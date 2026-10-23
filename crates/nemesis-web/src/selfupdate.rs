@@ -391,10 +391,16 @@ pub(crate) fn save_pending(exe: &Path, pending: &PendingUpdate) -> Result<(), St
         .map_err(|e| format!("待装包元数据落盘失败（{}）：{e}", path.display()))
 }
 
-/// SSE 下载进度帧（ephemeral：seq=0 不进环形缓冲——断线补拉重放旧进度
+/// SSE 下载/编排进度帧（ephemeral：seq=0 不进环形缓冲——断线补拉重放旧进度
 /// 无意义；在线订阅者直收，`useSSE` 需把事件名加进 [`EVENT_TYPES`]）。
+/// `message` = 失败类帧的人读原因（apply 编排失败必带；下载类 None）。
 #[cfg(feature = "selfupdate")]
-pub(crate) fn publish_progress(phase: &str, downloaded: u64, total: Option<u64>) {
+pub(crate) fn publish_progress(
+    phase: &str,
+    downloaded: u64,
+    total: Option<u64>,
+    message: Option<&str>,
+) {
     let pct = total
         .and_then(|t| (downloaded * 100).checked_div(t))
         .map(|v| v.min(100));
@@ -405,6 +411,7 @@ pub(crate) fn publish_progress(phase: &str, downloaded: u64, total: Option<u64>)
             "downloaded_bytes": downloaded,
             "total_bytes": total,
             "pct": pct,
+            "message": message,
         }),
     );
 }
@@ -668,6 +675,15 @@ fn load_applied_sequence(exe: &Path, anchors: &[[u8; 32]], now: u64) -> Option<u
             None
         }
     }
+}
+
+/// 本机是否已有「已安装版本」清单基准（applied 副本**文件在场**——只看存在
+/// 性，不验签：这里只服务 Dashboard 的「首更形态」提前告知，权威判定永远在
+/// apply 的顺序闸里）。false = 存量安装首次更新形态——默认态顺序闸 Unknown
+/// 必拒，前端据此在确认框里提前说明豁免语义。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn sequence_baseline_present(exe: &Path) -> bool {
+    applied_manifest_path(exe).exists()
 }
 
 /// journal → applied 副本落盘（boot `update_success` 收口接线；R1 写入链
@@ -1387,6 +1403,22 @@ impl Default for DownloadProgress {
     }
 }
 
+/// 最近一次 apply 编排失败的反馈面（2026-10-23 挂死修复）。apply 是受理即
+/// 回的后台编排——失败若只落 gateway 日志，Dashboard 的「更新执行中」粘滞
+/// 态永远等不到收口信号。Ok 即清；重试发起时由 apply 包装层先行清空（编排
+/// 中不残留旧错）。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApplyErrorRecord {
+    /// 人读失败原因（各闸 Err 文案原样）。
+    pub message: String,
+    /// 失败闸 = 顺序判定拒绝类（清单缺失/验签失败 → Unknown、sequence 降级
+    /// /未知）——Dashboard 据此提供显式豁免重试（签名验真照常，不豁免）。
+    pub downgrade_denied: bool,
+    /// 失败时刻（ms epoch）。
+    pub at_ms: u64,
+}
+
 /// apply / 下载编排器。gateway run_runtime 装配点构建（审计链 / estop 同源），
 /// 注入 WSAPI 槽 + 内部命令臂 + 启动自动 check。`shutdown` 闭包 = 既有优雅
 /// 停机路径，注入避免本模块反向依赖 bin 类型。
@@ -1412,6 +1444,13 @@ pub struct SelfUpdateManager {
     /// 最近一次 check 结果缓存（gateway 启动 30s 自动 check 写入；WSAPI
     /// status 直接读，前端免再等一次网络往返）。
     pub last_check: std::sync::Arc<parking_lot::Mutex<Option<(UpdateCheck, u64)>>>,
+    /// 最近一次 apply 编排失败（None = 无/已清）。受理即回形态下这是
+    /// Dashboard 的持久失败信号（SSE error 帧只达在线订阅者，status 轮询
+    /// 兜底断线/刷新场景）。
+    pub last_apply_error: std::sync::Arc<parking_lot::Mutex<Option<ApplyErrorRecord>>>,
+    /// 顺序判定拒绝旗标（闸①清单缺失/验签失败、闸⑤ sequence 拒绝时置位；
+    /// apply 包装层收口时折进 [`ApplyErrorRecord::downgrade_denied`]）。
+    pub downgrade_denied: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "selfupdate")]
@@ -1428,6 +1467,11 @@ impl SelfUpdateManager {
                 reason,
             );
         }
+    }
+
+    /// 最近一次 apply 失败快照（None = 无在案失败）。status 投影用。
+    pub fn last_apply_error_snapshot(&self) -> Option<ApplyErrorRecord> {
+        self.last_apply_error.lock().clone()
     }
 
     /// 下载待装包（WSAPI `selfupdate.download` 的执行体；调用方负责放进
@@ -1512,7 +1556,7 @@ impl SelfUpdateManager {
                     p.phase = "ready".to_string();
                     (p.downloaded_bytes, p.total_bytes)
                 };
-                publish_progress("ready", done, total);
+                publish_progress("ready", done, total, None);
                 self.audit_event("selfupdate", "allowed", &msg);
                 Ok(msg)
             }
@@ -1523,7 +1567,7 @@ impl SelfUpdateManager {
                 p.phase = "error".to_string();
                 p.error = Some(e.clone());
                 drop(p);
-                publish_progress("error", 0, None);
+                publish_progress("error", 0, None, Some(&e));
                 self.audit_event("selfupdate", "denied", &format!("download: {e}"));
                 Err(e)
             }
@@ -1607,7 +1651,7 @@ impl SelfUpdateManager {
                         )
                         .is_ok()
                 {
-                    publish_progress("downloading", done, effective_total);
+                    publish_progress("downloading", done, effective_total, None);
                 }
                 true
             },
@@ -1648,8 +1692,11 @@ impl SelfUpdateManager {
     /// APK 形态，两者由 stub 变体诚实拒绝——见下方 cfg 分体）。Ok = staging
     /// 完成且新进程已拉起、本进程将优雅退出；Err = 人读失败原因（每步失败都
     /// 带现场 + 审计留痕）。
+    ///
+    /// 外层 [`SelfUpdateManager::apply`] 是全平台失败反馈面包装；本体在此
+    /// （`apply_inner`）。
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    pub async fn apply(
+    async fn apply_inner(
         &self,
         current_version: &str,
         current_commit: &str,
@@ -1790,7 +1837,14 @@ impl SelfUpdateManager {
             self.audit_event("selfupdate", "denied", &msg);
             msg
         })?;
-        let extracted = extract_update_bundle(&pkg_bytes)?;
+        // 解包失败 = 包结构损坏（sha 对但 zip/tar 坏）：与 load_pending 的
+        // 「坏包宁可重下」同策略——整清 updates/，不给永久失败循环留现场。
+        let extracted = extract_update_bundle(&pkg_bytes).map_err(|e| {
+            clear_updates_dir(&exe_path);
+            let msg = format!("解包更新包失败：{e}（updates/ 已清空，请重新下载）");
+            self.audit_event("selfupdate", "denied", &msg);
+            msg
+        })?;
 
         // ── 步骤 1e：身份与顺序闸（R1：签名更新清单为唯一权威）──
         // 锚与时间在闸前构造（清单验签在此需要；步骤 4 的 exe 本体验签复用
@@ -1819,6 +1873,8 @@ impl SelfUpdateManager {
             Some(Ok(m)) => Some(m),
             Some(Err(e)) => {
                 if !allow_downgrade {
+                    self.downgrade_denied
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                     self.audit_event("manifest", "denied", &e);
                     return Err(format!(
                         "{e}：无法证明版本顺序，更新已拒绝。确认要继续请带 \
@@ -1835,6 +1891,8 @@ impl SelfUpdateManager {
             }
             None => {
                 if !allow_downgrade {
+                    self.downgrade_denied
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                     self.audit_event("manifest", "denied", "manifest missing");
                     return Err("更新包内无签名更新清单（manifest.json 缺失）：无法证明版本\
                          顺序与 exe 完整性绑定，更新已拒绝。确认要继续请带 \
@@ -1916,6 +1974,8 @@ impl SelfUpdateManager {
             let current_seq = load_applied_sequence(&exe_path, &anchors, now);
             let verdict = sequence_verdict(current_seq, m.sequence);
             if let Some(err) = downgrade_gate_error(verdict, allow_downgrade) {
+                self.downgrade_denied
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 self.audit_event(
                     "selfupdate",
                     "denied",
@@ -2122,7 +2182,7 @@ impl SelfUpdateManager {
     /// 全平台可用。macOS CI 产物（nightly-macos.tar.gz）就位后，把
     /// `apply_supported()` 与本 cfg 门一起放开即接通。
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    pub async fn apply(
+    async fn apply_inner(
         &self,
         current_version: &str,
         current_commit: &str,
@@ -2139,6 +2199,36 @@ impl SelfUpdateManager {
              请手动下载 Release 包替换。"
                 .to_string()
         })
+    }
+
+    /// apply 受理入口（全平台）：失败反馈面单一收口包装。Err → 记
+    /// [`ApplyErrorRecord`]（status 轮询面，断线/刷新兜底）+ SSE error 帧
+    /// （在线即时）；Ok → 清旧错。发起时先行清空旗标与旧记录——编排进行中
+    /// status 不残留上一轮失败（前端粘滞态以此判「本轮尚未收口」）。
+    pub async fn apply(
+        &self,
+        current_version: &str,
+        current_commit: &str,
+        allow_downgrade: bool,
+    ) -> Result<String, String> {
+        self.downgrade_denied
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self.last_apply_error.lock() = None;
+        let result = self
+            .apply_inner(current_version, current_commit, allow_downgrade)
+            .await;
+        if let Err(e) = &result {
+            *self.last_apply_error.lock() = Some(ApplyErrorRecord {
+                message: e.clone(),
+                downgrade_denied: self
+                    .downgrade_denied
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                at_ms: now_ms(),
+            });
+            publish_progress("error", 0, None, Some(e));
+            tracing::warn!("[SelfUpdate] apply 编排失败（已反馈 status/SSE）：{e}");
+        }
+        result
     }
 }
 
