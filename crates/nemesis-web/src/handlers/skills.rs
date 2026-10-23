@@ -485,6 +485,11 @@ impl SkillsHandler {
         ctx: Option<&RequestContext>,
     ) -> Result<Option<serde_json::Value>, String> {
         let slug = crate::handlers::get_str(data, "slug")?;
+        // 路径安全（BUG-HUNT R35）：入口先拒——exists 检查的 `skills/<slug>` 拼
+        // 接、force 的 uninstall 与后续 installer.install 都不得喂入穿越 slug
+        // （installer 侧有同源校验兜底，此处提前给可读错误）。
+        nemesis_skills::types::validate_skill_identifier(&slug)
+            .map_err(|e| format!("invalid slug '{}': {}", slug, e))?;
         let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
         // registry 路径必填校验（保持旧文案 "missing field: registry"；
         // repo（GitHub 直装）存在时 registry 可省）。

@@ -1194,3 +1194,69 @@ fn test_uninstall_removes_all_files() {
     assert!(result.is_ok());
     assert!(!skill_dir.exists());
 }
+
+// ============================================================
+// BUG-HUNT R35：install() 的 staging 清理（remove_dir_all）拿原始 slug
+// 拼接——slug 校验必须发生在删除之前，否则 `../../victim` 会在 registry
+// 侧校验拒绝之前就把 workspace 外的目录先行删除（CLI `skills install
+// github/../../victim` 与 WSAPI skills.install 同达）。
+// ============================================================
+
+#[tokio::test]
+async fn test_install_rejects_traversal_slug_before_staging_delete() {
+    let temp = tempfile::tempdir().unwrap();
+    // 哨兵目录：从 .skill-staging 上溯两级（`../../victim`）恰落到 temp 根。
+    let victim = temp.path().join("victim");
+    std::fs::create_dir_all(victim.join("precious")).unwrap();
+    std::fs::write(victim.join("precious").join("data.txt"), "keep").unwrap();
+    let ws = temp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    // 配 stub registry：修复前流程能穿过 manager/registry 查找直达 staging
+    // 删除（stub 的 download 不写盘，删完才在后续验签环节报错）——哨兵存活
+    // 断言因此是真实闸，不是恒真。
+    let mut installer = SkillInstaller::new(ws.to_str().unwrap());
+    let manager = crate::registry::RegistryManager::new_empty();
+    manager.add_registry(std::sync::Arc::new(crate::registry::StubRegistryProvider));
+    installer.set_registry_manager(manager);
+
+    let err = installer
+        .install("stub", "../../victim", "1.0")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NemesisError::Validation(ref m) if m.contains("path traversal denied")),
+        "expected traversal rejection, got {err:?}"
+    );
+    assert!(
+        victim.join("precious").join("data.txt").exists(),
+        "sentinel dir must survive the rejected install"
+    );
+
+    // Windows 盘符相对路径（`C:evil`）：PathBuf::join 遇带 prefix 成分整体
+    // 截断，同样必须在入口被拒。
+    let err = installer
+        .install("stub", "C:evil", "1.0")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NemesisError::Validation(ref m) if m.contains("cannot contain ':'")),
+        "expected colon rejection, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_install_clean_slug_passes_entry_validation() {
+    // 对照组：合法 slug 不被入口校验误伤——错误推进到「registry manager
+    // 未配置」而非校验拒绝。
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let err = installer
+        .install("github", "ok-slug", "1.0")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NemesisError::Validation(ref m) if m.contains("registry manager")),
+        "clean slug should pass slug validation, got {err:?}"
+    );
+}

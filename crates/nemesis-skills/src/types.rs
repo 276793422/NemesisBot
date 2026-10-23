@@ -484,6 +484,12 @@ pub fn validate_skill_identifier(slug: &str) -> std::result::Result<(), String> 
     if trimmed.contains("..") {
         return Err("skill identifier cannot contain '..'".to_string());
     }
+    if trimmed.contains(':') {
+        // Windows 双重危险：`C:evil` 是盘符相对路径——PathBuf::join 遇到带
+        // prefix 的成分会整体截断已有路径（写入/删除逃出 workspace）；裸
+        // 冒号同时是 NTFS 备用数据流分隔符，作为目录名在 Windows 上非法。
+        return Err("skill identifier cannot contain ':'".to_string());
+    }
     if trimmed.len() > 64 {
         return Err("skill identifier too long (max 64 characters)".to_string());
     }

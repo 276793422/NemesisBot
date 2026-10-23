@@ -22,7 +22,9 @@ use crate::install_gate::{InstallDecision, InstallPlan, PlanFile, SharedInstallG
 use crate::lockfile::{LockedSkill, SkillsLockfile};
 use crate::security_check::{check_skill_security, check_skill_security_dir};
 use crate::trust::{TrustState, VerificationOutcome};
-use crate::types::{AvailableSkill, InstallResult, SecurityCheckResult, SkillOrigin};
+use crate::types::{
+    AvailableSkill, InstallResult, SecurityCheckResult, SkillOrigin, validate_skill_identifier,
+};
 
 /// 浏览器 UA（GitHub API 要求 User-Agent，测试服务器无所谓）。
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -667,6 +669,20 @@ impl SkillInstaller {
         slug: &str,
         version: &str,
     ) -> Result<InstallResult> {
+        // 路径安全（BUG-HUNT R35）：slug 只能是单一目录名，且校验必须发生在
+        // staging 清理之前——下方 `remove_dir_all_resilient(staging)` 拿的是
+        // `.skill-staging/<slug>` 的原始拼接，`../../x` 会经 OS 解析落到
+        // workspace 外的任意目录被先行删除；registry 侧（github/clawhub/
+        // modelscope）虽各自在 download_and_install 入口校验，但那发生在本
+        // 清理之后，管不住删除。与 uninstall 的边界校验对称、与 registry/
+        // agent 工具共用同一验证器（单一真相源）。
+        validate_skill_identifier(slug).map_err(|e| {
+            NemesisError::Validation(format!(
+                "path traversal denied: invalid skill slug '{}': {}",
+                slug, e
+            ))
+        })?;
+
         let manager = self.registry_manager.as_ref().ok_or_else(|| {
             NemesisError::Validation("registry manager not configured".to_string())
         })?;
