@@ -10,7 +10,8 @@
 //! 诚实边界（doc 钉死）：
 //! - 输入维度安全阀 [`MAX_INPUT_DIMENSION`]（12000px）：解码内存 ≈ w·h·4，
 //!   超阀诚实拒绝而非尝试（拒绝时保持原图直附语义失败前的原拒绝注记）。
-//! - **GIF 不降采样**（重编码丢动画帧 = 静默语义变更），诚实拒绝。
+//! - **GIF / 动画 WebP 不降采样**（重编码丢动画帧 = 静默语义变更），诚实拒绝。
+//!   动画 WebP 判据见 [`webp_is_animated`]。
 //! - 解码失败（合法 magic 但坏 body）诚实拒绝。
 //! - 开关 `agents.image_downscale`（默认**开**）由调用方 fresh-read 后以
 //!   `uploads_dir: Option<&Path>` 传入——`None` = 开关关，调用方零行为变化。
@@ -41,6 +42,12 @@ const MAX_INPUT_DIMENSION: u32 = 12000;
 /// JPEG 重编码质量（对齐实施计划原文 q85）。
 #[cfg(feature = "image-process")]
 const JPEG_QUALITY: u8 = 85;
+
+/// 头部采样窗口（字节）：GIF 魔数在 offset 0..6；动画 WebP 的 VP8X 扩展头
+/// 旗标在 offset 20（spec 规定 VP8X 为扩展格式首 chunk），窗口再放大到 4KB
+/// 顺带覆盖非规范 mux 下紧随的 ANMF fourcc 扫描。
+#[cfg(feature = "image-process")]
+const HEADER_SCAN_BYTES: usize = 4096;
 
 /// 降采样判定参数（生产默认 = [`DEFAULT_LIMITS`]；测试注入小阈值免合成
 /// 25MB 实体文件）。字段 pub(crate)：仅 nemesis-agent 测试构造。
@@ -139,17 +146,24 @@ pub(crate) fn downscale_gate_with(
             w, h, MAX_INPUT_DIMENSION
         ));
     }
-    // GIF：重编码丢动画帧 = 静默语义变更，诚实拒绝。
+    // 头部采样（up-to 读，短于窗口的文件取全量；<12 字节残帧走后续全量
+    // 解码诚实 Err，与原 read_exact 形态同为诚实拒绝）。
     let head = std::fs::File::open(src)
         .and_then(|mut f| {
             use std::io::Read;
-            let mut buf = [0u8; 12];
-            f.read_exact(&mut buf)?;
+            let mut buf = vec![0u8; HEADER_SCAN_BYTES];
+            let n = f.read(&mut buf)?;
+            buf.truncate(n);
             Ok(buf)
         })
         .map_err(|e| format!("无法读取图片文件头 ({}): {}", src.display(), e))?;
     if image_path_detector::ext_from_magic(&head) == Some("gif") {
         return Err("GIF 动图不支持自动降采样（会丢失动画帧）".to_string());
+    }
+    // 动画 WebP（2026-10-23 R33）：与 GIF 同原则——image-webp 对 ANMF 文件
+    // 解码第一帧成功，重编码 JPEG = 动画帧静默丢失。检测在解码前，诚实拒绝。
+    if webp_is_animated(&head) {
+        return Err("动画 WebP 不支持自动降采样（会丢失动画帧）".to_string());
     }
 
     // 全量读入 + 解码（维度安全阀已过，内存有界）。
@@ -200,6 +214,24 @@ pub(crate) fn downscale_gate_with(
         LADDER[LADDER.len() - 1],
         limits.out_bytes / (1024 * 1024)
     ))
+}
+
+/// 动画 WebP 判定（纯函数，`head` = 文件头部采样 ≤[`HEADER_SCAN_BYTES`] 字节）。
+///
+/// 判据一（spec 权威）：动画必带 VP8X 扩展头（扩展格式首 chunk）且 animation
+/// 旗标（flags 字节 bit1，offset 20）置 1——RIFF(4)+size(4)+WEBP(4)+VP8X
+/// fourcc(4)+chunk size(4) 之后第一个字节。判据二（兜底）：头部窗口内扫到
+/// ANMF 帧块 fourcc（覆盖旗标未置的非规范 mux）。静态 WebP（裸 VP8/VP8L 或
+/// VP8X 旗标 0）两判据皆不命中 → 走原降采样链不变。
+#[cfg(feature = "image-process")]
+fn webp_is_animated(head: &[u8]) -> bool {
+    if head.len() < 12 || &head[0..4] != b"RIFF" || &head[8..12] != b"WEBP" {
+        return false;
+    }
+    if head.len() >= 21 && &head[12..16] == b"VP8X" && head[20] & 0x02 != 0 {
+        return true;
+    }
+    head.windows(4).any(|w| w == b"ANMF")
 }
 
 /// 透明像素铺白底（JPEG 无 alpha 通道，直接丢 alpha 会把透明区变黑/杂色）。
