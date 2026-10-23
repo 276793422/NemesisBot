@@ -18,6 +18,7 @@ import { uploadImage, validateImageFile, type UploadedImage } from '../composabl
 import { useToast } from '../composables/useToast'
 import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
+import { useSessionAllowAll } from '../composables/useSessionAllowAll'
 // 皮肤结构挂载点（主页启动器槽）：skinHasSlot('launcher') 才渲染
 import { skinHasSlot } from '../composables/useSkin'
 import SkinSlot from './SkinSlot.vue'
@@ -229,6 +230,33 @@ async function toggleExternalWrite() {
   // ext 依赖 full：按钮仅在 fullAccess 时可点（disabled），此处仍显式带 full。
   await setEditorAccess(true, !externalWrite.value)
 }
+
+// --- 会话级全部放行开关（2026-10-24 长任务无人值守计划 Feature A）---
+// 作用域是单个会话（不是运行时全局态）：开启后本会话所有安全审批卡
+// （含 CRITICAL + 紫微 force）自动放行——硬拒绝与急停不在放行之列。
+// 持久真相源在会话 sidecar（无 TTL、重启自动恢复），与 Full Access 的
+// 「运行时态重启失效」刻意相反。模块级单例（useSessionAllowAll）。
+
+const { allowAllBySession, sessionAllowAvailable, refreshSessionAllow, setSessionAllow } =
+  useSessionAllowAll()
+
+/** 当前会话的放行态（未查询过 = false）。 */
+const sessionAllowActive = computed(
+  () => !!effectiveSid.value && (allowAllBySession.value[effectiveSid.value]?.enabled ?? false)
+)
+
+async function toggleSessionAllow() {
+  await setSessionAllow(effectiveSid.value, !sessionAllowActive.value)
+}
+
+// 会话切换 / 初始化时拉取当前会话的放行态（容错静默——开关缺省视为关）。
+watch(
+  effectiveSid,
+  (sid) => {
+    if (sid && isDefaultChat.value) void refreshSessionAllow(sid)
+  },
+  { immediate: true }
+)
 
 /** 一键插队：给输入加 `!` 前缀（已有前缀则不动）。 */
 function prefixSteer() {
@@ -2882,6 +2910,19 @@ onUnmounted(() => {
       >
         外部写删
       </button>
+      <!-- 会话级全部放行（2026-10-24 长任务无人值守计划）：作用域是当前
+           会话（持久 sidecar，重启自动恢复），所有安全审批卡自动放行；
+           硬拒绝与急停不受影响 -->
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn session-allow-btn"
+        :class="{ active: sessionAllowActive }"
+        :disabled="!sessionAllowAvailable || !effectiveSid"
+        title="会话全部放行（本会话持久）：本会话所有安全审批自动放行（含高危）；硬拒绝与急停不受影响；长任务无人值守用，用完记得关"
+        @click="toggleSessionAllow"
+      >
+        🔓 全部放行
+      </button>
       <button
         v-if="isDefaultChat"
         class="voice-btn redo-btn"
@@ -2996,6 +3037,10 @@ onUnmounted(() => {
     <div v-if="fullAccess" class="editor-strip">
       <template v-if="externalWrite">⚡ Full Access + 外部写删：全放行中（exec 由真沙盒兜底；自毁硬拦仍生效）— 点击上方按钮或设置页【编辑器】关闭</template>
       <template v-else>⚡ Full Access：项目内全放行 + 项目外读/执行/网络/系统放行（项目外写删仍审批）— Agent 重启后自动关闭</template>
+    </div>
+    <!-- 会话级全部放行常驻条（无人值守时安全状态必须始终可见） -->
+    <div v-if="sessionAllowActive" class="editor-strip session-allow-strip">
+      🔓 全部放行中（本会话）：已自动批准 {{ allowAllBySession[effectiveSid ?? '']?.count ?? 0 }} 条 — 硬拒绝与急停不受影响；长任务跑完请点击上方按钮关闭
     </div>
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
@@ -3289,6 +3334,10 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 会话级全部放行常驻条（无人值守安全可见性；绿色=放行态辨识色） */
+.session-allow-strip {
+  color: #67c23a;
 }
 /* BUG-3（2026-10-23）：失败待续状态条（plan-strip 同款布局，错误色） */
 .failed-strip {

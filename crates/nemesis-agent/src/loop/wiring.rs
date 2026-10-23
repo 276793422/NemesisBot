@@ -73,8 +73,11 @@ impl AgentLoop {
     }
 
     /// §2：装配免打扰运行时态（无人值守计划 Part 2，gateway 与 auditor /
-    /// web security handler 同一 Arc）。`check_escalation` 的 doom-loop 臂
-    /// 消费——开关开 = 不发卡清签名继续；未装配 = 恒 false（现行为）。
+    /// web security handler 同一 Arc）。消费方变迁（2026-10-24 循环干预
+    /// 阶梯）：`check_escalation` 的免打扰直批分支已删（终级卡 bypass，
+    /// 任何自动化开关压不掉）；auditor 侧的 §2 审批直批块走
+    /// nemesis-security 内部同 Arc，不经本槽。本槽保留=注入面不破坏
+    /// （wiring 回环测试消费），当前无生产读取点。
     #[cfg(feature = "security")]
     pub fn set_approval_auto_approve(
         &self,
@@ -83,8 +86,10 @@ impl AgentLoop {
         *self.security.approval_auto.write() = Some(state);
     }
 
-    /// §2：免打扰是否生效（doom-loop 臂判定；未装配/开关关 = false）。
+    /// §2：免打扰是否生效（未装配/开关关 = false）。（2026-10-24 起
+    /// `check_escalation` 不再读它——终级卡不可自动批；仅测试消费。）
     #[cfg(feature = "security")]
+    #[allow(dead_code)]
     pub(crate) fn approval_auto_enabled(&self) -> bool {
         self.security
             .approval_auto

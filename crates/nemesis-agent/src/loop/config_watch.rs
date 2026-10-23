@@ -288,6 +288,12 @@ impl AgentLoop {
     /// （F8 `current_hidden_tools` 同款模式——config.json 是唯一真相源，每次
     /// escalation 现读，运行时改键下一轮生效，无需重启）。无 config_path /
     /// 解析失败 = `false`（安全底座方向）。
+    ///
+    /// ⚠ 2026-10-24 循环干预阶梯：`check_escalation` 改走无 config 闸的
+    /// 终级卡（全会话默认行为），本读取器**不再被生产消费**——键保留解析
+    /// （老 config 不炸），J5 的历史消费方 `ask_doom_loop_approval` 保留可
+    /// 调用（禁止删除，见其注释块）。若未来复用 J5 卡，本读取器即闸。
+    #[allow(dead_code)]
     pub(crate) fn current_doom_loop_approval(&self) -> bool {
         let path = match self.config_path.read().clone() {
             Some(p) => p,

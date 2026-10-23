@@ -5901,6 +5901,7 @@ impl Tool for QuestionTool {
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: QUESTION_DEFAULT_TIMEOUT_SECS,
+            bypass_auto_approve: false,
         };
 
         // ask 是同步阻塞（最长 120s）——spawn_blocking 出 worker 线程，
@@ -5939,6 +5940,11 @@ impl Tool for QuestionTool {
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
                 Ok("No answer: user did not answer, proceed with your best judgment.".to_string())
+            }
+            // 循环干预阶梯（2026-10-24）：急停触发，broker 把 pending 提问
+            // 强制了结——按「停止」语义回灌，不鼓励模型继续。
+            nemesis_types::agent::QuestionOutcome::Cancelled => {
+                Ok("No answer: emergency stop was triggered while waiting; do not retry this question, stop and report.".to_string())
             }
         }
     }
@@ -6240,6 +6246,7 @@ impl Tool for PlanPresentTool {
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: PLAN_PRESENT_TIMEOUT_SECS,
+            bypass_auto_approve: false,
         };
 
         // ask 是同步阻塞（最长 600s）——spawn_blocking 出 worker 线程
@@ -6284,6 +6291,15 @@ impl Tool for PlanPresentTool {
                     .lock()
                     .insert(context.session_key.clone(), PlanPresentVerdict::Timeout);
                 Ok("⏱ 计划审批超时未获响应：本轮到此结束（仍处 plan 模式）。".to_string())
+            }
+            // 循环干预阶梯（2026-10-24）：急停强制了结——与超时同收口
+            // （留在 plan 模式、本轮终局），不进 build 不继续执行。
+            nemesis_types::agent::QuestionOutcome::Cancelled => {
+                self.handle
+                    .verdicts
+                    .lock()
+                    .insert(context.session_key.clone(), PlanPresentVerdict::Timeout);
+                Ok("⏹ 急停触发，计划审批中断：本轮到此结束（仍处 plan 模式）。".to_string())
             }
         }
     }

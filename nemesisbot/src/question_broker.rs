@@ -33,6 +33,9 @@ enum Answer {
     Selection(Vec<String>),
     /// 表单形态：键=字段 key，值=文本或选中项原文（可选空值已剔除）。
     Form(BTreeMap<String, String>),
+    /// 循环干预阶梯（2026-10-24）：[`Self::cancel_pending_all`]（estop
+    /// watcher）的强制了结形态——不是超时也不是用户作答。
+    Cancelled,
 }
 
 /// 一条等待作答的提问：元数据（`question.pending` 列表用）+ 作答回传通道
@@ -61,6 +64,32 @@ impl WebQuestionBroker {
             agent_event_tx,
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 循环干预阶梯（2026-10-24）：急停挂钩——把全部 pending 提问以
+    /// [`Answer::Cancelled`] 强制了结（等待方醒来 → 消费方按「停止」语义
+    /// 处理；`broadcast_resolved("cancelled")` 让前端摘卡）。无超时终级卡
+    /// 停在等答态会跨 estop 存续——estop watcher（gateway 装配处 spawn）
+    /// 触发时调本方法，停车的 loop 醒来 → 下一次 dispatch 被 estop 冻结
+    /// 拒绝 → 本轮诚实收尾。返回了结条数（0 = 无 pending，良性）。
+    pub fn cancel_pending_all(&self, reason: &str) -> usize {
+        let entries: Vec<(String, PendingEntry)> = match self.pending.lock() {
+            Ok(mut map) => map.drain().collect(),
+            Err(_) => return 0,
+        };
+        let n = entries.len();
+        for (id, entry) in entries {
+            let _ = entry.tx.send(Answer::Cancelled);
+            self.broadcast_resolved(&id, "cancelled");
+        }
+        if n > 0 {
+            tracing::warn!(
+                "[WebQuestion] cancelled {} pending question(s): {}",
+                n,
+                reason
+            );
+        }
+        n
     }
 
     /// 广播提问事件（无订阅者/通道关闭都是良性——提问等待不依赖广播）。
@@ -145,13 +174,17 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
     fn ask(&self, request: QuestionRequest) -> Result<QuestionOutcome, String> {
         // §2 免打扰（无人值守计划 Part 2）：开关开 = 提问卡不广播不进
         // pending，直接超时语义返回——工具侧回灌「按最佳判断继续」，无人
-        // 值守下 agent 全自主推进。doom-loop 卡不走这里（check_escalation
-        // 在上游已用同一开关短路为「自动批准」，轮不到发卡）。
+        // 值守下 agent 全自主推进。
+        // **bypass_auto_approve 绕过**（循环干预阶梯，2026-10-24）：终级卡
+        // （doom-loop escalation 停车问询）必须绕过本分支——任何自动化开关
+        // 都压不掉它（烟雾报警器必须响，用户裁决第 5 点）。
         // security 关闭 = 审批体系整体缺席（approval_auto_state 在
         // handlers::security 模块内，随 feature 消失）→ 不可能有自动兜底，
         // 恒发卡。feature matrix 实录：漏 gate 编译红 E0433（2026-10-14）。
         #[cfg(feature = "security")]
-        if nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled()) {
+        if !request.bypass_auto_approve
+            && nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled())
+        {
             tracing::info!(
                 "[WebQuestion] auto-approve on: question {} skipped (timeout semantics)",
                 request.question_id
@@ -188,7 +221,20 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
         // 阻塞等作答。工具侧已经 spawn_blocking（不占 worker），这里直接
         // recv；block_in_place 分支保留给直接在 async 上下文调用 ask 的
         // 形态（与审批同构）。
-        let wait = || rx.recv_timeout(Duration::from_secs(request.timeout_secs));
+        // **timeout_secs == 0 = 永不超时**（循环干预阶梯终级卡专用语义，
+        // 2026-10-24）：`rx.recv()` 无限等（**不是** `recv_timeout(0)`——那
+        // 是立即返回）。唯一的了结路径 = 用户作答 / respond_stale 类重启
+        // 补裁（本题无——提问 pending 纯内存、无重启 sweep，不存在自动
+        // 拒绝面，`timeout_secs==0` 条目天然「永不自动拒绝」）/ estop 经
+        // `cancel_pending_all` 强制了结（Cancelled）。
+        let wait = || {
+            if request.timeout_secs == 0 {
+                rx.recv()
+                    .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+            } else {
+                rx.recv_timeout(Duration::from_secs(request.timeout_secs))
+            }
+        };
         let result = if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::block_in_place(wait)
         } else {
@@ -218,6 +264,14 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
                     values.len()
                 );
                 Ok(QuestionOutcome::AnsweredForm(values))
+            }
+            Ok(Answer::Cancelled) => {
+                // 已了结广播（"cancelled"）由 cancel_pending_all 负责。
+                tracing::warn!(
+                    "[WebQuestion] question {} cancelled (emergency stop)",
+                    request.question_id
+                );
+                Ok(QuestionOutcome::Cancelled)
             }
             Err(_) => {
                 tracing::warn!(

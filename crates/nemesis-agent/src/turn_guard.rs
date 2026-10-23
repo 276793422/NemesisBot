@@ -25,11 +25,20 @@ use tracing::warn;
 pub const ALTERNATING_LOOP_THRESHOLD: u32 = 3;
 
 /// ⑥ Escalation: when the same `(tool, error_signature)` fails this many times
-/// in a turn we stop hard — nudges are being ignored. Bounds the worst-case
-/// cost of a stuck model that would otherwise run all the way to `max_turns`.
-/// 2× the nudge threshold, so the model gets three nudged chances to recover
-/// (failures 3, 4, 5) before we cut it off at failure 6.
-pub const ALTERNATING_LOOP_HARD_STOP: u32 = 6;
+/// in a turn we stop hard — every level of the intervention ladder
+/// （循环干预阶梯，2026-10-24）has been ignored. Bounds the worst-case cost of
+/// a stuck model that would otherwise run all the way to `max_turns`.
+///
+/// 计次分级阶梯：3–5 L0 通用 nudge → 6–11 L1 换方法 → 12–17 L2 换路径/
+/// 分解 → 18–23 L3 绕过+记录缺口 → ≥24 终级（无超时严重卡问用户；asker
+/// 缺席 = fail-closed 停轮）。旧值 6 是 J5 审批化时代的硬停点；阶梯化后
+/// 终级前先走完四级 nudge 干预，24 给模型完整的四级自纠机会。
+pub const ALTERNATING_LOOP_HARD_STOP: u32 = 24;
+
+/// ⑥ 干预阶梯分级边界（与 [`ALTERNATING_LOOP_HARD_STOP`] 同一真相源）：
+/// L1 起点 6、L2 起点 12、L3 起点 18；≥ [`ALTERNATING_LOOP_HARD_STOP`] 由
+/// escalation 终级接手（不再发 nudge）。[`Self::alternating_nudge`] 消费。
+pub const LADDER_LEVEL_BOUNDS: [u32; 3] = [6, 12, 18];
 
 /// 升级硬停文案的稳定前缀（P2A，2026-09-12）：[`TurnGuard::escalation_message`]
 /// 与集群 worker 侧（`cluster_agent`）共用同一真相源——worker 据此识别
@@ -173,15 +182,13 @@ impl TurnGuard {
         };
         let sig = error_signature(tool, error);
 
-        // ⑥ Alternating — cumulative across the whole turn.
+        // ⑥ Alternating — cumulative across the whole turn. Nudge text is
+        // level-keyed (循环干预阶梯)：count is the ladder, no separate
+        // intervention map.
         let alt_count = self.fail_freq.entry(sig.clone()).or_insert(0);
         *alt_count += 1;
-        let alt_nudge = (*alt_count >= ALTERNATING_LOOP_THRESHOLD).then(|| {
-            format!(
-                "\n[loop guard] {} 在本任务中已 {} 次报相同错误。中间的修改并没有消除这个错误——根因可能在别处。请换方向：检查依赖配置 / 构建配置 / 环境依赖是否正确安装，或换一条完全不同的实现路径；若实在无法解决，请在最终答复里说明阻塞点。",
-                tool, *alt_count
-            )
-        });
+        let alt_nudge =
+            (*alt_count >= ALTERNATING_LOOP_THRESHOLD).then(|| alternating_nudge(tool, *alt_count));
 
         // ④ Storm — consecutive identical failure only.
         let storm_nudge = if Some(&sig) == self.storm_sig.as_ref() {
@@ -410,6 +417,45 @@ impl TurnGuard {
                 "你的上一条回复没有可见正文。请直接给出实际答复。".to_string(),
             )
         }
+    }
+}
+
+/// ⑥ 循环干预阶梯（2026-10-24）：`alt_count` 计次分级 nudge 文案——级别是
+/// 计数的纯函数（无独立干预计数、无清零窗口）。每次失败都返回当级文案
+/// （nudge 通道逐次重现，模型不会「忘」上一轮的指导）；≥
+/// [`ALTERNATING_LOOP_HARD_STOP`] 不再进本函数（escalation 终级接手）。
+/// L0 文案与阶梯化前逐字节一致（既有测试/账本兼容）。
+fn alternating_nudge(tool: &str, count: u32) -> String {
+    let level = if count < LADDER_LEVEL_BOUNDS[0] {
+        0
+    } else if count < LADDER_LEVEL_BOUNDS[1] {
+        1
+    } else if count < LADDER_LEVEL_BOUNDS[2] {
+        2
+    } else {
+        3
+    };
+    match level {
+        // L0（3–5）：通用纠偏（原文案）。
+        0 => format!(
+            "\n[loop guard] {} 在本任务中已 {} 次报相同错误。中间的修改并没有消除这个错误——根因可能在别处。请换方向：检查依赖配置 / 构建配置 / 环境依赖是否正确安装，或换一条完全不同的实现路径；若实在无法解决，请在最终答复里说明阻塞点。",
+            tool, count
+        ),
+        // L1（6–11）：换方法——此前几轮的微调已被证伪，停止在同一方法上打磨。
+        1 => format!(
+            "\n[loop guard] {} 已 {} 次报相同错误——前几轮的修改没有解决问题，继续微调当前方法没有意义。请彻底放弃这一步的当前做法：换一个工具、换一条命令或换一种完全不同的实现方式来完成同样的目标。",
+            tool, count
+        ),
+        // L2（12–17）：换路径/分解——方法级换血仍无进展，质疑任务拆法与前提。
+        2 => format!(
+            "\n[loop guard] {} 已 {} 次报相同错误——多轮换方法仍无进展，说明前提假设可能有问题。请重新审视目标本身：换一条根本不同的实现路径，或把任务分解成更小的子步骤逐个击破，必要时先解决前置依赖，或明确放弃不可行的子目标。",
+            tool, count
+        ),
+        // L3（18–23）：绕过+记录缺口——停止尝试修复，转向有界交付。
+        _ => format!(
+            "\n[loop guard] {} 已 {} 次报相同错误——干预阶梯最后一级。停止继续尝试：绕过该阻塞点完成其余能完成的工作，在最终答复里明确记录缺口（失败原因、已尝试过的方法、建议的人工处理方式），交付已完成的部分。不要再次重试同一调用。",
+            tool, count
+        ),
     }
 }
 

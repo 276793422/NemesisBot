@@ -1208,8 +1208,8 @@ async fn escalation_fires_on_repeated_failing_builds() {
     // exec (cargo build), which fails identically every time. ExecTool returns
     // Ok("Exit code: 101\nstderr: error[...]...") for a non-zero exit — without
     // the tool_result_indicates_error helper this looks like success and the
-    // guards never fire. Verify ⑥ escalation hard-stops at failure 6 (well
-    // under max_turns=100).
+    // guards never fire. Verify ⑥ escalation hard-stops at failure 24 (well
+    // under max_turns=100); the ladder nudges L0-L3 fire along the way.
     let fail_resp = LlmResponse {
         finish_reason: None,
         escalated_to: None,
@@ -1225,7 +1225,7 @@ async fn escalation_fires_on_repeated_failing_builds() {
         raw_request_body: None,
         raw_response_body: None,
     };
-    let responses: Vec<LlmResponse> = (0..20).map(|_| fail_resp.clone()).collect();
+    let responses: Vec<LlmResponse> = (0..30).map(|_| fail_resp.clone()).collect();
     let provider = MockLlmProvider::new(responses);
     let mut config = test_config();
     config.max_turns = 100;
@@ -1255,7 +1255,7 @@ async fn escalation_fires_on_repeated_failing_builds() {
     // the nudge repeatedly while the model keeps looping. The original wiring
     // bug: escalation's `break` only exited the tool-call batch, so escalation
     // fired every round without ending the turn — observed 43× in a deployed
-    // test. With the latch-based fix, exactly one Done at ~round 6.
+    // test. With the latch-based fix, exactly one Done at ~round 24.
     assert_eq!(
         done_events.len(),
         1,
@@ -1270,7 +1270,7 @@ async fn escalation_fires_on_repeated_failing_builds() {
     );
 }
 
-// --- J5 (devtool-upgrade 阶段 6): doom-loop escalation 审批化（默认关） ---
+// --- 循环干预阶梯（2026-10-24）：终级停车卡 + J5 保留件 ---
 
 /// 测试假 asker：返回预置作答（None = Timeout），并计数被问次数。
 struct FakeDoomAsker {
@@ -1279,9 +1279,10 @@ struct FakeDoomAsker {
 }
 
 impl FakeDoomAsker {
+    /// 终级卡批准项（选项原文 = tool_dispatch 的「批准续跑」）。
     fn approving() -> Self {
         Self {
-            answer: std::sync::Mutex::new(Some(vec!["继续执行".to_string()])),
+            answer: std::sync::Mutex::new(Some(vec!["批准续跑".to_string()])),
             asked: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -1302,30 +1303,20 @@ impl FakeDoomAsker {
 impl nemesis_types::agent::QuestionAsker for FakeDoomAsker {
     fn ask(
         &self,
-        _request: nemesis_types::agent::QuestionRequest,
+        request: nemesis_types::agent::QuestionRequest,
     ) -> Result<nemesis_types::agent::QuestionOutcome, String> {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // 终级卡契约钉死（bypass 是判别器）：无超时（timeout_secs=0）——
+        // 任何自动化开关都压不掉这张卡（用户裁决第 5 点：烟雾报警器必须
+        // 响）。J5 保留件卡走常规超时，不受此约束。
+        if request.bypass_auto_approve {
+            assert_eq!(request.timeout_secs, 0, "terminal card must never time out");
+        }
         match self.answer.lock().unwrap().clone() {
             Some(sel) => Ok(nemesis_types::agent::QuestionOutcome::Answered(sel)),
             None => Ok(nemesis_types::agent::QuestionOutcome::Timeout),
         }
     }
-}
-
-/// 写一个只有 `agents.doom_loop_approval` 的临时 config.json，返回路径
-/// （调用方负责删除）。后缀区分并行测试。
-fn doom_config_file(flag: bool, suffix: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "nemesis_test_doom_{}_{}.json",
-        std::process::id(),
-        suffix
-    ));
-    std::fs::write(
-        &path,
-        serde_json::json!({"agents": {"doom_loop_approval": flag}}).to_string(),
-    )
-    .unwrap();
-    path
 }
 
 /// WS2（P5）：写一个只含 `agents.defaults.compact_keep_recent_tokens` 的临时
@@ -1366,10 +1357,10 @@ fn failing_exec_response(id: &str) -> LlmResponse {
 }
 
 #[tokio::test]
-async fn doom_loop_approval_approved_clears_and_continues() {
-    // Approve = 清签名计数继续：失败 6 次触发 escalation → 用户批准 →
-    // 同签名从零重数；再次撞到 6 又发卡（一次批准不等于永久豁免）。
-    // 12 次失败（两次撞顶各批准一次）后第 13 轮模型给出正常完成。
+async fn doom_loop_terminal_approved_clears_and_continues() {
+    // Approve = 清签名计数继续：失败 24 次触发终级卡 → 用户批准 → 同签名
+    // 从零重数；再次撞到 24 又发卡（一次批准不等于永久豁免）。48 次失败
+    // （两次撞顶各批准一次）后第 49 轮模型给出正常完成。
     let fail_resp = failing_exec_response("tc_fail");
     let ok_resp = LlmResponse {
         finish_reason: None,
@@ -1382,17 +1373,15 @@ async fn doom_loop_approval_approved_clears_and_continues() {
         raw_request_body: None,
         raw_response_body: None,
     };
-    let mut responses: Vec<LlmResponse> = (0..12).map(|_| fail_resp.clone()).collect();
+    let mut responses: Vec<LlmResponse> = (0..48).map(|_| fail_resp.clone()).collect();
     responses.push(ok_resp);
     let provider = MockLlmProvider::new(responses);
     let mut config = test_config();
-    config.max_turns = 100;
+    config.max_turns = 200;
 
-    let cfg_path = doom_config_file(true, "approve");
     let asker = std::sync::Arc::new(FakeDoomAsker::approving());
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
-    agent_loop.set_config_path(cfg_path.clone());
     agent_loop.set_question_asker(asker.clone());
     agent_loop.register_tool(
         "exec".to_string(),
@@ -1420,27 +1409,24 @@ async fn doom_loop_approval_approved_clears_and_continues() {
     assert_eq!(
         asker.asked.load(std::sync::atomic::Ordering::SeqCst),
         2,
-        "card asked exactly twice (re-escalation after each clear asks again)"
+        "terminal card asked exactly twice (re-escalation after each clear asks again)"
     );
-    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
-async fn doom_loop_approval_denied_stops_turn() {
-    // Deny = 现行为：恰好一次 Done，文案与 escalation_check 一字不差。
+async fn doom_loop_terminal_denied_stops_turn() {
+    // Deny = 停车：恰好一次 Done，文案与 escalation_check 一字不差。
     let provider = MockLlmProvider::new(
-        (0..20)
+        (0..30)
             .map(|i| failing_exec_response(&format!("tc_{}", i)))
             .collect(),
     );
     let mut config = test_config();
     config.max_turns = 100;
 
-    let cfg_path = doom_config_file(true, "deny");
     let asker = std::sync::Arc::new(FakeDoomAsker::denying());
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
-    agent_loop.set_config_path(cfg_path.clone());
     agent_loop.set_question_asker(asker.clone());
     agent_loop.register_tool(
         "exec".to_string(),
@@ -1467,25 +1453,24 @@ async fn doom_loop_approval_denied_stops_turn() {
         1,
         "asked once, then the denial latched the stop"
     );
-    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
-async fn doom_loop_approval_timeout_stops_turn() {
-    // 超时 = 现行为（与 deny 同臂）——无人作答不等于批准。
+async fn doom_loop_terminal_timeout_outcome_stops_turn() {
+    // Timeout 结局（broker 异常等路径）= 与 deny 同臂——无作答不等于批准。
+    // 终级卡本身无超时（FakeDoomAsker 已断言 timeout_secs==0），这里是
+    // ask 通路返回 Timeout 时的 fail-closed 兜底。
     let provider = MockLlmProvider::new(
-        (0..20)
+        (0..30)
             .map(|i| failing_exec_response(&format!("tc_{}", i)))
             .collect(),
     );
     let mut config = test_config();
     config.max_turns = 100;
 
-    let cfg_path = doom_config_file(true, "timeout");
     let asker = std::sync::Arc::new(FakeDoomAsker::timing_out());
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
-    agent_loop.set_config_path(cfg_path.clone());
     agent_loop.set_question_asker(asker.clone());
     agent_loop.register_tool(
         "exec".to_string(),
@@ -1505,26 +1490,23 @@ async fn doom_loop_approval_timeout_stops_turn() {
             _ => None,
         })
         .collect();
-    assert_eq!(done_events.len(), 1, "timeout stops the turn once");
+    assert_eq!(done_events.len(), 1, "timeout outcome stops the turn once");
     assert!(done_events[0].contains("无法打破"));
-    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
-async fn doom_loop_approval_without_asker_stops_turn() {
-    // Fail-closed：开关开但 asker 未装配（headless/exec 子进程形态）→
-    // 问不了人 = 不得放行，走现行为停轮。
+async fn doom_loop_terminal_without_asker_stops_turn() {
+    // Fail-closed：asker 未装配（headless/exec 子进程/集群 worker 形态）→
+    // 问不了人 = 不得放行，停车收轮。
     let provider = MockLlmProvider::new(
-        (0..20)
+        (0..30)
             .map(|i| failing_exec_response(&format!("tc_{}", i)))
             .collect(),
     );
     let mut config = test_config();
     config.max_turns = 100;
 
-    let cfg_path = doom_config_file(true, "noasker");
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
-    agent_loop.set_config_path(cfg_path.clone());
     // 刻意不 set_question_asker。
     agent_loop.register_tool(
         "exec".to_string(),
@@ -1544,28 +1526,26 @@ async fn doom_loop_approval_without_asker_stops_turn() {
             _ => None,
         })
         .collect();
-    assert_eq!(done_events.len(), 1, "missing asker = current behavior");
+    assert_eq!(done_events.len(), 1, "missing asker = fail-closed stop");
     assert!(done_events[0].contains("无法打破"));
-    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
-async fn doom_loop_approval_flag_off_ignores_asker() {
-    // 开关关（默认）：即使 asker 在且总是批准，也绝不发卡——
-    // turn_guard 现行为是安全底座，不被静默装配改变。
+async fn doom_loop_terminal_fires_card_by_default() {
+    // 用户裁决第 7 点（2026-10-24）：阶梯 + 终级卡是**默认行为**——无需
+    // 任何 config 开关，全会话生效（取代 J5 的「开关关默认不发卡」语义）。
     let provider = MockLlmProvider::new(
-        (0..20)
+        (0..30)
             .map(|i| failing_exec_response(&format!("tc_{}", i)))
             .collect(),
     );
     let mut config = test_config();
     config.max_turns = 100;
 
-    let cfg_path = doom_config_file(false, "flagoff");
-    let asker = std::sync::Arc::new(FakeDoomAsker::approving());
+    let asker = std::sync::Arc::new(FakeDoomAsker::denying());
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
-    agent_loop.set_config_path(cfg_path.clone());
+    // 不 set_config_path（无 config.json，默认态）。
     agent_loop.set_question_asker(asker.clone());
     agent_loop.register_tool(
         "exec".to_string(),
@@ -1585,14 +1565,36 @@ async fn doom_loop_approval_flag_off_ignores_asker() {
             _ => None,
         })
         .collect();
-    assert_eq!(done_events.len(), 1, "flag off = current behavior");
+    assert_eq!(
+        done_events.len(),
+        1,
+        "default state: terminal card fires without any config switch"
+    );
     assert!(done_events[0].contains("无法打破"));
     assert_eq!(
         asker.asked.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "flag gates the ask — no card is ever sent"
+        1,
+        "default state sends the card — no flag gates it"
     );
-    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// J5 保留件冒烟（2026-10-24）：`ask_doom_loop_approval` 已被终级卡取代
+/// （生产不消费）但**禁止删除**——直呼验证它仍然可用（带超时的轻量确认
+/// 卡语义保留给未来场景）。同一 asker 槽、不同选项原文（「继续执行」）。
+#[tokio::test]
+async fn j5_ask_doom_loop_approval_smoke() {
+    let asker = std::sync::Arc::new(FakeDoomAsker {
+        answer: std::sync::Mutex::new(Some(vec!["继续执行".to_string()])),
+        asked: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(Vec::new())), test_config());
+    agent_loop.set_question_asker(asker.clone());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let verdict = agent_loop
+        .ask_doom_loop_approval("exec\x00boom", 6, &context)
+        .await;
+    assert_eq!(verdict, Some(true), "J5 card approving answer = Some(true)");
+    assert_eq!(asker.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

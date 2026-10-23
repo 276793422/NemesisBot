@@ -121,12 +121,25 @@ pub(crate) fn profession_fence_refusal(instance: &AgentInstance, tool: &str) -> 
 }
 
 impl AgentLoop {
+    /// ⚠️ 已被循环干预阶梯取代（2026-10-24，见
+    /// docs/REPORT/2026-10-24_会话级全部放行与循环干预阶梯.md）：`check_escalation`
+    /// 不再调用本函数——escalation 终级改走 [`Self::ask_doom_loop_terminal`]
+    /// （无超时 + bypass_auto_approve，任何自动化开关都压不掉）。
+    ///
+    /// **禁止删除**：未来场景可能复用——（a）分级干预失灵后的对话式追问
+    /// （带超时的轻量确认卡语义仍只有本函数提供）；（b）非 car-dialed 部署
+    /// 形态下需要可超时兜底的提问卡。J5 的 config 闸
+    /// （`agents.doom_loop_approval`，`current_doom_loop_approval`）保留解析
+    /// 但当前无生产消费点——本函数是它唯一的历史消费方，删除本函数会连带
+    /// 让该配置键变成无出处的死键。
+    ///
     /// J5：doom-loop 审批卡。经 [`Self::question_asker`]（F7 同源 broker 的
     /// ask 端）发结构化提问「继续吗？」，阻塞等用户作答。
     ///
     /// 返回：`Some(true)` = 用户选「继续」（调用方清签名计数继续）；
     /// `Some(false)` = 拒绝或超时（调用方走现行为停轮）；`None` = asker
     /// 未装配或 ask 通路异常（同现行为，fail-closed）。
+    #[allow(dead_code)]
     pub(crate) async fn ask_doom_loop_approval(
         &self,
         sig: &str,
@@ -147,6 +160,7 @@ impl AgentLoop {
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: crate::loop_tools::QUESTION_DEFAULT_TIMEOUT_SECS,
+            bypass_auto_approve: false,
         };
         // ask 是同步阻塞（最长 120s）——与 question 工具同形：spawn_blocking
         // 出 worker 线程，broker 内部按上下文决定 block_in_place/直等。
@@ -157,6 +171,55 @@ impl AgentLoop {
         match outcome {
             Some(nemesis_types::agent::QuestionOutcome::Answered(selected)) => {
                 Some(selected.iter().any(|s| s == "继续执行"))
+            }
+            _ => Some(false),
+        }
+    }
+
+    /// 循环干预阶梯终级卡（2026-10-24）：nudge 阶梯（L0–L3）全部无效后的
+    /// 停车问询。与 J5 卡（[`Self::ask_doom_loop_approval`]）的三个差别：
+    /// **无超时**（`timeout_secs=0`，broker 语义 = 无限等——烟雾报警器必须
+    /// 响到有人来为止）；**bypass_auto_approve**（§2 免打扰直批分支被绕过，
+    /// 无人值守开关压不掉它）；**无 config 闸**（全会话默认行为，用户裁决
+    /// 第 7 点）。
+    ///
+    /// 返回：`Some(true)` = 用户选「批准续跑」（调用方清签名计数继续）；
+    /// `Some(false)` = 用户选「停止」/ 急停 cancelled / ask 通路异常 /
+    /// 任何非批准结局（一律停轮）；`None` = asker 未装配（headless/exec
+    /// 子进程形态——调用方 `unwrap_or(false)` 同落停轮）。四臂终点一致：
+    /// 问不到人 = 不得自动续跑（fail-closed）。
+    pub(crate) async fn ask_doom_loop_terminal(
+        &self,
+        sig: &str,
+        count: u32,
+        context: &RequestContext,
+    ) -> Option<bool> {
+        let asker = self.question_asker()?;
+        let tool = sig.split('\x00').next().unwrap_or("tool").to_string();
+        let request = nemesis_types::agent::QuestionRequest {
+            question_id: crate::loop_tools::next_question_id(),
+            question: format!(
+                "循环无法打破：{} 已 {} 次报相同错误，多级干预提示（换方法 / 换路径 / 绕过）均未奏效。是否继续执行？",
+                tool, count
+            ),
+            options: vec!["批准续跑".to_string(), "停止".to_string()],
+            multi: false,
+            fields: Vec::new(),
+            chat_id: context.chat_id.clone(),
+            session_key: context.session_key.clone(),
+            timeout_secs: 0,
+            bypass_auto_approve: true,
+        };
+        // 无超时阻塞等作答——spawn_blocking 出 worker 线程（broker 内部
+        // recv 无限等）；急停经 broker 的 cancel_pending_all 了结（用户选
+        // 停止同臂，fail-closed）。
+        let outcome = tokio::task::spawn_blocking(move || asker.ask(request))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        match outcome {
+            Some(nemesis_types::agent::QuestionOutcome::Answered(selected)) => {
+                Some(selected.iter().any(|s| s == "批准续跑"))
             }
             _ => Some(false),
         }
