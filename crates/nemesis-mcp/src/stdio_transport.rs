@@ -367,7 +367,24 @@ impl Transport for StdioTransport {
                 }
 
                 match classify_line(&buf) {
-                    LineKind::Response => break buf,
+                    LineKind::Response => {
+                        // R39：id 匹配闸。超时/重试后，上一请求的迟到响应仍挂
+                        // 在 stdout 缓冲里——无闸会把旧响应错配给新请求（工具
+                        // 结果张冠李戴）。id 不符 = 陈旧响应，trace 后跳过继续
+                        // 读；id=None（通知形态，无响应可匹配）与解析失败保持
+                        // 旧行为（首个响应行采纳 / 既有错误路径诚实报错）。
+                        match serde_json::from_str::<TransportResponse>(buf.trim()) {
+                            Ok(resp) if Some(&resp.id) == request.id.as_ref() => break buf,
+                            Ok(resp) => {
+                                tracing::trace!(
+                                    expected = ?request.id,
+                                    got = ?resp.id,
+                                    "[StdioTransport] stale response skipped (id mismatch)"
+                                );
+                            }
+                            Err(_) => break buf,
+                        }
+                    }
                     LineKind::Progress(method) => {
                         tracing::trace!(
                             method = %method,
