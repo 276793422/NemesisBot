@@ -176,3 +176,36 @@ fn test_registry_rejects_tampered_and_honors_verified() {
         other => panic!("应为 Invalid，实际 {other:?}"),
     }
 }
+
+#[test]
+fn test_assess_signature_text_binds_to_supplied_bytes_not_disk() {
+    // 单读契约（scan/find TOCTOU 根修）：assess_signature_text 验的是调用方
+    // 传入的清单文本，不按磁盘现读——registry 把 parse 用的同一份 text 传
+    // 下来，读后验前磁盘被换文件不再造成「验签的字节 ≠ 执行的字节」错位
+    // （旧双读形态下 require_signed 可被窗口绕过：恶意清单被解析、原清单
+    // 被验证）。磁盘现读已换成篡改内容——若实现退回重读磁盘，本用例首断
+    // 言即红。
+    let ws = tempfile::tempdir().expect("ws");
+    let dir = ws.path().join("sample");
+    write_connector(&dir, SAMPLE_TOML);
+    let pair = nemesis_security::signature::generate_key_pair().expect("keygen");
+    sign_connector_dir(&dir, &pair.private_key).expect("sign");
+
+    // 磁盘清单换成与签名不符的内容（模拟双读窗口里的换文件）。
+    let tampered = SAMPLE_TOML.replace("version = \"0.1.0\"", "version = \"9.9.9\"");
+    assert_ne!(tampered, SAMPLE_TOML);
+    write_connector(&dir, &tampered);
+
+    let sig_path = dir.join(SIG_FILE);
+    let store = trusted_store(&pair.public_key, TrustLevel::Verified);
+
+    // 传入签名对应的原始文本 → 验签过（按磁盘重读必失败，故此断言同时
+    // 钉死「不重读磁盘」）。
+    let a = assess_signature_text(&sig_path, SAMPLE_TOML, &store).expect("按传入文本验签");
+    assert_eq!(a.trust, ConnectorTrust::Verified);
+
+    // 传入与签名不符的文本 → loud 拒（验证对象确实是传入字节）。
+    let err =
+        assess_signature_text(&sig_path, &tampered, &store).expect_err("文本与签名不符必须拒");
+    assert!(err.contains("签名验证失败"), "实际: {err}");
+}
