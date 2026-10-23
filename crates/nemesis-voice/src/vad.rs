@@ -27,6 +27,12 @@ impl VadEngine {
         window_size: u32,
         sample_rate: u32,
     ) -> Result<Self> {
+        // window_size=0 会让 SileroVoiceDetector 的喂窗循环死循环（drain(..0)
+        // 空集不消耗缓冲、条件恒真）——构造期拒绝，走调用方 RMS 回落，不让
+        // 坏 config 摸到 FFI。
+        if window_size == 0 {
+            anyhow::bail!("VAD window_size must be > 0（收到 0——0 窗口会让喂窗循环空转死循环）");
+        }
         if !model_path.exists() {
             anyhow::bail!("VAD model not found: {}", model_path.display());
         }
