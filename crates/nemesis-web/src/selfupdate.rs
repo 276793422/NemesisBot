@@ -891,6 +891,8 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                     "[SelfUpdate] 启动自检通过：当前 commit 命中目标 {}，更新收口",
                     &journal.target_commit[..journal.target_commit.len().min(12)]
                 ));
+                #[cfg(feature = "selfupdate")]
+                sweep_staging_after_boot(exe);
                 BootRecovery {
                     action: "update_success".to_string(),
                     detail: format!("target {}", journal.target_commit),
@@ -1370,6 +1372,35 @@ fn sweep_stale_staging(exe: &Path) -> usize {
         }
     }
     removed
+}
+
+/// 启动收口成功后的 staging 残留清扫（用户可见面：更新成功重启后旧 exe 与
+/// plugins staging 目录不该等下次 apply 才消失）。安全论证：走到这里 =
+/// 本进程就是刚更新成功的新进程，且旧进程已退场（recover_on_boot_in ① 的
+/// wait-for-exit 通过才会到收口）——自己上一轮留下的 `.old-{旧pid}` /
+/// `plugins.{old,new}-{pid}` 镜像锁已随旧进程消失，此刻删除是安全的。
+/// 回滚分支绝不调用（rollback 消耗 `.old`，扫了就丢回滚源）。仍取安装
+/// 目录锁：锁被占 = 同目录并发 apply 在飞，跳过（boot 抢扫反而可能删掉
+/// 在飞 staging；它的 apply 起步 sweep 会清）。best-effort：AV/索引器瞬时
+/// 句柄删不掉属预期，留下次。
+#[cfg(feature = "selfupdate")]
+fn sweep_staging_after_boot(exe: &Path) {
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    if dir.as_os_str().is_empty() {
+        return; // 相对路径 exe（测试形态）——空 dir 会让锁文件落进程 cwd
+    }
+    let Ok(lock) = acquire_install_lock(dir) else {
+        return; // 并发 apply 持锁在飞——不抢扫
+    };
+    let removed = sweep_stale_staging(exe);
+    drop(lock);
+    if removed > 0 {
+        boot_log_info(&format!(
+            "[SelfUpdate] 启动收口清扫 staging 残留 {removed} 项"
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------

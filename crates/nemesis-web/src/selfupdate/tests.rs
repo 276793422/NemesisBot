@@ -222,6 +222,67 @@ fn boot_recovery_restarting_commit_hit_success() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
+/// 更新成功收口 = staging 残留就地清扫（用户不该手删旧 exe / plugins
+/// staging）。安全前提：本进程是新进程且旧进程已退场；回滚分支不扫。
+#[cfg(feature = "selfupdate")]
+#[test]
+fn boot_recovery_success_sweeps_staging_residue() {
+    let ws = tmp_dir("boot-sweep");
+    let full = "0123456789abcdef0123456789abcdef01234567";
+    save_journal(&ws, &journal("restarting", full, "nowhere.old")).unwrap();
+    // staging 残留：exe .old 文件 + plugins .old/.new 目录（PID 后缀形态）
+    let exe = ws.join("current.exe");
+    std::fs::write(&exe, b"new-image").unwrap();
+    let old_exe = ws.join("current.old-424242");
+    std::fs::write(&old_exe, b"old-image").unwrap();
+    let plugins_old = ws.join("plugins.old-424242");
+    std::fs::create_dir_all(plugins_old.join("some-plugin")).unwrap();
+    std::fs::write(plugins_old.join("some-plugin").join("f.txt"), b"x").unwrap();
+    let plugins_new = ws.join("plugins.new-424242");
+    std::fs::create_dir_all(&plugins_new).unwrap();
+    // 非清扫面：真实插件目录与无关文件必须存活
+    let real_plugins = ws.join("plugins");
+    std::fs::create_dir_all(&real_plugins).unwrap();
+    std::fs::write(real_plugins.join("keep.txt"), b"k").unwrap();
+    std::fs::write(ws.join("unrelated.txt"), b"u").unwrap();
+
+    let r = recover_on_boot_in(&ws, "0123456", &exe);
+    assert_eq!(r.action, "update_success");
+    assert!(!old_exe.exists(), "旧 exe 残留应随收口清扫");
+    assert!(!plugins_old.exists(), "plugins.old 残留应随收口清扫");
+    assert!(!plugins_new.exists(), "plugins.new 残留应随收口清扫");
+    assert!(real_plugins.exists(), "真实 plugins 目录永不在清扫面");
+    assert!(ws.join("unrelated.txt").exists(), "无关文件不动");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 回滚分支绝不清扫（rollback 消耗 `.old`——扫了就丢回滚源）。
+#[cfg(feature = "selfupdate")]
+#[test]
+fn boot_recovery_rollback_does_not_sweep_residue() {
+    let ws = tmp_dir("boot-rollback-no-sweep");
+    let old = ws.join("current.exe.old");
+    std::fs::write(&old, b"old-bytes").unwrap();
+    let exe = ws.join("current.exe");
+    std::fs::write(&exe, b"broken-new").unwrap();
+    let other_old = ws.join("current.old-999");
+    std::fs::write(&other_old, b"other").unwrap();
+    save_journal(
+        &ws,
+        &journal(
+            "restarting",
+            "ffffffffffffffffffffffffffffffffffffffff",
+            &old.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let r = recover_on_boot_in(&ws, "0123456", &exe);
+    assert_eq!(r.action, "rolled_back");
+    assert!(other_old.exists(), "回滚路径不清扫其他 staging 残留");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 #[test]
 fn boot_recovery_restarting_mismatch_rolls_back() {
     let ws = tmp_dir("boot-rollback");
