@@ -1009,7 +1009,12 @@ fn truncate_diag(s: &str) -> String {
     if s.len() <= 400 {
         s.to_string()
     } else {
-        format!("{}…", &s[..400])
+        // BUG-HUNT R15：`&s[..400]` 在非字符边界 panic——两个调用方的输入
+        // 都是外部 CLI 输出/JSON 错误串（serde_json 不转义非 ASCII，中文
+        // 原样保留），握手失败诊断恰是最容易混入 CJK 的路径。先落到边界
+        // 再切（与 code_run/messages 等 in-repo 截断同纪律）。
+        let cut = nemesis_types::utils::floor_char_boundary(s, 400);
+        format!("{}…", &s[..cut])
     }
 }
 

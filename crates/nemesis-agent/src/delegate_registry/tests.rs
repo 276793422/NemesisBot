@@ -1225,3 +1225,31 @@ async fn stop_eof_ignoring_delegate_escalates_to_kill() {
         "escalated stop must mark killed: {stopped}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-HUNT R15：truncate_diag 多字节安全（&s[..400] 非字符边界 panic）
+// ---------------------------------------------------------------------------
+
+/// 中文诊断串第 400 字节落在多字节字符中间——修复前 `&s[..400]` 直接 panic。
+/// 握手失败诊断的两个输入（CLI 原始输出 / serde_json 错误串，非 ASCII 原样
+/// 保留）恰是最易混入 CJK 的路径。修后先 floor 到边界再切，末尾补省略号。
+#[test]
+fn truncate_diag_multibyte_safe_at_400() {
+    // 3 字节/字 × 134 = 402 字节 > 400；byte 400 = 399+1，落在最后一个
+    // 「好」的中间（修复前必 panic）。
+    let s = "好".repeat(134);
+    assert_eq!(s.len(), 402);
+    let out = super::truncate_diag(&s);
+    assert_eq!(out.chars().count(), 134, "133 字 + …，实际: {out:?}");
+    assert!(out.starts_with("好好"));
+    assert!(out.ends_with('…'));
+
+    // 纯 ASCII 长串行为不变：400 字节整切 + …（共 401 字符）。
+    let ascii = "a".repeat(401);
+    let out = super::truncate_diag(&ascii);
+    assert_eq!(out.chars().count(), 401);
+    assert!(out.ends_with('…'));
+
+    // 短串原样返回（不补省略号）。
+    assert_eq!(super::truncate_diag("短"), "短");
+}
