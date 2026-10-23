@@ -35,7 +35,7 @@ impl Drop for RestorePermsGuard {
 }
 
 #[cfg(any(unix, windows))]
-fn block_atomic_replace(dest: &std::path::Path) -> RestorePermsGuard {
+fn block_atomic_replace(dest: &std::path::Path) -> Option<RestorePermsGuard> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -43,16 +43,24 @@ fn block_atomic_replace(dest: &std::path::Path) -> RestorePermsGuard {
         let mut perm = std::fs::metadata(&parent).unwrap().permissions();
         perm.set_mode(0o555);
         std::fs::set_permissions(&parent, perm).unwrap();
-        RestorePermsGuard { parent }
+        // 环境探针（trivial probe）：root 语境（CAP_DAC_OVERRIDE）不受 0o555
+        // 限制，写失败注入无法生效——诚实跳过而非假红；权限就地恢复。
+        let probe = parent.join(".tmp-perm-probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            let _ = std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755));
+            return None;
+        }
+        Some(RestorePermsGuard { parent })
     }
     #[cfg(windows)]
     {
         let mut perm = std::fs::metadata(dest).unwrap().permissions();
         perm.set_readonly(true);
         std::fs::set_permissions(dest, perm).unwrap();
-        RestorePermsGuard {
+        Some(RestorePermsGuard {
             dest: dest.to_path_buf(),
-        }
+        })
     }
 }
 
@@ -764,7 +772,10 @@ fn test_w3b_ensure_node_id_error_paths() {
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
     std::fs::write(&path, "[node]\nname = \"x\"\n").unwrap();
-    let _guard = block_atomic_replace(&path);
+    // root 语境注入失效（探针 None）→ 诚实跳过。
+    let Some(_guard) = block_atomic_replace(&path) else {
+        return;
+    };
     assert!(ensure_node_id(&path, "id-3").is_err());
 }
 
@@ -797,7 +808,10 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
     std::fs::write(&path, "[node]\nid = \"keep\"\n").unwrap();
-    let _guard = block_atomic_replace(&path);
+    // root 语境注入失效（探针 None）→ 诚实跳过。
+    let Some(_guard) = block_atomic_replace(&path) else {
+        return;
+    };
     assert!(append_peer_to_file(&path, "Node-B", "10.0.0.1:9000", "worker", "dev", 0).is_err());
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -845,7 +859,10 @@ fn test_w3b_remove_peer_no_peers_table_and_error_paths() {
     let dir3 = tempfile::tempdir().unwrap();
     let path3 = dir3.path().join("peers.toml");
     append_peer_to_file(&path3, "victim", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
-    let _guard = block_atomic_replace(&path3);
+    // root 语境注入失效（探针 None）→ 诚实跳过。
+    let Some(_guard) = block_atomic_replace(&path3) else {
+        return;
+    };
     assert!(remove_peer_from_file(&path3, "victim").is_err());
 }
 
