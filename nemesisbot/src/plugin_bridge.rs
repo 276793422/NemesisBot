@@ -272,7 +272,22 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
             }
             self.bridge.execute(args, context).await
         } else {
-            self.inner.execute(args, context).await
+            // 回退态凭据注入在 wrapper 内做（BUG-HUNT R17，闭合 TOCTOU）：
+            // 此前「keys 双态路由 + dispatch 层注入」在热同步翻位与
+            // credential_arg_keys()→execute() 两读之间存在竞态窗口——keys
+            // 读到回退态槽位、明文改写完成后 active 刚被翻真 → execute 走
+            // wasm 分支，vault 明文随 args 进沙盒（违反「凭据不进沙盒」
+            // 承诺）。现在 dispatch 层对本 wrapper 恒见空槽位（见
+            // credential_arg_keys），注入与路径决策共用同一次 active 快照
+            // ——单一快照决定整条路径，无混合态：load=false → 注入后的
+            // 明文只进内置执行体；load=true → 未注入的别名原文才进 wasm。
+            // 注入失败 = 与 dispatch 层注入同语义（Err 直接作为工具结果，
+            // 本轮不执行）。
+            let injected = nemesis_agent::r#loop::credential_injection::inject_credential_aliases(
+                self.inner.as_ref(),
+                args,
+            )?;
+            self.inner.execute(&injected, context).await
         }
     }
 
@@ -317,17 +332,11 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
     }
 
     fn credential_arg_keys(&self) -> &[&str] {
-        if self.active.load(Ordering::SeqCst) {
-            // 接管态：恒空槽纪律（vault 明文不进沙盒；guest 收 `vault:`
-            // 别名原文走既有 PolicyDenied 语义）。硬编码非转发。
-            &[]
-        } else {
-            // 回退态：内置语义逐字节——含凭据注入面（dispatch 最内层
-            // execute 前别名改写按注册工具槽位走；wrapper 恒空会连回退态
-            // 的内置槽位一起杀掉，「模型/安全面无感」承诺在接管激活的
-            // 瞬间就不成立。评审 #2 修正：槽位随开关双态路由）。
-            self.inner.credential_arg_keys()
-        }
+        // 恒空槽纪律（BUG-HUNT R17 改版）：注入收进 wrapper 回退态分支
+        // 自做（与 active 路径决策同点原子，闭合翻位 TOCTOU——详见
+        // execute 注释），dispatch 层对本 wrapper 恒不注入。评审 #2 的
+        // 双态路由正是这个 TOCTOU 的来源，此处不再恢复。
+        &[]
     }
 
     fn limit_categories(&self) -> &[&str] {

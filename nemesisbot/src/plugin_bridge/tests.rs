@@ -798,9 +798,119 @@ async fn takeover_wrapper_routes_by_switch_and_hides_credential_slots() {
         "stub-v1"
     );
     assert!(nemesis_agent::r#loop::Tool::is_read_only(&wrapper));
-    // 回退态凭据槽逐字节恢复内置（评审 #2 回归锁另半边）：恒空会连回退态
-    // 的内置注入面一起杀掉——槽位随开关双态路由。
-    assert_eq!(wrapper.credential_arg_keys(), &["headers"]);
+    // 凭据槽恒空（BUG-HUNT R17 回归锁：双态路由是 TOCTOU 来源，注入收进
+    // wrapper 回退态分支自做——见 execute 注释；dispatch 层恒不注入）。
+    assert!(wrapper.credential_arg_keys().is_empty());
+}
+
+/// 记录收到 args 的内置替身（TOCTOU 回归锁专用：断言注入后明文/别名原文
+/// 到底进了哪条执行路径）。
+struct RecordingBuiltin {
+    tag: &'static str,
+    cred_keys: &'static [&'static str],
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::Tool for RecordingBuiltin {
+    async fn execute(
+        &self,
+        args: &str,
+        _ctx: &nemesis_agent::context::RequestContext,
+    ) -> Result<String, String> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(args.to_string());
+        Ok(format!("builtin:{}", self.tag))
+    }
+    fn description(&self) -> String {
+        format!("stub-{}", self.tag)
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+    fn credential_arg_keys(&self) -> &[&str] {
+        self.cred_keys
+    }
+}
+
+/// TOCTOU 闭合回归锁（BUG-HUNT R17）：回退态注入与路径决策同点原子。
+/// 此前「keys 双态路由 + dispatch 层注入」在翻位与两读之间有竞态窗口——
+/// keys 读到回退态槽位、明文改写完成后 active 刚翻真 → 明文进 wasm 沙盒。
+/// 现契约：dispatch 层对 wrapper 恒见空槽位；回退态 execute 入口自注入
+/// （vault 别名解析失败 = Err 且内置执行体未触达 = 注入实锤发生）；
+/// 接管态恒不注入（别名原文进 wasm 桥，错误来自桥而非注入层）。
+#[tokio::test]
+// temp_home 的 std 锁是测试 home 隔离串行（守卫必须活满用例）；被 await 的
+// execute 只读 AtomicBool 不取该锁，无死锁面——测试内刻意持有，非生产形态。
+#[allow(clippy::await_holding_lock)]
+async fn takeover_credential_injection_atomic_with_path_decision() {
+    let (_lock, _dir, home) = temp_home();
+    // 全局 vault 解析器卫生（对齐 delegate_registry 惯例：clear→断言→clear；
+    // temp_home 串行锁保证本二进制内无并发写者）。
+    nemesis_config::clear_global_vault_resolver();
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let inner = Arc::new(RecordingBuiltin {
+        tag: "v1",
+        cred_keys: &["headers"],
+        seen: seen.clone(),
+    });
+    let bridge = PluginToolBridge::new(stub_meta("plugin.p.base"), manager);
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wrapper = super::TakeoverToolBridge {
+        inner,
+        bridge,
+        active: active.clone(),
+    };
+    let ctx = nemesis_agent::context::RequestContext::new("test", "c1", "tester", "");
+    let alias_args = r#"{"headers":{"x-token":"vault:bughunt-r17-absent"}}"#;
+
+    // 回退态：wrapper 内注入实锤——vault 别名解析失败 → Err + 内置未触达。
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, alias_args, &ctx).await;
+    let err = out.expect_err("注入失败必须 Err");
+    assert!(
+        err.contains("CREDENTIAL REFERENCE FAILED"),
+        "注入错误语义: {err}"
+    );
+    assert!(
+        seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        "注入失败本轮不得执行内置"
+    );
+
+    // 回退态：非 vault 字面量原样通过注入层 → 内置执行体照常收原 args。
+    let literal_args = r#"{"headers":{"x-token":"literal"}}"#;
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, literal_args, &ctx).await;
+    assert_eq!(out.expect("literal passthrough"), "builtin:v1");
+    assert_eq!(
+        seen.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last()
+            .map(String::as_str),
+        Some(literal_args),
+        "字面量槽位原样透传"
+    );
+
+    // 接管态：恒不注入——别名原文直接进 wasm 桥（错误来自桥级诚实报错，
+    // 绝不出现注入层 CREDENTIAL FAILED）；明文永不进 wasm。
+    active.store(true, std::sync::atomic::Ordering::SeqCst);
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, alias_args, &ctx).await;
+    let err = out.expect_err("接管态走 wasm 桥（无插件 = 桥级诚实错）");
+    assert!(
+        !err.contains("CREDENTIAL REFERENCE FAILED"),
+        "接管态不得注入: {err}"
+    );
+    // dispatch 层恒空槽位（TOCTOU 闭合的另一半：外层永不注入）。
+    assert!(wrapper.credential_arg_keys().is_empty());
+    nemesis_config::clear_global_vault_resolver();
 }
 
 #[tokio::test(flavor = "multi_thread")]
