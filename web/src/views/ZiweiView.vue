@@ -88,7 +88,7 @@ async function verifyProfile(p: any) {
     const r = await request('ziwei', 'verify', { profile_id: p.profile_id })
     sessionMsg.value = `✓ 验证 ${p.profile_id}：裁决 ${r?.report?.verdict ?? '?'}`
     await refresh()
-  } catch (e: string) {
+  } catch (e: any) {
     sessionMsg.value = `✗ ${e}`
   } finally {
     busy.value = false
@@ -169,7 +169,7 @@ async function attachProfile(p: any) {
     sessionMsg.value = `✓ 已附加 pid=${r?.session?.pid ?? pid}（${r?.session?.state ?? ''}）`
     selected.value = p
     await refresh()
-  } catch (e: string) {
+  } catch (e: any) {
     sessionMsg.value = `✗ ${e}`
   } finally {
     busy.value = false
@@ -184,7 +184,7 @@ async function detachSession(s: any) {
     sessionMsg.value = `✓ ${r?.message ?? '已卸载'}`
     invokeSnapshot.value = null
     await refresh()
-  } catch (e: string) {
+  } catch (e: any) {
     sessionMsg.value = `✗ ${e}`
   } finally {
     busy.value = false
@@ -198,7 +198,7 @@ async function invokeTool(p: any, toolName: string) {
     const r = await request('ziwei', 'invoke', { profile_id: p.profile_id, tool: toolName })
     invokeSnapshot.value = r
     sessionMsg.value = `✓ ${toolName} 快照已取得`
-  } catch (e: string) {
+  } catch (e: any) {
     sessionMsg.value = `✗ ${e}`
     invokeSnapshot.value = null
   } finally {
@@ -211,7 +211,7 @@ async function refreshTools() {
   try {
     const r = await request('ziwei', 'refresh')
     sessionMsg.value = `✓ 动态工具重注册：${r?.registered ?? 0} 个`
-  } catch (e: string) {
+  } catch (e: any) {
     sessionMsg.value = `✗ ${e}`
   } finally {
     busy.value = false
@@ -272,7 +272,7 @@ async function wizSelectTarget() {
     wiz.value.info = await request('ziwei', 'setup.select_target', data)
     wiz.value.step = 2
     wizMsg(`✓ 草稿 ${wiz.value.info?.profile_id} 已建（pid=${wiz.value.info?.pid}，${wiz.value.info?.exe_name}）`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -288,7 +288,7 @@ async function wizSnapshot() {
     wiz.value.analysis = r
     wiz.value.step = 4
     wizMsg(`✓ 分析完成：函数 ${r?.functions}，CRT 折叠 ${r?.crt_folded}（${r?.analysis_json}）`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -301,7 +301,7 @@ async function wizAnalyze() {
     const r = await request('ziwei', 'setup.analyze', {})
     wiz.value.analysis = r
     wizMsg(`✓ 分析完成：函数 ${r?.functions}，CRT 折叠 ${r?.crt_folded}${r?.llm_suggest_error ? `（LLM 建议：${r.llm_suggest_error}）` : r?.llm_suggestions ? `（LLM 建议 ${r.llm_suggestions.length} 条）` : ''}`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -313,7 +313,7 @@ async function wizCandidates() {
   try {
     wiz.value.candidates = await request('ziwei', 'setup.candidates', {})
     wizMsg(`✓ 候选 ${wiz.value.candidates?.count} 条——点行内「标注」进入 Step 4b`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -327,7 +327,7 @@ async function wizDiff() {
     wiz.value.diff = await request('ziwei', 'setup.diff_window', { wait_secs: wait })
     const pages = wiz.value.diff?.data_pages?.length ?? 0
     wizMsg(`✓ 差分窗口（等 ${wait}s）：变化页 ${wiz.value.diff?.pages?.length ?? 0}，可写数据页 ${pages}（DataArea 线索）`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -360,7 +360,7 @@ async function wizSubmitAnnotate() {
       anchors: [annAnchor()],
     })
     wizMsg(`✓ 已标注 ${r?.annotated}（锚 ${r?.anchors}）——继续下一个函数或进 Step 5`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -379,7 +379,7 @@ async function wizDefineStruct() {
     const r = await request('ziwei', 'setup.define_struct', { name: ds.value.name.trim(), size: Number(ds.value.size), fields })
     if (!wiz.value.structs.includes(r?.struct)) wiz.value.structs.push(r?.struct)
     wizMsg(`✓ 结构 ${r?.struct} 已定义`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -396,7 +396,7 @@ async function wizDefineTool() {
     })
     if (!wiz.value.tools.includes(dt.value.tool_name.trim())) wiz.value.tools.push(dt.value.tool_name.trim())
     wizMsg(`✓ 工具 ${dt.value.tool_name.trim()} 已定义`)
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -411,7 +411,7 @@ async function wizCommit() {
     wizMsg(`✓ 已提交 ${r?.committed}（函数 ${r?.functions}/工具 ${r?.tools}/锚 ${r?.anchors}，动态工具 ${r?.tools_registered ?? 0} 个）`)
     wizReset()
     await refresh()
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false
@@ -425,7 +425,7 @@ async function wizAbort() {
     const r = await request('ziwei', 'setup.abort', {})
     wizMsg(`✓ 已作废 ${r?.aborted}`)
     wizReset()
-  } catch (e: string) {
+  } catch (e: any) {
     wizMsg(`✗ ${e}`)
   } finally {
     busy.value = false

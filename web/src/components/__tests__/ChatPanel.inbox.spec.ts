@@ -114,7 +114,8 @@ describe('ChatPanel U7 可见性', () => {
     await sendBtn!.trigger('click')
     await flushPromises()
     expect(vi.mocked(send)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(send).mock.calls[0][0]).toBe('插队消息')
+    // steer 模式发送侧自动补 `!` 前缀（admission.rs 仅 Steer 认 `!`）
+    expect(vi.mocked(send).mock.calls[0][0]).toBe('! 插队消息')
     wrapper.unmount()
   })
 
