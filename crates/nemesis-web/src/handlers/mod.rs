@@ -59,6 +59,8 @@ pub mod editor;
 // P30（WS14）：canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
 pub mod estop;
+// 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
+// 运行闸默认关）。
 #[cfg(feature = "forge")]
 pub mod forge;
 pub mod fs;
@@ -69,6 +71,8 @@ pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
 pub mod models;
+#[cfg(feature = "ziwei")]
+pub mod ziwei;
 // CD6（2026-09-17）：发件箱死信面 WSAPI（dead_list / dead_replay）。状态全
 // 在磁盘，重放只需 workspace 根；feature 门随 nemesis-cluster 依赖。
 #[cfg(feature = "cluster")]
@@ -227,6 +231,11 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // 紫微系统（T0.5）：ziwei.* 全量命令清单随 feature 进出。
+    #[cfg(feature = "ziwei")]
+    {
+        router.register(Arc::new(ziwei::ZiweiHandler));
+    }
     // P30（WS14）：canvas 关闭回执。
     router.register(Arc::new(canvas::CanvasHandler));
     // L9：版本自切换通道（check/apply/status；manager 槽未装配诚实报）。

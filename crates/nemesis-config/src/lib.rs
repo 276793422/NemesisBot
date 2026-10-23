@@ -200,6 +200,48 @@ pub struct Config {
     /// enabled=true，预算 fail-closed：资金限额 0=拒绝所有）。
     #[serde(default)]
     pub connectors: Option<ConnectorsConfig>,
+    /// 紫微系统（三方程序受控接管，【万物皆工具】；None = 全默认——
+    /// **enabled=false 总闸关**，对齐 terminal.enabled 双闸模式：另一闸是
+    /// `ziwei` cargo feature）。见 [`ZiweiConfig`]。
+    #[serde(default)]
+    pub ziwei: Option<ZiweiConfig>,
+}
+
+/// 紫微系统配置（`config.json` 的 `"ziwei"` 段；总控 §9.1）。
+///
+/// `enabled` 默认 false：总闸关 = WSAPI 全拒 + CLI 子命令诚实报未启用 +
+/// payload 嵌入字节不落盘（feature 关则三 crate 连同 payload 整体不编译）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ZiweiConfig {
+    /// 总闸（false 默认：全部命令诚实拒绝）。
+    pub enabled: bool,
+    /// exe 路径/sha256 白名单；空 = 仅配置期可附加（使用期附加全弹卡）。
+    #[serde(default)]
+    pub allowed_targets: Vec<String>,
+    /// payload DLL 落位目录（None = `<workspace>/tools/ziwei/`，bot 内嵌
+    /// 落盘——决议 9）。
+    #[serde(default)]
+    pub payload_dir: Option<String>,
+    /// 同时附加的会话上限。
+    pub max_sessions: u32,
+    /// 配置期快照保留天数（决议 3）。
+    pub snapshots_ttl_days: u32,
+    /// 使用期数据回流保留天数（对齐 uploads 惯例）。
+    pub runs_ttl_days: u32,
+}
+
+impl Default for ZiweiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_targets: Vec::new(),
+            payload_dir: None,
+            max_sessions: 4,
+            snapshots_ttl_days: 30,
+            runs_ttl_days: 7,
+        }
+    }
 }
 
 /// connector 注册表配置（`config.json` 的 `connectors` 段；`#[serde(default)]`
@@ -4795,7 +4837,7 @@ pub fn default_config() -> Config {
                 workspace: ws,
                 restrict_to_workspace: true,
                 llm: "zhipu/glm-4.7-flash".to_string(),
-                max_tokens: 8192,
+                max_tokens: nemesis_types::capability::DEFAULT_MAX_TOKENS,
                 temperature: 0.7,
                 max_tool_iterations: 100,
                 // concurrent_request_mode intentionally omitted — filled by
@@ -4909,6 +4951,7 @@ pub fn default_config() -> Config {
         bridge: None,
         ui: None,
         connectors: None,
+        ziwei: None,
     }
 }
 
@@ -5264,7 +5307,9 @@ fn default_prompt_system() -> String {
     "pro".to_string()
 }
 fn default_max_tokens() -> i64 {
-    8192
+    // 单一真相源：nemesis-types capability（2026-10-23 P0，8192→64K，
+    // docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md）
+    nemesis_types::capability::DEFAULT_MAX_TOKENS
 }
 fn default_temperature() -> f64 {
     0.7

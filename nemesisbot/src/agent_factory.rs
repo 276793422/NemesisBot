@@ -1438,6 +1438,19 @@ pub fn build_agent_loop(
     // 项目/selfbuilt loop 共用同一治理面装配）。
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
+    // 紫微系统 T2.2：profile.tools[] → 动态工具注册（poll_report 可调；
+    // call_fn/hook_capture 诚实报 M4 实装中）。config 闸同 WSAPI 门关；
+    // profile 新增后经 `ziwei.refresh` 幂等重注册（先清 zw_* 再装）。
+    #[cfg(feature = "ziwei")]
+    if cfg.ziwei.clone().unwrap_or_default().enabled {
+        let n = crate::ziwei_tools::register_profile_tools(&agent_loop, &shared.workspace_dir());
+        crate::ziwei_tools::set_current_loop(agent_loop.clone());
+        // 配置期向导元工具（T3.8）：LLM 经 {action, params} 驱动 SetupManager。
+        crate::ziwei_tools::register_bridge_tool(&agent_loop, &shared.workspace_dir());
+        if n > 0 {
+            info!("[AgentFactory] ziwei dynamic tools registered ({n})");
+        }
+    }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
     // 活在 AgentLoop 内、随其销毁；启动失败 warn 一次后禁用，不阻断装配。

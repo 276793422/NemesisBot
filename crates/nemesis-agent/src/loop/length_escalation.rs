@@ -6,9 +6,12 @@
 //! 评审自身失败恒转人工。本模块在主 loop 的 LLM 调用收口处（[`AgentLoop::chat_call_escalating`]，
 //! recovery.rs 五个调用点）包翻倍阶梯：
 //!
-//! - **判定**：`finish_reason == "length"` 且正文空白且无工具调用 = 思考
-//!   烧穿形态（非空截断走既有 continue-generation，[`super::run_loop] 的
-//!   `handle_length_continuation`，分工边界）。
+//! - **判定**：`finish_reason == "length"` 且正文空白，且（① 无工具调用 =
+//!   纯思考烧穿，§6.2 原形态；② 工具调用参数全为空对象/空串/非法 JSON 且
+//!   schema 需要参数 = 工具参数截断，BUG 2026-10-23 第四形态扩展——主
+//!   agent 轮恒挂工具，同一故障必然带着 tool_calls 出现）＝ 烧穿形态。
+//!   非空截断 / 带合法参数的工具调用走既有 continue-generation，
+//!   [`super::run_loop] 的 `handle_length_continuation`，分工边界。
 //! - **阶梯**：`next = max(current × 2, 32768)`（32K 地板：条目 8192/16384
 //!   撞顶直接跳 32K 不浪费一轮），`next ≤ ceiling` 才重发（封顶
 //!   `agents.defaults.max_output_ceiling`，默认 262144，每轮 config 现读）。
@@ -32,6 +35,39 @@ use tracing::warn;
 
 use super::AgentLoop;
 use super::llm_types::{LlmMessage, LlmProvider, LlmResponse};
+use crate::types::{ToolCallInfo, ToolDefinition};
+
+/// 工具参数截断签名（BUG 2026-10-23 第四形态）：全部工具调用的参数均为
+/// 空串 / 空对象 / 非法 JSON，且（schema 可查时）该工具声明需要参数。
+/// 任一工具调用带合法参数 = 不是纯截断形态（可能有可执行进度），不判烧穿。
+fn tool_args_all_truncated(tool_calls: &[ToolCallInfo], tools: &[ToolDefinition]) -> bool {
+    !tool_calls.is_empty()
+        && tool_calls.iter().all(|tc| {
+            let a = tc.arguments.trim();
+            let looks_truncated =
+                a.is_empty() || a == "{}" || serde_json::from_str::<serde_json::Value>(a).is_err();
+            if !looks_truncated {
+                return false;
+            }
+            match tools.iter().find(|d| d.function.name == tc.name) {
+                Some(d) => schema_expects_args(&d.function.parameters),
+                // schema 未知（工具不在供给清单）→ 保守按截断算
+                None => true,
+            }
+        })
+}
+
+/// 工具参数 schema 是否声明需要参数（required 或 properties 非空）。
+fn schema_expects_args(parameters: &serde_json::Value) -> bool {
+    parameters
+        .get("required")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
+        || parameters
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .is_some_and(|o| !o.is_empty())
+}
 
 /// 阶梯地板：撞顶后第一次重发的 max_tokens 下限（三机 GLM 条目已配 32768
 /// 的现状 ×2 顺滑衔接；8192 硬默认条目撞顶直接跳 32K）。
@@ -88,10 +124,24 @@ impl AgentLoop {
                 tools.clone(),
             )
             .await?;
-            // 思考烧穿形态：截断且零产出（正文空白 + 无工具调用）。
+            // 思考烧穿形态：截断且零产出。两类指纹（BUG 2026-10-23 第四
+            // 形态扩展，docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md）：
+            // ① 纯思考烧穿——正文空白 + 无工具调用（§6.2 原形态，评审 LLM
+            //   出生场景）；
+            // ② 工具参数截断——正文空白 + 工具调用参数为空对象/空串/非法
+            //   JSON（主 agent 轮恒挂 40+ 工具，同一故障在这里必然带着
+            //   tool_calls 出现：anthropic lane 把截断 input 归一化成
+            //   `{}`（anthropic.rs unwrap_or(json!({}))），openai 兼容 lane
+            //   截断 args 是非法 JSON 原文。2026-10-23 ziwei-e2e 事故：glm-
+            //   5.3-flash 思考 + multiedit 大参数三轮恒 8192 截断，阶梯因
+            //   `tool_calls.is_empty()` 指纹不匹配从未触发）。
+            // 工具 schema 声明需要参数（required/properties 非空）才判截断
+            // ——无参工具的 `{}` 是合法调用不算；schema 未知保守按截断算：
+            // 误升级代价 = 一次更高 cap 的重发（收敛为正常完成），漏判代价
+            // = 零进度循环到停轮。
             let burned = r.finish_reason.as_deref() == Some("length")
                 && r.content.trim().is_empty()
-                && r.tool_calls.is_empty();
+                && (r.tool_calls.is_empty() || tool_args_all_truncated(&r.tool_calls, &tools));
             let next = current.map(|c| (c * 2).max(ESCALATION_FLOOR));
             // 终止三态：非烧穿形态（非空截断 → 既有续写机制接管）/ estop
             // 挂起（LLM 活动冻结）/ 起点 max_tokens 未知 / 翻倍超封顶。

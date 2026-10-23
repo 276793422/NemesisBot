@@ -794,7 +794,10 @@ fn extra_serde_default_agent_defaults_via_json() {
     let json = r#"{}"#;
     let cfg: AgentDefaults = serde_json::from_str(json).unwrap();
     assert!(cfg.restrict_to_workspace);
-    assert_eq!(cfg.max_tokens, 8192);
+    assert_eq!(
+        cfg.max_tokens,
+        nemesis_types::capability::DEFAULT_MAX_TOKENS
+    );
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);
     assert_eq!(cfg.max_tool_iterations, 100);
     // E1 (2026-09-05): serde default flipped reject → queue.
@@ -925,7 +928,10 @@ fn extra_default_config_has_expected_defaults() {
     let cfg = default_config();
     assert!(cfg.agents.defaults.restrict_to_workspace);
     assert_eq!(cfg.agents.defaults.llm, "zhipu/glm-4.7-flash");
-    assert_eq!(cfg.agents.defaults.max_tokens, 8192);
+    assert_eq!(
+        cfg.agents.defaults.max_tokens,
+        nemesis_types::capability::DEFAULT_MAX_TOKENS
+    );
     assert_eq!(cfg.gateway.host, "0.0.0.0");
     assert_eq!(cfg.gateway.port, 18790);
     assert!(cfg.tools.web.duckduckgo.enabled);

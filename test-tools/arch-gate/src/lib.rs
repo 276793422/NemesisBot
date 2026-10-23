@@ -35,6 +35,9 @@ pub fn rules() -> Vec<(&'static str, Rule)> {
                 "nemesis-channels",
                 "nemesis-desktop",
                 "nemesis-board",
+                // R15（紫微 M3）：窄门面——rev/profile 只准经 nemesis-ziwei 消费
+                "nemesis-ziwei-rev",
+                "nemesis-ziwei-profile",
             ]),
         ),
         // R4: provider 层只认类型 + 叶子工具 crate。T2a（扩展计划 D4，
@@ -58,7 +61,13 @@ pub fn rules() -> Vec<(&'static str, Rule)> {
         // R7: 通道层不得依赖引擎/呈现（出站靠 bus 消息，不走直接调用）。
         (
             "nemesis-channels",
-            Rule::Forbidden(&["nemesis-agent", "nemesis-web"]),
+            Rule::Forbidden(&[
+                "nemesis-agent",
+                "nemesis-web",
+                // R15（紫微 M3）：窄门面——rev/profile 只准经 nemesis-ziwei 消费
+                "nemesis-ziwei-rev",
+                "nemesis-ziwei-profile",
+            ]),
         ),
         // R8（§四.4）：connectors 是连接器域逻辑层，不得依赖呈现/通道/
         // 桌面/看板/服务编排层——经 web handler 与 nemesisbot connector_tools
@@ -77,7 +86,13 @@ pub fn rules() -> Vec<(&'static str, Rule)> {
         // 经 bus 出站；desktop 是桌面集成。实测：两者均不在 web 依赖里。
         (
             "nemesis-web",
-            Rule::Forbidden(&["nemesis-channels", "nemesis-desktop"]),
+            Rule::Forbidden(&[
+                "nemesis-channels",
+                "nemesis-desktop",
+                // R15（紫微 M3）：窄门面——rev/profile 只准经 nemesis-ziwei 消费
+                "nemesis-ziwei-rev",
+                "nemesis-ziwei-profile",
+            ]),
         ),
         // R10：看板数据层（issue/评论/项目模型 + SQLite 存储）不得依赖
         // 引擎/呈现/通道/桌面——board 的消费方是 web handler 与 bot 命令。
@@ -112,6 +127,23 @@ pub fn rules() -> Vec<(&'static str, Rule)> {
                 "nemesis-web",
                 "nemesis-channels",
                 "nemesis-desktop",
+            ]),
+        ),
+        // R13（紫微 M3，决议 8①）：rev 是纯二进制分析层（输入 = 字节 + PE
+        // 元数据，无进程/管道访问），只认公共叶子；profile 是数据层（模型 +
+        // 存储），只认公共叶子。实测：两者都只依赖 nemesis-utils。
+        ("nemesis-ziwei-rev", Rule::Only(&["nemesis-utils"])),
+        ("nemesis-ziwei-profile", Rule::Only(&["nemesis-utils"])),
+        // R14（紫微 M3，决议 8①）：门面是 bot 侧唯一组装点——可依赖
+        // profile/rev/utils + injector（windows 注入链）。LLM 经 OnceLock
+        // 钩子注入，不经 provider 直接依赖。
+        (
+            "nemesis-ziwei",
+            Rule::Only(&[
+                "nemesis-ziwei-profile",
+                "nemesis-ziwei-rev",
+                "nemesis-utils",
+                "nemesis-injector",
             ]),
         ),
     ]

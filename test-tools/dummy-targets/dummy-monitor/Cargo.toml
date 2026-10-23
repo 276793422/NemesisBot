@@ -1,0 +1,18 @@
+[package]
+name = "dummy-monitor"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "dummy-monitor"
+path = "src/main.rs"
+
+# 独立于 NemesisBot workspace（测试夹具，零依赖）
+[workspace]
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

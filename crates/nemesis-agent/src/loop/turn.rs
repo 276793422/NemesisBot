@@ -435,6 +435,45 @@ impl AgentLoop {
         {
             final_response.push_str(&summary);
         }
+        // BUG 2026-10-23（对话链路三缺陷 BUG-2）：异常收尾轮的中间正文落盘。
+        // 正常轮 chat_log 只写最终回复（「一轮 = jsonl 恰好 +2 行」不变量），
+        // 中间轮正文只进内存 history / session store——turn 死于错误时最终
+        // 行 = 错误通知，用户轮内看到的所有流式正文（分析/表格）重载后凭空
+        // 消失，前端只剩一行错误（ziwei-e2e 2026-10-23 实证：两轮各只剩一行
+        // guard 错误）。Error 收尾时把本轮中间 assistant 正文冲刷为独立
+        // chat_log 行（错误行之前），重载后对话连贯、断点可辨。Done 收尾不
+        // 冲刷——正常轮保持 +2 行不变量（E3 rewind/fork 的结构假设）。
+        let abnormal_ending = matches!(
+            events.iter().rev().find_map(|e| match e {
+                AgentEvent::Done(_) => Some(false),
+                AgentEvent::Error(_) => Some(true),
+                _ => None,
+            }),
+            Some(true)
+        );
+        if abnormal_ending {
+            // 本轮中间 assistant 正文 = 最后一条 user 行（turn 起点）之后的
+            // assistant 条目，排除空正文与最终回复本身（它由下方主路径落盘，
+            // 避免双份）。倒序收集正序写出（保 jsonl 时序）。
+            let flushed: Vec<String> = instance
+                .get_history()
+                .iter()
+                .rev()
+                .take_while(|t| t.role != "user")
+                .filter(|t| t.role == "assistant")
+                .map(|t| t.content.clone())
+                .filter(|c| !c.trim().is_empty() && c.as_str() != final_response.as_str())
+                .collect();
+            let model_badge = self.current_display_model();
+            for text in flushed.into_iter().rev() {
+                crate::chat_log::append_chat_log_with_model(
+                    session_key,
+                    "assistant",
+                    &text,
+                    Some(&model_badge),
+                );
+            }
+        }
         crate::chat_log::append_chat_log_meta(
             session_key,
             "assistant",

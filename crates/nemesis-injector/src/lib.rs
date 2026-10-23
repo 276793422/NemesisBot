@@ -13,6 +13,9 @@
 
 #![cfg(windows)]
 
+pub mod ziwei_attach;
+pub mod ziwei_wow64;
+
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};

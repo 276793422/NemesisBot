@@ -844,7 +844,10 @@ fn test_agent_model_config_string_serialization() {
 #[test]
 fn test_agent_defaults_default() {
     let defaults = AgentDefaults::default();
-    assert_eq!(defaults.max_tokens, 8192);
+    assert_eq!(
+        defaults.max_tokens,
+        nemesis_types::capability::DEFAULT_MAX_TOKENS
+    );
     assert_eq!(defaults.temperature, 0.7);
     assert_eq!(defaults.max_tool_iterations, 100);
 }

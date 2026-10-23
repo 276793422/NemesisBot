@@ -43,6 +43,11 @@ pub enum OperationType {
     // 调用各自过闸）。W5 盲点修复配套：给「纯内置编排面」一个诚实的
     // LOW 档家，避免它们误挂 ProcessExec/Network* 名实不符的档位。
     Internal,
+    // 紫微系统（三方程序受控接管）：附加/注入/原语调用/hook 子工具。
+    // CRITICAL——把代码送进三方进程并调用其内部函数，风险量级与
+    // ProcessExec 同档；审批矩阵见紫微总控 §9.2（配置期每步审批卡，
+    // 使用期按 profile run_policy）。
+    Ziwei,
 }
 
 impl fmt::Display for OperationType {
@@ -73,6 +78,7 @@ impl fmt::Display for OperationType {
             Self::RegistryWrite => "registry_write",
             Self::RegistryDelete => "registry_delete",
             Self::Internal => "internal",
+            Self::Ziwei => "ziwei",
         };
         write!(f, "{}", s)
     }
@@ -118,7 +124,8 @@ pub fn get_danger_level(op: OperationType) -> DangerLevel {
         | OperationType::SystemService
         | OperationType::SystemInstall
         | OperationType::RegistryWrite
-        | OperationType::RegistryDelete => DangerLevel::Critical,
+        | OperationType::RegistryDelete
+        | OperationType::Ziwei => DangerLevel::Critical,
         _ => DangerLevel::Medium,
     }
 }
@@ -153,6 +160,7 @@ pub fn operation_type_from_slug(slug: &str) -> Option<OperationType> {
         "registry_write" => OperationType::RegistryWrite,
         "registry_delete" => OperationType::RegistryDelete,
         "internal" => OperationType::Internal,
+        "ziwei" => OperationType::Ziwei,
         _ => return None,
     })
 }
@@ -502,6 +510,11 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         | "delegate_send" | "delegate_output" | "delegate_stop" => {
             Some(OperationType::Internal)
         }
+        // 紫微系统：ziwei_bridge 元工具（配置期操作者，每步审批卡）——
+        // Ziwei=CRITICAL 让 guardian/approval 全链照跑。动态子工具
+        // （profile.tools[] 固化面）在注册期经 declare_tool_operation
+        // 声明同款 Ziwei 档（T2.2）。
+        "ziwei_bridge" => Some(OperationType::Ziwei),
         _ => None,
     }
 }

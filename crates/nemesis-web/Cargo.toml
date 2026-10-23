@@ -20,6 +20,7 @@ nemesis-cluster = { workspace = true, optional = true }
 # 行动代理连接器数据面（handlers/connectors.rs；`connectors` feature 门控——
 # 它无条件依赖 nemesis-security，关 = security 一并退出依赖图）。
 nemesis-connectors = { workspace = true, optional = true }
+nemesis-ziwei = { workspace = true, optional = true }
 nemesis-forge = { workspace = true, optional = true }
 nemesis-skills = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
@@ -147,6 +148,10 @@ board = ["dep:nemesis-board"]
 # 行动代理连接器管理面（connectors.* / paperbroker.* WSAPI；由 nemesisbot
 # 的 connectors feature 穿透）。关 = handler 整体退出注册表面。
 connectors = ["dep:nemesis-connectors"]
+# 紫微系统管理面（ziwei.* WSAPI + Dashboard 紫微页后端；由 nemesisbot 的
+# ziwei feature 穿透，窄门面依赖 nemesis-ziwei）。关 = handler 整体退出
+# 注册表面（端点 404 形态=unknown command）。
+ziwei = ["dep:nemesis-ziwei"]
 
 [dev-dependencies]
 tempfile = "3"
