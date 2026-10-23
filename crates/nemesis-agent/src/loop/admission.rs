@@ -432,16 +432,21 @@ impl AgentLoop {
     /// E3：返回本消息 begin 的 checkpoint turn 序号（无 store 挂载时
     /// None）——gate 捕获后装进 [`TurnAdmission`]，随链穿针到行落盘点做
     /// `checkpoint_turn` 行标记（消息级回退的行→turn 定位锚）。
+    ///
+    /// R31：checkpoint 条目带会话归属（`begin_for_session`）——`route_message`
+    /// 是纯解析（registry 查表，gate 各分支本就多次现取），这里提前取一次只
+    /// 用于归属穿针；会话级回退据此把截断/冲突预检收窄到本会话。
     fn turn_preamble(&self, msg: &nemesis_types::channel::InboundMessage) -> Option<usize> {
         // Open a checkpoint turn for the edit safety net (so writer-tool changes
         // during this message can be rewound). No-op when no store is attached.
         let cp_turn = self
             .turn_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let session_key = self.route_message(msg).1;
         let attached = {
             let cp = self.security.checkpoint_store.read().as_ref().cloned();
             if let Some(cp) = cp {
-                cp.begin(cp_turn, &msg.content);
+                cp.begin_for_session(cp_turn, &msg.content, Some(&session_key));
                 true
             } else {
                 false

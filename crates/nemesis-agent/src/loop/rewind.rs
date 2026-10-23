@@ -83,6 +83,14 @@ impl AgentLoop {
     /// 指纹/当前指纹，前端可展示）；`force == true` 强过，回执与日志留痕
     /// （`forced: true`）。
     ///
+    /// R31（2026-10-23 会话回退波及面收窄）：回退是会话级 API，但 turn 序
+    /// 号与 checkpoint 索引是 loop 全局的——scoped 预检把回退区间内**其他
+    /// 会话**声明过变更的路径单列进 `other_session_paths`（同为默认拒绝，
+    /// `force` 显式强过）；文件恢复与截断也只作用于本会话的 checkpoint 条
+    /// 目，并发会话的回退历史与文件在 force 强过后依然完整（其文件若在恢
+    /// 复树内仍会被碾——这正是 other_session_paths 要拦的事，强过即用户
+    /// 意志）。
+    ///
     /// 会话闸：经 [`Self::under_history_gate`] 真互斥（BUG-HUNT R6——旧
     /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
     ///
@@ -248,15 +256,21 @@ impl AgentLoop {
         // P20（2026-09-25 能力扩展）：冲突预检——restore 锚之后各 turn 封印
         // 的「变更后指纹」vs 现盘内容。只读不突变（零副作用），冲突且未
         // force = 拒绝并列结构化清单；force = 强过（审计留痕）。
+        // R31（2026-10-23 会话回退波及面收窄）：scoped 预检——回退区间内
+        // 其他会话声明过变更的路径进 `other_session_paths` 同样默认拒绝
+        // （restore 的全树恢复会碾掉它们，但它们不属于本会话的回退意图）。
+        // 其他会话的 checkpoint 条目不会被 scoped 截断摧毁，其 rewind/redo
+        // 能力在 force 强过后依然完整。
         let mut report = crate::checkpoint::CheckpointConflictReport::default();
         if let Some(t) = restore_turn
             && let Some(cp) = self.attached_checkpoint()
         {
-            report = cp.conflict_scan(t);
-            if !report.conflicts.is_empty() && !force {
+            report = cp.conflict_scan_scoped(t, Some(session_key));
+            if (!report.conflicts.is_empty() || !report.other_session_paths.is_empty()) && !force {
                 warn!(
-                    "[AgentLoop] rewind 冲突预检拒绝：session={session_key} turn>={t} 检出 {} 个文件在 checkpoint 后被外部修改（force 可强过）",
-                    report.conflicts.len()
+                    "[AgentLoop] rewind 冲突预检拒绝：session={session_key} turn>={t} 检出 {} 个外部修改冲突 + {} 个波及其他会话的路径（force 可强过）",
+                    report.conflicts.len(),
+                    report.other_session_paths.len()
                 );
                 return Ok(serde_json::json!({
                     "blocked": true,
@@ -266,14 +280,17 @@ impl AgentLoop {
                     "restore_turn": t,
                     "conflicts": report.conflicts,
                     "unchecked_paths": report.unchecked_paths,
+                    "other_session_paths": report.other_session_paths,
                 }));
             }
         }
-        let forced = force && !report.conflicts.is_empty();
+        let forced =
+            force && (!report.conflicts.is_empty() || !report.other_session_paths.is_empty());
         if forced {
             warn!(
-                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突",
-                report.conflicts.len()
+                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突 + {} 个其他会话波及路径",
+                report.conflicts.len(),
+                report.other_session_paths.len()
             );
         }
 
@@ -311,7 +328,9 @@ impl AgentLoop {
             let (w, d) = cp.restore_code(t).await;
             written = w;
             deleted = d;
-            cp.truncate_from(t);
+            // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）
+            // 原样保留，其回退历史不被本会话的回退摧毁。
+            cp.truncate_from_scoped(t, Some(session_key));
             file_restore = "applied";
         } else if restore_turn.is_some() {
             file_note = Some("checkpoint store 未挂载，文件未回滚".to_string());
@@ -346,8 +365,9 @@ impl AgentLoop {
                     &format!("{session_key}#idx={report_index}"),
                     "forced",
                     &format!(
-                        "rewind force 覆盖 {} 个外部修改冲突（restore_turn={restore_turn:?}）",
-                        report.conflicts.len()
+                        "rewind force 覆盖 {} 个外部修改冲突 + {} 个其他会话波及路径（restore_turn={restore_turn:?}）",
+                        report.conflicts.len(),
+                        report.other_session_paths.len()
                     ),
                 );
                 if recorded.is_none() {

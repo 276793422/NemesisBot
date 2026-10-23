@@ -84,6 +84,12 @@ pub struct CheckpointConflict {
 pub struct CheckpointConflictReport {
     pub conflicts: Vec<CheckpointConflict>,
     pub unchecked_paths: Vec<String>,
+    /// R31（2026-10-23 会话回退波及面收窄）：回退区间内**其他会话**声明过
+    /// 变更的路径。restore 的全树恢复会把它们一并碾掉，但它们不属于本次回
+    /// 退的会话意图——与 `conflicts` 同为默认拒绝（force 显式强过）。单列而
+    /// 不并入 `conflicts`：它们大概率指纹干净（封印态=现盘态），语义是
+    /// 「波及并发会话」而非「外部修改」，消费方能向用户说明差别。
+    pub other_session_paths: Vec<String>,
 }
 
 /// Anchors the pre-edit state of every distinct file touched during one user turn.
@@ -94,6 +100,13 @@ pub struct CheckpointConflictReport {
 ///
 /// `after` / `sealed`（P20 新增，serde default 兼容老 JSON）：turn 收尾封印
 /// 的「变更后指纹」集与封印标记——rewind 冲突预检的比对基线。
+///
+/// `session`（R31 新增，serde default 兼容老 JSON）：begin 该 turn 的会话
+/// 键（`begin_for_session` 穿针）。turn 序号是 loop 全局的
+/// （`turn_counter.fetch_add`），而 `sessions.rewind_to_message` 是会话级
+/// API——无归属字段时全局截断/全树恢复会把并发会话的变更一并碾掉。None =
+/// 旧条目/测试直构造——scope 判定按「同会话」处理（不可归属不惩罚，单会
+/// 话行为逐字节不变）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub turn: usize,
@@ -108,6 +121,8 @@ pub struct Checkpoint {
     pub after: Vec<FileFingerprint>,
     #[serde(default)]
     pub sealed: bool,
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 /// Picker-facing summary of a checkpoint (no file contents).
@@ -240,6 +255,35 @@ pub struct CheckpointStore {
     root: PathBuf,
     git: Option<GitBackend>,
     inner: Mutex<Inner>,
+}
+
+/// R31：scope 判定单一真相源——条目会话归属是否属于「其他会话」。
+/// `rewind_session = None`（不收窄）恒 false；条目归属 None（旧条目/测试直
+/// 构造，不可归属）恒 false——不可归属不惩罚，按同会话处理，单会话与存量
+/// 数据行为逐字节不变。
+fn is_other_session(entry_session: &Option<String>, rewind_session: Option<&str>) -> bool {
+    match rewind_session {
+        None => false,
+        Some(rs) => entry_session.as_deref().is_some_and(|s| s != rs),
+    }
+}
+
+/// R31：落盘 turn-N.json 是否属于其他会话（scoped 截断的磁盘镜像判定，
+/// 与内存 retain 同源语义）。解析失败 = 不可归属 = false（按本会话删——
+/// load 本也跳过解析失败文件，留着无法归属的壳没有消费面）。
+fn persisted_checkpoint_belongs_to_other_session(
+    path: &std::path::Path,
+    rewind_session: Option<&str>,
+) -> bool {
+    let Some(rs) = rewind_session else {
+        return false;
+    };
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Checkpoint>(&bytes)
+            .ok()
+            .is_some_and(|c| c.session.as_deref().is_some_and(|s| s != rs)),
+        Err(_) => false,
+    }
 }
 
 impl CheckpointStore {
@@ -911,6 +955,19 @@ impl CheckpointStore {
     /// 也被快照的关键），tree 与上一 turn 不同才落盘 JSON（翻页空 turn 不
     /// 留壳，落盘纪律同 JSON 模式）。
     pub fn begin(&self, turn: usize, prompt: impl Into<String>) {
+        self.begin_for_session(turn, prompt, None);
+    }
+
+    /// R31：带会话归属的 begin。`session_key` 落进 checkpoint 条目，会话级
+    /// 回退（`truncate_from_scoped` / `conflict_scan_scoped`）据此把波及面
+    /// 收窄到本会话的 turn。`begin`（无会话）委托 None——旧全局语义，测试
+    /// 与兼容路径沿用。
+    pub fn begin_for_session(
+        &self,
+        turn: usize,
+        prompt: impl Into<String>,
+        session_key: Option<&str>,
+    ) {
         // P20 兜底封印：上一 turn 若因崩溃未走到 process_admitted 的收尾
         // 封印点，在开启新 turn 前补封（幂等——已封印的 turn 直接跳过）。
         let fallback_seal = {
@@ -952,6 +1009,7 @@ impl CheckpointStore {
             tree: tree_hex,
             after: Vec::new(),
             sealed: false,
+            session: session_key.map(str::to_string),
         };
 
         let mut guard = self.inner.lock();
@@ -1119,10 +1177,28 @@ impl CheckpointStore {
     /// target..reference 间已偏离 = 被回退区间内 agent 自己的变更，回退本
     /// 意如此，不算冲突。
     pub fn conflict_scan(&self, from_turn: usize) -> CheckpointConflictReport {
+        self.conflict_scan_scoped(from_turn, None)
+    }
+
+    /// R31：会话收窄版冲突预检。`rewind_session = Some(回退发起会话)` 时，
+    /// 回退区间内**其他会话**（条目归属 ≠ 发起会话）声明过变更的路径进
+    /// `other_session_paths`（默认拒绝，force 显式强过）——它们会被 restore
+    /// 的全树恢复碾掉但不属于本次回退意图。None = 不收窄（旧全局语义）。
+    /// 不可归属条目（session=None）按「同会话」处理：走既有指纹比对语义，
+    /// 单会话与存量数据行为逐字节不变。其他会话路径不做指纹比对（封印态
+    /// 通常=现盘态，冲突语义是「波及」而非「外部修改」；若其文件确被外部
+    /// 改动，仍默认拒绝，只是标签归入波及面）。
+    pub fn conflict_scan_scoped(
+        &self,
+        from_turn: usize,
+        rewind_session: Option<&str>,
+    ) -> CheckpointConflictReport {
         let mut report = CheckpointConflictReport::default();
         // 锁内收集 (path, sealed, sealed_hash) 快照，放锁后读盘比对
         // （锁纪律：不带着 inner 锁做文件 IO）。
         let mut last_declared: Vec<(String, bool, Option<String>)> = Vec::new();
+        // R31：其他会话声明的路径（保序去重）。
+        let mut other_paths: Vec<String> = Vec::new();
         // restore 同款守卫：from_turn 后无 checkpoint → no-op（锁内一次性赋值）。
         let has_post;
         {
@@ -1139,6 +1215,16 @@ impl CheckpointStore {
                 } else {
                     c.paths.clone()
                 };
+                // R31：其他会话的 turn——单列进 other_session_paths，不进
+                // last_declared（不重复出现在 unchecked/git-form 补充里）。
+                if is_other_session(&c.session, rewind_session) {
+                    for p in paths {
+                        if !other_paths.contains(&p) {
+                            other_paths.push(p);
+                        }
+                    }
+                    continue;
+                }
                 for p in paths {
                     let fp = c
                         .after
@@ -1154,6 +1240,7 @@ impl CheckpointStore {
                 }
             }
         }
+        report.other_session_paths = other_paths;
         let declared: std::collections::HashSet<String> =
             last_declared.iter().map(|(p, _, _)| p.clone()).collect();
         for (path, sealed, sealed_hash) in last_declared {
@@ -1180,7 +1267,8 @@ impl CheckpointStore {
         }
         // git 形态：全树 diff 的未声明路径补进 unchecked（见 fn 文档）。排
         // 除集 = 声明路径 ∪ 已报冲突路径（后者已有精确封印判定，不得再以
-        // unchecked 身份重复出现）；补进时对既有 unchecked 去重。
+        // unchecked 身份重复出现）∪ R31 其他会话路径（已单列波及面）；补进
+        // 时对既有 unchecked 去重。
         // from_turn 后无 checkpoint（restore no-op）或无 target tree（hybrid
         // 兜底路径）时 restore 不做 tree 恢复，这里同样不报。
         #[cfg(feature = "checkpoint-git")]
@@ -1194,6 +1282,9 @@ impl CheckpointStore {
             let mut excluded = declared;
             for c in &report.conflicts {
                 excluded.insert(c.path.clone());
+            }
+            for p in &report.other_session_paths {
+                excluded.insert(p.clone());
             }
             let mut repo = gb.repo.lock();
             let extra =
@@ -1426,10 +1517,29 @@ impl CheckpointStore {
     ///
     /// git 模式：只清 JSON 索引（v1 不做影子库对象 gc——模块文档诚实边界）。
     pub fn truncate_from(&self, from_turn: usize) {
+        self.truncate_from_scoped(from_turn, None);
+    }
+
+    /// R31：会话收窄版截断——只清「本会话」的 turn ≥ from_turn 条目（含落
+    /// 盘 turn-N.json）。turn 序号是 loop 全局的，而 `sessions.rewind_to_message`
+    /// 是会话级 API：无收窄的全局截断会把并发会话的回退历史整段清掉，永久
+    /// 摧毁其 rewind/redo 能力。`rewind_session = None` = 不收窄（旧全局语义，
+    /// 测试与兼容路径沿用）。
+    ///
+    /// 磁盘镜像判定：读 turn-N.json 解析 session 与内存 retain 同判定；解析
+    /// 失败 = 不可归属 = 按本会话处理（删——与内存侧 None 语义一致）。
+    pub fn truncate_from_scoped(&self, from_turn: usize, rewind_session: Option<&str>) {
         {
             let mut guard = self.inner.lock();
-            guard.done.retain(|c| c.turn < from_turn);
-            if guard.cur.as_ref().is_some_and(|c| c.turn >= from_turn) {
+            // 保留：旧 turn（< from_turn）∪ 其他会话条目；清：本会话 turn ≥
+            // from_turn。cur 同判定（本会话才清；其他会话的进行中 turn 不动）。
+            guard
+                .done
+                .retain(|c| c.turn < from_turn || is_other_session(&c.session, rewind_session));
+            if let Some(cur) = guard.cur.as_ref()
+                && cur.turn >= from_turn
+                && !is_other_session(&cur.session, rewind_session)
+            {
                 guard.cur = None;
                 guard.seen.clear();
             }
@@ -1444,6 +1554,7 @@ impl CheckpointStore {
                     .and_then(|s| s.strip_suffix(".json"))
                     && let Ok(t) = rest.parse::<usize>()
                     && t >= from_turn
+                    && !persisted_checkpoint_belongs_to_other_session(&ent.path(), rewind_session)
                 {
                     let _ = std::fs::remove_file(ent.path());
                 }
