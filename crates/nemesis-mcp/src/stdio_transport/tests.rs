@@ -854,3 +854,72 @@ fn stdio_transport_profile_field_wiring() {
     assert!(!t.browser_profile_opt_in);
     assert!(t.browser_profile.is_none());
 }
+
+#[tokio::test]
+async fn stale_response_after_timeout_is_not_misattributed() {
+    // BUG-HUNT R39：send 无 id 匹配闸——请求 1 超时后其迟到响应挂在
+    // stdout 缓冲，下一个请求会把它当自己的答案捞走（工具结果张冠李戴）。
+    // 服务器：响应 1 故意迟到（1s，越过请求 1 的 300ms 超时），请求 2
+    // 秒回。修复后：请求 2 应跳过 id=1 的迟到响应、拿到 id=2 的真答案。
+    let script = r#"
+import sys, json, time
+def rl():
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            time.sleep(30)
+        line = line.strip()
+        if line:
+            try:
+                return json.loads(line)
+            except Exception:
+                continue
+r1 = rl()
+time.sleep(1.0)
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": r1.get("id"), "result": {"which": 1}}) + "\n")
+sys.stdout.flush()
+r2 = rl()
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": r2.get("id"), "result": {"which": 2}}) + "\n")
+sys.stdout.flush()
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req1 = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    // 请求 1：服务器 1s 才答 → 300ms 超时（响应此刻未出，无半行消费）。
+    let err = t.send(&req1, 300).await.unwrap_err();
+    assert!(
+        err.message.contains("timed out"),
+        "expected timeout, got: {}",
+        err.message
+    );
+
+    // 请求 2：读取路径先撞上 id=1 的迟到响应——必须有闸跳过。
+    let req2 = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(2.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let resp = t.send(&req2, 10_000).await.expect("request 2 must succeed");
+    assert_eq!(
+        resp.id,
+        serde_json::json!(2),
+        "响应 id 必须与请求匹配（迟到响应已被跳过）"
+    );
+    assert_eq!(
+        resp.result.and_then(|r| r.get("which").cloned()),
+        Some(serde_json::json!(2)),
+        "拿到的必须是请求 2 的答案而非请求 1 的迟到响应"
+    );
+    t.close().await.unwrap();
+}
