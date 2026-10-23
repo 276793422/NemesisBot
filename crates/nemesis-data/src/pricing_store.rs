@@ -255,37 +255,39 @@ impl PricingStore {
 
     /// 新增/更新自定义条目（按 model_id 幂等 upsert）。
     pub fn upsert_custom(&self, entry: ModelPricing) -> Result<(), String> {
-        {
-            let mut layers = self.layers.write().map_err(|e| e.to_string())?;
-            let mut custom = std::mem::take(&mut layers.custom);
-            match custom.iter_mut().find(|p| p.model_id == entry.model_id) {
-                Some(slot) => *slot = entry,
-                None => custom.push(entry),
-            }
-            write_json_atomic(&self.data_dir.join(CUSTOM_FILE), &custom)?;
-            *layers = Layers::rebuild(custom, layers.downloaded.take());
+        let mut layers = self.layers.write().map_err(|e| e.to_string())?;
+        // 先从克隆落盘再改内存（对齐 replace_downloaded 的磁盘优先序）：
+        // 此前 mem::take 后 `write_json_atomic(...)?` 提前返回——写盘失败
+        // （磁盘满/权限/AV 锁）时磁盘旧文件完好、内存自定义层却被清空，
+        // pricing 查表静默丢失全部自定义条目直到重启。
+        let mut custom = layers.custom.clone();
+        match custom.iter_mut().find(|p| p.model_id == entry.model_id) {
+            Some(slot) => *slot = entry,
+            None => custom.push(entry),
         }
+        write_json_atomic(&self.data_dir.join(CUSTOM_FILE), &custom)?;
+        *layers = Layers::rebuild(custom, layers.downloaded.take());
         Ok(())
     }
 
     /// 删除自定义条目。返回是否真的删了。
     pub fn remove_custom(&self, model_id: &str) -> Result<bool, String> {
         let mut layers = self.layers.write().map_err(|e| e.to_string())?;
-        let custom = std::mem::take(&mut layers.custom);
-        let before = custom.len();
-        let custom: Vec<ModelPricing> = custom
-            .into_iter()
+        let before = layers.custom.len();
+        // 先从克隆落盘再改内存（同 upsert_custom：写盘失败不清内存层）。
+        let custom: Vec<ModelPricing> = layers
+            .custom
+            .iter()
             .filter(|p| p.model_id != model_id)
+            .cloned()
             .collect();
-        let removed = custom.len() != before;
-        if removed {
-            write_json_atomic(&self.data_dir.join(CUSTOM_FILE), &custom)?;
-            *layers = Layers::rebuild(custom, layers.downloaded.take());
-        } else {
-            // 没删东西也要把 take 走的还回去。
-            *layers = Layers::rebuild(custom, layers.downloaded.take());
+        if custom.len() == before {
+            // 没删东西：不落盘，内存原样。
+            return Ok(false);
         }
-        Ok(removed)
+        write_json_atomic(&self.data_dir.join(CUSTOM_FILE), &custom)?;
+        *layers = Layers::rebuild(custom, layers.downloaded.take());
+        Ok(true)
     }
 }
 
