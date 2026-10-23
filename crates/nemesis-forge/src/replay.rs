@@ -110,8 +110,14 @@ pub fn extract_failures(workspace: &Path) -> Result<Vec<FailureRecord>, String> 
 }
 
 /// 失败记录 → 重放用例。重放语义：原任务重跑，执行零错误即过。
+///
+/// name 的会话段走 [`nemesis_utils::sanitize::sanitize_path_segment`]
+/// 单一真相源（SAN-05）：超 80 字符自动带 FNV 短哈希后缀。本地旧实现
+/// `take(24) + 非字母数字转 _` 是裸截断身份——cluster 会话键
+/// `{node_id}/{chat}` 的节点 id 普遍 12+ 字符，前 24 字符全是公共前缀，
+/// 同节点两个不同失败生成同名用例，`ingest` 按 name 幂等去重时第二条
+/// 被静默丢弃（回归集漏检）。
 pub fn to_test_case(rec: &FailureRecord) -> TestCase {
-    let sess8: String = rec.session_key.chars().take(24).collect();
     let task = if rec.user.trim().is_empty() {
         format!(
             "继续上一次未完成的任务（上次在调用工具 {} 时失败，状态 {}）",
@@ -121,7 +127,11 @@ pub fn to_test_case(rec: &FailureRecord) -> TestCase {
         rec.user.trim().to_string()
     };
     TestCase {
-        name: format!("replay-{}-{}", sanitize(&sess8), sanitize(&rec.tool)),
+        name: format!(
+            "replay-{}-{}",
+            nemesis_utils::sanitize::sanitize_path_segment(&rec.session_key),
+            nemesis_utils::sanitize::sanitize_path_segment(&rec.tool)
+        ),
         turns: vec![TestTurn { user: task }],
         fixtures: vec![],
         expect: TestExpectations {
@@ -130,13 +140,6 @@ pub fn to_test_case(rec: &FailureRecord) -> TestCase {
         },
         judge: None,
     }
-}
-
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .take(24)
-        .collect()
 }
 
 fn replay_dir(workspace: &Path) -> PathBuf {
