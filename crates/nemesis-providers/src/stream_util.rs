@@ -15,6 +15,54 @@ use crate::failover::FailoverError;
 use crate::http_provider::StreamChunk;
 use crate::types::LLMResponse;
 
+/// SSE 增量 UTF-8 解码：把一个网络 chunk 安全并入行缓冲 `buffer`
+/// （BUG-HUNT R38）。`pending` 携带上一 chunk 留下的未完成尾随序列。
+///
+/// 逐 chunk 独立 `from_utf8_lossy` 会把被 chunk 边界劈开的多字节字符
+/// （CJK 3 字节 / emoji 4 字节）替换成 U+FFFD——TCP 分片边界是任意的，
+/// 长 CJK 回复几乎每个边界都可能烂字。这里分段扫描：尾部**不完整**序列
+/// （`error_len()==None`）留待与下一 chunk 拼接后整体解码；真坏字节
+/// （`error_len()==Some`）当场 lossy 替换后**从坏段之后继续扫**（同一
+/// chunk 里坏字节后面跟着的合法字符/残尾不受牵连）。`pending` 恒 ≤3
+/// 字节，有界。
+pub fn push_chunk_incremental(buffer: &mut String, pending: &mut Vec<u8>, bytes: &[u8]) {
+    let mut chunk = std::mem::take(pending);
+    chunk.extend_from_slice(bytes);
+    let mut pos = 0usize;
+    loop {
+        match std::str::from_utf8(&chunk[pos..]) {
+            Ok(s) => {
+                buffer.push_str(s);
+                pos = chunk.len();
+                break;
+            }
+            Err(e) => {
+                // valid_up_to()/error_len() 都相对 &chunk[pos..]，v/n 换算回绝对下标。
+                let v = pos + e.valid_up_to();
+                match e.error_len() {
+                    Some(n) => {
+                        // 合法前缀 [pos..v) + 坏段 [v..v+n)（→U+FFFD）入缓冲，
+                        // 越过坏段继续扫（其后可能还有合法字符/残尾）。
+                        buffer.push_str(&String::from_utf8_lossy(&chunk[pos..v + n]));
+                        pos = v + n;
+                        if pos == chunk.len() {
+                            break;
+                        }
+                    }
+                    None => {
+                        // 尾部不完整（序列被 chunk 边界劈开）：合法前缀
+                        // [pos..v) 入缓冲，残尾 [v..) 留给下一 chunk。
+                        buffer.push_str(&String::from_utf8_lossy(&chunk[pos..v]));
+                        pos = v;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    *pending = chunk.split_off(pos);
+}
+
 /// Consume a lane's `chat_stream` receiver and aggregate into a non-streaming
 /// `LLMResponse`.
 ///
@@ -72,3 +120,6 @@ pub async fn collect_stream_response(
         }),
     }
 }
+
+#[cfg(test)]
+mod tests;
