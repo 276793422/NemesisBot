@@ -7,7 +7,7 @@
 //! | 1 | cron on_job 双分支 (1348-1397)     | 预种子 jobs.json（过期 "at" 任务）→ gateway arm 后秒级触发；分支 A 发 InboundMessage（经 LLM 落 request_log），分支 B 空消息直接 Ok("No message to deliver")（落 store 历史）|
 //! | 2 | cluster 双节点 peer_chat 全链      | A/B 两 gateway 子进程（独立 temp home、完全独立端口组），共享 AEAD token，互为静态 peers；A 由预种子 cron 驱动（无 WS）发 cluster_rpc → B 的 MockAi 回 canned 文本 → callback 三路由的 Route2(bus cluster_continuation)+Route3(TaskManager complete) 完成 A 侧续行 |
 //! | 3 | cluster_rpc 工具选型 (2099-2126)   | 同上：A 模型脚本第一条即 ToolCall(cluster_rpc)，peers_fn 注入 + call_fn 异步 ack 全链路真跑（本测试与 #2 合并在同一场景）|
-//! | 4 | heartbeat 多臂 (3146-3252)         | 实例 a：BOOTSTRAP.md 在 → 零 LLM 命中；实例 b：HEARTBEAT.md 有任务行 + interval=1min → 第一拍(+1s)喂 passthrough 文本、第二拍(+60s)喂 "  HEARTBEAT_OK\n"（trim 归一命中）|
+//! | 4 | heartbeat 多臂 (3146-3252)         | 实例 a：BOOTSTRAP.md 在 → 零 LLM 命中；实例 b：HEARTBEAT.md 有任务行 + interval=1min → 第一拍(+1s)喂 passthrough 文本、第二拍(≈+61s，interval_at 节奏)喂 "  HEARTBEAT_OK\n"（trim 归一命中）|
 //! | 5 | workflow message/event 触发驱动    | definitions/ 放两条 YAML：wf-r9-msg(message 触发, transform 节点零依赖) + wf-r9-event(event 触发, 匹配 workflow.completed 且 workflow_name==wf-r9-msg 防自递归)；由同一条 cron InboundMessage 广播级联点亮 2908-3078 两个订阅任务；断言 workspace/workflow/executions/*.jsonl |
 //! | 6 | approval ask 规则链 (196-274)      | config.security.json file_rules.write=[{pattern:"*",action:"ask"}] + MockAi 首条 write_file 工具调用 → WebApprovalManager 审批卡无人应答 → approval_timeout_secs=300s 到点自动 deny（M7 起 plugin-ui 早拒臂已死，2026-09-08 更名对齐）；工具结果回灌后第二轮出终文本 |
 //! | 7 | open_dashboard / shutdown 内部命令 | POST /api/internal {"cmd":"open_dashboard"}（dll 缺席守卫下无窗口风险）拿 {"status":"ok"} ack；随后每实例的优雅停机本身走 Shutdown 臂 (3601-3608) |
@@ -1858,13 +1858,15 @@ async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
 }
 
 /// heartbeat 变体 d：WSAPI agent.stop 之后再来的拍进「agent 不在」臂。
-/// HEARTBEAT.md 启动即在（bootstrap 缺席）→ 前两拍（arm+~1s、interval 首
-/// tick 即时）agent 存活正常消耗脚本两条；web 就绪后经手搓 WS 客户端发
-/// {"module":"agent","cmd":"stop"} 停掉 AgentLoop → 下一个 +60s 拍命中
+/// HEARTBEAT.md 启动即在（bootstrap 缺席）→ 前两拍在 agent 存活期正常消耗
+/// 脚本两条（节奏 = heartbeat 服务起点 +1s 首拍、≈+61s 第二拍、此后每 60s，
+/// interval_at 根修 2026-10-24）——**先等两拍真实落地，再**经手搓 WS 客户端
+/// 发 {"module":"agent","cmd":"stop"} 停掉 AgentLoop → 下一个 60s 拍命中
 /// adapter.current()==None 早退臂（gateway.rs:3207-3218），不再耗任何 LLM。
-/// 断言：恰好 2 次命中、脚本余量 0。诚实的失败模式：若机器极慢导致第三拍
-/// 抢在 stop 之前，脚本第 3 次请求拿到 500 → hits==3 → 断言响亮失败（按
-/// problem-analysis 纪律视为环境慢而非静默放过）。
+/// 断言：恰好 2 次命中、脚本余量 0。旧版校准按 interval() 首 tick 即时的
+/// 0 间隔连击写（两拍都在 +1s 附近）——那连击正是停机 panic 根源，已修；
+/// 「等两拍再停」的次序同时消掉旧结构的固有竞态（机器慢时第三拍抢在
+/// stop 前 → hits==3 误报）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_agent_none_after_wsapi_stop_sends_zero_llm() {
@@ -1899,17 +1901,17 @@ async fn r10_live_heartbeat_agent_none_after_wsapi_stop_sends_zero_llm() {
     let gw = spawn_gateway("r10_hbd_gw", &bin, &ws);
     let web_port = wait_for_web_port(&home).await;
 
-    // 前两拍（agent 存活期）落地余量。
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // 前两拍（agent 存活期）先等真实落地再停 AgentLoop：第 1 拍 +1s、第 2 拍
+    // ≈+61s（interval_at 节奏；旧 interval() 首 tick 即时的 0 间隔连击已修，
+    // 本测试旧校准随之同步）。
+    wait_until(90, "both alive-agent heartbeat ticks consumed", || {
+        mock.hits() >= 2
+    })
+    .await;
 
     // 手搓 RFC6455 停掉主 AgentLoop（无 HTTP 等价路由）。
     r10_wsapi_agent_stop(web_port, token, "r10hbstop")
         .unwrap_or_else(|e| panic!("wsapi agent.stop upgrade/frame failed: {e}"));
-
-    wait_until(60, "both alive-agent heartbeat ticks consumed", || {
-        mock.hits() >= 2
-    })
-    .await;
 
     // 观察跨越下一个 60s 间隔拍：此后任何拍都必须止步于 agent-none 臂。
     tokio::time::sleep(Duration::from_secs(70)).await;

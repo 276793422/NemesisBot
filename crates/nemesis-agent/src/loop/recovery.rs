@@ -824,6 +824,15 @@ impl AgentLoop {
         // 检测同哲学：立即失败的重试无效信号更早暴露。
         let mut backoff_eligible = first_call_failed_after >= std::time::Duration::from_secs(1);
         while retries < MAX_TRANSIENT_RETRIES {
+            // 停机感知（2026-10-24 tokio 停机 panic 根修）：循环顶先看停机
+            // 令牌——立即拒绝形态（backoff_eligible=false，无 sleep）也会在
+            // stop 后继续盲试，闸必须在环顶而不是只在退避处。
+            if self.stop_token.is_cancelled() {
+                return (
+                    None,
+                    "[AgentLoop] stopped; LLM transient retry aborted".to_string(),
+                );
+            }
             retries += 1;
             // 429 文档关联隐患 1（可重试类统一设计）：transient
             // 环对真网络等待加 1s/2s/4s 小退避——此前无 sleep
@@ -831,8 +840,25 @@ impl AgentLoop {
             // backoff_eligible）不退避。测试经 tokio
             // start_paused 自动推进，零等待。
             if backoff_eligible {
-                tokio::time::sleep(std::time::Duration::from_secs(1u64 << (retries - 1).min(2)))
-                    .await;
+                // 退避 sleep 与停机令牌 select：stop() 后立即退出重试环，
+                // 不再新注册 timer（runtime 停机窗口里 timer 首次 poll =
+                // TimerEntry panic）。这条是 process_direct 直调任务
+                // （moderator/guardian/headless，不在 turn_task_handles、
+                // abort 覆盖不到）在停机时的唯一出口。
+                // 臂序铁律：cancelled 第一——select! 按书写顺序 poll，sleep
+                // 在前的话停机后被唤醒的 poll 会先注册 timer（panic 点），
+                // 轮不到 cancelled 臂。
+                let backoff = std::time::Duration::from_secs(1u64 << (retries - 1).min(2));
+                tokio::select! {
+                    _ = self.stop_token.cancelled() => {
+                        return (
+                            None,
+                            "[AgentLoop] stopped during LLM transient retry backoff; call aborted"
+                                .to_string(),
+                        );
+                    }
+                    _ = tokio::time::sleep(backoff) => {}
+                }
             }
             let r_msgs = self.build_messages(instance);
             let r_tools = self.rebuild_full_tool_defs();

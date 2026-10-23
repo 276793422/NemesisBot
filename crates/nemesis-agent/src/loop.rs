@@ -387,6 +387,16 @@ pub struct AgentLoop {
     chat_seq_lookup: parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str) -> u64 + Send + Sync>>>,
     /// Running flag for the bus consumption loop.
     running: AtomicBool,
+    /// 停机令牌：`stop()` 时 cancel。LLM 瞬态重试环（recovery.rs
+    /// `retry_transient`）的退避 sleep 与本令牌 select——停机后重试环立即
+    /// 退出，不再把 1s/2s/4s 退避的 timer 注册拖进 runtime 停机窗口（
+    /// TimerEntry 首次 poll 撞停机 = "A Tokio 1.x context was found, but
+    /// it is being shutdown" panic；实录：gateway boot 测试停机后 30ms
+    /// 仍见 "LLM transient error, retrying"）。独立于 `running` 的原因：
+    /// process_direct 直调路径（moderator/guardian/headless run/ACP）从不
+    /// 置 running=true，拿 running 当闸会误杀这些路径的重试；本令牌只在
+    /// 显式 stop() 时置位，零误报。
+    stop_token: tokio_util::sync::CancellationToken,
     /// Per-session busy state with queue length tracking.
     session_busy: parking_lot::Mutex<HashMap<String, SessionBusyState>>,
     /// BUG 2026-09-21 ①：单会话限流重试实时快照（写侧重试环、读侧
@@ -810,6 +820,7 @@ impl AgentLoop {
             session_store: None,
             chat_seq_lookup: parking_lot::RwLock::new(None),
             running: AtomicBool::new(false),
+            stop_token: tokio_util::sync::CancellationToken::new(),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             rate_limit_status: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode: ConcurrentMode::Reject,
@@ -1244,6 +1255,11 @@ mod rate_limit_retry_tests;
 // "invalid api key" 不误入压缩环回归 + 词表盲区配额/deadline 文案进对应环）。
 #[cfg(test)]
 mod recovery_classifier_tests;
+// 停机感知回归锁（2026-10-24 tokio 停机 panic 根修）：retry_transient 退避
+// sleep 被 stop() 唤醒 + 循环顶停机闸（process_direct 直调任务不在
+// turn_task_handles，abort 覆盖不到，停机令牌是唯一出口）。
+#[cfg(test)]
+mod recovery_stop_tests;
 // R1 (2026-09-21)：中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]

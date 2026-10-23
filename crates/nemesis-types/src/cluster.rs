@@ -103,6 +103,11 @@ pub struct DiscussionEvent {
     /// 触发消息的发送者。
     #[serde(default)]
     pub new_sender: String,
+    /// 触发消息发送者的身份种类（Actor.kind：admin=人类 / agent=节点 /
+    /// system=系统；2026-10-23 身份透传——此前只传裸 id，worker 的 LLM
+    /// 无从知晓说话的是人还是节点，@all 后对着人类只能 @ 自己）。
+    #[serde(default)]
+    pub sender_kind: String,
     /// 触发消息内容。
     #[serde(default)]
     pub new_content: String,
@@ -125,6 +130,10 @@ pub struct DiscussionEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DiscussionCtxMessage {
     pub sender: String,
+    /// 发送者身份种类（Actor.kind：admin/agent/system；serde default 兼容
+    /// 旧 master 的 wake 包——缺省空串，渲染退化为裸 id）。
+    #[serde(default)]
+    pub kind: String,
     pub content: String,
     /// unix secs。
     pub at: i64,

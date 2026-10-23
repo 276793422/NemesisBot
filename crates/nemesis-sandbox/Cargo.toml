@@ -87,5 +87,12 @@ required-features = ["vm"]
 name = "vm_bootstrap_arm"
 required-features = ["vm"]
 
+# VM 演示线（008657b9）：浏览器取证全链真机演示（VNC 显示 + guest browser
+# 工具链）。vm 模块 feature 门控，example 必须同门控——否则关 feature 构建
+# 时 examples 自动发现编译撞 unresolved import（workspace 全量实测 2026-10-24）。
+[[example]]
+name = "vm_browser_forensic"
+required-features = ["vm"]
+
 [lints]
 workspace = true
