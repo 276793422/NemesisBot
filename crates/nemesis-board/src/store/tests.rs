@@ -1037,13 +1037,15 @@ fn test_recent_completed_dispatch_durations() {
     );
 
     // 秒级时间戳粒度下同秒完结会得 duration=0（被 WHERE 过滤）——测试里
-    // 把 dispatched_at 回拨 120s，得到确定性的正时长（真时长语义由
-    // node_perf 单测覆盖，这里只验投影与过滤）。
+    // 把 dispatched_at 锚到 completed_at - 120，得到确定性的正时长
+    // （真时长语义由 node_perf 单测覆盖，这里只验投影与过滤）。
+    // 锚 completed_at 而非 dispatched_at 自身回拨：后者隐含「insert 与
+    // finish 落在同一墙钟秒」假设，重载 runner 上跨秒即得 121 假红。
     {
         let conn = store.conn.lock().unwrap();
         conn.execute(
             "UPDATE issue_dispatch
-             SET dispatched_at = dispatched_at - 120
+             SET dispatched_at = completed_at - 120
              WHERE task_id IN ('task-a1', 'task-a2')",
             [],
         )
