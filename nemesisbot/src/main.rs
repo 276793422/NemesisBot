@@ -758,7 +758,12 @@ fn main() -> Result<()> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        return rt.block_on(exec_worker::run());
+        // 限时收尾（同非 mac 入口 2026-10-24 根修）：runtime drop = 立即
+        // shutdown + 无限等，停机窗口里被唤醒任务的 timer 注册撞
+        // TimerEntry panic。窗口内 runtime 正常运行，timer 注册合法。
+        let result = rt.block_on(exec_worker::run());
+        rt.shutdown_timeout(std::time::Duration::from_secs(5));
+        return result;
     }
 
     // Eval-agent role short-circuit (see the non-mac entry for rationale).
@@ -769,7 +774,9 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            return rt.block_on(eval_worker::run());
+            let result = rt.block_on(eval_worker::run());
+            rt.shutdown_timeout(std::time::Duration::from_secs(5));
+            return result;
         }
     }
 
@@ -786,7 +793,9 @@ fn main() -> Result<()> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        return match rt.block_on(nemesis_desktop::child_mode::run_child_mode()) {
+        let result = rt.block_on(nemesis_desktop::child_mode::run_child_mode());
+        rt.shutdown_timeout(std::time::Duration::from_secs(5));
+        return match result {
             Ok(()) => Ok(()),
             Err(e) => {
                 eprintln!("[Child] Error: {}", e);
@@ -839,7 +848,15 @@ fn main() -> Result<()> {
                 let gw_rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()?;
-                gw_rt.block_on(run_command(cli))
+                // 限时收尾（2026-10-24 根修，同非 mac 入口）：此前的
+                // `gw_rt` 在闭包尾直接 drop = `#[tokio::main]` 的「立即
+                // shutdown + 无限等」原样保留——gateway 停机后残余孤儿
+                // 任务被唤醒注册 timer 撞 TimerEntry panic；任务卡死则
+                // 无限等待拖住退出。shutdown_timeout 给残余任务最多 5s
+                // 自然收尾后硬砍。
+                let result = gw_rt.block_on(run_command(cli));
+                gw_rt.shutdown_timeout(std::time::Duration::from_secs(5));
+                result
             })
             .expect("failed to spawn gateway thread");
 
@@ -869,7 +886,9 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run_command(cli))
+    let result = rt.block_on(run_command(cli));
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+    result
 }
 
 /// Shared command dispatch, used by both the `#[tokio::main]` entry

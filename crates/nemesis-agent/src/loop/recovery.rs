@@ -685,6 +685,16 @@ impl AgentLoop {
         let budget_started = tokio::time::Instant::now();
         let mut budget_exhausted = false;
         while retries < max_retries {
+            // 停机感知（2026-10-24 tokio 停机 panic 根修，同 transient 环）：
+            // 循环顶先看停机令牌——stop 后不再继续盲试（限流梯子动辄数十
+            // 秒等待，僵尸环会继续烧预算并重发调用）。
+            if self.stop_token.is_cancelled() {
+                self.clear_rate_limit_status(&context.session_key);
+                return (
+                    None,
+                    "[AgentLoop] stopped; LLM rate-limit retry aborted".to_string(),
+                );
+            }
             // ②B：进入下一轮等待+调用前先看预算——预算是
             // 硬上限，超了直接终局（ sleep 也要算进去，
             // 所以检查放循环头顶部）。
@@ -729,7 +739,25 @@ impl AgentLoop {
                     updated_at: std::time::Instant::now(),
                 },
             );
-            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            // 等待 sleep 与停机令牌 select（2026-10-24 根修，同 transient
+            // 环）：stop() 后立即退出重试环——不再新注册 timer（runtime
+            // 停机窗口里 timer 首次 poll = TimerEntry panic），也不再对
+            // 已停机的 loop 重发调用。快照已在上方 set_rate_limit_status
+            // 写入，退出前必须清（环出口统一清快照的不变量）。
+            // 臂序铁律：cancelled 第一——select! 按书写顺序 poll，sleep
+            // 在前的话停机后被唤醒的 poll 会先注册 timer（panic 点），
+            // 轮不到 cancelled 臂。
+            tokio::select! {
+                _ = self.stop_token.cancelled() => {
+                    self.clear_rate_limit_status(&context.session_key);
+                    return (
+                        None,
+                        "[AgentLoop] stopped during LLM rate-limit retry backoff; call aborted"
+                            .to_string(),
+                    );
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(wait)) => {}
+            }
             // 消息 + tool_defs 重建（首捕值已随失败调用
             // move，同 transient 环纪律）。
             let r_msgs = self.build_messages(instance);
