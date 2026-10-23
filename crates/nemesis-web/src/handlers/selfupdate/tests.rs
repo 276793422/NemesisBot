@@ -116,4 +116,8 @@ async fn status_shape_is_honest_when_unwired() {
     assert_eq!(out["download"]["phase"], "idle");
     assert!(out["pending"].is_null());
     assert!(out["cached_check"].is_null());
+    // apply 失败反馈面（2026-10-23 挂死修复）：未装配 = 无在案失败；基准
+    // 探测在测试进程 exe 目录恒 false（无 applied_manifest.json）。
+    assert!(out["last_apply_error"].is_null());
+    assert_eq!(out["sequence_baseline_present"], false);
 }

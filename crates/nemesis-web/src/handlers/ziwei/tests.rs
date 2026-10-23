@@ -37,7 +37,7 @@ fn make_ctx() -> (RequestContext, tempfile::TempDir) {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
-        // R40：QUIC 中继句柄与集群解耦后成为 AppState 无条件字段（cfg 只切
+        // QUIC 中继句柄与集群解耦后成为 AppState 无条件字段（cfg 只切
         // 类型）；测试夹具恒 None（不装配中继）。
         quic_relay: None,
         cluster_service: None,
