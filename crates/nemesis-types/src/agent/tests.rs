@@ -721,6 +721,7 @@ fn test_agent_event_question_serde_shape() {
         chat_id: "c".to_string(),
         session_key: "s".to_string(),
         timeout_secs: 60,
+        bypass_auto_approve: false,
     };
     assert_eq!(req.timeout_secs, 60);
 }

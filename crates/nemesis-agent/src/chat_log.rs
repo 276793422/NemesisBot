@@ -1152,6 +1152,98 @@ pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// 会话级全部放行（2026-10-24 长任务无人值守计划）：sidecar 持久位
+// ---------------------------------------------------------------------------
+
+/// 写会话级全部放行的 sidecar 持久位（WSAPI set 的持久半边；运行态内存半边
+/// 在 `nemesis_security::SessionAllowAllState`，由 handler 双写）。
+///
+/// - enabled=true：记 `allow_all=true` + `allow_all_since=since` +
+///   `session_key`（真实键随行烧入——hydrate 靠它，文件名 stem 是 sanitize
+///   有损形态）。`since` 由调用方传入（内存态 `set()` 的返回值——单一真相，
+///   两半边不各打各的时间戳）；空串回落现在（防御性，正常调用不触发）。
+/// - enabled=false：摘除 `allow_all`/`allow_all_since`（关闭即回默认，不留
+///   陈旧真值；`session_key` 字段保留无害）。无 meta / 本就没开 = no-op
+///   不空写文件（同 clear_session_snooze 姿态）。
+pub fn write_session_allow_all(session_key: &str, enabled: bool, since: &str) {
+    if enabled {
+        let since = if since.is_empty() {
+            Local::now().to_rfc3339()
+        } else {
+            since.to_string()
+        };
+        upsert_meta(session_key, |m| {
+            m.allow_all = true;
+            m.allow_all_since = Some(since);
+            m.session_key = Some(session_key.to_string());
+        });
+        return;
+    }
+    // 关 = 摘除（与 upsert_meta 同锁——check-then-write 原子性）。
+    let _guard = META_LOCK.lock();
+    let Some(mut meta) = read_meta_full(session_key) else {
+        return;
+    };
+    if !meta.allow_all {
+        return;
+    }
+    meta.allow_all = false;
+    meta.allow_all_since = None;
+    let path = meta_path(session_key);
+    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+        tracing::warn!(
+            "[chat_log] failed to clear allow_all {}: {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+/// 读会话级全部放行持久位 `(enabled, since)`；无 meta / 未记 = `None`。
+pub fn read_session_allow_all(session_key: &str) -> Option<(bool, String)> {
+    let meta = read_meta_full(session_key)?;
+    Some((meta.allow_all, meta.allow_all_since.unwrap_or_default()))
+}
+
+/// hydrate 扫描：全部 meta 中 `allow_all=true` 的 `(session_key, since)`
+/// 列表（真实会话键来自 meta 内烧入的 `session_key` 字段；缺字段/空键的
+/// 条目防御性跳过——旧形态不可能有 allow_all，此臂只兜手工改盘）。输出按
+/// 会话键排序（read_dir 顺序是平台实现细节，消费与顺序无关，排序只为
+/// 测试确定性）。
+pub fn allow_all_sessions() -> Vec<(String, String)> {
+    let dir = default_path_manager().sessions_log_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .ends_with(".meta.json")
+        {
+            continue;
+        }
+        let Ok(data) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<SessionMeta>(&data) else {
+            continue;
+        };
+        if meta.allow_all
+            && let Some(key) = meta.session_key
+            && !key.is_empty()
+        {
+            out.push((key, meta.allow_all_since.unwrap_or_default()));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 /// Read the full sidecar meta by session key. `None` when absent/unparsable.
 fn read_meta_full(session_key: &str) -> Option<SessionMeta> {
     let path = meta_path(session_key);
@@ -1221,6 +1313,20 @@ pub struct SessionMeta {
     /// None = 未绑定（cron/heartbeat/system 等无主体来源，或旧文件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
+    /// 会话级全部放行（2026-10-24 长任务无人值守计划）：true = 本会话的
+    /// 安全审批卡全自动放行（含 CRITICAL 与 ziwei force 卡；硬 deny / estop
+    /// 不受影响）。持久真相源 = 本字段；gateway 的 SessionAllowAllState 是
+    /// 运行期镜像（启动 hydrate 回载）。无 TTL 无自动关闭（用户裁决）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_all: bool,
+    /// 放行开启时刻（RFC3339 本地时区；前端「自 HH:MM 放行中」+ hydrate 种
+    /// SessionAllowAllState 的 since）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_all_since: Option<String>,
+    /// 真实会话键（写 allow_all 时随行烧入——文件名 stem 是 sanitize 后的
+    /// 有损形态还原不了，hydrate 直接读本字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
 }
 
 /// WS9/P17：一次消息级回退的谱系记录（`last_rewind` 的载荷）。
@@ -1445,6 +1551,11 @@ mod b11_tests;
 // + 其余 meta 保留 + 无血缘诚实返 false 测试。
 #[cfg(test)]
 mod detach_tests;
+
+// 会话级全部放行（2026-10-24）：write/read 持久位 round-trip + 旧 meta 兼容
+// + allow_all_sessions 扫描过滤测试。
+#[cfg(test)]
+mod allow_all_tests;
 
 // cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
 // tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与

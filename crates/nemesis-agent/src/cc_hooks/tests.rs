@@ -1515,6 +1515,7 @@ async fn observing_question_asks_notifies_then_delegates() {
             chat_id: "web:1".to_string(),
             session_key: "sk-1".to_string(),
             timeout_secs: 30,
+            bypass_auto_approve: false,
         })
         .expect("delegated");
     assert_eq!(outcome, QuestionOutcome::Answered(vec!["a".to_string()]));

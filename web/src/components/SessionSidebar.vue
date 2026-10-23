@@ -789,6 +789,13 @@ function relTime(ts: string): string {
                 class="undelivered-badge"
                 :title="`有未送达的回复（已落盘，打开即见）`"
               >{{ undeliveredBadge(s) }}</span>
+              <!-- 会话级全部放行徽标（2026-10-24 长任务无人值守计划）：
+                   该会话所有安全审批自动放行中——一眼可见的高危状态。 -->
+              <span
+                v-if="s.allow_all"
+                class="allow-all-badge"
+                title="本会话全部放行中：所有安全审批自动批准（硬拒绝与急停不受影响）"
+              >🔓</span>
             </div>
             <!-- E4: fork 血缘标记（父在列表可点击跳转；不在则纯文本）。
                  ↳ 前缀已升格为标题行内 ⑂ marker（2026-10-20）。 -->
@@ -1123,6 +1130,14 @@ function relTime(ts: string): string {
 /* B11（2026-10-18 snooze）: 暂停中徽标——⏰ 字符（无底色，弱化行内
  * 视觉锚点；tooltip 由行级 snoozeTip 承担） */
 .snooze-badge {
+  margin-left: 6px;
+  font-size: 11px;
+  display: inline-block;
+  vertical-align: 1px;
+}
+/* 会话级全部放行徽标（2026-10-24）：🔓 字符（高危状态一眼可见；
+ * tooltip 由行内 title 承担） */
+.allow-all-badge {
   margin-left: 6px;
   font-size: 11px;
   display: inline-block;
