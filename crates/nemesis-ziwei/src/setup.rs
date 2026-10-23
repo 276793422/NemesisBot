@@ -21,19 +21,28 @@ use std::sync::{Mutex, OnceLock};
 
 use nemesis_ziwei_profile::model::parse_byte_pattern;
 use nemesis_ziwei_profile::{
-    Anchor, AnchorSet, AnchorType, AttachInfo, Conv, DataStructure, FieldDef, LocateKind,
-    LocateSpec, Machine, Profile, ProfileStatus, ProfileStore, SCHEMA_VERSION, TargetFingerprint,
-    Verification, VerifyPolicy,
+    Anchor, AnchorSet, AnchorType, Conv, DataStructure, FieldDef, LocateKind, LocateSpec, Machine,
+    Profile, ProfileStore,
+};
+// 以下仅在 Windows 分析管线（session/管道层）消费；非 Windows 存根编译
+// 不触及，cfg 门控防 Linux 侧 unused import 撞 -D warnings。
+#[cfg(windows)]
+use nemesis_ziwei_profile::{
+    AttachInfo, ProfileStatus, SCHEMA_VERSION, TargetFingerprint, Verification, VerifyPolicy,
 };
 use nemesis_ziwei_rev::candidates;
 use nemesis_ziwei_rev::crtsigs;
+#[cfg(windows)]
 use nemesis_ziwei_rev::diff;
 use nemesis_ziwei_rev::disasm::Arch;
 use nemesis_ziwei_rev::funcs;
 use nemesis_ziwei_rev::pe::{self, ImageMap, PeInfo};
-use nemesis_ziwei_rev::snapshot::{SnapshotMeta, SnapshotStore};
+#[cfg(windows)]
+use nemesis_ziwei_rev::snapshot::SnapshotMeta;
+use nemesis_ziwei_rev::snapshot::SnapshotStore;
 use nemesis_ziwei_rev::xref;
 use serde_json::json;
+#[cfg(windows)]
 use sha2::Digest;
 
 /// 分析引擎信息转发（保持 `setup::engine_info` 旧路径稳定）。
@@ -42,17 +51,23 @@ pub use nemesis_ziwei_rev::engine::{EngineInfo, engine_info};
 // ── 常量 ────────────────────────────────────────────────────────────────
 
 /// 头页读取量（PE 头 + 节表足够）。
+#[cfg(windows)]
 const HEADERS_BYTES: u64 = 0x1000;
 /// 单次管道读分块（1MB；MAX_FRAME 4MB 留 4 倍余）。
+#[cfg(windows)]
 const CHUNK_BYTES: u64 = 1 << 20;
 /// 单节快照上限（64MB——正常用户态模块节远小于此；超出诚实截断并注记）。
+#[cfg(windows)]
 const SECTION_CAP: u64 = 64 << 20;
 /// 候选清单上限（向导展示面）。
 const CANDIDATE_CAP: usize = 32;
 /// 差分报告页数上限（超出截断注记）。
+#[cfg(windows)]
 const DIFF_PAGE_CAP: usize = 64;
 /// 快照保留（TTL 7 天 / 最多 8 份）。
+#[cfg(windows)]
 const SNAP_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+#[cfg(windows)]
 const SNAP_MAX_KEPT: usize = 8;
 
 // ── 状态 ────────────────────────────────────────────────────────────────
@@ -163,6 +178,7 @@ impl SetupManager {
 
     /// 快照/差分专用：还要求模块基址真实（gateway 重启后基址可能因 ASLR
     /// 变化——旧值不可信，必须重新 select_target）。
+    #[cfg(windows)]
     fn require_live_info(&self, workspace: &Path) -> Result<SetupInfo, String> {
         let info = self.require_info(workspace)?;
         if info.pid == 0 || info.module_base == 0 {
@@ -187,7 +203,7 @@ impl SetupManager {
         #[cfg(not(windows))]
         {
             let _ = (pid, exe_hint, workspace);
-            return Err("配置期目标选择仅 Windows 支持（payload/注入链未编译）".to_string());
+            Err("配置期目标选择仅 Windows 支持（payload/注入链未编译）".to_string())
         }
         #[cfg(windows)]
         {
