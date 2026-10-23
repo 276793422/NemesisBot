@@ -278,3 +278,190 @@ async fn p20_rewind_force_records_audit_chain_event() {
 
     delete_chat_log(&key);
 }
+
+// ---------------------------------------------------------------------------
+// R31（2026-10-23 会话回退波及面收窄）：rewind 是会话级 API，但 turn 序号
+// 与 checkpoint 索引是 loop 全局的——修复前回退会话 A 会把并发会话 B 在
+// 其回退点之后的文件变更静默碾掉（B 的封印=现盘，冲突预检判「干净」不
+// 拦），并把 B 的 checkpoint 条目整段清掉（永久摧毁 B 的 rewind/redo）。
+// ---------------------------------------------------------------------------
+
+/// 会话级回退的全链路编排测试：A(t1,t2) + B(t3) 交错在同一 store（主 loop
+/// 上多会话共享一个 checkpoint store 是默认形态）。A 回退自己的 t2：
+/// - 默认（force=false）：b.txt 是其他会话波及面 → **零副作用拒绝**，
+///   `conflicts` 空 + `other_session_paths=["b.txt"]`（语义区分「外部修改」
+///   与「波及并发会话」）；
+/// - force=true：强过（a.txt 恢复到 t2 begin 树；全树恢复按用户意志碾掉
+///   b.txt），但 **B 的会话行与 checkpoint 条目（turn 3）原样保留**——
+///   修复前这里被 scoped 掉的 truncate_from 整段清空。
+#[tokio::test]
+async fn r31_rewind_session_scoped_other_session_paths_block_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    git2::Repository::init(&root).unwrap();
+    std::fs::write(root.join("a.txt"), "a1").unwrap();
+
+    let al = AgentLoop::new(Box::new(P20NoopProvider), p20_config());
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(None, root.clone()));
+    al.set_checkpoint_store(store);
+    let key_a = p20_uniq_key("r31a");
+    let key_b = p20_uniq_key("r31b");
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+
+    let cp = al.attached_checkpoint().unwrap();
+
+    // A turn1：a.txt → v2。turn 序号模拟 loop 全局计数器（turn_preamble
+    // 的 fetch_add），会话归属经 begin_for_session 穿针。
+    cp.begin_for_session(1, "a q1", Some(&key_a));
+    std::fs::write(root.join("a.txt"), "a2").unwrap();
+    cp.snapshot(&p20_modify("a.txt")).await;
+    cp.seal_turn(1);
+    p20_append(&key_a, "user", "a q1", Some(1));
+    p20_append(&key_a, "assistant", "a ans1", None);
+
+    // A turn2：a.txt → v3（本测试的回退目标）。
+    cp.begin_for_session(2, "a q2", Some(&key_a));
+    std::fs::write(root.join("a.txt"), "a3").unwrap();
+    cp.snapshot(&p20_modify("a.txt")).await;
+    cp.seal_turn(2);
+    p20_append(&key_a, "user", "a q2", Some(2));
+    p20_append(&key_a, "assistant", "a ans2", None);
+
+    // B turn3（在 A 的 t2 之后被接纳）：b.txt 独立会话的工作。
+    cp.begin_for_session(3, "b q1", Some(&key_b));
+    std::fs::write(root.join("b.txt"), "b2").unwrap();
+    cp.snapshot(&p20_modify("b.txt")).await;
+    cp.seal_turn(3);
+    p20_append(&key_b, "user", "b q1", Some(3));
+    p20_append(&key_b, "assistant", "b ans1", None);
+
+    // A 回退保自己的 t1（index 0 所在 turn 之后全截）→ restore_turn=2，
+    // 回退区间 [2,∞) 覆盖 B 的 turn3。
+    let out = al.rewind_to_message(&key_a, 0, false).await.unwrap();
+    assert_eq!(out["blocked"], true, "{out}");
+    assert_eq!(out["reason"], "conflict");
+    assert_eq!(out["restore_turn"], 2);
+    assert!(
+        out["conflicts"].as_array().unwrap().is_empty(),
+        "b.txt 是波及面不是外部修改: {out}"
+    );
+    assert_eq!(
+        out["other_session_paths"],
+        serde_json::json!(["b.txt"]),
+        "{out}"
+    );
+
+    // 零副作用四连：两个会话的 jsonl 不动、两个文件不动、undo 栈不入。
+    assert_eq!(read_chat_log(&key_a, 100, None).1, 4);
+    assert_eq!(read_chat_log(&key_b, 100, None).1, 2);
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "a3");
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "b2");
+    let err = al.redo_rewind(&key_a).await.unwrap_err();
+    assert!(err.contains("没有可重做"), "{err}");
+
+    // force 强过：a.txt 恢复到 t2 begin 树（=t1 完成态 v2）；全树恢复把
+    // b.txt 碾掉（force = 用户对波及面的显式意志，与 P20 外部冲突同款）。
+    let out = al.rewind_to_message(&key_a, 0, true).await.unwrap();
+    assert_eq!(out["blocked"], serde_json::Value::Null, "{out}");
+    assert_eq!(out["forced"], true, "波及面 + force = 审计留痕: {out}");
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "a2");
+    assert!(!root.join("b.txt").exists());
+
+    // B 的会话行与 checkpoint 条目（turn 3）原样保留——修复前 turn 3 的
+    // 条目被全局 truncate_from 清空，B 的 rewind/redo 能力被永久摧毁。
+    assert_eq!(read_chat_log(&key_b, 100, None).1, 2, "B 的会话行不动");
+    let turns: Vec<usize> = al.checkpoint_list().iter().map(|m| m.turn).collect();
+    assert_eq!(turns, vec![1, 3], "B 的 checkpoint 条目必须幸存");
+
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+}
+
+/// store 级 scope 语义：冲突报告与会话收窄截断按归属处置；`begin`（无会
+/// 话，legacy）条目按「同会话」清（不可归属不惩罚 = 存量行为逐字节不变）。
+#[tokio::test]
+async fn r31_scoped_truncate_and_conflict_report_are_session_scoped() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let ckpt_dir = dir.path().join(".ck");
+    let cp = Arc::new(crate::checkpoint::CheckpointStore::new(
+        Some(ckpt_dir.clone()),
+        root.clone(),
+    ));
+
+    // sA turn1 / sB turn2 / legacy turn3（begin 无会话）。
+    cp.begin_for_session(1, "a1", Some("sA"));
+    std::fs::write(root.join("a.txt"), "a2").unwrap();
+    cp.snapshot(&p20_modify("a.txt")).await;
+    cp.seal_turn(1);
+    cp.begin_for_session(2, "b1", Some("sB"));
+    std::fs::write(root.join("b.txt"), "b2").unwrap();
+    cp.snapshot(&p20_modify("b.txt")).await;
+    cp.seal_turn(2);
+    cp.begin(3, "legacy");
+    std::fs::write(root.join("c.txt"), "c2").unwrap();
+    cp.snapshot(&p20_modify("c.txt")).await;
+    cp.seal_turn(3);
+
+    // sA 视角（turn>=2）：b.txt 是其他会话波及面；legacy c.txt 走既有指纹
+    // 语义（同会话）。无外部修改 → conflicts 空。
+    let rpt = cp.conflict_scan_scoped(2, Some("sA"));
+    assert!(rpt.conflicts.is_empty(), "{rpt:?}");
+    assert_eq!(rpt.other_session_paths, vec!["b.txt".to_string()]);
+    // 不收窄（conflict_scan / rewind_session=None）= 旧全局语义，不产
+    // other_session_paths。
+    let rpt = cp.conflict_scan(2);
+    assert!(rpt.conflicts.is_empty(), "{rpt:?}");
+    assert!(rpt.other_session_paths.is_empty(), "{rpt:?}");
+
+    // sA 视角截断：turn2（sB，其他会话）保留；turn3（None，同会话）清；
+    // 磁盘镜像同判定（其他会话的 turn-N.json 幸存）。
+    cp.truncate_from_scoped(2, Some("sA"));
+    let turns: Vec<usize> = cp.list_meta().iter().map(|m| m.turn).collect();
+    assert_eq!(turns, vec![1, 2]);
+    assert!(
+        ckpt_dir.join("turn-2.json").exists(),
+        "其他会话的落盘条目必须保留"
+    );
+    assert!(!ckpt_dir.join("turn-3.json").exists());
+
+    // sB 视角截断：turn2 同会话 → 清，磁盘同步。
+    cp.truncate_from_scoped(2, Some("sB"));
+    let turns: Vec<usize> = cp.list_meta().iter().map(|m| m.turn).collect();
+    assert_eq!(turns, vec![1]);
+    assert!(!ckpt_dir.join("turn-2.json").exists());
+}
+
+/// 老载荷兼容：历史 turn-N.json 无 `session` 字段（serde default → None）
+/// 加载不受影响，scope 判定按「同会话」（不可归属不惩罚，全局截断照清）。
+#[tokio::test]
+async fn r31_old_payload_without_session_field_loads_as_same_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let ckpt_dir = dir.path().join(".ck");
+    std::fs::create_dir_all(&ckpt_dir).unwrap();
+    // 手工摆一份无 session 字段的历史载荷（修复前形态）。
+    std::fs::write(
+        ckpt_dir.join("turn-5.json"),
+        br#"{"turn":5,"time":"t","prompt":"legacy","files":[],"paths":["old.txt"],"tree":null,"after":[],"sealed":true}"#,
+    )
+    .unwrap();
+
+    let cp = crate::checkpoint::CheckpointStore::new(Some(ckpt_dir.clone()), root);
+    let metas = cp.list_meta();
+    assert_eq!(metas.len(), 1, "历史载荷照常加载");
+    assert_eq!(metas[0].turn, 5);
+
+    // scoped 截断把不可归属条目按同会话清——存量行为逐字节不变。
+    cp.truncate_from_scoped(5, Some("any-session"));
+    assert!(
+        !ckpt_dir.join("turn-5.json").exists(),
+        "不可归属 = 同会话 = 可清"
+    );
+    assert!(cp.list_meta().is_empty());
+}

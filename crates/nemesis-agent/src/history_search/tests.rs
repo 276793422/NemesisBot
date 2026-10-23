@@ -133,3 +133,57 @@ fn char_boundary_helpers_floor_and_ceil() {
     assert_eq!(ceil_char_boundary(s, 4), 6);
     assert_eq!(ceil_char_boundary(s, 100), s.len());
 }
+
+// ===========================================================================
+// 降级路径确定性迭代序（2026-10-23）：search_linear 的 limit 截断让命中
+// 子集依赖 read_dir 平台序（NTFS 字典序 vs ext4 哈希序）。收集/排序拆成
+// 纯函数在此钉死：过滤 jsonl + mtime 降序 + 文件名升序 tiebreak。
+// （状态族经 search() 走真索引的测试在 tests/history_search_fts.rs——
+// 目录占位强降级会毒化进程级 IndexState，不可用。）
+// ===========================================================================
+
+#[test]
+fn test_order_session_files_latest_first() {
+    let mk = |t: u64, name: &str| {
+        (
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(t),
+            std::path::PathBuf::from(name),
+        )
+    };
+    let mut files = vec![
+        mk(100, "a_old.jsonl"),
+        mk(300, "c_new.jsonl"),
+        mk(200, "b_mid.jsonl"),
+    ];
+    order_session_files_latest_first(&mut files);
+    let names: Vec<&str> = files.iter().map(|(_, p)| p.to_str().unwrap()).collect();
+    assert_eq!(names, vec!["c_new.jsonl", "b_mid.jsonl", "a_old.jsonl"]);
+
+    // mtime 并列 → 文件名升序 tiebreak（确定性不被并列破坏）。
+    let mut tied = vec![mk(100, "z.jsonl"), mk(100, "a.jsonl"), mk(100, "m.jsonl")];
+    order_session_files_latest_first(&mut tied);
+    let names: Vec<&str> = tied.iter().map(|(_, p)| p.to_str().unwrap()).collect();
+    assert_eq!(names, vec!["a.jsonl", "m.jsonl", "z.jsonl"]);
+
+    // 幂等：已序输入再排不翻。
+    order_session_files_latest_first(&mut files);
+    let names: Vec<&str> = files.iter().map(|(_, p)| p.to_str().unwrap()).collect();
+    assert_eq!(names, vec!["c_new.jsonl", "b_mid.jsonl", "a_old.jsonl"]);
+}
+
+#[test]
+fn test_jsonl_files_latest_first_filters_non_jsonl() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.jsonl"), "{}").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), "x").unwrap();
+    std::fs::write(tmp.path().join("history_index.db"), "x").unwrap();
+    std::fs::create_dir(tmp.path().join("subdir.jsonl")).unwrap();
+    let rd = std::fs::read_dir(tmp.path()).unwrap();
+    let mut got = jsonl_files_latest_first(rd);
+    got.sort();
+    let names: Vec<String> = got
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(names, vec!["a.jsonl"], "目录与 .txt/.db 不进清单");
+}

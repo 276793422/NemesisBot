@@ -22,18 +22,28 @@
 //    dispatch 未注册名 fail-closed CRITICAL——WIT 合同口径）+ estop watch
 //    联动（急停冻结子系统，释放恢复；invoker 挂接在 build_agent_loop
 //    每次重建时执行）。
+// 6. [`PolicyBridge`]——三循环策略槽（`CompactPolicy`/`FinalJudgePolicy`/
+//    `ValidationPolicy`）的 WASM 适配器（2026-10-22 样板工程批 4）：JSON
+//    投影进出 + 裁决解析；guest 失败（trap/超时/解码失败/畸形裁决）诚实
+//    回退内置 + WARN + 计数，`NotAvailable`（无接管者/禁用/总开关关，常规
+//    态）静默回内置。
+// 7. [`GatewayLlmInvoker`] / [`register_policy_bridges`]——llm-complete
+//    宿主面（estop fail-closed + max_tokens 钳 bypass_llm 同源上限，委托
+//    `AgentLoop::chore_completion` 杂务槽）+ 策略桥装配入口（manager 级
+//    llm 面注入 + 按接管点装桥）。
 //
 // 模块随 `plugins-wasm` feature 门控（该 feature implies security——信任/
 // 审计/扫描机制依赖 nemesis-security）。
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use nemesis_agent::context::RequestContext;
-use nemesis_plugins_wasm::host_impl::{HostToolInvoker, SecretResolver};
+use nemesis_plugins_wasm::error::PluginError;
+use nemesis_plugins_wasm::host_impl::{HostToolInvoker, LlmInvoker, SecretResolver};
 use nemesis_plugins_wasm::install::{InstallApprover, InstallReview};
-use nemesis_plugins_wasm::limits::PluginLimits;
+use nemesis_plugins_wasm::limits::{PluginLimits, PolicyPoint};
 use nemesis_plugins_wasm::registry::{PluginManager, ToolMetaSnapshot};
 use tracing::info;
 
@@ -112,28 +122,43 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
             call_id: uuid::Uuid::new_v4().to_string(),
         };
         let depth = self.depth.load(Ordering::SeqCst);
-        tracing::debug!(
-            tool = %self.meta.name,
-            depth,
-            session = %context.session_key,
-            "[WasmPlugin] bridge execute"
-        );
-        match self
+        let slug = self
             .manager
-            .execute_tool(&self.meta.name, args.to_string(), exec_ctx)
+            .find_by_tool_name(&self.meta.name)
+            .map(|reg| reg.manifest.slug.clone())
+            .unwrap_or_else(|| self.meta.name.clone());
+        // 调用留痕（2026-10-23 委托面可观测）：宿主侧成对日志——调用 +
+        // 返回各一行，只记元数据与量纲（slug/耗时/字节量/outcome），不落
+        // 载荷全文（审计链 hash-only 同纪律；内容归 wasm.logs 与 SSE 卡）。
+        // 此前仅 debug 级一行（release 默认不可见），「这是插件干的还是
+        // 内置干的、烧了多久、返回多大」排障无据。
+        info!(
+            slug = %slug,
+            tool = %self.meta.name,
+            call_id = %exec_ctx.call_id,
+            depth,
+            args_bytes = args.len(),
+            session = %context.session_key,
+            "[WasmPlugin] 工具调用 →"
+        );
+        let started = std::time::Instant::now();
+        let (res, ok, out_bytes, outcome) = match self
+            .manager
+            .execute_tool(&self.meta.name, args.to_string(), exec_ctx.clone())
             .await
         {
             Ok(output) => {
+                let scanned = self.rescan_output_credentials(&output.content, &context.session_key);
+                let n = scanned.len();
                 if output.is_error {
                     // guest 业务失败 → Err（dispatch 包 "Tool error: {err}"
                     // + post-failure hooks，与内置工具失败同语义）。错误文本
                     // 同样走出站凭据复扫——失败信息可能回显 guest 刚读到的
                     // 凭据（2026-09-30 复查 #1：此前仅成功路径扫描）。
-                    return Err(
-                        self.rescan_output_credentials(&output.content, &context.session_key)
-                    );
+                    (Err(scanned), false, n, "guest_error")
+                } else {
+                    (Ok(scanned), true, n, "ok")
                 }
-                Ok(self.rescan_output_credentials(&output.content, &context.session_key))
             }
             Err(e) => {
                 // PluginError（trap/超时/预算/禁用）→ 错误文本回灌；不带
@@ -145,13 +170,27 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
                 while cut > 0 && !scanned.is_char_boundary(cut) {
                     cut -= 1;
                 }
-                Err(if scanned.len() > 300 {
+                let msg = if scanned.len() > 300 {
                     format!("{}…", &scanned[..cut])
                 } else {
                     scanned
-                })
+                };
+                let n = msg.len();
+                (Err(msg), false, n, "plugin_error")
             }
-        }
+        };
+        info!(
+            slug = %slug,
+            tool = %self.meta.name,
+            call_id = %exec_ctx.call_id,
+            duration_ms = started.elapsed().as_millis() as u64,
+            args_bytes = args.len(),
+            out_bytes,
+            ok,
+            outcome,
+            "[WasmPlugin] 工具调用 ←"
+        );
+        res
     }
 
     fn set_invocation_depth(&self, depth: usize) {
@@ -181,6 +220,395 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
         // manifest 校验保证非空且 ∈ {mini,normal,big}（registry 对账快照
         // 随桥走，无边车表无漂移）；合成测试外的空串经 rank 兜底 = big。
         Some(&self.meta.min_tier)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 工具接管层（2026-10-23）：内置接口 → wasm 执行体的可插拔托管。
+//
+// 形态（与 loop 策略点接管同哲学——宿主保留裁决权，wasm 只是执行体）：
+// - 模型/安全面全无感：wrapper 元数据全 delegate 内置实例（prompt cache
+//   字节不变），安全 8 层按内置名语义照跑、estop 照冻、审计链照记；
+// - 降级语义分两层：可用性缺失（禁用/卸载/子系统关/目标缺席）→ 回内置
+//   执行体（零窗口）；执行失败 → 诚实回灌错误（工具不幂等，静默重试 =
+//   双执行——绝不回退内置）；
+// - 凭据注入面随开关双态：接管态恒空槽（vault 明文不进沙盒——guest 收
+//   `vault:` 别名原文，无法解析、无泄漏）；回退态逐字节恢复内置槽位
+//   （dispatch 别名注入按注册工具槽位走，恒空会连回退态的内置注入面一起
+//   杀掉——「内置语义无感」含此面）；
+// - guest 回环闸：guest tool-invoke（GatewayHostInvoker 固定标记
+//   channel="plugin"）再入接管面 = 无界递归（guest→内置链天然终止，接管
+//   后成环）——接管态下诚实拒绝，不回内置（回内置=guest 借宿主网络出沙盒）；
+// - 注册表对象恒定：wrapper 注册后热同步只翻 `Arc<AtomicBool>` 开关
+//   （侧表 [`TAKEOVER_SWITCHES`]），零 swap 零 prompt cache 抖动。
+// ---------------------------------------------------------------------------
+
+/// 接管 wrapper（每接管目标一个实例）。
+pub struct TakeoverToolBridge {
+    /// 内置实例（元数据 + 降级执行体；[`AgentLoop::take_tool`] 摘出的 Arc）。
+    inner: Arc<dyn nemesis_agent::r#loop::Tool>,
+    /// wasm 执行体（成对日志/出站凭据复扫全复用）。
+    bridge: PluginToolBridge,
+    /// 接管开关（侧表持有同 Arc；热同步翻位）。
+    active: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+        if self.active.load(Ordering::SeqCst) {
+            // guest 回环闸（评审 #1，2026-10-23）：guest tool-invoke 经
+            // GatewayHostInvoker 的固定标记 context（channel="plugin"，全仓
+            // 唯一构造点）再入接管面 = guest↔wasm 无界递归——guest→内置链
+            // 今天天然终止（内置工具不再发起工具调用），接管后这条边成环
+            // （每层新开 wasm store + 阻塞链）。诚实拒绝，不回内置执行体：
+            // 回内置=guest 借宿主进程网络出沙盒，破坏接管面的沙盒承诺。
+            // 非标记路径（模型/子代理/通道）不受影响——模型驱动环由
+            // turn_guard/轮次治理兜底。
+            if context.channel == "plugin" {
+                return Err(
+                    "taken-over tool cannot be invoked from wasm guests (recursion gate)".into(),
+                );
+            }
+            self.bridge.execute(args, context).await
+        } else {
+            // 回退态凭据注入在 wrapper 内做（BUG-HUNT R17，闭合 TOCTOU）：
+            // 此前「keys 双态路由 + dispatch 层注入」在热同步翻位与
+            // credential_arg_keys()→execute() 两读之间存在竞态窗口——keys
+            // 读到回退态槽位、明文改写完成后 active 刚被翻真 → execute 走
+            // wasm 分支，vault 明文随 args 进沙盒（违反「凭据不进沙盒」
+            // 承诺）。现在 dispatch 层对本 wrapper 恒见空槽位（见
+            // credential_arg_keys），注入与路径决策共用同一次 active 快照
+            // ——单一快照决定整条路径，无混合态：load=false → 注入后的
+            // 明文只进内置执行体；load=true → 未注入的别名原文才进 wasm。
+            // 注入失败 = 与 dispatch 层注入同语义（Err 直接作为工具结果，
+            // 本轮不执行）。
+            let injected = nemesis_agent::r#loop::credential_injection::inject_credential_aliases(
+                self.inner.as_ref(),
+                args,
+            )?;
+            self.inner.execute(&injected, context).await
+        }
+    }
+
+    fn set_context(&self, channel: &str, chat_id: &str) {
+        self.inner.set_context(channel, chat_id);
+    }
+
+    fn set_invocation_depth(&self, depth: usize) {
+        // 双向转发：内置实例的深度语义（spawn 等）+ wasm 桥的日志维度。
+        self.inner.set_invocation_depth(depth);
+        self.bridge.set_invocation_depth(depth);
+    }
+
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.inner.parameters()
+    }
+
+    fn read_only_hint(&self) -> Option<bool> {
+        self.inner.read_only_hint()
+    }
+
+    fn destructive_hint(&self) -> Option<bool> {
+        self.inner.destructive_hint()
+    }
+
+    fn preview(&self, args: &str) -> Option<nemesis_agent::r#loop::FileChange> {
+        // checkpoint 预检面随内置实例（接管目标经 deny-list 不含写类，
+        // 常规为 None；若目标有 preview，安全网语义不因接管失明）。
+        self.inner.preview(args)
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    fn is_parallel_safe(&self) -> bool {
+        self.inner.is_parallel_safe()
+    }
+
+    fn credential_arg_keys(&self) -> &[&str] {
+        // 恒空槽纪律（BUG-HUNT R17 改版）：注入收进 wrapper 回退态分支
+        // 自做（与 active 路径决策同点原子，闭合翻位 TOCTOU——详见
+        // execute 注释），dispatch 层对本 wrapper 恒不注入。评审 #2 的
+        // 双态路由正是这个 TOCTOU 的来源，此处不再恢复。
+        &[]
+    }
+
+    fn limit_categories(&self) -> &[&str] {
+        self.inner.limit_categories()
+    }
+
+    fn min_tier(&self) -> Option<&str> {
+        self.inner.min_tier()
+    }
+
+    fn operation_override(&self, args: &str) -> Option<nemesis_agent::r#loop::OperationOverride> {
+        self.inner.operation_override(args)
+    }
+}
+
+/// 接管开关侧表条目（进程级；loop 重建由 [`apply_takeovers`] 整表重建）。
+#[derive(Clone)]
+pub struct TakeoverSwitch {
+    /// 与 wrapper 共享的开关位。
+    pub active: Arc<AtomicBool>,
+    /// 接管者 slug（归因）。
+    pub slug: String,
+    /// wasm 工具全名（`plugin.<slug>.<base>`；日志/前端归因）。
+    pub wasm_tool: String,
+}
+
+static TAKEOVER_SWITCHES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, TakeoverSwitch>>,
+> = std::sync::OnceLock::new();
+
+fn takeover_switches()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, TakeoverSwitch>> {
+    TAKEOVER_SWITCHES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 单目标接管对账（启动 8d 循环体 + 热同步 hook 共用单一真相源）。
+///
+/// 裁决链：接管者裁决（registry `takeover_owner`——禁用/卸载/非 tool = 无
+/// 主）→ deny 闸（防御性二拦，parse 层已拒）→ 目标在场闸（loop 注册表）→
+/// 激活（已 wrap 翻位 / 未 wrap 现场 wrap）或解除（开关关，wrapper 留守
+/// 委托内置）。返回接管面当前是否在管。
+///
+/// config 总闸（`plugins.wasm.takeover`）由调用方消费（启动一次读；热同步
+/// 每事件读）——本函数是闸后原语，测试无需 config 文件。
+pub fn reconcile_takeover(
+    agent_loop: &nemesis_agent::r#loop::AgentLoop,
+    manager: &Arc<PluginManager>,
+    builtin: &str,
+) -> bool {
+    let Some(owner) = manager.takeover_owner(builtin) else {
+        // 无启用中的接管者 → 解除（在管的翻关，wrapper 留守委托内置）；
+        // 返回 false = 接管面不再激活（解除动作本身成功与否不影响语义）。
+        set_takeover_active(builtin, false, "无启用中的接管者");
+        return false;
+    };
+    if nemesis_plugins_wasm::manifest::takeover_denied(builtin) {
+        // parse 层已拒（安装/装载即失败）；防御性二拦兜住直注册路径。
+        tracing::warn!(
+            builtin,
+            "[WasmPlugin] 接管目标是宿主特权工具（deny-list）——拒绝激活"
+        );
+        return false;
+    }
+    let Some(meta) = owner.tool_meta.clone() else {
+        tracing::warn!(slug = %owner.manifest.slug, builtin, "[WasmPlugin] 接管者缺工具快照——拒绝激活");
+        return false;
+    };
+    let switches = takeover_switches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(sw) = switches.get(builtin) {
+        // 已 wrap：翻位即达（热启停零 swap）。
+        let sw = sw.clone();
+        drop(switches);
+        sw.active.store(true, Ordering::SeqCst);
+        info!(
+            slug = %owner.manifest.slug,
+            builtin,
+            wasm_tool = %sw.wasm_tool,
+            "[WasmPlugin] 工具接管 生效"
+        );
+        return true;
+    }
+    drop(switches);
+    // 未 wrap：目标必须在 loop 注册表在场（在场即真相——不维护第二份内置
+    // 名清单；缺席 = 本 loop 不激活 + WARN，诚实注记）。
+    let Some(inner) = agent_loop.take_tool(builtin) else {
+        tracing::warn!(
+            slug = %owner.manifest.slug,
+            builtin,
+            "[WasmPlugin] 接管目标不在工具注册表——本 loop 不激活"
+        );
+        return false;
+    };
+    // 凭据槽位纪律注记（接管态恒空槽——注入面不进沙盒；回退态双态恢复）。
+    // 读成 owned——inner 即刻 move 进 wrapper，借用不跨界。
+    let cred_keys: Vec<String> = inner
+        .credential_arg_keys()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let active = Arc::new(AtomicBool::new(true));
+    let wasm_tool = meta.name.clone();
+    // take→register 之间无 await、单线程同体执行（hook 路径持 hook_serial，
+    // 工厂路径 loop 未投运），中间不可能有并发写者插同名——
+    // register_plugin_tool 的撞名改名分支（`_2` 僵尸）在此不可达；返回名
+    // 恒等于 builtin。
+    let actual = agent_loop.register_plugin_tool(
+        builtin.to_string(),
+        Arc::new(TakeoverToolBridge {
+            inner,
+            bridge: PluginToolBridge::new(meta, manager.clone()),
+            active: active.clone(),
+        }),
+    );
+    debug_assert_eq!(
+        actual, builtin,
+        "take→register 无 await 单写者，register_plugin_tool 改名分支不可达（见上注记）"
+    );
+    takeover_switches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            builtin.to_string(),
+            TakeoverSwitch {
+                active,
+                slug: owner.manifest.slug.clone(),
+                wasm_tool: wasm_tool.clone(),
+            },
+        );
+    if cred_keys.is_empty() {
+        info!(
+            slug = %owner.manifest.slug,
+            builtin,
+            wasm_tool = %wasm_tool,
+            "[WasmPlugin] 工具接管 生效"
+        );
+    } else {
+        info!(
+            slug = %owner.manifest.slug,
+            builtin,
+            wasm_tool = %wasm_tool,
+            credential_keys = ?cred_keys,
+            "[WasmPlugin] 工具接管 生效（凭据槽位不进沙盒——guest 收到别名原文）"
+        );
+    }
+    true
+}
+
+/// 翻既有接管开关（解除/复启用；未在管返回 false）。
+pub fn set_takeover_active(builtin: &str, on: bool, reason: &str) -> bool {
+    let switches = takeover_switches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let Some(sw) = switches.get(builtin) else {
+        return false;
+    };
+    let sw = sw.clone();
+    drop(switches);
+    sw.active.store(on, Ordering::SeqCst);
+    info!(
+        builtin,
+        slug = %sw.slug,
+        wasm_tool = %sw.wasm_tool,
+        reason,
+        "[WasmPlugin] 工具接管 {}",
+        if on { "生效" } else { "解除（回内置执行体）" }
+    );
+    true
+}
+
+/// 接管面快照（测试观测面——生产对账走 [`reconcile_takeover_event`] 的
+/// 幂等翻位，无独立读取消费点；cfg(test) 防非测试构建 dead_code 告警）。
+#[cfg(test)]
+pub fn takeover_switch_state(builtin: &str) -> Option<bool> {
+    takeover_switches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(builtin)
+        .map(|sw| sw.active.load(Ordering::SeqCst))
+}
+
+/// 启动装配（agent_factory 8d；loop 每次重建调用）：接管声明应用。
+///
+/// 侧表整表重建（进程级表随 loop 生命周期走——旧 loop 的开关 Arc 属死
+/// wrapper，不清则泄漏陈旧归因）。返回激活数。
+pub fn apply_takeovers(
+    agent_loop: &nemesis_agent::r#loop::AgentLoop,
+    manager: &Arc<PluginManager>,
+    gate: bool,
+) -> usize {
+    if !gate {
+        // 总闸关：清表（不留死归因）+ 注记。wrapper 属本 loop 前身（重建
+        // 场景）已随旧 registry 消亡；fresh loop 无接管面。
+        let n = takeover_switches()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        takeover_switches()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        if n > 0 {
+            info!("[WasmPlugin] 工具接管侧表清空（{n} 项；接管总闸关）");
+        }
+        info!(
+            "[WasmPlugin] 工具接管总闸关（plugins.wasm.takeover=false）——全部内置接口维持内置执行体"
+        );
+        return 0;
+    }
+    takeover_switches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    let mut applied = 0usize;
+    for reg in manager.list() {
+        if !reg.enabled.load(Ordering::SeqCst) || reg.manifest.takeover.is_empty() {
+            continue;
+        }
+        for builtin in &reg.manifest.takeover {
+            if reconcile_takeover(agent_loop, manager, builtin) {
+                applied += 1;
+            }
+        }
+    }
+    if applied > 0 {
+        info!("[WasmPlugin] 工具接管装配完成：{applied} 个内置接口由 wasm 组件托管");
+    }
+    applied
+}
+
+/// 事件涉及面（热同步 hook 用）：manifest 声明 ∪ 侧表在管归因。卸载场景
+/// manifest 已删（`manager.get` = None），声明无从读——侧表的 slug 归因是
+/// 唯一回查面（这正是侧表存在的第二理由：归因不止为日志）。
+fn takeover_faces_for_event(manager: &Arc<PluginManager>, slug: &str) -> Vec<String> {
+    let mut faces: Vec<String> = Vec::new();
+    if let Some(reg) = manager.get(slug) {
+        faces.extend(reg.manifest.takeover.iter().cloned());
+    }
+    let switches = takeover_switches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for (builtin, sw) in switches.iter() {
+        if sw.slug == slug && !faces.contains(builtin) {
+            faces.push(builtin.clone());
+        }
+    }
+    faces
+}
+
+/// 事件级接管面对账（ToolSync hook 尾部单点；含总闸消费）。
+///
+/// 面 = [`takeover_faces_for_event`]；闸开逐面 [`reconcile_takeover`]（启用
+/// = wrap/翻位、禁用/卸载 = 解除），闸关逐面翻关。幂等——重复事件收敛同态。
+pub fn reconcile_takeover_event(
+    loop_arc: &nemesis_agent::r#loop::AgentLoop,
+    manager: &Arc<PluginManager>,
+    home: &std::path::Path,
+    slug: &str,
+) {
+    let faces = takeover_faces_for_event(manager, slug);
+    if faces.is_empty() {
+        return;
+    }
+    if read_runtime_config(home).takeover {
+        for b in &faces {
+            reconcile_takeover(loop_arc, manager, b);
+        }
+    } else {
+        for b in &faces {
+            set_takeover_active(b, false, "接管总闸关");
+        }
     }
 }
 
@@ -311,6 +739,14 @@ impl LateInstallApprover {
 }
 
 impl InstallApprover for LateInstallApprover {
+    /// gateway 审批卡具备人批能力：无签名载荷开关补漏斗时放行进卡面
+    ///（卡片展示 trust=review-required，用户批准 = 显式接受——与
+    /// `install --allow-unsigned` 同一留档语义）。签名失效/吊销仍由
+    /// trust 闸从紧拒绝（卡面救不了失效签名）。
+    fn can_approve_unsigned(&self) -> bool {
+        true
+    }
+
     fn approve<'a>(
         &'a self,
         review: &'a InstallReview,
@@ -452,6 +888,8 @@ pub struct PluginRuntimeConfig {
     pub enabled: bool,
     /// 全局限制表（只允许收紧 = 与默认取 min）。
     pub limits: PluginLimits,
+    /// 工具接管总闸（缺省 true；false = 全部内置接口维持内置执行体）。
+    pub takeover: bool,
 }
 
 /// 读 `config.json` 的 `plugins.wasm` 段（缺文件/缺段 = 全默认）。
@@ -460,6 +898,7 @@ pub fn read_runtime_config(home: &std::path::Path) -> PluginRuntimeConfig {
     let mut out = PluginRuntimeConfig {
         enabled: true,
         limits: defaults.clone(),
+        takeover: true,
     };
     let Ok(raw) = std::fs::read_to_string(common::config_path(home)) else {
         return out;
@@ -472,6 +911,9 @@ pub fn read_runtime_config(home: &std::path::Path) -> PluginRuntimeConfig {
     };
     if let Some(b) = wasm.get("enabled").and_then(|x| x.as_bool()) {
         out.enabled = b;
+    }
+    if let Some(b) = wasm.get("takeover").and_then(|x| x.as_bool()) {
+        out.takeover = b;
     }
     if let Some(l) = wasm.get("limits").and_then(|x| x.as_object()) {
         let take_u64 = |key: &str| -> Option<u64> { l.get(key).and_then(|x| x.as_u64()) };
@@ -587,6 +1029,421 @@ pub fn build_plugin_stack(
     let installer =
         nemesis_plugins_wasm::install::PluginInstaller::new(manager.clone(), gate, scanner);
     Some((manager, installer))
+}
+
+// ---------------------------------------------------------------------------
+// 循环策略点桥（2026-10-22 样板工程批 4：盘点 #17/#18/#10/#14 的 WASM 化）。
+//
+// 形态：一个零状态路由桥实现三 trait，按 trait 硬编码路由到对应
+// `PolicyPoint`（宿主 registry 的 `policy_owner` 是接管者唯一裁决点——桥
+// 不背「哪个 slug 接管哪点」的状态，禁用/卸载经 sync hook 摘桥或
+// NotAvailable 静默回退，无陈旧路由窗口）。
+//
+// 投影边界（宿主 → guest 的入参构造在此完成；Rust 层零截断——截断是
+// WASM 桥投影语义）：
+// - judge-final content 截断 [`JUDGE_CONTENT_MAX_CHARS`]；
+// - compact exec prefix 用 `model_facing_content()`（工具结果按模型侧
+//   裁剪形态，与 LLM 请求同口径）+ 单条/条数/总字符三重上限；
+// - 裁决回传：nudge/notice/reject message 文本钳 [`POLICY_TEXT_MAX_CHARS`]，
+//   summary 空串拒绝 + 长度钳 [`COMPACT_SUMMARY_MAX_CHARS`]（宿主硬闸——
+//   空摘要会无声抹掉覆盖前缀，同内置 summarize 拒空语义），fixed args
+//   必须可解析为 JSON（不合法 = 畸形裁决回内置）。
+// 出站凭据复扫不适用于裁决文本：policy 组件 manifest 禁 x-secret（无凭据
+// 可泄漏），对话原文本就已在会话历史内，复扫不改变信任级别。
+// ---------------------------------------------------------------------------
+
+/// judge-final 投影的候选终答截断上限（字符）。
+const JUDGE_CONTENT_MAX_CHARS: usize = 4_000;
+/// 裁决回传文本（nudge/notice/reject message）钳制上限（字符）。
+const POLICY_TEXT_MAX_CHARS: usize = 2_000;
+/// compact exec 投影：prefix 条数上限（先到先得）。
+const COMPACT_PREFIX_MAX_TURNS: usize = 200;
+/// compact exec 投影：单条 content 字符上限。
+const COMPACT_TURN_MAX_CHARS: usize = 2_000;
+/// compact exec 投影：prefix 总字符预算（只按 content 计，先到先得）。
+const COMPACT_PREFIX_TOTAL_CHARS: usize = 120_000;
+/// compact exec 裁决摘要长度钳（字符；≈ AUX_SUMMARY_MAX_TOKENS 8k tokens
+/// 同界——guest 产出超长摘要不放大上下文占用）。
+const COMPACT_SUMMARY_MAX_CHARS: usize = 32_000;
+
+/// 字符边界安全截断（超限尾部 `…` 注记；切点回退到字符边界）。
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        None => s.to_string(),
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+    }
+}
+
+/// 策略点 WASM 桥（每槽一个实例；`fallbacks` 是该实例的 guest 失败
+/// 计数——可观测面，后续 WSAPI 行可接）。
+pub struct PolicyBridge {
+    manager: Arc<PluginManager>,
+    fallbacks: AtomicU64,
+}
+
+impl PolicyBridge {
+    /// 桥实例（每槽一个；`manager` 只读路由面——接管者裁决在 registry）。
+    /// `pub`：gateway runtime 的策略面热同步 hook 与启动装配共用同一构造。
+    pub fn new(manager: Arc<PluginManager>) -> Self {
+        Self {
+            manager,
+            fallbacks: AtomicU64::new(0),
+        }
+    }
+
+    /// guest 失败记账（WARN 一失败一记；计数单调递增可观测）。
+    fn fallback(&self, point: PolicyPoint, reason: String) {
+        let n = self.fallbacks.fetch_add(1, Ordering::SeqCst) + 1;
+        tracing::warn!(
+            point = point.export_name(),
+            reason = %reason,
+            fallbacks = n,
+            "[WasmPlugin] 策略点 guest 调用失败，回退内置"
+        );
+    }
+
+    /// 统一 guest 调用 + 裁决 JSON 解析。`None` = 回退内置：
+    /// `NotAvailable`（无接管者/禁用/总开关关——常规态，静默）；
+    /// trap/超时/解码失败走 [`Self::fallback`]（WARN + 计数）。
+    async fn call_guest(
+        &self,
+        point: PolicyPoint,
+        payload: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        match self
+            .manager
+            .call_policy_point(point, payload.to_string())
+            .await
+        {
+            Ok(out) => match serde_json::from_str::<serde_json::Value>(&out) {
+                Ok(v) => {
+                    // 委托裁决留痕（2026-10-23 委托面可观测）：接管者正常
+                    // 裁决此前零日志（只有失败才 WARN）——「这次为什么没
+                    // 压缩/为什么放行」无据可查。只记点/slug/裁决 JSON
+                    // （裁决是小结构体，非载荷；全文归 wasm.logs）。
+                    let owner = self
+                        .manager
+                        .policy_owner(point)
+                        .map(|reg| reg.manifest.slug.clone())
+                        .unwrap_or_default();
+                    info!(
+                        point = point.export_name(),
+                        slug = %owner,
+                        verdict = %v,
+                        "[WasmPlugin] 策略点委托裁决"
+                    );
+                    Some(v)
+                }
+                Err(e) => {
+                    self.fallback(point, format!("verdict decode: {e}"));
+                    None
+                }
+            },
+            Err(PluginError::NotAvailable(_)) => None,
+            Err(e) => {
+                self.fallback(point, e.to_string());
+                None
+            }
+        }
+    }
+
+    /// 取裁决对象的必填字符串字段（缺失 = 畸形裁决，WARN + 计数 + None）。
+    fn required_str(
+        &self,
+        point: PolicyPoint,
+        verdict: &serde_json::Value,
+        key: &str,
+    ) -> Option<String> {
+        match verdict.get(key).and_then(serde_json::Value::as_str) {
+            Some(s) => Some(s.to_string()),
+            None => {
+                self.fallback(
+                    point,
+                    format!("malformed verdict: '{key}' string field missing"),
+                );
+                None
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::policy::CompactPolicy for PolicyBridge {
+    async fn should_compact(
+        &self,
+        input: &nemesis_agent::r#loop::policy::CompactTriggerInput,
+    ) -> nemesis_agent::r#loop::policy::CompactTriggerVerdict {
+        use nemesis_agent::r#loop::policy::CompactTriggerVerdict;
+        let payload = serde_json::json!({
+            "point": "trigger",
+            "session_key": input.session_key,
+            "tail_tokens": input.tail_tokens,
+            "provider_signal": input.provider_signal,
+            "signal": input.signal,
+            "threshold": input.threshold,
+            "soft": input.soft,
+            "window": input.window,
+            "covers_up_to": input.covers_up_to,
+            "new_boundary": input.new_boundary,
+        });
+        let Some(v) = self.call_guest(PolicyPoint::Compact, payload).await else {
+            return CompactTriggerVerdict::Builtin;
+        };
+        match v.get("verdict").and_then(serde_json::Value::as_str) {
+            Some("compact") => CompactTriggerVerdict::Compact,
+            Some("skip") => CompactTriggerVerdict::Skip,
+            Some("builtin") => CompactTriggerVerdict::Builtin,
+            other => {
+                self.fallback(PolicyPoint::Compact, format!("unknown verdict {other:?}"));
+                CompactTriggerVerdict::Builtin
+            }
+        }
+    }
+
+    async fn generate_summary(
+        &self,
+        input: &nemesis_agent::r#loop::policy::CompactExecInput<'_>,
+    ) -> nemesis_agent::r#loop::policy::CompactExecVerdict {
+        use nemesis_agent::r#loop::policy::CompactExecVerdict;
+        // prefix 投影：三重上限（条数 / 单条字符 / 总字符预算，先到先得）。
+        // model_facing_content 保证工具结果与 LLM 请求同口径（裁剪已生效）。
+        let mut used = 0usize;
+        let mut prefix = Vec::new();
+        for turn in input.prefix.iter().take(COMPACT_PREFIX_MAX_TURNS) {
+            let content =
+                truncate_chars(turn.model_facing_content().trim(), COMPACT_TURN_MAX_CHARS);
+            used += content.chars().count();
+            if used > COMPACT_PREFIX_TOTAL_CHARS {
+                break;
+            }
+            prefix.push(serde_json::json!({
+                "role": turn.role,
+                "content": content,
+                "tool_name": turn.tool_name,
+            }));
+        }
+        let payload = serde_json::json!({
+            "point": "exec",
+            "session_key": input.session_key,
+            "prefix": prefix,
+            "existing_summary": input.existing_summary,
+            "window": input.window,
+            "model": input.model,
+        });
+        let Some(v) = self.call_guest(PolicyPoint::Compact, payload).await else {
+            return CompactExecVerdict::Builtin;
+        };
+        match v.get("verdict").and_then(serde_json::Value::as_str) {
+            Some("summary") => {
+                let Some(s) = self.required_str(PolicyPoint::Compact, &v, "summary") else {
+                    return CompactExecVerdict::Builtin;
+                };
+                // 宿主硬闸：空摘要拒绝（无声抹掉覆盖前缀 = 内置 summarize
+                // 拒空同语义）+ 超长钳制（下轮 B2 无进展守卫还会复检省幅）。
+                if s.trim().is_empty() {
+                    self.fallback(PolicyPoint::Compact, "empty summary rejected".into());
+                    return CompactExecVerdict::Builtin;
+                }
+                CompactExecVerdict::Summary(truncate_chars(&s, COMPACT_SUMMARY_MAX_CHARS))
+            }
+            Some("skip") => CompactExecVerdict::Skip,
+            Some("builtin") => CompactExecVerdict::Builtin,
+            other => {
+                self.fallback(PolicyPoint::Compact, format!("unknown verdict {other:?}"));
+                CompactExecVerdict::Builtin
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::policy::FinalJudgePolicy for PolicyBridge {
+    async fn judge(
+        &self,
+        input: &nemesis_agent::r#loop::policy::FinalJudgeInput,
+    ) -> nemesis_agent::r#loop::policy::FinalJudgeVerdict {
+        use nemesis_agent::r#loop::policy::FinalJudgeVerdict;
+        let payload = serde_json::json!({
+            "session_key": input.session_key,
+            "content": truncate_chars(&input.content, JUDGE_CONTENT_MAX_CHARS),
+            "turns_used": input.turns_used,
+            "validation_failures": input.validation_failures,
+        });
+        let Some(v) = self.call_guest(PolicyPoint::FinalJudge, payload).await else {
+            return FinalJudgeVerdict::Builtin;
+        };
+        match v.get("verdict").and_then(serde_json::Value::as_str) {
+            Some("accept") => FinalJudgeVerdict::Accept,
+            Some("retry") => match self.required_str(PolicyPoint::FinalJudge, &v, "nudge") {
+                Some(n) => {
+                    FinalJudgeVerdict::RetryWithNudge(truncate_chars(&n, POLICY_TEXT_MAX_CHARS))
+                }
+                None => FinalJudgeVerdict::Builtin,
+            },
+            Some("giveup") => match self.required_str(PolicyPoint::FinalJudge, &v, "notice") {
+                Some(n) => FinalJudgeVerdict::GiveUp(truncate_chars(&n, POLICY_TEXT_MAX_CHARS)),
+                None => FinalJudgeVerdict::Builtin,
+            },
+            Some("builtin") => FinalJudgeVerdict::Builtin,
+            other => {
+                self.fallback(
+                    PolicyPoint::FinalJudge,
+                    format!("unknown verdict {other:?}"),
+                );
+                FinalJudgeVerdict::Builtin
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::policy::ValidationPolicy for PolicyBridge {
+    async fn validate(
+        &self,
+        input: &nemesis_agent::r#loop::policy::ValidationInput,
+    ) -> nemesis_agent::r#loop::policy::ValidationVerdict {
+        use nemesis_agent::r#loop::policy::ValidationVerdict;
+        let payload = serde_json::json!({
+            "tool": input.tool,
+            // WIT：schema 可为 null = 工具未声明（组件可自定义强校验）。
+            "schema": input.schema,
+            // WIT：原始 args JSON **串**（未解析——与内置 autofix 消费形态一致）。
+            "args": input.args_json,
+        });
+        let Some(v) = self.call_guest(PolicyPoint::Validation, payload).await else {
+            return ValidationVerdict::Builtin;
+        };
+        match v.get("verdict").and_then(serde_json::Value::as_str) {
+            Some("valid") => ValidationVerdict::Valid,
+            Some("fixed") => {
+                let Some(a) = self.required_str(PolicyPoint::Validation, &v, "args") else {
+                    return ValidationVerdict::Builtin;
+                };
+                // 宿主硬闸：fixed args 必须可解析为 JSON——不可解析的修复
+                // 等价于换了个报错，直接按畸形裁决回内置（内置 autofix 对
+                // 同名场景更成熟）。
+                if serde_json::from_str::<serde_json::Value>(&a).is_err() {
+                    self.fallback(
+                        PolicyPoint::Validation,
+                        "malformed verdict: fixed args is not valid JSON".into(),
+                    );
+                    return ValidationVerdict::Builtin;
+                }
+                ValidationVerdict::Fixed(a)
+            }
+            Some("reject") => match self.required_str(PolicyPoint::Validation, &v, "message") {
+                Some(m) => ValidationVerdict::Reject {
+                    message: truncate_chars(&m, POLICY_TEXT_MAX_CHARS),
+                },
+                None => ValidationVerdict::Builtin,
+            },
+            Some("builtin") => ValidationVerdict::Builtin,
+            other => {
+                self.fallback(
+                    PolicyPoint::Validation,
+                    format!("unknown verdict {other:?}"),
+                );
+                ValidationVerdict::Builtin
+            }
+        }
+    }
+}
+
+/// llm-complete 宿主面（policy 帧 guest 内调 LLM 的唯一通道）。
+///
+/// fail-closed 链：estop engaged → Err（急停不授 LLM 花销，同子系统冻结
+/// 语义）；loop 已亡（Weak 升级失败）→ Err；max_tokens 钳
+/// [`nemesis_agent::r#loop::AUX_TITLE_MAX_TOKENS`]（bypass_llm 护栏同源
+/// 上限——guest 传大值不放大花销）。委托 `AgentLoop::chore_completion`
+/// （small_model 杂务槽 + 墙钟护栏 + 空输出拒绝 + 重试——与 /compact、
+/// 标题生成同源路径）；未配 small_model 时 chore_completion 自行回落主
+/// 模型并 WARN（诚实注记，非静默）。每次调用现解析 provider（模型热切
+/// 友好）。
+pub struct GatewayLlmInvoker {
+    loop_ref: std::sync::Weak<nemesis_agent::r#loop::AgentLoop>,
+    estop: Arc<nemesis_agent::EstopState>,
+}
+
+impl GatewayLlmInvoker {
+    /// Arc<AgentLoop> 降级持 Weak（loop 重建不死锁旧引用——装配点每次
+    /// loop 重建重注，见 [`register_policy_bridges`]）。
+    pub fn new(
+        loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
+        estop: &Arc<nemesis_agent::EstopState>,
+    ) -> Self {
+        Self {
+            loop_ref: Arc::downgrade(loop_arc),
+            estop: estop.clone(),
+        }
+    }
+}
+
+impl LlmInvoker for GatewayLlmInvoker {
+    fn complete(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        let prompt = prompt.to_string();
+        Box::pin(async move {
+            if self.estop.is_engaged() {
+                return Err("estop engaged".to_string());
+            }
+            let Some(loop_arc) = self.loop_ref.upgrade() else {
+                return Err("agent loop unavailable (shutting down?)".to_string());
+            };
+            if max_tokens == 0 {
+                return Err("max_tokens must be > 0".to_string());
+            }
+            let max_tokens = max_tokens.min(nemesis_agent::r#loop::AUX_TITLE_MAX_TOKENS);
+            loop_arc
+                .chore_completion("wasm-llm-complete", prompt, max_tokens)
+                .await
+        })
+    }
+}
+
+/// 装配循环策略桥（init_agent / build_agent_loop 装配点，与
+/// [`register_plugin_tools`] 相邻调用）。
+///
+/// 两件事：① manager 级 llm-complete 面注入（每次 loop 重建都重指——
+/// `GatewayLlmInvoker` 持 Weak，旧 loop 的引用随重建失效）；② 按各启用
+/// policy 插件的接管点装桥（接管者唯一性由 install/register 对账保证，
+/// 同点多组件早在装配期被拒，这里无须再冲裁决）。
+///
+/// 返回装桥点数（可观测；0 = 无 policy 组件接管，三槽维持内置哨兵）。
+pub fn register_policy_bridges(
+    loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    manager: &Arc<PluginManager>,
+    estop: &Arc<nemesis_agent::EstopState>,
+) -> usize {
+    manager.set_llm(Arc::new(GatewayLlmInvoker::new(loop_arc, estop)));
+    let mut registered = 0usize;
+    for reg in manager.list() {
+        if !reg.enabled.load(Ordering::SeqCst) {
+            continue;
+        }
+        let Some(pm) = reg.policy_meta else {
+            continue;
+        };
+        if pm.compact {
+            loop_arc.set_compact_policy(Arc::new(PolicyBridge::new(manager.clone())));
+            registered += 1;
+        }
+        if pm.final_judge {
+            loop_arc.set_final_judge_policy(Arc::new(PolicyBridge::new(manager.clone())));
+            registered += 1;
+        }
+        if pm.validation {
+            loop_arc.set_validation_policy(Arc::new(PolicyBridge::new(manager.clone())));
+            registered += 1;
+        }
+    }
+    if registered > 0 {
+        info!("[WasmPlugin] 循环策略桥装配完成：{registered} 个策略点由组件接管");
+    }
+    registered
 }
 
 #[cfg(test)]

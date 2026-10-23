@@ -1175,6 +1175,23 @@ pub fn build_agent_loop(
         }
     }
 
+    // 8d. 工具接管层（2026-10-23）：接管声明应用（内置名 → wasm 执行体，
+    // wrapper 双态保降级）。在 8c 之后：先有插件工具供给面，再换内置执行
+    // 体。总闸 config `plugins.wasm.takeover`（缺省 true）；热同步由
+    // gateway ToolSync hook 翻侧表开关（注册表对象恒定，零 prompt cache
+    // 抖动）。主 agent 专属——项目 loop 不经此段（同 8c 边界）。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared.plugin_manager {
+        let gate = crate::plugin_bridge::read_runtime_config(&shared.home).takeover;
+        let n = crate::plugin_bridge::apply_takeovers(&agent_loop, pm, gate);
+        if n > 0 {
+            info!(
+                "[AgentFactory] {} builtin tool(s) taken over by wasm plugins",
+                n
+            );
+        }
+    }
+
     // 9. Continuation manager (disk-persisted — new instance).
     {
         let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
@@ -1278,11 +1295,18 @@ pub fn build_agent_loop(
     // W5-3：插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
     // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。
+    // 2026-10-22 样板工程批 4：循环策略桥同点装配（三策略槽接管 +
+    // llm-complete 面注入——Weak 同样必须每次重建重指；无 policy 组件 =
+    // 零装桥，槽维持内置哨兵）。
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared.plugin_manager {
         pm.set_invoker(Arc::new(crate::plugin_bridge::GatewayHostInvoker::new(
             &agent_loop,
         )));
+        let np = crate::plugin_bridge::register_policy_bridges(&agent_loop, pm, &shared.estop);
+        if np > 0 {
+            info!("[AgentFactory] {} wasm loop policy point(s) bridged", np);
+        }
     }
     // T2 codemode（内部专项总计划 L1）：code_run 脚本工具。编译闸 `codemode`
     // feature + 运行闸 `agents.codemode.enabled`（默认关）+ min_tier big 双闸

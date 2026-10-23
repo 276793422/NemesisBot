@@ -469,3 +469,87 @@ fn l2_replay_events_are_ordered_and_match_live() {
         "replay window must match live order/seqs"
     );
 }
+
+/// BUG-HUNT R32：重连决议的重启签名——Last-Event-ID 超前于服务端 latest
+/// （网关重启 seq 域重置）→ 游标必须归零重放。修复前 SSE 端点无条件
+/// last_sent = after，live 去重分支 `seq <= last_sent` 把新域 seq 1.. 全部
+/// 吞到追上旧游标为止（实时流假死数小时：审批卡/工具事件/看板推送全灭）。
+#[test]
+fn l2_resolve_reconnect_restart_signature_resets_cursor() {
+    // 旧域游标 100 >> 新域 latest=3 → 归零重放 + 强制 resync。
+    let hub = EventHub::new();
+    for i in 0..3 {
+        hub.publish("r", serde_json::json!({"i": i}));
+    }
+    let (last_sent, replay, gap) = hub.resolve_reconnect(Some(100));
+    assert_eq!(last_sent, 0, "旧域游标必须作废归零");
+    assert_eq!(replay.len(), 3, "按 0 重放环内最近窗口");
+    assert_eq!(replay[0].seq, 1);
+    assert!(gap, "重启签名保留 resync 提示（环外旧事件不可补）");
+
+    // 重启且新域尚无事件：归零、空重放、resync 照发。
+    let hub = EventHub::new();
+    let (last_sent, replay, gap) = hub.resolve_reconnect(Some(5000));
+    assert_eq!(last_sent, 0);
+    assert!(replay.is_empty());
+    assert!(gap);
+}
+
+/// 常规重连决议不变量：追平（游标保持、无重放无 gap）、窗口内中途掉线
+/// （游标=after、重放 (after, latest]、无 gap）、无游标（零游标冷启动）。
+#[test]
+fn l2_resolve_reconnect_invariants_unchanged() {
+    let hub = EventHub::new();
+    for i in 0..10 {
+        hub.publish("r", serde_json::json!({"i": i}));
+    }
+    let (last_sent, replay, gap) = hub.resolve_reconnect(Some(10));
+    assert_eq!(last_sent, 10);
+    assert!(replay.is_empty() && !gap);
+
+    let (last_sent, replay, gap) = hub.resolve_reconnect(Some(7));
+    assert_eq!(last_sent, 7);
+    assert_eq!(replay.len(), 3);
+    assert_eq!(replay[0].seq, 8);
+    assert!(!gap);
+
+    let (last_sent, replay, gap) = hub.resolve_reconnect(None);
+    assert_eq!(last_sent, 0);
+    assert!(replay.is_empty() && !gap);
+}
+
+/// BUG-HUNT R8：并发 publish 的 seq 分配必须在缓冲锁内——锁外分配可致
+/// 环形缓冲乱序（T1 得 5、T2 得 6、T2 先入队 → [.., 6, 5]），违反字段
+/// 注释声明的「seq 升序」不变量。8 线程 barrier 对齐后并发发布，回放必须
+/// 严格升序且恰好 1..=N 完整覆盖（总条数 < REPLAY_BUFFER_CAP 免滑窗）。
+#[test]
+fn l2_concurrent_publish_keeps_replay_buffer_in_seq_order() {
+    use std::sync::Barrier;
+    let hub = std::sync::Arc::new(EventHub::new());
+    let threads = 8;
+    let per_thread = 100; // 8×100=800 < REPLAY_BUFFER_CAP，全窗口无滑出
+    let barrier = std::sync::Arc::new(Barrier::new(threads));
+    let mut handles = Vec::new();
+    for t in 0..threads {
+        let hub = hub.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..per_thread {
+                hub.publish("conc", serde_json::json!({ "t": t, "i": i }));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(hub.latest_seq(), (threads * per_thread) as u64);
+    let (events, gap) = hub.replay_after(0);
+    assert!(!gap);
+    assert_eq!(events.len(), threads * per_thread, "全部事件必须在窗口内");
+    // 严格升序 + 完整覆盖 = seq 序与缓冲序一致（锁外分配的经典违例形态
+    // 是相邻交换对 [.., k+1, k, ..]）。
+    for (idx, e) in events.iter().enumerate() {
+        assert_eq!(e.seq, idx as u64 + 1, "replay 必须严格升序且无洞");
+    }
+}

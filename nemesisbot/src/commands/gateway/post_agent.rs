@@ -681,17 +681,45 @@ pub(crate) async fn init_post_agent(
                     // P5-R2 ④：plugin-vm 宿主装载（vm-display feature 门控，
                     // implies vm）。缺席 = 常态静默（display=vnc 时 shim
                     // 端诚实 501）；在场但被拒（签名/ABI）= loud warn 留痕。
+                    // 2026-10-23 花名册补正：装载前过统一开关闸
+                    // （config.plugin.native.json，plugin_vm 条目）——开关
+                    // 缺省 = 启用（与四插件同款「有签名自动装载」），关掉
+                    // = 用户主动禁用；enforce 签名策略与四插件同谱。
                     #[cfg(feature = "vm-display")]
-                    match crate::vm_display_loader::load_plugin_vm(
-                        std::sync::Arc::clone(&vm_sup),
-                        &shared_resources.workspace_dir(),
-                    ) {
-                        crate::vm_display_loader::LoadOutcome::Absent => {}
-                        crate::vm_display_loader::LoadOutcome::Loaded { listen_port } => {
-                            info!("[Gateway] plugin-vm 显示插件装载成功：127.0.0.1:{listen_port}");
-                        }
-                        crate::vm_display_loader::LoadOutcome::Rejected(reason) => {
-                            warn!("[Gateway] plugin-vm 装载被拒：{reason}");
+                    {
+                        let vm_switch_dir = nemesis_path::workspace_config_dir(
+                            &crate::common::workspace_path(&shared_resources.home),
+                        );
+                        match crate::native_plugins::gate_load(
+                            &vm_switch_dir,
+                            nemesis_config::plugins_native::NativePluginId::PluginVm,
+                        ) {
+                            crate::native_plugins::GateOutcome::DisabledBySwitch => {
+                                info!(
+                                    "[Gateway] plugin-vm 显示插件开关关闭（config.plugin.native.json），跳过装载"
+                                );
+                            }
+                            crate::native_plugins::GateOutcome::BlockedBySignature(reason) => {
+                                warn!("[Gateway] plugin-vm 显示插件签名策略拦截：{reason}");
+                            }
+                            crate::native_plugins::GateOutcome::Allow { .. } => {
+                                match crate::vm_display_loader::load_plugin_vm(
+                                    std::sync::Arc::clone(&vm_sup),
+                                    &shared_resources.workspace_dir(),
+                                ) {
+                                    crate::vm_display_loader::LoadOutcome::Absent => {}
+                                    crate::vm_display_loader::LoadOutcome::Loaded {
+                                        listen_port,
+                                    } => {
+                                        info!(
+                                            "[Gateway] plugin-vm 显示插件装载成功：127.0.0.1:{listen_port}"
+                                        );
+                                    }
+                                    crate::vm_display_loader::LoadOutcome::Rejected(reason) => {
+                                        warn!("[Gateway] plugin-vm 装载被拒：{reason}");
+                                    }
+                                }
+                            }
                         }
                     }
                     // estop 断连挂点：急停触发 → 全部显示会话立即断连
@@ -1228,6 +1256,15 @@ pub(crate) async fn init_post_agent(
             }));
             info!("[Gateway] Cluster log → SSE EventHub bridge connected");
         }
+    }
+
+    // QUIC 中继管理器注入 web 面（quic-relay）：WSAPI cluster.relay.status/
+    // toggle 经同一 Arc 消费运行态与实时开关（2026-10-23 解耦——与集群
+    // 注入互不依赖，集群未装配中继面照常可用）。
+    #[cfg(feature = "quic-relay")]
+    if let Some(ref mgr) = ctx.quic_relay_manager {
+        web_server.set_quic_relay(mgr.clone());
+        info!("[Gateway] QuicRelayManager injected into web server");
     }
 
     // Inject AgentLoop ref into web server for runtime model switching

@@ -135,10 +135,12 @@ pub(crate) fn fresh_store(
     Ok(store)
 }
 
-/// fresh linker：宿主能力面（8 函数 → C 回调分发）+ wasi p2 空壳。
+/// fresh linker：宿主能力面（9 函数 → C 回调分发）+ wasi p2 空壳。
 ///
-/// 两个 world 的 host 接口同名同型（`nemesis:plugin/host@0.1.0`），组件只
-/// 绑定自己导入的；一次注册覆盖两 world。
+/// 三个 world 的 host 接口同名同型（`nemesis:plugin/host@0.1.0`），组件只
+/// 绑定自己导入的；一次注册覆盖全部 world。llm-complete 恒注册（不按
+/// world 区分）——新版 bindgen 产出的组件可能无论 world 都 import 该函数
+///（import 裁剪不保证），缺席会让无辜组件实例化失败。
 pub(crate) fn fresh_linker(engine: &wasmtime::Engine) -> Linker<ShellCtx> {
     let mut linker = Linker::new(engine);
     register_host_face(&mut linker);
@@ -153,7 +155,7 @@ pub(crate) fn fresh_linker(engine: &wasmtime::Engine) -> Linker<ShellCtx> {
 /// WIT host 接口实例名（package nemesis:plugin@0.1.0 的 interface host）。
 const HOST_INSTANCE: &str = "nemesis:plugin/host@0.1.0";
 
-/// 把 8 个宿主函数以动态 func_new 注册进 linker（类型在实例化期按组件
+/// 把 9 个宿主函数以动态 func_new 注册进 linker（类型在实例化期按组件
 /// 导入声明匹配——壳不声明 Canonical ABI 类型，只按 WIT 形状取参写果）。
 fn register_host_face(linker: &mut Linker<ShellCtx>) {
     // linker.instance 在 wasmtime 48 返回 Result（实例名重注册会 Err；此处
@@ -224,6 +226,13 @@ fn register_host_face(linker: &mut Linker<ShellCtx>) {
         let tool = val_string(&params[0])?;
         let args = val_string(&params[1])?;
         results[0] = unsafe { call_tool_invoke(env, &tool, &args) };
+        Ok(())
+    });
+    let _ = inst.func_new("llm-complete", |store, _f, params, results| {
+        let env = store.data().env.0;
+        let prompt = val_string(&params[0])?;
+        let max_tokens = val_u32(&params[1])?;
+        results[0] = unsafe { call_llm_complete(env, &prompt, max_tokens) };
         Ok(())
     });
 }
@@ -467,6 +476,38 @@ unsafe fn call_tool_invoke(env: *mut c_void, tool: &str, args: &str) -> wasmtime
     result_val(content.map(wasmtime::component::Val::String), tag, detail)
 }
 
+/// llm-complete 分发（2026-10-22 批 3 增补）：槽缺失（legacy 宿主回调表）=
+/// 诚实 unavailable——fail-closed，绝不静默假装成功。
+unsafe fn call_llm_complete(
+    env: *mut c_void,
+    prompt: &str,
+    max_tokens: u32,
+) -> wasmtime::component::Val {
+    use wasmtime::component::Val;
+    let Some(cb) = callbacks() else {
+        return result_val(
+            None,
+            abi::host_err::UNAVAILABLE,
+            Some("callbacks not initialized".into()),
+        );
+    };
+    let Some(llm) = cb.llm_complete else {
+        return result_val(
+            None,
+            abi::host_err::UNAVAILABLE,
+            Some("llm-complete callback not available in this host".into()),
+        );
+    };
+    let mut out: *mut c_char = std::ptr::null_mut();
+    let mut detail: *mut c_char = std::ptr::null_mut();
+    let prompt_c = crate::abi::string_to_cstr(prompt);
+    let tag = llm(env, prompt_c, max_tokens, &mut out, &mut detail);
+    take_back_cstr(prompt_c);
+    let content = take_out(out);
+    let detail = take_out(detail);
+    result_val(content.map(Val::String), tag, detail)
+}
+
 // ---------------------------------------------------------------------------
 // Val 取参 helper
 // ---------------------------------------------------------------------------
@@ -477,6 +518,16 @@ fn val_string(v: &wasmtime::component::Val) -> Result<String, wasmtime::Error> {
         wasmtime::component::Val::String(s) => Ok(s.clone()),
         other => Err(wasmtime::Error::msg(format!(
             "host func param type mismatch: expected string, got {other:?}"
+        ))),
+    }
+}
+
+/// Val → u32（同 [`val_string`] 纪律）。
+fn val_u32(v: &wasmtime::component::Val) -> Result<u32, wasmtime::Error> {
+    match v {
+        wasmtime::component::Val::U32(n) => Ok(*n),
+        other => Err(wasmtime::Error::msg(format!(
+            "host func param type mismatch: expected u32, got {other:?}"
         ))),
     }
 }

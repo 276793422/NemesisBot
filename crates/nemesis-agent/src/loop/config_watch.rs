@@ -436,6 +436,40 @@ impl AgentLoop {
         *self.extra_hidden_tools.write() = tools;
     }
 
+    /// 循环流程策略槽（WASM 样板工程批 1；`policy` 模块是设计真相源）。
+    /// 全量替换语义，镜像 [`Self::set_extra_hidden_tools`]；传入哨兵
+    /// （`Builtin*Policy`）即回退内置路径。
+    pub fn set_compact_policy(
+        &self,
+        policy: std::sync::Arc<dyn crate::r#loop::policy::CompactPolicy>,
+    ) {
+        *self.compact_policy.write() = policy;
+    }
+
+    /// 终答裁决策略槽注入（见 [`Self::set_compact_policy`]）。
+    pub fn set_final_judge_policy(
+        &self,
+        policy: std::sync::Arc<dyn crate::r#loop::policy::FinalJudgePolicy>,
+    ) {
+        *self.final_judge_policy.write() = policy;
+    }
+
+    /// 参数校验策略槽注入（见 [`Self::set_compact_policy`]）。
+    pub fn set_validation_policy(
+        &self,
+        policy: std::sync::Arc<dyn crate::r#loop::policy::ValidationPolicy>,
+    ) {
+        *self.validation_policy.write() = policy;
+    }
+
+    /// 标题回调槽注入（D5 单点回调形态；`None` = 内置小模型路径）。
+    pub fn set_title_callback(
+        &self,
+        cb: Option<std::sync::Arc<dyn crate::r#loop::policy::TitleCallback>>,
+    ) {
+        *self.title_callback.write() = cb;
+    }
+
     /// B2（2026-10-19 connector 独占接管）：独占隐藏表供给器注入（装配点
     /// nemesisbot agent_factory，loop Arc 定型后调）。闭包每次现扫（连接器
     /// 注册表 + sidecar 例外 + MCP 工具快照）——磁盘真相，无失效通知问题；
@@ -555,7 +589,10 @@ impl AgentLoop {
     /// spawn 除外——MCP 语义未知不猜，采取「plan 只 deny 已知写」
     /// 立场；spawn 保留供给，分发闸在子代理深度同样生效=纵深）。
     /// 曾前瞻列入的 question（F7）/multiedit（A7）均已落码（2026-09-06），
-    /// 本表沿用语义不变。
+    /// 本表沿用语义不变。BUG-HUNT R13：供给闸与分发闸契约对齐——本表
+    /// 供给的工具不得被分发闸 100% 拒：剔除 cron（调度=延迟副作用，
+    /// 静态表归 ProcessExec，分发闸必拒，不供给被拒工具）；todowrite
+    /// 保留（计划草稿，分发闸在 declared_write 臂豁免，见 tool_dispatch）。
     pub(crate) const PLAN_MODE_TOOLS: &'static [&'static str] = &[
         "read_file",
         "list_dir",
@@ -570,7 +607,6 @@ impl AgentLoop {
         "skills_info",
         "find_skills",
         "cli_reference",
-        "cron",
         "sleep",
         "message",
         "history_search",
@@ -982,8 +1018,10 @@ impl AgentLoop {
         // 级——config 里 agents.defaults.max_tokens 在主轮路径是死键。
         nemesis_types::capability::resolve_max_output_tokens(&cfg, &active)
             .or_else(|| nemesis_types::capability::resolve_agents_default_max_tokens(&cfg))
-            .map(|n| n as u32)
-        // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
+            // u32 值域外（负数 / >u32::MAX）= 配置坏值，按缺席处理（调用方
+            // 回落 DEFAULT_MAX_TOKENS 默认）。裸 `as` 会把 -1 回绕成
+            // 4294967291——请求带巨值 max_tokens 打爆 provider 400（2026-10-23）。
+            .and_then(|n| u32::try_from(n).ok())
     }
 
     /// 本回合生效模型名：detached 覆盖优先，否则 loop 主 active_model。

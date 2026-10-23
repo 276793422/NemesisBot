@@ -129,6 +129,11 @@ mod observer;
 pub use observer::*;
 #[allow(unused_imports)]
 pub(crate) use observer::*;
+// 循环流程策略 trait 层（WASM 样板工程批 1）：CompactPolicy /
+// FinalJudgePolicy / ValidationPolicy 三策略 + TitleCallback 单点回调；
+// 哨兵 Builtin 默认实现，行为零变化（见 policy.rs 模块文档）。
+pub mod policy;
+
 // E5（2026-10-15 收尾保障）：预算暂停前收尾编译探针（触发闸/探针执行/
 // 诚实注记；计划 docs/PLAN/2026-10-15_编码基准固化与E5收尾保障计划.md 项②）。
 mod pre_pause_probe;
@@ -574,6 +579,16 @@ pub struct AgentLoop {
     /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
     /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
     tool_policy_allow: parking_lot::RwLock<Vec<String>>,
+    /// 循环流程策略槽（WASM 样板工程批 1，`policy` 模块是设计真相源）：
+    /// 三策略 + 标题回调。三策略恒持实现——默认零逻辑哨兵（裁决
+    /// `Builtin` → 宿主原逻辑路径），WASM 桥（批 4 PolicyBridge）激活
+    /// 组件时整槽替换，桥故障回退 = 换回哨兵；全量替换语义镜像
+    /// [`Self::set_extra_hidden_tools`]。标题槽例外为 `Option`——内置
+    /// 路径依赖宿主 small_model 资源（D5 形态对照，见 policy.rs）。
+    compact_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::CompactPolicy>>,
+    final_judge_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::FinalJudgePolicy>>,
+    validation_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::ValidationPolicy>>,
+    title_callback: parking_lot::RwLock<Option<std::sync::Arc<dyn policy::TitleCallback>>>,
     /// ②typed checks 块捕获槽表（诚实边界收口 2026-10-19）：会话键 → 记录
     /// 槽。集群 worker 任务 run 前后 begin/take（`checks_capture` 模块文档
     /// 是语义真相源）；并发任务按 session_key 精确归属互不串账。空表 =
@@ -861,6 +876,16 @@ impl AgentLoop {
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
             exclusive_hidden_provider: parking_lot::RwLock::new(None),
             tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
+            compact_policy: parking_lot::RwLock::new(std::sync::Arc::new(
+                policy::BuiltinCompactPolicy,
+            )),
+            final_judge_policy: parking_lot::RwLock::new(std::sync::Arc::new(
+                policy::BuiltinFinalJudgePolicy,
+            )),
+            validation_policy: parking_lot::RwLock::new(std::sync::Arc::new(
+                policy::BuiltinValidationPolicy,
+            )),
+            title_callback: parking_lot::RwLock::new(None),
             checks_capture: parking_lot::RwLock::new(HashMap::new()),
             tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
@@ -1077,7 +1102,9 @@ mod cache_warmer_tests;
 #[cfg(test)]
 mod context_window_tests;
 // P0 vault（C1/C2，2026-09-22 计划 §3）：凭据别名最后一刻注入机制。
-mod credential_injection;
+// pub（BUG-HUNT R17）：接管 wrapper（bot 层）需在 execute 入口自调注入——
+// dispatch 层读槽位与 execute 之间的翻位竞态要求「注入+路径决策」同点原子。
+pub mod credential_injection;
 // P0 vault（D2，2026-09-22 计划 §4）：声明式量化风险限制（滑动窗口 + 超限升级）。
 pub mod limits;
 // P0 vault（C3）：注入机制测试（纯函数 + loop 级四表面防泄漏）。
@@ -1130,6 +1157,11 @@ mod f8_hidden_tools_tests;
 // tier_override 钉死 vs config 驱动）测试。
 #[cfg(test)]
 mod g1_agent_slots_tests;
+
+// 循环流程策略槽（WASM 样板工程批 1）：哨兵默认 / 槽替换 / 裁决映射 /
+// 标题回调 Option 语义测试。
+#[cfg(test)]
+mod policy_slots_tests;
 // B2（profession-capability-evolution 2026-10-14）：职能工具围栏双闸测试。
 #[cfg(test)]
 mod tool_fence_tests;
@@ -1257,6 +1289,10 @@ mod llm_types_cov_tests;
 // 学习缓存。
 #[cfg(test)]
 mod length_escalation_tests;
+// config_watch 值域防护测试：per-model max_output_tokens 解析的 u32 值域
+// 外坏值按缺席处理（不回绕/不截断）。
+#[cfg(test)]
+mod config_watch_tests;
 // tool_dispatch.rs 安全管线后续层覆盖（limits 审批直通车三分支 /
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]

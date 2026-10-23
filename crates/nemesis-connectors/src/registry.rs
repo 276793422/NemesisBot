@@ -66,17 +66,30 @@ impl std::fmt::Display for ConnectorLookupError {
     }
 }
 
-/// 目录签名评估（scan/find 共用；feature 门在 signing 侧）。
-fn assess_dir_trust(dir: &Path, workspace: &Path) -> Result<ConnectorTrust, String> {
+/// 目录签名评估（scan/find 共用；feature 门在 signing 侧）。**单读纪律**：
+/// manifest_text 必须传调用方已解析的同一份文本——parse 与验签双读磁盘的
+/// 窗口里换文件，会让验签通过的字节 ≠ 实际执行的字节（require_signed 可被
+/// 双读绕过）。
+fn assess_dir_trust(
+    dir: &Path,
+    workspace: &Path,
+    manifest_text: &str,
+) -> Result<ConnectorTrust, String> {
     #[cfg(feature = "security")]
     {
         let store = crate::signing::workspace_trust_store(workspace);
-        crate::signing::assess_connector_signature(dir, &store).map(|a| a.trust)
+        crate::signing::assess_signature_text(
+            &dir.join(crate::signing::SIG_FILE),
+            manifest_text,
+            &store,
+        )
+        .map(|a| a.trust)
     }
     #[cfg(not(feature = "security"))]
     {
         let _ = workspace;
-        crate::signing::assess_connector_signature(dir).map(|a| a.trust)
+        crate::signing::assess_signature_text(&dir.join(crate::signing::SIG_FILE), manifest_text)
+            .map(|a| a.trust)
     }
 }
 
@@ -119,7 +132,7 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
         }
         match std::fs::read_to_string(&manifest_path) {
             Ok(text) => match parse_connector_manifest(&text) {
-                Ok(c) => match assess_dir_trust(&path, workspace) {
+                Ok(c) => match assess_dir_trust(&path, workspace, &text) {
                     // D6.1：带签名且验签失败（篡改/调换/吊销）→ 拒收，
                     // corrupt 形态诚实入列（不静默跳过也不过带）。
                     Err(err) => out.push(LoadedConnector {
@@ -219,11 +232,13 @@ pub fn find_connector(
     })?;
     // D6.1：带签名且验签失败（篡改/调换/吊销）→ 执行面拒用——即使清单
     // parse 仍然合法（改动后的清单可能语义完好，但签名不再对得上）。
-    let trust =
-        assess_dir_trust(&dir, workspace).map_err(|error| ConnectorLookupError::Invalid {
+    // 单读：验签对象就是上面 parse 用的 text。
+    let trust = assess_dir_trust(&dir, workspace, &text).map_err(|error| {
+        ConnectorLookupError::Invalid {
             id: id.to_string(),
             error,
-        })?;
+        }
+    })?;
     // A3-a：启停真相单点合并（sidecar 覆盖 > 清单缺省），与 scan_connectors 同源。
     let side = crate::state::load_tool_state(workspace, &c.id);
     let c = ValidatedConnector {

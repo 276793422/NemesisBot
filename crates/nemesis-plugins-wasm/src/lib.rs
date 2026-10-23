@@ -35,7 +35,10 @@ pub mod trust;
 pub use error::PluginError;
 pub use loader::resolve_host_dll_path;
 pub use manifest::{PluginKind, PluginManifest};
-pub use registry::{InstanceConfigFile, PluginManager, RegisteredPlugin, ToolMetaSnapshot};
+// 开关与实例配置真相源 = nemesis-config::plugin_wasm（config.plugin.wasm.json，
+// 缺省 enabled=false）；本 crate 只经 PluginManager 的 get_switch/
+// set_config_key 等方法读写，不再自有开关类型。
+pub use registry::{PluginManager, RegisteredPlugin, ToolMetaSnapshot};
 pub use trust::{PluginTrustState, VerificationOutcome};
 
 /// 合同代际（与 WIT package 版本对应；manifest api-version 必须一致）。

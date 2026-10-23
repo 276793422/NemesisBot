@@ -19,7 +19,7 @@
 #   examples/<name>/  ← 仓库示例拷贝；sdk path 依赖改写为 ../sdk；Cargo.lock 随包
 #
 # 示例名单 = git ls-files 已入库者（工作区未提交的示例不进包——本地与 CI
-# 产物一致）。当前入库：textstat / activity-log / translate。
+# 产物一致）。入库即自动进名单，无需改本脚本。
 # =============================================================================
 set -euo pipefail
 

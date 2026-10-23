@@ -42,6 +42,25 @@ fn vad_new_missing_model_bails() {
 }
 
 #[test]
+fn vad_new_zero_window_size_bails_before_ffi() {
+    // window_size=0 构造期拒绝（BUG-HUNT R27）：0 窗口会让 SileroVoiceDetector
+    // 的喂窗循环死循环——drain(..0) 空集不消耗缓冲、`len() >= 0` 恒真，管线
+    // 线程忙循环卡死。模型在场（避免先撞 model not found）也必须 Err 且不触
+    // FFI 符号查找 panic。
+    let tmp = tempfile::tempdir().unwrap();
+    let model = tmp.path().join("silero_vad.onnx");
+    std::fs::write(&model, b"fixture").unwrap();
+    let err = format!(
+        "{:#}",
+        VadEngine::new(&model, 0.5, 0.5, 0.25, 5.0, 0, 16000)
+            .err()
+            .expect("must fail")
+    );
+    assert!(err.contains("window_size"), "{err}");
+    assert!(!err.contains("model not found"), "{err}");
+}
+
+#[test]
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn vad_new_with_model_builds_structs_until_ffi() {
     let tmp = tempfile::tempdir().unwrap();

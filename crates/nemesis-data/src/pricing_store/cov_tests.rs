@@ -105,3 +105,45 @@ fn downloaded_layer_loads_and_lookups() {
     assert_eq!(dl.len(), 1);
     assert_eq!(store.lookup("dl-model").expect("hit").model_id, "dl-model");
 }
+
+/// BUG-HUNT R11：upsert_custom / remove_custom 写盘失败（磁盘满 / 权限 /
+/// AV 锁）不得清空内存自定义层。原实现 `mem::take` 后
+/// `write_json_atomic(...)?` 提前返回——磁盘旧文件完好，内存层却被清空，
+/// pricing 查表静默丢失全部自定义覆盖直到进程重启（remove 的 no-op 分支
+/// 注释「没删东西也要把 take 走的还回去」证明还回义务已知，唯独漏了写盘
+/// 失败路径）。阻断写盘的手法：tmp 路径（with_extension 替换末段 →
+/// `pricing_custom.json.tmp`）预置为目录，`fs::write` 必失败。
+#[test]
+fn custom_write_failure_keeps_memory_layer() {
+    let dir = temp_dir("custom_wr_fail");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let store = crate::PricingStore::open(&dir).expect("open");
+    store
+        .upsert_custom(entry("keep-me", &[]))
+        .expect("基线 upsert 应成功");
+    assert_eq!(store.list_custom().len(), 1);
+
+    // 阻断写盘：tmp 路径变成目录 → fs::write 必失败。
+    std::fs::create_dir(dir.join("pricing_custom.json.tmp")).expect("block tmp path");
+
+    let err = store
+        .upsert_custom(entry("new-one", &[]))
+        .expect_err("写盘被阻断应报错");
+    assert!(!err.is_empty(), "错误信息不应为空");
+    assert_eq!(
+        store.list_custom().len(),
+        1,
+        "upsert 写盘失败后内存自定义层必须保持原状（got err={err}）"
+    );
+    assert_eq!(store.list_custom()[0].model_id, "keep-me");
+
+    let err = store
+        .remove_custom("keep-me")
+        .expect_err("写盘被阻断应报错");
+    assert!(!err.is_empty(), "错误信息不应为空");
+    assert_eq!(
+        store.list_custom().len(),
+        1,
+        "remove 写盘失败后内存自定义层必须保持原状（got err={err}）"
+    );
+}

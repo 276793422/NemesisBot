@@ -923,7 +923,10 @@ impl LogsHandler {
         workspace: &str,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let dir = request_log_dir(workspace).join(id);
+        // SAN-05：id 进路径前过白名单消毒（合法 `{ts}_{rand}` 目录名全字符
+        // 在白名单内逐字节不变；`..`/分隔符/绝对路径塌成扁平段后诚实
+        // not found——裸 join 可被穿越读到 request_logs 之外，BUG-HUNT R7）。
+        let dir = request_log_dir(workspace).join(sanitize_session_key(id));
         if !dir.exists() {
             return Err(format!("request '{}' not found", id));
         }
@@ -1449,7 +1452,12 @@ impl LogsHandler {
         session: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         // Primary: read the session_logs file directly (decoupled from memory manager).
-        let path = session_log_dir(workspace).join(format!("{}.jsonl", session));
+        // SAN-05：客户端 session 串进路径前过白名单消毒（磁盘 stem 本就是
+        // sanitize_path_segment(key) 的产物，见 chat_log::log_path，对合法
+        // 输入逐字节不变）——裸 join 可被 `..`/绝对路径顶替读工作区外
+        // jsonl（同 fs.rs tree_in 的 F7 闸，BUG-HUNT R7）。
+        let path =
+            session_log_dir(workspace).join(format!("{}.jsonl", sanitize_session_key(session)));
         #[cfg_attr(not(feature = "memory"), allow(unused_mut))]
         let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
             .into_iter()

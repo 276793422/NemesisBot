@@ -1,0 +1,16 @@
+{
+  "relay": {
+    "enabled": false,
+    "http_port": 3340,
+    "quic_port": 7842,
+    "registry_port": 3341,
+    "external_host": "",
+    "tls": "self-signed",
+    "token": ""
+  },
+  "client": {
+    "relay_url": "",
+    "relay_token": "",
+    "rendezvous_url": ""
+  }
+}

@@ -11,10 +11,12 @@ license = "AGPL-3.0-only"
 libloading = "0.8"
 base64.workspace = true
 
-# 内部层（types 事件源 / security 签名+扫描+操作注册表 / utils 原子写）
+# 内部层（types 事件源 / security 签名+扫描+操作注册表 / utils 原子写 /
+# config 开关文件真相源 config.plugin.wasm.json）
 nemesis-types = { workspace = true }
 nemesis-security = { workspace = true, features = ["scanner"] }
 nemesis-utils = { workspace = true }
+nemesis-config = { workspace = true }
 
 # 基础
 tokio.workspace = true

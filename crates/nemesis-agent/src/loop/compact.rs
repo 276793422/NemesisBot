@@ -419,7 +419,32 @@ impl AgentLoop {
         // 自查②：触发比较用混合信号（实报 ≥ tail，取大者早触发）。`new_c > c`
         // 闸保留——可折叠前缀没变化时（尾巴太短/工具与 system 占大头）摘要帮
         // 不上，交给 force_compression，不空转。
-        let will_summarize = signal >= threshold && new_c > c;
+        let mut will_summarize = signal >= threshold && new_c > c;
+
+        // 循环策略槽（WASM 样板工程批 1）：触发裁决开放（盘点 #17）。
+        // Builtin = 保留内置式；Compact/Skip = 组件覆盖。stuck 闩 / soft
+        // 记账 / summarizing 互斥等状态治理仍在宿主，基于覆盖后的
+        // will_summarize 走原路径（`policy` 模块文档是设计真相源）。
+        {
+            use crate::r#loop::policy::{CompactTriggerInput, CompactTriggerVerdict};
+            let input = CompactTriggerInput {
+                session_key: session_key.to_string(),
+                tail_tokens,
+                provider_signal,
+                signal,
+                threshold,
+                soft,
+                window: context_window,
+                covers_up_to: c,
+                new_boundary: new_c,
+            };
+            let slot = self.compact_policy.read().clone();
+            match slot.should_compact(&input).await {
+                CompactTriggerVerdict::Compact => will_summarize = true,
+                CompactTriggerVerdict::Skip => will_summarize = false,
+                CompactTriggerVerdict::Builtin => {}
+            }
+        }
 
         // ⑩ Graded tiers (soft / summarize) + stuck self-check on the tail.
         // Soft is info-log-only. The stuck counter only ticks when summarize
@@ -549,25 +574,48 @@ impl AgentLoop {
             bridge.run_compact_hooks("auto", "pre").await;
         }
 
-        // Fold the prefix history[..new_c] into the summary, merged with the
-        // existing summary (which already covers history[..c]). summarize the
-        // FULL prefix from source each time (no "keep last N" — that would
-        // leave a gap between the summary and the verbatim tail).
-        // P6：existing_summary 非空时走 UPDATE 迭代修订指令（见
-        // build_summary_instruction）；P7：文件操作台账由 summarize_prefix_owned
-        // 内部从同一前缀聚合注入。
-        let prefix_refs: Vec<&crate::types::ConversationTurn> = history[..new_c].iter().collect();
-        let summary = summarize_prefix_owned(
-            &prefix_refs,
-            existing_summary,
-            new_c.saturating_sub(c),
-            context_window,
-            self.current_summarizer_prefix_reuse(),
-            provider.as_ref(),
-            &model,
-            observer_mgr,
-        )
-        .await;
+        // 循环策略槽（WASM 样板工程批 1）：摘要执行开放（盘点 #18）。
+        // Builtin = 内置 provider 摘要链（全量前缀重摘 + UPDATE 迭代修订 +
+        // 台账注入，见 `summarize_prefix_owned`）；Summary = 采用组件文本
+        // （宿主照跑无进展守卫 B2 / covers 推进 / 通知 / hooks 全套）；
+        // Skip = 同内置「无可摘要内容」路径（loud warn + covers 不推进）。
+        let summary = {
+            use crate::r#loop::policy::{CompactExecInput, CompactExecVerdict};
+            let exec_input = CompactExecInput {
+                session_key,
+                prefix: &history[..new_c],
+                existing_summary,
+                window: context_window,
+                model: &model,
+            };
+            let slot = self.compact_policy.read().clone();
+            match slot.generate_summary(&exec_input).await {
+                CompactExecVerdict::Summary(text) => Some(text),
+                CompactExecVerdict::Skip => None,
+                CompactExecVerdict::Builtin => {
+                    // Fold the prefix history[..new_c] into the summary, merged with the
+                    // existing summary (which already covers history[..c]). summarize the
+                    // FULL prefix from source each time (no "keep last N" — that would
+                    // leave a gap between the summary and the verbatim tail).
+                    // P6：existing_summary 非空时走 UPDATE 迭代修订指令（见
+                    // build_summary_instruction）；P7：文件操作台账由 summarize_prefix_owned
+                    // 内部从同一前缀聚合注入。
+                    let prefix_refs: Vec<&crate::types::ConversationTurn> =
+                        history[..new_c].iter().collect();
+                    summarize_prefix_owned(
+                        &prefix_refs,
+                        existing_summary,
+                        new_c.saturating_sub(c),
+                        context_window,
+                        self.current_summarizer_prefix_reuse(),
+                        provider.as_ref(),
+                        &model,
+                        observer_mgr,
+                    )
+                    .await
+                }
+            }
+        };
 
         if let Some(summary) = summary {
             // B2（2026-10-18 B 级清零）：无进展守卫——采用前用同轴估算比较

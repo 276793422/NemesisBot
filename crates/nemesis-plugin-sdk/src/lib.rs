@@ -82,6 +82,24 @@ macro_rules! export_observer {
     };
 }
 
+/// 循环策略插件一键导出（2026-10-22 批 2；crate 根调用；工程须有
+/// `wit/plugin.wit` 合同副本）。
+///
+/// 展开顺序：生成 `plugin-loop-policy` world 绑定（`exports::nemesis::
+/// plugin::loop_policy` 与 `nemesis::plugin::host` 导入模块）→
+/// `export!($ty)`。`runtime_path` 语义同 [`export_tool!`]。
+#[macro_export]
+macro_rules! export_loop_policy {
+    ($ty:ident) => {
+        ::nemesis_plugin_sdk::generate!({
+            path: "wit",
+            world: "plugin-loop-policy",
+            runtime_path: "nemesis_plugin_sdk",
+        });
+        ::nemesis_plugin_sdk::__export_impl!($ty);
+    };
+}
+
 /// generate!/export! 的顺序衔接（`export!` 宏由 generate! 展开产物定义到
 /// 调用 crate 根——必须在其后展开）；不对外稳定。片段全程 `ident`（宏链
 /// 逐层转发，`ty` 片段无法再匹配内层 `ident`）。
@@ -136,6 +154,8 @@ pub mod guide {
     pub const TOOL_GUEST: &str = "exports::nemesis::plugin::tool::Guest";
     /// 观察者插件 Guest trait（生成后位于插件 crate）。
     pub const OBSERVER_GUEST: &str = "exports::nemesis::plugin::observer::Guest";
+    /// 循环策略插件 Guest trait（生成后位于插件 crate）。
+    pub const LOOP_POLICY_GUEST: &str = "exports::nemesis::plugin::loop_policy::Guest";
 }
 
 pub mod types {
@@ -156,4 +176,22 @@ pub mod types {
     /// `tool-output`：`content` / `is_error`（生成名 `ToolOutput`；
     /// `is_error=true` = 业务失败回灌 LLM 自纠，非 trap）。
     pub struct ToolOutputDoc;
+
+    /// `policy-metadata`：`compact` / `final_judge` / `validation`（生成名
+    /// `PolicyMetadata`；三 bool = 各自策略点接管清单，安装期对账 +
+    /// 运行期路由唯一事实源；每策略点仅一个激活组件）。
+    pub struct PolicyMetadataDoc;
+
+    /// 循环策略三出口（单 json-string 进出；出参统一支持
+    /// `{"verdict":"builtin"}` = 单次显式回退宿主内置逻辑）：
+    ///
+    /// - `compact-check`：`{"point":"trigger"|"exec", ...}`（入参投影见
+    ///   WIT 合同注释；trigger 出 `compact|skip|builtin`，exec 出
+    ///   `summary|skip|builtin`）。
+    /// - `judge-final`：入 `{session_key, content, turns_used,
+    ///   validation_failures}`；出 `accept | retry{nudge} | giveup{notice}
+    ///   | builtin`。
+    /// - `validate-args`：入 `{tool, schema, args}`；出
+    ///   `valid | fixed{args} | reject{message} | builtin`。
+    pub struct LoopPolicyDoc;
 }

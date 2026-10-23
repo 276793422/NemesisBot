@@ -707,6 +707,13 @@ async fn test_w1b_fire_loop_delete_after_run_error_keeps_job() {
     assert_eq!(after.state.last_error.as_deref(), Some("handler exploded"));
     assert_eq!(after.state.history.len(), 1);
     assert_eq!(after.state.history[0].status, "error");
+    // BUG-HUNT R34：留证必须伴随停摆——enabled=true + 过期 at_ms 的僵尸
+    // 会在下次启动被 recompute_next_runs 的 H1 子句复活，每次重启重放。
+    assert!(
+        !after.enabled,
+        "failed delete_after_run job must be disabled (evidence kept, no restart replay)"
+    );
+    assert_eq!(after.state.next_run_at_ms, None);
 }
 
 #[tokio::test]

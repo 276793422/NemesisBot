@@ -338,85 +338,24 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // Clear SessionStore (in-memory + sessions/*.json) +
-                // session_logs/*.jsonl. Best-effort; absence is not an error.
-                {
-                    let guard = ctx.state.agent_loop.read();
-                    if let Some(al) = guard.as_ref()
-                        && let Some(store) = al.session_store()
-                    {
-                        store.delete_session(&session_key);
+                // 会话闸（BUG-HUNT R6，同 rewind 家族——admission
+                // under_history_gate）：turn 在飞时的 delete 与在飞回合竞态，
+                // jsonl 删掉后回合尾巴把内存会话回写，被删会话以孤儿行复活。
+                // 经 resolve_session_loop 拿归属 loop（busy 旗标 per-loop，
+                // 项目会话必须闸在项目 loop 上）；持有期间新消息排队/诚实
+                // 拒绝，操作完成（含错误路径）释放 + 排空。参数解析在闸外
+                // （零副作用）。无 loop（退化 ctx）诚实降级为不闸——没有
+                // 回合引擎就没有在飞回合，竞态窗口不存在；S10b 记录的跳臂
+                // 行为（store 臂跳过、jsonl 幸存）保持原样。
+                match crate::handlers::projects::resolve_session_loop(ctx, &session_key) {
+                    Ok(al) => {
+                        al.under_history_gate(&session_key, "删除", || {
+                            delete_session_body(ctx, &session_id, &session_key)
+                        })
+                        .await
                     }
+                    Err(_) => delete_session_body(ctx, &session_id, &session_key).await,
                 }
-                // 方言 SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
-                // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
-                // 先把桥 Arc 克隆出 guard 作用域，再 await（guard 不跨 await）。
-                let session_end_bridge = {
-                    let guard = ctx.state.agent_loop.read();
-                    guard.as_ref().and_then(|al| al.cc_hooks_bridge())
-                };
-                if let Some(bridge) = session_end_bridge {
-                    bridge.on_session_end(&session_key, "deleted").await;
-                }
-                // Cron cascade (2026-08-25): a scheduled job pinned to this
-                // session_key would otherwise FIRE on a deleted conversation
-                // and resurrect it — an empty jsonl re-created + cron rows
-                // appended, a session the user explicitly deleted coming
-                // back as a zombie. Disable (NOT remove: the job definition
-                // stays on the Tasks page for re-pointing/re-enabling) every
-                // ENABLED job whose payload targets this session, and report
-                // what was paused. Disabled jobs are left untouched.
-                // Guard released above so we never hold agent_loop + cron
-                // mutexes together.
-                let mut paused: Vec<serde_json::Value> = Vec::new();
-                if let Some(svc) = ctx.state.cron.as_ref()
-                    && let Ok(svc) = svc.lock()
-                {
-                    for job in svc.list_jobs(true) {
-                        if !job.enabled {
-                            continue;
-                        }
-                        if job.payload.session_key.as_deref() != Some(session_key.as_str()) {
-                            continue;
-                        }
-                        match svc.enable_job(&job.id, false) {
-                            Ok(j) => paused.push(serde_json::json!({
-                                "id": j.id,
-                                "name": j.name,
-                            })),
-                            Err(e) => tracing::warn!(
-                                "[sessions] delete cascade: failed to pause cron job {} ({}): {}",
-                                job.id,
-                                job.name,
-                                e
-                            ),
-                        }
-                    }
-                }
-                // L6++ G4（2026-09-08）：项目归属联动摘除（内存索引 + sidecar
-                // project 字段——meta 已随 delete_chat_log 删除时为 no-op）。
-                // bridge 未装配 = 无项目分组语义，跳过。
-                if let Some(bridge) = crate::handlers::projects::projects_bridge() {
-                    bridge.forget_session(&session_key);
-                }
-                // B（2026-09-23 多会话并行清账）：绑定注册表级联摘除（指向
-                // 该会话的键全清，不留悬空绑定）。best-effort：workspace 缺
-                // 席（退化 ctx）= 跳过；删除会话后绑定残留会让 get-or-create
-                // 误判「已绑」，产生「保存了却找不到会话」的错觉。
-                if let Some(ws) = ctx.workspace.as_deref() {
-                    let removed = crate::session_bindings::remove_session(ws, &session_id);
-                    if removed > 0 {
-                        tracing::info!(
-                            "[sessions] delete cascade: removed {} binding(s) for {}",
-                            removed,
-                            session_id
-                        );
-                    }
-                }
-                Ok(Some(serde_json::json!({
-                    "deleted": session_id,
-                    "paused_cron_jobs": paused,
-                })))
             }
             "clear" => {
                 let session_id = data
@@ -429,26 +368,17 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // Clear SessionStore messages + session_logs jsonl (keep meta/key).
-                // Order matters (2026-08-25 self-heal note): truncate the
-                // chat_log FIRST, then drop the store json. If we crashed
-                // between the two steps the other way round, the surviving
-                // jsonl would let `rebuild_from_chat_log` resurrect the
-                // content the user just asked to clear. jsonl-first keeps the
-                // rebuild path unable to revive cleared data.
-                nemesis_agent::chat_log::clear_chat_log(&session_key);
-                let guard = ctx.state.agent_loop.read();
-                if let Some(al) = guard.as_ref()
-                    && let Some(store) = al.session_store()
-                {
-                    store.clear_session(&session_key);
-                }
-                drop(guard);
-                // L6++ G4（2026-09-08）：clear 重置会话 → 项目归属一并解除
-                // （摘索引 + sidecar project 字段，title 保留——防 owner_of
-                // 的 sidecar 兜底把绑定「复活」）。bridge 未装配 = 跳过。
-                if let Some(bridge) = crate::handlers::projects::projects_bridge() {
-                    bridge.forget_session(&session_key);
+                // 会话闸（BUG-HUNT R6，同 delete 臂）：clear 的 jsonl 截断
+                // 与在飞回合竞态——截空后回合尾巴回写孤儿行。归属 loop 真互斥；
+                // 无 loop 诚实降级（理由同 delete 臂）。
+                match crate::handlers::projects::resolve_session_loop(ctx, &session_key) {
+                    Ok(al) => {
+                        al.under_history_gate(&session_key, "清空", || {
+                            clear_session_body(ctx, &session_key)
+                        })
+                        .await?
+                    }
+                    Err(_) => clear_session_body(ctx, &session_key).await?,
                 }
                 Ok(Some(serde_json::json!({ "cleared": session_id })))
             }
@@ -662,6 +592,126 @@ impl ModuleHandler for SessionsHandler {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-HUNT R6（2026-10-23）：delete/clear 操作体抽出——原 inline 臂原样搬移，
+// 供 handle_cmd 在 `under_history_gate` 持闸下调用（归属 loop 在场时）；
+// 无 loop（退化 ctx）直调不闸。本节函数自身不闸（参数解析同样留在闸外，
+// 保证 busy 拒绝路径零副作用）。
+// ---------------------------------------------------------------------------
+
+/// sessions.delete 操作体：store 删除（内存 + sessions/*.json + jsonl）→
+/// 方言 SessionEnd → cron 级联停用 → 项目归属/绑定摘除。
+async fn delete_session_body(
+    ctx: &RequestContext,
+    session_id: &str,
+    session_key: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    // Clear SessionStore (in-memory + sessions/*.json) +
+    // session_logs/*.jsonl. Best-effort; absence is not an error.
+    {
+        let guard = ctx.state.agent_loop.read();
+        if let Some(al) = guard.as_ref()
+            && let Some(store) = al.session_store()
+        {
+            store.delete_session(session_key);
+        }
+    }
+    // 方言 SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
+    // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
+    // 先把桥 Arc 克隆出 guard 作用域，再 await（guard 不跨 await）。
+    let session_end_bridge = {
+        let guard = ctx.state.agent_loop.read();
+        guard.as_ref().and_then(|al| al.cc_hooks_bridge())
+    };
+    if let Some(bridge) = session_end_bridge {
+        bridge.on_session_end(session_key, "deleted").await;
+    }
+    // Cron cascade (2026-08-25): a scheduled job pinned to this
+    // session_key would otherwise FIRE on a deleted conversation
+    // and resurrect it — an empty jsonl re-created + cron rows
+    // appended, a session the user explicitly deleted coming
+    // back as a zombie. Disable (NOT remove: the job definition
+    // stays on the Tasks page for re-pointing/re-enabling) every
+    // ENABLED job whose payload targets this session, and report
+    // what was paused. Disabled jobs are left untouched.
+    let mut paused: Vec<serde_json::Value> = Vec::new();
+    if let Some(svc) = ctx.state.cron.as_ref()
+        && let Ok(svc) = svc.lock()
+    {
+        for job in svc.list_jobs(true) {
+            if !job.enabled {
+                continue;
+            }
+            if job.payload.session_key.as_deref() != Some(session_key) {
+                continue;
+            }
+            match svc.enable_job(&job.id, false) {
+                Ok(j) => paused.push(serde_json::json!({
+                    "id": j.id,
+                    "name": j.name,
+                })),
+                Err(e) => tracing::warn!(
+                    "[sessions] delete cascade: failed to pause cron job {} ({}): {}",
+                    job.id,
+                    job.name,
+                    e
+                ),
+            }
+        }
+    }
+    // L6++ G4（2026-09-08）：项目归属联动摘除（内存索引 + sidecar
+    // project 字段——meta 已随 delete_chat_log 删除时为 no-op）。
+    // bridge 未装配 = 无项目分组语义，跳过。
+    if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+        bridge.forget_session(session_key);
+    }
+    // B（2026-09-23 多会话并行清账）：绑定注册表级联摘除（指向
+    // 该会话的键全清，不留悬空绑定）。best-effort：workspace 缺
+    // 席（退化 ctx）= 跳过；删除会话后绑定残留会让 get-or-create
+    // 误判「已绑」，产生「保存了却找不到会话」的错觉。
+    if let Some(ws) = ctx.workspace.as_deref() {
+        let removed = crate::session_bindings::remove_session(ws, session_id);
+        if removed > 0 {
+            tracing::info!(
+                "[sessions] delete cascade: removed {} binding(s) for {}",
+                removed,
+                session_id
+            );
+        }
+    }
+    Ok(Some(serde_json::json!({
+        "deleted": session_id,
+        "paused_cron_jobs": paused,
+    })))
+}
+
+/// sessions.clear 操作体：jsonl 先截 + store 清（self-heal 顺序）+
+/// 项目归属摘除。clear 不做 cron 级联（会话还在，job 跟着空会话合法）。
+async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(), String> {
+    // Clear SessionStore messages + session_logs jsonl (keep meta/key).
+    // Order matters (2026-08-25 self-heal note): truncate the
+    // chat_log FIRST, then drop the store json. If we crashed
+    // between the two steps the other way round, the surviving
+    // jsonl would let `rebuild_from_chat_log` resurrect the
+    // content the user just asked to clear. jsonl-first keeps the
+    // rebuild path unable to revive cleared data.
+    nemesis_agent::chat_log::clear_chat_log(session_key);
+    let guard = ctx.state.agent_loop.read();
+    if let Some(al) = guard.as_ref()
+        && let Some(store) = al.session_store()
+    {
+        store.clear_session(session_key);
+    }
+    drop(guard);
+    // L6++ G4（2026-09-08）：clear 重置会话 → 项目归属一并解除
+    // （摘索引 + sidecar project 字段，title 保留——防 owner_of
+    // 的 sidecar 兜底把绑定「复活」）。bridge 未装配 = 跳过。
+    if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+        bridge.forget_session(session_key);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // B11（2026-10-18 snooze）：暂停时刻解析 + 到期唤醒 sweeper
 // ---------------------------------------------------------------------------
 
@@ -739,7 +789,13 @@ pub(crate) fn wake_due_sessions() -> usize {
             None => "⏰ 会话暂停已到期，自动恢复".to_string(),
         };
         nemesis_agent::chat_log::append_chat_log(&session_key, "system", &content);
-        crate::chat_event_log::record(sid, "system", &content, None, None);
+        // BUG-HUNT R9：record 键空间契约是完整会话键（send_to_session
+        // 「记录键优先会话键（跨连接稳定）」、record_tool「与 send_to_session
+        // 同域」），chat.sync 按完整键重建桶查。此前传裸 sid——恢复行落进
+        // 无人查询的孤儿桶，断线窗口内唤醒的会话重连补拉看不到此行
+        // （jsonl 有、补拉无）。publish_activity 内部剥前缀还原裸 sid，
+        // chat.activity 信号形态不变。
+        crate::chat_event_log::record(&session_key, "system", &content, None, None);
         crate::chat_event_log::publish_global_event(
             "session.updated",
             serde_json::json!({

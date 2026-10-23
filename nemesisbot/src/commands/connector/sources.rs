@@ -21,7 +21,8 @@ use anyhow::Result;
 use nemesis_connectors::manifest::{ValidatedConnector, parse_connector_manifest};
 use nemesis_connectors::registry::MANIFEST_FILE;
 use nemesis_connectors::signing::{
-    ConnectorTrust, SIG_FILE, assess_connector_signature, workspace_trust_store,
+    ConnectorTrust, SIG_FILE, assess_connector_signature, assess_signature_text,
+    workspace_trust_store,
 };
 
 // ============ 源注册表（config/connector_sources.json） ============
@@ -298,7 +299,9 @@ pub fn scan_source(workspace: &Path, source_name: &str) -> Result<Vec<SourceHit>
             }
         };
         match parse_connector_manifest(&text) {
-            Ok(c) => match assess_connector_signature(&dir, &store) {
+            // 单读：验签对象 = 上面 parse 用的同一份 text（与 registry
+            // scan/find 同纪律——双读窗口里换源缓存文件会让徽标错位）。
+            Ok(c) => match assess_signature_text(&dir.join(SIG_FILE), &text, &store) {
                 Err(e) => hits.push(SourceHit {
                     source: source_name.to_string(),
                     rel: rel.clone(),

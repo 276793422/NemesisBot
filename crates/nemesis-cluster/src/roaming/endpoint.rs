@@ -137,6 +137,15 @@ pub fn persist(id: &RoamingIdentity, path: &Path) -> Result<(), String> {
 /// 装配好的 iroh 端点（叠加层传输入口）。
 pub struct RoamingEndpoint {
     endpoint: Endpoint,
+    /// 最近拨号路径观测（node_id hex → "direct"/"relay"/"unknown"）。
+    ///
+    /// 每次拨号成功 spawn 一个观察任务：周期读 [`Connection::paths`] 快照
+    /// 写入此表（打洞成功出现 direct 路径后 10s 早退；120s 上限防长命
+    /// 连接挂任务；连接关闭即退）。消费面：健康探针成功后读
+    /// [`Self::dial_path_of`] 写进 registry 节点条目（Dashboard 可见
+    /// 「打洞直连 / 中继转发」）。Arc 是给观察任务跨 await 持有的（ Mutex
+    /// guard 借不到 'static）。
+    dial_paths: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>>,
     // Mutex 而非 Option：serve/shutdown 都走 `&self`——端点经 Arc 共享给
     // Cluster（`Cluster::stop` 关停）时无需所有权辗转。
     router: parking_lot::Mutex<Option<Router>>,
@@ -217,6 +226,9 @@ impl RoamingEndpoint {
             .map_err(|e| format!("iroh endpoint 绑定失败: {e}"))?;
         Ok(Self {
             endpoint,
+            dial_paths: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             router: parking_lot::Mutex::new(None),
         })
     }
@@ -254,11 +266,13 @@ impl RoamingEndpoint {
         &self,
         addr: EndpointAddr,
     ) -> Result<(SendStream, RecvStream), String> {
+        let peer = addr.id; // Copy：先取出，connect(addr) 消费整个 addr
         let conn: Connection = self
             .endpoint
             .connect(addr, ROAMING_ALPN.as_bytes())
             .await
             .map_err(|e| format!("iroh connect 失败: {e}"))?;
+        self.spawn_path_watcher(&peer, &conn);
         conn.open_bi()
             .await
             .map_err(|e| format!("iroh bi-stream 打开失败: {e}"))
@@ -271,6 +285,66 @@ impl RoamingEndpoint {
         node_id: EndpointId,
     ) -> Result<(SendStream, RecvStream), String> {
         self.connect_stream_addr(EndpointAddr::from(node_id)).await
+    }
+
+    // ---------------------------------------------------------------------------
+    // 拨号路径观测（打洞直连 vs 中继转发——Dashboard 节点面可观测）
+    // ---------------------------------------------------------------------------
+
+    /// 拨号成功后挂路径观察任务（fire-and-forget）。
+    ///
+    /// iroh 语义：连接通常先经 relay 打通，holepunch 成功后出现 direct 路径
+    /// （`Connection::paths` 文档）。观察者周期快照直到「direct 稳定 10s」
+    /// 或 120s 上限或连接关闭——上限防长命连接堆积任务，早退防无谓轮询。
+    /// **退出不清槽**：槽语义是「最近一次拨号的路径观测」（探针连接用完即
+    /// 关是常态，清掉会让查询恒撞空窗；观测结论——尤其 direct——在连接
+    /// 关闭后仍然成立，直到下次拨号被新观察者覆盖）。
+    fn spawn_path_watcher(&self, peer: &EndpointId, conn: &Connection) {
+        let key = node_id_to_hex(peer);
+        let conn = conn.clone();
+        let paths_slot = self.dial_paths_slot();
+        tokio::spawn(async move {
+            let mut direct_since: Option<tokio::time::Instant> = None;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let kind = classify_paths(&conn.paths());
+                *paths_slot.lock().entry(key.clone()).or_default() = kind.to_string();
+                match kind {
+                    "direct" if direct_since.is_none() => {
+                        direct_since = Some(tokio::time::Instant::now());
+                    }
+                    "direct"
+                        if direct_since
+                            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(10)) =>
+                    {
+                        break; // direct 稳定 10s：停止追踪（结论留在槽里）
+                    }
+                    _ => {}
+                }
+                let tick = tokio::time::sleep(std::time::Duration::from_secs(2));
+                tokio::select! {
+                    _ = tick => {}
+                    _ = conn.closed() => break, // 连接关闭：最后一次快照已写入
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// dial_paths 槽的 Arc 视图（观察任务跨 await 持有；Arc clone 廉价）。
+    fn dial_paths_slot(
+        &self,
+    ) -> std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>> {
+        self.dial_paths.clone()
+    }
+
+    /// 最近一次观测的拨号路径（`"direct"` = 打洞直连，`"relay"` = 经中继
+    /// 转发，`None` = 无观测——非漫游节点 / 从未拨号成功过）。观测随连接
+    /// 关闭保留（下次拨号才被覆盖），见 [`Self::spawn_path_watcher`]。
+    pub fn dial_path_of(&self, node_id_hex: &str) -> Option<String> {
+        self.dial_paths.lock().get(node_id_hex).cloned()
     }
 
     /// P1 通路探针（完整地址形态）：dial + ping/echo 往返，返回 RTT 毫秒。
@@ -326,6 +400,19 @@ impl RoamingEndpoint {
             tracing::warn!(error = %e, "iroh router shutdown 失败（best-effort 忽略）");
         }
         self.endpoint.close().await;
+    }
+}
+
+/// 路径快照分类：任一直连 IP 路径 = "direct"（打洞成功才出现 direct 路径）；
+/// 否则任一中继路径 = "relay"（打洞未收敛或失败，流量走转发）；空快照 =
+/// "unknown"（连接刚建立路径尚未协商）。
+fn classify_paths(list: &iroh::endpoint::PathList<'_>) -> &'static str {
+    if list.iter().any(|p| p.is_ip()) {
+        "direct"
+    } else if list.iter().any(|p| p.is_relay()) {
+        "relay"
+    } else {
+        "unknown"
     }
 }
 

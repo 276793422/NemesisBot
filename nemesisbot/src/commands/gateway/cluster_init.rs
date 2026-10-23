@@ -507,24 +507,23 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         e
                     ),
                 }
+            }
+        }
 
-                // QUIC 中继服务器随 gateway 进程内启动（roaming-relay）。
-                // 闸 = config roaming.relay.enabled；不要求 roaming.enabled
-                // （VPS 形态：只当中继服务器不开叠加层是合法组合）。失败 warn
-                // 不炸集群——中继是叠加层设施（端口占用/证书非法在此显形）。
-                #[cfg(feature = "roaming-relay")]
-                match cluster.setup_relay_server().await {
-                    Ok(true) => info!("[Gateway] Self-hosted relay server active"),
-                    Ok(false) => {
-                        tracing::debug!(
-                            "[Gateway] Self-hosted relay not enabled (config roaming.relay.enabled is not true)"
-                        )
-                    }
-                    Err(e) => warn!(
-                        "[Gateway] Self-hosted relay setup failed (overlay/TCP paths unaffected): {}",
-                        e
-                    ),
-                }
+        // QUIC 中继服务器随 gateway 进程内启动（quic-relay）。**独立闸**：
+        // 唯一依据 = config.quic.json relay.enabled（2026-10-23 与集群解耦
+        // ——「中继是 QUIC 的行为」，集群关了中继照起）。装配在集群分支外
+        //（ctx.quic_relay_manager 在 assemble 期构造，post_agent 注入 web
+        // 面、runtime teardown 停机）。失败 warn 不炸网关（端口占用/证书
+        // 非法/token 空在此显形）。
+        #[cfg(feature = "quic-relay")]
+        if let Some(mgr) = ctx.quic_relay_manager.as_ref() {
+            match mgr.setup().await {
+                Ok(true) => info!("[Gateway] Self-hosted relay server active (config.quic.json)"),
+                Ok(false) => tracing::debug!(
+                    "[Gateway] Self-hosted relay not enabled (config.quic.json relay.enabled is not true)"
+                ),
+                Err(e) => warn!("[Gateway] Self-hosted relay setup failed: {}", e),
             }
         }
 

@@ -85,6 +85,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_store: bool) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(agent_loop),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -309,4 +310,76 @@ async fn export_returns_seeded_messages() {
     assert_eq!(out["messages"][0]["content"], "导出我");
 
     nemesis_agent::chat_log::delete_chat_log(&key);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HUNT R6（2026-10-23）：delete/clear 的会话闸（busy 拒绝 + 释放后放行）
+// ---------------------------------------------------------------------------
+
+/// turn 在飞（busy）时 delete/clear 诚实拒绝且零副作用（jsonl 原样——
+/// 旧行为是 peek 不置位、破坏性操作直接动手）；释放后放行直达 store 臂。
+#[tokio::test]
+async fn delete_and_clear_refuse_busy_session_then_succeed_after_release() {
+    let _home = crate::test_home::lock_home();
+    let sid = unique_sid();
+    let key = session_key_for(&sid);
+    nemesis_agent::chat_log::append_chat_log(&key, "user", "占用中");
+
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let al = ctx.state.agent_loop.read().clone().unwrap();
+
+    assert!(al.try_acquire_session(&key));
+    let err = run(
+        &ctx,
+        "delete",
+        Some(serde_json::json!({ "session_id": sid })),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("正在处理"), "{err}");
+    let err = run(
+        &ctx,
+        "clear",
+        Some(serde_json::json!({ "session_id": sid })),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("正在处理"), "{err}");
+    let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(total, 1, "busy 拒绝路径零副作用");
+
+    // 释放后放行：delete 走 store 臂级联删 jsonl。
+    al.release_session(&key);
+    let out = run(
+        &ctx,
+        "delete",
+        Some(serde_json::json!({ "session_id": sid })),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["deleted"], serde_json::json!(sid));
+    let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(total, 0, "store 臂级联删 jsonl");
+    assert!(!al.is_session_busy(&key), "闸必须随操作完成释放");
+
+    // clear 放行后照常截断（新键，不与上面的 delete 互相干扰）。
+    let sid2 = unique_sid();
+    let key2 = session_key_for(&sid2);
+    nemesis_agent::chat_log::append_chat_log(&key2, "user", "清我");
+    let out = run(
+        &ctx,
+        "clear",
+        Some(serde_json::json!({ "session_id": sid2 })),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["cleared"], serde_json::json!(sid2));
+    let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key2, 10, None);
+    assert_eq!(total, 0, "clear 截断 jsonl");
+
+    nemesis_agent::chat_log::delete_chat_log(&key);
+    nemesis_agent::chat_log::delete_chat_log(&key2);
 }

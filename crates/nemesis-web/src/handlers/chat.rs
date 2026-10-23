@@ -202,9 +202,27 @@ impl ModuleHandler for ChatHandler {
                 "result": result,
             })));
         }
+        // 会话闸（BUG-HUNT R6，2026-10-23）：compact/clear 都是有副作用的
+        // 会话级操作——旧直调不持会话闸，在飞回合的行会在截断后回写（孤儿
+        // 行/内容复活）。under_history_gate 真互斥：持有期间新消息排队/
+        // 诚实拒绝，操作完成释放 + 排空。slash /compact /clear 路径经
+        // Maintenance outcome 先 acquire 再进尾巴，语义本就同款——这里对齐
+        // （文件头「busy 闸」注记由此真正对 WSAPI 入口成立）。
         let receipt = match cmd {
-            "compact" => agent_loop.compact_session(&session_key).await?,
-            "clear" => agent_loop.clear_session(&session_key).await?,
+            "compact" => {
+                agent_loop
+                    .under_history_gate(&session_key, "压缩", || {
+                        agent_loop.compact_session(&session_key)
+                    })
+                    .await?
+            }
+            "clear" => {
+                agent_loop
+                    .under_history_gate(&session_key, "清空", || {
+                        agent_loop.clear_session(&session_key)
+                    })
+                    .await?
+            }
             _ => return Err(format!("unknown chat cmd: {cmd}")),
         };
         Ok(Some(serde_json::json!({

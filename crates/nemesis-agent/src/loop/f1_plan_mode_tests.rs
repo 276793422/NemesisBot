@@ -519,3 +519,73 @@ fn c7_is_lsp_write_call_detects_rename_op() {
     assert!(AgentLoop::is_lsp_write_call("lsp", "{not json"));
     assert!(AgentLoop::is_lsp_write_call("lsp", r#"{"path":"/x/a.rs"}"#));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-HUNT R13：供给闸与分发闸契约对齐（cron / todowrite）
+// ---------------------------------------------------------------------------
+
+/// PLAN_MODE_TOOLS 供给的工具不得被分发闸 100% 拒。此前 cron（静态表归
+/// ProcessExec，调度=延迟副作用）与 todowrite（静态表归 FileWrite，但目标
+/// 是工具内部钉死的 sessions/todo_*.json）都被供给却在分发闸必拒——模型
+/// 在 plan 模式选中即吃拒绝回灌白烧轮次。修后契约：cron 不再供给；todowrite
+/// 仍供给且 dispatch 放行（declared_write 臂豁免，对齐 no-security 构建）。
+#[test]
+fn plan_mode_supply_matches_dispatch_gate() {
+    let mut al = f1_loop();
+    al.register_tool("cron".to_string(), Box::new(EchoTool));
+    al.register_tool("todowrite".to_string(), Box::new(EchoTool));
+    al.set_mode_with_event(
+        crate::types::AgentMode::Plan,
+        "agent:main:session:s",
+        "web:s",
+    );
+
+    let names = def_names(&al.build_tool_defs());
+    assert!(
+        !names.iter().any(|n| n == "cron"),
+        "cron 是延迟副作用（分发闸必拒），plan 模式不得供给，实际供给: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "todowrite"),
+        "todowrite 是计划草稿（内部钉死路径），plan 模式必须供给，实际供给: {names:?}"
+    );
+}
+
+/// 分发闸行为面：plan 模式下 todowrite 调用不落「Plan mode」拒绝文案、
+/// 照常执行；同会话写类（write_file）仍被拦——豁免不外溢。
+#[tokio::test]
+async fn plan_mode_todowrite_dispatches_while_write_still_blocked() {
+    let mut al = f1_loop();
+    al.register_tool("todowrite".to_string(), Box::new(EchoTool));
+    al.register_tool("write_file".to_string(), Box::new(EchoTool));
+    al.set_mode_with_event(
+        crate::types::AgentMode::Plan,
+        "agent:main:session:f1",
+        "web:f1",
+    );
+    let ctx = RequestContext::new("web", "f1chat", "f1user", "agent:main:session:f1");
+
+    let tc_todo = ToolCallInfo {
+        id: "call_tw".to_string(),
+        name: "todowrite".to_string(),
+        arguments: r#"{"todos": [{"id": "1", "content": "调研", "status": "pending"}]}"#
+            .to_string(),
+    };
+    let out = al.handle_tool_call(&tc_todo, &ctx).await;
+    assert_eq!(
+        out, "echo_ok",
+        "Plan 模式下 todowrite（计划草稿）必须放行，实际: {out}"
+    );
+
+    // 正对照：同会话 write_file 依旧被拦（豁免只限 todowrite 自身）。
+    let tc_write = ToolCallInfo {
+        id: "call_wf".to_string(),
+        name: "write_file".to_string(),
+        arguments: r#"{"path": "src/main.rs", "content": "x"}"#.to_string(),
+    };
+    let out = al.handle_tool_call(&tc_write, &ctx).await;
+    assert!(
+        out.contains("Plan mode") && out.contains("/build"),
+        "Plan 模式下 write_file 必须仍被拦，实际: {out}"
+    );
+}

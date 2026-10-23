@@ -10,6 +10,32 @@ export interface MarkdownRenderOptions {
   breaks?: boolean
 }
 
+/**
+ * HTML 转义（&<>"' 全量）：v-html 渲染面在异常降级路径上的兜底原语。
+ * renderMarkdownHtml 是唯一消毒闸，但它依赖 marked/DOMPurify 正常工作——
+ * 调用方 catch 回落时**不得**把原文直接喂 v-html（等于绕过消毒闸），
+ * 必须先过本函数把活动内容降级为纯文本再进 HTML 上下文。
+ */
+export function escapeHtml(s: string): string {
+  if (!s) return ''
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
+ * HTML 片段消毒（渲染闸与皮肤引擎 data-nb-html 共用的单一配置真相源）。
+ * DOMPurify 默认净化活动内容（script / on* 事件属性 / javascript: URI）；
+ * style 属性整体禁掉——模型/皮肤内容不需要内联样式，禁掉即消灭整类 CSS
+ * 注入向量（DOMPurify 默认只净化不剥除）。对已消毒 HTML 幂等。
+ */
+export function sanitizeHtmlFragment(html: string): string {
+  return DOMPurify.sanitize(html, { FORBID_ATTR: ['style'] })
+}
+
 export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): string {
   // 代码高亮走事后 DOM 路径（渲染后对 pre code 跑 hljs.highlightElement，
   // 见 ChatPanel renderCodeBlocks）——marked v15 已移除 highlight 选项，
@@ -19,11 +45,11 @@ export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): 
     breaks: opts?.breaks ?? false,
   }) as string
   // marked 默认放行 raw HTML——模型输出（或被注入后的输出）混入
-  // <script>/<img onerror> 会被当真渲染。此处是全部 6 个 v-html 渲染面的
+  // <script>/<img onerror> 会被当真渲染。此处是全部 v-html 渲染面的
   // 唯一消毒闸（2026-09-26 复检挂账高优 Canvas-#2）；hljs 高亮是消毒后
-  // 的 DOM 事后增强，不受影响。style 属性整体禁掉：模型内容不需要内联
-  // 样式，禁掉即消灭整类 CSS 注入向量（DOMPurify 默认只净化不剥除）。
-  const html = DOMPurify.sanitize(raw, { FORBID_ATTR: ['style'] })
+  // 的 DOM 事后增强，不受影响。消毒配置单一真相源见 sanitizeHtmlFragment
+  // （皮肤引擎 data-nb-html 同源消费）。
+  const html = sanitizeHtmlFragment(raw)
   // marked 输出的表格标签无属性、形态稳定——就地包装为滚动容器。
   const linked = linkifyFilePaths(html)
   return linked

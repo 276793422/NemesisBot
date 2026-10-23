@@ -1037,13 +1037,15 @@ fn test_recent_completed_dispatch_durations() {
     );
 
     // 秒级时间戳粒度下同秒完结会得 duration=0（被 WHERE 过滤）——测试里
-    // 把 dispatched_at 回拨 120s，得到确定性的正时长（真时长语义由
-    // node_perf 单测覆盖，这里只验投影与过滤）。
+    // 把 dispatched_at 锚到 completed_at - 120，得到确定性的正时长
+    // （真时长语义由 node_perf 单测覆盖，这里只验投影与过滤）。
+    // 锚 completed_at 而非 dispatched_at 自身回拨：后者隐含「insert 与
+    // finish 落在同一墙钟秒」假设，重载 runner 上跨秒即得 121 假红。
     {
         let conn = store.conn.lock().unwrap();
         conn.execute(
             "UPDATE issue_dispatch
-             SET dispatched_at = dispatched_at - 120
+             SET dispatched_at = completed_at - 120
              WHERE task_id IN ('task-a1', 'task-a2')",
             [],
         )
@@ -4566,6 +4568,63 @@ fn claim_issue_rejects_empty_claimer_and_missing_issue() {
     let issue = store.create_issue(new_issue("x")).unwrap();
     assert!(store.claim_issue(issue.id, "  ", &admin()).is_err());
     assert!(store.claim_issue(999_999, "node-b", &admin()).is_err());
+    cleanup(&dir);
+}
+
+#[test]
+fn rollback_claim_clears_only_when_assignee_is_still_claimer() {
+    let (store, dir) = temp_store("claim-rollback-guard");
+    let actor = Actor::agent("node-b");
+
+    // ① 正常回滚：指派仍是认领者本人 → 清空 + 审计留痕。
+    let i1 = store.create_issue(new_issue("回滚 happy")).unwrap();
+    store.claim_issue(i1.id, "node-b", &actor).unwrap();
+    assert!(store.rollback_claim(i1.id, "node-b", &admin()).unwrap());
+    let cur = store.get_issue(i1.id).unwrap();
+    assert!(
+        cur.assignee.is_none() && cur.assignee_id.is_none(),
+        "回滚后必须回到未指派：{cur:?}"
+    );
+    assert!(
+        store
+            .list_activity(i1.id)
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "assigned"
+                && a.details
+                    .as_deref()
+                    .is_some_and(|d| d.contains("认领派发失败回滚"))),
+        "回滚必须留审计痕迹"
+    );
+
+    // ② 竞态守卫：并发派发赢家已把 assignee 回填成 node-c → 让位不清空。
+    //    （handle_claim 派发失败路径的现实场景：claim→dispatch 窗口内
+    //    dashboard 手动派发/补派抢先 try_claim_dispatch + assign 回填。）
+    let i2 = store.create_issue(new_issue("让位")).unwrap();
+    store.claim_issue(i2.id, "node-b", &actor).unwrap();
+    store
+        .assign_issue(
+            i2.id,
+            Some(AssignmentType::Worker),
+            Some("node-c".to_string()),
+            &admin(),
+        )
+        .unwrap();
+    assert!(
+        !store.rollback_claim(i2.id, "node-b", &admin()).unwrap(),
+        "指派已易主，回滚必须让位"
+    );
+    let cur = store.get_issue(i2.id).unwrap();
+    assert_eq!(
+        cur.assignee_id.as_deref(),
+        Some("node-c"),
+        "并发赢家的指派不得被回滚踩掉"
+    );
+
+    // ③ 未指派单 → false 零副作用。
+    let i3 = store.create_issue(new_issue("无人认领")).unwrap();
+    assert!(!store.rollback_claim(i3.id, "node-b", &admin()).unwrap());
+    assert!(store.get_issue(i3.id).unwrap().assignee_id.is_none());
     cleanup(&dir);
 }
 

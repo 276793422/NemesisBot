@@ -1084,6 +1084,38 @@ impl BoardStore {
         Ok(issue)
     }
 
+    /// 认领回滚（守卫式清空）：claim 后派发失败时把单子退回待领池——
+    /// **只在 assignee 仍是认领者本人时**清空。claim→dispatch 窗口内并发
+    /// 派发赢家（dashboard 手动派发/autopilot 补派抢先 [`Self::try_claim_dispatch`]
+    /// 并回填自己的 assignee）不得被踩：无条件清空会抹掉在途派发的指派
+    /// （「派发即指派」的字段与事实脱节回归）。返回是否执行了清空
+    /// （false = 让位，单子归并发赢家）。守卫 UPDATE 与 [`Self::claim_issue`]
+    /// 同族（SQLite 单写者 + 事务下原子）。
+    pub fn rollback_claim(&self, id: i64, claimer: &str, actor: &Actor) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        let changed = tx
+            .execute(
+                "UPDATE issue SET assignee_type = NULL, assignee_id = NULL, updated_at = ?1
+                 WHERE id = ?2 AND assignee_type = ?3 AND assignee_id = ?4",
+                params![now, id, AssignmentType::Worker.as_str(), claimer],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed > 0 {
+            insert_activity(
+                &tx,
+                id,
+                actor,
+                "assigned",
+                Some(&format!("认领派发失败回滚：worker/{claimer} → （清空）")),
+                now,
+            )?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(changed > 0)
+    }
+
     /// 看板拖拽（W2 P3）：原子地完成「状态转移 + 列内排序」——同列重排只改
     /// position（不触发状态机，写 reordered 活动）；跨列拖动走状态机校验并写
     /// status_change 评论 + 指派对象通知（与 [`Self::transition_issue`] 同套

@@ -277,6 +277,14 @@ impl HttpProvider {
         );
         let mut body = self.build_request_body(messages, tools, &model, options);
         body["stream"] = serde_json::json!(true);
+        // include_usage（2026-10-23 根修）：OpenAI 语义下流式 usage 只在请求
+        // 带 stream_options.include_usage 时出现——终态 finish chunk 之后、
+        // choices:[] 的专用 usage chunk。此前既不请求也不转发，stream=yes
+        // 模型在严格 OpenAI 形态端点上账本恒按 0 记（usage 面板/审计/
+        // board token 预算保险丝漏记）；usage 内嵌 finish chunk 的端点
+        // （DeepSeek 等）不受影响。主流兼容实现均支持该键；个别严格端点
+        // 若拒绝，诚实 400 走故障转移，好过静默零账。
+        body["stream_options"] = serde_json::json!({ "include_usage": true });
 
         let api_key = self.config.api_key.clone();
         let headers = self.config.headers.clone();
@@ -675,6 +683,25 @@ impl HttpProvider {
                             && finish_reason.is_none()
                             && tool_calls.is_empty()
                         {
+                            // 终态后 usage 专用 chunk（include_usage 形态：
+                            // choices 空数组 + usage，finish 已随前一帧发出）
+                            // ——转发 usage 给覆盖式聚合侧（stream_util 出现
+                            // 即覆盖收下）；其余无内容 chunk 照旧丢弃。不碰
+                            // finish_emitted（终态已发，[DONE]/EOF 收尾不变）。
+                            if parsed["choices"].as_array().is_some_and(|a| a.is_empty())
+                                && let Some(usage) = parsed.get("usage").map(extract_usage)
+                            {
+                                let chunk = StreamChunk {
+                                    delta: String::new(),
+                                    tool_calls: vec![],
+                                    finish_reason: None,
+                                    usage: Some(usage),
+                                    reasoning_content: None,
+                                };
+                                if tx.send(Ok(chunk)).await.is_err() {
+                                    return;
+                                }
+                            }
                             continue;
                         }
 

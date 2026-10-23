@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import hljs from 'highlight.js/lib/core'
 import diff from 'highlight.js/lib/languages/diff'
 import { useWSAPI } from '../../composables/useWSAPI'
+import { escapeHtml } from '../../utils/markdown'
 
 hljs.registerLanguage('diff', diff)
 
@@ -83,7 +84,9 @@ const diffHtml = computed(() => {
   try {
     return hljs.highlight(diffText.value, { language: 'diff' }).value
   } catch {
-    return diffText.value
+    // hljs 正常输出自带 HTML 转义；降级路径同理必须先转义再进 v-html，
+    // 不能让 diff 原文（含文件内容）绕过转义直接进 HTML 上下文。
+    return escapeHtml(diffText.value)
   }
 })
 

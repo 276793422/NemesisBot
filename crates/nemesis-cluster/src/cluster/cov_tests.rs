@@ -57,6 +57,16 @@ impl Ws {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, json).unwrap();
     }
+
+    /// 写 config.quic.json（QUIC 解耦后的配置真相源，2026-10-23）。
+    /// 消费者（relay fail-closed / 实时开关 roundtrip）都在 quic-relay 门内，
+    /// helper 同门防默认形态 dead_code。
+    #[cfg(feature = "quic-relay")]
+    fn write_quic_config(&self, json: &str) {
+        let path = nemesis_path::resolve_quic_config_path_in_workspace(&self.root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
 }
 
 impl Drop for Ws {
@@ -635,40 +645,76 @@ async fn poll_stale_times_out_past_safety_net_publishes_bus() {
 }
 
 // ---------------------------------------------------------------------------
-// QUIC 中继 gateway 内路径 fail-closed（2026-10-21 三路收口）：
-// `setup_relay_server` 对 roaming.relay.token 空 = Err 拒绝启动（跳板无鉴权
-// 裸奔 = 公网白蹭带宽 + 存在性探测面）。与独立入口 `run_relay_server` 顶部
-// 闸同一纪律；Err → 调用方 warn 不炸 gateway（中继是叠加层设施）。
+// QUIC 中继 gateway 内路径 fail-closed（2026-10-21 三路收口；2026-10-23 起
+// 走 QuicRelayManager——中继与集群解耦）：manager.setup() 对 config.quic.json
+// relay.token 空 = Err 拒绝启动（跳板无鉴权裸奔 = 公网白蹭带宽 + 存在性探测
+// 面）。与独立入口 `run_relay_server` 顶部闸同一纪律；Err → 调用方 warn 不炸
+// gateway（中继是叠加层设施）。
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "roaming-relay")]
+#[cfg(feature = "quic-relay")]
 #[tokio::test]
-async fn setup_relay_server_fails_closed_on_empty_token() {
+async fn relay_setup_fails_closed_on_empty_token() {
     let ws = Ws::new("relay-fc");
-    // enabled=true + token 空（default 段无 token 键 = 空）。
-    ws.write_app_config(
+    // enabled=true + token 空（缺 token 键 = 解析默认空）。
+    ws.write_quic_config(
         r#"{
-            "enabled": false,
-            "roaming": { "enabled": false, "relay": { "enabled": true } }
+            "relay": { "enabled": true }
         }"#,
     );
-    let cluster = ws.cluster("relay-fc-node", "relay-fc-node");
+    let manager = crate::roaming::relay_manager::QuicRelayManager::new(ws.root.clone());
 
-    let err = cluster
-        .setup_relay_server()
+    let err = manager
+        .setup()
         .await
         .expect_err("token 空必须拒绝启动（fail-closed）");
-    assert!(
-        err.contains("roaming.relay.token"),
-        "报错必须指路 token 键：{err}"
-    );
+    assert!(err.contains("relay.token"), "报错必须指路 token 键：{err}");
     assert!(
         err.contains("fail-closed") || err.contains("拒绝启动"),
         "报错必须说明拒绝语义：{err}"
     );
-    // 未 spawn：句柄槽必须仍为空（拒绝发生在任何端口 bind 之前）。
-    assert!(
-        cluster.relay_server.lock().is_none(),
-        "fail-closed 拒绝不得留下中继句柄"
+    // 未 spawn：运行态必须仍未运行（拒绝发生在任何端口 bind 之前）。
+    assert!(!manager.status().0, "fail-closed 拒绝不得留下中继句柄");
+}
+
+// ---------------------------------------------------------------------------
+// QUIC 中继实时开关 roundtrip（2026-10-23）：QuicRelayManager::setup（幂等
+// 拉起）与 stop（runtime disable 单一实现）运行时即可调用，免重启网关——
+// 「集群功能都能实时开关，穿透功能不能实时开关说不过去」。端口全 0（OS
+// 临时分配）零冲突；loopback bind，CI 可复现。
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "quic-relay")]
+#[tokio::test]
+async fn relay_runtime_enable_disable_roundtrip() {
+    let ws = Ws::new("relay-rt");
+    ws.write_quic_config(
+        r#"{
+            "relay": { "enabled": true, "token": "rt-tok", "tls": "none",
+                "http_port": 0, "quic_port": 0, "registry_port": 0 }
+        }"#,
     );
+    let manager = crate::roaming::relay_manager::QuicRelayManager::new(ws.root.clone());
+
+    // 初始：未拉起。
+    assert!(!manager.status().0, "初始运行态必须为未运行");
+    // 实时开：进程内拉起，状态面立即 active。
+    assert!(
+        manager
+            .setup()
+            .await
+            .expect("实时启用应成功（token 在场 + 端口临时分配）"),
+        "setup 应报告已启动"
+    );
+    let (active, http, quic) = manager.status();
+    assert!(active, "实时启用后运行态必须立即可见");
+    assert!(http.is_some(), "HTTP 监听地址必须就位");
+    assert!(quic.is_none(), "tls=none 不拉 QUIC 臂——quic_addr=None 诚实");
+    // 实时关：停臂同步生效（句柄槽取空 → 状态立即回落）。
+    manager.stop();
+    let (after_stop, _, _) = manager.status();
+    assert!(!after_stop, "停臂取走句柄后运行态必须立即回落");
+    // 幂等：重复停不炸（槽已空 = 无操作）。
+    manager.stop();
+    assert!(!manager.status().0);
 }

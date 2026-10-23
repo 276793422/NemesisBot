@@ -35,7 +35,7 @@ import ToolCallCard from './chat/ToolCallCard.vue'
 import type { ToolEvent } from '../stores/chat'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
-import { renderMarkdownHtml } from '../utils/markdown'
+import { escapeHtml, renderMarkdownHtml } from '../utils/markdown'
 import { planRegenerate, type RegenPlan } from '../utils/regenerate'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -378,7 +378,9 @@ function renderMarkdown(text: string): string {
   try {
     return renderMarkdownHtml(text, { breaks: true })
   } catch {
-    return text.replace(/\n/g, '<br>')
+    // 降级路径必须保住消毒闸不变量：原文过 escapeHtml 变纯文本再进
+    // v-html，不能把未转义原文直接喂 v-html（等于绕过 renderMarkdownHtml）。
+    return escapeHtml(text).replace(/\n/g, '<br>')
   }
 }
 

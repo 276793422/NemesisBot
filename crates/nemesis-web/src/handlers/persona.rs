@@ -670,6 +670,9 @@ impl ModuleHandler for PersonaHandler {
             "shop.refresh",
             "shop.preview",
             "shop.download",
+            // 集群聘用依赖 cluster handler（写 cluster/ 三件套 + peers.toml 事务）
+            #[cfg(feature = "cluster")]
+            "shop.hire",
         ]
     }
 
@@ -728,6 +731,12 @@ impl ModuleHandler for PersonaHandler {
                 let d = data.ok_or("missing data")?;
                 let id = get_str(&d, "id")?;
                 self.cmd_shop_download(workspace, &id).await
+            }
+            #[cfg(feature = "cluster")]
+            "shop.hire" => {
+                let d = data.ok_or("missing data")?;
+                let id = get_str(&d, "id")?;
+                self.cmd_shop_hire(workspace, &id, ctx)
             }
             _ => Err(format!("unknown command: persona.{}", cmd)),
         }
@@ -1308,6 +1317,221 @@ impl PersonaHandler {
             "id": id,
         })))
     }
+
+    /// 集群聘用：把已安装的本地超市人格映射进 workspace/cluster/ 三件套。
+    /// 决策与零丢失契约：docs/REPORT/2026-10-23_集群聘用需求评估与决策.md。
+    /// 前置：必须先 shop.download（决策 4）；覆盖前 zip 备份（决策 5）；
+    /// 节点身份只换 name（决策 3）；EXPERTISE 保守不动（决策 2）。
+    #[cfg(feature = "cluster")]
+    fn cmd_shop_hire(
+        &self,
+        workspace: &str,
+        id: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let dir = resolve_path(workspace, &format!("personas/{}", id))?;
+        if !dir.exists() {
+            return Err(format!(
+                "persona '{}' not installed — 集群聘用必须先下载（shop.download）",
+                id
+            ));
+        }
+        let (name, backup) = hire_write_cluster_persona(workspace, &dir, id)?;
+
+        // runtime 内存态同步（persona_apply 同款「runtime + peers.toml 双写」
+        // 纪律，只换 name——决策 3）：peers.toml 是持久真相源（重启重读），
+        // runtime 同步消掉「重启失败/未完成时 nodes.list/拓扑仍显旧名」的
+        // 显示失配窗口。handle 缺席（集群未装配）best-effort 跳过。
+        if let Some(cluster) = ctx.state.cluster.clone() {
+            cluster.set_node_name(&name);
+        }
+
+        // Best-effort reload（语义与 cluster.rs persona_apply 一致）：只在集群
+        // 运行中重启；从不为了应用人格而启动一个停止的集群。
+        let mut reloaded = false;
+        let mut note = String::new();
+        if let Some(svc) = ctx.state.cluster_service.as_ref() {
+            let running = nemesis_services::bot_service::LifecycleService::is_running(svc.as_ref());
+            if running {
+                match svc.stop().and_then(|_| svc.start()) {
+                    Ok(()) => reloaded = true,
+                    Err(e) => {
+                        tracing::warn!("[Persona] shop.hire cluster reload failed: {}", e);
+                        note = format!("（重启集群以加载新人格失败：{e}，将在下次启动集群时生效）");
+                    }
+                }
+            } else {
+                note = "（集群当前未运行，新人格将在下次启动集群时生效）".to_string();
+            }
+        } else {
+            note = "（集群服务不可用，新人格将在下次启动集群时生效）".to_string();
+        }
+
+        tracing::info!(persona = %id, name = %name, reloaded, "[Persona] hired into cluster");
+        Ok(Some(serde_json::json!({
+            "hired": true,
+            "name": name,
+            "id": id,
+            "backed_up": backup,
+            "reloaded": reloaded,
+            "note": note,
+        })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cluster hire（集群聘用）—— 映射/备份/身份纯函数 + 写盘主体
+// 全体随 cluster feature 门控：write 盘主体跨调 cluster handler（feature 门
+// 模块），映射纯函数虽不依赖 cluster，随主体同进出避免 feature-off 死代码。
+// ---------------------------------------------------------------------------
+
+/// 剥离系统模板前缀，取人格自有附加段。超市下载写入形态是
+/// `format!("{}\n{}", DEFAULT_*, extra)`；strip 失败（用户手改过 / 模板
+/// 升级导致前缀不匹配）时**整个文件原样返回**——宁可把系统模板文字也
+/// 塞进 SOUL，绝不丢人格内容（零丢失兜底）。
+#[cfg(feature = "cluster")]
+fn strip_system_prefix(file_content: &str, system_default: &str) -> String {
+    match file_content.strip_prefix(system_default) {
+        Some(rest) => rest.trim_start_matches('\n').to_string(),
+        None => file_content.to_string(),
+    }
+}
+
+/// 聘用映射：cluster/SOUL.md = 原 SOUL + 专用工作流尾节 + 工具偏好尾节
+///（非空才追加，`---` 分隔）。IDENTITY 1:1 由调用方直接拷贝。
+#[cfg(feature = "cluster")]
+fn build_cluster_soul(soul_md: &str, agent_md: &str, tools_md: &str) -> String {
+    let agent_extra = strip_system_prefix(agent_md, DEFAULT_AGENT_MD);
+    let tools_extra = strip_system_prefix(tools_md, DEFAULT_TOOLS_MD);
+    let mut out = soul_md.trim_end().to_string();
+    for extra in [agent_extra, tools_extra] {
+        if extra.trim().is_empty() {
+            continue;
+        }
+        out.push_str("\n\n---\n\n");
+        out.push_str(extra.trim_end());
+    }
+    out.push('\n');
+    out
+}
+
+/// PERSONA.json 的 name 字段（frontmatter 展示名）；缺失/空/非法回落 id。
+#[cfg(feature = "cluster")]
+fn read_persona_display_name(dir: &std::path::Path, id: &str) -> String {
+    std::fs::read_to_string(dir.join("PERSONA.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// 覆盖前备份 hire 即将触碰的全部既有文件到 `cluster/backups/persona_<毫秒
+/// 时间戳>.zip`：人格三件（IDENTITY/SOUL/EXPERTISE，存在哪个备哪个）+
+/// peers.toml（hire 会改 [node].name，回滚需要它）。全部不存在（含
+/// cluster/ 目录不存在）→ Ok(None)，无需备份。**字节级读取**（fs::read，
+/// 非 UTF-8 手改文件照备不丢）；存在但读不出（权限/占用）→ Err abort，
+/// fail-closed：绝不在无备份的情况下覆盖旧文件。同毫秒重入以 `_N` 后缀
+/// 递增防覆盖（备份被覆盖 = 丢备份）。全留不滚动（单份几 KB，决策 5）。
+#[cfg(feature = "cluster")]
+fn backup_cluster_persona_files(workspace: &str) -> Result<Option<String>, String> {
+    const BACKUP_FILES: [&str; 4] = ["IDENTITY.md", "SOUL.md", "EXPERTISE.md", "peers.toml"];
+    let mut present: Vec<(&str, Vec<u8>)> = Vec::new();
+    for f in BACKUP_FILES {
+        let path = resolve_path(workspace, &format!("cluster/{f}"))?;
+        if path.exists() {
+            let bytes = std::fs::read(&path).map_err(|e| {
+                format!("备份前读取 cluster/{f} 失败，拒绝在无备份情况下覆盖旧文件: {e}")
+            })?;
+            present.push((f, bytes));
+        }
+    }
+    if present.is_empty() {
+        return Ok(None);
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut rel = format!("cluster/backups/persona_{ts}.zip");
+    let mut n = 1u32;
+    while resolve_path(workspace, &rel)?.exists() {
+        rel = format!("cluster/backups/persona_{ts}_{n}.zip");
+        n += 1;
+    }
+    let zip_path = resolve_path(workspace, &rel)?;
+    if let Some(parent) = zip_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建备份目录失败: {e}"))?;
+    }
+    let file = std::fs::File::create(&zip_path).map_err(|e| format!("创建备份文件失败: {e}"))?;
+    let mut zw = zip::ZipWriter::new(std::io::BufWriter::new(file));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, content) in &present {
+        zw.start_file(*name, options)
+            .map_err(|e| format!("写入备份条目 {name} 失败: {e}"))?;
+        std::io::Write::write_all(&mut zw, content)
+            .map_err(|e| format!("写入备份条目 {name} 失败: {e}"))?;
+    }
+    // BUG-HUNT R16：finish 返回的 BufWriter 若靠 drop 收尾，缓冲里最后
+    // ≤8KiB 的 flush 错误会被 std 静默吞掉——本函数返回 Ok 却留下截断的
+    // 备份 zip，调用方照常覆盖旧人格文件，架空「绝不在无备份的情况下
+    // 覆盖旧文件」的 fail-closed 契约（截断备份比没有更糟：虚假信心）。
+    // 对齐 REL-002 纪律：显式落盘报错 + sync_all 后才算备份成功（备份必须
+    // 先于紧随其后的覆盖写，确保掉电也存活）。
+    let inner = zw.finish().map_err(|e| format!("收尾备份 zip 失败: {e}"))?;
+    inner
+        .into_inner()
+        .map_err(|e| format!("备份 zip 落盘失败: {}", e.into_error()))?
+        .sync_all()
+        .map_err(|e| format!("备份 zip sync 失败: {e}"))?;
+    Ok(Some(rel))
+}
+
+/// 聘用写盘主体（无 ctx 的可测核心）：备份（hire 触碰的全部既有文件）→
+/// cluster/IDENTITY.md（1:1 拷贝）→ cluster/SOUL.md（拼接）→ peers.toml
+/// [node] 只换 name。EXPERTISE 保守不动（决策 2）。返回 (展示名, 备份相对
+/// 路径 Option)。
+#[cfg(feature = "cluster")]
+fn hire_write_cluster_persona(
+    workspace: &str,
+    persona_dir: &std::path::Path,
+    id: &str,
+) -> Result<(String, Option<String>), String> {
+    let read = |f: &str| -> Result<String, String> {
+        std::fs::read_to_string(persona_dir.join(f))
+            .map_err(|e| format!("读取 personas/{id}/{f} 失败: {e}"))
+    };
+    let identity = read("IDENTITY.md")?;
+    let soul = read("SOUL.md")?;
+    let agent = read("AGENT.md")?;
+    let tools = read("TOOLS.md")?;
+
+    let backup = backup_cluster_persona_files(workspace)?;
+
+    crate::handlers::cluster::ClusterHandler::write_cluster_file(
+        workspace,
+        "IDENTITY.md",
+        &identity,
+    )?;
+    crate::handlers::cluster::ClusterHandler::write_cluster_file(
+        workspace,
+        "SOUL.md",
+        &build_cluster_soul(&soul, &agent, &tools),
+    )?;
+
+    // 节点身份：只换 name（纯展示；tags/role/professions 等派发硬条件绝不
+    // 碰——决策 3，超市标签不准且 tags 是 matcher 交集条件）。
+    let name = read_persona_display_name(persona_dir, id);
+    crate::handlers::cluster::update_peers_node(workspace, |node| {
+        node.name = name.clone();
+        Ok(())
+    })?;
+    Ok((name, backup))
 }
 
 // ---------------------------------------------------------------------------
@@ -1329,3 +1553,8 @@ mod s10b_tests;
 // （GITHUB_API 硬编码 https 无注入缝）或防御臂，定性见 agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
+
+// 集群聘用（2026-10-23）：strip/build 映射纯函数 + 备份 zip + 写盘主体
+//（无 ctx，temp workspace 文件级验证）。随 cluster feature 门控。
+#[cfg(all(test, feature = "cluster"))]
+mod hire_tests;

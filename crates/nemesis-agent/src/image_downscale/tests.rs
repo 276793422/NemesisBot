@@ -5,7 +5,7 @@
 use std::io::Cursor;
 use std::path::PathBuf;
 
-use super::{GateVerdict, Limits, downscale_gate_with};
+use super::{GateVerdict, Limits, downscale_gate_with, webp_is_animated};
 
 fn tiny_limits() -> Limits {
     Limits {
@@ -157,6 +157,137 @@ fn rejects_gif_honestly() {
     let src = write_file(&dir, "anim.gif", &gif);
     let err = downscale_gate_with(&src, &dir.0, &tiny_limits()).unwrap_err();
     assert!(err.contains("GIF"), "honest GIF boundary: {}", err);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HUNT R33：动画 WebP 与 GIF 同原则——image-webp 对 ANMF 文件解码第一帧
+// 成功，原实现只拦 GIF，动画 WebP 撞闸后被静默重编码成静态 JPEG（动画帧丢
+// 失 = 模块 doc 钉死的「静默语义变更」）。修复 = 头部采样窗口 12→4096 +
+// webp_is_animated（VP8X animation 旗标 / ANMF fourcc）诚实拒绝。
+// ---------------------------------------------------------------------------
+
+/// 极小动画 WebP fixture（82 字节）：按 image-webp 0.2.4 头部解析契约构造
+/// ——动画文件必须 ANIM+ANMF chunk 齐全（缺任一 = ChunkMissing），VP8X 旗标
+/// bit1 置动画位；ANMF payload ≥24 且内嵌 VP8L 子块头合法（1x1 lossless），
+/// 否则 into_dimensions 在动画检查点之前就诚实 Err、测试失真。画布 500x500
+/// 让 tiny_limits（entry_dimension=100）触发降采样路径。
+fn animated_webp_bytes() -> Vec<u8> {
+    fn u24le(v: u32) -> [u8; 3] {
+        [
+            (v & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            ((v >> 16) & 0xFF) as u8,
+        ]
+    }
+    // VP8X：flags=0x02（动画位）+ 保留 3 字节 + 画布 500x500（w-1/h-1 3LE）。
+    let mut vp8x = vec![0x02, 0, 0, 0];
+    vp8x.extend_from_slice(&u24le(499));
+    vp8x.extend_from_slice(&u24le(499));
+    // ANIM：背景色 4 字节 + loop_count u16=0（Forever）。
+    let anim = vec![0u8; 6];
+    // ANMF payload：帧几何 x/y/w-1/h-1 各 3LE（全 0 = 1x1 帧）+ 时长 3LE+1
+    // 保留 + VP8L 子块头（fourcc+size=5）+ VP8L 1x1 头（0x2F + u32=0）。
+    let mut anmf = vec![0u8; 12];
+    anmf.extend_from_slice(&[40, 0, 0, 0]); // duration
+    anmf.extend_from_slice(b"VP8L");
+    anmf.extend_from_slice(&5u32.to_le_bytes());
+    anmf.extend_from_slice(&[0x2F, 0x00, 0x00, 0x00, 0x00]);
+    assert!(anmf.len() >= 24, "ANMF payload 契约下限");
+
+    let mut chunks = Vec::new();
+    chunks.extend_from_slice(b"VP8X");
+    chunks.extend_from_slice(&(vp8x.len() as u32).to_le_bytes());
+    chunks.extend_from_slice(&vp8x);
+    chunks.extend_from_slice(b"ANIM");
+    chunks.extend_from_slice(&(anim.len() as u32).to_le_bytes());
+    chunks.extend_from_slice(&anim);
+    let anmf_size = anmf.len() as u32;
+    let anmf_pad = (anmf_size % 2) as usize; // chunk 偶对齐
+    chunks.extend_from_slice(b"ANMF");
+    chunks.extend_from_slice(&anmf_size.to_le_bytes());
+    chunks.extend_from_slice(&anmf);
+    chunks.resize(chunks.len() + anmf_pad, 0);
+
+    let riff_size = 4 + chunks.len() as u32; // "WEBP" + chunks
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&riff_size.to_le_bytes());
+    out.extend_from_slice(b"WEBP");
+    out.extend_from_slice(&chunks);
+    out
+}
+
+#[test]
+fn rejects_animated_webp_honestly() {
+    let dir = TempDir::new("animwebp");
+    let src = write_file(&dir, "sticker.webp", &animated_webp_bytes());
+    let err = downscale_gate_with(&src, &dir.0, &tiny_limits()).unwrap_err();
+    assert!(
+        err.contains("动画 WebP"),
+        "honest animated-WebP boundary: {}",
+        err
+    );
+}
+
+#[test]
+fn static_webp_still_downsamples() {
+    let dir = TempDir::new("staticwebp");
+    // 静态无损 WebP（image 原生编码器）：无 VP8X/ANMF，不得误伤——照常解码
+    // 重编码为 JPEG 产物。
+    let mut webp = Vec::new();
+    let mut cursor = Cursor::new(&mut webp);
+    let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut cursor);
+    image::DynamicImage::ImageRgb8(noise_rgb(200, 150))
+        .write_with_encoder(encoder)
+        .unwrap();
+    assert!(webp.len() > 2048, "fixture 必须超 tiny entry_bytes 触发闸");
+    let src = write_file(&dir, "photo.webp", &webp);
+    let v = downscale_gate_with(&src, &dir.0, &tiny_limits()).unwrap();
+    let GateVerdict::Replaced { path, .. } = v else {
+        panic!("expected Replaced, got {v:?}");
+    };
+    let product = std::fs::read(&path).unwrap();
+    assert_eq!(&product[..3], &[0xFF, 0xD8, 0xFF], "产物应为 JPEG");
+}
+
+/// webp_is_animated 纯函数判定矩阵：spec 权威判据（VP8X 旗标）、兜底判据
+/// （ANMF fourcc）、静态两形态、残帧与非 WebP 输入。
+#[test]
+fn webp_is_animated_decision_matrix() {
+    let mut base = b"RIFF".to_vec();
+    base.extend_from_slice(&74u32.to_le_bytes());
+    base.extend_from_slice(b"WEBP");
+
+    // VP8X 旗标 bit1 → 动画。
+    let mut flag = base.clone();
+    flag.extend_from_slice(b"VP8X");
+    flag.extend_from_slice(&10u32.to_le_bytes());
+    flag.extend_from_slice(&[0x02, 0, 0, 0, 0, 0, 0]);
+    assert!(webp_is_animated(&flag), "VP8X animation 旗标必须判动画");
+
+    // 旗标 0 的静态扩展 WebP → 非动画。
+    let mut still = flag.clone();
+    still[20] = 0x08; // alpha 位，动画位清零（head[20] = flags 字节）
+    assert!(!webp_is_animated(&still), "旗标 0 静态 WebP 不得误判");
+
+    // 无 VP8X 但窗口内扫到 ANMF（非规范 mux 兜底）→ 动画。
+    let mut anmf_only = base.clone();
+    anmf_only.extend_from_slice(b"VP8L\0\0\0\0ANMF....");
+    assert!(webp_is_animated(&anmf_only), "ANMF fourcc 必须判动画");
+
+    // 裸 VP8L 静态（image 原生编码器形态）→ 非动画。
+    let mut lossless = base.clone();
+    lossless.extend_from_slice(b"VP8L");
+    lossless.extend_from_slice(&5u32.to_le_bytes());
+    lossless.extend_from_slice(&[0x2F, 0, 0, 0, 0]);
+    assert!(!webp_is_animated(&lossless));
+
+    // 残帧（<12 字节）与非 WebP 输入 → 恒 false（不拦静态链）。
+    assert!(!webp_is_animated(b"RIFF\x00\x00"));
+    assert!(!webp_is_animated(&encode_jpeg(
+        &solid_rgb(8, 8, [1, 2, 3]),
+        85
+    )));
+    assert!(!webp_is_animated(&[]));
 }
 
 #[test]

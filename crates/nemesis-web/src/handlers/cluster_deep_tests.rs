@@ -101,6 +101,7 @@ fn make_deep_ctx(
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
+        quic_relay: None,
         cluster_service: service
             .map(|s| s as Arc<dyn nemesis_services::bot_service::LifecycleService>),
         cluster_log_dir: log_dir,
@@ -1429,6 +1430,7 @@ fn ctx_ws_with_provider(
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
+        quic_relay: None,
         cluster_service: service
             .map(|s| s as Arc<dyn nemesis_services::bot_service::LifecycleService>),
         cluster_log_dir: None,
