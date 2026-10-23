@@ -318,6 +318,32 @@ nemesisbot sandbox stop          # 停止并卸载引擎（--purge 连文件一�
 
 ---
 
+## 紫微系统（三方程序受控接管）
+
+「紫微系统」让 bot 对**任意第三方 Windows 程序**（无源码、无接口）建立受控接管：注入探测载荷 → 静态分析 + 运行观测定位关键函数 → 生成受管 profile（数据结构解码 + 自动工具）→ 附加运行期采集与远程调用。目标更新后验证链拦截失效 profile，《找回报告》+ 用户逐锚确认恢复信任。全程套用安全 8 层管线与审计。
+
+四阶段生命周期（对应 profile 状态机 Active / Stale / Revoked）：
+
+```bash
+nemesisbot ziwei              # 交互式配置向导（选目标 → 快照分析 → 锚点候选 → 标注 → 结构/工具定义 → 提交）
+nemesisbot ziwei status       # 全部 profile 概览（状态/函数/工具数）
+nemesisbot ziwei invoke <id>  # 执行 profile 定义的自动工具（轮询报表 / 远程调用 / hook 捕获）
+nemesisbot ziwei verify <id>  # 附加前验证链：hash 基准 → 版本资源证据 → 锚投票（阈值裁决）
+nemesisbot ziwei refresh <id> --exe <路径>   # 目标更新后重扫锚集 → 《找回报告》
+nemesisbot ziwei refresh-confirm <id> --exe <路径> [--accept fn1,fn2]  # 用户授权找回（全锚命中 = Active + 新基准）
+nemesisbot ziwei revoke <id>  # 吊销（不可自动复活）
+```
+
+- **锚点**（标注时生成、找回时复用）：byte_pattern / imm_const / str_ref / import_call_seq / bb_hash 五类。附加时逐锚重扫投票，过阈值（`anchors_vote>=N`，缺省 2）即「语义仍在」。
+- **验证链**：hash 一致 → 直接放行；不一致 → 锚投票过阈值 = 降级可用（一次性注记，Dashboard 横幅提示），不过 = Stale（拒附加 + `logs/ziwei/notify.jsonl` 通知）。
+- **找回**：`refresh` 逐锚重扫盘上 exe（原始字节级，不依赖反汇编）+ 可选 LLM 语义比对 → 报告落 `workspace/reports/ziwei-recover/`；确认接受 = 新 hash 基准入库恢复 Active，有拒绝 = 诚实保持 Stale（无部分恢复态）。
+- **payload**：`ziwei_agent_x64.dll` / `ziwei_agent_x86.dll` 双架构探测载荷（≤1MB/架构，编译期嵌入，`build-windows.bat --skip-ziwei` 可跳过）。
+- Dashboard「紫微」页：向导 / profile 管理 / 验证 / 失效横幅（授权找回 / 引导重配）。
+
+裁剪：cargo feature `ziwei`（默认开）；关掉后整个子系统（CLI/WSAPI/Dashboard 页）不参与编译。
+
+---
+
 ## 安全配置
 
 ### 工作目录隔离

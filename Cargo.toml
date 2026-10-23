@@ -69,6 +69,9 @@ members = [
     "test-tools/verify-loader",
     "test-tools/arch-gate",
     "crates/nemesis-guest",
+    "crates/nemesis-ziwei",
+    "crates/nemesis-ziwei-profile",
+    "crates/nemesis-ziwei-rev",
     "test-tools/fake-qmp",
     "test-tools/verify-probe",
 ]
@@ -208,6 +211,10 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"
 
+# 二进制分析（紫微 M3 配置期引擎；MIT，取证 2026-10-22）
+# 只取 decoder：反汇编解码 + 指令属性（立即数/分支目标/rip 相对），不引编码器与格式化器
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "instr_info", "std"] }
+
 # CLI
 clap = { version = "4", features = ["derive", "string"] }
 
@@ -266,6 +273,9 @@ nemesis-state = { path = "crates/nemesis-state" }
 nemesis-taskstore = { path = "crates/nemesis-taskstore" }
 nemesis-utils = { path = "crates/nemesis-utils" }
 nemesis-injector = { path = "crates/nemesis-injector" }
+nemesis-ziwei = { path = "crates/nemesis-ziwei" }
+nemesis-ziwei-profile = { path = "crates/nemesis-ziwei-profile" }
+nemesis-ziwei-rev = { path = "crates/nemesis-ziwei-rev" }
 nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }

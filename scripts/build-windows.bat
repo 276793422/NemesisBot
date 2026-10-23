@@ -31,6 +31,7 @@ REM Parse Arguments
 REM ============================================
 set CLEAN=0
 set SKIP_PLUGIN=0
+set SKIP_ZIWEI=0
 
 :parse_args
 if "%~1"=="" goto done_parsing
@@ -41,6 +42,11 @@ if /i "%~1"=="--clean" (
 )
 if /i "%~1"=="--skip-plugin" (
     set SKIP_PLUGIN=1
+    shift
+    goto parse_args
+)
+if /i "%~1"=="--skip-ziwei" (
+    set SKIP_ZIWEI=1
     shift
     goto parse_args
 )
@@ -55,6 +61,7 @@ echo.
 echo Options:
 echo   --clean        Clean target before building
 echo   --skip-plugin  Skip plugin-ui.dll build
+echo   --skip-ziwei   Skip ziwei payload DLLs (dual-arch inject payloads)
 echo   --help         Show this help
 exit /b 0
 
@@ -155,6 +162,67 @@ if exist "web\package.json" (
 )
 echo.
 
+REM --- ziwei payload DLLs (dual-arch inject payloads, x64+x86; embedded into
+REM     nemesisbot at compile time via nemesis-ziwei build.rs - this build must
+REM     precede `cargo build --release`. Failure = non-fatal: absent file =
+REM     zero-byte embed + honest runtime error, per decision 9) ---
+if "%SKIP_ZIWEI%"=="1" (
+    echo   Ziwei payload skipped ^(--skip-ziwei^)
+    goto step3
+)
+if exist "plugins\ziwei-agent-dll\Cargo.toml" (
+    echo   Building ziwei payload ^(x64^)...
+    pushd plugins\ziwei-agent-dll
+    set CARGO_TARGET_DIR=target
+    rustup target list --installed | findstr /c:"x86_64-pc-windows-msvc" >nul
+    if errorlevel 1 (
+        echo   WARN x86_64-pc-windows-msvc target missing ^(rustup target add x86_64-pc-windows-msvc^)
+        popd
+        set CARGO_TARGET_DIR=target\target_windows
+        goto ziwei_x86
+    )
+    cargo build --release --target x86_64-pc-windows-msvc
+    if errorlevel 1 (
+        echo   WARN ziwei x64 payload build failed ^(non-fatal, embed stays zero-byte^)
+        popd
+        set CARGO_TARGET_DIR=target\target_windows
+        goto ziwei_x86
+    )
+    if not exist bin mkdir bin
+    copy /y target\x86_64-pc-windows-msvc\release\ziwei_agent_dll.dll bin\ziwei_agent_x64.dll >nul
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK ziwei x64 payload built
+) else (
+    echo   SKIP plugins\ziwei-agent-dll\Cargo.toml not found
+    goto step3
+)
+:ziwei_x86
+if exist "plugins\ziwei-agent-dll\Cargo.toml" (
+    echo   Building ziwei payload ^(x86^)...
+    pushd plugins\ziwei-agent-dll
+    set CARGO_TARGET_DIR=target
+    rustup target list --installed | findstr /c:"i686-pc-windows-msvc" >nul
+    if errorlevel 1 (
+        echo   WARN i686-pc-windows-msvc target missing ^(rustup target add i686-pc-windows-msvc^)
+        popd
+        set CARGO_TARGET_DIR=target\target_windows
+        goto step3
+    )
+    cargo build --release --target i686-pc-windows-msvc
+    if errorlevel 1 (
+        echo   WARN ziwei x86 payload build failed ^(non-fatal, embed stays zero-byte^)
+        popd
+        set CARGO_TARGET_DIR=target\target_windows
+        goto step3
+    )
+    if not exist bin mkdir bin
+    copy /y target\i686-pc-windows-msvc\release\ziwei_agent_dll.dll bin\ziwei_agent_x86.dll >nul
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK ziwei x86 payload built
+)
+echo.
 :step3
 
 REM ============================================

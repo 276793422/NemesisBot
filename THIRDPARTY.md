@@ -46,7 +46,7 @@
 
 **MPL-2.0 说明**：MPL-2.0 为文件级弱 copyleft。本项目**未修改**这三个 crate 的源码，仅以编译产物链接；按 MPL-2.0 §3.3，与本项目 AGPL-3.0 组合可构成"更大作品"（Larger Work），MPL 文件的源码仍可从 crates.io 公开获取，合规义务满足。如对这三个 crate 进行修改，修改后的文件须按 MPL-2.0 开源。（`attohttpc` 经 `iroh → portmapper → igd-next`（QUIC 中继的 UPnP 打洞链路）进入默认依赖树，与 `colored`/`option-ext` 同等对待。）
 
-**关键依赖（部分列举，均宽松许可）**：`tokio`、`axum`、`reqwest`（rustls）、`serde`、`clap`、`tracing`、`ratatui`、`ed25519-dalek`/`aes-gcm`/`sha2`、`include_dir`、`tower-http`、`quinn`、`iroh`（QUIC 中继/漫游，MIT OR Apache-2.0）、`rumqttc`（MQTT 通道，Apache-2.0）、`socket2`、`dashmap`、`parking_lot`、`chrono`。
+**关键依赖（部分列举，均宽松许可）**：`tokio`、`axum`、`reqwest`（rustls）、`serde`、`clap`、`tracing`、`ratatui`、`ed25519-dalek`/`aes-gcm`/`sha2`、`include_dir`、`tower-http`、`quinn`、`iroh`（QUIC 中继/漫游，MIT OR Apache-2.0）、`rumqttc`（MQTT 通道，Apache-2.0）、`socket2`、`dashmap`、`parking_lot`、`chrono`、`iced-x86`（x86/x64 反汇编引擎，MIT，2026-10-23 随紫微配置期引擎引入）。
 
 > 唯一带 "LGPL" 字样的 `r-efi`（lock 中 5.3.0 与 6.0.0 两个版本）为 `Apache-2.0 OR LGPL-2.1-or-later OR MIT` 三选一，本项目按 MIT 选项履行，无 LGPL 义务。
 

@@ -56,6 +56,10 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),
   // P5 第 4 步 ②：桌面级 VM 管理页（vm feature / VITE_FEATURE_VM 门控）。
   ...(import.meta.env.VITE_FEATURE_VM !== 'false' ? [{ path: '/vm', name: 'vm', component: () => import('../views/VmView.vue') }] : []),
+  // 紫微系统（2026-10-22）：三方程序受控接管（【万物皆工具】）。
+  // ziwei feature / VITE_FEATURE_ZIWEI 门控；config ziwei.enabled 是另一道
+  // 运行闸（默认关——页面上诚实报未启用）。
+  ...(import.meta.env.VITE_FEATURE_ZIWEI !== 'false' ? [{ path: '/ziwei', name: 'ziwei', component: () => import('../views/ZiweiView.vue') }] : []),
   // L8 (2026-09-07)：PTY 内嵌终端（terminal feature / VITE_FEATURE_TERMINAL 门控）。
   // 后端 /ws/pty 另有 config terminal.enabled 运行闸（默认关）——路由可达时
   // 页面会显示连接失败，属于诚实降级。

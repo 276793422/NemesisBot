@@ -21,7 +21,7 @@ default = [
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
     "cluster-roaming", "roaming-relay",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
-    "connectors",
+    "connectors", "ziwei",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
     "pricing-embed", "verify", "web-static", "lsp",
     "checkpoint-git", "image-process", "history-search", "usage-store",
@@ -86,6 +86,13 @@ connectors = ["dep:nemesis-connectors", "nemesis-web/connectors"]
 # `nemesisbot eval` — prompt/skill behaviour assessment (needs the sandbox +
 # security layers, the injector and the LLM proxy).
 eval = ["sandbox", "security", "dep:nemesis-injector", "dep:nemesis-eval-proxy"]
+
+# 紫微系统（三方程序受控接管，【万物皆工具】）：窄门面 nemesis-ziwei +
+# WSAPI ziwei.* 管理面。关 = 三 crate（ziwei/ziwei-profile/ziwei-rev）
+# 整体退出依赖图、payload 嵌入零字节（决议 8/9）；config ziwei.enabled
+# 是另一道运行闸（默认 false）。Windows 注入面为主（nemesis-injector 随
+# eval 的既有依赖进图，非本 feature 独有）。
+ziwei = ["dep:nemesis-ziwei", "nemesis-web/ziwei"]
 
 # Frontend-only gate (no Rust code): controls the "使用统计" Dashboard page
 # (UsageView) which pulls in echarts (~558KB). Off in minimal-iot → the page +
@@ -258,6 +265,7 @@ nemesis-plugin = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
+nemesis-ziwei = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 # 凭据 vault CLI（P0）：隐藏输入 secret/口令（全库首个隐藏输入依赖，不回显）

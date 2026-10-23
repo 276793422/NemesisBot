@@ -688,6 +688,113 @@ impl GatewayCtx {
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         info!("[Gateway] Global e-stop (kill switch) initialized (released)");
 
+        // 紫微系统会话管理器（M1，总控 §9.1/§9.4）：feature + config 双闸开
+        // → 装配 SessionManager 全局槽 + estop 卸载钩子 + estop 上升沿订阅
+        // （触发即全会话卸载序列，逐行审计日志）。闸关 = 不装配（WSAPI/CLI
+        // 诚实报「未启用/未装配」，payload 零落盘）。
+        #[cfg(feature = "ziwei")]
+        {
+            let zcfg = cfg.ziwei.clone().unwrap_or_default();
+            if zcfg.enabled {
+                let manager = Arc::new(nemesis_ziwei::session::SessionManager::new(
+                    &home.join("workspace"),
+                    zcfg.payload_dir.clone(),
+                    zcfg.max_sessions,
+                ));
+                // T2.3：报警事件汇 → bus 出站（【紫微系统】前缀；web 通道推
+                // Dashboard，其余在线通道同源可见）。出站在 gateway 侧——
+                // nemesis-ziwei 不依赖 bus（窄门面纪律）。
+                let bus_for_zw = bus.clone();
+                manager.set_event_sink(Arc::new(
+                    move |ev: nemesis_ziwei::scheduler::ZiweiEvent| {
+                        let nemesis_ziwei::scheduler::ZiweiEvent::Alert {
+                            profile_name,
+                            tool,
+                            expr,
+                            snapshot,
+                            ..
+                        } = &ev;
+                        let line = format!(
+                            "【紫微系统】⚠ 报警（{profile_name}/{tool}）：条件 {expr} 命中，快照 {snapshot}"
+                        );
+                        warn!("[Gateway][ziwei] {line}");
+                        bus_for_zw.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+                            "web", "ziwei", &line,
+                        ));
+                    },
+                ));
+                // T2.4：capture 清扫（interval 首 tick 即时触发 = 启动扫一遍
+                // + 每 10 分钟周期；TTL 取 config ziwei.runs_ttl_days）。
+                let cap = manager.capture();
+                let zw_ttl =
+                    std::time::Duration::from_secs(u64::from(zcfg.runs_ttl_days.max(1)) * 86400);
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        tick.tick().await;
+                        let report =
+                            cap.sweep(zw_ttl, nemesis_ziwei::capture::MAX_BYTES_PER_PROFILE);
+                        if report.expired_profiles > 0 || report.size_truncated > 0 {
+                            info!("[Gateway][ziwei] capture sweep: {report:?}");
+                        }
+                    }
+                });
+                nemesis_ziwei::session::set_global(manager);
+                nemesis_ziwei::session::register_estop_hook();
+                // T2.2 refresh 钩子（依赖方向：nemesis-web 不依赖 nemesisbot
+                // ——钩子闭包桥回本 crate；loop 槽由工厂每次重建时更新）。
+                #[cfg(feature = "ziwei")]
+                {
+                    nemesis_web::handlers::ziwei::set_refresh_hook(Arc::new(|ws| {
+                        crate::ziwei_tools::refresh_current(ws)
+                    }));
+                    // T5.2 失效/降级/找回事件钩子（ziwei 静态槽 → web 全局
+                    // EventHub 广播；Dashboard 横幅数据源）。
+                    nemesis_ziwei::verify::set_event_hook(Arc::new(|event: &str, data| {
+                        nemesis_web::chat_event_log::publish_global_event(event, data.clone());
+                    }));
+                    // T3.6 LLM hook（同步签名 LlmFn）：专用线程 + current_thread
+                    // runtime 桥到 default_slot provider 裸调用（board_review
+                    // vision 同款；不经 agent loop）。gateway 运行时形态多样，
+                    // 不赌 block_in_place。
+                    nemesis_ziwei::package::set_llm_hook(Arc::new(|prompt: &str| {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let prompt = prompt.to_string();
+                        std::thread::Builder::new()
+                            .name("ziwei-llm-hook".into())
+                            .spawn(move || {
+                                let res = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .map_err(|e| format!("LLM hook runtime 建立失败：{e}"))
+                                    .and_then(|rt| rt.block_on(ziwei_llm_suggest(prompt)));
+                                let _ = tx.send(res);
+                            })
+                            .map_err(|e| format!("LLM hook 线程启动失败：{e}"))?;
+                        rx.recv().map_err(|_| "LLM hook 线程提前退出".to_string())?
+                    }));
+                }
+                let mut estop_rx = estop.subscribe();
+                tokio::spawn(async move {
+                    let mut prev = *estop_rx.borrow_and_update();
+                    loop {
+                        if estop_rx.changed().await.is_err() {
+                            break;
+                        }
+                        let now = *estop_rx.borrow_and_update();
+                        if now && !prev {
+                            for line in nemesis_ziwei::estop_hook::run_estop_unload() {
+                                warn!("[Gateway][ziwei] estop 卸载: {line}");
+                            }
+                        }
+                        prev = now;
+                    }
+                });
+                info!("[Gateway] Ziwei session manager assembled (config ziwei.enabled=true)");
+            }
+        }
+
         // W2 P4: board autopilot 的集群槽位。on_job 闭包在 cluster 创建之前
         // 装配（cron 服务先于 cluster 就绪），用 OnceLock 让闭包在 cluster 建
         // 好后取用；未启用集群时保持 None（target 为空的 autopilot 规则仍可
@@ -1215,6 +1322,37 @@ async fn run_quic_relay(_home: &std::path::Path) -> Result<()> {
         "--quic-relay 需要 roaming-relay feature 编译（当前二进制未含）；\
          自建：cargo build --release -p nemesisbot --features roaming-relay"
     )
+}
+
+/// T3.6 LLM 建议标注底座：default_slot provider 裸调用（board_review
+/// vision 先例；不经 agent loop/工具管线——输入是本仓打包的静态分析
+/// 函数表，输出只做建议解析，不落库）。仅在 ziwei feature 下编译。
+#[cfg(feature = "ziwei")]
+async fn ziwei_llm_suggest(prompt: String) -> Result<String, String> {
+    use nemesis_providers::types::{ChatOptions, Message, MessageContent};
+    let (provider, model, _llm_ref) = nemesis_providers::default_slot::current()
+        .ok_or("default_slot 无活跃模型（先在 Dashboard/CLI 配置默认模型）")?;
+    let messages = [
+        Message {
+            role: "system".to_string(),
+            content: MessageContent::Text(
+                "你是逆向分析助手。根据函数表（调用关系/导入/字符串引用）为函数建议\
+                 语义名与用途说明，严格按要求的行格式输出。"
+                    .to_string(),
+            ),
+            ..Default::default()
+        },
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text(prompt),
+            ..Default::default()
+        },
+    ];
+    let resp = provider
+        .chat(&messages, &[], &model, &ChatOptions::default())
+        .await
+        .map_err(|e| format!("LLM 调用失败：{e}"))?;
+    Ok(resp.content)
 }
 
 /// T5（扩展计划 D2b）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +

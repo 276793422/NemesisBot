@@ -533,6 +533,18 @@ desc = "LLM 用量账本（nemesis-data DataStore，rusqlite bundled ~1MB）：u
 category = "subsystems"
 default = true
 
+# NOTE: 紫微系统（三方程序受控接管，【万物皆工具】）：窄门面三 crate
+# （nemesis-ziwei/ziwei-profile/ziwei-rev）+ payload 双架构 DLL 内嵌
+# （feature 关 = 三 crate 不编译 + payload 零字节，决议 8/9）。运行闸是
+# config ziwei.enabled（默认 false）——cargo feature 只是编译闸。
+# Windows 注入/管道为主，非 Windows 编译为 stub。IoT 最小包建议关。
+[[feature]]
+id = "ziwei"
+label = "紫微系统（三方接管）"
+desc = "三方程序受控接管（万物皆工具）：附加/注入/内存原语/hook 捕获，把三方软件固化成 agent 子工具。Windows 为主；config ziwei.enabled 运行闸默认关。IoT/无头建议关"
+category = "subsystems"
+default = true
+
 # ── Frontend-only gate (no Rust code; exists in nemesisbot/Cargo.toml [features]
 #    only so `nemesis-config check` passes) ────────────────────────────────
 

@@ -23,6 +23,7 @@ mod tool_tests;
 mod ui_batch_series;
 mod vault_ws_tests;
 mod wsapi;
+mod ziwei_ws_tests;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -922,6 +923,10 @@ async fn main() -> Result<()> {
     // connectors/ fixture + data/ 回执与账本，套件结束删除恢复原状。
     all_results
         .extend(connectors_ws_tests::test_connectors_data_plane(&ws, &cfg.gateway_bin).await);
+
+    // 紫微系统 M2（2026-10-23）：WSAPI 表面契约——门关拒绝面/热开闸/未装配
+    // 诚实报，改工作区 config.json，套件结束删 ziwei 键恢复原状。
+    all_results.extend(ziwei_ws_tests::test_ziwei_surface(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an
