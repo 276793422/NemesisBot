@@ -733,6 +733,116 @@ async fn test_download_file_connection_refused() {
     assert!(result.unwrap_err().contains("download request"));
 }
 
+// ================================================================
+// BUG-HUNT R36: strict (no-redirect) vs compat (auto-follow) download
+// ================================================================
+
+/// 302 重定向双服务器：A 任何请求回 302 → Location 指向 B；A/B 各带命中
+/// 计数。返回 (A 的 base_url, A 命中数, B 的 base_url, B 命中数, join handles)。
+#[allow(clippy::type_complexity)]
+async fn start_redirect_pair() -> (
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>),
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits_b = std::sync::Arc::new(AtomicUsize::new(0));
+    let listener_b = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = listener_b.local_addr().unwrap().port();
+    let hits_b_task = hits_b.clone();
+    let handle_b = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener_b.accept().await else {
+                break;
+            };
+            let hits = hits_b_task.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                hits.fetch_add(1, Ordering::SeqCst);
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ntarget",
+                    )
+                    .await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    let url_b = format!("http://127.0.0.1:{port_b}/next");
+
+    let hits_a = std::sync::Arc::new(AtomicUsize::new(0));
+    let listener_a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_a = listener_a.local_addr().unwrap().port();
+    let hits_a_task = hits_a.clone();
+    let location = url_b.clone();
+    let handle_a = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener_a.accept().await else {
+                break;
+            };
+            let (hits, location) = (hits_a_task.clone(), location.clone());
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                hits.fetch_add(1, Ordering::SeqCst);
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    let url_a = format!("http://127.0.0.1:{port_a}/asset");
+
+    (url_a, hits_a, url_b, hits_b, (handle_a, handle_b))
+}
+
+#[tokio::test]
+async fn test_download_strict_does_not_follow_redirect_compat_does() {
+    let (url_a, hits_a, url_b, hits_b, (_ha, _hb)) = start_redirect_pair().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("out.bin");
+    let file_path_str = file_path.to_str().unwrap().to_string();
+
+    let pool = ConnectionPool::with_defaults();
+
+    // strict：302 直接按业务错报出，无第二跳请求，不落盘。
+    let err = pool
+        .download_file_capped_strict(&url_a, &file_path_str, 1024)
+        .await
+        .unwrap_err();
+    assert!(err.contains("HTTP 302"), "unexpected error: {err}");
+    assert_eq!(
+        hits_a.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "exactly one request to the redirector"
+    );
+    assert_eq!(
+        hits_b.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "strict must not issue the redirected request"
+    );
+    assert!(!file_path.exists(), "nothing must be written on redirect");
+
+    // 兼容面：download_file_capped 维持旧语义（跟随 302 → B 命中 + 落盘），
+    // 钉住两入口的差异来自 client 策略而非实现分叉。
+    pool.download_file_capped(&url_a, &file_path_str, 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        hits_b.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "compat path follows the redirect"
+    );
+    assert_eq!(std::fs::read(&file_path).unwrap(), b"target");
+}
+
 #[tokio::test]
 async fn test_download_file_empty_body() {
     let (base_url, _handle) = start_http_server(200, vec![]).await;

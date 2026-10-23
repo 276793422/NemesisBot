@@ -33,6 +33,12 @@ impl Default for PoolConfig {
 pub struct ConnectionPool {
     config: PoolConfig,
     client: reqwest::Client,
+    /// 不跟随重定向的伴生 client（BUG-HUNT R36）。reqwest 默认策略自动
+    /// 跟随 ≤10 跳——「先过 SSRF 闸再发请求」的调用面闸只覆盖显式 URL，
+    /// 对端 302 指向内网/元数据端点即整条绕闸（web_fetch J2a 修过的同类
+    /// 形态）。守卫类下载面走 [`Self::download_file_capped_strict`]；
+    /// 普通面维持 [`Self::client`] 语义不变。
+    no_redirect_client: reqwest::Client,
 }
 
 impl ConnectionPool {
@@ -46,8 +52,21 @@ impl ConnectionPool {
             .user_agent(&config.user_agent)
             .build()
             .unwrap_or_default();
+        let no_redirect_client = reqwest::Client::builder()
+            .connect_timeout(config.connect_timeout)
+            .timeout(config.request_timeout)
+            .pool_max_idle_per_host(config.max_connections_per_host)
+            .pool_idle_timeout(config.idle_timeout)
+            .user_agent(&config.user_agent)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default();
 
-        Self { config, client }
+        Self {
+            config,
+            client,
+            no_redirect_client,
+        }
     }
 
     /// Create with default configuration.
@@ -117,14 +136,46 @@ impl ConnectionPool {
     /// 远端可把任意大响应灌进内存（磁盘弹药）。两道闸：Content-Length
     /// 预检（超限在传输前拒绝）+ 分块累积硬上限（缺/谎报 Content-Length
     /// 的 chunked 响应由实收字节兜底）。`u64::MAX` = 不限（旧语义）。
+    ///
+    /// 语义注记（BUG-HUNT R36）：本方法用默认 client，**跟随重定向**。
+    /// 调用方若先过了 SSRF 闸（闸只覆盖显式 URL，逐跳不重放），必须改用
+    /// [`Self::download_file_capped_strict`]。
     pub async fn download_file_capped(
         &self,
         url: &str,
         dest_path: &str,
         max_bytes: u64,
     ) -> Result<(), String> {
-        let resp = self
-            .client
+        self.download_file_capped_on(&self.client, url, dest_path, max_bytes)
+            .await
+    }
+
+    /// [`Self::download_file_capped`] 的不跟随重定向版（BUG-HUNT R36）：
+    /// reqwest 默认策略自动跟随 ≤10 跳，而「先过 SSRF 闸再发请求」的调用
+    /// 面（board 资产拉取等）闸只查显式 URL——对端 302 指向
+    /// metadata/内网端点即整条绕闸。本方法遇 3xx 直接按 `HTTP <status>`
+    /// 报错，跳转裁决权交还调用方（与 web_fetch J2a 手动逐跳过闸同一纪律；
+    /// 构成不安全跳转时由上层错误路径自然处理，无 second request 落地）。
+    pub async fn download_file_capped_strict(
+        &self,
+        url: &str,
+        dest_path: &str,
+        max_bytes: u64,
+    ) -> Result<(), String> {
+        self.download_file_capped_on(&self.no_redirect_client, url, dest_path, max_bytes)
+            .await
+    }
+
+    /// 下载实现的单一真相源：`max_bytes` 双闸 + 原子落盘，重定向行为由
+    /// 传入的 client 决定（两个公开入口的唯一差异点）。
+    async fn download_file_capped_on(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        dest_path: &str,
+        max_bytes: u64,
+    ) -> Result<(), String> {
+        let resp = client
             .get(url)
             .send()
             .await

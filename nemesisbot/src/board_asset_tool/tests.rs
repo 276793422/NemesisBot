@@ -567,6 +567,107 @@ async fn http_business_error_does_not_trigger_fallback() {
     assert_eq!(calls.load(Ordering::SeqCst), 0, "mock RPC 未被调用");
 }
 
+/// 302 重定向假提供方（BUG-HUNT R36）：A 任何请求回 302 → Location 指向
+/// B；B 命中计数（第二跳断言用）。返回 (A 的 base_url, B 的 base_url,
+/// B 的命中计数)。
+async fn spawn_redirect_server() -> (String, String, StdArc<AtomicUsize>) {
+    let hits_b = StdArc::new(AtomicUsize::new(0));
+    let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr_b = listener_b.local_addr().expect("addr");
+    let hits_task = hits_b.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener_b.accept().await else {
+                break;
+            };
+            let hits = hits_task.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                hits.fetch_add(1, Ordering::SeqCst);
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ntarget",
+                    )
+                    .await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+
+    let location = format!("http://{addr_b}/next");
+    let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr_a = listener_a.local_addr().expect("addr");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener_a.accept().await else {
+                break;
+            };
+            let location = location.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+
+    (
+        format!("http://{addr_a}"),
+        format!("http://{addr_b}"),
+        hits_b,
+    )
+}
+
+#[tokio::test]
+async fn fetch_redirect_is_refused_without_second_hop() {
+    // BUG-HUNT R36：SSRF 闸只查显式 URL（本面还是内网放行形态），旧实现
+    // 用共享 client 自动跟随 ≤10 跳——恶意 peer 回 302 → 内网/metadata
+    // 端点即整条绕闸。strict 化后 302 = 业务错诚实上抛：无第二跳请求、
+    // 无文件落盘、不触发 RPC 兜底（与 403 同类）。
+    let (base_a, _base_b, hits_b) = spawn_redirect_server().await;
+    let body = b"asset payload 0123456789";
+    let (cluster, calls) = mock_cluster(
+        body.to_vec(),
+        nemesis_board::sha256_bytes(body),
+        body.len() as u64,
+    );
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+
+    let args = serde_json::json!({
+        "action": "fetch",
+        "node_url": base_a,
+        "asset_ref": "spec.md",
+        "asset_token": "cafebabe",
+        "expires_at": chrono::Utc::now().timestamp() + 600,
+        "sha256": nemesis_board::sha256_bytes(body),
+    })
+    .to_string();
+    let err = tool
+        .execute(&args, &ctx())
+        .await
+        .expect_err("302 must fail");
+    assert!(err.contains("HTTP 302"), "got: {err}");
+    assert!(!err.contains("cluster RPC"), "业务错不触发兜底，got: {err}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "redirect 不触发 RPC 兜底");
+    let assets = ws.join("board").join("assets");
+    assert!(!assets.join("spec.md").exists(), "final file must not land");
+    assert!(!assets.join("spec.md.part").exists(), "part file cleaned");
+    // err 返回时首跳响应已收讫，若有第二跳此刻早已发出——直接断言零命中。
+    assert_eq!(hits_b.load(Ordering::SeqCst), 0, "302 不得产生第二跳请求");
+}
+
 #[test]
 fn connection_level_error_classification() {
     // 连接级（send 阶段）→ 兜底。
