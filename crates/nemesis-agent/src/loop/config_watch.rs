@@ -589,7 +589,10 @@ impl AgentLoop {
     /// spawn 除外——MCP 语义未知不猜，采取「plan 只 deny 已知写」
     /// 立场；spawn 保留供给，分发闸在子代理深度同样生效=纵深）。
     /// 曾前瞻列入的 question（F7）/multiedit（A7）均已落码（2026-09-06），
-    /// 本表沿用语义不变。
+    /// 本表沿用语义不变。BUG-HUNT R13：供给闸与分发闸契约对齐——本表
+    /// 供给的工具不得被分发闸 100% 拒：剔除 cron（调度=延迟副作用，
+    /// 静态表归 ProcessExec，分发闸必拒，不供给被拒工具）；todowrite
+    /// 保留（计划草稿，分发闸在 declared_write 臂豁免，见 tool_dispatch）。
     pub(crate) const PLAN_MODE_TOOLS: &'static [&'static str] = &[
         "read_file",
         "list_dir",
@@ -604,7 +607,6 @@ impl AgentLoop {
         "skills_info",
         "find_skills",
         "cli_reference",
-        "cron",
         "sleep",
         "message",
         "history_search",
