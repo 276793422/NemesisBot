@@ -307,11 +307,11 @@ pub(crate) struct SecurityState {
     /// 未装配 = `None`，question handler 诚实报「未装配」。
     pub(crate) question_responder:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionResponder>>>,
-    /// J5 (devtool-upgrade 阶段 6)：doom-loop 审批卡的提问发起端
+    /// J5 (devtool-upgrade 阶段 6)：doom-loop 终级卡的提问发起端
     /// （`QuestionAsker`）——gateway 注入与 F7 responder 同源的
-    /// WebQuestionBroker Arc 的另一半 trait。escalation 触发且
-    /// `agents.doom_loop_approval` 开时经此发卡问用户「继续吗？」。
-    /// 未装配 = `None` = 审批通路缺失，escalation 直接走现行为（停轮）。
+    /// WebQuestionBroker Arc 的另一半 trait。循环干预阶梯（2026-10-24）
+    /// 的 escalation 终级经此发**无超时严重卡**问用户（批准续跑/停止）。
+    /// 未装配 = `None` = 审批通路缺失，escalation 直接停轮（fail-closed）。
     pub(crate) question_asker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
     /// B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——Auth 失败经此向
@@ -323,9 +323,9 @@ pub(crate) struct SecurityState {
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::CredentialBroker>>>,
     /// §2 免打扰运行时态（无人值守计划 Part 2，security feature）：gateway
     /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
-    /// 真相源同款双注入）。`check_escalation` 的 doom-loop 臂读它——开关
-    /// 开 = 不发卡，清签名继续（无人值守下循环守卫不停车等人）。未装配
-    /// = `None` = 恒 false（现行为）。
+    /// 真相源同款双注入）。（2026-10-24 循环干预阶梯起 `check_escalation`
+    /// 不再读它——终级卡不可自动批；auditor 侧 §2 直批块走 nemesis-security
+    /// 内部同 Arc。本槽保留=注入面不破坏，仅测试消费。）
     #[cfg(feature = "security")]
     pub(crate) approval_auto:
         parking_lot::RwLock<Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>>>,

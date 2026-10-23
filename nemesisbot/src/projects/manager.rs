@@ -1139,6 +1139,7 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             chat_id: t.msg.chat_id.clone(),
             session_key: t.msg.session_key.clone(),
             timeout_secs: CONFLICT_ASK_TIMEOUT_SECS,
+            bypass_auto_approve: false,
         };
         let ask_broker = broker.clone();
         let outcome = tokio::task::spawn_blocking(move || ask_broker.ask(req)).await;
@@ -1154,6 +1155,12 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             Ok(Ok(nemesis_types::agent::QuestionOutcome::Timeout)) => {
                 classify_conflict_answer(None)
             }
+            // 急停强制了结（循环干预阶梯，2026-10-24）：无裁决 = 保守取消
+            // 本轮同步（文件挂起状态保持原样，下轮恢复后重裁）。
+            Ok(Ok(nemesis_types::agent::QuestionOutcome::Cancelled)) => (
+                ConflictChoice::Cancel,
+                "急停触发，冲突裁决中断，本轮已取消（文件挂起状态不变）".to_string(),
+            ),
             Ok(Err(e)) => (
                 ConflictChoice::Cancel,
                 format!("裁决卡故障（{e}），本轮已取消"),

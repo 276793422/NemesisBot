@@ -3,6 +3,7 @@ import { computed, reactive } from 'vue'
 import {
   useQuestions,
   QUESTION_DROPDOWN_THRESHOLD,
+  isTerminalQuestion,
   type PendingQuestion,
 } from '../composables/useQuestions'
 
@@ -27,6 +28,19 @@ import {
 const { pendingQuestions, now, respondTo, respondForm } = useQuestions()
 
 const visible = computed(() => pendingQuestions.length > 0)
+
+/**
+ * 渲染序：终级卡（timeout_secs=0，永不超时）置顶，其余保持到达序。
+ * 稳定排序——同档内不重排（避免并发卡抖动）。
+ */
+const orderedQuestions = computed(() => {
+  const normal: PendingQuestion[] = []
+  const terminal: PendingQuestion[] = []
+  for (const q of pendingQuestions) {
+    ;(isTerminalQuestion(q) ? terminal : normal).push(q)
+  }
+  return [...terminal, ...normal]
+})
 
 /** 每张卡的选项草稿（question_id → 已勾选选项；提交后随卡清除）。 */
 const drafts = reactive<Record<string, string[]>>({})
@@ -95,14 +109,14 @@ function remaining(q: PendingQuestion): number {
 <template>
   <div v-if="visible" class="modal-backdrop question-backdrop">
     <div
-      v-for="q in pendingQuestions"
+      v-for="q in orderedQuestions"
       :key="q.question_id"
       class="modal question-modal"
     >
-      <div class="approval-card question-card">
+      <div class="approval-card question-card" :class="{ 'question-terminal': isTerminalQuestion(q) }">
         <div class="approval-header">
-          <h3 style="margin: 0;">❓ Agent 提问</h3>
-          <span class="badge">{{ isForm(q) ? '表单' : q.multi ? '多选' : '单选' }}</span>
+          <h3 style="margin: 0;">{{ isTerminalQuestion(q) ? '🚨 循环无法打破——需要你决定' : '❓ Agent 提问' }}</h3>
+          <span class="badge" :class="{ 'badge-danger': isTerminalQuestion(q) }">{{ isTerminalQuestion(q) ? '必答·无超时' : isForm(q) ? '表单' : q.multi ? '多选' : '单选' }}</span>
         </div>
 
         <div class="question-body">
@@ -164,7 +178,12 @@ function remaining(q: PendingQuestion): number {
         </div>
 
         <div class="approval-footer">
-          <span class="approval-countdown">⏱ {{ remaining(q) }}s 后超时（模型将自行判断）</span>
+          <!-- 终级卡无超时：不倒计时不自动关——必须人来决断（烟雾报警器
+               必须响）；选「停止」即停车（deny / 关窗都不回答 = 停车）。 -->
+          <span v-if="isTerminalQuestion(q)" class="approval-countdown terminal-countdown">
+            ⏹ 无超时——agent 循环已暂停，等待你的决定（任何自动化放行对此卡无效）
+          </span>
+          <span v-else class="approval-countdown">⏱ {{ remaining(q) }}s 后超时（模型将自行判断）</span>
           <div class="approval-actions">
             <button
               class="btn btn-success"
@@ -268,5 +287,21 @@ function remaining(q: PendingQuestion): number {
 .question-dropdown {
   width: 100%;
   cursor: pointer;
+}
+
+/* 终级卡（doom-loop ≥24 次，2026-10-24 循环干预阶梯）：红色高危渲染。
+ * 左侧色条走 .approval-card 的边框色变量；标题与提示用危险色强调。 */
+.question-terminal {
+  border-left-color: var(--danger, #e5484d) !important;
+}
+
+.question-terminal .badge-danger {
+  background: var(--danger, #e5484d);
+  color: #fff;
+}
+
+.terminal-countdown {
+  color: var(--danger, #e5484d);
+  font-weight: 600;
 }
 </style>

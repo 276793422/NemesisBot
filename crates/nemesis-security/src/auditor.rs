@@ -331,6 +331,13 @@ pub struct SecurityAuditor {
     /// gateway 装配处注入（与 web security handler 共享同一 Arc——单一
     /// 真相源；config 是持久真相源，本态是运行期投影）。
     approval_auto: RwLock<Option<Arc<crate::approval_auto::ApprovalAutoApproveState>>>,
+    /// 会话级全部放行（2026-10-24 长任务无人值守计划）：Some =
+    /// request_permission RequireApproval 臂按 ctx.session_key 命中即自动
+    /// 放行（含 CRITICAL 与 force 卡——裁决语义；审计标 session_allow_all）；
+    /// None = 未装配（旧行为）。gateway 装配处注入（与 web security handler
+    /// 共享同一 Arc——单一真相源，approval_auto 同款双注入）；持久真相源 =
+    /// 会话 sidecar `allow_all` 字段，本态是运行期投影。
+    session_allow_all: RwLock<Option<Arc<crate::session_allow_all::SessionAllowAllState>>>,
     /// JSONL 结构化审计通道的运行时接线(None = 未接线 → 回落 `config` 的
     /// `audit_log_file_enabled`/`audit_log_dir` 既有语义,即默认不写)。
     /// 生产此前两条通道都拿不到 policy_rule:文本通道 policy 段恒 "pipeline",
@@ -361,6 +368,7 @@ impl SecurityAuditor {
             self_destruct_exempt: RwLock::new(String::new()),
             editor_access: RwLock::new(None),
             approval_auto: RwLock::new(None),
+            session_allow_all: RwLock::new(None),
             audit_jsonl: RwLock::new(None),
         }
     }
@@ -824,6 +832,16 @@ impl SecurityAuditor {
             .is_some_and(|s| s.enabled())
     }
 
+    /// 会话级全部放行运行时态注入（2026-10-24 长任务无人值守计划，gateway
+    /// 装配处调用；同一 Arc 同时交给 web security handler 读写——单一真相
+    /// 源，approval_auto 同款双注入）。
+    pub fn set_session_allow_all(
+        &self,
+        state: Arc<crate::session_allow_all::SessionAllowAllState>,
+    ) {
+        *self.session_allow_all.write() = Some(state);
+    }
+
     /// 接线 JSONL 结构化审计通道(每条判定含 `policy_rule`,审计页
     /// security.audit 的数据源)。装配期调用一次;`enabled=false` = 显式
     /// 禁用(优先于 `config` 既有字段)。
@@ -919,6 +937,42 @@ impl SecurityAuditor {
                 self.log_audit_event(&event);
                 return (true, None, None);
             }
+        }
+
+        // 会话级全部放行（2026-10-24 长任务无人值守计划）：RequireApproval
+        // 且 ctx.session_key 命中启用集 = 自动放行（**含 force_approval 卡
+        // 与 CRITICAL**——裁决语义；F3 对 force 的跳过闸只管 pattern 记忆，
+        // 管不到本块）。优先级：F3 规则表 → 本块 → §2 免打扰 → 人工卡
+        // （更具体的意图先落审计标记）。硬边界：Denied 根本到不了
+        // RequireApproval；estop 冻结在上游 dispatch 已拦。ctx 缺席/无会话
+        // 键（cron 等）= 无会话可挂，跳过本块（fail-safe 走后续路径）。
+        // 集群来源天然按键匹配：B 端集群会话键不匹配照旧弹卡。
+        if decision == SecurityDecision::RequireApproval
+            && let Some(sa) = self.session_allow_all.read().clone()
+            && let Some(c) = ctx
+            && !c.session_key.is_empty()
+            && sa.check(&c.session_key)
+        {
+            self.allowed_count.fetch_add(1, Ordering::SeqCst);
+            sa.bump(&c.session_key);
+            let event = AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: req.clone(),
+                decision: "allowed".to_string(),
+                reason: "auto approved by session allow-all (session-scoped unattended mode)"
+                    .to_string(),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "session_allow_all".to_string(),
+            };
+            self.log_audit_event(&event);
+            tracing::info!(
+                "[SessionAllowAll] auto-approved {} {} (risk {}) session {}",
+                req.op_type,
+                req.target,
+                req.danger_level,
+                c.session_key
+            );
+            return (true, None, None);
         }
 
         // §2 免打扰开关（无人值守计划 Part 2）：RequireApproval 且开关开 =

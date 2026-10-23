@@ -26,6 +26,16 @@ import { useToast } from './useToast'
 /** B8：单选选项数超过该阈值渲染为下拉 select（≤6 radio 列表）。 */
 export const QUESTION_DROPDOWN_THRESHOLD = 6
 
+/**
+ * 终级卡判定（2026-10-24 循环干预阶梯）：`timeout_secs === 0` = 永不
+ * 超时（doom-loop 终极停车卡——烟雾报警器必须响）。前端语义：不倒计时、
+ * 不本地摘卡（expiresAt=∞，pruneExpired 永不到期）、pending 列表置顶、
+ * 红色高危渲染。任何自动化开关（免打扰直批等）在服务端已 bypass。
+ */
+export function isTerminalQuestion(q: Pick<PendingQuestion, 'timeout_secs'>): boolean {
+  return q.timeout_secs === 0
+}
+
 export interface QuestionField {
   key: string
   label: string
@@ -79,7 +89,9 @@ function upsertFromPayload(data: any) {
     timeout_secs: timeout,
     chat_id: data.chat_id || undefined,
     session_key: data.session_key || undefined,
-    expiresAt: Date.now() + Math.max(0, timeout - age) * 1000,
+    // 终级卡（timeout_secs=0）= 永不本地到期（∞ > 任意 now，pruneExpired
+    // 不摘）——只有 question-resolved 广播能摘走它。
+    expiresAt: timeout === 0 ? Number.POSITIVE_INFINITY : Date.now() + Math.max(0, timeout - age) * 1000,
   }
   if (existing === -1) {
     pendingQuestions.push(entry)
