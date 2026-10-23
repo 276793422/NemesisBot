@@ -402,6 +402,68 @@ async fn bind_and_forget_session_roundtrip_with_sidecar() {
     assert!(!mgr.forget_session(key), "二次 forget 必须 false");
 }
 
+/// remove 后归属保留契约（2026-10-24 数据契约审计钉死；曾与 CLAUDE.md
+/// 旧表述「owner_of 回 None」相悖——旧表述错误）：remove 只摘 registry
+/// 条目 + stop loop，**索引与 sidecar 的 project 字段刻意保留**——前端
+/// 「已移除」灰组派生（session.projectId 不在 projects 列表）与同名再
+/// 注册自动收编都依赖它；owner_of 仍回 Some(pid)，可用性闸在消费方
+/// （loop_for_session=None → resolve_session_loop 诚实报错）。若误清
+/// 绑定，已移除项目的会话会被静默路由进主 loop（工作区边界错位）。
+#[cfg(windows)] // Windows-form（进程级单例重定向依赖 crate::tests 沙箱 home）
+#[tokio::test]
+async fn remove_project_retains_session_binding_contract() {
+    use nemesis_web::handlers::projects::ProjectsBridge as _;
+    let _serial = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = crate::tests::singleton_test_home();
+    let main_ws = home.join("workspace");
+    std::fs::create_dir_all(&main_ws).unwrap();
+    let project_dir = home.join("proj_rmkeep");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let mgr = manager_for(&home);
+
+    let entry = registry::create_project(
+        mgr.registry_path(),
+        &main_ws,
+        "移除保留",
+        project_dir.to_str().unwrap(),
+        4,
+    )
+    .expect("create project");
+    let key = "agent:main:session:rmkeep1";
+    mgr.bind_session(key, &entry.id).expect("bind succeeds");
+    assert_eq!(mgr.owner_of(key).as_deref(), Some(entry.id.as_str()));
+
+    // remove：registry 摘除 + stop loop。绑定（索引 + sidecar）必须保留。
+    // （singleton home 是进程内共享沙箱，注册表含其他用例残留——只断言
+    // 本条目摘除，不断言全空。）
+    mgr.remove(&entry.id).expect("remove ok");
+    assert!(
+        mgr.list().iter().all(|p| p.id != entry.id),
+        "被移除项目不得再出现在注册表"
+    );
+
+    assert_eq!(
+        mgr.owner_of(key).as_deref(),
+        Some(entry.id.as_str()),
+        "remove 后归属刻意保留（Some(pid)），可用性闸在消费方"
+    );
+    let meta_path = nemesis_path::resolve_session_logs_dir_in_workspace(&main_ws)
+        .join(format!("{}.meta.json", key.replace(':', "_")));
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    assert_eq!(
+        meta["project_id"].as_str(),
+        Some(entry.id.as_str()),
+        "sidecar project_id 保留（前端灰组派生 + 再注册收编依赖）"
+    );
+    assert!(
+        mgr.loop_for_session(&entry.id).is_none(),
+        "loop 已停：消费方闸在此接管（诚实报错而非静默回落主 loop）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // reload_providers（BUG 2026-09-21）：模型热切联动到在跑项目 loop
 // ---------------------------------------------------------------------------
