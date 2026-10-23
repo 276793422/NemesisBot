@@ -609,6 +609,16 @@ fn finish_tolerates_unreadable_file_via_skipped_manifest() {
         std::fs::Permissions::from_mode(0o000),
     )
     .unwrap();
+    // 环境探针（trivial probe）：root 语境（CAP_DAC_OVERRIDE）可读 0o000
+    // 文件，不可读注入失效——诚实跳过而非假红；权限就地恢复。
+    if std::fs::File::open(exec.join("db/data.bin")).is_ok() {
+        std::fs::set_permissions(
+            exec.join("db/data.bin"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        return;
+    }
     write_sidecar(
         &exec,
         &BaselineSidecar {

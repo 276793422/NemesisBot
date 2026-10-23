@@ -511,6 +511,20 @@ async fn delete_by_id_rewrite_fails_on_readonly_file() {
     perms.set_readonly(true);
     std::fs::set_permissions(&path, perms).unwrap();
 
+    // 环境探针（trivial probe）：root 语境（CAP_DAC_OVERRIDE）可写只读文件，
+    // 失败注入无法生效——诚实跳过而非假红；权限就地恢复。
+    if std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b""))
+        .is_ok()
+    {
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        return;
+    }
+
     // Deleting ep1 leaves ep2 → rewrite path → write fails on readonly file.
     let err = store.delete_by_id(&ep1.id).await.unwrap_err();
     assert!(err.contains("Failed to rewrite session file"), "got: {err}");
@@ -535,6 +549,20 @@ async fn cleanup_rewrite_fails_on_readonly_file() {
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_readonly(true);
     std::fs::set_permissions(&path, perms).unwrap();
+
+    // 环境探针（trivial probe）：root 语境（CAP_DAC_OVERRIDE）可写只读文件，
+    // 失败注入无法生效——诚实跳过而非假红；权限就地恢复。
+    if std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b""))
+        .is_ok()
+    {
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        return;
+    }
 
     // cleanup(1) → old removed, keep remains → rewrite path → write fails.
     let err = store.cleanup(1).await.unwrap_err();
