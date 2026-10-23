@@ -513,9 +513,13 @@ fn pack_files(workspace: &Path, rels: &[String], out: &Path) -> Result<PackResul
         bytes += meta.len();
         present.push(rel.clone());
     }
-    builder
-        .finish()
+    // finish 只写 tar 尾块；BufWriter 靠 drop 收尾会把最后 ≤8KiB 的 flush
+    // 错误静默吞掉——声明成功但回传 tar 可能截断。into_inner 内含 finish
+    // 并交还 writer，显式 flush 报错后才算打包成功。
+    let mut f = builder
+        .into_inner()
         .map_err(|e| format!("收尾 tar 失败: {e}"))?;
+    f.flush().map_err(|e| format!("tar 落盘失败: {e}"))?;
     Ok(PackResult { bytes, present })
 }
 
