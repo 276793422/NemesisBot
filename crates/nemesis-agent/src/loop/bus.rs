@@ -612,6 +612,15 @@ impl AgentLoop {
                 // running turn; see finish_message).
                 self.finish_message(msg, response, None, false).await;
             }
+            GateOutcome::Coalesced { cron_job_id } => {
+                // C4（2026-10-24 cron 合闸）：重复 tick 静默丢弃——零出站
+                // （回执/落盘都省，防 UI 与历史被 skip 刷屏）。闸门侧已有
+                // info 留痕，这里只补泵侧 debug 关联。
+                debug!(
+                    cron_job_id = %cron_job_id,
+                    "[AgentLoop] coalesced cron tick dropped at pump (no receipt, no persistence)"
+                );
+            }
             GateOutcome::Maintenance {
                 kind,
                 session_key,

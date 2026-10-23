@@ -1144,3 +1144,76 @@ fn s2_web_channel_trait_is_running_via_dyn_dispatch() {
     let dyn_ch: Arc<dyn Channel> = Arc::new(ch);
     assert!(!dyn_ch.is_running());
 }
+
+// === C4（2026-10-24 死会话软失败）===
+
+/// 目标会话不存在的 mock——错误串与真实 session map 一致。
+struct DeadSessionMockServer;
+
+impl WebServerOps for DeadSessionMockServer {
+    fn send_to_session(
+        &self,
+        session_id: &str,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        Err(format!(
+            "failed to broadcast: session not found or no send queue: {session_id}"
+        ))
+    }
+    fn send_history_to_session(&self, _: &str, _: &str) -> std::result::Result<(), String> {
+        Err("history failed".to_string())
+    }
+    fn broadcast(&self, _: &str) -> std::result::Result<(), String> {
+        Err("broadcast failed".to_string())
+    }
+    fn active_session_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn start_server(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
+    fn stop_server(&self) {}
+}
+
+fn outbound_to(session: &str) -> OutboundMessage {
+    OutboundMessage {
+        channel: "web".to_string(),
+        chat_id: format!("web:{session}"),
+        content: "test".to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_dead_target_session_soft_fails_ok() {
+    let ch = WebChannel::with_defaults();
+    ch.running.store(true, Ordering::SeqCst);
+    ch.base.set_enabled(true);
+    ch.set_server(Arc::new(DeadSessionMockServer));
+
+    // 死目标：Ok（软失败），不进 manager 错误路径。
+    ch.send(outbound_to("dead-tab")).await.unwrap();
+    // 同目标重复投递（逐轮场景）：仍 Ok，WARN 已去重为 debug。
+    ch.send(outbound_to("dead-tab")).await.unwrap();
+    ch.send(outbound_to("dead-tab")).await.unwrap();
+    // 去重集合记账。
+    assert!(ch.dead_targets.lock().contains("dead-tab"));
+}
+
+#[tokio::test]
+async fn test_real_send_error_still_propagates() {
+    let ch = WebChannel::with_defaults();
+    ch.running.store(true, Ordering::SeqCst);
+    ch.base.set_enabled(true);
+    ch.set_server(Arc::new(FailingMockServer));
+
+    // 非「会话不存在」类错误照旧 Err（不吞真故障）。
+    let err = ch.send(outbound_to("session-1")).await.unwrap_err();
+    assert!(err.to_string().contains("send failed"));
+    assert!(!ch.dead_targets.lock().contains("session-1"));
+}
