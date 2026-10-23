@@ -1075,8 +1075,11 @@ fn extract_ip_from_addr(addr: &str) -> Option<IpAddr> {
         let socket = rest.split_once('@')?.1;
         return extract_ip_from_addr(socket);
     }
-    // Handle [IPv6]:Port
-    if let Some(idx) = addr.rfind("]:") {
+    // Handle [IPv6]:Port（必须确认以 '[' 开头才剥——裸 "]:" 会让 idx=0
+    // 落成 &addr[1..0]（start>end panic），首字符多字节时也切非边界）
+    if addr.starts_with('[')
+        && let Some(idx) = addr.rfind("]:")
+    {
         let ip_str = &addr[1..idx]; // strip '[' and ']:port'
         return ip_str.parse().ok();
     }
