@@ -61,6 +61,21 @@ for arg in "$@"; do
 done
 
 # ============================================
+# Selfupdate trust anchor (compile-time; same source as CI daily-release:
+# SHA-256 of certs/root_cert.der). Absent file = no anchor = self-update
+# apply refuses to execute (fail-closed), build itself unaffected.
+# nemesis-verify/build.rs declares rerun-if-env-changed, so a value change
+# (incl. appearing after an unanchored build) auto-recompiles the crate.
+# ============================================
+if [ -f "certs/root_cert.der" ]; then
+    ANCHOR="$(sha256sum certs/root_cert.der | cut -d' ' -f1)"
+    export NEMESIS_BUILD_ROOT_ANCHOR="$ANCHOR"
+    echo "  OK selfupdate anchor injected: $ANCHOR"
+else
+    echo "  WARN certs/root_cert.der not found - no compile-time anchor, self-update refuses (fail-closed)"
+fi
+
+# ============================================
 # Banner
 # ============================================
 VERSION="0.0.0.1"
