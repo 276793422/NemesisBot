@@ -35,6 +35,11 @@ pub(crate) enum GateOutcome {
     /// Short-circuit reply (busy receipt / busy bounce / queue-full / slash
     /// command response). No session was acquired.
     Immediate { agent_id: String, response: String },
+    /// C4（2026-10-24 cron 合闸）：同 job 重复 tick 在 busy 闸被丢弃——
+    /// 无回执、无落盘（cron tick 是系统自消息，D-2 用户消息留痕契约不适
+    /// 用；触发真相源在 cron 服务自身日志 + 触发账本）。泵侧只 debug 记
+    /// 一笔。job id 走 tracing 字段。
+    Coalesced { cron_job_id: String },
     /// E6 (2026-09-05): `/compact` / `/clear` — 会话维护命令。gate 的同步
     /// 短路点拿不到 instance（LLM 摘要是 async），但会话已在此获取（防
     /// 并发回合与压缩互相踩摘要推进）；pump/serial tail 派发到
@@ -392,6 +397,15 @@ impl AgentLoop {
         match self.gate_inbound(&msg) {
             GateOutcome::Continuation(task_id) => ("__continuation__".to_string(), task_id, None),
             GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
+            GateOutcome::Coalesced { cron_job_id } => {
+                // C4（2026-10-24 cron 合闸）：串行回退路径同语义——静默丢弃，
+                // 空串让调用方 finish_message 早退（零出站零落盘）。
+                debug!(
+                    cron_job_id = %cron_job_id,
+                    "[AgentLoop] coalesced cron tick dropped at serial tail"
+                );
+                (String::new(), String::new(), None)
+            }
             GateOutcome::Maintenance {
                 kind,
                 session_key,
@@ -810,6 +824,24 @@ impl AgentLoop {
                     };
                 }
                 ConcurrentMode::Queue | ConcurrentMode::Steer => {
+                    // C4（2026-10-24 cron 合闸，docs/BUG/2026-10-24_cron触发
+                    // 无合闸队列积压.md）：同 job 已有排队中的 tick → 丢弃本
+                    // tick。触发间隔 < 轮时长时无合闸 FIFO 无限积压（实测：
+                    // 30s 采集任务积压 6 轮、删除后幽灵排空 2 分钟、累计烧
+                    // 8.1M tokens）。合闸后积压上界 = 1 在途 + 1 排队。用户
+                    // 消息无 cron_job_id，永不命中本分支。
+                    if let Some(job_id) = msg.metadata.get("cron_job_id")
+                        && self.inbox.has_pending_cron_job(&session_key, job_id)
+                    {
+                        info!(
+                            cron_job_id = %job_id,
+                            "[AgentLoop] cron tick coalesced: same job already queued, dropping duplicate tick (session_key={})",
+                            session_key
+                        );
+                        return GateOutcome::Coalesced {
+                            cron_job_id: job_id.clone(),
+                        };
+                    }
                     let queued = crate::inbox::QueuedMessage {
                         msg: nemesis_types::channel::InboundMessage {
                             channel: msg.channel.clone(),

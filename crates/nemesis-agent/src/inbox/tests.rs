@@ -297,3 +297,45 @@ fn test_late_steer_transfers_on_normal_turn_end() {
     inbox.transfer_next_step_to_next_turn("s");
     assert_eq!(inbox.pending("s"), (1, 0));
 }
+
+// C4（2026-10-24 cron 合闸）：同 job 待处理判定——next_turn / next_step
+// 都算；不同 job / 用户消息（无 cron_job_id）不命中；取走后判定复位。
+#[test]
+fn test_has_pending_cron_job() {
+    let inbox = Inbox::new(16);
+
+    // 空队列：不命中。
+    assert!(!inbox.has_pending_cron_job("s", "job-1"));
+
+    // next_turn 中同 job：命中。
+    inbox.enqueue_for_mode(
+        "s",
+        msg_with_meta("t1", vec![("cron_job_id", "job-1")]),
+        false,
+    );
+    assert!(inbox.has_pending_cron_job("s", "job-1"));
+
+    // 不同 job：不命中。
+    assert!(!inbox.has_pending_cron_job("s", "job-2"));
+
+    // 用户消息（无 cron_job_id）永不与之冲突：无 job id 判定路径天然不
+    // 触达本函数，但同 job 字符串出现在用户 content 里也不能误判——
+    // 判定只看 metadata。
+    inbox.enqueue_for_mode("s", msg("cron_job_id=job-1 但这是用户文本"), false);
+    assert!(inbox.has_pending_cron_job("s", "job-1")); // 仍由 t1 命中
+
+    // 取走后复位。
+    assert_eq!(
+        inbox.claim_next_turn_head("s").unwrap().msg.metadata["cron_job_id"],
+        "job-1"
+    );
+    assert!(!inbox.has_pending_cron_job("s", "job-1"));
+
+    // next_step（steer 插话）中的同 job 也算。
+    inbox.enqueue_for_mode(
+        "s",
+        msg_with_meta("!t2", vec![("cron_job_id", "job-1")]),
+        true,
+    );
+    assert!(inbox.has_pending_cron_job("s", "job-1"));
+}

@@ -381,3 +381,20 @@ fn model_dir_truly_absolute_path_returned_without_join() {
     let dir = cfg.model_dir();
     assert_eq!(dir, abs, "absolute dir must be returned as-is");
 }
+
+// C4（2026-10-24 告警降噪）：缺失配置路径的 WARN 只发一次——重复失败
+// （每轮/心跳读取点）降 debug。判定按路径去重，不同路径互不影响。
+#[test]
+fn should_warn_missing_only_first_time_per_path() {
+    let a = Path::new("/tmp/voice-a/config.toml");
+    let b = Path::new("/tmp/voice-b/config.toml");
+
+    // 首次：true（WARN）；重复：false（debug）。
+    assert!(should_warn_missing(a));
+    assert!(!should_warn_missing(a));
+    assert!(!should_warn_missing(a));
+
+    // 不同路径独立记账。
+    assert!(should_warn_missing(b));
+    assert!(!should_warn_missing(b));
+}
