@@ -1477,7 +1477,18 @@ fn backup_cluster_persona_files(workspace: &str) -> Result<Option<String>, Strin
         std::io::Write::write_all(&mut zw, content)
             .map_err(|e| format!("写入备份条目 {name} 失败: {e}"))?;
     }
-    zw.finish().map_err(|e| format!("收尾备份 zip 失败: {e}"))?;
+    // BUG-HUNT R16：finish 返回的 BufWriter 若靠 drop 收尾，缓冲里最后
+    // ≤8KiB 的 flush 错误会被 std 静默吞掉——本函数返回 Ok 却留下截断的
+    // 备份 zip，调用方照常覆盖旧人格文件，架空「绝不在无备份的情况下
+    // 覆盖旧文件」的 fail-closed 契约（截断备份比没有更糟：虚假信心）。
+    // 对齐 REL-002 纪律：显式落盘报错 + sync_all 后才算备份成功（备份必须
+    // 先于紧随其后的覆盖写，确保掉电也存活）。
+    let inner = zw.finish().map_err(|e| format!("收尾备份 zip 失败: {e}"))?;
+    inner
+        .into_inner()
+        .map_err(|e| format!("备份 zip 落盘失败: {}", e.into_error()))?
+        .sync_all()
+        .map_err(|e| format!("备份 zip sync 失败: {e}"))?;
     Ok(Some(rel))
 }
 

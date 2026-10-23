@@ -145,9 +145,15 @@ pub fn create_zip(source_dir: &str, zip_path: &str) -> Result<(), String> {
 
     recursively_add_directory(&mut zip_writer, source_dir, source_dir, &options)?;
 
-    zip_writer
+    // finish returns the inner BufWriter — dropping it as a temporary would
+    // silently swallow the final flush error (≤8KiB tail), reporting success
+    // while the zip may be truncated. Flush explicitly so errors surface.
+    let inner = zip_writer
         .finish()
         .map_err(|e| format!("failed to finalize zip archive: {}", e))?;
+    inner
+        .into_inner()
+        .map_err(|e| format!("failed to flush zip archive: {}", e.into_error()))?;
 
     Ok(())
 }
