@@ -1,0 +1,19 @@
+[package]
+name = "nemesis-ziwei-rev"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "紫微系统配置期分析引擎：iced-x86 反汇编、函数边界、CRT 签名过滤、xref 索引、行为 diff、LLM 上下文打包（M3 落地）"
+
+[dependencies]
+# M3：iced-x86 反汇编（decoder-only；MIT，2026-10-22 crates.io 取证）
+iced-x86 = { workspace = true }
+hex = { workspace = true }
+nemesis-utils = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -62,9 +62,13 @@ pub mod vm;
 // 病毒扫描 CLI（scanner feature 从 security 拆出；implies security）。
 #[cfg(feature = "scanner")]
 pub mod scanner;
+// 紫微系统 CLI（三方程序受控接管；ziwei feature 门控，config ziwei.enabled
+// 运行闸默认关）。
 #[cfg(feature = "security")]
 pub mod security;
 pub mod session;
+#[cfg(feature = "ziwei")]
+pub mod ziwei;
 // L9 版本自切换通道 CLI（check/status 离线可用；apply 触发 gateway 侧编排）。
 #[cfg(feature = "selfupdate")]
 pub mod selfupdate;

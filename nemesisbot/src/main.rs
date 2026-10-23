@@ -212,6 +212,11 @@ mod verify_policy;
 /// feature off 时整块消失，本模块必须同门（--no-default-features 编译）。
 #[cfg(feature = "security")]
 mod web_approval;
+/// 紫微系统 T2.2：profile.tools[] → AgentLoop 动态工具桥（依赖方向所限
+/// ——nemesis-ziwei 不依赖 nemesis-agent，桥住本 crate；min_tier=normal +
+/// ziwei 操作投影 + confirm 强审批）。
+#[cfg(feature = "ziwei")]
+mod ziwei_tools;
 
 /// K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡管理器 + 组合分流。
 /// web_approval 同门（依赖 nemesis_security::auditor trait）。
@@ -547,6 +552,12 @@ enum Commands {
     Eval {
         #[command(subcommand)]
         action: commands::eval::EvalAction,
+    },
+    /// 紫微系统：三方程序受控接管（【万物皆工具】；config ziwei.enabled 默认关）
+    #[cfg(feature = "ziwei")]
+    Ziwei {
+        #[command(subcommand)]
+        action: commands::ziwei::ZiweiCommand,
     },
     /// Manage local voice pipeline
     #[cfg(feature = "voice")]
@@ -1071,6 +1082,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Eval { action } => {
             common::ensure_default_logger();
             commands::eval::run(action, cli.local).await?;
+        }
+        #[cfg(feature = "ziwei")]
+        Commands::Ziwei { action } => {
+            common::ensure_default_logger();
+            commands::ziwei::run(action, cli.local).await?;
         }
         #[cfg(feature = "voice")]
         Commands::Voice { action } => {

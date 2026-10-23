@@ -1,0 +1,26 @@
+[package]
+name = "dummy-draw"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "dummy-draw"
+path = "src/main.rs"
+
+# T5.4 找回演练变体：
+# - bake-mutate：出厂即 V2 布局（等价 --mutate 常开）→ 与 V1 不同 hash 的
+#   "更新版" exe（锚字节相同 → 验证走 degraded 路径）。
+# - no-anchors：编译期剥掉全部锚 sled/imm（锚全 miss → 验证走 stale 路径）。
+[features]
+bake-mutate = []
+no-anchors = []
+
+# 独立于 NemesisBot workspace（测试夹具，零依赖）
+[workspace]
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

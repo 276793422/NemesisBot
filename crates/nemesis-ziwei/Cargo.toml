@@ -1,0 +1,37 @@
+[package]
+name = "nemesis-ziwei"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "紫微系统门面：会话管理器（附加/注入编排/握手/管道客户端/原语调度/poll 调度/卸载）、动态工具注册（窄门面——bot 只准依赖本 crate）"
+
+[dependencies]
+nemesis-ziwei-profile = { workspace = true }
+# 门面聚合：rev 只经本 crate 对 bot/web 可见（窄门面纪律决议 8①）。
+nemesis-ziwei-rev = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+nemesis-utils = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+nemesis-injector = { workspace = true }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+sha2 = { workspace = true }
+
+[lints]
+workspace = true
