@@ -463,6 +463,76 @@ fn retention_sweep_rollups_trims_and_noops() {
     let _ = std::fs::remove_file(path);
 }
 
+/// 边界日不部分 rollup（2026-10-24 回归锁）：cutoff 未按 UTC 日界对齐时，
+/// GROUP BY 会把 cutoff 所在日切成部分聚合经 INSERT OR REPLACE 写入
+/// daily_rollups——gateway 每 6h 一轮 sweep，同一边界日被前后多轮 sweep
+/// 分批 rollup+删除，前几轮的贡献被最后一轮 REPLACE 静默抹掉（永久史账
+/// 系统性少记，明细已删不可恢复）。修复 = cutoff floor 到 UTC 0 点。
+/// 断言守恒律：任一有 rollup 行的 UTC 日在明细中必须零残留（完整日
+/// 语义）；边界日行既不 rollup 也不删除。
+#[test]
+fn retention_sweep_boundary_day_not_partially_rolled_up() {
+    let (store, path) = open_store("w4_sweep_boundary");
+    let now = chrono::Local::now().timestamp();
+    // 与 retention_sweep(Some(1), …) 修复后同式：retention 1 天的 UTC 日界。
+    let cutoff_midnight = (now - 86400) / 86400 * 86400;
+    // 四行：前日 2 行（必完整 rollup+删）、边界日内 1 行（对齐后绝不
+    // rollup）、近期 1 行。
+    let prev_day = cutoff_midnight - 86400 + 3600;
+    let boundary_day = cutoff_midnight + 3600;
+    for (i, ts) in [prev_day, prev_day + 1, boundary_day, now]
+        .into_iter()
+        .enumerate()
+    {
+        store
+            .insert_request_log(&w4_log(&format!("m{i}"), ts, "s", 200))
+            .unwrap();
+    }
+
+    let deleted = store.retention_sweep(Some(1), None).expect("sweep");
+    assert_eq!(
+        deleted, 2,
+        "只有前日 2 行被 rollup+删除；边界日与近期行不动（旧行为 cutoff 未对齐时 UTC 时间 > 01:00 会误删边界日行）"
+    );
+
+    // 守恒律：rollup 行的 UTC 日在明细中零残留（部分聚合 = 有残留 = bug）。
+    let raw = rusqlite::Connection::open(path.to_string_lossy().as_ref()).unwrap();
+    {
+        let mut stmt = raw
+            .prepare(
+                "SELECT r.date,
+                        (SELECT COUNT(*) FROM request_logs l
+                         WHERE strftime('%Y-%m-%d', l.created_at, 'unixepoch') = r.date)
+                 FROM daily_rollups r",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap();
+        for row in rows {
+            let (date, leftover) = row.unwrap();
+            assert_eq!(
+                leftover, 0,
+                "rollup 日 {date} 在明细中必须零残留（完整日 rollup，禁止部分聚合）"
+            );
+        }
+    }
+    // 边界日 + 近期 2 行保留在明细，且边界日没有 rollup 行。
+    let left_total: i64 = raw
+        .query_row("SELECT COUNT(*) FROM request_logs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left_total, 2, "边界日 + 近期 2 行保留在明细");
+    let boundary_rollups: i64 = raw
+        .query_row(
+            "SELECT COUNT(*) FROM daily_rollups WHERE date = strftime('%Y-%m-%d', ?1, 'unixepoch')",
+            [boundary_day],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(boundary_rollups, 0, "边界日不得产生 rollup 行");
+    let _ = std::fs::remove_file(path);
+}
+
 /// compute_cost_breakdown 包装：已知模型 Some（分项齐全）、未知模型 None。
 #[cfg(feature = "pricing-embed")]
 #[test]

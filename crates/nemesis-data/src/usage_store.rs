@@ -698,7 +698,17 @@ impl DataStore {
         let mut deleted_total: u64 = 0;
 
         if let Some(days) = retention_days.filter(|d| *d > 0) {
-            let cutoff = chrono::Local::now().timestamp() - days * 86400;
+            // cutoff 对齐 UTC 日界（floor 到当日 0 点，与下方 GROUP BY 的
+            // strftime '%Y-%m-%d' unixepoch 同族）。未对齐的 cutoff 会把
+            // 「cutoff 所在日」切成**部分聚合**写入 daily_rollups，而
+            // INSERT OR REPLACE 是整行覆盖——gateway 每 6h 一轮 sweep，
+            // 同一边界日被前后多轮 sweep 分批 rollup+删除，前几轮的贡献
+            // 被最后一轮 REPLACE 静默抹掉（永久史账系统性少记，明细已删
+            // 不可恢复）。对齐后每个 (date, model) 至多被完整 rollup 一次
+            // （写入即终态，REPLACE 仅 crash 重放时以同值重写），边界日
+            // 整日顺延到下一轮，语义 = 「最后一个完整 UTC 日之前的明细
+            // rollup 后删除」。
+            let cutoff = (chrono::Local::now().timestamp() - days * 86400) / 86400 * 86400;
 
             conn.execute(
                 "INSERT OR REPLACE INTO daily_rollups
