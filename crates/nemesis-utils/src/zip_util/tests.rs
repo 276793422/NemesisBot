@@ -774,14 +774,10 @@ fn test_is_path_within_dir_nonexistent_same_path_uses_string_compare() {
 #[test]
 #[cfg(windows)]
 fn test_s1_extract_root_drive_entry_parent_none() {
-    // Entry name "c:" (prefix-only): the zip crate normalizes '\' to '/', and
-    // a name ending in '/' becomes a dir entry whose create_dir_all on the
-    // drive root succeeds — so use prefix-only "c:". dest_dir.join("c:")
-    // replaces the whole path ("path.prefix().is_some()" push rule) →
-    // entry_path == "c:" → parent() == None for both checks (lines 49 / 78);
-    // is_dir() is false (no trailing '/'); File::create("c:") fails (colon is
-    // not a valid filename char / resolves to the drive's current directory)
-    // → "failed to create file".
+    // Entry name "c:" (prefix-only, Windows drive prefix): R62 前该形态漏过
+    // 两道旧检查（parent()==None 跳过 canonical 检查、子串兜底不匹配
+    // "c:"），晚到 File::create("c:") 才失败；现在被 is_unsafe_rel_path
+    // 词法闸提前拒绝——同形态恶意条目，拒绝点更早、消息更明确。
     let dir = tempfile::tempdir().unwrap();
     let zip_path = dir.path().join("root_entry.zip");
     let file = File::create(&zip_path).unwrap();
@@ -799,10 +795,7 @@ fn test_s1_extract_root_drive_entry_parent_none() {
         dest_dir.to_string_lossy().as_ref(),
     );
     let err = result.unwrap_err();
-    assert!(
-        err.contains("failed to create file"),
-        "unexpected error: {err}"
-    );
+    assert!(err.contains("zip slip detected"), "unexpected error: {err}");
 }
 
 #[test]
@@ -875,4 +868,47 @@ fn test_create_zip_target_is_directory_fails() {
     )
     .unwrap_err();
     assert!(err.contains("failed to create zip file"), "{err}");
+}
+
+/// R62 回归钉：is_unsafe_rel_path 词法闸（归档穿越判定单一真相源）。
+/// canonicalize 型检查在父目录不存在时被静默跳过，词法闸不依赖文件系统状态。
+#[test]
+fn test_is_unsafe_rel_path() {
+    // `..` 各形态——"经不存在中间目录"类（词法闸此前缺失的正是这类）。
+    assert!(is_unsafe_rel_path("../evil.txt"));
+    assert!(is_unsafe_rel_path("a/../../evil.txt"));
+    assert!(is_unsafe_rel_path("newdir/../../../evil.txt"));
+    assert!(is_unsafe_rel_path("a/../b"));
+    assert!(is_unsafe_rel_path("a/.."));
+    // 绝对形态：Unix 根 / Windows 盘符（盘符在 Unix 解析为普通组件，按字节拒绝）。
+    assert!(is_unsafe_rel_path("/etc/evil"));
+    assert!(is_unsafe_rel_path("C:/Users/evil"));
+    assert!(is_unsafe_rel_path(r"C:\Users\evil"));
+    assert!(is_unsafe_rel_path("z:/x"));
+    // 合法名字不误伤：双点在词中、普通嵌套、裸文件名。
+    assert!(!is_unsafe_rel_path("a..b.txt"));
+    assert!(!is_unsafe_rel_path("SKILL.md"));
+    assert!(!is_unsafe_rel_path("sub/dir/file.md"));
+}
+
+/// extract_zip 消费词法闸：`..` 条目整包拒绝（旧子串兜底已覆盖，钉住不回退）。
+#[test]
+fn test_extract_zip_rejects_traversal_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("dest");
+    let zip_path = dir.path().join("evil.zip");
+    {
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("sub/../../../evil.txt", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"pwned").unwrap();
+        writer.finish().unwrap();
+    }
+    let err = extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest.to_string_lossy().as_ref(),
+    )
+    .unwrap_err();
+    assert!(err.contains("zip slip detected"), "{err}");
 }

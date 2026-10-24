@@ -2131,3 +2131,60 @@ fn with_urls_backfills_empty_values_with_defaults() {
     assert_eq!(custom.base_url, "https://custom.clawhub.ai");
     assert_eq!(custom.convex_url, "https://c.convex.cloud");
 }
+
+/// R62 回归钉：穿越条目拒绝。旧实现只有 canonicalize-if-Ok 检查——穿越
+/// 路径经过不存在的中间目录时（新装目录的常态正是父目录缺席）检查被
+/// 静默跳过，`newdir/../../../evil.txt` 落到 target 之外。
+#[test]
+fn test_extract_zip_rejects_traversal_through_missing_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    // 沙箱根：target 深埋三层，逃逸落点（root/evil.txt）仍在我们可控的
+    // 临时目录内——修复失效时污染面不外溢。
+    let root = dir.path().join("sandbox-root");
+    let target = root.join("skills").join("newskill");
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("newdir/../../../evil.txt", options)
+            .unwrap();
+        writer.write_all(b"pwned").unwrap();
+        writer.finish().unwrap();
+    }
+
+    let err = extract_zip_to_dir(&buf, &target.to_string_lossy()).unwrap_err();
+    assert!(
+        matches!(err, NemesisError::Security(_)),
+        "expect Security error, got: {err:?}"
+    );
+    // 效果面：逃逸落点（target 上三跳 = sandbox-root/evil.txt）不存在。
+    assert!(!root.join("evil.txt").exists());
+}
+
+/// R62 回归钉：Windows 盘符前缀条目（"C:/evil.txt"）——Path::join 绝对
+/// 形态换底逃逸。混入一个普通条目使公共前缀剥离失效（全 C: 前缀会被
+/// find_common_prefix 当单层目录剥掉，单条目形态到不了检查点）。
+#[test]
+fn test_extract_zip_rejects_drive_prefix_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("extracted");
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("C:/evil.txt", options).unwrap();
+        writer.write_all(b"pwned").unwrap();
+        writer.start_file("normal/SKILL.md", options).unwrap();
+        writer.write_all(b"# ok").unwrap();
+        writer.finish().unwrap();
+    }
+
+    let err = extract_zip_to_dir(&buf, &target.to_string_lossy()).unwrap_err();
+    assert!(
+        matches!(err, NemesisError::Security(_)),
+        "expect Security error, got: {err:?}"
+    );
+}

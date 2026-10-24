@@ -108,6 +108,15 @@ pub async fn download_skill_tree_from_github(
 
         let dest_path = Path::new(target_dir).join(relative_path);
 
+        // 词法闸（is_unsafe_rel_path）：canonicalize 检查（下方）在父目录
+        // 不存在时静默跳过；blob 路径是远端可控输入，`..`/绝对形态词法兜死。
+        if nemesis_utils::zip_util::is_unsafe_rel_path(relative_path) {
+            return Err(NemesisError::Security(format!(
+                "path traversal detected: {}",
+                relative_path
+            )));
+        }
+
         // Security: ensure dest_path is within targetDir (path traversal check).
         let canonical_target = Path::new(target_dir)
             .canonicalize()

@@ -602,10 +602,12 @@ impl ModelScopeRegistry {
 
         for (rel, content) in &files {
             // Path-traversal guard: server-provided paths must stay under target.
-            if rel.is_empty() || rel.starts_with('/') || rel.starts_with('\\') || rel.contains("..")
-            {
+            // 词法闸单一真相源（is_unsafe_rel_path）：取代旧子串检查——旧式
+            // contains("..") 漏盘符前缀（"C:/x" join 即换底），canonicalize
+            // 型检查（下方）在父目录不存在时又静默跳过。
+            if rel.is_empty() || nemesis_utils::zip_util::is_unsafe_rel_path(rel) {
                 return Err(NemesisError::Security(format!(
-                    "refusing unsafe skill file path: {}",
+                    "path traversal detected: {}",
                     rel
                 )));
             }
