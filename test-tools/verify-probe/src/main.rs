@@ -1,31 +1,29 @@
-//! verify-probe（诚实边界收口 ③a，2026-10-19）：delegate / iroh 实机验收的
-//! 预检探针 + 验收驱动。
+//! verify-probe（诚实边界收口 ③a，2026-10-19）：delegate 实机验收的
+//! 预检探针 + 验收驱动 + nic 自检。
 //!
 //! 3a 产出物（计划：`docs/PLAN/2026-10-19_诚实边界收口三步计划.md` §3a）：
-//! - 预检探针：`delegate-probe`（CLI 在场/版本/auth 信息面）+ `iroh-self`
-//!   /`iroh-ping`（端点绑定/连通 RTT）+ `nic`（网卡/网段自检）。
+//! - 预检探针：`delegate-probe`（CLI 在场/版本/auth 信息面）+ `nic`
+//!   （网卡/网段自检）。
 //! - 验收驱动：`delegate-roundtrip`（真实 CLI 往返 + stop 树杀无孤儿）+
 //!   `delegate-estop`（半程急停 → stop_all 排空 → 无孤儿）。
 //!
 //! 退出码契约（脚本/手册消费，机器可判）：
 //! - `0` = PASS（该腿全过）
 //! - `1` = FAIL（失败信息自带现场：原始输出尾/pid 残留/错误链）
-//! - `3` = SKIP-READY（环境不满足：CLI 不在场 / feature 未编译——原因写明）
+//! - `3` = SKIP-READY（环境不满足：CLI 不在场——原因写明）
 //!
 //! 诚实边界：依赖外部工具（codex CLI 等）时「二进制在场 ≠ 可用」——
 //! presence 只判在场，可用性由 roundtrip 真实往返判定；auth 探测是
-//! 信息面（子命令不存在/输出不认 = 打印原文，不猜结论）。iroh 腿在同一
-//! 网段运行时 relay 参与发现但数据面可能直连——NAT 穿越覆盖与否由手册
-//! 按两机网段比对判定，探针只如实报告 direct_addrs。
+//! 信息面（子命令不存在/输出不认 = 打印原文，不猜结论）。iroh 腿已随
+//! QUIC 插件化 M3 退役（端点本体迁 plugin_roaming，实机验收归插件侧
+//! 测试与 cluster-uat 真链路）。
 
 mod delegate;
-#[cfg(feature = "iroh")]
-mod iroh_leg;
 
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "verify-probe", about = "delegate/iroh 实机验收探针（③a）")]
+#[command(name = "verify-probe", about = "delegate 实机验收探针（③a）+ nic 自检")]
 enum Cmd {
     /// delegate 腿预检：CLI 在场 + 版本 + auth 信息面（不烧 token）。
     DelegateProbe {
@@ -59,35 +57,6 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         wait_secs: u64,
     },
-    /// iroh 腿：绑定端点 + echo serve，打印 node_id/直连地址（对端 ping
-    /// 用）。feature=iroh 编译。
-    #[cfg(feature = "iroh")]
-    IrohSelf {
-        /// 身份密钥目录（缺省 = 系统临时目录下 verify-probe-iroh/）。
-        #[arg(long)]
-        workspace: Option<String>,
-        /// serve 保持秒数（超时自动退出；0 = 一直等到 Ctrl+C）。
-        #[arg(long, default_value_t = 600)]
-        serve_secs: u64,
-        /// Minimal 预设（无中继纯直连——loopback/受限网测试形态）。
-        #[arg(long, default_value_t = false)]
-        direct: bool,
-    },
-    /// iroh 腿：ping 对端（生产地址语法 `iroh:<hex>[@<ip:port>]`——
-    /// `iroh-self` 输出里有现成命令形态），打印 RTT。
-    #[cfg(feature = "iroh")]
-    IrohPing {
-        /// 对端地址（`iroh:<hex>` 走发现 / `iroh:<hex>@<ip:port>` 钉直连）。
-        addr: String,
-        /// 身份密钥目录（缺省 = 系统临时目录下 verify-probe-iroh/）。
-        #[arg(long)]
-        workspace: Option<String>,
-        #[arg(long, default_value_t = 30)]
-        timeout_secs: u64,
-        /// Minimal 预设（与钉直连地址配套；缺省走 N0 发现）。
-        #[arg(long, default_value_t = false)]
-        direct: bool,
-    },
     /// 网卡/网段自检：默认路由出口 IP（UDP connect 技巧，零发包）+ 平台
     /// 原生接口清单 dump——两机比对判定是否真跨网。
     Nic,
@@ -109,19 +78,6 @@ async fn main() {
             cwd,
             wait_secs,
         } => delegate::estop(&cli, cwd.as_deref(), wait_secs).await,
-        #[cfg(feature = "iroh")]
-        Cmd::IrohSelf {
-            workspace,
-            serve_secs,
-            direct,
-        } => iroh_leg::self_probe(workspace.as_deref(), serve_secs, direct).await,
-        #[cfg(feature = "iroh")]
-        Cmd::IrohPing {
-            addr,
-            workspace,
-            timeout_secs,
-            direct,
-        } => iroh_leg::ping(&addr, workspace.as_deref(), timeout_secs, direct).await,
         Cmd::Nic => nic(),
     };
     std::process::exit(code);

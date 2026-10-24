@@ -252,6 +252,17 @@ mod vm_plugin_lib;
 #[cfg(feature = "vm")]
 mod vm_resources;
 
+/// 插件库文件查找 + v4 签名闸（无 feature 门；PluginLibSpec 参数化
+/// 插件名）——VM（vm_plugin_lib 薄壳）与 roaming（roaming_plugin_loader）
+/// 两个装载臂的单一真相源。
+mod plugin_lib;
+
+/// plugin_roaming 宿主装载器（C-ABI 解冻第二例：新式交互插件样板——
+/// 常驻服务 + 同步 FFI + vtable 双向回调；M4 起 feature 门已删，恒编译）。
+/// 装载/调用/停机三面：QUIC 中继服务端面自 2026-10-23 起经本装载器
+/// 走插件（iroh 家族重依赖随迁出主二进制）。
+mod roaming_plugin_loader;
+
 /// A1 运行时完整性清单：打包部署的
 /// 运行时文件 hash 清单（runtime-manifest.json，构建期由
 /// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
@@ -259,7 +270,7 @@ mod vm_resources;
 mod runtime_manifest;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 // Embed all config templates at compile time (mirrors Go's //go:embed config)
 // pub(crate)：onboard 提取模块（commands/onboard.rs）共用同一份嵌入常量，
@@ -339,8 +350,7 @@ enum Commands {
         relay: bool,
         /// QUIC 纯中继模式（统一入口；与 `quic relay` 分类管理入口同源同一
         /// 实现）：只跑自建 iroh 中继，不起本地 agent/board/集群/discovery。
-        /// 读 config.cluster.json roaming.relay 段；token 空 = 拒绝启动
-        /// （fail-closed）。需要 quic-relay feature 编译。
+        /// 读 config.quic.json relay 段；token 空 = 拒绝启动（fail-closed）。
         #[arg(long)]
         quic_relay: bool,
         /// A1 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
@@ -536,8 +546,7 @@ enum Commands {
         action: commands::sandbox::SandboxCommand,
     },
     /// QUIC management (keygen / status / relay server; 2026-10-23 与集群解耦——
-    /// keygen/status 随 cluster-roaming，relay 子命令随 quic-relay)
-    #[cfg(feature = "cluster-roaming")]
+    /// relay 走 plugin_roaming 装载，插件缺席 = 动态隐藏 + 显式调用诚实报错)
     Quic {
         #[command(subcommand)]
         action: commands::quic::QuicAction,
@@ -689,7 +698,7 @@ async fn async_main() -> Result<()> {
         })
         .collect();
 
-    let mut cli = Cli::parse_from(filtered_args);
+    let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
         println!("Local mode enabled: using ./.nemesisbot");
@@ -734,6 +743,33 @@ async fn async_main() -> Result<()> {
     // and is called by commands that don't have their own config-based init.
 
     run_command(cli).await
+}
+
+/// CLI 解析单点（非 mac / mac 双入口同源）：动态隐藏后 parse。
+/// `parse_from` 的错误即退出语义由 `try_get_matches_from` + `e.exit()` 保真。
+fn parse_cli(args: Vec<String>) -> Cli {
+    // mut 仅被动态隐藏消费（非隐藏路径无变异——不靠裸 allow 压真实告警）。
+    let mut cmd = Cli::command();
+    {
+        cmd = maybe_hide_quic_relay_entries(cmd);
+    }
+    let matches = cmd.try_get_matches_from(args).unwrap_or_else(|e| e.exit());
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+}
+
+/// plugin_roaming 缺席时动态隐藏 QUIC 服务端面入口（拍板 2：动态隐藏 +
+/// 显式调用诚实报错双保险——hide 只影响 help/补全可见性，显式传参仍可
+/// 解析，落到运行时诚实报错）。纯文件探测（不 dlopen）；
+/// `quic relay` 子命令与 `gateway --quic-relay` 旗标同源隐藏。
+/// clap `mut_subcommand`/`mut_arg` 按 self 值消费——整函数传值返回。
+fn maybe_hide_quic_relay_entries(mut cmd: clap::Command) -> clap::Command {
+    if crate::roaming_plugin_loader::roaming_plugin_present() {
+        return cmd;
+    }
+    cmd = cmd.mut_subcommand("quic", |quic| {
+        quic.mut_subcommand("relay", |relay| relay.hide(true))
+    });
+    cmd.mut_subcommand("gateway", |gw| gw.mut_arg("quic_relay", |a| a.hide(true)))
 }
 
 /// 双击直启判定：无参（None）或显式 gateway——都按 gateway 语义长驻，
@@ -817,7 +853,7 @@ fn main() -> Result<()> {
             }
         })
         .collect();
-    let mut cli = Cli::parse_from(filtered_args);
+    let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
         println!("Local mode enabled: using ./.nemesisbot");
@@ -1108,7 +1144,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::sandbox::run(action, cli.local).await?;
         }
-        #[cfg(feature = "cluster-roaming")]
         Commands::Quic { action } => {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);

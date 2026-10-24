@@ -1,15 +1,22 @@
-//! relay_server 单测：spawn→addr 探测→shutdown 全链（端口 0 = OS 分配）+
-//! 自签证书幂等（二次 spawn 复用同证书字节）+ PEM 解析辅助 + URL 组装。
+//! relay_server 单测（移植自宿主 relay_server/tests.rs，QUIC 插件化 M1）：
+//! spawn→addr 探测→shutdown 全链（端口 0 = OS 分配）+ 自签证书幂等（二次
+//! spawn 复用同证书字节）+ PEM 解析辅助。客户端 e2e 走**插件内** endpoint
+//! 实现（M3：iroh 拨号/受理全在插件——spawn_endpoint + BridgeAcceptor PING
+//! 分支 + trust 闸）。
+//!
+//! 不搬（宿主 relay_info.rs 显示面）：advertised_relay_url 三测。
 //!
 //! 全部绑定 0.0.0.0:0（OS 分配端口），无固定端口占用，并行安全。
 
 use super::{
-    advertised_relay_url, ensure_self_signed_cert, parse_certs_pem, parse_key_pem, relay_cert_path,
-    relay_key_path, spawn_relay_server,
+    ensure_self_signed_cert, parse_certs_pem, parse_key_pem, relay_cert_path, relay_key_path,
+    spawn_relay_server,
 };
-use crate::roaming::bridge::parse_roaming_address;
-use crate::roaming::config::{RelaySettings, RelayTls};
-use crate::roaming::endpoint::{RoamingEndpoint, RoamingIdentity, RoamingProtocolHandler};
+use crate::endpoint::{
+    EndpointConfig, TrustBookData, parse_roaming_address, save_trust_book, spawn_endpoint,
+};
+use crate::identity::Identity;
+use crate::types::{RelaySettings, RelayTls};
 
 /// 基础 settings（http/quic 端口 0 = OS 分配）。
 fn base_settings() -> RelaySettings {
@@ -156,16 +163,49 @@ fn parse_pem_chain_multiple_certs() {
 }
 
 // ---------------------------------------------------------------------------
-// 自建中继端到端：双客户端 bind_custom_relay 经本 relay ping/echo 往返
+// 自建中继端到端：双端 spawn_endpoint 经本 relay ping 往返（插件内全链）
 // ---------------------------------------------------------------------------
 
-/// P2 通路验证：spawn 中继（tls=none）→ A/B 两端 `bind_custom_relay` 接入 →
-/// A 以 `iroh:<hex>@http://127.0.0.1:<port>` 地址形态（bridge 解析 →
-/// `with_relay_url`）dial B → ping/echo 往返成立。整链零 n0 依赖（Minimal
-/// 基座 + 显式中继地址，纯 loopback hermetic）。
+/// 拉起插件内端点（EndpointConfig + Identity seed；spawn_endpoint 内置
+/// BridgeAcceptor serve——PING 分支即探针回声面）。
+async fn bind_ep(
+    id: &Identity,
+    relay_url: &str,
+    token: Option<&str>,
+    ws: &std::path::Path,
+) -> std::sync::Arc<crate::endpoint::EndpointHandle> {
+    let cfg = EndpointConfig {
+        relay_url: relay_url.to_string(),
+        relay_token: token.unwrap_or("").to_string(),
+        ..EndpointConfig::default()
+    };
+    spawn_endpoint(&cfg, &id.seed(), ws)
+        .await
+        .expect("endpoint spawn")
+}
+
+/// accept 端 trust 簿写入（trust.toml 存在即启用闸——trusted 放行 dial 端）。
+fn allow_peer(ws: &std::path::Path, peer_hex: &str) {
+    save_trust_book(
+        ws,
+        &TrustBookData {
+            trusted: vec![peer_hex.to_string()],
+            revoked: vec![],
+        },
+    )
+    .expect("trust 簿写入");
+}
+
+/// 通路验证：spawn 中继（tls=none）→ A/B 两端 `spawn_endpoint`（Minimal 基座
+/// + 显式中继 RelayMap）接入 → B trust 簿放行 A → A 以
+/// `iroh:<hex>@http://127.0.0.1:<port>` 地址形态（bridge 解析 →
+/// `with_relay_url`）ping B（PING 写入 → accept 端 PING 分支回显）→ RTT
+/// 成立。整链零 n0 依赖（纯 loopback hermetic）。
 #[tokio::test]
 async fn loopback_client_pings_through_self_relay() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let ws_a = tempfile::tempdir().expect("ws A");
+    let ws_b = tempfile::tempdir().expect("ws B");
     let settings = RelaySettings {
         tls: RelayTls::None,
         ..base_settings()
@@ -176,19 +216,14 @@ async fn loopback_client_pings_through_self_relay() {
     let http_port = relay.http_addr.expect("http addr").port();
     let relay_url = format!("http://127.0.0.1:{http_port}");
 
-    let id_b = RoamingIdentity::generate();
+    let id_b = Identity::generate();
     let node_b_hex = id_b.node_id_hex();
-    let ep_b = RoamingEndpoint::bind_custom_relay(&id_b, true, &relay_url, None)
-        .await
-        .expect("B bind");
-    ep_b.serve(RoamingProtocolHandler::echo())
-        .await
-        .expect("B serve");
+    let ep_b = bind_ep(&id_b, &relay_url, None, ws_b.path()).await;
 
-    let id_a = RoamingIdentity::generate();
-    let ep_a = RoamingEndpoint::bind_custom_relay(&id_a, false, &relay_url, None)
-        .await
-        .expect("A bind");
+    let id_a = Identity::generate();
+    // B 端 trust 簿放行 A（trust.toml 存在即闸启用；PING 分支同样过闸）。
+    allow_peer(ws_b.path(), &id_a.node_id_hex());
+    let ep_a = bind_ep(&id_a, &relay_url, None, ws_a.path()).await;
 
     // 生产同款地址形态：bridge 解析 `iroh:<hex>@http://...` → with_relay_url。
     let addr = parse_roaming_address(&format!("iroh:{node_b_hex}@{relay_url}"))
@@ -209,13 +244,15 @@ async fn loopback_client_pings_through_self_relay() {
 }
 
 /// 寻址边界钉死：自建中继形态（Minimal 基座，零发现层）下**裸** `iroh:<hex>`
-/// 拨号必须失败——iroh 1.0 的 Minimal 预设只设 crypto provider（无
-/// dns/pkarr address lookup，也无 relay 型发现），裸 node_id 无解析路径。
-/// 这是 announce 侧必须携带 `iroh:<hex>@<relay_url>` 完整形态的根因
-/// （cluster 自报 addresses 收割该形态；对端入池 → bridge with_relay_url）。
+/// 拨号必须失败——Minimal 预设只设 crypto provider（无 dns/pkarr address
+/// lookup，也无 relay 型发现），裸 node_id 无解析路径。这是 announce 侧必须
+/// 携带 `iroh:<hex>@<relay_url>` 完整形态的根因（cluster 自报 addresses 收割
+/// 该形态；对端入池 → bridge with_relay_url）。
 #[tokio::test]
 async fn bare_node_id_dial_fails_on_self_relay_minimal_base() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let ws_a = tempfile::tempdir().expect("ws A");
+    let ws_b = tempfile::tempdir().expect("ws B");
     let settings = RelaySettings {
         tls: RelayTls::None,
         ..base_settings()
@@ -225,18 +262,13 @@ async fn bare_node_id_dial_fails_on_self_relay_minimal_base() {
         .expect("relay spawn");
     let relay_url = format!("http://127.0.0.1:{}", relay.http_addr.expect("http").port());
 
-    let id_b = RoamingIdentity::generate();
-    let ep_b = RoamingEndpoint::bind_custom_relay(&id_b, true, &relay_url, None)
-        .await
-        .expect("B bind");
-    ep_b.serve(RoamingProtocolHandler::echo())
-        .await
-        .expect("B serve");
+    let id_b = Identity::generate();
+    let ep_b = bind_ep(&id_b, &relay_url, None, ws_b.path()).await;
 
-    let id_a = RoamingIdentity::generate();
-    let ep_a = RoamingEndpoint::bind_custom_relay(&id_a, false, &relay_url, None)
-        .await
-        .expect("A bind");
+    let id_a = Identity::generate();
+    // trust 簿放行（排除 trust 闸假阳性——失败必须来自拨号解析，不是闸）。
+    allow_peer(ws_b.path(), &id_a.node_id_hex());
+    let ep_a = bind_ep(&id_a, &relay_url, None, ws_a.path()).await;
     let addr =
         parse_roaming_address(&format!("iroh:{}", id_b.node_id_hex())).expect("裸形态解析本身合法");
 
@@ -261,6 +293,9 @@ async fn bare_node_id_dial_fails_on_self_relay_minimal_base() {
 #[tokio::test]
 async fn relay_token_mismatch_rejects_client() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    let ws_a = tempfile::tempdir().expect("ws A");
+    let ws_b = tempfile::tempdir().expect("ws B");
+    let ws_c = tempfile::tempdir().expect("ws C");
     let settings = RelaySettings {
         tls: RelayTls::None,
         token: "s3cret".to_string(),
@@ -271,22 +306,16 @@ async fn relay_token_mismatch_rejects_client() {
         .expect("relay spawn");
     let relay_url = format!("http://127.0.0.1:{}", relay.http_addr.expect("http").port());
 
-    let id_b = RoamingIdentity::generate();
+    let id_b = Identity::generate();
     let node_b_hex = id_b.node_id_hex();
     // B（accept 端）同样必须携带配对 token——SharedToken 闸对中继连接本身
-    // 生效（不带 token 的 B 根本进不了 relay，C 的 dial 会无的放矢）。
-    let ep_b = RoamingEndpoint::bind_custom_relay(&id_b, true, &relay_url, Some("s3cret"))
-        .await
-        .expect("B bind");
-    ep_b.serve(RoamingProtocolHandler::echo())
-        .await
-        .expect("B serve");
+    // 生效（不带 token 的 B 根本进不了 relay，A 的 dial 会无的放矢）。
+    let ep_b = bind_ep(&id_b, &relay_url, Some("s3cret"), ws_b.path()).await;
+    let id_a = Identity::generate();
+    allow_peer(ws_b.path(), &id_a.node_id_hex());
 
-    // 无 token 客户端（负例臂）：中继接入被 SharedToken 拒绝 → dial 必败。
-    let id_a = RoamingIdentity::generate();
-    let ep_a = RoamingEndpoint::bind_custom_relay(&id_a, false, &relay_url, None)
-        .await
-        .expect("A bind");
+    // 无 token 客户端（负例臂）：中继接入被 SharedToken 拒绝 → ping 必败。
+    let ep_a = bind_ep(&id_a, &relay_url, None, ws_a.path()).await;
     let addr = parse_roaming_address(&format!("iroh:{node_b_hex}@{relay_url}"))
         .expect("roaming addr parse");
 
@@ -302,10 +331,9 @@ async fn relay_token_mismatch_rejects_client() {
     );
 
     // 配对 token 客户端（对照）：同 relay 必须通。
-    let id_c = RoamingIdentity::generate();
-    let ep_c = RoamingEndpoint::bind_custom_relay(&id_c, false, &relay_url, Some("s3cret"))
-        .await
-        .expect("C bind");
+    let id_c = Identity::generate();
+    allow_peer(ws_b.path(), &id_c.node_id_hex());
+    let ep_c = bind_ep(&id_c, &relay_url, Some("s3cret"), ws_c.path()).await;
     let addr_c = parse_roaming_address(&format!("iroh:{node_b_hex}@{relay_url}"))
         .expect("roaming addr parse");
     let rtt = tokio::time::timeout(
@@ -321,51 +349,4 @@ async fn relay_token_mismatch_rejects_client() {
     ep_c.shutdown().await;
     ep_b.shutdown().await;
     relay.shutdown().await;
-}
-
-// ---------------------------------------------------------------------------
-// advertised_relay_url
-// ---------------------------------------------------------------------------
-
-#[test]
-fn advertised_url_uses_external_host_when_set() {
-    let settings = RelaySettings {
-        http_port: 3340,
-        external_host: "vps.example.com".to_string(),
-        ..RelaySettings::default()
-    };
-    assert_eq!(
-        advertised_relay_url(&settings),
-        "http://vps.example.com:3340"
-    );
-}
-
-#[test]
-fn advertised_url_trims_whitespace_host() {
-    let settings = RelaySettings {
-        http_port: 7842,
-        external_host: " 10.1.2.3 ".to_string(),
-        ..RelaySettings::default()
-    };
-    assert_eq!(advertised_relay_url(&settings), "http://10.1.2.3:7842");
-}
-
-#[test]
-fn advertised_url_empty_host_falls_back_shape() {
-    // 空主机 = 探测本机 IP（环境相关）——只断言形态：http://<host>:<port>。
-    let settings = RelaySettings {
-        http_port: 3340,
-        ..RelaySettings::default()
-    };
-    let url = advertised_relay_url(&settings);
-    assert!(url.starts_with("http://"), "{url}");
-    assert!(url.ends_with(":3340"), "{url}");
-    let host = url
-        .strip_prefix("http://")
-        .and_then(|u| u.strip_suffix(":3340"))
-        .expect("shape");
-    assert!(
-        !host.is_empty() && !host.contains(':'),
-        "host 段非空且无端口残留: {url}"
-    );
 }

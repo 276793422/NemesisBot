@@ -1258,13 +1258,14 @@ pub(crate) async fn init_post_agent(
         }
     }
 
-    // QUIC 中继管理器注入 web 面（quic-relay）：WSAPI cluster.relay.status/
-    // toggle 经同一 Arc 消费运行态与实时开关（2026-10-23 解耦——与集群
-    // 注入互不依赖，集群未装配中继面照常可用）。
-    #[cfg(feature = "quic-relay")]
-    if let Some(ref mgr) = ctx.quic_relay_manager {
-        web_server.set_quic_relay(mgr.clone());
-        info!("[Gateway] QuicRelayManager injected into web server");
+    // QUIC 中继插件句柄注入 web 面（QUIC 插件化 M1）：WSAPI quic.relay.*/
+    // registry.members 经同一句柄代理插件调用（2026-10-23 解耦——与集群
+    // 注入互不依赖，集群未装配中继面照常可用）。句柄是 fn 指针 Copy——
+    // 直接解引用值拷贝。插件未装载（文件缺席/拒载）= web 面保持 None
+    // （handler 诚实降级 not loaded，不注入假句柄）。
+    if let Some(handle) = crate::roaming_plugin_loader::plugin_handle() {
+        web_server.set_roaming_plugin(*handle);
+        info!("[Gateway] plugin_roaming handle injected into web server");
     }
 
     // Inject AgentLoop ref into web server for runtime model switching

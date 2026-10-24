@@ -95,12 +95,11 @@ pub struct AppState {
     pub cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     pub cluster: Option<()>,
-    /// QUIC 中继生命周期管理（2026-10-23 与集群解耦——宿主直接持有；集群
-    /// 未装配/已关闭时中继启停照常可用）。
-    #[cfg(feature = "quic-relay")]
-    pub quic_relay: Option<Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>>,
-    #[cfg(not(feature = "quic-relay"))]
-    pub quic_relay: Option<()>,
+    /// QUIC 中继运行面句柄（QUIC 插件化 M1：运行面在 plugin_roaming C-ABI
+    /// 插件——宿主 nemesisbot 装载后注入；fn 指针 Copy，直接持值不 Arc）。
+    /// None = 插件未装载（诚实降级：启停/成员查询报 not loaded）。
+    /// M4 起恒编译（cluster-roaming feature 已删）。
+    pub quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.

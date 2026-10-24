@@ -32,21 +32,14 @@ rand = { workspace = true }
 sha2 = { workspace = true }
 aes-gcm = { workspace = true }
 toml = { workspace = true }
-# A1 iroh 跨网 P2P 叠加层（feature=cluster-roaming）：QUIC 自证端点 + 中继打洞。
-iroh = { workspace = true, optional = true }
-# iroh-relay：server 面专用（quic-relay feature）。client 面类型
-# （RelayUrl/RelayConfig/RelayMap）全部经 iroh 根 re-export 可命名
-# （lib.rs:282-290），cluster-roaming 单开时零直依赖零编译增量；server 面
-# （rcgen/ACME/tokio-websockets 等编译增量）只随 quic-relay 进编译。
-iroh-relay = { workspace = true, optional = true }
-# QUIC 中继服务器证书自签（rcgen）+ rustls ServerConfig 组装——两 crate 已在
-# iroh-relay server 依赖树内，直接声明仅为可命名。
-rcgen = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
-# rendezvous 名册客户端（register/members HTTP 往返；cluster-roaming）。
-reqwest = { workspace = true, optional = true }
-# rendezvous 名册服务端（axum 注册表两端点；quic-relay）。
-axum = { workspace = true, optional = true }
+# QUIC 插件化 M2：C-ABI 桥消费面（身份/名册控制面在 plugin_roaming；dlopen
+# 与句柄装载在 nemesisbot loader，cluster 侧只经 roaming::plugin_bridge 调插件）。
+# M4 起非 optional——cluster-roaming feature 已删（拍板②），桥消费面恒编译。
+nemesis-plugin = { workspace = true }
+# node_id hex on-curve 校验（QUIC 插件化 M3 宿主侧重实现：iroh EndpointId
+# 已随端点迁入插件，VerifyingKey::from_bytes 与 EndpointId::from_bytes 同语义
+# ——announce 入池前置闸）。M4 起非 optional（同上，随桥消费面恒编译）。
+ed25519-dalek = { workspace = true }
 # roaming 密钥 hex 编解码（node_id/seed 的文本形态）。
 hex = { workspace = true }
 if-addrs = "0.13"
@@ -68,15 +61,13 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [features]
-# A1 iroh 跨网 P2P 叠加层（2026-10-18）：默认关——LAN 用户零新依赖；开启后
-# endpoint/trust/bridge 三模块进编译，peer_chat/探针支持 `iroh:<node_id>` 地址。
-# 2026-10-22 rendezvous：+= reqwest（名册客户端 register/members 往返）。
-cluster-roaming = ["dep:iroh", "dep:reqwest"]
-# QUIC 中继服务器（2026-10-21）：自建 iroh 中继回落服务器（内网穿透）。
-# 隐含 cluster-roaming（中继服务于叠加层，主从关系）；server 面编译增量
-# （rcgen/ACME/tokio-websockets 等）只在开 quic-relay 时进编译。
-# 2026-10-22 rendezvous：+= axum（成员注册表两端点；传输面不依赖它）。
-quic-relay = ["cluster-roaming", "iroh-relay/server", "dep:rcgen", "dep:rustls", "dep:axum"]
+# A1 iroh 跨网 P2P 叠加层（2026-10-18 建档 → 2026-10-23 QUIC 插件化 M1/M2/M3
+# 渐次搬插件 → 2026-10-24 M4 **feature 删除**，拍板②「少一个 feature 少一分
+# 组合矩阵」）：iroh 端点/中继/名册全部在 plugin_roaming C-ABI 插件；cluster
+# 侧桥消费面（plugin_bridge / 拨号臂 / accept 臂 / on-curve 校验）恒编译，
+# 插件缺席 = 运行期诚实报错（宿主 loader 拒装 + 桥调用降级）。本 crate 的
+# feature 数组不再存在；iroh 家族依赖只活在插件 crate。
+# （原 quic-relay 空壳 feature 一并删除——中继运行面自 M1 起整体在插件内。）
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -1465,12 +1465,17 @@ pub(crate) async fn run_runtime(
         }
     }
 
-    // QUIC 中继停机（quic-relay，2026-10-23 解耦）：与集群停臂互不依赖
-    // ——中继生命周期归 QuicRelayManager，集群关了中继也要停。
-    #[cfg(feature = "quic-relay")]
-    if let Some(mgr) = ctx.quic_relay_manager.as_ref() {
-        mgr.stop();
-        info!("[Gateway] QUIC relay stopped");
+    // QUIC 中继停机（QUIC 插件化 M1）：计划拍板「estop 不触达传输面」，
+    // roaming_stop 只挂 gateway 进程停机链——优雅停中继（插件内关 HTTP/
+    // QUIC 监听）+ shutdown_plugin_roaming 终态收尾（幂等；不 unload 库，
+    // 活线程 UB——同库 OS 引用计数新句柄）。与集群停臂互不依赖：集群关了
+    // 中继也要停；插件缺席（装载失败）= Err 诚实吞进 debug，不炸停机链。
+    {
+        match crate::roaming_plugin_loader::roaming_stop().await {
+            Ok(_) => info!("[Gateway] QUIC relay stopped (plugin_roaming)"),
+            Err(e) => tracing::debug!("[Gateway] QUIC relay stop skipped: {e}"),
+        }
+        crate::roaming_plugin_loader::shutdown_plugin_roaming();
     }
 
     // Clean up gateway state file

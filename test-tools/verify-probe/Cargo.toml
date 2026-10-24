@@ -13,14 +13,11 @@ tokio = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 nemesis-agent = { workspace = true }
-nemesis-cluster = { workspace = true, optional = true }
 
 [features]
-# iroh 腿（绑端点/ping）依赖 cluster-roaming——iroh 编译重，按需启用：
-#   cargo run -p verify-probe --features iroh -- iroh-self
-# 默认不启用：workspace 全量构建零新增权重，delegate 腿 / nic 子命令不受影响。
+# iroh 腿已随 QUIC 插件化 M3 退役（iroh 端点本体迁 plugin_roaming——
+# 端点绑定/ping 的实机验收归插件侧测试与 cluster-uat 真链路）。
 default = []
-iroh = ["dep:nemesis-cluster", "nemesis-cluster/cluster-roaming"]
 
 [lints]
 workspace = true

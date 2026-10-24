@@ -167,23 +167,10 @@ git2 = { version = "0.21", default-features = false }
 # 每次调用独立 runtime；interrupt handler + memory limit 资源闸）。
 rquickjs = "0.14"
 
-# A1（A级差距修正计划 2026-10-18）：集群跨网 P2P iroh 叠加层——QUIC 自证端点
-# + 中继打洞（NAT 后零端口转发互连）；feature=cluster-roaming，只在
-# nemesis-cluster 可选消费（LAN 现有 TCP 路径字节不变，iroh 是叠加层）。
-iroh = "1"
-
-# QUIC 中继服务器（2026-10-21 计划）：iroh-relay server 面——自建中继回落
-# （内网穿透服务器）；feature=quic-relay，只在 nemesis-cluster 可选消费。
-# default-features=false：metrics/tls-ring 等默认特性不随继承混入——client 面
-# 与 iroh 自身的 iroh-relay 依赖形态对齐（零编译增量），server 面（rcgen/
-# ACME/tokio-websockets 等）由 nemesis-cluster 的 quic-relay 经
-# `iroh-relay/server` 显式开启。
-iroh-relay = { version = "1", default-features = false }
-
-# QUIC 中继服务器证书自签 + rustls ServerConfig 组装（quic-relay）。
-# 两 crate 已在 iroh-relay server 依赖树内——workspace 声明只为集中版本。
-rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# QUIC 漫游面（QUIC 插件化 M4 收口 2026-10-24）：iroh/iroh-relay/rcgen/rustls
+# 家族依赖已整体随迁 plugins/plugin-roaming（独立 workspace，依赖自持）——
+# 主 workspace 零 iroh 依赖（Cargo.lock 无 iroh 边），插件在场与否是唯一
+# 功能开关（缺席 = 诚实降级）。
 
 # B9-1（VM 项目工作副本）：宿主打包 / guest 解包的项目树 tar 载体（不压缩
 # ——localhost slirp 通道带宽廉价，CPU 留给 hash）；纯 Rust 零系统依赖。

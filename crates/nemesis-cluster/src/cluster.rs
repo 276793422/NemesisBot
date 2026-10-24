@@ -126,10 +126,10 @@ pub struct Cluster {
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
     /// RPC server instance.
     rpc_server: Option<Arc<crate::rpc::server::RpcServer>>,
-    /// A1：iroh 漫游端点（feature=cluster-roaming；`setup_roaming` 装配，
-    /// `stop()` 关停）。None = 未启用（无 roaming.key / 装配失败 / 未编译）。
-    #[cfg(feature = "cluster-roaming")]
-    roaming_endpoint: Mutex<Option<Arc<crate::roaming::endpoint::RoamingEndpoint>>>,
+    /// A1：iroh 漫游叠加层运行旗标（QUIC 插件化
+    /// M3：端点本体搬 plugin_roaming，宿主只记「setup_roaming 装配成功 /
+    /// stop() 已请求停机」——`setup_roaming` 置位，`stop()` 复位）。
+    roaming_started: AtomicBool,
     /// A1：本节点 iroh 漫游身份 hex（`setup_roaming` 成功后写入；announce
     /// 携带，对端据此把 `iroh:<hex>` 追加进拨号候选池）。None = 未启用
     /// 漫游叠加层（announce 不带字段，wire 兼容）。
@@ -139,12 +139,16 @@ pub struct Cluster {
     /// node_id 无解析路径——对端需要完整形态才能 bridge → `with_relay_url`。
     /// 空 = N0 形态（裸候选经 `roaming_id` 字段，N0 发现层解析）。
     roaming_dialable: parking_lot::RwLock<Vec<String>>,
-    /// rendezvous 名册客户端状态快照（2026-10-22 自动发现；`setup_roaming`
-    /// 自建中继形态 spawn 的同步循环每 tick 覆写；WSAPI roaming.status 读取）。
+    /// rendezvous 名册客户端状态快照（2026-10-22 自动发现；QUIC 插件化 M2
+    /// 后由成员回流漏斗（插件名册循环每次推送）覆写；WSAPI roaming.status 读取）。
     /// None = 循环未挂（N0 形态 / 推导失败 / 未启用漫游）。
-    #[cfg(feature = "cluster-roaming")]
     rendezvous_status:
         parking_lot::RwLock<Option<crate::roaming::rendezvous::RendezvousClientState>>,
+    /// 名册循环装配参数缓存（QUIC 插件化 M2：循环本体在 plugin_roaming，
+    /// 宿主持真相源参数——身份/宣告字段热改经 `sync_local_node_to_registry`
+    /// 尾部钩子重组装重发 `registry_start`（幂等停旧起新））。None = 循环
+    /// 未挂（N0 形态 / 未启用漫游 / stop() 已清）。
+    rendezvous_params: parking_lot::RwLock<Option<RendezvousParams>>,
     /// A1 运行时硬化批：本节点构建号（git 短 hash；announce 携带）。由
     /// 宿主（nemesisbot gateway / 轻量节点命令）在构造后经
     /// [`Cluster::set_build_hash`] 注入——编译期常量 `NEMESISBOT_GIT_COMMIT`
@@ -213,6 +217,22 @@ pub struct Cluster {
         Arc<Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>>,
 }
 
+/// 名册循环装配参数缓存（QUIC 插件化 M2，拍板 7：循环本体在 plugin_roaming
+/// 自持 runtime，宿主持真相源参数）。身份/宣告字段热改经
+/// `sync_local_node_to_registry` 尾部钩子重组装 member 载荷重发
+/// `registry_start`（插件侧幂等停旧起新）。
+#[derive(Debug, Clone)]
+pub(crate) struct RendezvousParams {
+    /// 名册服务 URL（resolve_registry_url 推导产物）。
+    registry_url: String,
+    /// 本方对外 relay_url（member.relay_url + 对端拨号兜底）。
+    relay_url: String,
+    /// 中继/名册共享 token（member 提取自集群 token 槽——热改即走钩子）。
+    relay_token: String,
+    /// 本节点 iroh 身份 hex（插件侧 identity_mismatch 闸的对账键）。
+    iroh_hex: String,
+}
+
 impl Cluster {
     /// Create a new cluster with the given configuration.
     pub fn new(config: ClusterConfig) -> Self {
@@ -256,12 +276,11 @@ impl Cluster {
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
             rpc_server: None,
-            #[cfg(feature = "cluster-roaming")]
-            roaming_endpoint: Mutex::new(None),
+            roaming_started: AtomicBool::new(false),
             roaming_id: parking_lot::RwLock::new(None),
             roaming_dialable: parking_lot::RwLock::new(Vec::new()),
-            #[cfg(feature = "cluster-roaming")]
             rendezvous_status: parking_lot::RwLock::new(None),
+            rendezvous_params: parking_lot::RwLock::new(None),
             build_hash: parking_lot::RwLock::new(String::new()),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
@@ -422,12 +441,11 @@ impl Cluster {
             )),
             rpc_client: Mutex::new(None),
             rpc_server: None,
-            #[cfg(feature = "cluster-roaming")]
-            roaming_endpoint: Mutex::new(None),
+            roaming_started: AtomicBool::new(false),
             roaming_id: parking_lot::RwLock::new(None),
             roaming_dialable: parking_lot::RwLock::new(Vec::new()),
-            #[cfg(feature = "cluster-roaming")]
             rendezvous_status: parking_lot::RwLock::new(None),
+            rendezvous_params: parking_lot::RwLock::new(None),
             build_hash: parking_lot::RwLock::new(String::new()),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
@@ -873,60 +891,60 @@ impl Cluster {
         self.rpc_reference_broken.load(Ordering::SeqCst)
     }
 
-    /// iroh 漫游叠加层是否在跑（feature=cluster-roaming）。供 Dashboard
-    /// `cluster.roaming.status` 展示运行态；feature 关 = 恒 false。
-    #[cfg(feature = "cluster-roaming")]
+    /// iroh 漫游叠加层是否在跑。供 Dashboard `cluster.roaming.status`
+    /// 展示运行态；插件缺席/未装配 = 恒 false。
+    /// QUIC 插件化 M3：读装配旗标（端点本体在 plugin_roaming）。
     pub fn roaming_active(&self) -> bool {
-        self.roaming_endpoint.lock().is_some()
+        self.roaming_started.load(Ordering::SeqCst)
     }
 
-    /// feature-off 形态：漫游层未编译，恒 false。
-    #[cfg(not(feature = "cluster-roaming"))]
-    pub fn roaming_active(&self) -> bool {
-        false
-    }
-
-    /// 最近一次拨号路径观测（打洞直连 / 经中继转发——Dashboard 节点面
-    /// 可观测）：从注册表地址抠 `iroh:<hex>` node_id，查漫游端点的拨号
-    /// 路径观察槽（`"direct"` / `"relay"` / `"unknown"`）。None = 非漫游
-    /// 节点 / 端点未装配 / 尚无观测（连接未发起或观察已退出）。实时读槽
-    /// 不落注册表——路径是连接瞬时状态，非节点身份属性。
-    #[cfg(feature = "cluster-roaming")]
-    pub fn roaming_path_of(&self, node_id: &str) -> Option<String> {
+    /// 从注册表节点条目地址抠 `iroh:<hex>` node_id hex（小写）。None = 非
+    /// 漫游节点。纯字符串逻辑，无 feature 门（feature-off 时拨号路径表
+    /// 恒空，消费面 `roaming_dial_paths` 查不到即自然降级为「无观测」）。
+    pub fn roaming_hex_of(&self, node_id: &str) -> Option<String> {
         let info = self.registry.get(node_id)?;
-        let hex = info.addresses.iter().find_map(|a| {
+        info.addresses.iter().find_map(|a| {
             a.strip_prefix("iroh:")
                 .map(|rest| rest.split('@').next().unwrap_or(rest).to_ascii_lowercase())
-        })?;
-        let endpoint = self.roaming_endpoint.lock().clone()?;
-        endpoint.dial_path_of(&hex)
+        })
     }
 
-    /// feature-off 形态：漫游层未编译，恒 None。
-    #[cfg(not(feature = "cluster-roaming"))]
-    pub fn roaming_path_of(&self, node_id: &str) -> Option<String> {
-        let _ = node_id;
-        None
+    /// 最近拨号路径观测批量快照（打洞直连 / 经中继转发——Dashboard 节点面
+    /// 可观测）：node_id hex → "direct"/"relay"。QUIC 插件化 M3：观测槽在
+    /// plugin_roaming（插件侧逐连接观察任务维护），宿主经桥读快照——批量
+    /// 一次 FFI 往返，消费面配 [`Self::roaming_hex_of`] 做节点→hex 映射。
+    /// 空 map = 插件缺席 / 端点未运行 / 尚无观测。
+    pub async fn roaming_dial_paths(&self) -> std::collections::HashMap<String, String> {
+        match crate::roaming::plugin_bridge::status_snapshot().await {
+            crate::roaming::plugin_bridge::BridgeOutcome::Ok(s) => s.dial_paths,
+            crate::roaming::plugin_bridge::BridgeOutcome::Absent => {
+                std::collections::HashMap::new()
+            }
+            crate::roaming::plugin_bridge::BridgeOutcome::Failed(e) => {
+                tracing::debug!(error = %e, "[Cluster] roaming 拨号路径快照读取失败（按无观测渲染）");
+                std::collections::HashMap::new()
+            }
+        }
     }
 
     /// Stop the cluster. Stops discovery (joins threads) and signals shutdown.
-    /// A1 P2：iroh 漫游叠加层装配（feature=cluster-roaming）。
+    /// A1 P2：iroh 漫游叠加层装配。
     ///
     /// 显式开关（Dashboard/CLI 可控）：config.cluster.json `roaming.enabled`
     /// 为 true 才装配——key 只是身份材料不再是开关（P0 的「key 存在即启用」
     /// 文件 opt-in 语义由本闸取代）；缺 key 时自动生成（身份为本地自证材料，
     /// info 日志诚实记录）。缺省/显式 false = 不装配（Ok(false)），LAN 节点
-    /// 零 iroh 面。装配三件事：bind iroh endpoint（N0 预设，可收可拨）、把
-    /// RPC server 的入站桥挂上 ALPN accept、把端点注入 RPC client（dial
-    /// 按 `iroh:` 前缀分派）。AEAD token 取 server 当前值（`load_rpc_auth_token`
-    /// 在 start() 已应用——调用方必须晚于 `cluster.start()`）。
+    /// 零 iroh 面。QUIC 插件化 M3：端点本体（iroh QUIC 栈）在 plugin_roaming
+    /// ——本方法只做装配编排：身份经桥 ensure、`endpoint_start` 拉起插件端
+    /// 点（accept 侧入站交接经 notify_incoming 漏斗回流）、给 RPC client 挂
+    /// [`crate::roaming::plugin_bridge::BridgeDialer`]（dial 按 `iroh:` 前缀
+    /// 分派）、名册循环照旧 registry_start。AEAD token 取 server 当前值
+    /// （`load_rpc_auth_token` 在 start() 已应用——调用方必须晚于
+    /// `cluster.start()`）。
     ///
     /// 返回 Ok(true)=已启用；Ok(false)=开关未开；Err=装配失败（调用方 warn
     /// 不炸集群——漫游是叠加层，TCP 主通路不受影响）。
-    #[cfg(feature = "cluster-roaming")]
     pub async fn setup_roaming(&self) -> Result<bool, String> {
-        use crate::roaming::endpoint::{RoamingEndpoint, RoamingProtocolHandler};
-
         // 显式闸：config.cluster.json `roaming.enabled`（缺文件/缺字段/false
         // 恒不启用——单一真相源，key 在场也不再等价于开启）。
         let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&self.workspace);
@@ -937,22 +955,30 @@ impl Cluster {
             return Ok(false);
         }
 
-        // 身份材料：缺 key 自动生成（load_or_create 幂等——已有则原样加载）。
-        let (identity, created) =
-            crate::roaming::endpoint::RoamingIdentity::load_or_create(&self.workspace)?;
-        if created {
+        // 身份材料（QUIC 插件化 M2/M3）：身份面在 plugin_roaming——桥
+        // identity_ensure（无文件生成+落盘，幂等）等价旧 load_or_create。
+        // 插件缺席 = warn 降级 Ok(false)（叠加层整体不启用——CLI 显式路径
+        // 才诚实报错，gateway 装配失败不炸启动，与旧「缺 key 正常启动」
+        // 降级哲学同源）。M3 起 seed 不出插件（插件是身份与端点的唯一
+        // 消费者——identity_payload 一律不带 secret）。
+        let identity = match crate::roaming::plugin_bridge::identity_ensure().await {
+            crate::roaming::plugin_bridge::BridgeOutcome::Ok(info) => info,
+            crate::roaming::plugin_bridge::BridgeOutcome::Absent => {
+                tracing::warn!(
+                    "[Cluster] Roaming 开关已启用但 plugin_roaming 未装载——iroh 叠加层不启用\
+                     （请随发行包安装 plugins/plugin_roaming/plugin_roaming.dll）"
+                );
+                return Ok(false);
+            }
+            crate::roaming::plugin_bridge::BridgeOutcome::Failed(e) => return Err(e),
+        };
+        if identity.created {
             tracing::info!(
-                path = %crate::roaming::endpoint::roaming_key_path(&self.workspace).display(),
+                path = %crate::roaming::roaming_key_path(&self.workspace).display(),
                 "[Cluster] Roaming enabled but no identity key — generated one (cluster/roaming.key)"
             );
         }
-        let iroh_hex = identity.node_id_hex();
-
-        // 信任簿裁决（P3 accept 侧闸）：trust.toml 存在 = 启用 allowlist
-        // 语义（revoked 一票否决 → trusted 放行 → 默认拒）；不存在 =
-        // 未启用，走 token 单层语义。加载失败 = Err（信任簿坏了宁可不起
-        // 叠加层，不静默放行）。
-        let trust_book = crate::roaming::trust::TrustBook::load(&self.workspace)?;
+        let iroh_hex = identity.iroh_id.clone();
 
         // peers.toml [node].iroh_id 静态声明对账：声明与 roaming.key 派生
         // 不一致 = 配置漂移 warn（身份仍以 key 派生为准——声明只是运营者
@@ -978,42 +1004,54 @@ impl Cluster {
             }
         }
 
-        let bridge_handler = match self.rpc_server.as_ref() {
-            Some(server) => server.roaming_conn_handler(trust_book),
+        // 入站受理臂装配（QUIC 插件化 M3）：server 臂挂受理漏斗——插件
+        // accept iroh 连接（trust 闸在插件 accept 侧先行，trust.toml 语义
+        // 镜像宿主旧 TrustBook）后 notify_incoming 回流 {conn_id, port,
+        // remote_hex}，消费任务逐条 `serve_roaming_loopback`
+        // （TcpStream::connect 127.0.0.1:port → 既有 TcpConn 帧管线照跑）。
+        // 漏斗随 stop() 摘除（摘后抵达的交接诚实丢弃，插件拨入超时兜底）。
+        match self.rpc_server.as_ref() {
+            Some(server) => server.spawn_roaming_acceptor()?,
             None => return Err("RPC server 未装配，iroh 入站桥无处挂载".to_string()),
-        };
+        }
 
-        // 端点装配：relay_url 空 = n0 公共中继（现行为字节不变）；非空 =
-        // 自建中继回落（Minimal 基座 + Custom 中继地图——裸 `iroh:<hex>` 寻址
-        // 在此形态不可用，对端地址需 `iroh:<hex>@<relay_url>` 形态，bridge
-        // 解析 → with_relay_url）。可选 relay_token 与服务端 SharedToken 配对。
-        // 客户端三键（relay_url/relay_token/rendezvous_url）自 2026-10-23 起
-        // 迁 config.quic.json `client` 段（QUIC 的配置不丢在集群里——集群
-        // 只是 QUIC 的一个消费方）。
+        // 端点装配（QUIC 插件化 M3）：端点本体在 plugin_roaming——桥
+        // endpoint_start（幂等停旧起新）拉起插件端点。relay_url 空 = n0
+        // 公共中继；非空 = 自建中继回落（Minimal 基座零发现层——裸
+        // `iroh:<hex>` 寻址在此形态不可用，对端地址需
+        // `iroh:<hex>@<relay_url>` 完整形态）。可选 relay_token 与服务端
+        // SharedToken 配对。客户端三键（relay_url/relay_token/rendezvous_url）
+        // 自 2026-10-23 起迁 config.quic.json `client` 段（QUIC 的配置不丢
+        // 在集群里——集群只是 QUIC 的一个消费方）。
         let quic_cfg = crate::roaming::quic_config::resolved_quic(
             &nemesis_path::resolve_quic_config_path_in_workspace(&self.workspace),
         );
         let quic_client = &quic_cfg.client;
-        let endpoint = if quic_client.relay_url.trim().is_empty() {
-            RoamingEndpoint::bind(&identity, true).await?
-        } else {
-            let trimmed_token = quic_client.relay_token.trim();
-            let token = (!trimmed_token.is_empty()).then_some(trimmed_token);
+        if !quic_client.relay_url.trim().is_empty() {
             tracing::info!(
                 relay_url = %quic_client.relay_url,
-                "[Cluster] Roaming using self-hosted relay (Minimal base — bare iroh:<hex> addressing unavailable, peers need iroh:<hex>@<relay_url> form)"
+                "[Cluster] Roaming using self-hosted relay (bare iroh:<hex> addressing unavailable, peers need iroh:<hex>@<relay_url> form)"
             );
-            RoamingEndpoint::bind_custom_relay(&identity, true, &quic_client.relay_url, token)
-                .await?
-        };
-        let endpoint = Arc::new(endpoint);
-        endpoint
-            .serve(RoamingProtocolHandler::bridge(bridge_handler))
-            .await?;
+        }
+        let endpoint_cfg = serde_json::json!({
+            "relay_url": quic_client.relay_url.trim(),
+            "relay_token": quic_client.relay_token.trim(),
+        })
+        .to_string();
+        match crate::roaming::plugin_bridge::endpoint_start(endpoint_cfg).await {
+            crate::roaming::plugin_bridge::BridgeOutcome::Ok(_) => {}
+            crate::roaming::plugin_bridge::BridgeOutcome::Absent => {
+                // identity_ensure 已确保插件在场——此处 Absent 属装配竞态
+                // （理论不可达），诚实 Err 不留半装配态。
+                return Err("plugin_roaming 未装载（装配竞态？）——端点未启动".to_string());
+            }
+            crate::roaming::plugin_bridge::BridgeOutcome::Failed(e) => return Err(e),
+        }
 
-        // 出站：RPC client dial 分派按 `iroh:` 前缀走本端点。
+        // 出站：RPC client dial 分派按 `iroh:` 前缀走桥拨号（插件 loopback
+        // 交接；测试可注入 LocalDialer 同 trait）。
         if let Some(client) = self.rpc_client.lock().clone() {
-            client.set_roaming_endpoint(endpoint.clone());
+            client.set_roaming_dialer(Arc::new(crate::roaming::plugin_bridge::BridgeDialer));
         }
 
         // announce 携带本节点 iroh 身份（下一拍广播生效；对端入池拨号候选）。
@@ -1032,23 +1070,29 @@ impl Cluster {
             node_id = %iroh_hex,
             "[Cluster] Roaming overlay active (iroh: node reachable via iroh overlay)"
         );
-        *self.roaming_endpoint.lock() = Some(endpoint);
+        self.roaming_started.store(true, Ordering::SeqCst);
 
-        // rendezvous 名册同步循环（自动发现，2026-10-22）：仅自建中继形态
-        // （relay_url 非空）挂载——N0 公共中继无名册，保持既有手工静态条目
-        // 路径。注册表地址 = relay_url host + 默认端口推导（rendezvous_url
-        // 显式覆盖）；推导失败 = warn 跳过（名册是便利设施，不阻塞叠加层）。
+        // rendezvous 名册同步循环（自动发现，2026-10-22；QUIC 插件化 M2，
+        // 拍板 7：循环本体搬 plugin_roaming 自持 runtime——宿主只组装载荷
+        // + 挂成员回流漏斗 + 发 registry_start）。仅自建中继形态（relay_url
+        // 非空）挂载——N0 公共中继无名册，保持既有手工静态条目路径。注册表
+        // 地址 = relay_url host + 默认端口推导（rendezvous_url 显式覆盖）；
+        // 推导失败 = warn 跳过（名册是便利设施，不阻塞叠加层）。
         if !quic_client.relay_url.trim().is_empty() {
             match crate::roaming::rendezvous::resolve_registry_url(
                 &quic_client.rendezvous_url,
                 &quic_client.relay_url,
             ) {
-                Ok(registry_url) => self.start_rendezvous_loop(
-                    registry_url,
-                    quic_client.relay_url.trim().to_string(),
-                    &quic_client.relay_token,
-                    &iroh_hex,
-                ),
+                Ok(registry_url) => {
+                    *self.rendezvous_params.write() = Some(RendezvousParams {
+                        registry_url,
+                        relay_url: quic_client.relay_url.trim().to_string(),
+                        relay_token: quic_client.relay_token.trim().to_string(),
+                        iroh_hex: iroh_hex.clone(),
+                    });
+                    crate::roaming::plugin_bridge::set_members_sink(self.members_sink());
+                    self.restart_registry_from_params();
+                }
                 Err(e) => tracing::warn!(
                     error = %e,
                     "[Cluster] rendezvous 注册表地址推导失败（自动发现不可用，其余叠加层功能不受影响）"
@@ -1058,118 +1102,102 @@ impl Cluster {
         Ok(true)
     }
 
-    /// rendezvous 名册同步循环（30s tick；`stop_tx` 停机对称——与恢复循环
-    /// 同款 subscribe；`self_weak` 懒升级——`setup_roaming` 跑在 `Arc::new`
-    /// 之前，循环持 Weak 每 tick 现升级，未安装/已释放跳过本 tick）。
-    ///
-    /// 每 tick：register 自己 + 拉全量成员 → 非己成员经
-    /// [`Self::merge_rendezvous_members`] 单一漏斗入册；成败写
-    /// `rendezvous_status` 快照（观测面）。失败限频告警：首败 + 每 10 连败。
-    #[cfg(feature = "cluster-roaming")]
-    fn start_rendezvous_loop(
-        &self,
-        registry_url: String,
-        relay_url: String,
-        relay_token: &str,
-        iroh_hex: &str,
-    ) {
-        let mut stop_rx = self.stop_tx.subscribe();
+    /// 成员回流漏斗（QUIC 插件化 M2）：插件名册循环经 vtable
+    /// `notify_members` 推来的 `{"members":[...]}` 全量包 →
+    /// [`Self::merge_rendezvous_members`] 单一漏斗入册 + `rendezvous_status`
+    /// 快照覆写。闭包持 `self_weak` 懒升级（同旧循环——`setup_roaming` 跑在
+    /// `Arc::new` 之前）；在插件循环线程同步执行（纯内存入册，无回呼插件，
+    /// 无死锁面）。快照语义：本漏斗只写**成功**形态（最后成功推送）；失败态
+    /// 由插件运行状态槽承载，`plugin_bridge::effective_rendezvous_state`
+    /// 在状态面 merge 出最终形态（Phase 2 观测性，2026-10-24）。
+    fn members_sink(&self) -> std::sync::Arc<dyn Fn(&str) + Send + Sync> {
         let weak = self.self_weak.clone();
-        let token = relay_token.trim().to_string();
-        let iroh_hex = iroh_hex.to_string();
-        tokio::spawn(async move {
-            let client = match reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-            {
-                Ok(c) => c,
+        std::sync::Arc::new(move |json: &str| {
+            let Some(cluster) = weak.lock().clone().and_then(|w| w.upgrade()) else {
+                tracing::debug!(
+                    "[Rendezvous] self_weak 未安装或已释放，成员包丢弃（下 tick 重推）"
+                );
+                return;
+            };
+            // 参数缓存已清（stop() 竞态窗口）= 集群已撤名册，本包不合并。
+            let Some(p) = cluster.rendezvous_params.read().clone() else {
+                return;
+            };
+            #[derive(serde::Deserialize)]
+            struct MembersPacket {
+                #[serde(default)]
+                members: Vec<crate::roaming::rendezvous::RendezvousMember>,
+            }
+            let packet: MembersPacket = match serde_json::from_str(json) {
+                Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!(error = %e, "[Rendezvous] HTTP 客户端构建失败，名册同步不可用");
+                    tracing::debug!(error = %e, "[Rendezvous] 成员包解析失败（忽略本包，下 tick 重推）");
                     return;
                 }
             };
-            tracing::info!(
-                registry_url = %registry_url,
-                "[Rendezvous] 名册同步循环已挂载（30s tick；接入即报到、周期拉名册）"
-            );
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            let mut fail_streak: u64 = 0;
-            loop {
-                tokio::select! {
-                    _ = stop_rx.recv() => return,
-                    _ = interval.tick() => {}
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let merged =
+                cluster.merge_rendezvous_members(&packet.members, &p.iroh_hex, &p.relay_url);
+            if merged > 0 {
+                tracing::info!(
+                    members = packet.members.len(),
+                    merged,
+                    "[Rendezvous] 名册同步：新成员/变更已入册"
+                );
+            }
+            *cluster.rendezvous_status.write() =
+                Some(crate::roaming::rendezvous::RendezvousClientState {
+                    registry_url: p.registry_url,
+                    last_sync_ok: true,
+                    last_sync_ms: now_ms,
+                    member_count: packet.members.len(),
+                    last_error: String::new(),
+                });
+        })
+    }
+
+    /// 从参数缓存组装 `registry_start` 入参 JSON（member 身份字段现读——
+    /// identity editor 热改经钩子下一拍生效）。
+    fn rendezvous_registry_payload(&self, p: &RendezvousParams) -> String {
+        let member = self.rendezvous_self_member(&p.iroh_hex, &p.relay_url);
+        serde_json::json!({
+            "registry_url": p.registry_url,
+            "token": p.relay_token,
+            "member": member,
+            // interval 缺省 = 插件默认 30s（与旧宿主循环同值，不显式传）。
+        })
+        .to_string()
+    }
+
+    /// （重）发 `registry_start`（插件侧幂等停旧起新；fire-and-forget）。
+    /// 参数缓存已清 / 无 runtime 上下文 / 插件缺席 = 跳过或日志降级。
+    fn restart_registry_from_params(&self) {
+        use crate::roaming::plugin_bridge::{self, BridgeOutcome};
+        let Some(p) = self.rendezvous_params.read().clone() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::debug!("[Rendezvous] 无 runtime 上下文，registry_start 跳过");
+            return;
+        };
+        let payload = self.rendezvous_registry_payload(&p);
+        handle.spawn(async move {
+            match plugin_bridge::registry_start(payload).await {
+                BridgeOutcome::Ok(_) => {}
+                BridgeOutcome::Absent => {
+                    tracing::warn!("[Rendezvous] plugin_roaming 未装载，名册循环未启动");
                 }
-                // self_weak 懒升级：setup_roaming 时 Arc 可能尚未构造完成
-                //（cluster_init.rs 先 setup_roaming 后 Arc::new + install_self_weak
-                //——首 tick 之前必就绪，此处只防极端竞态）。
-                let Some(cluster) = weak.lock().clone().and_then(|w| w.upgrade()) else {
-                    tracing::debug!("[Rendezvous] self_weak 未安装或已释放，跳过本 tick");
-                    continue;
-                };
-                let self_member = cluster.rendezvous_self_member(&iroh_hex, &relay_url);
-                let sync_result = crate::roaming::rendezvous::sync_once(
-                    &client,
-                    &registry_url,
-                    &token,
-                    &self_member,
-                )
-                .await;
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                match sync_result {
-                    Ok(members) => {
-                        fail_streak = 0;
-                        let merged =
-                            cluster.merge_rendezvous_members(&members, &iroh_hex, &relay_url);
-                        if merged > 0 {
-                            tracing::info!(
-                                members = members.len(),
-                                merged,
-                                "[Rendezvous] 名册同步：新成员/变更已入册"
-                            );
-                        }
-                        *cluster.rendezvous_status.write() =
-                            Some(crate::roaming::rendezvous::RendezvousClientState {
-                                registry_url: registry_url.clone(),
-                                last_sync_ok: true,
-                                last_sync_ms: now_ms,
-                                member_count: members.len(),
-                                last_error: String::new(),
-                            });
-                    }
-                    Err(e) => {
-                        fail_streak += 1;
-                        if fail_streak == 1 || fail_streak.is_multiple_of(10) {
-                            tracing::warn!(
-                                streak = fail_streak,
-                                error = %e,
-                                "[Rendezvous] 名册同步失败（限频告警；静态 peers 不受影响）"
-                            );
-                        }
-                        let prev_count = cluster
-                            .rendezvous_status
-                            .read()
-                            .as_ref()
-                            .map(|s| s.member_count)
-                            .unwrap_or(0);
-                        *cluster.rendezvous_status.write() =
-                            Some(crate::roaming::rendezvous::RendezvousClientState {
-                                registry_url: registry_url.clone(),
-                                last_sync_ok: false,
-                                last_sync_ms: now_ms,
-                                member_count: prev_count,
-                                last_error: e,
-                            });
-                    }
+                BridgeOutcome::Failed(e) => {
+                    tracing::warn!(error = %e, "[Rendezvous] registry_start 失败（身份热更钩子重试）");
                 }
             }
         });
     }
 
     /// 本节点 → 名册注册载荷（身份字段现读——identity editor 热改下一拍生效）。
-    #[cfg(feature = "cluster-roaming")]
     fn rendezvous_self_member(
         &self,
         iroh_hex: &str,
@@ -1200,7 +1228,6 @@ impl Cluster {
     /// via-bridge 先例）；地址 = `iroh:<hex>@<relay_url>`（成员未自报时以
     /// 本方 relay_url 兜底）。返回 upsert 判变为 true 的条数（首见/真变更
     /// ——content_eq 不含 last_seen，稳态每 tick 恒 false 不刷日志）。
-    #[cfg(feature = "cluster-roaming")]
     fn merge_rendezvous_members(
         &self,
         members: &[crate::roaming::rendezvous::RendezvousMember],
@@ -1258,7 +1285,6 @@ impl Cluster {
     }
 
     /// rendezvous 客户端状态快照（WSAPI roaming.status 的 rendezvous 段数据源）。
-    #[cfg(feature = "cluster-roaming")]
     pub fn rendezvous_status_snapshot(
         &self,
     ) -> Option<crate::roaming::rendezvous::RendezvousClientState> {
@@ -1279,16 +1305,14 @@ impl Cluster {
     /// 真相源——setup_roaming 装配闸与 WSAPI/CLI 状态面同读此形；段内自
     /// 2026-10-23 起只剩 enabled 一个键，QUIC 客户端/服务端配置已迁
     /// config.quic.json）。
-    #[cfg(feature = "cluster-roaming")]
     pub fn roaming_enabled_in_config(config_path: &std::path::Path) -> bool {
         crate::roaming::config::resolved_roaming(config_path).enabled
     }
 
-    // QUIC 中继生命周期已迁出集群（2026-10-23 解耦）：中继句柄与启停由
-    // [`crate::roaming::relay_manager::QuicRelayManager`] 承载、宿主
-    //（nemesisbot gateway / 独立 `quic relay` 进程）直接持有——集群关闭/
-    // 未启用时中继照起，集群 `stop()` 也不再触碰中继。配置真相源 =
-    // `config.quic.json` `relay` 段。
+    // QUIC 中继生命周期已迁出集群（2026-10-23 解耦）：中继启停由宿主
+    //（nemesisbot gateway / 独立 `quic relay` 进程）经 plugin_roaming
+    // C-ABI 承载（QUIC 插件化 M1）——集群关闭/未启用时中继照起，集群
+    // `stop()` 也不再触碰中继。配置真相源 = `config.quic.json` `relay` 段。
     pub fn stop(&self) {
         *self.running.write() = false;
 
@@ -1300,15 +1324,37 @@ impl Cluster {
             tracing::warn!(error = %e, "[Cluster] RPC server stop error");
         }
 
-        // A1：iroh 漫游端点关停（router 收流 + endpoint 关闭；无 runtime 时
-        // 句柄即弃——没有 runtime 就没有在跑的 QUIC 任务，无需显式 close）。
-        // QUIC 中继不在本停臂（2026-10-23 解耦——中继宿主 QuicRelayManager
-        // 自行停机，集群停/启不影响中继）。
-        #[cfg(feature = "cluster-roaming")]
-        if let Some(endpoint) = self.roaming_endpoint.lock().take()
-            && let Ok(h) = tokio::runtime::Handle::try_current()
+        // A1：iroh 漫游叠加层停机（QUIC 插件化 M3：端点本体在 plugin_roaming
+        // ——桥 endpoint_stop 幂等收口 + 装配旗标复位 + 入站漏斗摘除；无
+        // runtime 时 fire-and-forget 兜底由插件 shutdown 承担）。QUIC 中继
+        // 不在本停臂（2026-10-23 解耦——中继运行面在 plugin_roaming 插件、
+        // 由宿主 gateway 停机链 roaming_stop 收口，集群停/启不影响中继）。
         {
-            h.spawn(async move { endpoint.shutdown().await });
+            self.roaming_started.store(false, Ordering::SeqCst);
+            crate::roaming::plugin_bridge::clear_incoming_sink();
+            if let Ok(h) = tokio::runtime::Handle::try_current() {
+                h.spawn(async move {
+                    if let crate::roaming::plugin_bridge::BridgeOutcome::Failed(e) =
+                        crate::roaming::plugin_bridge::endpoint_stop().await
+                    {
+                        tracing::debug!(
+                            "[Cluster] roaming endpoint_stop 失败（幂等无副作用）: {e}"
+                        );
+                    }
+                });
+            } else {
+                tracing::debug!(
+                    "[Cluster] 无 runtime 上下文，endpoint_stop 跳过（插件 shutdown 兜底）"
+                );
+            }
+        }
+
+        // QUIC 插件化 M2：名册循环在插件内——参数缓存清空（成员回流漏斗
+        // 闭包据此丢弃迟到包）+ registry_stop（插件侧幂等；fire-and-forget，
+        // 无 runtime 上下文由插件 shutdown 兜底）。中继照旧不动（M1 解耦）。
+        {
+            *self.rendezvous_params.write() = None;
+            crate::roaming::plugin_bridge::registry_stop_fire_and_forget();
         }
 
         // Stop discovery service (joins broadcast + receive threads)
@@ -1690,17 +1736,15 @@ impl Cluster {
         crate::is_roaming_address(a)
     }
 
-    /// A1 双形态：iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，
-    /// 统一小写）。feature 关时恒 `None`——未编译时入池 iroh 候选只会
-    /// 浪费拨号预算（诚实裁剪）。
-    #[cfg(feature = "cluster-roaming")]
+    /// A1：iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，统一小写）。
+    /// None = 非法——入池 iroh 候选只会浪费拨号预算（诚实裁剪）。
     fn valid_iroh_id(s: Option<String>) -> Option<String> {
         let s = s?;
         let trimmed = s.trim();
         if trimmed.is_empty() {
             return None;
         }
-        match crate::roaming::endpoint::node_id_from_hex(trimmed) {
+        match crate::roaming::node_id_from_hex(trimmed) {
             Ok(_) => Some(trimmed.to_lowercase()),
             Err(e) => {
                 tracing::debug!(value = %trimmed, error = %e,
@@ -1708,10 +1752,6 @@ impl Cluster {
                 None
             }
         }
-    }
-    #[cfg(not(feature = "cluster-roaming"))]
-    fn valid_iroh_id(_s: Option<String>) -> Option<String> {
-        None
     }
 
     pub fn handle_discovered_node(
@@ -3528,6 +3568,15 @@ impl Cluster {
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(info);
+
+        // QUIC 插件化 M2 热更钩子：身份热改（8 个 setter 调用点全覆盖——
+        // 本函数是它们共同尾站）后名册注册载荷里的成员身份字段同步刷新。
+        // registry_start 插件侧幂等停旧起新；无 runtime 上下文（纯同步
+        // 测试路径）/ 名册未挂（params None）= 静默跳过。
+        if self.rendezvous_params.read().is_some() && tokio::runtime::Handle::try_current().is_ok()
+        {
+            self.restart_registry_from_params();
+        }
     }
 
     /// Sync state to disk.

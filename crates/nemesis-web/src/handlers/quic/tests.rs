@@ -1,10 +1,9 @@
 //! quic WSAPI 覆盖率（2026-10-23 与集群解耦，自 handlers/cluster/tests.rs
-//! 迁入）：relay config 合并/清除语义、status 载荷形状、客户端面两键、
-//! manager=None 实时开关契约 + 名册命令表面。
+//! 迁入；QUIC 插件化 M1 起 handler 代理化——此处钉 config 合并/清除语义、
+//! status 载荷形状、客户端面两键、handle=None 实时开关契约 + 名册命令表面）。
 
 use super::*;
 
-#[cfg(feature = "quic-relay")]
 #[test]
 fn test_relay_config_save_merge_and_clear_semantics() {
     let dir = tempfile::tempdir().unwrap();
@@ -64,12 +63,11 @@ fn test_relay_config_save_merge_and_clear_semantics() {
     assert!(v["relay"].get("token").is_none());
 }
 
-#[cfg(feature = "quic-relay")]
 #[test]
 fn test_relay_status_payload_shape() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
-    let p = relay_status_payload(ws, false, None, None)
+    let p = relay_status_payload(ws, false, serde_json::Value::Null, serde_json::Value::Null)
         .unwrap()
         .unwrap();
     assert_eq!(p["available"], serde_json::json!(true));
@@ -89,18 +87,18 @@ fn test_relay_status_payload_shape() {
 
     // config 闸开而未跑 → requires_restart
     relay_config_save_impl(ws, &serde_json::json!({ "enabled": true })).unwrap();
-    let p = relay_status_payload(ws, false, None, None)
+    let p = relay_status_payload(ws, false, serde_json::Value::Null, serde_json::Value::Null)
         .unwrap()
         .unwrap();
     assert_eq!(p["enabled"], serde_json::json!(true));
     assert_eq!(p["requires_restart"], serde_json::json!(true));
 
-    // 运行态跟上 → requires_restart=false + 地址面回显
+    // 运行态跟上 → requires_restart=false + 地址面回显（插件回执字符串透传）
     let p = relay_status_payload(
         ws,
         true,
-        Some("127.0.0.1:3340".parse().unwrap()),
-        Some("127.0.0.1:7842".parse().unwrap()),
+        serde_json::json!("127.0.0.1:3340"),
+        serde_json::json!("127.0.0.1:7842"),
     )
     .unwrap()
     .unwrap();
@@ -109,7 +107,6 @@ fn test_relay_status_payload_shape() {
     assert_eq!(p["quic_addr"], serde_json::json!("127.0.0.1:7842"));
 }
 
-#[cfg(feature = "quic-relay")]
 #[test]
 fn test_relay_config_save_client_face() {
     let dir = tempfile::tempdir().unwrap();
@@ -163,18 +160,18 @@ fn test_relay_config_save_client_face() {
 
 // ---------------------------------------------------------------------------
 // 实时开关（2026-10-23）：relay.enable / relay.disable 免重启网关——config 闸
-// 落盘 + 进程内拉起/停掉一体（真中继 roundtrip 归 nemesis-cluster cov 测试）。
-// 此处以 manager=None 验证 config+载荷契约：闸与运行态解耦时的诚实呈现。
+// 落盘 + 插件内拉起/停掉一体（真中继 roundtrip 归插件侧 e2e + gateway 装载
+// 冒烟）。此处以 handle=None 验证 config+载荷契约：闸与运行态解耦时的诚实
+// 呈现（插件未装载 = requires_restart 亮起，不假成功）。
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "quic-relay")]
 #[tokio::test]
 async fn test_relay_toggle_config_contract_without_cluster() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
     let cfg_path = quic_config_path(ws);
 
-    // enable（中继管理器未装配）：config 闸落盘；active=false、requires_restart=true
+    // enable（插件句柄未装载）：config 闸落盘；active=false、requires_restart=true
     // 诚实呈现——配置说了算、进程没跟上，面板亮「待启动」而不是假成功。
     let p = relay_toggle_impl(None, ws, true).await.unwrap().unwrap();
     assert_eq!(p["enabled"], serde_json::json!(true));
@@ -214,15 +211,10 @@ fn quic_module_commands_surface_is_stable() {
     }
 }
 
-/// 零 Cluster 类型依赖的表面锚点：feature 全开时 registry.members 在中继
-/// 未装配（manager 槽空）下 = 空表不是错误（状态诚实语义）。
-#[cfg(feature = "quic-relay")]
+/// 插件化 M1 表面锚点：registry.members 命令恒注册（诚实降级形态在
+/// handler None 臂——插件缺席 = available:false + reason，不伪装空表）。
 #[test]
-fn registry_members_empty_when_relay_not_running() {
-    // 直接对 manager=None 形态做载荷级验证走 handler 需要 AppState；
-    // manager 槽空臂由 QuicRelayManager::registry_members 自身保证——
-    // 未运行 = 空 vec（nemesis-cluster 侧 cov 钉）。此处只钉 handler 表面
-    // 命令可路由（unknown command 语义）。
+fn registry_members_command_registered_when_plugin_absent() {
     let h = QuicHandler::new();
     assert!(h.commands().contains(&"registry.members"));
 }

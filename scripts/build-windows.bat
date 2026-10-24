@@ -18,6 +18,9 @@ REM       plugin_ui.dll
 REM       eval_monitor_dll.dll
 REM       plugin_wasm.dll
 REM       plugin_vm.dll  (image script + guest ELFs embedded; released on first use)
+REM       plugin_roaming.dll  (QUIC relay server + rendezvous registry; QUIC
+REM                           plugin M1 — iroh stack lives here, host exe
+REM                           zero increment; absent = relay honestly degraded)
 REM     plugins_wasm\        (WASM plugin payload dir, preset empty + README;
 REM                           installed plugins land here, NOT loaded by default)
 REM     tests\
@@ -405,13 +408,38 @@ if exist "plugins\plugin-wasm\Cargo.toml" (
         echo   WARN Plugin-wasm DLL build failed ^(non-fatal, wasm plugin subsystem unavailable^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto plugin_vm
+        goto plugin_roaming
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
     echo   OK Plugin-wasm DLL built
 ) else (
     echo   SKIP plugins\plugin-wasm\Cargo.toml not found
+)
+echo.
+
+:plugin_roaming
+REM --- plugin-roaming (QUIC relay server + rendezvous registry; QUIC plugin
+REM     M1 2026-10-23: iroh-relay/rcgen/rustls/axum stack lives entirely in
+REM     this DLL, host binary zero increment; absent = server-side relay
+REM     honestly degraded + CLI dynamic-hide, never a load failure) ---
+if exist "plugins\plugin-roaming\Cargo.toml" (
+    echo   Building plugin-roaming...
+    pushd plugins\plugin-roaming
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-roaming
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-roaming DLL build failed ^(non-fatal, QUIC relay server unavailable^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto plugin_vm
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-roaming DLL built
+) else (
+    echo   SKIP plugins\plugin-roaming\Cargo.toml not found
 )
 echo.
 
@@ -561,6 +589,15 @@ if exist "target\target_windows\plugins\plugin-vm\release\plugin_vm.dll" (
     set /a COPIED+=1
 ) else (
     if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_vm.dll not found in build output ^(VM display relay unavailable^)
+)
+
+REM Copy plugin-roaming DLL into plugins\ subdir (QUIC relay server face;
+REM QUIC plugin M1: absent = relay honestly degraded + CLI dynamic-hide).
+if exist "target\target_windows\plugins\plugin-roaming\release\plugin_roaming.dll" (
+    copy /y "target\target_windows\plugins\plugin-roaming\release\plugin_roaming.dll" "bin\bin_windows\plugins\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_roaming.dll not found in build output ^(QUIC relay server unavailable^)
 )
 
 REM Copy test-tools binaries to bin\bin_windows\tests\

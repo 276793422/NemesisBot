@@ -1,4 +1,5 @@
-//! rendezvous 成员名册——共享类型与客户端半边（QUIC 中继自动发现，2026-10-22）。
+//! rendezvous 成员名册——wire 类型与地址拼装纯函数（QUIC 中继自动发现，
+//! 2026-10-22）。
 //!
 //! 中继从「纯传输」升级为「传输 + 名册」双面：设备接入中继即周期报到
 //! （register），并周期拉取同 token 名册下的其他设备（members）——名册成员
@@ -10,9 +11,11 @@
 //! 名册只供地址——入网连接仍要过传输身份（QUIC-TLS）+ 集群 RPC token
 //! （AEAD）+ trust.toml 信任簿三关，语义与既有路径完全同源。
 //!
-//! 分层：类型 / 客户端（sync_once / resolve_registry_url）随 `cluster-roaming`
-//! 进编译（设备侧只需要这半边）；axum 服务端在 [`super::rendezvous_server`]
-//! （随 `quic-relay`，中继机侧）。
+//! 分层：类型 / resolve_registry_url / member_dial_address 恒编译（M4 起
+//! cluster-roaming feature 已删）；HTTP 客户端半边（原 `sync_once`）随 QUIC 插件化 M2（2026-10-23）
+//! 迁入 plugin_roaming `registry_client.rs`；axum 服务端半边随 QUIC 插件化
+//! M1（2026-10-23）迁入 plugin_roaming（名册成员形状对账基准 = 本模块 serde
+//! 类型，两侧字段名/语义逐字对齐）。
 
 use serde::{Deserialize, Serialize};
 
@@ -134,48 +137,9 @@ fn split_host(hostport: &str) -> &str {
 // ---------------------------------------------------------------------------
 // 客户端同步
 // ---------------------------------------------------------------------------
-
-/// 单次同步：register 自己 + 拉全量成员（两请求一次往返语义）。
-///
-/// 返回**含自己**的成员列表（调用方自过滤——保留全量便于观测 member_count）。
-pub async fn sync_once(
-    client: &reqwest::Client,
-    registry_url: &str,
-    token: &str,
-    self_member: &RendezvousMember,
-) -> Result<Vec<RendezvousMember>, String> {
-    let base = registry_url.trim().trim_end_matches('/');
-    let url = format!("{base}/v1/roaming/register");
-    let resp = client
-        .post(url)
-        .bearer_auth(token)
-        .json(self_member)
-        .send()
-        .await
-        .map_err(|e| format!("register 失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("register 被拒（HTTP {}）", resp.status().as_u16()));
-    }
-    let url = format!("{base}/v1/roaming/members");
-    let resp = client
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| format!("拉取成员失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("拉取成员被拒（HTTP {}）", resp.status().as_u16()));
-    }
-    #[derive(Deserialize)]
-    struct MembersResp {
-        members: Vec<RendezvousMember>,
-    }
-    let body: MembersResp = resp
-        .json()
-        .await
-        .map_err(|e| format!("成员响应解析失败: {e}"))?;
-    Ok(body.members)
-}
+// （QUIC 插件化 M2：register/members HTTP 往返（原 `sync_once`）整体迁入
+// plugin_roaming `registry_client.rs`——错误文案逐字对齐，宿主不再持 HTTP
+// 客户端。本文件只剩 wire 类型与地址拼装纯函数。）
 
 /// 名册成员 → `handle_discovered_node_ex` 入参的地址形态
 /// （`iroh:<hex>@<relay_url>`；成员未自报 relay_url 时以本方 relay_url 兜底

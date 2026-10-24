@@ -1,30 +1,20 @@
-//! QUIC 中继服务器（feature=quic-relay）——自建 iroh 中继回落（内网穿透）。
+//! QUIC 中继服务器——自建 iroh 中继回落（内网穿透）。
+//!
+//! 搬自宿主 `nemesis-cluster::roaming::relay_server`（QUIC 插件化 M1）。
+//! 差异：RelaySettings 走本插件 `types.rs` 副本；日志走 vtable 转发；
+//! `advertised_relay_url` 留宿主（显示面，依赖宿主本机 IP 探测）。其余
+//! （TLS 三档 / 访问控制 / 自签证书幂等 / 注册表并行拉起）逐行同源。
 //!
 //! 装配形态对齐官方 iroh-relay `--dev` 模式：HTTP relay transport 明文
 //! （`http_port`，客户端零证书负担——relay_url 用 `http://` 即接入）+
-//! QAD（QUIC Address Discovery，`quic_port`，TLS 1.3；iroh 1.0.2 的 QUIC
-//! 臂**只有地址发现**，relay 流量本身恒走 HTTP/WS transport，无 QUIC relay
-//! transport——`quic_port` 属 v2 预留面）。TLS 三档：
-//! - [`RelayTls::SelfSigned`]（默认）：rcgen 自签，PEM 落
-//!   `<workspace>/cluster/relay/`，存在即复用（幂等）；
-//! - [`RelayTls::Manual`]：用户自备 PEM（cert_path + key_path，仅 PKCS#8 私钥）；
-//! - [`RelayTls::None`]：QAD 关，纯 HTTP relay transport（受限兜底档）。
+//! QAD（QUIC Address Discovery，`quic_port`，TLS 1.3）。TLS 三档：
+//! - SelfSigned（默认）：rcgen 自签，PEM 落 `<workspace>/cluster/relay/`，
+//!   存在即复用（幂等）；
+//! - Manual：用户自备 PEM（cert_path + key_path，仅 PKCS#8 私钥）；
+//! - None：QAD 关，纯 HTTP relay transport（受限兜底档）。
 //!
-//! 访问控制：token 非空 = SharedToken（`Authorization: Bearer` / `?token=`，
-//! 官方 binary 同款形态）；空 = `AllowAll`（解析层默认）——但三个启动路径
-//! （`quic relay` CLI / `gateway --quic-relay` / 随网关 in-process）都在
-//! spawn 前对空 token fail-closed 拒绝，无鉴权中继不允许裸奔。
-//!
-//! rendezvous 成员注册表（2026-10-22）：token 非空且 `registry_port>0` 时随
-//! 中继并行拉起（[`crate::roaming::rendezvous_server`]，默认 3341）——设备
-//! 接入即报到、周期拉名册，零手工配置互见；拉起失败 = WARN + 中继照常。
-//!
-//! Spike 结论（2026-10-21，iroh 1.0.2 源码核对）：
-//! - 客户端信任面存在——`Endpoint::builder().ca_tls_config(CaTlsConfig::
-//!   custom_roots([cert]))` 可把自签证书 pin 为唯一信任根；
-//!   `insecure_skip_verify` 有 `cfg(test/test-utils)` 门控，生产不可用（好事）。
-//! - v1 客户端走 HTTP transport（零证书负担）；QUIC transport 的证书分发
-//!   （peer 怎么拿到 relay_cert.pem）留 v2 管理面。
+//! 证书路径契约（与宿主 relay_info.rs 显示函数同源，落盘路径不变）：
+//! `<workspace>/cluster/relay/{relay_cert.pem,relay_key.pem}`。
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -36,9 +26,9 @@ use iroh_relay::server::{
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
-use crate::roaming::config::{RelaySettings, RelayTls};
+use crate::types::{RelaySettings, RelayTls};
 
-/// 中继证书目录（`<workspace>/cluster/relay/`）。
+/// 中继证书目录（`<workspace>/cluster/relay/`；与宿主 relay_info.rs 同源）。
 pub fn relay_dir(workspace: &Path) -> PathBuf {
     workspace.join("cluster").join("relay")
 }
@@ -53,24 +43,6 @@ pub fn relay_key_path(workspace: &Path) -> PathBuf {
     relay_dir(workspace).join("relay_key.pem")
 }
 
-/// 对外交付的 relay URL（客户端填进自己 `roaming.relay_url` 的形态）。
-///
-/// `external_host` 空 = 自动探测本机主 IP（`Cluster::start` 同款枚举；
-/// 全回环环境兜底 127.0.0.1——仅 loopback 测试可达，HTTP transport 形态）。
-pub fn advertised_relay_url(settings: &RelaySettings) -> String {
-    let host = if settings.external_host.trim().is_empty() {
-        let ip = crate::network::get_local_ip();
-        if ip.is_loopback() || ip.is_unspecified() {
-            Ipv4Addr::LOCALHOST.to_string()
-        } else {
-            ip.to_string()
-        }
-    } else {
-        settings.external_host.trim().to_string()
-    };
-    format!("http://{host}:{}", settings.http_port)
-}
-
 /// 运行中的自建中继句柄（shutdown 幂等——`server` 槽取空即无操作）。
 pub struct RelayServerHandle {
     server: Option<Server>,
@@ -80,7 +52,7 @@ pub struct RelayServerHandle {
     pub quic_addr: Option<SocketAddr>,
     /// rendezvous 成员注册表（token 非空且 registry_port>0 时随中继拉起；
     /// 拉起失败 = None + WARN——名册是附加设施，不拖垮传输面）。
-    pub registry: Option<crate::roaming::rendezvous_server::RegistryServerHandle>,
+    pub registry: Option<crate::rendezvous_server::RegistryServerHandle>,
 }
 
 impl RelayServerHandle {
@@ -98,7 +70,11 @@ impl RelayServerHandle {
         if let Some(server) = self.server.take()
             && let Err(e) = server.shutdown().await
         {
-            tracing::warn!(error = %e, "iroh 中继服务器 shutdown 失败（best-effort 忽略）");
+            crate::plugin_log(
+                crate::roaming::ROAMING_LOG_WARN,
+                "relay",
+                &format!("iroh 中继服务器 shutdown 失败（best-effort 忽略）: {e}"),
+            );
         }
     }
 }
@@ -147,7 +123,7 @@ pub async fn spawn_relay_server(
     // registry_port>0（未显式关）才拉起；失败 = warn + 中继照常（名册是
     // 附加设施，不拖垮传输面）。
     let registry = if settings.registry_port > 0 && !settings.token.trim().is_empty() {
-        match crate::roaming::rendezvous_server::spawn_registry_server(
+        match crate::rendezvous_server::spawn_registry_server(
             settings.registry_port,
             settings.token.trim(),
         )
@@ -155,7 +131,11 @@ pub async fn spawn_relay_server(
         {
             Ok(handle) => Some(handle),
             Err(e) => {
-                tracing::warn!(error = %e, "[Rendezvous] 成员注册表拉起失败（中继照常运行，自动发现不可用）");
+                crate::plugin_log(
+                    crate::roaming::ROAMING_LOG_WARN,
+                    "relay",
+                    &format!("成员注册表拉起失败（中继照常运行，自动发现不可用）: {e}"),
+                );
                 None
             }
         }
@@ -269,16 +249,20 @@ fn ensure_self_signed_cert(
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("收紧 {} 权限失败: {e}", key_path.display()))?;
     }
-    tracing::info!(
-        cert = %cert_path.display(),
-        key = %key_path.display(),
-        "[Cluster] 自建中继自签证书已生成（复用即免重生）"
+    crate::plugin_log(
+        crate::roaming::ROAMING_LOG_INFO,
+        "relay",
+        &format!(
+            "自建中继自签证书已生成（复用即免重生） cert={} key={}",
+            cert_path.display(),
+            key_path.display()
+        ),
     );
     Ok((cert_pem, key_pem))
 }
 
 /// 组装 rustls ServerConfig（ring provider 显式注入——不装进程级默认
-/// provider，避免与 reqwest 等其他 rustls 消费方的全局状态互踩）。
+/// provider，避免与宿主进程内其他 rustls 消费方的全局状态互踩）。
 fn build_rustls_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
