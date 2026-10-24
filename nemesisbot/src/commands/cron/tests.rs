@@ -459,3 +459,123 @@ mod cross_layer {
         });
     }
 }
+
+// ===========================================================================
+// gateway 在位守卫：运行中的 gateway 以内存态写穿 store，CLI 增删改会在
+// gateway 下次保存时被整体覆盖（静默丢失）。守卫复用 estop 探活链
+// （state/gateway.json + /api/health），只在**确认** gateway 在跑时拦。
+// ===========================================================================
+mod live_gateway_guard {
+    // GLOBAL_STATE_LOCK 必须横跨 .await 持有：NEMESISBOT_HOME 是进程全局，
+    // 守卫探活的 await 期间同样不能让其他测试看到本测试的 home。单线程
+    // tokio 测试 runtime + 探活目标是不碰锁的本地应答线程，无死锁面。
+    #![allow(clippy::await_holding_lock)]
+    use super::super::{CronAction, ensure_no_live_gateway};
+    use std::io::{Read as _, Write as _};
+
+    fn state_path_of(home: &std::path::Path) -> std::path::PathBuf {
+        home.join("workspace").join("state").join("gateway.json")
+    }
+
+    fn plant_state(home: &std::path::Path, port: i64) {
+        let p = state_path_of(home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            &p,
+            format!(r#"{{"pid": 1, "web_host": "127.0.0.1", "web_port": {port}}}"#),
+        )
+        .unwrap();
+    }
+
+    /// 最小 HTTP 200 应答器（loopback 随机端口，服务 `count` 个请求后退出；
+    /// 守卫每次只发一个 GET /api/health）。
+    fn spawn_health_responder(count: usize) -> i64 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port() as i64;
+        std::thread::spawn(move || {
+            for _ in 0..count {
+                let Ok((mut s, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            }
+        });
+        port
+    }
+
+    fn set_env_home() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        (tmp, home)
+    }
+
+    #[tokio::test]
+    async fn blocks_add_when_gateway_alive_but_list_exempt() {
+        let _serial = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (_tmp, home) = set_env_home();
+
+        let port = spawn_health_responder(1);
+        plant_state(&home, port);
+
+        let err = ensure_no_live_gateway(
+            &CronAction::Add {
+                name: "g".into(),
+                message: "m".into(),
+                every: Some(5),
+                cron: None,
+                deliver: false,
+                to: None,
+                channel: None,
+            },
+            false,
+        )
+        .await
+        .expect_err("gateway 确认在跑时增改必须被拦");
+        let msg = err.to_string();
+        assert!(msg.contains("gateway 正在运行"), "{msg}");
+        assert!(msg.contains("Dashboard"), "错误要指引替代路径: {msg}");
+
+        // List 只读：守卫在 action 判定处短路，不探活不拦（responder 计数
+        // 1 已被上一臂消费，此处即便走到探活也会因无人应答而放行——断言
+        // 的是「无 Err」这一外部契约）。
+        ensure_no_live_gateway(&CronAction::List, false)
+            .await
+            .expect("List 只读不拦");
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    #[tokio::test]
+    async fn passes_when_state_missing_or_stale() {
+        let _serial = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (_tmp, home) = set_env_home();
+
+        // 无 state 文件 → 放行。
+        ensure_no_live_gateway(&CronAction::Remove { id: "x".into() }, false)
+            .await
+            .expect("无 state 文件必须放行");
+
+        // state 指向无人监听的端口 → 探活失败放行（stale/已死进程不拦）。
+        plant_state(&home, 1);
+        ensure_no_live_gateway(&CronAction::Enable { id: "x".into() }, false)
+            .await
+            .expect("探活失败必须放行");
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+}

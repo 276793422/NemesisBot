@@ -54,6 +54,46 @@ pub enum CronAction {
     },
 }
 
+/// gateway 在位守卫（main 派发处对增删改臂调用；`List` 只读不拦）。
+///
+/// 为什么拦：`jobs.json` 是跨进程真相源，但 gateway 以**内存态写穿**——
+/// 任一任务触发 / 任意 WSAPI 变更都会全量保存。gateway 运行中用本 CLI
+/// 增删改，改动会在 gateway 下次保存时被整体覆盖（静默丢失，且重启也
+/// 救不回——盘上已无此任务）。运行中请走 Dashboard 定时任务页
+/// （WSAPI `tasks.cron.*`，与 gateway 同进程，天然无此问题），或先停掉
+/// gateway 再用 CLI。
+///
+/// 检测链复用 estop/dashboard 的跨进程先例：`<workspace>/state/gateway.json`
+/// 存在且 `web_port>0` → GET `/api/health` 探活；**只有确认 200 才拦**——
+/// 无 state 文件 / 端口无效 / 探活失败（stale 文件、进程已死）一律放行，
+/// 宁可漏拦也不误伤 gateway 不在场的正常 CLI 使用。
+pub(crate) async fn ensure_no_live_gateway(action: &CronAction, local: bool) -> Result<()> {
+    if matches!(action, CronAction::List) {
+        return Ok(());
+    }
+    let home = common::resolve_home(local);
+    let state_path =
+        nemesis_path::resolve_gateway_state_path_in_workspace(&common::workspace_path(&home));
+    let Some(info) = crate::commands::dashboard::read_gateway_state(&state_path) else {
+        return Ok(());
+    };
+    if info.web_port <= 0 {
+        return Ok(());
+    }
+    let base_url = format!("http://{}:{}", info.web_host, info.web_port);
+    if crate::commands::dashboard::check_health(&base_url)
+        .await
+        .is_ok()
+    {
+        anyhow::bail!(
+            "检测到 gateway 正在运行（{base_url}）——运行中的 gateway 以内存态写穿定时任务存储，\
+             本 CLI 的增删改会在它下次保存时被覆盖（静默丢失）。\
+             请在 Dashboard 的定时任务页操作，或先停掉 gateway 再用 CLI。"
+        );
+    }
+    Ok(())
+}
+
 pub fn run(action: CronAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let store_path = common::cron_store_path(&home);
