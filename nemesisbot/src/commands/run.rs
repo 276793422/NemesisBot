@@ -4,9 +4,10 @@
 //! 无 gateway、无 web/通道/集群装配。与 `nemesisbot agent --message` 的
 //! 本质差异：`run` 走 **agent_factory 的完整装配**（SharedResources +
 //! `build_agent_loop`），因此安全 8 层 + guardian + tier 过滤 + spill +
-//! turn_guard 与 gateway **同源生效**——headless 是编码 agent 的第二入口，
-//! 不是安全旁路。任务执行走 `AgentLoop::run_detached_events`（与 spawn
-//! 子代理同一条 `run_with_trace` 链路，全治理），会话跑完即弃不落盘。
+//! turn_guard + estop（经跟随器镜像 gateway 急停）与 gateway **同源生效**
+//! ——headless 是编码 agent 的第二入口，不是安全旁路。任务执行走
+//! `AgentLoop::run_detached_events`（与 spawn 子代理同一条 `run_with_trace`
+//! 链路，全治理），会话跑完即弃不落盘。
 //!
 //! - 任务来源：位置参数，或 `-` / 缺省 = 从 stdin 读（管道友好）。
 //! - `--workspace DIR`：工作区覆盖（config.json 仍从 home 解析）。
@@ -181,6 +182,26 @@ pub fn serialize_terminal_events(events: &[nemesis_agent::types::AgentEvent]) ->
 }
 
 // ---------------------------------------------------------------------------
+// 急停接线（2026-10-24 R75 补齐，BUG-20261024-05）
+// ---------------------------------------------------------------------------
+
+/// headless 进程的急停态绑定：进程级共享 EstopState + 跨进程跟随器一次性
+/// spawn（幂等）。此前 `..Default::default()` 给本进程一个**孤立**的新建
+/// EstopState——loop 的急停闸全部在位却永远无人触发，gateway 全局急停对
+/// headless 不可达（与 2026-09-27 修复的 mcp-serve/acp 同一缺陷类，本入口
+/// 被遗漏）。绑定 `shared_estop()` 后，gateway 急停经 `/api/internal`
+/// 镜像进来；无 gateway（gateway.json 缺失 / web_port=0）时 discover=None
+/// 纯 no-op，headless 行为零变化。
+///
+/// 独立成函数是回归闸：装配字面量若不再调用它（改回孤立态），clippy
+/// dead_code + `bind_estop_*` 测试双闸同红。
+fn bind_estop(home: &std::path::Path) -> Arc<nemesis_agent::estop::EstopState> {
+    let estop = crate::estop_follower::shared_estop();
+    crate::estop_follower::ensure_spawned(home.to_path_buf());
+    estop
+}
+
+// ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 
@@ -289,6 +310,10 @@ pub async fn run(
         // 入口形态（gap ⑤）：headless 单任务——无交互界面、跑完即退的
         // 语境说明随身份基座注入（pro 体系；classic 忽略）。
         entrance: nemesis_agent::prompt::Entrance::Headless,
+        // 急停态：进程级共享 + 跟随器镜像 gateway（与 acp/mcp-serve 同源
+        // ——headless 同样不是急停旁路；Default 的孤立新建态 = 急停闸
+        // 在位却无人可达）。
+        estop: bind_estop(home),
         ..Default::default()
     });
     let agent_loop = crate::agent_factory::build_agent_loop(&shared)

@@ -204,6 +204,46 @@ fn frontmatter_preserved_with_crlf() {
 }
 
 #[test]
+fn no_frontmatter_no_leading_blank() {
+    // 无 frontmatter 的候选不得带前导空行——fm 为空串时旧实现
+    // format!("{fm}\n…") 注入 "\n"，人工应用后逐轮累积（R72 根修回归锁）。
+    let body = "## 步骤\n\n做事。\n\n## 注意\n\n- 不要越权\n";
+    let c = apply(
+        Operator::ReorderConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    )
+    .unwrap();
+    assert!(
+        !c.content.starts_with('\n'),
+        "候选头部不得有空行: {:?}",
+        c.content
+    );
+    assert!(c.content.starts_with("## "));
+}
+
+#[test]
+fn empty_frontmatter_no_leading_blank() {
+    // 空 fence（---\n---）按无 frontmatter 处理（C-F5 语义，fence 行作为
+    // 引导文本原样保留在头部）——候选同样不得带前导空行。
+    let content = "---\n---\n## 步骤\n\n做事。\n\n## 注意\n\n- 不要越权\n";
+    let c = apply(
+        Operator::ReorderConstraints,
+        content,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    )
+    .unwrap();
+    assert!(
+        !c.content.starts_with('\n'),
+        "候选头部不得有空行: {:?}",
+        c.content
+    );
+    assert!(c.content.starts_with("---"), "{}", c.content);
+}
+
+#[test]
 fn operator_parse_roundtrip() {
     for op in [
         Operator::ReorderConstraints,

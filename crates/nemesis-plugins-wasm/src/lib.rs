@@ -20,6 +20,8 @@
 mod abi;
 pub mod bindings;
 mod callbacks;
+#[cfg(test)]
+mod callbacks_tests;
 pub mod egress;
 pub mod error;
 pub mod host_impl;

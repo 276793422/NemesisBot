@@ -443,3 +443,34 @@ mod wave6 {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 急停接线（2026-10-24 R75，BUG-20261024-05）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bind_estop_returns_process_shared_state_not_an_isolated_arc() {
+    // 绑定闸：bind_estop 必须给出进程级共享态——跟随器镜像的唯一落点。
+    // 回归形态 = 改回 `Arc::new(EstopState::new())`（即 `..Default::default()`
+    // 的孤立新建态：loop 急停闸全部在位却永远无人触发，gateway 全局急停
+    // 对 headless 不可达）。
+    let tmp_a = tempfile::tempdir().unwrap();
+    let a = bind_estop(tmp_a.path());
+    let tmp_b = tempfile::tempdir().unwrap();
+    let b = bind_estop(tmp_b.path());
+    assert!(
+        Arc::ptr_eq(&a, &b),
+        "两次绑定必须是同一进程级共享态（跟随器只镜像这一个）"
+    );
+    assert!(
+        Arc::ptr_eq(&a, &crate::estop_follower::shared_estop()),
+        "绑定态必须就是 estop_follower 的镜像落点"
+    );
+    // 触发可见：共享态 engage/release → 绑定态同观测（loop estop 闸的源）。
+    let shared = crate::estop_follower::shared_estop();
+    assert!(!a.is_engaged(), "前置：共享态初值未急停");
+    shared.trigger();
+    assert!(a.is_engaged(), "跟随器镜像触发必须立刻被绑定态观测到");
+    shared.release();
+    assert!(!a.is_engaged());
+}

@@ -115,7 +115,15 @@ pub fn apply(
         }
     };
 
-    let new_content = format!("{fm}\n{new_body}");
+    // 无 frontmatter（含空 fence 按 body 处理的形态）不拼分隔换行：
+    // fm 为空串时 format!("{fm}\n…") 会给候选头部注入空行，人工应用后
+    // 逐轮累积（R72 根修——四路评审 C-F5 只把空 fence 归入 body，主拼
+    // 接路径仍在污染候选头部）。
+    let new_content = if fm.is_empty() {
+        new_body
+    } else {
+        format!("{fm}\n{new_body}")
+    };
     let budget_chars = budget_tokens as usize * 2;
     if new_content.chars().count() > budget_chars {
         return Err(format!(
