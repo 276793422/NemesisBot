@@ -4,7 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // ClusterRoaming（跨网漫游卡片，2026-10-23 自独立 TAB 收编进【集群设置】
 // 右列顶；QUIC 解耦后开关+观测归集群配置页）：
 // - TAB 清单：'roaming'（跨网）已删除（ClusterTabs）；
-// - feature 未编译（available:false）→ 诚实降级面板，无开关可点；
+// - 管理面未就绪（available:false，防御性保留——M4 起 feature 已删恒编译）
+//   → 诚实降级面板，无开关可点；
 // - 正常态：运行中徽标 + iroh:<hex> 身份展示 + 信任簿计数；
 // - 开关点击 → roaming.enable / roaming.disable WSAPI 调用 + 重启提示 toast。
 
@@ -45,18 +46,18 @@ describe('ClusterTabs', () => {
 })
 
 describe('ClusterRoaming', () => {
-  it('feature 未编译时渲染诚实降级面板', async () => {
+  it('available:false 时渲染诚实降级面板', async () => {
     wsapiRequest.mockResolvedValue({
       available: false,
       enabled: false,
       active: false,
-      reason: 'cluster-roaming feature 未编译（iroh 跨网漫游层不可用）',
+      reason: '跨网漫游管理面未就绪（管理面恒编译，此形态仅防御性保留）',
     })
     const w = mount(ClusterRoaming)
-    // 卡片头徽标在 loading 期就渲染「未编译」——必须等降级正文出现，
+    // 卡片头徽标在 loading 期就渲染「未就绪」——必须等降级正文出现，
     // 不能拿徽标当就绪信号（竞态：waitFor 过早放行）
     await vi.waitFor(() =>
-      expect(w.text()).toContain('cluster-roaming feature 关闭'),
+      expect(w.text()).toContain('跨网漫游管理面未就绪'),
     )
     // 降级面板无 toggle
     expect(w.find('.toggle').exists()).toBe(false)

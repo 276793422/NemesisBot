@@ -134,16 +134,14 @@ pub enum ClusterAction {
     },
     /// Manage iroh cross-network roaming (A1 overlay layer; identity keygen
     /// 2026-10-23 起归 `quic keygen`——身份是 QUIC 层资产)
-    #[cfg(feature = "cluster-roaming")]
     Roaming {
         #[command(subcommand)]
         action: RoamingAction,
     },
 }
 
-/// iroh 漫游子命令（A1 叠加层；feature=cluster-roaming；keygen 已挪
+/// iroh 漫游子命令（A1 叠加层；keygen 已挪
 /// `quic keygen`——2026-10-23 与集群解耦，身份文件物理路径不变）。
-#[cfg(feature = "cluster-roaming")]
 #[derive(clap::Subcommand)]
 pub enum RoamingAction {
     /// Show roaming identity status (key file / node ID / trust book)
@@ -1185,25 +1183,29 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         ClusterAction::Firewall { action } => {
             run_firewall(action)?;
         }
-        #[cfg(feature = "cluster-roaming")]
         ClusterAction::Roaming { action } => {
-            run_roaming(action, &home)?;
+            run_roaming(action, &home).await?;
         }
     }
     Ok(())
 }
 
 /// iroh 漫游管理（A1 叠加层；status/enable/disable；keygen 已挪 `quic keygen`
-/// ——2026-10-23 与集群解耦）。
-#[cfg(feature = "cluster-roaming")]
-fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
-    use nemesis_cluster::roaming::endpoint::{RoamingIdentity, roaming_key_path};
+/// ——2026-10-23 与集群解耦）。QUIC 插件化 M2：身份/派生面在 plugin_roaming
+/// ——CLI 进程先装载插件（幂等）再走桥；插件缺席 = status 诚实注记（配置/
+/// 信任簿段照常展示）、enable 诚实报错（显式意志不降级，与 `quic keygen`
+/// 同口径）。
+async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
+    use crate::roaming_plugin_loader::{RoamingLoadOutcome, load_roaming_plugin, relay_init_json};
+    use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
+    use nemesis_cluster::roaming::roaming_key_path;
     use nemesis_cluster::roaming::trust::TrustBook;
 
     // roaming_* / resolve_*_in_workspace 系列收的是 workspace 根（与 gateway
     // setup_roaming、WSAPI 面同口径），不是 home——错传会把 key/config 写到
     // `.nemesisbot/` 而非 `.nemesisbot/workspace/`，gateway 读不到。
     let workspace = common::workspace_path(home);
+    let quic_path = common::quic_config_path(home);
 
     match action {
         RoamingAction::Status => {
@@ -1218,15 +1220,34 @@ fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                     "未启用"
                 }
             );
+            // 身份段走桥（seed→node_id 派生是 ed25519 运算，在插件内）；
+            // 缺席/拒载/读失败 = 诚实注记，状态面不因身份读不到而失败。
             if key_path.exists() {
-                match RoamingIdentity::load(&key_path) {
-                    Ok(id) => {
-                        println!("  密钥: {}（已配置）", key_path.display());
-                        println!("  node_id: {}", id.node_id_hex());
-                        println!("  完整地址: iroh:{}", id.node_id_hex());
+                match load_roaming_plugin(&workspace, &relay_init_json(&quic_path)) {
+                    RoamingLoadOutcome::Loaded => match plugin_bridge::get_iroh_id().await {
+                        BridgeOutcome::Ok(hex) => {
+                            println!("  密钥: {}（已配置）", key_path.display());
+                            println!("  node_id: {hex}");
+                            println!("  完整地址: iroh:{hex}");
+                        }
+                        BridgeOutcome::Failed(e) => {
+                            println!("  密钥: {}（读取失败: {e}）", key_path.display());
+                        }
+                        BridgeOutcome::Absent => {
+                            println!("  密钥: 未装载（plugin_roaming 桥槽空——身份面在插件内）");
+                        }
+                    },
+                    RoamingLoadOutcome::Absent => {
+                        println!(
+                            "  密钥: {}（plugin_roaming 未安装——身份派生面在插件内）",
+                            key_path.display()
+                        );
                     }
-                    Err(e) => {
-                        println!("  密钥: {}（读取失败: {e}）", key_path.display());
+                    RoamingLoadOutcome::Rejected(reason) => {
+                        println!(
+                            "  密钥: {}（plugin_roaming 拒载: {reason}）",
+                            key_path.display()
+                        );
                     }
                 }
             } else {
@@ -1256,13 +1277,31 @@ fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             );
             if enabled {
                 // 缺 key 顺手备料（与 WSAPI enable / setup_roaming 同一语义）。
+                // QUIC 插件化 M2：备料面（load_or_create）在插件内——装载走
+                // 桥；插件缺席/拒载 = 诚实报错（CLI 显式意志，闸已写不回滚）。
                 let key_path = roaming_key_path(&workspace);
-                let (id, created) =
-                    RoamingIdentity::load_or_create(&workspace).map_err(|e| anyhow::anyhow!(e))?;
-                if created {
-                    println!("  已生成漫游身份密钥: {}", key_path.display());
+                match load_roaming_plugin(&workspace, &relay_init_json(&quic_path)) {
+                    RoamingLoadOutcome::Loaded => {}
+                    RoamingLoadOutcome::Absent => anyhow::bail!(
+                        "plugin_roaming 未找到（exe 旁 plugins/plugin_roaming 缺席）——\
+身份面在插件内，请随发行包安装 plugins/plugin_roaming/plugin_roaming.dll"
+                    ),
+                    RoamingLoadOutcome::Rejected(reason) => {
+                        anyhow::bail!("plugin_roaming 拒载: {reason}");
+                    }
                 }
-                println!("  node_id: {}", id.node_id_hex());
+                match plugin_bridge::identity_ensure().await {
+                    BridgeOutcome::Ok(info) => {
+                        if info.created {
+                            println!("  已生成漫游身份密钥: {}", key_path.display());
+                        }
+                        println!("  node_id: {}", info.iroh_id);
+                    }
+                    BridgeOutcome::Absent => {
+                        anyhow::bail!("plugin_roaming 未装载（桥槽空）——身份备料面在插件内");
+                    }
+                    BridgeOutcome::Failed(e) => anyhow::bail!("{e}"),
+                }
             }
             // 集群本体闸链诚实检查（与 gateway cluster_should_start 同源两道闸：
             // config.json cluster.enabled × config.cluster.json 顶层 enabled）。
@@ -1292,7 +1331,6 @@ fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
 
 /// 漫游 config 键写入（CLI 面）：`roaming.enabled` = bool。咽喉锁 + 原子写，
 /// 与 WSAPI `update_cluster_config_roaming` 同形态。收 workspace 根（非 home）。
-#[cfg(feature = "cluster-roaming")]
 fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
     let _cfg_serial = nemesis_config::config_write_lock();
     let path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);

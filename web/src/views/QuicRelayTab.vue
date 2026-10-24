@@ -15,8 +15,8 @@
 //    即报到、周期心跳的设备全在这里。跨网开关（集群是否消费中继组网）在
 //    【集群 → 配置】跨网漫游卡——集群是 QUIC 的消费方，不是宿主。
 //
-// 降级：quic-relay feature 未编译 = quic.relay.status available:false → 整页
-// 诚实提示不可操作（命令面恒注册，payload 带原因）。
+// 降级：quic.relay.status available:false → 整页诚实提示不可操作
+//（命令面恒注册，payload 带原因；M4 起 feature 已删恒编译——该分支仅防御性保留）。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
@@ -290,7 +290,7 @@ async function loadRegistry() {
     const r = await request('quic', 'registry.members')
     if (r) registry.value = { count: r.count ?? 0, members: r.members ?? [] }
   } catch {
-    // feature 未编译 / 未装配 = 保持上次值（降级面板已覆盖 feature 缺席）
+    // 管理面未就绪 / 未装配 = 保持上次值（降级面板已覆盖该形态，防御性保留）
   }
 }
 
@@ -327,7 +327,7 @@ onUnmounted(() => {
 <template>
   <div style="display: flex; flex-direction: column; gap: var(--space-4);">
 
-    <!-- ===== 降级面板（quic-relay feature 未编译） ===== -->
+    <!-- ===== 降级面板（管理面未就绪；M4 起恒编译，防御性保留） ===== -->
     <div v-if="!featureOn" class="card">
       <div class="card-header"><h3 style="margin: 0;">QUIC 中继（内网穿透）</h3></div>
       <div class="card-body">
@@ -339,7 +339,7 @@ onUnmounted(() => {
             {{ degradeReason }}
           </p>
           <p style="margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-secondary);">
-            需以 <span style="font-family: var(--font-mono);">quic-relay</span> feature 重新编译（构建配置器「QUIC 中继服务器」勾选项）。
+            请确认网关为完整构建（QUIC 管理面恒编译，降级面板仅防御性保留）。
           </p>
         </div>
       </div>

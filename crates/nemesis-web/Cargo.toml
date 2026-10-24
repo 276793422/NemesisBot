@@ -46,6 +46,9 @@ nemesis-mcp = { workspace = true }
 # WASM 插件管理面（handlers/plugins_wasm.rs；`plugins-wasm` feature 门控，
 # nemesisbot feature 转发）。
 nemesis-plugins-wasm = { workspace = true, optional = true }
+# QUIC 插件管理面契约（handlers/quic.rs 启停代理；M4 起非 optional——
+# cluster-roaming feature 已删，代理代码恒编译）。
+nemesis-plugin = { workspace = true }
 nemesis-workflow = { workspace = true, optional = true }
 nemesis-utils = { workspace = true }
 # 提示词资产单一真相源（M7）：cluster_persona_gen（人格生成三阶段）消费；
@@ -100,12 +103,11 @@ voice-capture = ["voice", "nemesis-voice/voice-capture"]
 # dep:zip = shop.hire 集群聘用的覆盖备份（cluster/backups/persona_*.zip）；
 # 备份是聘用的实现依赖（决策 5），随 cluster 进出（与 skins 同款模式）。
 cluster = ["dep:nemesis-cluster", "dep:zip"]
-# iroh 跨网漫游管理面（cluster.roaming.* WSAPI；由 nemesisbot 的
-# cluster-roaming 穿透）。关 = 三条命令诚实报未编译，cluster 其余命令照常。
-cluster-roaming = ["cluster", "nemesis-cluster/cluster-roaming"]
-# QUIC 中继管理面（cluster.relay.* WSAPI；由 nemesisbot 的 quic-relay
-# 穿透，隐含 cluster-roaming）。关 = relay.status/config 诚实降级 available:false。
-quic-relay = ["cluster-roaming", "nemesis-cluster/quic-relay"]
+# iroh 跨网漫游管理面（cluster.roaming.* / quic.* WSAPI）：2026-10-24 QUIC
+# 插件化 M4 起 cluster-roaming/quic-relay feature 删除（拍板②），管理面
+# 代理代码恒编译——quic.relay.* 启停经恒编译的 nemesis-plugin 契约打
+# plugin_roaming 句柄；插件缺席 = 运行期诚实报错。
+# （原 quic-relay = ["cluster-roaming"] 空壳穿透一并删除。）
 forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]

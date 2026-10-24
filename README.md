@@ -42,7 +42,7 @@
 - **业务分类** - design / development / testing / ops / deployment / analysis / general
 - **自定义标签** - 灵活的多维度分类体系
 - **加密 UDP 自动发现** - 局域网内自动发现其他节点（AES-256-GCM 加密广播）
-- **跨网组网（QUIC P2P）** - iroh UDP 打洞 + 自建中继回落，跨网段设备零端口转发互连（默认编译开启，见「跨网组网」）
+- **跨网组网（QUIC P2P）** - iroh UDP 打洞 + 自建中继回落，跨网段设备零端口转发互连（由 plugin_roaming 插件提供，见「跨网组网」）
 - **专业职能（professions）** - 节点声明职能（product / ui-design / architecture / dev / test-whitebox / test-blackbox）与能力档位，看板拆解按职能 + tier 硬条件派发到合适节点
 - **异步 RPC 通信** - 节点间非阻塞远程调用，支持多步骤工具链，令牌认证保护
 - **续行快照模式** - LLM 上下文在异步调用点保存，回调到达后自动续行
@@ -137,8 +137,11 @@ scripts\run-demo.bat
 # 或手动编译
 cargo build --release -p nemesisbot
 
-# 编译 plugin-ui DLL（可选，用于桌面审批弹窗）
-cd plugins/plugin-ui
+# 上面各平台脚本已自动编译全部插件（plugin-ui / plugin-roaming 等，产物在
+# 产物目录 plugins/ 子目录）。手动补编译单个插件示例：
+cd plugins/plugin-ui      # 桌面审批弹窗（可选）
+cargo build --release
+cd ../plugin-roaming      # QUIC 跨网组网中继面（缺席 = 该功能诚实降级）
 cargo build --release
 ```
 
@@ -158,7 +161,7 @@ bash scripts/customize.sh iot
 cargo build --profile iotsmall -p nemesisbot --no-default-features --features "channels-web,channels-rpc"
 ```
 
-可裁剪：`cluster`（含跨网 P2P `cluster-roaming` / QUIC 中继 `roaming-relay`，默认开）/ `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` / `vm`(QEMU 桌面级虚拟机) / `board`(看板) / `connectors`(行动代理连接器) / `terminal` / `skins` / `plugins-wasm`(WASM 组件插件) / `codemode`(code_run 脚本工具) / `selfupdate`(版本自更新) / `usage`(前端使用统计页，带 echarts)，另有体积细粒度八件套（价目表内嵌 / 启动验签 / 前端资源内嵌 / LSP / checkpoint 影子库 / 图片降采样 / FTS 检索 / 用量账本）及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。**Vue 前端也同步裁剪**——customize 按同一份 feature 选择生成 `web/.env`，router/侧栏门控，Vite 把关闭的页面 tree-shake 掉（不进二进制；minimal-iot 前端从 1.7MB 降到 ~0.6MB）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md` + `docs/REPORT/2026-07-12_frontend-feature-gating.md`。
+可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` / `vm`(QEMU 桌面级虚拟机) / `board`(看板) / `connectors`(行动代理连接器) / `terminal` / `skins` / `plugins-wasm`(WASM 组件插件) / `codemode`(code_run 脚本工具) / `selfupdate`(版本自更新) / `usage`(前端使用统计页，带 echarts)，另有体积细粒度八件套（价目表内嵌 / 启动验签 / 前端资源内嵌 / LSP / checkpoint 影子库 / 图片降采样 / FTS 检索 / 用量账本）及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。**跨网漫游与 QUIC 中继不占 feature**——iroh 家族重依赖随迁 `plugin_roaming` C-ABI 插件，插件在场与否是唯一功能开关（缺席 = 诚实降级）。**Vue 前端也同步裁剪**——customize 按同一份 feature 选择生成 `web/.env`，router/侧栏门控，Vite 把关闭的页面 tree-shake 掉（不进二进制；minimal-iot 前端从 1.7MB 降到 ~0.6MB）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md` + `docs/REPORT/2026-07-12_frontend-feature-gating.md`。
 
 ### 运行测试
 
@@ -179,6 +182,9 @@ cargo run -p integration-test
 
 # 运行 P2P 集群测试（同为纯 bin runner）
 cargo run -p cluster-test
+
+# 运行插件测试（独立 workspace，不在主 cargo test --workspace 覆盖内）
+cargo test --manifest-path plugins/plugin-roaming/Cargo.toml
 ```
 
 #### 质量基准（可复现）
@@ -423,7 +429,7 @@ nemesisbot cluster disable
 
 ### 跨网组网（QUIC 中继）
 
-不在同一局域网的设备也能组网：基于 iroh 的 UDP 打洞（QUIC），打不通时回落中继。**默认编译开启**，零端口转发，三种用法：
+不在同一局域网的设备也能组网：基于 iroh 的 UDP 打洞（QUIC），打不通时回落中继。传输面由 **plugin_roaming 插件**提供（`plugin_roaming.dll` 放在 exe 旁 `plugins/` 目录即生效；缺席时相关命令诚实报错不做静默降级），零端口转发，三种用法：
 
 ```bash
 # ① 客户端：指向中继服务器 + 配对令牌，等设备上线
@@ -651,7 +657,7 @@ NemesisBot_Rust/
 │   ├── nemesis-tools/               # 工具系统（40+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
 │   ├── nemesis-sandbox/             # Sandboxie 沙盒集成（执行体隔离 Layer 2，Windows）
-│   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照 + iroh 跨网 P2P）
+│   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照 + 跨网漫游桥）
 │   ├── nemesis-taskstore/           # 统一任务层（tasks.db：审批台账 + agent 实体注册表）
 │   ├── nemesis-connectors/          # 行动代理连接器（registry / 回执 / 纸面账本）
 │   ├── nemesis-guest/               # VM 客户内 agent（QEMU 整机隔离执行后端）
@@ -703,7 +709,7 @@ NemesisBot_Rust/
 │       ├── gateway.rs               # 网关（核心启动入口）
 │       ├── run.rs                   # headless 单任务（无端口跑完即退）
 │       ├── acp.rs                   # ACP server（编辑器接入）
-│       ├── quic.rs                  # QUIC 中继服务器（独立进程 / 状态查看）
+│       ├── quic.rs                  # QUIC 中继命令（独立进程 / 状态查看，经 plugin_roaming 插件）
 │       ├── vm.rs                    # VM 环境自举（QEMU 安装/加速/镜像）
 │       ├── estop.rs                 # 急停开关
 │       ├── agent.rs                 # Agent 管理
@@ -763,7 +769,7 @@ NemesisBot_Rust/
 - **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
 - **可执行文件签名验证（v4）** - 「借微软的格式，不借微软的信任」：ECDSA P-256 + SHA-256 + X.509 三级证书链 + CMS/PKCS#7，Windows Authenticode 格式对齐（微软工具可解析自产签名）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。**已接入主程序**：启动自验（`verify_policy.rs`，锚定编译期根）+ 自更新仅接受 `VerifyOutcome::Valid`（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，防绕过有物理上限）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
-- **QUIC 跨网组网** - iroh UDP 打洞 + 自建中继回落（SharedToken 访问控制，令牌空 = 拒绝启动），跨网段设备零端口转发互连；独立进程形态 `quic relay` 只跑中继（默认编译开启）
+- **QUIC 跨网组网** - iroh UDP 打洞 + 自建中继回落（SharedToken 访问控制，令牌空 = 拒绝启动），跨网段设备零端口转发互连；独立进程形态 `quic relay` 只跑中继（由 plugin_roaming 插件提供，缺席 = 诚实报错）
 - **执行体隔离多后端** - Windows Sandboxie 内核级 / Linux landlock+bwrap / macOS Seatbelt / **QEMU 桌面级 VM**（独立内核 + guest agent + 项目工作副本同步），`executor.strict` 可要求无沙盒即拒绝执行
 - **WASM 组件插件** - wasmtime 运行时剥离进宿主壳 DLL（独立构建，缺席 = 子系统诚实关闭）；fuel/内存/墙钟三重限制 + egress 默认拒绝 + 技能签名信任链
 - **行动代理连接器** - connector_find/invoke 只读数据面 + 独占接管/总开关治理 + 纸面账本回执

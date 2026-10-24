@@ -3,7 +3,7 @@
 //! 不再有 plugin_vm/ 资源目录）。
 //!
 //! 流程（[`ensure_released`]，镜像构建前调用）：
-//! 1. [`crate::vm_plugin_lib`] 找 DLL + v4 签名闸（与显示装载臂同源
+//! 1. [`crate::plugin_lib`]（VM spec）找 DLL + v4 签名闸（与显示装载臂同源
 //!    口径——同一 DLL 同一信任裁决）；
 //! 2. dlopen → `plugin_vm_resource_get` 按名取字节（.rodata 静态指针，
 //!    进程生命周期有效）；

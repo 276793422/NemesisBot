@@ -865,10 +865,8 @@ fn test_send_announce_with_no_endpoints_no_unicast_noise() {
 // -- A1 P3：announce 携带 iroh_id（UDP 往返保全 + 缺省不带字段语义）--
 
 /// FixedEndpointCallbacks 变体：带自报 iroh 漫游身份（默认方法覆写）。
-#[cfg(feature = "cluster-roaming")]
 struct FixedRoamingCallbacks(Vec<String>, Option<String>, Vec<String>);
 
-#[cfg(feature = "cluster-roaming")]
 impl ClusterCallbacks for FixedRoamingCallbacks {
     fn node_id(&self) -> String {
         "roaming-sender".into()
@@ -929,9 +927,8 @@ impl ClusterCallbacks for FixedRoamingCallbacks {
 /// announce 单播往返：`roaming_id()` 有值 → 接收端解出 iroh_id 一致；
 /// None → 接收端 iroh_id 也是 None（未启用漫游 = wire 不带身份）。
 #[test]
-#[cfg(feature = "cluster-roaming")]
 fn test_announce_carries_roaming_id_roundtrip() {
-    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let hex = crate::roaming::random_valid_iroh_hex();
 
     for (roaming, label) in [(Some(hex.clone()), "enabled"), (None, "disabled")] {
         let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -958,9 +955,8 @@ fn test_announce_carries_roaming_id_roundtrip() {
 /// → 接收端 addresses 含 `iroh:<hex>@<relay_url>`（LAN IP 之后池尾追加，
 /// 不抢直连优先级）；空 = addresses 不含 iroh 形态（N0 形态行为不变）。
 #[test]
-#[cfg(feature = "cluster-roaming")]
 fn test_announce_carries_relay_qualified_overlay_address() {
-    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let hex = crate::roaming::random_valid_iroh_hex();
     let overlay = format!("iroh:{hex}@http://relay.example.com:3340");
 
     for (overlay_addr, label) in [(Some(overlay.clone()), "self-relay"), (None, "n0-fallback")] {

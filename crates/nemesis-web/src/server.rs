@@ -246,11 +246,10 @@ pub struct WebServer {
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     cluster: Option<()>,
-    /// QUIC 中继生命周期管理（2026-10-23 与集群解耦）。
-    #[cfg(feature = "quic-relay")]
-    quic_relay: Option<Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>>,
-    #[cfg(not(feature = "quic-relay"))]
-    quic_relay: Option<()>,
+    /// QUIC 中继运行面句柄（QUIC 插件化 M1：plugin_roaming C-ABI，fn 指针
+    /// Copy 直接持值；nemesisbot gateway 装载插件后经 set_roaming_plugin 注入）。
+    /// M4 起恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
+    quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -507,14 +506,10 @@ impl WebServer {
         self.cluster = Some(cluster);
     }
 
-    /// Set the QUIC relay lifecycle manager（2026-10-23 与集群解耦——宿主
-    /// 直接持有，独立于 cluster 装配）。
-    #[cfg(feature = "quic-relay")]
-    pub fn set_quic_relay(
-        &mut self,
-        mgr: Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>,
-    ) {
-        self.quic_relay = Some(mgr);
+    /// Set the QUIC relay plugin handle（QUIC 插件化 M1：nemesisbot gateway
+    /// 装载 plugin_roaming 后注入；与 cluster 装配独立）。
+    pub fn set_roaming_plugin(&mut self, handle: nemesis_plugin::roaming::RoamingPluginHandle) {
+        self.quic_relay = Some(handle);
     }
 
     /// Set the cluster lifecycle service for start/stop control.
@@ -673,9 +668,7 @@ impl WebServer {
         let cluster = self.cluster.clone();
         #[cfg(not(feature = "cluster"))]
         let cluster = self.cluster;
-        #[cfg(feature = "quic-relay")]
-        let quic_relay = self.quic_relay.clone();
-        #[cfg(not(feature = "quic-relay"))]
+        // RoamingPluginHandle 是 fn 指针 Copy——Option 也 Copy，clone 塌缩单行。
         let quic_relay = self.quic_relay;
         #[cfg(feature = "workflow")]
         let workflow_engine = self.workflow_engine.clone();

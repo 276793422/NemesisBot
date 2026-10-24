@@ -244,9 +244,8 @@ async fn assemble_coverage_arms_capture_off_board_db_failure_and_relay_gate() {
 
 /// Step 5b-2（QUIC 中继统一入口，2026-10-21）：`--quic-relay` 早退臂。
 /// config.quic.json 缺席 → relay 段解析回落默认（token 空）→ 与
-/// `--relay` 同款 fail-closed 拒绝启动（不 bind 任何端口）；feature 关 =
-/// 诚实报 feature 缺失（旗标恒编译）。2026-10-23 解耦：断言随错误文案
-/// 迁移（roaming.relay.token → quic.json relay.token）。
+/// `--relay` 同款 fail-closed 拒绝启动（不 bind 任何端口）。2026-10-23
+/// 解耦：断言随错误文案迁移（roaming.relay.token → quic.json relay.token）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
     let th = ctx_env();
@@ -254,26 +253,14 @@ async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
     let Err(err) = GatewayCtx::assemble(false, false, true, &[]).await else {
         panic!("quic relay 模式在 relay.token 为空时必须拒绝启动");
     };
-    #[cfg(feature = "quic-relay")]
-    {
-        assert!(err.to_string().contains("relay.token"), "{err}");
-    }
-    #[cfg(not(feature = "quic-relay"))]
-    {
-        assert!(err.to_string().contains("quic-relay"), "{err}");
-    }
+    assert!(err.to_string().contains("relay.token"), "{err}");
 }
 
-/// 旧位置 QUIC 键迁移在 assemble 期触发（cluster-roaming 闸——**不只
-/// quic-relay**）：cluster.json 带 roaming 段 client 三键老形态 + quic.json
-/// 缺席 → assemble 后 quic.json 在场且三键迁入。钉住迁移调用的闸位组合
-/// 缝隙：客户端消费面 `Cluster::setup_roaming` 在 cluster-roaming 下读
-/// config.quic.json，迁移若只挂 quic-relay 闸，「cluster-roaming 开 +
-/// quic-relay 裁掉」的合法组合里老配置用户会被静默回落 n0 公共中继。
-/// 本测试在默认 feature（两闸同开）下运行，钉的是「assemble 必须做迁移」
-/// 这一语义面；闸位本身的组合正确性由裁剪组合编译检查保证（cargo check
-/// --no-default-features --features cluster-roaming）。
-#[cfg(feature = "cluster-roaming")]
+/// 旧位置 QUIC 键迁移在 assemble 期触发（M4 起恒编译——cluster-roaming
+/// feature 已删，迁移与消费面同闸恒在）：cluster.json 带 roaming 段 client
+/// 三键老形态 + quic.json 缺席 → assemble 后 quic.json 在场且三键迁入。
+/// 钉住「assemble 必须做迁移」语义面：客户端消费面 `Cluster::setup_roaming`
+/// 读 config.quic.json，迁移缺失会让老配置用户静默回落 n0 公共中继。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assemble_migrates_legacy_quic_keys_to_config_quic_json() {
     let th = ctx_env();
@@ -294,8 +281,7 @@ async fn assemble_migrates_legacy_quic_keys_to_config_quic_json() {
         .expect("非 relay 必返 Some");
 
     let quic_path = crate::common::quic_config_path(&th.home);
-    let raw = std::fs::read_to_string(&quic_path)
-        .expect("quic.json 应由 assemble 期迁移生成（cluster-roaming 闸内）");
+    let raw = std::fs::read_to_string(&quic_path).expect("quic.json 应由 assemble 期迁移生成");
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(v["client"]["relay_url"], "http://vps.example.com:3340");
     assert_eq!(v["client"]["relay_token"], "tok-123");

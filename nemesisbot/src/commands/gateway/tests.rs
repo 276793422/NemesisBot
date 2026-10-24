@@ -5527,8 +5527,6 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
         cron_service,
         conv_router,
         estop,
-        #[cfg(feature = "quic-relay")]
-        quic_relay_manager: None,
         data_store: None,
         agent_outbound_tx,
         bridge_outbound_handle,
