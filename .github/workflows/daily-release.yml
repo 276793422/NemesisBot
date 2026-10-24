@@ -704,7 +704,9 @@ jobs:
           # plugin-roaming 插件包（non-fatal：.so 缺席 = 诚实跳过不出残包，
           # 对齐 release body「插件包视编译情况可能缺席」声明）
           if [ -f bin/bin_android/arm64-v8a/plugins/libplugin_roaming.so ]; then
-            (cd bin/bin_android/arm64-v8a && zip -q ../../../../nightly-android-plugins.zip plugins/libplugin_roaming.so)
+            # ../ 计数：arm64-v8a→bin_android→bin→仓库根 = 3 层（4 层会写到
+            # runner 工作区外，ls 落空 + bash -e 步骤红 = 整个 android job 炸）
+            (cd bin/bin_android/arm64-v8a && zip -q ../../../nightly-android-plugins.zip plugins/libplugin_roaming.so)
             ls -la nightly-android-plugins.zip
           else
             echo "WARN libplugin_roaming.so 缺席（构建步 non-fatal 失败）——跳过 nightly-android-plugins.zip"
