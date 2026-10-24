@@ -48,6 +48,7 @@ fn append_meta_writes_all_optional_fields() {
         cron_job_name: Some("nightly"),
         images: &["/tmp/pic.png".to_string()],
         file_changes: &changes,
+        steer: false,
         deliverables: &[],
         checkpoint_turn: Some(7),
     };

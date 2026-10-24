@@ -918,14 +918,18 @@ impl AgentLoop {
                 // steer 路径却用 3 参变体丢掉 images → 会话浏览器/self-heal
                 // 重建/fork 时 steer 轮的图片凭空消失（instance 里有图、
                 // 落盘行无图，两套存储分叉）。
-                crate::chat_log::append_chat_log_full_with_images(
+                // BUG-20261025-19：steer 行带 `"steer": true` 标记——role
+                // 仍是 "user" 但不是轮首，rewind/fork 轮边界判定据此跳过
+                // （否则截断点切在 steer 行上，「撤销最后一轮」只删尾巴）。
+                crate::chat_log::append_chat_log_meta(
                     &context.session_key,
                     "user",
                     &format!("[steer] {}", content),
-                    None,
-                    None,
-                    None,
-                    &attach.ref_strings(),
+                    &crate::chat_log::ChatLogMeta {
+                        images: &attach.ref_strings(),
+                        steer: true,
+                        ..Default::default()
+                    },
                 );
                 info!(
                     "[AgentLoop] steer message injected before LLM call: session_key={}, len={}",

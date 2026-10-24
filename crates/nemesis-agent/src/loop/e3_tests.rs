@@ -789,3 +789,112 @@ async fn e3_gate_releases_session_after_inner_error() {
 
     delete_chat_log(&key);
 }
+
+/// steer 注入行追加（BUG-20261025-19 写入形态：role=user + `"steer": true`
+/// 标记、无 checkpoint_turn——run_loop 注入路径同构）。
+fn e3_append_steer(key: &str, content: &str) {
+    crate::chat_log::append_chat_log_meta(
+        key,
+        "user",
+        &format!("[steer] {content}"),
+        &crate::chat_log::ChatLogMeta {
+            steer: true,
+            ..Default::default()
+        },
+    );
+}
+
+/// BUG-20261025-19 回归锁：「撤销最后一轮」在最后一轮含 steer 注入时，
+/// 截断点必须落在真实轮首——旧行为切在 steer 行上，只删掉 steer 尾巴、
+/// 轮的提问与首轮回复残留、文件也不回滚（restore 锚 None）。
+#[tokio::test]
+async fn e3_rewind_last_turn_skips_steer_rows() {
+    let (al, key, dir) = stage_two_turns("undo-steer").await;
+    let file = dir.path().join("ws").join("code.txt");
+    // steer 注入 + 后续回复落在 turn 2 尾部（轮中间注入的落盘时序）。
+    e3_append_steer(&key, "换 venv 重跑");
+    e3_append(&key, "assistant", "turn 2 a after steer", None);
+
+    let out = al.rewind_last_turn(&key).await.unwrap();
+    // cut = turn 2 真实轮首（idx 2）→ turn 2 连 steer 整轮移除。
+    assert_eq!(out["kept_count"], 2, "{out}");
+    assert_eq!(out["removed_count"], 4);
+    assert_eq!(out["restore_turn"], 2, "{out}");
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "v2",
+        "整轮回滚到 turn 2 begin 前"
+    );
+
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2, "turn 1 完整保留");
+    delete_chat_log(&key);
+}
+
+/// BUG-20261025-19 回归锁：回退到含 steer 注入的轮首 = 整轮保留（steer
+/// 与其后回复随轮走）——旧行为切在 steer 行上，轮被拦腰截断（后 steer
+/// 回复丢失）且回滚锚错位。
+#[tokio::test]
+async fn e3_rewind_to_message_keeps_whole_steered_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    let file = root.join("code.txt");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&file, "v1").unwrap();
+
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    al.set_checkpoint_store(Arc::new(crate::checkpoint::CheckpointStore::new(
+        None, root,
+    )));
+    let key = e3_uniq_key("rew-steer");
+    delete_chat_log(&key);
+    let cp = al.attached_checkpoint().unwrap();
+
+    // turn 1：begin → snapshot → 工具改 v2 → 行落盘（含轮中间 steer 注入
+    // + 后续回复——都在 turn 1 begin 之后、turn 2 begin 之前）。
+    cp.begin(1, "turn 1");
+    cp.snapshot(&e3_modify("code.txt")).await;
+    std::fs::write(dir.path().join("ws").join("code.txt"), "v2").unwrap();
+    e3_append(&key, "user", "turn 1 q", Some(1));
+    e3_append(&key, "assistant", "turn 1 a", None);
+    e3_append_steer(&key, "补充说明");
+    e3_append(&key, "assistant", "turn 1 a after steer", None);
+
+    // turn 2：begin → snapshot → 工具改 v3 → 行落盘。
+    cp.begin(2, "turn 2");
+    cp.snapshot(&e3_modify("code.txt")).await;
+    std::fs::write(dir.path().join("ws").join("code.txt"), "v3").unwrap();
+    e3_append(&key, "user", "turn 2 q", Some(2));
+    e3_append(&key, "assistant", "turn 2 a", None);
+
+    // 回退到 turn 1 轮首（idx 0）：cut = turn 2 轮首（idx 4）→ turn 1 连
+    // steer 整轮 4 行保留，turn 2 两行移除。
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["kept_count"], 4, "{out}");
+    assert_eq!(out["removed_count"], 2);
+    assert_eq!(out["restore_turn"], 2);
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "v2",
+        "回滚到 turn 1 完成（含 steer 尾巴）时的文件态"
+    );
+
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4);
+    delete_chat_log(&key);
+}
+
+/// BUG-20261025-19 回归锁：`rewind_before_message` 落在 steer 注入行上
+/// loud 拒绝（steer 行不是轮首，与 assistant 行同罪——旧行为放行会产生
+/// 「删 steer 尾巴留轮首」的破碎半轮）。
+#[tokio::test]
+async fn e3_rewind_before_rejects_steer_row() {
+    let (al, key, _dir) = stage_two_turns("before-steer").await;
+    e3_append_steer(&key, "补充");
+    // steer 行 index = 4（旧行为在此放行并切出破碎半轮）。
+    let err = al.rewind_before_message(&key, 4, false).await.unwrap_err();
+    assert!(err.contains("steer"), "{err}");
+    delete_chat_log(&key);
+}

@@ -200,6 +200,7 @@ impl AgentLoop {
                 file_changes: &[],
                 deliverables: &[],
                 checkpoint_turn: None,
+                steer: false,
             },
         );
         if !log_existed {

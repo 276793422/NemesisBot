@@ -53,6 +53,13 @@ pub struct ChatLogMeta<'a> {
     /// turn（不靠内容/时间戳猜测）。`None` 不写——无 checkpoint store 的
     /// 行回退时只截断对话不回滚文件。
     pub checkpoint_turn: Option<usize>,
+    /// BUG-20261025-19：`"steer"` 字段——本行是轮中间的 steer 注入行
+    /// （run_loop 注入路径写入，`role` 仍是 `"user"` 但**不是轮首**）。
+    /// rewind/fork 的轮边界判定（[`is_user_turn_boundary`]）据此跳过本行
+    /// ——否则「撤销最后一轮」的截断点会切在 steer 行上，轮的提问与首轮
+    /// 回复残留、只删掉 steer 尾巴。`false` 不写（缺字段 = 旧行/普通行，
+    /// 一律按轮边界处理，与旧行为逐字节一致）。
+    pub steer: bool,
 }
 
 /// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
@@ -69,6 +76,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.deliverables,
         meta.checkpoint_turn,
         None,
+        meta.steer,
     );
 }
 
@@ -157,6 +165,7 @@ pub fn append_chat_log_with_model_and_node(
         &[],
         None,
         source_node,
+        false,
     );
 }
 
@@ -186,6 +195,7 @@ pub fn append_chat_log_full(
         &[],
         None,
         None,
+        false,
     );
 }
 
@@ -216,6 +226,7 @@ pub fn append_chat_log_full_with_images(
         &[],
         None,
         None,
+        false,
     );
 }
 
@@ -224,6 +235,7 @@ pub fn append_chat_log_full_with_images(
 /// `file_changes` non-empty → extra `"file_changes"` array field (D3).
 /// `deliverables` non-empty → extra `"deliverables"` array field (N5).
 /// `checkpoint_turn` Some → extra `"checkpoint_turn"` numeric field (E3).
+/// `steer` true → extra `"steer": true` field (BUG-20261025-19 轮边界标记).
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
@@ -237,6 +249,7 @@ fn write_chat_entry(
     deliverables: &[PresentedFile],
     checkpoint_turn: Option<usize>,
     source_node: Option<&str>,
+    steer: bool,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -288,6 +301,11 @@ fn write_chat_entry(
     // 缺字段 = 无 store 时代的行，回退只截断对话不回滚文件。
     if let Some(t) = checkpoint_turn {
         entry["checkpoint_turn"] = serde_json::Value::from(t);
+    }
+    // BUG-20261025-19：steer 注入标记（轮边界判定据此跳过本行；缺字段 =
+    // 旧行/普通行，一律按轮边界处理）。
+    if steer {
+        entry["steer"] = serde_json::Value::Bool(true);
     }
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
@@ -672,6 +690,20 @@ pub fn is_projected_chat_row(role: &str, content: &str) -> bool {
         "assistant" => !content.trim().is_empty(),
         _ => false,
     }
+}
+
+/// 轮边界判定单一真相源（BUG-20261025-19）：jsonl 行是否开启一个完整
+/// user 轮。`role == "user"` 且非 steer 注入行——steer 是轮中间注入的
+/// user 形态行（`"steer": true` 标记，run_loop 注入路径写入），不是轮首；
+/// 把它当轮边界会把 rewind/fork 的截断点切进轮中间（「撤销最后一轮」只
+/// 删掉 steer 尾巴、轮的提问与首轮回复残留；fork「分叉到第 N 轮」切出
+/// 半轮）。消费方：rewind 三入口的截断点计算 + `session_fork` 的轮计数
+/// 与切点。缺 `steer` 字段的行 = 旧形态（真正的轮首与 system/maintenance
+/// 等无标记行）——一律按轮边界处理，与旧行为逐字节一致（修复前写入的
+/// steer 行无标记，按旧行为退化，与 checkpoint_turn 的旧行纪律同款）。
+pub fn is_user_turn_boundary(row: &Value) -> bool {
+    row.get("role").and_then(|v| v.as_str()) == Some("user")
+        && row.get("steer").and_then(|v| v.as_bool()) != Some(true)
 }
 
 /// FIX (2026-08-25 分叉内容错位, round 2): generate `new_key`'s chat_log by

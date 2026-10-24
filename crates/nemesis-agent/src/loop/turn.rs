@@ -486,6 +486,7 @@ impl AgentLoop {
                 file_changes: &turn_changes,
                 deliverables: &turn_deliverables,
                 checkpoint_turn: None, // E3：标记只在 user 行（turn 开始锚）
+                steer: false,
             },
         );
 
