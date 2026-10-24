@@ -579,3 +579,25 @@ mod live_gateway_guard {
         }
     }
 }
+
+#[test]
+fn add_huge_every_is_honest_error_and_not_created() {
+    with_env_home(|home| {
+        // 旧的 (secs * 1000) as i64：debug 下 u64 乘法溢出 panic，release
+        // 回绕成负 every_ms → 静默僵尸任务。修复后必须诚实 Err 且不落盘。
+        for secs in [u64::MAX, 10_000_000_000_000_000, (i64::MAX as u64) / 100] {
+            let err =
+                run(add_args("boom", Some(secs), None), false).expect_err("超大 --every 必须 Err");
+            assert!(
+                err.to_string().contains("超出可表示范围"),
+                "错误要点明范围溢出: {err}"
+            );
+            assert!(!store_of(&home).exists(), "任何 job 都不能落盘");
+        }
+        // 常规值不受影响。
+        run(add_args("ok", Some(5), None), false).expect("常规 --every 照常创建");
+        let store = read_store(&home);
+        assert_eq!(store.jobs.len(), 1);
+        assert_eq!(store.jobs[0].schedule.every_ms, Some(5_000));
+    });
+}
