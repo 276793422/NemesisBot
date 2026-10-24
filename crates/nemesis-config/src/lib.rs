@@ -2394,6 +2394,11 @@ pub struct WhatsAppConfig {
     /// 此前无 config 出口，装配点空串 → None）。支持 vault/env/yaml 引用。
     #[serde(default)]
     pub api_key: String,
+    /// 出站代理 URL（桥可部署在远端，与 telegram 同构；空 = 直连）。
+    /// BUG-20261024-12：模板早已声明 `channels.whatsapp.proxy`，typed 字段
+    /// 缺失 → 读取端静默忽略、typed save 静默删除。
+    #[serde(default)]
+    pub proxy: String,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
     #[serde(default)]
