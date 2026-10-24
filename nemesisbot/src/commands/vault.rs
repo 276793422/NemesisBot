@@ -179,7 +179,6 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
             let config_path = home.join("config.json");
             let cred_path = nemesis_config::credentials::credentials_path_for_home(&home);
             let report = migrate_model_keys(&config_path, &cred_path, &mut store)?;
-            store.save().context("保存 vault 失败")?;
 
             println!(
                 "模型 API key 迁移到加密 vault（{}，{}）",
@@ -243,6 +242,14 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
 /// 冲突策略与 `credentials::run_import` 一致：已有别名同值 → 复用；异值 →
 /// `__2`/`__3` 后缀，绝不覆盖。config 用 typed round-trip 保存（ModelConfig
 /// extra flatten 保未类型化键，与 credentials 迁移同路线）。
+///
+/// 持久化顺序不变量：**vault 落盘先于 config/yaml 回写**——迁移的本质是
+/// 「明文 key 换 `vault:<alias>`」，若先剥离明文再落 vault，「config 回写
+/// 成功 → vault 落盘失败/进程中断」窗口内盘上就是断链态（配置指
+/// `vault:<alias>` 但 vault 文件没有该别名，明文已离盘）。与
+/// credential_broker 的「先落 vault 再送裁决」、chat_secrets 的
+/// persist-then-swap 是同一条纪律。store 被改动 ⇔ `config_changed`（set
+/// 只在迁移分支发生），故以它作落盘闸。
 fn migrate_model_keys(
     config_path: &std::path::Path,
     cred_path: &std::path::Path,
@@ -317,6 +324,11 @@ fn migrate_model_keys(
     }
 
     if config_changed {
+        // 先落 vault 再回写配置（顺序不变量见函数头注）——vault 落盘失败
+        // 时明文 key 还在 config/yaml 原地，重跑迁移即可，零损失。
+        store.save().map_err(|e| {
+            anyhow::anyhow!("保存 vault 失败（明文 key 未离盘，修复后重跑即可）: {e}")
+        })?;
         nemesis_config::save_config(config_path, &mut config)
             .map_err(|e| anyhow::anyhow!("写回 config.json 失败: {e}"))?;
     }
