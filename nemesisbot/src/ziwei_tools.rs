@@ -20,6 +20,7 @@ use nemesis_agent::context::RequestContext;
 use nemesis_agent::r#loop::{AgentLoop, OperationOverride, Tool};
 use nemesis_ziwei::profile::{Primitive, ProfileStore, RunPolicy, ToolDef};
 use nemesis_ziwei::session::SessionManager;
+use nemesis_ziwei::setup::{DISASM_MAX_INSNS, LIST_MAX_ROWS};
 
 /// 动态工具名前缀（LLM 可见名 = `zw_{profile_id}_{tool_name}`，sanitize 后）。
 pub const TOOL_NAME_PREFIX: &str = "zw_";
@@ -357,6 +358,33 @@ pub struct ZiweiBridgeTool {
     workspace: std::path::PathBuf,
 }
 
+/// 查询入参取字符串字段（非字符串 = None；容错 LLM 数字形态的 value/query）。
+fn param_str<'a>(params: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    params.get(key).and_then(|v| v.as_str())
+}
+
+/// 查询入参取 rva 字段原始值（缺席/类型怪 = 带字段名的诚实报错）。
+fn rva_arg(params: &serde_json::Value) -> Result<&serde_json::Value, String> {
+    params
+        .get("rva")
+        .ok_or_else(|| "缺 rva（十六进制或数值）".to_string())
+}
+
+/// 查询面 RVA 入参归一：Number 直取（≤u32 校验）；String 走 parse_hex_u32
+/// 容错（`0x` 前缀可选）——与 manager 层同一真相源。
+fn parse_rva_param(v: &serde_json::Value) -> Result<u32, String> {
+    match v {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .filter(|x| *x <= u32::MAX as u64)
+            .map(|x| x as u32)
+            .ok_or_else(|| format!("rva {v} 超 u32 范围")),
+        serde_json::Value::String(s) => nemesis_ziwei::setup::parse_hex_u32(s)
+            .ok_or_else(|| format!("rva {s:?} 非法（十六进制，0x 前缀可选）")),
+        other => Err(format!("rva 形态 {other:?} 非法（数值或十六进制字符串）")),
+    }
+}
+
 impl ZiweiBridgeTool {
     /// 需要 force_approval 的写人生动作（approve 一次只放行本次调用）。
     fn approval_gate(action: &str) -> Option<String> {
@@ -421,10 +449,64 @@ impl Tool for ZiweiBridgeTool {
                 obj
             }
             "abort" => mgr.abort(ws).await?,
+            // ── 查询面（B1）：只读、无审批、有界返回；地址十六进制 0x 可选 ──
+            "disasm" => {
+                let rva = parse_rva_param(rva_arg(&params)?)?;
+                let max_insns = params
+                    .get("max_insns")
+                    .and_then(|m| m.as_u64())
+                    .unwrap_or(DISASM_MAX_INSNS as u64) as usize;
+                mgr.query_disasm(ws, rva, max_insns)?
+            }
+            "xref_to" => {
+                let kind = param_str(&params, "kind").ok_or("缺 kind（str/imm/data）")?;
+                let value = param_str(&params, "value").ok_or("缺 value")?;
+                mgr.query_xref_to(ws, kind, value)?
+            }
+            "xref_from" => {
+                let rva = parse_rva_param(rva_arg(&params)?)?;
+                mgr.query_xref_from(ws, rva)?
+            }
+            "callers" => {
+                let rva = parse_rva_param(rva_arg(&params)?)?;
+                mgr.query_callers(ws, rva)?
+            }
+            "search" => {
+                let kind =
+                    param_str(&params, "kind").ok_or("缺 kind（bytes/string/imm/name/insn）")?;
+                let query = param_str(&params, "query").ok_or("缺 query")?;
+                mgr.query_search(ws, kind, query)?
+            }
+            "read_data" => {
+                let rva = parse_rva_param(rva_arg(&params)?)?;
+                let size = params.get("size").and_then(|s| s.as_u64()).unwrap_or(256) as usize;
+                let as_utf8 = param_str(&params, "as") == Some("utf8");
+                mgr.query_read_data(ws, rva, size, as_utf8)?
+            }
+            "pe" => {
+                let what = param_str(&params, "what")
+                    .ok_or("缺 what（sections/exports/imports/pdata/tls/debug/rich）")?;
+                mgr.query_pe(ws, what)?
+            }
+            "locate" => {
+                let rva = parse_rva_param(rva_arg(&params)?)?;
+                mgr.query_locate(ws, rva)?
+            }
+            "functions" => {
+                let sort = param_str(&params, "sort").unwrap_or("size");
+                let top = params
+                    .get("top")
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(LIST_MAX_ROWS as u64) as usize;
+                let name = param_str(&params, "name");
+                mgr.query_functions(ws, sort, top, name)?
+            }
+            "gaps" => mgr.query_gaps(ws)?,
             other => {
                 return Err(format!(
-                    "未知 action「{other}」；合法：status/select_target/snapshot/analyze/\
-                     diff_window/candidates/annotate/define_struct/define_tool/commit/abort"
+                    "未知 action「{other}」；合法（向导 11）：status/select_target/snapshot/analyze/\
+                     diff_window/candidates/annotate/define_struct/define_tool/commit/abort；\
+                     （查询 10）：disasm/xref_to/xref_from/callers/search/read_data/pe/locate/functions/gaps"
                 ));
             }
         };
@@ -446,19 +528,27 @@ impl Tool for ZiweiBridgeTool {
                     "type": "string",
                     "enum": ["status", "select_target", "snapshot", "analyze", "diff_window",
                              "candidates", "annotate", "define_struct", "define_tool",
-                             "commit", "abort"],
-                    "description": "向导步骤。流程：select_target → snapshot → analyze \
+                             "commit", "abort",
+                             "disasm", "xref_to", "xref_from", "callers", "search",
+                             "read_data", "pe", "locate", "functions", "gaps"],
+                    "description": "向导步骤（前 11 个）：select_target → snapshot → analyze \
                                     → candidates → annotate*(≥1锚/函数) → define_struct? \
                                     → define_tool+ → commit（人生节点 select_target/commit/abort \
-                                    会弹审批卡）",
+                                    会弹审批卡）。查询步骤（后 10 个，只读无审批）：静态分析投影，\
+                                    供标注前定位/取证",
                 },
                 "params": {
                     "type": "object",
-                    "description": "步骤入参。select_target: {pid}|{exe}; diff_window: {wait_secs?, hook?（观测窗并入临时 hook 命中计数）}; \
-                                    annotate: {rva, semantic, anchors:[{kind,pattern|imm|...}], conv?, note?}; \
+                    "description": "向导入参：select_target: {pid}|{exe}; diff_window: {wait_secs?, hook?（观测窗并入临时 hook 命中计数）}; \
+                                    annotate: {rva, semantic, anchors:[{kind,pattern|imm|...}], conv?, note?, params?:[{reg,ty?,desc?}]（参数签名，ty 为 FieldType 字面量如 u64/char[32]）}; \
                                     define_struct: {name, size, fields:[{offset,name,type}]}; \
                                     define_tool: {tool_name, description, action:{primitive,addr,mode?,...}}; \
-                                    其余步骤无参数",
+                                    其余向导步骤无参数。\
+                                    查询入参（地址一律十六进制，0x 前缀可选）：\
+                                    disasm: {rva, max_insns?≤512}; xref_to: {kind:str|imm|data, value}; \
+                                    xref_from/callers/locate: {rva}; search: {kind:bytes|string|imm|name|insn, query}; \
+                                    read_data: {rva, size?≤4096, as?:hex|utf8}; pe: {what:sections|exports|imports|pdata|tls|debug|rich}; \
+                                    functions: {sort?:size|refs|imports, top?≤64, name?}; gaps: {}",
                 },
             },
             "additionalProperties": false,

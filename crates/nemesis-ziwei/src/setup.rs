@@ -16,13 +16,14 @@
 //! 非 Windows：会话/管道层天然诚实报错（session stub），annotate/
 //! define_struct/define_tool/commit 等纯文件操作跨平台可用。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use nemesis_ziwei_profile::model::parse_byte_pattern;
 use nemesis_ziwei_profile::{
-    Anchor, AnchorSet, AnchorType, Conv, DataStructure, FieldDef, LocateKind, LocateSpec, Machine,
-    Profile, ProfileStore,
+    Anchor, AnchorSet, AnchorType, ArgSpec, Conv, DataStructure, FieldDef, LocateKind, LocateSpec,
+    Machine, Profile, ProfileStore,
 };
 // 以下仅在 Windows 分析管线（session/管道层）消费；非 Windows 存根编译
 // 不触及，cfg 门控防 Linux 侧 unused import 撞 -D warnings。
@@ -31,11 +32,14 @@ use nemesis_ziwei_profile::{
     AttachInfo, ProfileStatus, SCHEMA_VERSION, TargetFingerprint, Verification, VerifyPolicy,
 };
 use nemesis_ziwei_rev::candidates;
+use nemesis_ziwei_rev::container::{self, BinHeaders};
 use nemesis_ziwei_rev::crtsigs;
 #[cfg(windows)]
 use nemesis_ziwei_rev::diff;
 use nemesis_ziwei_rev::disasm::Arch;
 use nemesis_ziwei_rev::funcs;
+// PeInfo 消费点：attach 指纹/节表快照（cfg(windows) 面）+ analyze 的盘上
+// 头重解析（平台中立——文件域分析两条腿都要）。
 use nemesis_ziwei_rev::pe::{self, ImageMap, PeInfo};
 #[cfg(windows)]
 use nemesis_ziwei_rev::snapshot::SnapshotMeta;
@@ -70,16 +74,46 @@ const SNAP_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
 #[cfg(windows)]
 const SNAP_MAX_KEPT: usize = 8;
 
+// ── 查询面硬上限（单一真相源；bridge/未来 WSAPI 同源引用）──────────────
+
+/// 单次反汇编指令上限。
+pub const DISASM_MAX_INSNS: usize = 512;
+/// xref_to/xref_from/callers 命中上限。
+pub const XREF_MAX_HITS: usize = 32;
+/// search 命中上限。
+pub const SEARCH_MAX_HITS: usize = 32;
+/// read_data 单次字节上限。
+pub const READ_DATA_MAX_BYTES: usize = 4096;
+/// pe/functions/gaps 类清单行数上限。
+pub const LIST_MAX_ROWS: usize = 64;
+
 // ── 状态 ────────────────────────────────────────────────────────────────
 
-/// 内存分析缓存（analyze 产物；candidates/标注提示直接消费，避免重跑反汇编）。
+/// 内存分析缓存（analyze 产物；candidates/标注提示/查询面直接消费，避免重跑反汇编）。
 struct AnalysisCache {
     img: ImageMap,
     set: funcs::FunctionSet,
     idx: xref::XrefIndex,
+    /// 反查索引（与 idx 同轮构建；查询面 O(1) 底座）。
+    reverse: xref::ReverseIndex,
     crt: Vec<crtsigs::CrtSuspect>,
-    #[allow(dead_code)] // M5 找回实装时消费（重扫归因需要导入面）
     imports: Vec<pe::ImportDll>,
+    /// 导出清单（analyze 时已解析；pe 查询/search name 消费）。
+    exports: Vec<pe::Export>,
+    /// .pdata 异常表（None = 无该数据目录；pe 查询/pdata 对账消费）。
+    pdata: Option<Vec<(u32, u32)>>,
+    /// CFG 合法间接调用目标表（B2 存表；v2 池 vtable 先验，查询面暂不暴露）。
+    #[allow(dead_code)] // v2 池消费（summary 对账面已用界内计数）
+    cfg_funcs: Vec<u32>,
+    /// TLS 回调 RVA（B2；None = 目录缺席；pe tls 查询消费）。
+    tls_callbacks: Option<Vec<u32>>,
+    /// Debug 目录（B2；PDB 路径白送语义；pe debug 查询消费）。
+    debug: Option<pe::DebugInfo>,
+    /// Rich 头工具链指纹（B2；pe rich 查询消费）。
+    rich: Option<pe::RichInfo>,
+    /// 重定位表（B2 存表；v2 池 vtable 扫描先验，查询面不暴露）。
+    #[allow(dead_code)] // v2 池消费
+    relocs: Option<pe::RelocTable>,
     #[allow(dead_code)] // M5 找回实装时消费（rescan 需要 arch）
     arch: Arch,
 }
@@ -413,44 +447,40 @@ impl SetupManager {
             .latest()
             .map_err(|e| e.to_string())?
             .ok_or("无快照：先 snapshot")?;
-        let pe = PeInfo::parse(&headers).map_err(|e| format!("快照头解析失败：{e}"))?;
-        let arch = Arch::from_machine(pe.machine)
-            .ok_or_else(|| format!("machine 0x{:04X} 无法反汇编", pe.machine))?;
-        let img = ImageMap::new(pe, section_blobs).map_err(|e| e.to_string())?;
-
-        // 种子：入口 + 导出函数（落在可执行节内的）
-        let text = img
-            .pe
-            .sections
-            .iter()
-            .find(|s| s.is_executable())
-            .ok_or("无可执行节（.text）")?;
-        let bounds = (text.rva, text.rva.saturating_add(text.vsize));
-        let mut seeds: Vec<u32> = Vec::new();
-        if img.pe.entry_rva >= bounds.0 && img.pe.entry_rva < bounds.1 {
-            seeds.push(img.pe.entry_rva);
+        let hdrs = BinHeaders::parse(&headers).map_err(|e| format!("快照头解析失败：{e}"))?;
+        let arch = hdrs
+            .arch()
+            .ok_or_else(|| format!("machine 0x{:04X} 无法归一到内部架构", hdrs.machine_raw()))?;
+        if !arch.disassembler_available() {
+            return Err(format!(
+                "arch {arch:?} 已识别但反汇编器缺席（iced-x86 仅 x86/x64）"
+            ));
         }
+        // 容器/架构分派吃快照头（活内存字节）；但 PeInfo 一律从盘上 exe
+        // 重解析：加载器会把活内存头部的 ImageBase 改写成实际装载基址
+        // （ASLR；实据：cmd.exe 活快照 headers.bin ImageBase=0x7FF6… ≠ 盘上
+        // 0x140000000），而 CFG 表 VA / TLS 回调数组 VA 等目录字段仍按首选
+        // 基址编码在盘上 exe 里——用活头部基址做 va_to_rva 必然下溢，attach
+        // 路径的 cfg/tls 两源种子静默清零（真实场景测试抓出）。盘上 PeInfo
+        // 与 exe_file 同源同基址，节表 RVA 与活内存布局一致，分析无歧义。
         let exe_file = std::fs::read(&info.exe_path).map_err(|e| e.to_string())?;
-        let exports = pe::parse_exports_file(&exe_file, &img.pe).unwrap_or_default();
-        for e in &exports {
-            if e.rva >= bounds.0 && e.rva < bounds.1 {
-                seeds.push(e.rva);
+        let pe = match hdrs {
+            BinHeaders::Pe(_) => {
+                PeInfo::parse(&exe_file).map_err(|e| format!("盘上 exe PE 头解析失败：{e}"))?
             }
-        }
-        // x64：.pdata 异常目录 = 函数起点权威表（用户 main 经 std
-        // lang_start 间接进入，递归下降够不到）；x86 无 .pdata → 预埋
-        // nopsled 标记扫描兜底（夹具契约：锚点函数入口 8×0x90）。
-        if let Some(pdata) = pe::parse_pdata_file(&exe_file, &img.pe) {
-            for (start, _end) in pdata {
-                if start >= bounds.0 && start < bounds.1 {
-                    seeds.push(start);
-                }
+            BinHeaders::Elf => {
+                return Err("ELF 容器解析器未启用（P1 批次实装）".to_string());
             }
-        }
-        for rva in funcs::nopsled_seed_rvas(&img) {
-            if rva >= bounds.0 && rva < bounds.1 {
-                seeds.push(rva);
-            }
+        };
+        let img = ImageMap::new(pe, section_blobs).map_err(|e| e.to_string())?;
+        let bounds = container::pe_text_bounds(&img).ok_or("无可执行节（.text）")?;
+
+        // 种子装配（P0 供给器化：入口/导出/pdata/CFG/TLS/nopsled 六源全部
+        // 可选，缺席来源诚实缺席；界内过滤在供给器内完成）。
+        let contribs = container::pe_seed_contribs(&img, &exe_file);
+        let mut seeds: Vec<u32> = Vec::new();
+        for c in &contribs {
+            seeds.extend_from_slice(&c.rvas);
         }
         seeds.sort_unstable();
         seeds.dedup();
@@ -459,24 +489,73 @@ impl SetupManager {
         }
 
         let set = funcs::recover(arch, &img, &seeds, bounds);
-        let imports = pe::parse_imports_file(&exe_file, &img.pe).unwrap_or_default();
+        let mut imports = pe::parse_imports_file(&exe_file, &img.pe).unwrap_or_default();
+        // 延迟导入并入同形清单：xref 的 call [iat] 归因与 import_dlls 计数
+        // 自动覆盖 dd[13]（B2 失名补全）。
+        let delay = pe::parse_delay_imports_file(&exe_file, &img.pe).unwrap_or_default();
+        imports.extend(delay);
         let idx = xref::build(&img, &set, &imports);
+        let reverse = xref::build_reverse(&idx, &set);
         let crt = crtsigs::fold(&img, &set, &imports);
+
+        // B2 目录解析面（缓存进 AnalysisCache；pe tls/debug/rich 查询与
+        // v2 池消费）。pdata/exports 单独取全量清单（对账与 pe 查询要
+        // 未过滤形态——供给器里那份是界内过滤后的）。
+        let exports = pe::parse_exports_file(&exe_file, &img.pe).unwrap_or_default();
+        let pdata = pe::parse_pdata_file(&exe_file, &img.pe);
+        let cfg_funcs = pe::parse_cfg_function_table(&exe_file, &img.pe).unwrap_or_default();
+        let tls_callbacks = pe::parse_tls_callbacks(&exe_file, &img.pe);
+        let debug_info = pe::parse_debug_file(&exe_file, &img.pe);
+        let rich_info = pe::parse_rich(&headers);
+        let relocs = pe::parse_relocations_file(&exe_file, &img.pe);
 
         let rows = nemesis_ziwei_rev::package::function_table(&set, &idx, &crt, 128);
         let table = function_table_json(&rows);
+        // pdata 对账（§5-3）：.pdata 界内起点数（权威表）vs discovered——
+        // 差值 = 递归下降漏网函数线索（locate/gaps 交叉探查）；x86 恒 null。
+        let pdata_funcs = pdata.as_ref().map(|v| {
+            v.iter()
+                .filter(|(s, _)| *s >= bounds.0 && *s < bounds.1)
+                .map(|(s, _)| *s)
+                .collect::<std::collections::BTreeSet<u32>>()
+                .len()
+        });
+        // CFG 对账（B2）：CFG 表声明为合法间接调用目标的界内起点数 vs
+        // discovered——guard:cf 目标上两者应高度一致，差值即漏网线索。
+        let cfg_funcs_inb = cfg_funcs
+            .iter()
+            .filter(|r| **r >= bounds.0 && **r < bounds.1)
+            .copied()
+            .collect::<std::collections::BTreeSet<u32>>()
+            .len();
+        let mut seeds_by_source = serde_json::Map::new();
+        for c in &contribs {
+            seeds_by_source.insert(c.source.to_string(), json!(c.rvas.len()));
+        }
         let mut summary = json!({
             "profile_id": info.profile_id,
             "machine": format!("0x{:04X}", img.pe.machine),
-            "arch": match arch { Arch::X64 => "x64", Arch::X86 => "x86" },
+            "arch": match arch { Arch::X64 => "x64", Arch::X86 => "x86", Arch::Arm64 => "arm64" },
             "seeds": seeds.iter().map(|r| format!("0x{r:X}")).collect::<Vec<_>>(),
+            "seeds_by_source": seeds_by_source,
             "functions": set.functions.len(),
             "crt_folded": crt.len(),
             "import_dlls": imports.len(),
             "strings": idx.str_refs.len(),
+            "strings_wide": idx.str_refs.iter().filter(|s| s.wide).count(),
+            "pdata_funcs": pdata_funcs,
+            "cfg_funcs": cfg_funcs_inb,
             "snapshot_ts": meta.ts_rfc3339,
             "table": table,
         });
+        if pdata_funcs.is_none()
+            && let Some(obj) = summary.as_object_mut()
+        {
+            obj.insert(
+                "pdata_note".into(),
+                json!("无 .pdata 异常目录（x86 目标或快照无该数据目录）"),
+            );
+        }
         // T3.6 LLM 建议标注：hook 已装才尝试（gateway ctx.rs 装桥）。
         // 仅建议不落库——候选与注释进 profile 的唯一通路 = 显式 annotate；
         // 失败诚实注记，分析照常成功。
@@ -484,6 +563,7 @@ impl SetupManager {
             let arch_label = match arch {
                 Arch::X64 => "x64",
                 Arch::X86 => "x86",
+                Arch::Arm64 => "arm64",
             };
             let prompt = nemesis_ziwei_rev::package::build_prompt(
                 &info.exe_name,
@@ -522,19 +602,31 @@ impl SetupManager {
         )
         .map_err(|e| format!("analysis.json 落盘失败：{e}"))?;
 
-        // 缓存进状态（保留 pid 等；重建即覆盖旧缓存）
+        // 缓存进状态（重建即覆盖旧缓存）。内存态缺席（gateway 重启后 analyze
+        // 重算、查询面直调）= 从磁盘重建 info 建态——与 require_info 同语义；
+        // pid=0 的重建态被 require_live_info 闸住快照/差分（须重新 select_target）。
         let mut guard = self.state_mut();
-        if let Some(st) = guard.as_mut() {
-            st.info = info.clone();
-            st.analysis = Some(AnalysisCache {
-                img,
-                set,
-                idx,
-                crt,
-                imports,
-                arch,
-            });
-        }
+        let st = guard.get_or_insert_with(|| SetupState {
+            info: info.clone(),
+            analysis: None,
+        });
+        st.info = info.clone();
+        st.analysis = Some(AnalysisCache {
+            img,
+            set,
+            idx,
+            reverse,
+            crt,
+            imports,
+            exports,
+            pdata,
+            cfg_funcs,
+            tls_callbacks,
+            debug: debug_info,
+            rich: rich_info,
+            relocs,
+            arch,
+        });
         let analysis_path = draft_dir(workspace, &info.profile_id)
             .join("analysis.json")
             .display()
@@ -544,10 +636,18 @@ impl SetupManager {
             "crt_folded": summary["crt_folded"],
             "import_dlls": summary["import_dlls"],
             "strings": summary["strings"],
+            "strings_wide": summary["strings_wide"],
             "analysis_json": analysis_path,
             "next": "candidates / diff_window / annotate",
         });
-        for key in ["llm_suggestions", "llm_suggest_error"] {
+        for key in [
+            "llm_suggestions",
+            "llm_suggest_error",
+            "pdata_funcs",
+            "pdata_note",
+            "cfg_funcs",
+            "seeds_by_source",
+        ] {
             if let Some(v) = summary.get(key)
                 && let Some(o) = out.as_object_mut()
             {
@@ -576,6 +676,890 @@ impl SetupManager {
             .and_then(|s| s.analysis.as_ref())
             .ok_or_else(|| "分析缓存仍缺席（analyze 异常）".to_string())?;
         Ok(f(cache))
+    }
+
+    /// 查询面形态：闭包内部 `?`/`Err` 直通（ Result 闭包 + 扁平化，
+    /// 避免 `Result<Result<Value>>>` 双层包裹漏出）。
+    fn with_analysis_res<T>(
+        &self,
+        workspace: &Path,
+        f: impl FnOnce(&AnalysisCache) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_analysis(workspace, f).and_then(|r| r)
+    }
+
+    // ── 查询面（B1 计划 §2/§3 Phase B）：只读、无审批、有界返回 ─────────
+
+    /// disasm：函数体反汇编投影（体内地址自动按起点 + 注记；无主地址诚实报错）。
+    pub fn query_disasm(
+        &self,
+        workspace: &Path,
+        rva: u32,
+        max_insns: usize,
+    ) -> Result<serde_json::Value, String> {
+        let info = self.require_info(workspace)?;
+        let max_insns = max_insns.clamp(1, DISASM_MAX_INSNS);
+        self.with_analysis_res(workspace, |cache| {
+            let (f, note) = resolve_func(&cache.set, rva)?;
+            let names = semantic_names(workspace, &info.profile_id);
+            let total = f.insns.len();
+            let insns: Vec<serde_json::Value> = f
+                .insns
+                .iter()
+                .take(max_insns)
+                .map(|insn| {
+                    let mut row = json!({
+                        "rva": format!("0x{:X}", insn.rva),
+                        "bytes": cache
+                            .img
+                            .read_rva(insn.rva, insn.len as usize)
+                            .map(hex::encode)
+                            .unwrap_or_default(),
+                        "m": format!("{:?}", insn.mnemonic).to_ascii_lowercase(),
+                        "ops": insn.ops,
+                    });
+                    if let Some(t) = insn.branch_target {
+                        let kind = if cache.set.find_by_rva(t).is_some() {
+                            "func"
+                        } else if text_bounds(&cache.img).is_some_and(|(lo, hi)| t < lo || t >= hi)
+                        {
+                            "outside"
+                        } else {
+                            "unknown"
+                        };
+                        row["target"] = json!({"kind": kind, "rva": format!("0x{t:X}")});
+                    }
+                    row
+                })
+                .collect();
+            let truncated = total > max_insns;
+            let mut out = json!({
+                "rva": format!("0x{rva:X}"),
+                "func_rva": format!("0x{:X}", f.rva),
+                "func_name": names.get(&f.rva),
+                "total_insns": total,
+                "count": insns.len(),
+                "truncated": truncated,
+                "instructions": insns,
+                "next": if truncated {
+                    json!("输出已截断：调大 max_insns（≤512）看全函数体")
+                } else {
+                    json!("call/jmp 目标可直接 disasm 跟进；数据地址用 read_data / locate")
+                },
+            });
+            if let Some(n) = note {
+                out["note"] = json!(n);
+            }
+            Ok(out)
+        })
+    }
+
+    /// xref_to：反查「谁引用了 X」（str=字符串内容 / imm=立即数值 / data=数据 RVA）。
+    pub fn query_xref_to(
+        &self,
+        workspace: &Path,
+        kind: &str,
+        value: &str,
+    ) -> Result<serde_json::Value, String> {
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| {
+            let mut sites: Vec<u32> = Vec::new();
+            let mut echo = json!({"kind": kind, "value": value});
+            match kind {
+                "str" => {
+                    let rvas = cache
+                        .reverse
+                        .str_by_content
+                        .get(value)
+                        .cloned()
+                        .unwrap_or_default();
+                    echo["str_rvas"] =
+                        json!(rvas.iter().map(|r| format!("0x{r:X}")).collect::<Vec<_>>());
+                    for r in &rvas {
+                        if let Some(list) = cache.reverse.data_by_rva.get(r) {
+                            sites.extend(list.iter().copied());
+                        }
+                    }
+                }
+                "imm" => {
+                    let v = parse_imm_u64(value)
+                        .ok_or_else(|| format!("imm 值 {value:?} 非法（十进制或 0x 十六进制）"))?;
+                    echo["value_num"] = json!(format!("0x{v:X}"));
+                    sites = cache
+                        .reverse
+                        .imm_by_value
+                        .get(&v)
+                        .cloned()
+                        .unwrap_or_default();
+                }
+                "data" => {
+                    let r = parse_hex_u32(value)
+                        .ok_or_else(|| format!("data RVA {value:?} 非法（十六进制，0x 可选）"))?;
+                    sites = cache
+                        .reverse
+                        .data_by_rva
+                        .get(&r)
+                        .cloned()
+                        .unwrap_or_default();
+                }
+                other => return Err(format!("kind {other:?} 非法（str/imm/data）")),
+            }
+            sites.sort_unstable();
+            sites.dedup();
+            let total = sites.len();
+            let names = semantic_names(workspace, &info.profile_id);
+            let hits: Vec<serde_json::Value> = sites
+                .iter()
+                .take(XREF_MAX_HITS)
+                .map(|s| {
+                    let func = cache.reverse.site_to_func.get(s).copied();
+                    json!({
+                        "site": format!("0x{s:X}"),
+                        "func": func.map(|f| json!(format!("0x{f:X}"))),
+                        "name": func.and_then(|f| names.get(&f)),
+                    })
+                })
+                .collect();
+            let mut out = json!({
+                "query": echo,
+                "total": total,
+                "count": hits.len(),
+                "truncated": total > hits.len(),
+                "hits": hits,
+            });
+            if total == 0 {
+                out["note"] = json!("无引用站点（未识别函数区域不索引——与函数边界保守闭包一致）");
+            } else {
+                out["next"] =
+                    json!("对命中站点 disasm 看上下文；对 func 地址 callers/xref_from 深挖");
+            }
+            Ok(out)
+        })
+    }
+
+    /// xref_from：某函数引用的全部 str/imm/data/import（正向清单）。
+    pub fn query_xref_from(&self, workspace: &Path, rva: u32) -> Result<serde_json::Value, String> {
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| {
+            let (f, note) = resolve_func(&cache.set, rva)?;
+            let names = semantic_names(workspace, &info.profile_id);
+            let in_range = |s: u32| s >= f.rva && s < f.end_rva;
+
+            let imports: Vec<String> = cache
+                .idx
+                .import_calls
+                .iter()
+                .filter(|c| in_range(c.insn_rva))
+                .map(|c| format!("{}!{}", c.dll, c.func))
+                .take(XREF_MAX_HITS)
+                .collect();
+
+            let strings: Vec<serde_json::Value> = cache
+                .idx
+                .str_refs
+                .iter()
+                .filter(|s| s.refs.iter().any(|r| in_range(*r)))
+                .take(XREF_MAX_HITS)
+                .map(|s| {
+                    json!({"str_rva": format!("0x{:X}", s.str_rva), "text": s.text, "wide": s.wide})
+                })
+                .collect();
+
+            let mut imm_vals: Vec<u64> = cache
+                .idx
+                .imm_consts
+                .iter()
+                .filter(|c| in_range(c.insn_rva))
+                .map(|c| c.value)
+                .collect();
+            imm_vals.sort_unstable();
+            imm_vals.dedup();
+            let imm_truncated = imm_vals.len() > XREF_MAX_HITS;
+            imm_vals.truncate(XREF_MAX_HITS);
+
+            let mut datas: Vec<u32> = cache
+                .idx
+                .data_refs
+                .iter()
+                .filter(|d| in_range(d.insn_rva))
+                .map(|d| d.data_rva)
+                .collect();
+            datas.sort_unstable();
+            datas.dedup();
+            let data_truncated = datas.len() > XREF_MAX_HITS;
+            datas.truncate(XREF_MAX_HITS);
+
+            let mut out = json!({
+                "func_rva": format!("0x{:X}", f.rva),
+                "func_name": names.get(&f.rva),
+                "imports": imports,
+                "strings": strings,
+                "imm_consts": imm_vals.iter().map(|v| format!("0x{v:X}")).collect::<Vec<_>>(),
+                "data_refs": datas.iter().map(|d| format!("0x{d:X}")).collect::<Vec<_>>(),
+                "imm_truncated": imm_truncated,
+                "data_truncated": data_truncated,
+                "next": "imm 值可作 annotate 锚（imm_const）；字符串可作 str_ref 锚",
+            });
+            if let Some(n) = note {
+                out["note"] = json!(n);
+            }
+            Ok(out)
+        })
+    }
+
+    /// callers：调用该函数的全部函数（含语义名装饰）。
+    pub fn query_callers(&self, workspace: &Path, rva: u32) -> Result<serde_json::Value, String> {
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| {
+            let (f, note) = resolve_func(&cache.set, rva)?;
+            let names = semantic_names(workspace, &info.profile_id);
+            let callers = cache
+                .reverse
+                .callers_of
+                .get(&f.rva)
+                .cloned()
+                .unwrap_or_default();
+            let total = callers.len();
+            let rows: Vec<serde_json::Value> = callers
+                .iter()
+                .take(XREF_MAX_HITS)
+                .map(|c| json!({"rva": format!("0x{c:X}"), "name": names.get(c)}))
+                .collect();
+            let mut notes: Vec<String> = Vec::new();
+            if total == 0 {
+                notes.push("无直接调用方（可能仅经间接调用/函数指针/导出进入）".to_string());
+            }
+            if let Some(n) = note {
+                notes.push(n);
+            }
+            let mut out = json!({
+                "func_rva": format!("0x{:X}", f.rva),
+                "func_name": names.get(&f.rva),
+                "total": total,
+                "count": rows.len(),
+                "truncated": total > rows.len(),
+                "callers": rows,
+            });
+            if !notes.is_empty() {
+                out["note"] = json!(notes.join("；"));
+            }
+            Ok(out)
+        })
+    }
+
+    /// search：五维搜索（bytes 通配模式 / string 精确 / imm / name 子串 / insn 助记符）。
+    pub fn query_search(
+        &self,
+        workspace: &Path,
+        kind: &str,
+        query: &str,
+    ) -> Result<serde_json::Value, String> {
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| {
+            let names = semantic_names(workspace, &info.profile_id);
+            let site_row = |s: u32| {
+                let func = cache.reverse.site_to_func.get(&s).copied();
+                json!({
+                    "site": format!("0x{s:X}"),
+                    "func": func.map(|f| json!(format!("0x{f:X}"))),
+                    "name": func.and_then(|f| names.get(&f)),
+                })
+            };
+            match kind {
+                "bytes" => {
+                    let pat = parse_byte_pattern_query(query)?;
+                    let mut hits: Vec<serde_json::Value> = Vec::new();
+                    'scan: for (sec, bytes) in &cache.img.sections {
+                        if !sec.is_executable() {
+                            continue;
+                        }
+                        for i in 0..bytes.len() {
+                            if match_pattern(bytes, i, &pat) {
+                                let rva = sec.rva + i as u32;
+                                let mut row = site_row(rva);
+                                row["section"] = json!(sec.name);
+                                hits.push(row);
+                                if hits.len() > SEARCH_MAX_HITS {
+                                    break 'scan;
+                                }
+                            }
+                        }
+                    }
+                    let truncated = hits.len() > SEARCH_MAX_HITS;
+                    hits.truncate(SEARCH_MAX_HITS);
+                    let total_note = if hits.is_empty() {
+                        json!("无可执行节内命中")
+                    } else {
+                        json!("对命中站点 disasm 看上下文")
+                    };
+                    Ok(json!({
+                        "query": {"kind": kind, "value": query},
+                        "count": hits.len(),
+                        "truncated": truncated,
+                        "hits": hits,
+                        "note": total_note,
+                    }))
+                }
+                "string" => {
+                    let rvas = cache
+                        .reverse
+                        .str_by_content
+                        .get(query)
+                        .cloned()
+                        .unwrap_or_default();
+                    let wide_by_rva: HashMap<u32, bool> = cache
+                        .idx
+                        .str_refs
+                        .iter()
+                        .map(|s| (s.str_rva, s.wide))
+                        .collect();
+                    let mut hits: Vec<serde_json::Value> = Vec::new();
+                    for r in &rvas {
+                        let sites = cache
+                            .reverse
+                            .data_by_rva
+                            .get(r)
+                            .cloned()
+                            .unwrap_or_default();
+                        let refs: Vec<serde_json::Value> =
+                            sites.iter().take(8).map(|s| site_row(*s)).collect();
+                        hits.push(json!({
+                            "str_rva": format!("0x{r:X}"),
+                            "wide": wide_by_rva.get(r).copied(),
+                            "refs": refs,
+                        }));
+                        if hits.len() >= SEARCH_MAX_HITS {
+                            break;
+                        }
+                    }
+                    let note = if hits.is_empty() {
+                        json!("无精确匹配（UTF-16LE 宽字符串规划 B3 接入；可试 bytes 维）")
+                    } else {
+                        json!("对 refs 站点 disasm 看引用上下文")
+                    };
+                    Ok(json!({
+                        "query": {"kind": kind, "value": query},
+                        "count": hits.len(),
+                        "hits": hits,
+                        "note": note,
+                    }))
+                }
+                "imm" => {
+                    let v = parse_imm_u64(query)
+                        .ok_or_else(|| format!("imm 值 {query:?} 非法（十进制或 0x 十六进制）"))?;
+                    let sites = cache
+                        .reverse
+                        .imm_by_value
+                        .get(&v)
+                        .cloned()
+                        .unwrap_or_default();
+                    let total = sites.len();
+                    let hits: Vec<serde_json::Value> = sites
+                        .iter()
+                        .take(SEARCH_MAX_HITS)
+                        .map(|s| site_row(*s))
+                        .collect();
+                    Ok(json!({
+                        "query": {"kind": kind, "value": query, "value_num": format!("0x{v:X}")},
+                        "total": total,
+                        "count": hits.len(),
+                        "truncated": total > hits.len(),
+                        "hits": hits,
+                    }))
+                }
+                "name" => {
+                    let q = query.trim().to_ascii_lowercase();
+                    if q.is_empty() {
+                        return Err("name 查询为空".to_string());
+                    }
+                    let mut hits: Vec<serde_json::Value> = Vec::new();
+                    // ① 语义锚名（draft annotate 落库）
+                    for (rva, name) in &names {
+                        if name.to_ascii_lowercase().contains(&q) {
+                            hits.push(json!({
+                                "source": "annotated",
+                                "rva": format!("0x{rva:X}"),
+                                "name": name,
+                            }));
+                        }
+                    }
+                    // ② 导出名
+                    for e in &cache.exports {
+                        if e.name.to_ascii_lowercase().contains(&q) {
+                            hits.push(json!({
+                                "source": "export",
+                                "rva": format!("0x{:X}", e.rva),
+                                "name": e.name,
+                            }));
+                        }
+                    }
+                    // ③ 导入名（dll!func → 调用站点）
+                    for c in &cache.idx.import_calls {
+                        let full = format!("{}!{}", c.dll, c.func);
+                        if full.to_ascii_lowercase().contains(&q) {
+                            hits.push(json!({
+                                "source": "import",
+                                "name": full,
+                                "site": format!("0x{:X}", c.insn_rva),
+                                "func": cache
+                                    .reverse
+                                    .site_to_func
+                                    .get(&c.insn_rva)
+                                    .map(|f| json!(format!("0x{f:X}"))),
+                            }));
+                        }
+                    }
+                    let total = hits.len();
+                    hits.truncate(SEARCH_MAX_HITS);
+                    Ok(json!({
+                        "query": {"kind": kind, "value": query},
+                        "total": total,
+                        "count": hits.len(),
+                        "truncated": total > hits.len(),
+                        "hits": hits,
+                    }))
+                }
+                "insn" => {
+                    let q = query.trim().to_ascii_lowercase();
+                    if q.is_empty() {
+                        return Err("insn 查询为空".to_string());
+                    }
+                    let mut hits: Vec<serde_json::Value> = Vec::new();
+                    'walk: for f in &cache.set.functions {
+                        for insn in &f.insns {
+                            if format!("{:?}", insn.mnemonic).to_ascii_lowercase() == q {
+                                hits.push(json!({
+                                    "site": format!("0x{:X}", insn.rva),
+                                    "func": format!("0x{:X}", f.rva),
+                                    "name": names.get(&f.rva),
+                                }));
+                                if hits.len() > SEARCH_MAX_HITS {
+                                    break 'walk;
+                                }
+                            }
+                        }
+                    }
+                    let truncated = hits.len() > SEARCH_MAX_HITS;
+                    hits.truncate(SEARCH_MAX_HITS);
+                    Ok(json!({
+                        "query": {"kind": kind, "value": query},
+                        "count": hits.len(),
+                        "truncated": truncated,
+                        "hits": hits,
+                    }))
+                }
+                other => Err(format!(
+                    "search kind {other:?} 非法（bytes/string/imm/name/insn）"
+                )),
+            }
+        })
+    }
+
+    /// read_data：快照字节投影（hex / utf8；单次 ≤4096 字节）。
+    pub fn query_read_data(
+        &self,
+        workspace: &Path,
+        rva: u32,
+        size: usize,
+        as_utf8: bool,
+    ) -> Result<serde_json::Value, String> {
+        let requested = size;
+        let size = size.clamp(1, READ_DATA_MAX_BYTES);
+        self.with_analysis_res(workspace, |cache| {
+            let bytes = cache.img.read_rva(rva, size).ok_or_else(|| {
+                format!("地址 0x{rva:X} 不在快照节内：用 pe/sections 查节界后重试")
+            })?;
+            let actual = bytes.len();
+            let data = if as_utf8 {
+                json!(String::from_utf8_lossy(bytes))
+            } else {
+                json!(hex::encode(bytes))
+            };
+            Ok(json!({
+                "rva": format!("0x{rva:X}"),
+                "requested": requested,
+                "size": actual,
+                "as": if as_utf8 { "utf8" } else { "hex" },
+                "data": data,
+                "section": cache.img.pe.section_by_rva(rva).map(|s| s.name.clone()),
+                "next": "数据地址可 xref_to kind=data 反查引用方",
+            }))
+        })
+    }
+
+    /// pe：结构清单投影（sections/exports/imports/pdata 四值 B1 实现；
+    /// tls/debug/rich 三值 schema 已定型、解析器 B2 填充）。
+    pub fn query_pe(&self, workspace: &Path, what: &str) -> Result<serde_json::Value, String> {
+        match what {
+            "sections" | "exports" | "imports" | "pdata" | "tls" | "debug" | "rich" => {}
+            other => {
+                return Err(format!(
+                    "pe what {other:?} 非法（sections/exports/imports/pdata/tls/debug/rich）"
+                ));
+            }
+        }
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| match what {
+            "sections" => {
+                let rows: Vec<serde_json::Value> = cache
+                    .img
+                    .pe
+                    .sections
+                    .iter()
+                    .map(|s| {
+                        json!({
+                            "name": s.name,
+                            "rva": format!("0x{:X}", s.rva),
+                            "vsize": s.vsize,
+                            "raw_size": s.raw_size,
+                            "exec": s.is_executable(),
+                            "writable": s.is_writable(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({"what": "sections", "count": rows.len(), "sections": rows}))
+            }
+            "exports" => {
+                let total = cache.exports.len();
+                let rows: Vec<serde_json::Value> = cache
+                    .exports
+                    .iter()
+                    .take(LIST_MAX_ROWS)
+                    .map(|e| json!({"name": e.name, "rva": format!("0x{:X}", e.rva)}))
+                    .collect();
+                Ok(json!({
+                    "what": "exports",
+                    "total": total,
+                    "count": rows.len(),
+                    "truncated": total > rows.len(),
+                    "exports": rows,
+                }))
+            }
+            "imports" => {
+                let total: usize = cache.imports.iter().map(|d| d.funcs.len()).sum();
+                let mut rows: Vec<serde_json::Value> = Vec::new();
+                let mut shown = 0usize;
+                'walk: for d in &cache.imports {
+                    let mut funcs: Vec<serde_json::Value> = Vec::new();
+                    for (fname, _slot) in &d.funcs {
+                        funcs.push(json!(fname));
+                        shown += 1;
+                        if shown >= LIST_MAX_ROWS {
+                            break 'walk;
+                        }
+                    }
+                    rows.push(json!({"dll": d.dll, "funcs": funcs}));
+                }
+                Ok(json!({
+                    "what": "imports",
+                    "total": total,
+                    "count": shown.min(total),
+                    "truncated": total > shown,
+                    "imports": rows,
+                }))
+            }
+            "pdata" => match &cache.pdata {
+                None => Ok(json!({
+                    "what": "pdata",
+                    "pdata": null,
+                    "note": "无 .pdata 异常目录（x86 目标或快照无该数据目录）",
+                })),
+                Some(list) => {
+                    let total = list.len();
+                    let rows: Vec<serde_json::Value> = list
+                        .iter()
+                        .take(LIST_MAX_ROWS)
+                        .map(|(s, e)| {
+                            json!({
+                                "start": format!("0x{s:X}"),
+                                "end": format!("0x{e:X}"),
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "what": "pdata",
+                        "total": total,
+                        "count": rows.len(),
+                        "truncated": total > rows.len(),
+                        "pdata": rows,
+                    }))
+                }
+            },
+            "tls" => {
+                let Some(list) = &cache.tls_callbacks else {
+                    return Ok(json!({
+                        "what": "tls",
+                        "total": 0,
+                        "note": "无 TLS 目录（dd[9] 缺席或回调数组为空）",
+                    }));
+                };
+                let names = semantic_names(workspace, &info.profile_id);
+                let total = list.len();
+                let rows: Vec<serde_json::Value> = list
+                    .iter()
+                    .take(LIST_MAX_ROWS)
+                    .map(|rva| {
+                        json!({
+                            "rva": format!("0x{rva:X}"),
+                            "discovered": cache.set.contains(*rva),
+                            "name": names.get(rva),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "what": "tls",
+                    "total": total,
+                    "count": rows.len(),
+                    "truncated": total > rows.len(),
+                    "callbacks": rows,
+                }))
+            }
+            "debug" => match &cache.debug {
+                None => Ok(json!({
+                    "what": "debug",
+                    "entries": [],
+                    "pdb_path": null,
+                    "note": "无 Debug 目录（dd[6] 缺席或全部条目无效）",
+                })),
+                Some(d) => {
+                    let rows: Vec<serde_json::Value> = d
+                        .entries
+                        .iter()
+                        .take(LIST_MAX_ROWS)
+                        .map(|e| {
+                            json!({
+                                "type": e.ty,
+                                "size": e.size,
+                                "rva": format!("0x{:X}", e.rva),
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "what": "debug",
+                        "total": d.entries.len(),
+                        "entries": rows,
+                        "pdb_path": d.pdb_path,
+                    }))
+                }
+            },
+            "rich" => match &cache.rich {
+                None => Ok(json!({
+                    "what": "rich",
+                    "prods": [],
+                    "note": "无 Rich 头（MinGW/strip 过的 DOS stub 无编译器指纹）",
+                })),
+                Some(r) => {
+                    let rows: Vec<serde_json::Value> = r
+                        .prods
+                        .iter()
+                        .take(LIST_MAX_ROWS)
+                        .map(|p| {
+                            json!({
+                                "prod_id": p.prod_id,
+                                "build": p.build,
+                                "count": p.count,
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "what": "rich",
+                        "key": format!("0x{:08X}", r.key),
+                        "total": r.prods.len(),
+                        "prods": rows,
+                    }))
+                }
+            },
+            _ => unreachable!("what 合法性已在上方闸死"),
+        })
+    }
+
+    /// locate：地址→函数归属（func/body/unowned/outside）+ prev/next 邻接函数起点。
+    pub fn query_locate(&self, workspace: &Path, rva: u32) -> Result<serde_json::Value, String> {
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| {
+            let names = semantic_names(workspace, &info.profile_id);
+            let bounds = text_bounds(&cache.img);
+            let starts: Vec<u32> = cache.set.functions.iter().map(|f| f.rva).collect();
+            let exact = cache.set.find_by_rva(rva);
+            let in_body = cache
+                .set
+                .functions
+                .iter()
+                .find(|f| rva > f.rva && rva < f.end_rva);
+            let (status, func_rva, note) = if let Some(f) = exact {
+                ("func", Some(f.rva), None)
+            } else if let Some(f) = in_body {
+                (
+                    "body",
+                    Some(f.rva),
+                    Some(format!(
+                        "地址在函数 0x{:X} 体内（起点见 func.rva）",
+                        f.rva
+                    )),
+                )
+            } else if bounds.is_some_and(|(lo, hi)| rva >= lo && rva < hi) {
+                (
+                    "unowned",
+                    None,
+                    Some(
+                        "地址在可执行节内但不在任何已识别函数（递归下降漏网——gaps/pdata 对账交叉验证）"
+                            .to_string(),
+                    ),
+                )
+            } else {
+                ("outside", None, Some("地址不在可执行节内（数据节/头/未映射）".to_string()))
+            };
+            let prev = starts.iter().filter(|s| **s < rva).max().copied();
+            let next = starts.iter().filter(|s| **s > rva).min().copied();
+            let next_hint = match status {
+                "func" | "body" => "disasm 看函数体；xref_from 看引用清单",
+                "unowned" => "v1 disasm 只接受函数域地址；用 gaps/pdata 对账定位后按邻近函数探索",
+                _ => "read_data 读字节；pe sections 看节界",
+            };
+            let mut out = json!({
+                "rva": format!("0x{rva:X}"),
+                "status": status,
+                "func": func_rva.map(|f| json!({"rva": format!("0x{f:X}"), "name": names.get(&f)})),
+                "prev_func": prev.map(|p| json!({"rva": format!("0x{p:X}"), "name": names.get(&p)})),
+                "next_func": next.map(|n| json!({"rva": format!("0x{n:X}"), "name": names.get(&n)})),
+                "next_hint": next_hint,
+            });
+            if let Some(n) = note {
+                out["note"] = json!(n);
+            }
+            Ok(out)
+        })
+    }
+
+    /// functions：函数表过滤/排序投影（找关键函数工作流）。
+    pub fn query_functions(
+        &self,
+        workspace: &Path,
+        sort: &str,
+        top: usize,
+        name: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        if !matches!(sort, "size" | "refs" | "imports") {
+            return Err(format!("sort {sort:?} 非法（size/refs/imports）"));
+        }
+        let info = self.require_info(workspace)?;
+        self.with_analysis_res(workspace, |cache| {
+            let names = semantic_names(workspace, &info.profile_id);
+            let folded: std::collections::HashSet<u32> = cache.crt.iter().map(|c| c.rva).collect();
+            let mut rows: Vec<serde_json::Value> = cache
+                .set
+                .functions
+                .iter()
+                .map(|f| {
+                    let imports = cache
+                        .idx
+                        .import_calls
+                        .iter()
+                        .filter(|c| c.insn_rva >= f.rva && c.insn_rva < f.end_rva)
+                        .count();
+                    let refs = cache
+                        .reverse
+                        .callers_of
+                        .get(&f.rva)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    json!({
+                        "rva": format!("0x{:X}", f.rva),
+                        "size": f.end_rva - f.rva,
+                        "name": names.get(&f.rva),
+                        "imports": imports,
+                        "refs": refs,
+                        "crt_folded": folded.contains(&f.rva),
+                    })
+                })
+                .collect();
+            if let Some(q) = name.map(str::trim).filter(|s| !s.is_empty()) {
+                let q = q.to_ascii_lowercase();
+                rows.retain(|r| {
+                    let name_hit = r["name"]
+                        .as_str()
+                        .map(|n| n.to_ascii_lowercase().contains(&q))
+                        .unwrap_or(false);
+                    let rva_hit = r["rva"]
+                        .as_str()
+                        .map(|s| s.to_ascii_lowercase().contains(&q))
+                        .unwrap_or(false);
+                    name_hit || rva_hit
+                });
+            }
+            match sort {
+                "refs" => rows.sort_by_key(|r| std::cmp::Reverse(r["refs"].as_u64().unwrap_or(0))),
+                "imports" => {
+                    rows.sort_by_key(|r| std::cmp::Reverse(r["imports"].as_u64().unwrap_or(0)))
+                }
+                _ => rows.sort_by_key(|r| std::cmp::Reverse(r["size"].as_u64().unwrap_or(0))),
+            }
+            let total = rows.len();
+            let top = top.clamp(1, LIST_MAX_ROWS);
+            let truncated = total > top;
+            rows.truncate(top);
+            Ok(json!({
+                "total": total,
+                "count": rows.len(),
+                "truncated": truncated,
+                "sort": sort,
+                "functions": rows,
+                "next": "对目标函数 disasm / xref_from / callers 深挖",
+            }))
+        })
+    }
+
+    /// gaps：.text 未覆盖区间清单（未识别区域视图；pdata 对账的另一半）。
+    pub fn query_gaps(&self, workspace: &Path) -> Result<serde_json::Value, String> {
+        self.with_analysis_res(workspace, |cache| {
+            let bounds =
+                text_bounds(&cache.img).ok_or_else(|| "无可执行节（.text）".to_string())?;
+            let mut covered: Vec<(u32, u32)> = cache
+                .set
+                .functions
+                .iter()
+                .map(|f| (f.rva, f.end_rva))
+                .collect();
+            covered.sort_unstable();
+            // 区间合并（重叠/相接并块）
+            let mut merged: Vec<(u32, u32)> = Vec::new();
+            for (s, e) in covered {
+                match merged.last_mut() {
+                    Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                    _ => merged.push((s, e)),
+                }
+            }
+            // 求补（限制在可执行节界内）
+            let mut gaps: Vec<(u32, u32)> = Vec::new();
+            let mut cur = bounds.0;
+            for (s, e) in merged {
+                if s > cur {
+                    gaps.push((cur, s));
+                }
+                cur = cur.max(e);
+            }
+            if cur < bounds.1 {
+                gaps.push((cur, bounds.1));
+            }
+            let total_bytes: u64 = gaps.iter().map(|(s, e)| (e - s) as u64).sum();
+            let total = gaps.len();
+            let rows: Vec<serde_json::Value> = gaps
+                .iter()
+                .take(LIST_MAX_ROWS)
+                .map(|(s, e)| {
+                    json!({"start": format!("0x{s:X}"), "end": format!("0x{e:X}"), "size": e - s})
+                })
+                .collect();
+            Ok(json!({
+                "text_bounds": format!("0x{:X}-0x{:X}", bounds.0, bounds.1),
+                "total_gaps": total,
+                "total_gap_bytes": total_bytes,
+                "count": rows.len(),
+                "truncated": total > rows.len(),
+                "gaps": rows,
+                "next": "大 gap 常是跳转表后代码/未识别函数——结合 pe pdata 对账定位",
+            }))
+        })
     }
 
     // ── Step 4a：candidates ─────────────────────────────────────────────
@@ -754,8 +1738,10 @@ impl SetupManager {
 
     /// 标注函数 + 强制锚（≥1）：落 draft.functions + anchors.json。
     /// data：{rva, semantic, conv?, note?, anchors:[{kind, pattern?/text?/
-    /// value?/imports?/distance?/note?}]}；函数 locate 取首个 byte_pattern
-    /// 锚，无则退 RVA 定位（锚照记）。级联注记：函数级 note 补进无注记的锚。
+    /// value?/imports?/distance?/note?}], params?:[{reg, ty?, desc?}]}；
+    /// 函数 locate 取首个 byte_pattern 锚，无则退 RVA 定位（锚照记）。
+    /// 级联注记：函数级 note 补进无注记的锚。params 落 draft.functions[].args
+    /// （≤16 条；ty 为 FieldType 字面量，define_tool/call_fn 消费）。
     pub fn annotate(
         &self,
         workspace: &Path,
@@ -790,6 +1776,41 @@ impl SetupManager {
             .get("note")
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        // B4：参数签名（LLM 推断的参数数/类型/描述——define_tool/call_fn 消费）。
+        let params_in = data.get("params").and_then(|v| v.as_array());
+        let args: Vec<ArgSpec> = match params_in {
+            None => Vec::new(),
+            Some(items) => {
+                if items.len() > 16 {
+                    return Err(format!(
+                        "params {} 条超上限 16（x64 寄存器 4 + 栈槽；异常形态转人工）",
+                        items.len()
+                    ));
+                }
+                let mut out = Vec::with_capacity(items.len());
+                for (i, p) in items.iter().enumerate() {
+                    let reg = p
+                        .get("reg")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| format!("params[{i}] 缺 reg（寄存器名或 stack:N）"))?
+                        .to_string();
+                    let ty = match p.get("ty").and_then(|v| v.as_str()) {
+                        None => None,
+                        Some(t) => {
+                            nemesis_ziwei_profile::FieldType::parse(t).ok_or_else(|| {
+                                format!("params[{i}] 类型 {t:?} 非法（FieldType 字面量，如 u64/char[32]）")
+                            })?;
+                            Some(t.to_string())
+                        }
+                    };
+                    let desc = p.get("desc").and_then(|v| v.as_str()).map(str::to_string);
+                    out.push(ArgSpec { reg, ty, desc });
+                }
+                out
+            }
+        };
 
         let anchors_in = data
             .get("anchors")
@@ -903,9 +1924,10 @@ impl SetupManager {
                 rva: Some(rva_u),
             }),
             conv,
-            args: Vec::new(),
+            args,
             capture: None,
         });
+        let params_count = profile.functions.last().map(|f| f.args.len()).unwrap_or(0);
         // 轻校验（全量校验留 commit；这里即时拦手误）
         profile
             .validate()
@@ -922,6 +1944,7 @@ impl SetupManager {
         Ok(json!({
             "annotated": semantic,
             "rva": format!("0x{rva:X}"),
+            "params": params_count,
             "functions": profile.functions.len(),
             "anchors": anchor_set.anchors.len(),
             "next": "继续 annotate / define_struct / define_tool 后 commit",
@@ -1315,6 +2338,128 @@ fn function_table_json(rows: &[nemesis_ziwei_rev::package::FuncRow]) -> Vec<serd
             })
         })
         .collect()
+}
+
+// ── 查询面辅助（B1：入参容错 / 函数归属 / 语义名投影 / 可执行节界）────
+
+/// 十六进制解析（`0x` 前缀可选，全 hex）。pub：bridge 层 rva 入参归一同源引用。
+pub fn parse_hex_u32(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let t = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
+    u32::from_str_radix(t, 16).ok()
+}
+
+/// 立即数解析：`0x` 前缀走 hex；否则先十进制后 hex 回落（容错 LLM 输出）。
+pub fn parse_imm_u64(s: &str) -> Option<u64> {
+    let t = s.trim();
+    if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        return u64::from_str_radix(h, 16).ok();
+    }
+    t.parse::<u64>()
+        .ok()
+        .or_else(|| u64::from_str_radix(t, 16).ok())
+}
+
+/// 单 nibble：`?`=None（通配），hex 字符=Some(值)。
+fn parse_nibble(c: u8) -> Result<Option<u8>, String> {
+    match c {
+        b'?' => Ok(None),
+        b'0'..=b'9' => Ok(Some(c - b'0')),
+        b'a'..=b'f' => Ok(Some(c - b'a' + 10)),
+        b'A'..=b'F' => Ok(Some(c - b'A' + 10)),
+        other => Err(format!(
+            "字节模式含非法字符 {:?}（hex 或 ?）",
+            other as char
+        )),
+    }
+}
+
+/// 字节通配模式解析：`DEADBEEF` / `DE AD ?? EF`（空白忽略；支持半通配
+/// `4?`/`?4`）→ (value, mask) 对——匹配 `byte & mask == value & mask`。
+fn parse_byte_pattern_query(pat: &str) -> Result<Vec<(u8, u8)>, String> {
+    let clean: String = pat.chars().filter(|c| !c.is_whitespace()).collect();
+    let bytes = clean.as_bytes();
+    if bytes.is_empty() {
+        return Err("bytes 模式为空".to_string());
+    }
+    if !bytes.len().is_multiple_of(2) {
+        return Err("bytes 模式长度须为偶数（每字节两个 nibble）".to_string());
+    }
+    bytes
+        .chunks(2)
+        .map(|pair| {
+            let hi = parse_nibble(pair[0])?;
+            let lo = parse_nibble(pair[1])?;
+            Ok(match (hi, lo) {
+                (None, None) => (0x00, 0x00),      // ?? 任意
+                (Some(h), None) => (h << 4, 0xF0), // 高半通配
+                (None, Some(l)) => (l, 0x0F),      // 低半通配
+                (Some(h), Some(l)) => ((h << 4) | l, 0xFF),
+            })
+        })
+        .collect()
+}
+
+/// 模式匹配（调用方保证 off+pat.len() 判断——内部再判界，防切片越界）。
+fn match_pattern(bytes: &[u8], off: usize, pat: &[(u8, u8)]) -> bool {
+    if off + pat.len() > bytes.len() {
+        return false;
+    }
+    pat.iter()
+        .enumerate()
+        .all(|(i, (v, m))| bytes[off + i] & m == v & m)
+}
+
+/// 函数归属：精确起点（无注记）→ 体内（+注记，按起点解析）→ 无主（Err，
+/// 提示先 locate——unowned 区域不在函数域，查询面不猜）。
+fn resolve_func(
+    set: &funcs::FunctionSet,
+    rva: u32,
+) -> Result<(&funcs::FunctionInfo, Option<String>), String> {
+    if let Some(f) = set.find_by_rva(rva) {
+        return Ok((f, None));
+    }
+    if let Some(f) = set
+        .functions
+        .iter()
+        .find(|f| rva > f.rva && rva < f.end_rva)
+    {
+        return Ok((
+            f,
+            Some(format!(
+                "地址 0x{rva:X} 在函数 0x{:X} 体内（非起点）——已按函数起点解析",
+                f.rva
+            )),
+        ));
+    }
+    Err(format!(
+        "地址 0x{rva:X} 不在任何已识别函数：先 locate 查归属（unowned 区域用 gaps / pe pdata 对账定位邻近函数）"
+    ))
+}
+
+/// 语义名投影：draft annotate 的 `locate.rva → semantic`（best-effort，
+/// draft 缺席/加载失败 = 空表——查询面不因标注缺失而失败）。
+fn semantic_names(workspace: &Path, profile_id: &str) -> std::collections::HashMap<u32, String> {
+    let mut out = std::collections::HashMap::new();
+    if let Ok(draft) = load_draft(workspace, profile_id) {
+        for f in &draft.functions {
+            if let Some(rva) = f.locate.rva {
+                out.insert(rva as u32, f.semantic.clone());
+            }
+        }
+    }
+    out
+}
+
+/// 首个可执行节界（locate/gaps 的覆盖范围基线；可执行节缺席 = None）。
+fn text_bounds(img: &ImageMap) -> Option<(u32, u32)> {
+    img.sections
+        .iter()
+        .find(|(s, _)| s.is_executable())
+        .map(|(s, _)| (s.rva, s.rva + s.vsize))
 }
 
 // ── 管道分块读（windows）────────────────────────────────────────────────

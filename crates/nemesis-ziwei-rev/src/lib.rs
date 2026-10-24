@@ -18,6 +18,7 @@
 //! 模块禁止直依赖。
 
 pub mod candidates;
+pub mod container;
 pub mod crtsigs;
 pub mod diff;
 pub mod disasm;
