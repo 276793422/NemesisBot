@@ -1736,6 +1736,7 @@ fn w4c_valid_init_config() -> ChannelInitConfig {
         cfg.whatsapp = Some(crate::whatsapp::WhatsAppConfig {
             bridge_url: "http://127.0.0.1:1/bridge".to_string(),
             api_key: None,
+            proxy: None,
             allow_from: vec![],
         });
     }
@@ -1964,6 +1965,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
         whatsapp: Some(crate::whatsapp::WhatsAppConfig {
             bridge_url: String::new(),
             api_key: None,
+            proxy: None,
             allow_from: vec![],
         }),
         #[cfg(feature = "feishu")]

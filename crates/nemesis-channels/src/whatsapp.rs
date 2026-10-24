@@ -22,12 +22,14 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// WhatsApp channel configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WhatsAppConfig {
     /// Bridge URL (HTTP or WebSocket).
     pub bridge_url: String,
     /// API key for bridge authentication.
     pub api_key: Option<String>,
+    /// Optional proxy URL for bridge connections (bridge may be remote).
+    pub proxy: Option<String>,
     /// Allowed sender IDs (empty = allow all).
     pub allow_from: Vec<String>,
 }
@@ -86,10 +88,30 @@ impl WhatsAppChannel {
             ));
         }
 
+        let mut client_builder = reqwest::Client::builder();
+
+        // Apply proxy if configured (bridge may be remote)
+        if let Some(ref proxy_url) = config.proxy {
+            if !proxy_url.is_empty() {
+                match reqwest::Proxy::all(proxy_url.as_str()) {
+                    Ok(proxy) => {
+                        client_builder = client_builder.proxy(proxy);
+                    }
+                    Err(e) => {
+                        warn!("[WhatsAppChannel] invalid proxy URL '{}': {}", proxy_url, e);
+                    }
+                }
+            }
+        }
+
+        let http = client_builder
+            .build()
+            .map_err(|e| NemesisError::Channel(format!("failed to create HTTP client: {e}")))?;
+
         Ok(Self {
             base: BaseChannel::new("whatsapp"),
             config,
-            http: reqwest::Client::new(),
+            http,
             running: Arc::new(parking_lot::RwLock::new(false)),
             outbound_queue: parking_lot::RwLock::new(Vec::new()),
             bus_sender,

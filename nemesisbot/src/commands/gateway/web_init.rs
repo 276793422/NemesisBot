@@ -594,6 +594,11 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                             "channels.whatsapp.api_key",
                         ))
                     },
+                    proxy: if cfg.channels.whatsapp.proxy.is_empty() {
+                        None
+                    } else {
+                        Some(cfg.channels.whatsapp.proxy.clone())
+                    },
                     allow_from: cfg.channels.whatsapp.allow_from.clone(),
                 })
             } else {
