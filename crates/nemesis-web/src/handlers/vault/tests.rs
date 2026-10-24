@@ -554,3 +554,108 @@ fn module_surface() {
         &["list", "set", "remove", "status", "unlock"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// 写路径 RMW 串行锁（2026-10-24）：并发 set 不得互相整文件覆盖
+// （websocket_handler 每消息一 spawn，无锁时各持旧快照后写覆盖先写，
+// 先落盘的条目静默丢失——与 share.rs SHARE_LOCK 同一缺陷类）
+// ---------------------------------------------------------------------------
+
+/// 锁可见性（确定性回归钉）：持 [`super::VAULT_IO_LOCK`] 期间 vault.set
+/// 必须阻塞在锁上——盘上不得出现新条目；放锁后完成且条目在盘。锁缺席
+/// （回归形态）时 set 立即完成、文件提前出现条目 → 首断言红。
+/// multi_thread：被阻塞的 set 在 worker 线程上等 std 锁，测试任务需要另
+/// 一条线程跑 sleep/断言（current_thread 会死锁）。测试本体刻意持 std 锁
+/// 跨 await（模拟另一请求持锁的窗口）——正是被验证的行为，allow 显式声明。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_blocks_while_vault_io_lock_held() {
+    let dir = tempfile::tempdir().unwrap();
+    create_fixture(&dir);
+    let ctx_task = make_ctx(&dir);
+    let ctx_direct = make_ctx(&dir);
+    with_passphrase(PW, async {
+        // 守卫必须持到放锁断言之后（内层块作用域会在 sleep 前就 drop）。
+        let _io = super::VAULT_IO_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = tokio::spawn(async move {
+            VaultHandler
+                .handle_cmd(
+                    "set",
+                    Some(serde_json::json!({ "alias": "blocked-a", "value": "v-a" })),
+                    &ctx_task,
+                )
+                .await
+        });
+        // 持锁窗口：set 不得推进（盘上不得出现 blocked-a）。
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let on_disk = std::fs::read_to_string(vault_file(&dir)).unwrap();
+        assert!(
+            !on_disk.contains("blocked-a"),
+            "持锁期间 set 不得落盘: {on_disk}"
+        );
+
+        // 放锁后 set 完成；随后直接 set 第二条，
+        // 两条都在盘（无锁世界里 blocked-a 会先落盘被 direct-b 的旧快照覆盖）。
+        drop(_io);
+        let resp = handle
+            .await
+            .unwrap()
+            .expect("set completes after release")
+            .expect("payload");
+        assert_eq!(resp["alias"], "blocked-a");
+        VaultHandler
+            .handle_cmd(
+                "set",
+                Some(serde_json::json!({ "alias": "direct-b", "value": "v-b" })),
+                &ctx_direct,
+            )
+            .await
+            .expect("direct set")
+            .expect("payload");
+        let on_disk = std::fs::read_to_string(vault_file(&dir)).unwrap();
+        assert!(
+            on_disk.contains("blocked-a") && on_disk.contains("direct-b"),
+            "两条 set 都必须存活: {on_disk}"
+        );
+    })
+    .await;
+}
+
+/// 并发 set 全部存活（丢更新形态钉，share 同款）：锁在场时 N 个并发 set
+/// 串行落盘，条目一个不丢；锁缺席时后写者用旧快照覆盖先写者（竞争窗口，
+/// 非确定性红——确定性锚在上一用例的锁可见性断言）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_sets_all_survive() {
+    let dir = tempfile::tempdir().unwrap();
+    create_fixture(&dir);
+    with_passphrase(PW, async {
+        let mut handles = Vec::new();
+        for i in 0..4 {
+            let ctx = make_ctx(&dir);
+            handles.push(tokio::spawn(async move {
+                VaultHandler
+                    .handle_cmd(
+                        "set",
+                        Some(serde_json::json!({
+                            "alias": format!("cc-{i}"),
+                            "value": format!("v-{i}")
+                        })),
+                        &ctx,
+                    )
+                    .await
+                    .expect("set cc")
+                    .expect("payload")
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let on_disk = std::fs::read_to_string(vault_file(&dir)).unwrap();
+        for i in 0..4 {
+            assert!(on_disk.contains(&format!("cc-{i}")), "并发 set 丢失 cc-{i}");
+        }
+    })
+    .await;
+}
