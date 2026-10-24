@@ -133,13 +133,17 @@ pub fn sweep_once(home: &Path, sweeps: u64, rt: &tokio::runtime::Handle) -> Resu
 }
 
 /// 扫 session_logs 全部 `*.jsonl`，收集 `role=="user"` 且时间戳不早于
-/// `window_start_ms`（证据窗起点，epoch 毫秒）的消息文本。
+/// `window_start_ms`（证据窗起点，epoch 毫秒）的消息文本，**按时间升序**
+/// 返回（BUG-20261025-21：此前按文件序返回——反思通道「近期 60 条」采样
+/// 取的是列表尾部；文件序由 session key 字典序决定，与新旧无关，字典序
+/// 靠前的活跃会话会把采到的是死会话的陈旧尾巴、漏掉真正新的会话）。
 fn collect_user_messages_after(
     workspace: &Path,
     window_start_ms: i64,
 ) -> Result<Vec<String>, String> {
     let dir = workspace.join("logs").join("session_logs");
     let mut out = Vec::new();
+    let mut pairs: Vec<(i64, String)> = Vec::new();
     // 缺目录 = 还没有任何会话（onboard 后未对话的常态），不是错误——
     // 按 Ok(空) 处理，不留每 tick warn 噪声（四路评审 B-Minor1 根修）。
     let entries = match std::fs::read_dir(&dir) {
@@ -174,10 +178,14 @@ fn collect_user_messages_after(
                 continue;
             }
             if let Some(c) = v.get("content").and_then(|c| c.as_str()) {
-                out.push(c.to_string());
+                pairs.push((ts.timestamp_millis(), c.to_string()));
             }
         }
     }
+    // 时间升序（同毫秒保持文件/行序——sort_by_key 稳定）：反思采样与
+    // 统计通道的输入从此与文件名字典序解耦。
+    pairs.sort_by_key(|(ts, _)| *ts);
+    out.extend(pairs.into_iter().map(|(_, c)| c));
     Ok(out)
 }
 
@@ -264,3 +272,6 @@ fn build_caller(
         &workspace.to_string_lossy(),
     )
 }
+
+#[cfg(test)]
+mod tests;

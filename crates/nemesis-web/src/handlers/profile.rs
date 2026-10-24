@@ -94,7 +94,13 @@ impl ProfileHandler {
             entry.enabled = true;
             Ok(())
         })?;
-        let profile = up::enable_profile(&ws)?;
+        // 截断上限与 sweep 同源：config 现读 max_entries（BUG-20261025-20）。
+        let max_entries = crate::handlers::config::load_config(&home)
+            .ok()
+            .and_then(|cfg| cfg.user_profile)
+            .map(|u| u.max_entries_or(up::MAX_ENTRIES))
+            .unwrap_or(up::MAX_ENTRIES);
+        let profile = up::enable_profile(&ws, max_entries)?;
         Ok(Some(json!({
             "enabled": true,
             "enabled_at": profile.enabled_at,

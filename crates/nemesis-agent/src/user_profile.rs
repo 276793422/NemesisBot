@@ -150,7 +150,13 @@ pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<()
 }
 
 /// 开启画像（记录 enabled_at——仅向前锚点；幂等：已开启不改动）。
-pub fn enable_profile(workspace: &Path) -> Result<UserProfile, String> {
+///
+/// `max_entries` = 注入条目上限，**由调用方从 config 现读传入**
+/// （`UserProfileConfig::max_entries_or(MAX_ENTRIES)`）——sweep 侧按同一
+/// config 值截断（BUG-20261025-20：此前本函数内嵌硬编码 [`prune_and_cap`]
+/// (=10)，`max_entries` 配 >10 的用户 disable→enable 循环后习惯被静默
+/// 截回 10，与配置矛盾）。
+pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfile, String> {
     // RMW 全程持锁（锁外读改写会丢并发写入；save_profile 锁不可重入，
     // 内层走 save_profile_locked）。
     let _serial = nemesis_config::config_write_lock();
@@ -158,7 +164,7 @@ pub fn enable_profile(workspace: &Path) -> Result<UserProfile, String> {
     if profile.enabled_at.is_none() {
         profile.enabled_at = Some(chrono::Local::now().to_rfc3339());
     }
-    prune_and_cap(&mut profile);
+    prune_and_cap_with_max(&mut profile, max_entries.max(1));
     save_profile_locked(workspace, &profile)?;
     Ok(profile)
 }

@@ -490,3 +490,37 @@ fn try_load_corrupt_profile_is_err_and_load_tolerates() {
     let dir2 = tempfile::tempdir().unwrap();
     assert!(try_load_profile(dir2.path()).unwrap().habits.is_empty());
 }
+
+// ---- enable_profile 截断上限随 config（BUG-20261025-20）----
+
+/// enable 重跑（幂等锚点 + 清洗截断）必须按调用方传入的 config 上限截断，
+/// 不再硬编码 10——`max_entries` 配 20 的用户 disable→enable 循环后，
+/// sweep 攒下的 10 条以上活跃习惯不允许被静默截回 10。
+#[test]
+fn enable_profile_respects_configured_max() {
+    let dir = tempfile::tempdir().unwrap();
+    // 预置：已开启（锚点已定）+ 12 条置信度递减的活跃习惯。
+    let p = UserProfile {
+        enabled_at: Some("2026-10-01T00:00:00+08:00".into()),
+        last_sweep_ms: None,
+        habits: (0..12)
+            .map(|i| habit(&format!("习惯条目 {i}"), 0.90 - i as f64 * 0.01))
+            .collect(),
+    };
+    save_profile(dir.path(), &p).unwrap();
+
+    // config max_entries=20 → 12 条全部保留（旧行为：截到 10）。
+    let out = enable_profile(dir.path(), 20).unwrap();
+    assert_eq!(out.habits.len(), 12, "config 上限内不截断");
+    assert_eq!(
+        out.enabled_at.as_deref(),
+        Some("2026-10-01T00:00:00+08:00"),
+        "幂等：锚点不改动"
+    );
+
+    // config max_entries=5 → 按置信度截前 5。
+    let out = enable_profile(dir.path(), 5).unwrap();
+    assert_eq!(out.habits.len(), 5);
+    assert_eq!(out.habits[0].confidence, 0.90);
+    assert_eq!(out.habits[4].confidence, 0.86);
+}

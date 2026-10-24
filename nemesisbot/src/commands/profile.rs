@@ -70,7 +70,14 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             // 开关先落 config（写锁在 set_config_value 内），锚点后置——
             // 失败顺序安全：开关失败 = 锚点不动；锚点成功后开关必已开。
             set_config_enabled(&home, true)?;
-            let profile = nemesis_agent::user_profile::enable_profile(&workspace)
+            // 截断上限与 sweep 同源：config 现读 max_entries（BUG-20261025-20：
+            // 此前硬编码 10，max_entries>10 的存量习惯在重跑 enable 时被截）。
+            let max_entries = nemesis_config::load_config(&common::config_path(&home))
+                .ok()
+                .and_then(|cfg| cfg.user_profile)
+                .map(|u| u.max_entries_or(nemesis_agent::user_profile::MAX_ENTRIES))
+                .unwrap_or(nemesis_agent::user_profile::MAX_ENTRIES);
+            let profile = nemesis_agent::user_profile::enable_profile(&workspace, max_entries)
                 .map_err(anyhow::Error::msg)?;
             println!(
                 "✓ profile enabled (enabled_at: {})",
