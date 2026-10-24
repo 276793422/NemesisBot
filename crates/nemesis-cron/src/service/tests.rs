@@ -3216,3 +3216,17 @@ fn add_job_internal_still_allows_legacy_dead_schedule() {
     assert!(job.enabled);
     assert_eq!(job.state.next_run_at_ms, None, "死排程内部注册＝不排程");
 }
+
+#[test]
+fn cron_expr_can_fire_combines_syntax_and_semantics() {
+    // BUG-20261025-18：挂载面（autopilot/dreaming）共用的组合判定。
+    let now = Local::now().timestamp_millis();
+    // 语法错 = false。
+    assert!(!cron_expr_can_fire("不是cron", now));
+    // 解析通过但永不匹配（2 月没有 30 日）= false——纯 parse 闸的盲区。
+    assert!(!cron_expr_can_fire("0 0 30 2 *", now));
+    assert!(!cron_expr_can_fire("* * 31 4 *", now));
+    // 合法且可触发 = true（含闰年 2/29——存在年份解）。
+    assert!(cron_expr_can_fire("*/1 * * * *", now));
+    assert!(cron_expr_can_fire("0 0 29 2 *", now));
+}

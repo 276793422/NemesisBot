@@ -1011,6 +1011,25 @@ pub fn secs_to_ms_checked(secs: u64) -> Result<i64, String> {
         .ok_or_else(|| "seconds value too large".to_string())
 }
 
+/// cron 表达式「能否触发」组合判定（语法 + 语义，BUG-20261025-18 的单一
+/// 真相源）：解析失败 = false；解析通过但从 `now_ms` 起算不出任何下一次
+/// 触发（永不匹配，如 `0 0 30 2 *`——2 月没有 30 日）= false。挂载面用
+/// 它在 enabled 作业上拒绝死排程（BUG-20261024-11 不变量覆盖
+/// add_job_internal 内部装配路径——autopilot/dreaming 挂载都走旁路）。
+pub fn cron_expr_can_fire(expr: &str, now_ms: i64) -> bool {
+    if CronService::validate_schedule(expr).is_err() {
+        return false;
+    }
+    let schedule = CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some(expr.to_string()),
+        tz: None,
+    };
+    compute_next_run(&schedule, now_ms).is_some()
+}
+
 pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
     match schedule.kind.as_str() {
         "at" => schedule.at_ms.filter(|&t| t > now_ms),

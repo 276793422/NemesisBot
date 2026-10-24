@@ -6,5 +6,6 @@ pub mod service;
 pub mod store;
 
 pub use service::{
-    CronJob, CronJobPatch, CronJobState, CronPayload, CronSchedule, CronService, secs_to_ms_checked,
+    CronJob, CronJobPatch, CronJobState, CronPayload, CronSchedule, CronService,
+    cron_expr_can_fire, secs_to_ms_checked,
 };

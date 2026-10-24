@@ -5616,6 +5616,24 @@ fn arm_autopilot_job(
     arm_autopilot_job_with(cron, store, ap)
 }
 
+/// autopilot cron 表达式校验单点（语法 + 语义，BUG-20261025-18）：
+/// `validate_schedule` 只验解析；解析通过但永不匹配的表达式（如 `0 0 30 2 *`
+/// ——2 月没有 30 日）会算不出任何下一次触发，若放行挂载就是 enabled 恒不
+/// 触发的静默僵尸——BUG-20261024-11 的不变量在 autopilot 面同样生效。
+/// `enabled=false` 只验语法（W1b：停用规则不排程，启用时重算再拦）。
+/// WSAPI create/update、CLI create/update 与挂载防线共用这一份。
+pub fn validate_autopilot_schedule(expr: &str, enabled: bool) -> Result<(), String> {
+    nemesis_cron::CronService::validate_schedule(expr)
+        .map_err(|e| format!("cron 表达式无效: {e}"))?;
+    if enabled && !nemesis_cron::cron_expr_can_fire(expr, chrono::Local::now().timestamp_millis()) {
+        return Err(format!(
+            "cron 表达式 `{expr}` 解析通过但永不匹配（算不出任何下一次触发），\
+             启用状态挂载即静默僵尸，拒绝——请检查日/月字段组合（如 2 月 30 日）"
+        ));
+    }
+    Ok(())
+}
+
 /// arm 的核心（不依赖 RequestContext）：gateway 启动同步
 /// （`sync_autopilot_jobs`）与 WSAPI handler 共用这一份构造逻辑——
 /// 单一真相源，别在 gateway 里复制 CronSchedule/patch 语义。
@@ -5631,6 +5649,17 @@ fn arm_autopilot_job_with(
         expr: Some(ap.cron.clone()),
         tz: None,
     };
+    // 挂载防线（BUG-20261025-18）：入口校验之外的第二道——存量库里的
+    // 死排程规则（手工改库/旧版本落库）在同步/挂载时 loud 拒绝，而不是
+    // 经 add_job_internal（绕过 add_job_ext 创建闸）挂成静默僵尸。
+    if ap.enabled
+        && !nemesis_cron::cron_expr_can_fire(&ap.cron, chrono::Local::now().timestamp_millis())
+    {
+        return Err(format!(
+            "autopilot #{} 启用中但 cron `{}` 永不匹配（死排程），拒绝挂载",
+            ap.id, ap.cron
+        ));
+    }
     let svc = cron
         .lock()
         .map_err(|_| "cron service lock poisoned".to_string())?;
@@ -5744,7 +5773,17 @@ pub fn sync_autopilot_jobs(
             }
             None => false,
         };
-        arm_autopilot_job_with(cron, store, ap)?;
+        // per-rule 隔离（BUG-20261025-18）：单条规则挂载失败（如死排程被
+        // 防线拒绝）只 warn 跳过——启动同步是批量兜底面，直接 `?` 会因一
+        // 条坏规则中断整批，其余好规则全部漏挂。
+        if let Err(e) = arm_autopilot_job_with(cron, store, ap) {
+            tracing::warn!(
+                "[Board] autopilot sync: 规则 #{} ({}) 挂载失败，跳过: {e}",
+                ap.id,
+                ap.name
+            );
+            continue;
+        }
         if !registered {
             rearmed += 1;
         }
@@ -6306,7 +6345,13 @@ impl ModuleHandler for BoardHandler {
             "autopilot.create" => {
                 let data = data.ok_or("missing data")?;
                 let cron_expr = get_str(&data, "cron")?;
-                nemesis_cron::CronService::validate_schedule(&cron_expr)?;
+                let enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                // 语法 + 语义双闸（BUG-20261025-18）：解析通过但永不匹配的
+                // 表达式在写 store 前拒绝，不留「已创建」的静默僵尸规则。
+                validate_autopilot_schedule(&cron_expr, enabled)?;
                 let ap = store.create_autopilot(&nemesis_board::NewAutopilot {
                     name: get_str(&data, "name")?.to_string(),
                     title: get_str(&data, "title")?.to_string(),
@@ -6319,10 +6364,7 @@ impl ModuleHandler for BoardHandler {
                         .unwrap_or(nemesis_board::models::priority::MEDIUM),
                     project_id: data.get("project_id").and_then(|v| v.as_i64()),
                     target: get_opt_str(&data, "target").unwrap_or_default(),
-                    enabled: data
-                        .get("enabled")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
+                    enabled,
                     // 全自动流转 D2：建单后自动 planner 拆解（默认 false，
                     // 存量前端不传时行为不变）。
                     auto_plan: data
@@ -6348,9 +6390,16 @@ impl ModuleHandler for BoardHandler {
                     .get("id")
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: id")?;
-                if let Some(c) = get_opt_str(&data, "cron") {
-                    nemesis_cron::CronService::validate_schedule(&c)?;
-                }
+                // 语法 + 语义双闸（BUG-20261025-18）：按「合并后的有效
+                // cron + 有效 enabled」在写 store 前校验——改 cron 成死
+                // 表达式、或把存量死规则 enable，都在此拒绝且 store 不动。
+                let old = store.get_autopilot(id)?;
+                let eff_cron = get_opt_str(&data, "cron").unwrap_or_else(|| old.cron.clone());
+                let eff_enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(old.enabled);
+                validate_autopilot_schedule(&eff_cron, eff_enabled)?;
                 let ap = store.update_autopilot(
                     id,
                     &nemesis_board::AutopilotPatch {

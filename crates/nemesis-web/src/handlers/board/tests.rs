@@ -6749,6 +6749,39 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
         );
         assert!(names.contains(&missing_job_name), "{names:?}");
     }
+    // BUG-20261025-18：存量死排程规则（绕过入口直落库的形态）→ sync
+    // 只跳过该条（per-rule 隔离），其余规则照常挂载，整体不 Err。
+    let dead = store
+        .create_autopilot(&nemesis_board::NewAutopilot {
+            name: "存量死规则".into(),
+            title: "t".into(),
+            cron: "0 0 30 2 *".into(),
+            description: String::new(),
+            priority: nemesis_board::models::priority::MEDIUM,
+            project_id: None,
+            target: String::new(),
+            enabled: true,
+            auto_plan: false,
+            acceptance_criteria: None,
+        })
+        .unwrap();
+    super::sync_autopilot_jobs(&cron, &store).unwrap();
+    {
+        let svc = cron.lock().unwrap();
+        let names: Vec<String> = svc.list_jobs(true).iter().map(|j| j.name.clone()).collect();
+        assert!(
+            !names.contains(&format!("board-ap:{}", dead.id)),
+            "死排程规则不得挂载: {names:?}"
+        );
+        assert!(
+            names.contains(&missing_job_name),
+            "坏规则不得阻塞其余规则挂载: {names:?}"
+        );
+    }
+    assert!(
+        store.get_autopilot(dead.id).unwrap().cron_job_id.is_none(),
+        "被跳过的规则不得回填 job id"
+    );
     // disarm：job 不存在 → warn 不炸（3328-3330）
     let ap = store.get_autopilot(ap_id).unwrap();
     let mut ghost = ap.clone();
@@ -6781,6 +6814,73 @@ async fn agt_autopilot_validate_and_issues_listing() {
     )
     .await;
     assert!(r.is_err(), "非法 cron 必须被拒");
+    // BUG-20261025-18：解析通过但永不匹配（2 月没有 30 日）→ create 拒绝
+    // 且 store 不落规则（先验后写，不留「已创建」的静默僵尸）。
+    let r = dispatch(
+        &ctx,
+        "autopilot.create",
+        serde_json::json!({ "name": "死规则", "title": "t", "cron": "0 0 30 2 *" }),
+    )
+    .await;
+    assert!(r.is_err(), "语义死排程必须被拒");
+    let store = store_of(&ctx);
+    assert!(
+        store.list_autopilots().unwrap().is_empty(),
+        "拒绝后不得留规则: {:?}",
+        store.list_autopilots().unwrap()
+    );
+    // 同表达式 enabled=false → 放行（W1b：停用规则不排程）。
+    let out = dispatch(
+        &ctx,
+        "autopilot.create",
+        serde_json::json!({
+            "name": "停用死规则", "title": "t", "cron": "0 0 30 2 *", "enabled": false
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["autopilot"]["enabled"], serde_json::json!(false));
+    // update 把启用规则 cron 改成死表达式 → 拒绝且 store 值不变（先验后写）。
+    let good = store
+        .create_autopilot(&nemesis_board::NewAutopilot {
+            name: "好规则".into(),
+            title: "t".into(),
+            cron: "*/5 * * * *".into(),
+            description: String::new(),
+            priority: nemesis_board::models::priority::MEDIUM,
+            project_id: None,
+            target: String::new(),
+            enabled: true,
+            auto_plan: false,
+            acceptance_criteria: None,
+        })
+        .unwrap();
+    let r = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({ "id": good.id, "cron": "* * 31 4 *" }),
+    )
+    .await;
+    assert!(r.is_err(), "update 改死排程必须被拒");
+    assert_eq!(
+        store.get_autopilot(good.id).unwrap().cron,
+        "*/5 * * * *",
+        "拒绝后 store cron 不得被改"
+    );
+    // 存量死规则 enable → 拒绝（复活僵尸入口封死）。
+    let dead_id = out["autopilot"]["id"].as_i64().unwrap();
+    let r = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({ "id": dead_id, "enabled": true }),
+    )
+    .await;
+    assert!(r.is_err(), "enable 死规则必须被拒");
+    assert!(
+        !store.get_autopilot(dead_id).unwrap().enabled,
+        "拒绝后 store enabled 不得翻转"
+    );
     // autopilot.issues：按 origin 列单（3765-3771）
     let out = dispatch(
         &ctx,
