@@ -1,4 +1,4 @@
-use super::sanitize_path_segment;
+use super::{sanitize_csv, sanitize_path_segment};
 
 #[test]
 fn plain_ids_pass_through() {
@@ -143,4 +143,24 @@ fn hash_output_represented_as_id_lands_elsewhere() {
     assert_ne!(relay, victim, "hash 段作原始 id 不得落回本段");
     // 确定性：同一输入恒同输出（读写两侧同函数）。
     assert_eq!(sanitize_path_segment(&victim), relay);
+}
+
+#[test]
+fn csv_plain_field_passes_through_unquoted() {
+    // 普通字段逐字节直通——档案 usage.csv 现网行形态不受影响（无谓引号
+    // 会让既有消费者误判）。
+    assert_eq!(sanitize_csv("task-a1"), "task-a1");
+    assert_eq!(sanitize_csv("node-w"), "node-w");
+    assert_eq!(sanitize_csv(""), "");
+    assert_eq!(sanitize_csv("节点 甲"), "节点 甲");
+}
+
+#[test]
+fn csv_special_chars_wrap_and_double_inner_quotes() {
+    assert_eq!(sanitize_csv("a,b"), "\"a,b\"");
+    assert_eq!(sanitize_csv("say \"hi\""), "\"say \"\"hi\"\"\"");
+    assert_eq!(sanitize_csv("a,\"b\",c"), "\"a,\"\"b\"\",c\"");
+    assert_eq!(sanitize_csv("line1\nline2"), "\"line1\nline2\"");
+    // `\r` 也触发包裹（RFC 4180 须引号字符；比 audit_log 旧版多认）。
+    assert_eq!(sanitize_csv("cr\rtail"), "\"cr\rtail\"");
 }

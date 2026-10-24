@@ -269,10 +269,13 @@ fn export_core(
     usage_rows.sort_by(|a, b| a.0.cmp(&b.0));
     let mut csv = String::from("task_id,worker,input_tokens,output_tokens,total\n");
     for (task_id, worker, input, output) in &usage_rows {
+        // task_id/worker_id 是外部影响字段（worker_id = 用户自设节点名，
+        // 无字符集校验）——CSV 字段消毒防错位移列（单一真相源
+        // nemesis_utils::sanitize::sanitize_csv，与审计链同源；数字列免消毒）。
         csv.push_str(&format!(
             "{},{},{},{},{}\n",
-            task_id,
-            worker,
+            nemesis_utils::sanitize::sanitize_csv(task_id),
+            nemesis_utils::sanitize::sanitize_csv(worker),
             input,
             output,
             input + output

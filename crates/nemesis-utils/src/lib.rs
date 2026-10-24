@@ -35,7 +35,7 @@ pub use message::{format_message, sanitize_for_log, split_message};
 pub use platform::{
     find_plugin_library, find_plugin_library_in, plugin_library_filename, plugin_library_label,
 };
-pub use sanitize::sanitize_path_segment;
+pub use sanitize::{sanitize_csv, sanitize_path_segment};
 pub use skills::{extract_slug, normalize_skill_name};
 pub use string_utils::{
     deref_str, format_datetime_compact, format_timestamp, is_blank, json_get_bool, json_get_f64,
