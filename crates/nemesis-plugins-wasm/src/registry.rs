@@ -667,7 +667,14 @@ impl PluginManager {
             workspace_root: self.workspace_root.clone(),
             egress: reg.egress.clone(),
             invoker: self.invoker.lock().clone(),
-            llm: self.llm.lock().clone(),
+            // LLM 面只授策略插件（契约 = host_impl::LlmInvoker「只有策略帧
+            // 可用」；调用时闸在 cb_llm_complete，这里供给面再收一道纵深：
+            // tool/observer 帧构造期即 None。2026-10-24 R70 帧纪律补齐）。
+            llm: if *reg.manifest.kind == PluginKind::Policy {
+                self.llm.lock().clone()
+            } else {
+                None
+            },
             data_dir: reg.data_dir.clone(),
             audit: self.audit.lock().clone(),
             session_key: String::new(),

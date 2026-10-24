@@ -1,4 +1,4 @@
-//! 宿主回调 shim（8 个 `extern "C"` 函数 → [`CallCaps`] 策略核心）。
+//! 宿主回调 shim（9 个 `extern "C"` 函数 → [`CallCaps`] 策略核心）。
 //!
 //! 策略语义从原 bindgen Host 实现原样搬移（帧预算/observe 帧收窄/审计/脱敏），
 //! 唯一形态变化：两 world 的 bindgen 类型差异由「统一 observer-frame 规则」
@@ -17,6 +17,7 @@ use base64::Engine as _;
 
 use crate::abi::{HostCallbacks, host_err};
 use crate::host_impl::{CallCaps, unix_millis};
+use crate::manifest::PluginKind;
 
 /// 回调表（engine_init 期传给壳；static 生命周期——宿主进程存活期有效）。
 pub(crate) fn callbacks_table() -> HostCallbacks {
@@ -511,10 +512,17 @@ unsafe extern "C" fn cb_tool_invoke(
 /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
 /// （2026-10-22 样板工程批 4；cb_tool_invoke 同款骨架）。
 ///
-/// 帧纪律：observe 帧恒 unavailable（观察路径不授 LLM 花销能力，同
-/// tool-invoke 收窄）；max_tokens=0 视为未给预算诚实拒绝（护栏在
-/// LlmInvoker 实现内做钳制，这里只挡明显畸形）。
-unsafe extern "C" fn cb_llm_complete(
+/// 帧纪律：**只有策略帧可用**（`kind == Policy`；tool / observer 帧恒
+/// unavailable——LLM 花销能力只授循环治理路径，见 host_impl::LlmInvoker
+/// 契约原文）。壳侧 llm-complete 恒注册（不按 world 区分）是 link 兼容
+///（无辜组件不因 import 缺席实例化失败），授权在调用时闸。
+/// 2026-10-24 R70 补齐：此前只拦 observe 帧，tool 帧经 build_frame
+/// 无差别注入的 llm 面即可调用——绕过 egress deny-by-default 形成未声明
+/// 出站通道（manifest 零权限插件可把任意内容经 prompt 送外部模型端点）。
+/// max_tokens=0 视为未给预算诚实拒绝（护栏在 LlmInvoker 实现内做钳制，
+/// 这里只挡明显畸形）。
+#[doc(hidden)]
+pub(crate) unsafe extern "C" fn cb_llm_complete(
     env: *mut c_void,
     prompt: *const c_char,
     max_tokens: u32,
@@ -527,10 +535,10 @@ unsafe extern "C" fn cb_llm_complete(
         if let Err(e) = caps.frame.consume() {
             return (host_err::BUDGET_EXCEEDED, Some(e));
         }
-        if caps.observer_frame {
+        if caps.observer_frame || caps.kind != PluginKind::Policy {
             return (
                 host_err::UNAVAILABLE,
-                Some("llm-complete is unavailable in observer frames".to_string()),
+                Some("llm-complete is only available in policy frames".to_string()),
             );
         }
         if max_tokens == 0 {
