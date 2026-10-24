@@ -308,6 +308,157 @@ async fn test_resume_nonexistent_execution() {
 }
 
 // -----------------------------------------------------------------------
+// BUG-20261024-13：多等待节点并行时 resume 的确定性
+// -----------------------------------------------------------------------
+
+/// 两个 human_review 同层并行（无依赖 → 同一拓扑层并发执行）双双 Waiting。
+/// 无定向 resume 旧实现按 HashMap 迭代序随机挑一个落地——人工决策可能
+/// 落到用户从未见过的节点（静默错配）。现必须 loud 拒绝并点名候选。
+#[tokio::test]
+async fn test_resume_multiple_waiting_without_target_is_loud_rejected() {
+    let engine = WorkflowEngine::new();
+    let hr = |id: &str| NodeDef {
+        id: id.to_string(),
+        node_type: "human_review".to_string(),
+        config: HashMap::from([(
+            "message".to_string(),
+            serde_json::json!(format!("Review {}", id)),
+        )]),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    engine
+        .register_workflow(make_workflow(
+            "dual_hr_wf",
+            vec![hr("review_b"), hr("review_a")],
+        ))
+        .unwrap();
+
+    // 生产路径（run_async → schedule_with_hook）同层并发：两个 human_review
+    // 双双 Waiting。deprecated start_execution 首个 Waiting 即返回，到不了
+    // 多等待形态。
+    let execution = engine
+        .create_execution("dual_hr_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    let execution = engine.run_async(&execution.id).await.unwrap();
+    assert_eq!(execution.state, ExecutionState::Waiting);
+    // 两个节点都在 Waiting（同一层并发执行，双双挂起）。
+    let waiting: Vec<&str> = execution
+        .node_results
+        .iter()
+        .filter(|(_, r)| r.state == ExecutionState::Waiting)
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(waiting.len(), 2);
+
+    let id = execution.id.clone();
+    let mut review = HashMap::new();
+    review.insert("approved".to_string(), serde_json::json!(true));
+    let result = engine.resume_execution(&id, review).await;
+    let err = format!("{}", result.unwrap_err());
+    assert!(err.contains("node_id"), "应提示带 node_id 定向：{err}");
+    // 候选集合按序点名（确定性）。
+    assert!(
+        err.contains("review_a") && err.contains("review_b"),
+        "{err}"
+    );
+}
+
+/// 定向 resume：评审结果落到指定节点，其余等待节点保持 Waiting。
+#[tokio::test]
+async fn test_resume_with_node_target_resolves_specified_node_only() {
+    let engine = WorkflowEngine::new();
+    let hr = |id: &str| NodeDef {
+        id: id.to_string(),
+        node_type: "human_review".to_string(),
+        config: HashMap::from([(
+            "message".to_string(),
+            serde_json::json!(format!("Review {}", id)),
+        )]),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    engine
+        .register_workflow(make_workflow(
+            "dual_hr_wf2",
+            vec![hr("review_b"), hr("review_a")],
+        ))
+        .unwrap();
+
+    let execution = engine
+        .create_execution("dual_hr_wf2", HashMap::new(), None)
+        .await
+        .unwrap();
+    let execution = engine.run_async(&execution.id).await.unwrap();
+    assert_eq!(execution.state, ExecutionState::Waiting);
+    let id = execution.id.clone();
+
+    let mut review = HashMap::new();
+    review.insert("approved".to_string(), serde_json::json!(true));
+    review.insert("comment".to_string(), serde_json::json!("for A only"));
+    let resumed = engine
+        .resume_execution_node(&id, review, Some("review_a"))
+        .await
+        .unwrap();
+
+    // review_a 已解析（评审输出烧入），review_b 仍 Waiting，执行整体仍 Waiting
+    // （任一 Waiting 即停——缺陷 9 语义，等全部解析后才继续下游）。
+    let a = resumed.node_results.get("review_a").unwrap();
+    assert_eq!(a.state, ExecutionState::Completed);
+    assert_eq!(a.output["comment"], serde_json::json!("for A only"));
+    let b = resumed.node_results.get("review_b").unwrap();
+    assert_eq!(b.state, ExecutionState::Waiting);
+    assert_eq!(resumed.state, ExecutionState::Waiting);
+}
+
+/// 定向 resume 打到非等待节点（未执行/已解析）→ loud 拒绝并点名等待集合。
+#[tokio::test]
+async fn test_resume_target_not_in_waiting_set_rejected() {
+    let engine = WorkflowEngine::new();
+    let hr = |id: &str| NodeDef {
+        id: id.to_string(),
+        node_type: "human_review".to_string(),
+        config: HashMap::from([(
+            "message".to_string(),
+            serde_json::json!(format!("Review {}", id)),
+        )]),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    engine
+        .register_workflow(make_workflow(
+            "dual_hr_wf3",
+            vec![hr("review_b"), hr("review_a")],
+        ))
+        .unwrap();
+
+    let execution = engine
+        .create_execution("dual_hr_wf3", HashMap::new(), None)
+        .await
+        .unwrap();
+    let execution = engine.run_async(&execution.id).await.unwrap();
+    assert_eq!(execution.state, ExecutionState::Waiting);
+    let id = execution.id.clone();
+
+    let result = engine
+        .resume_execution_node(&id, HashMap::new(), Some("nonexistent_node"))
+        .await;
+    let err = format!("{}", result.unwrap_err());
+    assert!(err.contains("nonexistent_node"), "{err}");
+    assert!(
+        err.contains("review_a") && err.contains("review_b"),
+        "{err}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // resume_execution runs downstream nodes (1b-A1 step 5 regression)
 // -----------------------------------------------------------------------
 

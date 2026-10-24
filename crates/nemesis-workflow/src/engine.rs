@@ -1836,11 +1836,17 @@ impl WorkflowEngine {
             ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
         );
         let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
-            wf_ctx
+            // BUG-20261024-13 同族：多等待节点并存时 checkpoint 的 waiting_node
+            // 取 id 最小者——HashMap 迭代序随机会让重启前后「当前等待节点」
+            // 漂移（可观测性字段，确定性优先）。
+            let mut ids: Vec<String> = wf_ctx
                 .get_all_node_results()
                 .iter()
-                .find(|(_, r)| r.state == ExecutionState::Waiting)
+                .filter(|(_, r)| r.state == ExecutionState::Waiting)
                 .map(|(id, _)| id.clone())
+                .collect();
+            ids.sort();
+            ids.into_iter().next()
         } else {
             None
         };
@@ -2306,6 +2312,22 @@ impl WorkflowEngine {
         id: &str,
         review_result: HashMap<String, serde_json::Value>,
     ) -> Result<Execution, EngineError> {
+        self.resume_execution_node(id, review_result, None).await
+    }
+
+    /// 节点定向 resume（BUG-20261024-13）。
+    ///
+    /// `target_node = Some(id)` 把评审结果落到指定等待节点；多个 human_review
+    /// 同层并行时（同一拓扑层并发执行、双双 Waiting），无定向的 resume 无法
+    /// 表达用户评审的是哪一个——旧实现按 HashMap 迭代序（进程内随机）挑一
+    /// 个落地，人工决策可能落到用户从未见过的节点上（静默错配）。`None` 时
+    /// 仅当恰好一个等待节点才落地，多于一个 loud 拒绝并点名候选集合。
+    pub async fn resume_execution_node(
+        &self,
+        id: &str,
+        review_result: HashMap<String, serde_json::Value>,
+        target_node: Option<&str>,
+    ) -> Result<Execution, EngineError> {
         // Snapshot the execution under the write lock, then release the lock
         // for the duration of the (potentially long) scheduler call.
         let execution_snapshot = {
@@ -2321,26 +2343,57 @@ impl WorkflowEngine {
                 )));
             }
 
-            // Find the waiting node and update its result with the review.
-            let mut found_waiting: Option<String> = None;
-            for (node_id, result) in execution.node_results.iter_mut() {
-                if result.state == ExecutionState::Waiting {
-                    result.output = serde_json::json!(review_result);
-                    result.state = ExecutionState::Completed;
-                    result.ended_at = Local::now();
-                    if let Some(approved) = review_result.get("approved")
-                        && let Some(b) = approved.as_bool()
-                    {
-                        debug!("[Workflow] Node {} review result: approved={}", node_id, b);
+            // BUG-20261024-13：候选按 id 排序保证确定性；target 必须命中
+            // 等待集合（已解析/未执行的节点 loud 拒绝），无定向且候选多于
+            // 一个时 loud 拒绝——绝不随机选边。
+            let mut waiting_ids: Vec<String> = execution
+                .node_results
+                .iter()
+                .filter(|(_, r)| r.state == ExecutionState::Waiting)
+                .map(|(nid, _)| nid.clone())
+                .collect();
+            waiting_ids.sort();
+            let waiting_id = match target_node {
+                Some(target) => {
+                    if !waiting_ids.iter().any(|nid| nid == target) {
+                        return Err(EngineError::InvalidState(format!(
+                            "节点 {:?} 不在本执行等待集合 {:?} 中（未执行或已解析）",
+                            target, waiting_ids
+                        )));
                     }
-                    found_waiting = Some(node_id.clone());
-                    break;
+                    target.to_string()
                 }
+                None if waiting_ids.is_empty() => {
+                    return Err(EngineError::InvalidState(format!(
+                        "execution {} has no node in waiting state",
+                        id
+                    )));
+                }
+                None if waiting_ids.len() > 1 => {
+                    return Err(EngineError::InvalidState(format!(
+                        "execution {} 有 {} 个等待节点 {:?}：无法确定本次评审落点，请在请求中带 node_id 指定目标节点",
+                        id,
+                        waiting_ids.len(),
+                        waiting_ids
+                    )));
+                }
+                None => waiting_ids[0].clone(),
+            };
+            let result = execution
+                .node_results
+                .get_mut(&waiting_id)
+                .expect("waiting_id 来自同一 map，必然存在");
+            result.output = serde_json::json!(review_result);
+            result.state = ExecutionState::Completed;
+            result.ended_at = Local::now();
+            if let Some(approved) = review_result.get("approved")
+                && let Some(b) = approved.as_bool()
+            {
+                debug!(
+                    "[Workflow] Node {} review result: approved={}",
+                    waiting_id, b
+                );
             }
-
-            let waiting_id = found_waiting.ok_or_else(|| {
-                EngineError::InvalidState(format!("execution {} has no node in waiting state", id))
-            })?;
 
             // Mark as Running while schedule_resume executes.
             execution.state = ExecutionState::Running;
@@ -2468,11 +2521,17 @@ impl WorkflowEngine {
             ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
         );
         let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
-            wf_ctx
+            // BUG-20261024-13 同族：多等待节点并存时 checkpoint 的 waiting_node
+            // 取 id 最小者——HashMap 迭代序随机会让重启前后「当前等待节点」
+            // 漂移（可观测性字段，确定性优先）。
+            let mut ids: Vec<String> = wf_ctx
                 .get_all_node_results()
                 .iter()
-                .find(|(_, r)| r.state == ExecutionState::Waiting)
+                .filter(|(_, r)| r.state == ExecutionState::Waiting)
                 .map(|(id, _)| id.clone())
+                .collect();
+            ids.sort();
+            ids.into_iter().next()
         } else {
             None
         };
