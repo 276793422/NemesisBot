@@ -2,7 +2,8 @@
 
 use crate::models::ModelPricing;
 use crate::pricing::{
-    PricingTable, compute_cost_usd, cost_from_pricing, embedded_source, lookup_pricing,
+    PricingTable, compute_cost_usd, cost_breakdown_from_pricing, cost_from_pricing,
+    embedded_source, lookup_pricing,
 };
 use std::collections::HashMap;
 
@@ -203,4 +204,86 @@ fn embedded_aliases_roundtrip() {
         table.lookup("fireworks_ai/glm-4p46").unwrap().model_id,
         "glm-4.6"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 负 token 钳 0 回归锁（BUG-20261024-09，R80）：账本不变量「上游报数异常
+// ——provider 响应的负 token 数——不得产生负成本」。修复前
+// cost_from_pricing / cost_breakdown_from_pricing 只钳 plain_input，
+// output/cache_creation/cache_read 三列负值原样乘入（provider 抽取层
+// as_i64 无符号校验，负值可达）。
+// ---------------------------------------------------------------------------
+
+fn synthetic_entry() -> ModelPricing {
+    ModelPricing {
+        model_id: "synthetic".into(),
+        display_name: "Synthetic".into(),
+        input_cost_per_million: 1.0,
+        output_cost_per_million: 2.0,
+        cache_read_cost_per_million: 0.1,
+        cache_creation_cost_per_million: 1.25,
+        max_input_tokens: None,
+        max_output_tokens: None,
+        aliases: vec!["vendor/synthetic".into()],
+        price_tiers: None,
+    }
+}
+
+#[test]
+fn cost_negative_output_tokens_clamped_not_negative_cost() {
+    let p = synthetic_entry();
+    // 修复前形态：100k*1 + (-200k)*2 = -300k / 1e6 = -0.3（负成本）。
+    // 钳后：负输出列忽略，只计纯输入 = 100k*1 / 1e6 = 0.1。
+    let cost = cost_from_pricing(&p, 100_000, -200_000, 0, 0);
+    assert!(approx(cost, 0.1), "got {cost}");
+    assert!(cost >= 0.0);
+
+    // 全列负值（极端脏数据）：四列全钳 → 恒 0.0，绝不为负。
+    let cost = cost_from_pricing(&p, -100_000, -200_000, -50_000, -150_000);
+    assert!(approx(cost, 0.0), "got {cost}");
+}
+
+#[test]
+fn cost_negative_cache_tokens_clamped_in_total() {
+    let p = synthetic_entry();
+    // 缓存写/读负值原样乘入的修复前形态：
+    // 100k*1 + 200k*2 + (-50k)*1.25 + (-150k)*0.1 = -0.04（负成本）。
+    // 钳后：只计输入+输出 = (100k*1 + 200k*2)/1e6 = 0.5。
+    let cost = cost_from_pricing(&p, 100_000, 200_000, -50_000, -150_000);
+    assert!(approx(cost, 0.5), "got {cost}");
+}
+
+#[test]
+fn cost_breakdown_negative_tokens_clamped_columns_sum_to_total() {
+    let p = synthetic_entry();
+    // 分项版同钳：负缓存列分项 = 0.0，total = 正列之和；
+    // 「四分项之和恒等于 total」的不变量在钳位形态下保持。
+    let b = cost_breakdown_from_pricing(&p, 100_000, 200_000, -50_000, -150_000);
+    assert!(approx(b.input_cost_usd, 0.1), "input: {}", b.input_cost_usd);
+    assert!(
+        approx(b.output_cost_usd, 0.4),
+        "output: {}",
+        b.output_cost_usd
+    );
+    assert_eq!(b.cache_creation_cost_usd, 0.0);
+    assert_eq!(b.cache_read_cost_usd, 0.0);
+    assert!(approx(b.total_cost_usd, 0.5), "total: {}", b.total_cost_usd);
+    assert!(
+        approx(
+            b.total_cost_usd,
+            b.input_cost_usd
+                + b.output_cost_usd
+                + b.cache_creation_cost_usd
+                + b.cache_read_cost_usd
+        ),
+        "columns must sum to total"
+    );
+
+    // 全负：四分项与 total 全 0.0。
+    let b = cost_breakdown_from_pricing(&p, -100_000, -200_000, -50_000, -150_000);
+    assert_eq!(b.total_cost_usd, 0.0);
+    assert_eq!(b.input_cost_usd, 0.0);
+    assert_eq!(b.output_cost_usd, 0.0);
+    assert_eq!(b.cache_creation_cost_usd, 0.0);
+    assert_eq!(b.cache_read_cost_usd, 0.0);
 }
