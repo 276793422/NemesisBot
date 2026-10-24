@@ -226,6 +226,8 @@ impl AgentLoop {
             external_changes: parking_lot::Mutex::new(Vec::new()),
             recent_self_writes: parking_lot::Mutex::new(std::collections::HashMap::new()),
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
+            #[cfg(all(feature = "codemode", not(target_os = "android")))]
+            code_run_tool: parking_lot::RwLock::new(None),
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
             pending_workflow_edit: parking_lot::RwLock::new(None),

@@ -98,6 +98,28 @@ config.json 的 `agents.hidden_tools` 列表可以把工具从模型视野里**�
 - 双闸生效：工具清单供给侧剔除 + 调用分发侧拦截（改配置后仍带着旧清单的请求也调不动）。
 - 改 config.json 即时生效（下一轮对话），无需重启；tier 档位与隐藏叠加——`model set-tier` 只调档位，被隐藏的工具任何档位都看不到。
 
+## code_run 工具（JS 脚本批量编排，codemode）
+
+需要**连续调用多个工具**（≥3 次调用、循环、条件分支——批量改文件、批量重命名、按过滤条件检索后逐个处理）时，优先用 `code_run` 一次搞定，别一步一步来回调：
+
+1. 它在沙箱里跑一段 JavaScript，脚本内 `tool(name, JSON.stringify({...}))` 调用任意已注册工具（拒绝会抛异常，预期内的失败用 try/catch 包住）。
+2. 中间结果留在脚本变量里，不进对话——只把最终表达式值（建议字符串）返回，省大量上下文。
+3. 脚本内每次 tool() 调用照走完整安全管线与审批；**审批等待消耗脚本墙钟预算**（默认 300s，与审批卡生命周期对齐；需要更长调 `agents.codemode.timeout_secs`）。
+4. 该工具仅 big 能力档模型可见；Dashboard「工具」页可手动关闭。
+
+示例（把 logs 目录下所有 .log 文件里的日期统一改掉）：
+
+```javascript
+const names = tool("list_dir", JSON.stringify({path: "logs"})).split("\n");
+let fixed = 0;
+for (const f of names.filter(x => x.endsWith(".log"))) {
+  const c = tool("read_file", JSON.stringify({path: "logs/" + f}));
+  tool("write_file", JSON.stringify({path: "logs/" + f, content: c.replaceAll("2025-", "2026-")}));
+  fixed++;
+}
+`fixed ${fixed} files`;
+```
+
 ## 消息内 @文件引用
 
 用户消息里可以直接引用工作区文件，内容会自动内联进对话（无需再调 read_file）：

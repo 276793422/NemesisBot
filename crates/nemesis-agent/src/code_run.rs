@@ -13,8 +13,10 @@
 //!   JS 字节码检查点生效 + 每次工具调用的剩余预算透传）、
 //!   `set_memory_limit` 限 JS 堆；脚本错误回传文本（不返 Err），模型可自纠；
 //! - 编译闸 `codemode` cargo feature + 运行闸 `agents.codemode.enabled`
-//!   （默认关）+ tier 闸 `min_tier() = Some("big")`（供给+分发双闸，
-//!   2026-09-30 插件体系复查 #2 同模型）。
+//!   （2026-10-25 默认开，Dashboard Tools 页可关；check_config_reload 热生效
+//!   ——开关切换下一轮 LLM 前增删注册表成员资格，无需重启）+ tier 闸
+//!   `min_tier() = Some("big")`（供给+分发双闸，2026-09-30 插件体系复查
+//!   #2 同模型）。
 //!
 //! 执行模型：rquickjs 非 parallel 形态的 Runtime/Context 不是 Send，整个
 //! JS 生命周期封闭在 `tokio::task::spawn_blocking` 线程内；宿主函数同步
@@ -174,6 +176,10 @@ mod imp {
         fn description(&self) -> String {
             format!(
                 "Run a JavaScript (QuickJS) script in a sandbox and return its completion value. \
+PREFERRED over repeated single tool calls whenever a task needs 3+ tool invocations, loops, or \
+conditional branching (batch file edits, bulk renames, filtered searches, staged pipelines): one \
+code_run call replaces many round trips, and intermediate results stay inside the script instead \
+of flooding the conversation. \
 Inside the script, call any registered tool with `tool(name, argsJson)` where argsJson is a \
 JSON string (e.g. `tool(\"read_file\", JSON.stringify({{path: \"a.txt\"}}))`); it returns the \
 tool result as a string and THROWS on rejection — wrap in try/catch when a failure is expected. \
@@ -181,7 +187,9 @@ All tool calls go through the full security pipeline (estop / approval / 8 layer
 direct tool use. `console.log/info/warn/error` are captured and appended to the result \
 (first {} lines). The script's final expression value (string recommended) is returned. \
 Budget: wall-clock {}s (infinite loops are interrupted), JS heap {}MB, output capped at {}KB. \
-Use for multi-step tool orchestration in one call; the script cannot call code_run itself.",
+Note: a tool() call that triggers an approval card consumes budget while waiting (the card can \
+outlive the budget) — budget is aligned with the approval-card lifetime by default; the script \
+cannot call code_run itself.",
                 MAX_CONSOLE_LINES,
                 self.timeout.as_secs(),
                 self.memory_limit_bytes / (1024 * 1024),
@@ -363,13 +371,17 @@ Use for multi-step tool orchestration in one call; the script cannot call code_r
         // 收到异常。不限时（Duration::MAX）透传不包 timeout。
         match deadline.checked_duration_since(Instant::now()) {
             None => Err(format!(
-                "tool('{name}') not started: script wall-clock budget already exhausted"
+                "tool('{name}') not started: script wall-clock budget already exhausted \
+(note: approval waits consume budget; raise agents.codemode.timeout_secs if approvals \
+routinely exhaust it)"
             )),
             Some(rem) if rem == Duration::MAX => finish_invoke(handle.block_on(fut)),
             Some(rem) => match handle.block_on(tokio::time::timeout(rem, fut)) {
                 Ok(res) => finish_invoke(res),
                 Err(_) => Err(format!(
-                    "tool('{name}') exceeded the script wall-clock budget and was aborted"
+                    "tool('{name}') exceeded the script wall-clock budget and was aborted \
+(note: approval waits consume budget; raise agents.codemode.timeout_secs if approvals \
+routinely exhaust it)"
                 )),
             },
         }

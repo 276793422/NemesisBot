@@ -11,7 +11,7 @@ edition.workspace = true
 default = ["codemode", "forge", "memory", "workflow", "security", "lsp", "checkpoint-git", "image-process", "history-search"]
 # T2（L1 codemode）：code_run 脚本工具（rquickjs QuickJS 引擎随它进出；
 # 关 = 无 code_run 工具，IoT/极小镜像可裁）。运行开关是 config
-# agents.codemode.enabled（默认关）——编译期与运行期双闸同 hidden_tools 模型。
+# agents.codemode.enabled（默认开，Tools 页可关，开关热生效）。
 codemode = ["dep:rquickjs"]
 # LSP 只读语义查询（lsp 工具 + 诊断回灌 diagnostics_loop 消费
 # nemesis-lsp；关 = 工具与诊断闭环编译期消失，config agents.lsp_tool

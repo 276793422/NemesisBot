@@ -413,6 +413,45 @@ async fn build_agent_loop_full_chain_from_disk_config() {
     assert!(loop2.tool_count() > 0);
 }
 
+// =========================================================================
+// codemode 装配期注册回归（2026-10-25 默认开拍板）：
+// - 默认 config（缺 codemode 键）装配后 code_run 已注册（serde default true）；
+// - 显式 agents.codemode.enabled=false 装配后不注册（装配闸尊重 config）。
+// 运行期热生效（开关切换的注册表增删）由 nemesis-agent config_watch 三测试钉住，
+// 这里只覆盖装配面。
+// =========================================================================
+
+#[tokio::test]
+async fn build_agent_loop_registers_codemode_by_default() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(&home, serde_json::json!({}));
+
+    let loop1 = build_agent_loop(&make_shared(&home)).expect("build must succeed");
+    assert!(
+        loop1.tool_names().iter().any(|n| n == "code_run"),
+        "默认 config（缺 codemode 键）装配后 code_run 必须已注册（serde default true）；实际工具: {:?}",
+        loop1.tool_names()
+    );
+}
+
+#[tokio::test]
+async fn build_agent_loop_skips_codemode_when_disabled() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(
+        &home,
+        serde_json::json!({ "agents": { "codemode": { "enabled": false } } }),
+    );
+
+    let loop1 = build_agent_loop(&make_shared(&home)).expect("build must succeed");
+    assert!(
+        !loop1.tool_names().iter().any(|n| n == "code_run"),
+        "显式 enabled=false 装配后 code_run 不应注册；实际工具: {:?}",
+        loop1.tool_names()
+    );
+}
+
 #[tokio::test]
 async fn build_agent_loop_degrades_when_config_missing() {
     let tmp = tempfile::TempDir::new().unwrap();
