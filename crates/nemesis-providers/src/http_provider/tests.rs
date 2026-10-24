@@ -1,5 +1,36 @@
 use super::*;
 
+/// BUG-HUNT R61 回归钉：SSE `data` 字段名后空格可选（规范语义）——此前
+/// 只认 `"data: "` 带空格形态，无空格上游（`data:{...}`，合规服务存在）
+/// 事件全被跳过 → 流式回复静默变空。anthropic lane 双臂 / codex lane
+/// strip_prefix 单臂早已兼容，本 lane 是唯一缺口。
+#[test]
+fn data_payloads_recognizes_both_space_forms() {
+    // 带空格（主流形态）。
+    assert_eq!(data_payloads("data: {\"a\":1}"), vec![r#"{"a":1}"#]);
+    // 无空格（规范允许；回归目标形态）。
+    assert_eq!(data_payloads("data:{\"a\":1}"), vec![r#"{"a":1}"#]);
+    // 混排：两种形态同块共存，按行保序。
+    assert_eq!(
+        data_payloads("data: {\"i\":0}\ndata:{\"i\":1}"),
+        vec![r#"{"i":0}"#, r#"{"i":1}"#]
+    );
+    // [DONE] 无空格形态同样可达 trim 判定。
+    assert_eq!(data_payloads("data:[DONE]"), vec!["[DONE]"]);
+}
+
+#[test]
+fn data_payloads_ignores_non_data_lines() {
+    // event:/id:/注释行/空行不产载荷；行尾 CRLF 由 trim 消化。
+    assert!(data_payloads("event: message\nid: 1\n: keep-alive\n\n").is_empty());
+    assert_eq!(
+        data_payloads("event: delta\r\ndata: {\"x\":1}\r\n"),
+        vec![r#"{"x":1}"#]
+    );
+    // 多空格形态：strip 掉一个约定空格后交下游 serde（容忍前导空白）。
+    assert_eq!(data_payloads("data:  {\"a\":1}"), vec![r#" {"a":1}"#]);
+}
+
 #[test]
 fn test_build_request_body() {
     let config = HttpProviderConfig {

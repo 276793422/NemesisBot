@@ -533,20 +533,13 @@ fn handle_sse_event(ev: &serde_json::Value) -> SseOutcome {
 /// 流自然结束仍无终态事件（中途断流）= 补全不完整，按 Timeout 计——
 /// 诚实不可交付，且重试环可安全重抽。
 fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, FailoverError> {
-    // 事件分隔符按协议是空行；同时容忍 \n\n 与 \r\n\r\n 两种形态。
+    // 事件分隔符按协议是空行；容忍 \n\n 与 \r\n\r\n 两种形态
+    //（判定逻辑单一真相源在 stream_util::next_event_boundary）。
     let mut rest = text;
     while !rest.is_empty() {
-        let (block, next): (&str, &str) = match (rest.find("\n\n"), rest.find("\r\n\r\n")) {
-            (Some(a), Some(b)) => {
-                if a <= b {
-                    (&rest[..a], &rest[a + 2..])
-                } else {
-                    (&rest[..b], &rest[b + 4..])
-                }
-            }
-            (Some(a), None) => (&rest[..a], &rest[a + 2..]),
-            (None, Some(b)) => (&rest[..b], &rest[b + 4..]),
-            (None, None) => (rest, ""),
+        let (block, next): (&str, &str) = match crate::stream_util::next_event_boundary(rest) {
+            Some((pos, sep)) => (&rest[..pos], &rest[pos + sep..]),
+            None => (rest, ""),
         };
         rest = next;
         let Some(ev) = parse_sse_block(block) else {

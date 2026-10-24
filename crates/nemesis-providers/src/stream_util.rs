@@ -121,5 +121,24 @@ pub async fn collect_stream_response(
     }
 }
 
+/// SSE 事件边界定位：返回 (块终点偏移, 分隔符字节长)。协议分隔符是空行，
+/// 同时容忍 `\n\n` 与 `\r\n\r\n` 两种行尾形态（SSE 规范行终止 LF/CR/CRLF
+/// 三态；CRLF-only 上游若按单一 `\n\n` 扫描将零事件解析——静默直到 EOF
+/// 兜底，内容全丢）。codex lane 原有语义抽成单一真相源，三 lane 共用。
+pub fn next_event_boundary(buffer: &str) -> Option<(usize, usize)> {
+    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
+        (Some(a), Some(b)) => {
+            if a <= b {
+                Some((a, 2))
+            } else {
+                Some((b, 4))
+            }
+        }
+        (Some(a), None) => Some((a, 2)),
+        (None, Some(b)) => Some((b, 4)),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests;

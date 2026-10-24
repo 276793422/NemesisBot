@@ -4,7 +4,43 @@
 //! 前半字节在上一个 chunk 被替换成 U+FFFD——长 CJK 回复几乎每个 chunk
 //! 边界都烂字。修复 = 尾部不完整序列 holdback 到下一 chunk 拼接后解码。
 
+use super::next_event_boundary;
 use super::push_chunk_incremental;
+
+/// BUG-HUNT R61 回归钉：`next_event_boundary` 双形态事件边界。
+/// 此前 anthropic/http_provider 两 lane 只扫 `\n\n`——CRLF-only 上游
+/// （SSE 规范行终止三态 LF/CR/CRLF）零事件解析，流式回复静默变空。
+
+#[test]
+fn boundary_lf_form() {
+    assert_eq!(next_event_boundary("data: a\n\ndata: b"), Some((7, 2)));
+    // 多边界取第一个。
+    assert_eq!(next_event_boundary("a\n\nb\n\nc"), Some((1, 2)));
+}
+
+#[test]
+fn boundary_crlf_form() {
+    // CRLF-only 上游此前完全解析不出事件（find("\n\n") 永不命中）。
+    assert_eq!(next_event_boundary("data: a\r\n\r\ndata: b"), Some((7, 4)));
+}
+
+#[test]
+fn boundary_prefers_earlier_separator() {
+    // LF 边界在前 → 取 LF。
+    assert_eq!(next_event_boundary("a\n\nb\r\n\r\nc"), Some((1, 2)));
+    // CRLF 边界在前 → 取 CRLF（旧 codex 内联语义：a<=b 取 LF，否则 CRLF）。
+    assert_eq!(next_event_boundary("a\r\n\r\nb\n\nc"), Some((1, 4)));
+    // 混合行尾（\r\n 行 + \n 空行）：CRLF 完整形态在场时优先整段消费。
+    assert_eq!(next_event_boundary("data: x\r\n\r\n"), Some((7, 4)));
+}
+
+#[test]
+fn boundary_none_when_no_separator() {
+    assert_eq!(next_event_boundary("data: {\"a\":1}\n"), None);
+    assert_eq!(next_event_boundary(""), None);
+    // 半包：分隔符劈在 chunk 边界上（\r\n / \r\n 各半）不可误判。
+    assert_eq!(next_event_boundary("data: x\r\n\r"), None);
+}
 
 fn feed(chunks: &[&[u8]]) -> String {
     let mut buf = String::new();
