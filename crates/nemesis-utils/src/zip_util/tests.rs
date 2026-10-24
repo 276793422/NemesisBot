@@ -880,6 +880,10 @@ fn test_is_unsafe_rel_path() {
     assert!(is_unsafe_rel_path("newdir/../../../evil.txt"));
     assert!(is_unsafe_rel_path("a/../b"));
     assert!(is_unsafe_rel_path("a/.."));
+    // 反斜杠形态跨平台一致拒绝（Unix 把 `\` 当普通字符，Path 不切分——
+    // Linux CI 实证漏放后归一化补上）。
+    assert!(is_unsafe_rel_path(r"foo\..\..\bar.txt"));
+    assert!(is_unsafe_rel_path(r"..\evil.txt"));
     // 绝对形态：Unix 根 / Windows 盘符（盘符在 Unix 解析为普通组件，按字节拒绝）。
     assert!(is_unsafe_rel_path("/etc/evil"));
     assert!(is_unsafe_rel_path("C:/Users/evil"));
