@@ -249,7 +249,8 @@ struct EffectivePrices {
 /// Pure cost math for a known pricing entry (unit-testable without the table).
 ///
 /// `input_tokens` = 非缓存纯输入（见 [`compute_cost_usd`] 语义注记）；
-/// 负值防御性钳 0（上游报数异常不产生负成本）。
+/// **四列全部**防御性钳 0（账本不变量：上游报数异常——provider 响应的
+/// 负 token 数——不得产生负成本；`tier_selection_tokens` 同款纪律）。
 pub fn cost_from_pricing(
     p: &ModelPricing,
     input_tokens: i64,
@@ -263,10 +264,13 @@ pub fn cost_from_pricing(
         tier_selection_tokens(input_tokens, cache_creation_tokens, cache_read_tokens),
     );
     let plain_input = input_tokens.max(0);
+    let output = output_tokens.max(0);
+    let cache_creation = cache_creation_tokens.max(0);
+    let cache_read = cache_read_tokens.max(0);
     (plain_input as f64 * prices.input
-        + output_tokens as f64 * prices.output
-        + cache_creation_tokens as f64 * prices.cache_creation
-        + cache_read_tokens as f64 * prices.cache_read)
+        + output as f64 * prices.output
+        + cache_creation as f64 * prices.cache_creation
+        + cache_read as f64 * prices.cache_read)
         / 1_000_000.0
 }
 
@@ -281,16 +285,20 @@ pub fn cost_breakdown_from_pricing(
     cache_read_tokens: i64,
 ) -> crate::CostBreakdown {
     // 选档与总价版同源：完整 prompt 长度（缓存参与），见 [`tier_selection_tokens`]。
+    // 四列防御性钳 0（与 [`cost_from_pricing`] 同一不变量：分项与 total
+    // 同钳，四分项之和恒等于 total 的形态保持）。
     let prices = effective_prices(
         p,
         tier_selection_tokens(input_tokens, cache_creation_tokens, cache_read_tokens),
     );
     let plain_input = input_tokens.max(0);
+    let output = output_tokens.max(0);
+    let cache_creation = cache_creation_tokens.max(0);
+    let cache_read = cache_read_tokens.max(0);
     let input_cost_usd = plain_input as f64 * prices.input / 1_000_000.0;
-    let output_cost_usd = output_tokens as f64 * prices.output / 1_000_000.0;
-    let cache_creation_cost_usd =
-        cache_creation_tokens as f64 * prices.cache_creation / 1_000_000.0;
-    let cache_read_cost_usd = cache_read_tokens as f64 * prices.cache_read / 1_000_000.0;
+    let output_cost_usd = output as f64 * prices.output / 1_000_000.0;
+    let cache_creation_cost_usd = cache_creation as f64 * prices.cache_creation / 1_000_000.0;
+    let cache_read_cost_usd = cache_read as f64 * prices.cache_read / 1_000_000.0;
     crate::CostBreakdown {
         pricing_model: p.model_id.clone(),
         input_cost_usd,
