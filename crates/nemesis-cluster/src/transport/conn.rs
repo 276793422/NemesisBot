@@ -359,9 +359,10 @@ impl Default for TcpConnConfig {
 /// - Auth token: optionally sent on start before any data
 ///
 /// 泛型于底层流 `S`（`AsyncRead + AsyncWrite`）：默认 `TokioTcpStream`（LAN
-/// TCP 路径，全部既有调用点零改动）；iroh 跨网路径传 [`crate::roaming::bridge::IrohBiStream`]
-/// （QUIC bi-stream 组合器，feature=cluster-roaming）——帧协议/AEAD/空闲监测
-/// 对两种载体逐字节同语义（A1 P2 双栈）。
+/// TCP 路径，全部既有调用点零改动）；iroh 跨网路径（QUIC 插件化 M3）同泛型
+/// 传 loopback `TokioTcpStream`——插件把 iroh bi-stream 一次性 loopback TCP
+/// 监听交接给宿主（`rpc::server::serve_roaming_loopback`），帧协议/AEAD/
+/// 空闲监测与 LAN TCP 路径零分叉（A1 P2 双栈）。
 pub struct TcpConn<S = TokioTcpStream> {
     node_id: String,
     address: String,

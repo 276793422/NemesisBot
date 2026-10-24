@@ -48,10 +48,8 @@ pub mod onboard;
 pub mod persona;
 /// 用户习惯画像 CLI（自进化升级 B 线：list/enable/disable/veto/forget/pin）。
 pub mod profile;
-// QUIC CLI（2026-10-23 与集群解耦：keygen/status 随 cluster-roaming——
-// QUIC 自身配置/身份是 QUIC 层资产；relay 子命令随 quic-relay 穿透
-// nemesis-cluster/quic-relay）。
-#[cfg(feature = "cluster-roaming")]
+// QUIC CLI（2026-10-23 与集群解耦：QUIC 自身配置/身份/中继是 QUIC 层
+// 资产，不寄居集群命令族；relay 运行面在 plugin_roaming 插件）。
 pub mod quic;
 /// K1（devtool-upgrade 阶段 4）：headless 单任务执行（无端口、无 gateway，
 /// 安全 9 层全量生效，跑完即退）。

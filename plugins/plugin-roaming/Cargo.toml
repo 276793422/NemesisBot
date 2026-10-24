@@ -1,0 +1,47 @@
+[package]
+name = "plugin-roaming"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+edition = "2024"
+description = "NemesisBot roaming plugin — QUIC relay server + rendezvous registry (cdylib)"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate
+# target). 体积纪律：QUIC/iroh 家族语义全在本插件，主二进制零增量。
+# Build: cargo build --release --manifest-path plugins/plugin-roaming/Cargo.toml
+# Output: target_plugin_roaming/release/plugin_roaming.dll (libplugin_roaming.so/.dylib)
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# QUIC 中继服务器（server 面：HTTP relay transport + QAD QUIC 臂 + 访问控制）。
+# default-features=false + server——与原 nemesis-cluster quic-relay feature 同形。
+iroh-relay = { version = "1", default-features = false, features = ["server"] }
+# 客户端连接面端点（M3：iroh QUIC 拨号/受理/loopback 交接全在插件——宿主零 iroh）。
+# default-features=false + tls-ring（与 iroh-relay 的 ring TLS 同源，不装 aws-lc-rs 双栈）。
+iroh = { version = "1", default-features = false, features = ["tls-ring"] }
+# trust.toml 信任簿读写（TrustBookData 序列化）。
+# 自签证书（RelayTls::SelfSigned 档）。
+rcgen = "0.14"
+# QUIC 臂 TLS ServerConfig 组装（ring provider 显式注入，不装进程级默认）。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+base64 = "0.22"
+# rendezvous 成员注册表（axum 薄壳两端点）。
+axum = "0.8"
+# 插件自持 runtime（FFI 同步导出内 block_on；常驻服务跑任务）。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# iroh 身份校验（valid_iroh_id 镜像宿主 node_id_from_hex 的 ed25519 公钥点校验）。
+ed25519-dalek = "2"
+hex = "0.4"
+# 身份 generate（32B seed OS 随机源——iroh SecretKey::generate 同级熵源）。
+getrandom = "0.2"
+# 名册循环客户端（M2：register/members HTTP 往返搬插件——拍板 7）。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"

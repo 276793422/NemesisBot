@@ -1,21 +1,22 @@
-//! QUIC CLI（feature=cluster-roaming 穿透 nemesis-cluster/roaming；2026-10-23
-//! 与集群解耦：QUIC 自身配置/身份/状态是 QUIC 层资产，不寄居集群命令族）。
+//! QUIC CLI（M4 起恒编译：cluster-roaming/quic-relay feature 已删，代理层
+//! 恒在；2026-10-23 与集群解耦：QUIC 自身配置/身份/状态是 QUIC 层资产，
+//! 不寄居集群命令族）。
 //!
 //! - `quic keygen`：生成本机 iroh 漫游身份（自 `cluster roaming keygen` 挪来
 //!   ——命令面挪、身份文件物理路径不动，免得平白多一步迁移）。
 //! - `quic status`：只读状态面——client 段（客户端连接参数）+ relay 段
 //!   （服务端配置解析产物、证书状态；零副作用，不触发证书生成）。
 //!
-//! 服务端面（`quic relay` 独立进程）随 `quic-relay` feature 编译：
-//! 独立中继的两个入口同源共用 `run_relay_server`（同一实现，不冲突）——
-//! `quic relay`：分类管理入口；`gateway --quic-relay`：统一入口
-//! （GatewayCtx::assemble 早退调进本函数；与桥中继 `gateway --relay`
-//! 旗标先例同形态）。两者都读 **config.quic.json** `relay` 段装配
-//!（`relay.enabled` 只约束 gateway 进程内启动闸，独立进程形态不受此闸
-//! 约束——命令本身即显式意志）；token 空 = fail-closed 拒绝启动。
-//! 首读触发旧位置（cluster.json roaming 段）一次性迁移
-//!（[`ensure_quic_config`]，幂等）。无 quic-relay 时 `quic status` 服务端
-//! 段诚实输出「feature 未编译」。
+//! 服务端面（`quic relay` 独立进程）运行面在 **plugin_roaming C-ABI 插件**
+//! （iroh-relay/rustls/axum 栈随插件迁出主二进制）：宿主只剩 token
+//! fail-closed 闸 + 装载 + 调插件 start/stop。两个入口同源共用
+//! `run_relay_server`（同一实现，不冲突）——`quic relay`：分类管理入口；
+//! `gateway --quic-relay`：统一入口。两者都读 **config.quic.json** `relay`
+//! 段装配（`relay.enabled` 只约束 gateway 进程内启动闸，独立进程形态不受
+//! 此闸约束——命令本身即显式意志）；token 空 = fail-closed 拒绝启动（插件
+//! 内同值兜底拒启，宿主前置检查只为了更清楚的错误文案）。首读触发旧位置
+//!（cluster.json roaming 段）一次性迁移（[`ensure_quic_config`]，幂等）。
+//! 插件缺席 = 诚实报错（CLI 是显式意志，没有降级可言）。
 
 use std::path::Path;
 
@@ -25,18 +26,16 @@ use nemesis_cluster::roaming::quic_config::{QuicConfig, ensure_quic_config, reso
 /// `nemesisbot quic <action>` 入口。
 pub async fn run(home: &Path, action: QuicAction) -> Result<(), String> {
     match action {
-        #[cfg(feature = "quic-relay")]
         QuicAction::Relay => run_relay_server(home).await,
-        QuicAction::Keygen { force } => run_keygen(home, force),
-        QuicAction::Status => show_status(home),
+        QuicAction::Keygen { force } => run_keygen(home, force).await,
+        QuicAction::Status => show_status(home).await,
     }
 }
 
 /// `quic` 子命令动作。
 #[derive(clap::Subcommand, Debug)]
 pub enum QuicAction {
-    /// 启动自建 QUIC 中继服务器（内网穿透；Ctrl-C 停机；feature=quic-relay）
-    #[cfg(feature = "quic-relay")]
+    /// 启动自建 QUIC 中继服务器（内网穿透；Ctrl-C 停机；运行面在 plugin_roaming）
     Relay,
     /// 生成本机 iroh 漫游身份密钥（workspace/cluster/roaming.key）
     Keygen {
@@ -60,49 +59,82 @@ fn resolved(home: &Path) -> (QuicConfig, std::path::PathBuf) {
 /// `quic keygen`：生成本机 iroh 漫游身份（2026-10-23 自 `cluster roaming
 /// keygen` 挪来——身份是 QUIC 层资产不是集群资产；**物理路径不变**
 /// workspace/cluster/roaming.key，对端 peers.toml 静态条目零影响）。
-fn run_keygen(home: &Path, force: bool) -> Result<(), String> {
-    use nemesis_cluster::roaming::endpoint::{RoamingIdentity, persist, roaming_key_path};
+/// QUIC 插件化 M2：身份面（seed→node_id 派生是 ed25519 运算）在
+/// plugin_roaming——CLI 先装载插件（幂等）再走桥；插件缺席 = 诚实报错
+/// （CLI 是显式意志，没有降级可言）。
+async fn run_keygen(home: &Path, force: bool) -> Result<(), String> {
+    use crate::roaming_plugin_loader::{RoamingLoadOutcome, load_roaming_plugin, relay_init_json};
+    use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
+    use nemesis_cluster::roaming::roaming_key_path;
 
+    // resolved() 顺带完成旧位置迁移（幂等）——cfg 不用但迁移副作用要。
+    let (_cfg, config_path) = resolved(home);
     // roaming_* 收的是 workspace 根（与 gateway setup_roaming、WSAPI 面同
     // 口径），不是 home——错传会把 key 写到 `.nemesisbot/` 而非
     // `.nemesisbot/workspace/`，gateway 读不到。
     let workspace = crate::common::workspace_path(home);
     let key_path = roaming_key_path(&workspace);
-    let (id, created) = if force && key_path.exists() {
-        let id = RoamingIdentity::generate();
-        persist(&id, &key_path).map_err(|e| format!("写身份密钥失败: {e}"))?;
-        (id, true)
+
+    // 装载（幂等——gateway 形态已装载时直接 Loaded）。身份文件解析根 =
+    // workspace（init 时经 get_workspace_dir 注入插件，与 gateway 同口径）。
+    match load_roaming_plugin(&workspace, &relay_init_json(&config_path)) {
+        RoamingLoadOutcome::Loaded => {}
+        RoamingLoadOutcome::Absent => {
+            return Err(
+                "plugin_roaming 未找到（exe 旁 plugins/plugin_roaming 缺席）——\
+身份面在插件内，请随发行包安装 plugins/plugin_roaming/plugin_roaming.dll"
+                    .to_string(),
+            );
+        }
+        RoamingLoadOutcome::Rejected(reason) => {
+            return Err(format!("plugin_roaming 拒载: {reason}"));
+        }
+    }
+
+    let info = match if force {
+        plugin_bridge::identity_keygen_force().await
     } else {
-        RoamingIdentity::load_or_create(&workspace).map_err(|e| format!("身份密钥装配失败: {e}"))?
+        plugin_bridge::identity_ensure().await
+    } {
+        BridgeOutcome::Ok(info) => info,
+        BridgeOutcome::Absent => {
+            return Err("plugin_roaming 未装载（桥槽空）——身份面在插件内".to_string());
+        }
+        BridgeOutcome::Failed(e) => return Err(e),
     };
     println!("Roaming identity key: {}", key_path.display());
     println!(
         "  状态: {}",
-        if created {
+        if info.created {
             "新生成"
         } else {
             "已存在（加载）"
         }
     );
-    println!("  node_id: {}", id.node_id_hex());
-    println!("  完整地址: iroh:{}", id.node_id_hex());
-    if !created {
+    println!("  node_id: {}", info.iroh_id);
+    println!("  完整地址: iroh:{}", info.iroh_id);
+    if !info.created {
         println!("  （密钥已存在未变更；轮换加 --force——对端须重新信任新 node_id）");
     }
     Ok(())
 }
 
-/// 独立中继进程：装配 → 打印监听面 → Ctrl-C 等待 → 优雅停机。
+/// 独立中继进程：token fail-closed → 装载 plugin_roaming → 插件 start →
+/// 打印监听面 → Ctrl-C → 插件 stop。
 ///
 /// 两个 CLI 入口同源共用（单一实现）：`nemesisbot quic relay`（分类管理入口）
 /// 与 `nemesisbot gateway --quic-relay`（统一入口，与桥中继 `--relay` 旗标
-/// 先例同形态——经 GatewayCtx::assemble 早退调进本函数）。与桥中继
-/// `run_relay` 同款 fail-closed 纪律：`relay.token` 空 = 拒绝启动
-/// （纯中继面向公网，无鉴权裸奔不可放行——此前的「警告后 AllowAll」偏差已
-/// 对齐收口）。feature=quic-relay（中继服务器面：iroh-relax/server +
-/// rustls + axum 随 feature 进出）。
-#[cfg(feature = "quic-relay")]
+/// 先例同形态——经 GatewayCtx::assemble 早退调进本函数）。QUIC 插件化 M1：
+/// iroh-relay 服务器栈不在本进程——插件内自持 tokio runtime 承载 HTTP/QUIC
+/// 监听与成员注册表；宿主经 C-ABI 调 start/stop（同步 FFI 内投插件自持
+/// runtime，宿主侧 loader 走 spawn_blocking）。与桥中继 `run_relay` 同款
+/// fail-closed 纪律：`relay.token` 空 = 拒绝启动（纯中继面向公网，无鉴权
+/// 裸奔不可放行）。插件缺席/拒载 = 诚实报错退出（显式意志不降级）。
 pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
+    use crate::roaming_plugin_loader::{
+        RoamingLoadOutcome, load_roaming_plugin, roaming_start, roaming_stop,
+    };
+
     let (cfg, config_path) = resolved(home);
     let workspace = crate::common::workspace_path(home);
     let relay = &cfg.relay;
@@ -116,7 +148,7 @@ pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
         return Err("--quic-relay/quic relay requires relay.token to be set".to_string());
     }
 
-    println!("QUIC 中继服务器（自建 iroh relay，独立进程）");
+    println!("QUIC 中继服务器（自建 iroh relay，plugin_roaming 承载）");
     println!("  配置: {}", config_path.display());
     println!(
         "  TLS 档: {}",
@@ -128,30 +160,48 @@ pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
     );
     println!("  访问控制: SharedToken（客户端需配对 client.relay_token）");
 
-    let mut handle =
-        nemesis_cluster::roaming::relay_server::spawn_relay_server(relay, &workspace).await?;
-    if let Some(http) = handle.http_addr {
+    // 插件装载（幂等——gateway 已装载时直接 Loaded）。init 配置 = relay 段
+    // raw 直传（loader 纪律：不走 typed 往返）。
+    let init_json = crate::roaming_plugin_loader::relay_init_json(&config_path);
+    match load_roaming_plugin(&workspace, &init_json) {
+        RoamingLoadOutcome::Loaded => {}
+        RoamingLoadOutcome::Absent => {
+            return Err(
+                "plugin_roaming 未找到（exe 旁 plugins/plugin_roaming 缺席）——\
+中继运行面在插件内，请随发行包安装 plugins/plugin_roaming/plugin_roaming.dll"
+                    .to_string(),
+            );
+        }
+        RoamingLoadOutcome::Rejected(reason) => {
+            return Err(format!("plugin_roaming 拒载: {reason}"));
+        }
+    }
+
+    // 插件内 token 兜底 fail-closed（token_missing）+ 实际拉起。回执 =
+    // status 快照形状（running/http_addr/quic_addr/registry_addr）。
+    let status = roaming_start()
+        .await
+        .map_err(|e| format!("中继启动失败: {e}"))?;
+    if let Some(http) = status.get("http_addr").and_then(|v| v.as_str()) {
         println!("  HTTP relay transport: {http}");
     }
-    if let Some(quic) = handle.quic_addr {
+    if let Some(quic) = status.get("quic_addr").and_then(|v| v.as_str()) {
         println!("  QUIC relay transport: {quic}");
     }
-    if let Some(reg) = handle.registry.as_ref() {
-        println!(
-            "  成员注册表 (rendezvous): {}（自动发现面；设备接入即报到、周期拉名册）",
-            reg.addr
-        );
-    } else if relay.registry_port == 0 {
-        println!("  成员注册表 (rendezvous): 关（registry_port=0，纯传输形态）");
+    match status.get("registry_addr").and_then(|v| v.as_str()) {
+        Some(reg) => {
+            println!("  成员注册表 (rendezvous): {reg}（自动发现面；设备接入即报到、周期拉名册）")
+        }
+        None => println!("  成员注册表 (rendezvous): 关（registry_port=0，纯传输形态）"),
     }
     println!(
         "  对外 relay URL（客户端 client.relay_url 填这个）: {}",
-        nemesis_cluster::roaming::relay_server::advertised_relay_url(relay)
+        nemesis_cluster::roaming::relay_info::advertised_relay_url(relay)
     );
     if relay.tls == RelayTls::SelfSigned {
         println!(
             "  证书: {}",
-            nemesis_cluster::roaming::relay_server::relay_cert_path(&workspace).display()
+            nemesis_cluster::roaming::relay_info::relay_cert_path(&workspace).display()
         );
     }
     println!("就绪。Ctrl-C 停机。");
@@ -160,13 +210,15 @@ pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
         .await
         .map_err(|e| format!("监听 Ctrl-C 失败: {e}"))?;
     println!("停机中…");
-    handle.shutdown().await;
-    println!("已停机。");
+    match roaming_stop().await {
+        Ok(_) => println!("已停机。"),
+        Err(e) => println!("停机异常（中继可能仍在运行）: {e}"),
+    }
     Ok(())
 }
 
 /// `quic status` 只读状态面。
-fn show_status(home: &Path) -> Result<(), String> {
+async fn show_status(home: &Path) -> Result<(), String> {
     let (cfg, config_path) = resolved(home);
     let workspace = crate::common::workspace_path(home);
     let relay = &cfg.relay;
@@ -199,19 +251,35 @@ fn show_status(home: &Path) -> Result<(), String> {
     );
     // 本机 iroh 身份（组网接线关键项：对端 peers.toml 静态条目的
     // `iroh:<hex>@<relay_url>` 要写这个 hex——gateway 启动日志同值，
-    // [node].iroh_id 声明可对账）。
-    let key_path = nemesis_cluster::roaming::endpoint::roaming_key_path(&workspace);
-    if key_path.exists() {
-        match nemesis_cluster::roaming::endpoint::RoamingIdentity::load(&key_path) {
-            Ok(id) => {
-                let hex = id.node_id_hex();
-                println!("本机 iroh 身份: iroh:{hex}");
-                println!("  对端静态条目写法: address = \"iroh:{hex}@<本机对外 relay_url>\"");
+    // [node].iroh_id 声明可对账）。QUIC 插件化 M2：身份派生（seed→node_id
+    // 是 ed25519 运算）在插件内——装载走桥读；缺席/失败 = 诚实注记
+    // （状态面不因身份读不到而失败，配置段照常展示）。
+    match crate::roaming_plugin_loader::load_roaming_plugin(
+        &workspace,
+        &crate::roaming_plugin_loader::relay_init_json(&config_path),
+    ) {
+        crate::roaming_plugin_loader::RoamingLoadOutcome::Loaded => {
+            match nemesis_cluster::roaming::plugin_bridge::get_iroh_id().await {
+                nemesis_cluster::roaming::plugin_bridge::BridgeOutcome::Ok(hex) => {
+                    println!("本机 iroh 身份: iroh:{hex}");
+                    println!("  对端静态条目写法: address = \"iroh:{hex}@<本机对外 relay_url>\"");
+                }
+                nemesis_cluster::roaming::plugin_bridge::BridgeOutcome::Failed(e) => {
+                    println!("本机 iroh 身份: 读取失败（{e}）");
+                }
+                nemesis_cluster::roaming::plugin_bridge::BridgeOutcome::Absent => {
+                    println!("本机 iroh 身份: 未装载（plugin_roaming 桥槽空）");
+                }
             }
-            Err(e) => println!("本机 iroh 身份: 读取失败（{e}）"),
         }
-    } else {
-        println!("本机 iroh 身份: 未生成（`quic keygen` 或首次启用 roaming 的 gateway 自动生成）");
+        crate::roaming_plugin_loader::RoamingLoadOutcome::Absent => {
+            println!(
+                "本机 iroh 身份: plugin_roaming 未安装（exe 旁 plugins/plugin_roaming 缺席——身份派生面在插件内）"
+            );
+        }
+        crate::roaming_plugin_loader::RoamingLoadOutcome::Rejected(reason) => {
+            println!("本机 iroh 身份: plugin_roaming 拒载（{reason}）");
+        }
     }
     println!("relay 段解析产物（服务端自建中继）:");
     println!("  gateway 进程内启动 (enabled): {}", relay.enabled);
@@ -256,9 +324,9 @@ fn show_status(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 服务端证书/对外 URL 段（quic-relay 双形态）：feature 在 = 完整证书状态 +
-/// 对外 URL；feature 关 = 诚实行（配置键解析照常展示——server 段是纯数据）。
-#[cfg(feature = "quic-relay")]
+/// 服务端证书/对外 URL 段：完整证书状态 + 对外 URL。路径/URL 计算是纯函数
+///（[`nemesis_cluster::roaming::relay_info`]），不触插件——状态面零副作用、
+/// 不装载插件。
 fn relay_server_status_lines(
     workspace: &Path,
     relay: &nemesis_cluster::roaming::config::RelaySettings,
@@ -269,8 +337,8 @@ fn relay_server_status_lines(
             println!("  私钥: {}（用户自备）", relay.key_path);
         }
         _ => {
-            let cert = nemesis_cluster::roaming::relay_server::relay_cert_path(workspace);
-            let key = nemesis_cluster::roaming::relay_server::relay_key_path(workspace);
+            let cert = nemesis_cluster::roaming::relay_info::relay_cert_path(workspace);
+            let key = nemesis_cluster::roaming::relay_info::relay_key_path(workspace);
             println!(
                 "  证书: {}（{}）",
                 cert.display(),
@@ -293,14 +361,6 @@ fn relay_server_status_lines(
     }
     println!(
         "  对外 relay URL: {}",
-        nemesis_cluster::roaming::relay_server::advertised_relay_url(relay)
+        nemesis_cluster::roaming::relay_info::advertised_relay_url(relay)
     );
-}
-
-#[cfg(not(feature = "quic-relay"))]
-fn relay_server_status_lines(
-    _workspace: &Path,
-    _relay: &nemesis_cluster::roaming::config::RelaySettings,
-) {
-    println!("  （quic-relay feature 未编译：中继服务器面不可用，以上为配置解析产物）");
 }

@@ -1,14 +1,16 @@
-//! A1 — iroh bi-stream ↔ 集群帧协议桥接（P2 组件层）。
+//! A1 — 集群帧协议组件（QUIC 插件化 M3 后宿主侧仅存的桥件）。
 //!
 //! 现有 TCP 路径的帧协议组件（`transport::frame`：4B 长度前缀 + AEAD）与
 //! 底层 IO 解耦——`AsyncFrameReader<R>`/`write_frame_async<W>` 泛型于
-//! `AsyncRead`/`AsyncWrite`。iroh 的 bi-stream（QUIC 双向流）实现了这两个
-//! trait，因此桥接是**薄封装**：同一套帧字节格式 + 同一套 AEAD token 语义，
-//! 换个 IO 载体而已——LAN TCP 与跨网 iroh 的帧层字节兼容。
+//! `AsyncRead`/`AsyncWrite`。QUIC 插件化 M3：iroh bi-stream 本体已随端点
+//! 迁入 plugin_roaming（`IrohBiStream` 组合器与地址解析一并退役），宿主侧
+//! 帧收发载体换 loopback TCP（`TcpStream` 直实现两 trait）——[`RoamingConn`]
+//! 原样复用：同一套帧字节格式 + 同一套 AEAD token 语义，LAN TCP 与跨网
+//! 漫游的帧层字节兼容。
 //!
-//! 信任分层照旧：iroh EndpointId = 传输身份（QUIC-TLS 握手即验身），
-//! AEAD token = 应用授权（本桥每帧照常加解密——语义独立于传输加密，
-//! iroh 的 TLS 不替代 token 校验）。
+//! 信任分层照旧：iroh EndpointId = 传输身份（QUIC-TLS 握手即验身，裁决在
+//! 插件 accept 闸），AEAD token = 应用授权（本桥每帧照常加解密——语义
+//! 独立于传输加密，iroh 的 TLS 不替代 token 校验）。
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -21,112 +23,6 @@ use crate::transport::frame::{
 /// iroh 地址前缀（`iroh:<64位小写hex>`）——单一真相源在 lib.rs（无 feature
 /// 门，announce 接收侧地址仲裁同样需要）；此处 re-export 保路径兼容。
 pub use crate::{IROH_ADDR_PREFIX, is_roaming_address};
-
-/// `iroh:<hex>[@<socket|relay_url>]` → [`iroh::EndpointAddr`]（剥前缀 +
-/// hex 解码；非法 loud 报错）。
-///
-/// 三种形态：
-/// - `iroh:<hex>`：仅 node_id——依赖发现层供址（N0 预设的 DNS/relay）。
-/// - `iroh:<hex>@<ip:port>`：钉直连地址——Minimal 预设（无发现）/ 受限网络
-///   / loopback 测试的诚实出口（`EndpointAddr::with_ip_addr`）。
-/// - `iroh:<hex>@http(s)://host:port`：钉中继回落地址——自建中继形态
-///   （`bind_custom_relay` 端点的对端寻址；`with_relay_url`）。识别依据 =
-///   `@` 后带 `://` scheme 前缀。
-pub fn parse_roaming_address(addr: &str) -> Result<iroh::EndpointAddr, String> {
-    let s = addr.trim();
-    let rest = s
-        .strip_prefix(IROH_ADDR_PREFIX)
-        .ok_or_else(|| format!("非 iroh 形态地址（缺少 `{IROH_ADDR_PREFIX}` 前缀）: {addr}"))?;
-    let (hex_part, socket_part) = match rest.split_once('@') {
-        Some((h, sock)) => {
-            if sock.trim().is_empty() {
-                return Err(format!("iroh 地址 `@` 后缺地址: {addr}"));
-            }
-            (h, Some(sock.trim()))
-        }
-        None => (rest, None),
-    };
-    let node_id = super::endpoint::node_id_from_hex(hex_part)?;
-    let base = iroh::EndpointAddr::from(node_id);
-    match socket_part {
-        Some(sock) if sock.contains("://") => {
-            // 中继回落形态（http:// / https://）——`with_relay_url`。
-            let url: iroh::RelayUrl = sock.parse().map_err(|e| {
-                format!("iroh 中继地址非法（应为 http(s)://host:port）: {sock}: {e}")
-            })?;
-            Ok(base.with_relay_url(url))
-        }
-        Some(sock) => {
-            let sa: std::net::SocketAddr = sock
-                .parse()
-                .map_err(|e| format!("iroh 直连地址非法（应为 ip:port）: {sock}: {e}"))?;
-            Ok(base.with_ip_addr(sa))
-        }
-        None => Ok(base),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IrohBiStream — (SendStream, RecvStream) → 单一 AsyncRead + AsyncWrite
-// ---------------------------------------------------------------------------
-
-/// iroh bi-stream 组合器：QUIC 的收/发是两个独立类型（`RecvStream: AsyncRead`、
-/// `SendStream: AsyncWrite`），而集群连接引擎（`TcpConn` 读写循环）吃的是
-/// **单一** `AsyncRead + AsyncWrite` 流。此类型把二者拼成一个，使 `TcpConn`
-/// 原样跑在 iroh 流上——帧协议/AEAD/空闲监测全部复用，字节语义零分叉。
-pub struct IrohBiStream {
-    send: iroh::endpoint::SendStream,
-    recv: iroh::endpoint::RecvStream,
-}
-
-impl IrohBiStream {
-    /// 拼装（`connect`/`accept_bi`/`open_bi` 产出的对）。
-    pub fn new(send: iroh::endpoint::SendStream, recv: iroh::endpoint::RecvStream) -> Self {
-        Self { send, recv }
-    }
-}
-
-impl tokio::io::AsyncRead for IrohBiStream {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.recv).poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for IrohBiStream {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        // SendStream 的固有 poll_write 返回自家 WriteError（Rust 方法解析固有
-        // 优先于 trait）——与 noq 自身 AsyncWrite impl 同款 `Into::into` 转发。
-        std::pin::Pin::new(&mut self.send)
-            .poll_write(cx, buf)
-            .map(|r| r.map_err(std::convert::Into::into))
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        // QUIC 流没有 flush 概念（写即发）；frames 语义由上层写入方决定。
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        // `write_half.shutdown()`（TcpConn 写循环收尾）映射为 QUIC finish：
-        // 本端不再发数据，对端读到 EOF——与 TCP shutdown 语义对齐。
-        let _ = self.send.finish();
-        std::task::Poll::Ready(Ok(()))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // 帧桥连接

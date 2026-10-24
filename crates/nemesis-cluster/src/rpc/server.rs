@@ -358,113 +358,120 @@ impl RpcServer {
     }
 
     // -----------------------------------------------------------------------
-    // A1 P2：iroh 入站连接桥（feature=cluster-roaming）
+    // A1 P2：iroh 入站连接桥（QUIC 插件化 M3）
     // -----------------------------------------------------------------------
 
-    /// A1 P2：iroh 入站连接处理器——快照当前 handler 表 / auth token / 空闲
-    /// 超时 / **信任簿**，交给
-    /// [`crate::roaming::endpoint::RoamingProtocolHandler::bridge`]
-    /// serve。与 TCP accept 路径同构：同一 handler 表（动态注册即见）、同一
-    /// AEAD token 语义、同一 `handle_request` 分发——零行为分叉。
+    /// 装配漫游入站受理臂（QUIC 插件化 M3）：挂桥漏斗（插件 accept iroh
+    /// 连接 → notify_incoming → mpsc）+ spawn 消费循环（逐条
+    /// [`Self::serve_roaming_loopback`]）。trust 闸在插件 accept 侧先行
+    /// （trust.toml 语义镜像宿主旧 TrustBook——revoked 一票否决 → trusted
+    /// 放行 → 默认拒，fail-closed）；抵达本臂的交接都已被插件放行。
     ///
-    /// `trust`：P3 accept 侧信任闸——`Some(book)` 且连接方 EndpointId 不在
-    /// trusted（或已 revoked）= 拒绝（连接被丢弃，对端得到连接关闭而非
-    /// 黑洞）；`None` = 未启用信任簿，走 token 单层语义。
-    #[cfg(feature = "cluster-roaming")]
-    pub fn roaming_conn_handler(
-        &self,
-        trust: Option<crate::roaming::trust::TrustBook>,
-    ) -> crate::roaming::endpoint::RoamingConnHandler {
+    /// 幂等（重复装配 = 漏斗热替换，旧消费任务因旧 sender 全 drop 自然
+    /// 退出）；需要 tokio runtime 上下文（setup_roaming 在 gateway runtime
+    /// 内跑——缺席诚实 Err，不静默空转）。
+    pub fn spawn_roaming_acceptor(&self) -> Result<(), String> {
+        use crate::roaming::plugin_bridge::IncomingConn;
+        use tokio::sync::mpsc;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<IncomingConn>();
+        crate::roaming::plugin_bridge::set_incoming_sink(Arc::new(
+            move |incoming: &IncomingConn| {
+                let _ = tx.send(incoming.clone());
+            },
+        ));
+
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            crate::roaming::plugin_bridge::clear_incoming_sink();
+            return Err("roaming 入站受理臂需要 tokio runtime 上下文".to_string());
+        };
+
+        // 快照受理参数（与旧 roaming_conn_handler 同口径：同一 handler 表
+        // ——动态注册即见、同一 AEAD token、同一空闲超时）。
         let handlers = Arc::clone(&self.handlers);
         let auth_token = self.auth_token.read().clone();
         let idle_timeout = self.config.idle_timeout;
-        Arc::new(move |conn: iroh::endpoint::Connection| {
-            let handlers = Arc::clone(&handlers);
-            // 信任裁决在 spawn 前同步做：拒绝路径直接丢 handle（连接关闭
-            // = 对端显式失败），不进 accept_bi 循环。
-            if let Some(book) = &trust {
-                let hex = crate::roaming::endpoint::node_id_to_hex(&conn.remote_id());
-                if !book.is_trusted(&hex) {
-                    tracing::warn!(
-                        remote = %hex,
-                        "[RpcServer] iroh 连接被信任簿拒绝（未列入 trusted 或已吊销）"
-                    );
-                    return;
-                }
+        handle.spawn(async move {
+            while let Some(incoming) = rx.recv().await {
+                let handlers = Arc::clone(&handlers);
+                let auth_token = auth_token.clone();
+                tokio::spawn(Self::serve_roaming_loopback(
+                    incoming,
+                    handlers,
+                    auth_token,
+                    idle_timeout,
+                ));
             }
-            tokio::spawn(Self::serve_roaming_connection(
-                conn,
-                handlers,
-                auth_token.clone(),
-                idle_timeout,
-            ));
-        })
+            tracing::debug!("[RpcServer] roaming 入站受理循环退出（漏斗已摘除）");
+        });
+        Ok(())
     }
 
-    /// iroh 入站连接服务：循环 accept bi-stream，每条流 = 一次帧交换会话
-    /// （对齐 TCP 短连接语义：client 每次 call 开一条流）。流级处理与
-    /// [`Self::handle_connection`] 逐行同构（`TcpConn` 泛型化后直接复用
-    /// `handle_request`）。
-    #[cfg(feature = "cluster-roaming")]
-    async fn serve_roaming_connection(
-        conn: iroh::endpoint::Connection,
+    /// 受理一条入站交接（QUIC 插件化 M3）：插件已为该 iroh bi-stream 开了
+    /// 一次性 loopback TCP 监听——本端 `TcpStream::connect(127.0.0.1:port)`
+    /// 后既有帧管线照跑（`TcpConn` + `handle_request`，与 TCP accept 路径
+    /// 零行为分叉）。连接中途失败 best-effort `close_conn` 收插件侧半开
+    /// QUIC 连接。
+    async fn serve_roaming_loopback(
+        incoming: crate::roaming::plugin_bridge::IncomingConn,
         handlers: Arc<RwLock<HashMap<String, Arc<RpcHandlerFn>>>>,
         auth_token: String,
         idle_timeout: std::time::Duration,
     ) {
-        let remote = format!(
-            "iroh:{}",
-            crate::roaming::endpoint::node_id_to_hex(&conn.remote_id())
-        );
-        loop {
-            match conn.accept_bi().await {
-                Ok((send, recv)) => {
-                    let handlers = Arc::clone(&handlers);
-                    let auth_token = auth_token.clone();
-                    let remote_stream = remote.clone();
-                    tokio::spawn(async move {
-                        let config = TcpConnConfig {
-                            address: remote_stream.clone(),
-                            auth_token: if auth_token.is_empty() {
-                                None
-                            } else {
-                                Some(auth_token)
-                            },
-                            idle_timeout,
-                            ..Default::default()
-                        };
-                        let mut tc = TcpConn::from_stream(
-                            crate::roaming::bridge::IrohBiStream::new(send, recv),
-                            config,
-                            String::new(),
-                            remote_stream.clone(),
-                        );
-                        if let Err(e) = tc.start().await {
-                            tracing::error!(
-                                remote = %remote_stream,
-                                error = %e,
-                                "[RpcServer] Failed to start roaming TcpConn"
-                            );
-                            return;
-                        }
-                        while let Some(wire_msg) = tc.receive().await {
-                            if wire_msg.msg_type == "request" {
-                                Self::handle_request(&tc, &wire_msg, &handlers).await;
-                            }
-                        }
-                        tc.close();
-                    });
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        remote = %remote,
-                        error = %e,
-                        "[RpcServer] Roaming connection closed"
-                    );
-                    break;
-                }
+        let remote = format!("iroh:{}", incoming.remote_hex);
+        let stream = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect(("127.0.0.1", incoming.port)),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    remote = %remote,
+                    port = incoming.port,
+                    error = %e,
+                    "[RpcServer] roaming loopback 交接连接失败（插件侧半开兜底关闭）"
+                );
+                crate::roaming::plugin_bridge::close_conn(incoming.conn_id).await;
+                return;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    remote = %remote,
+                    port = incoming.port,
+                    "[RpcServer] roaming loopback 交接连接超时（插件侧半开兜底关闭）"
+                );
+                crate::roaming::plugin_bridge::close_conn(incoming.conn_id).await;
+                return;
+            }
+        };
+
+        let config = TcpConnConfig {
+            address: remote.clone(),
+            auth_token: if auth_token.is_empty() {
+                None
+            } else {
+                Some(auth_token)
+            },
+            idle_timeout,
+            ..Default::default()
+        };
+        let mut tc = TcpConn::from_stream(stream, config, String::new(), remote.clone());
+        if let Err(e) = tc.start().await {
+            tracing::error!(
+                remote = %remote,
+                error = %e,
+                "[RpcServer] Failed to start roaming TcpConn"
+            );
+            return;
+        }
+        while let Some(wire_msg) = tc.receive().await {
+            if wire_msg.msg_type == "request" {
+                Self::handle_request(&tc, &wire_msg, &handlers).await;
             }
         }
+        tc.close();
     }
 
     // -----------------------------------------------------------------------

@@ -359,10 +359,11 @@ pub struct RpcClient {
     /// 运行期注入一次；`None` = 纯直连语义（一期行为零变化）。RwLock 因
     /// 装配晚于构造（gateway 组装顺序：RpcClient 先建、桥出口后建）。
     bridge_transport: RwLock<Option<Arc<dyn BridgeSend>>>,
-    /// A1 P2（feature=cluster-roaming）：iroh 漫游端点（拨号侧）。宿主在
-    /// 装配漫游身份后注入；`None` = 拨到 `iroh:` 地址诚实报错（不黑洞）。
-    #[cfg(feature = "cluster-roaming")]
-    roaming_endpoint: RwLock<Option<Arc<crate::roaming::endpoint::RoamingEndpoint>>>,
+    /// A1 P2：iroh 漫游拨号出口（QUIC 插件化 M3：
+    /// 抽象 trait——生产 [`crate::roaming::plugin_bridge::BridgeDialer`] 经桥
+    /// 打真插件，测试注入 LocalDialer 直连本地 TCP）。宿主在装配漫游身份后
+    /// 注入；`None` = 拨到 `iroh:` 地址诚实报错（不黑洞）。
+    roaming_dialer: RwLock<Option<Arc<dyn crate::roaming::plugin_bridge::RoamingDialer>>>,
 }
 
 impl RpcClient {
@@ -381,8 +382,7 @@ impl RpcClient {
             resolver: None,
             warn_gate: crate::discovery::AnnounceWarnGate::with_cooldown(Duration::from_secs(60)),
             bridge_transport: RwLock::new(None),
-            #[cfg(feature = "cluster-roaming")]
-            roaming_endpoint: RwLock::new(None),
+            roaming_dialer: RwLock::new(None),
         }
     }
 
@@ -430,12 +430,14 @@ impl RpcClient {
         *self.bridge_transport.write() = Some(bridge);
     }
 
-    /// A1 P2（feature=cluster-roaming）：注入 iroh 漫游端点（拨号侧）。
-    /// 注入后 `iroh:<node_id_hex>` 形态地址走 QUIC 叠加层；未注入时拨到
-    /// `iroh:` 地址诚实报错。
-    #[cfg(feature = "cluster-roaming")]
-    pub fn set_roaming_endpoint(&self, endpoint: Arc<crate::roaming::endpoint::RoamingEndpoint>) {
-        *self.roaming_endpoint.write() = Some(endpoint);
+    /// A1 P2：注入漫游拨号出口（QUIC 插件化 M3）。
+    /// 注入后 `iroh:<node_id_hex>` 形态地址走插件 QUIC 叠加层（桥 loopback
+    /// 交接）；未注入时拨到 `iroh:` 地址诚实报错。
+    pub fn set_roaming_dialer(
+        &self,
+        dialer: Arc<dyn crate::roaming::plugin_bridge::RoamingDialer>,
+    ) {
+        *self.roaming_dialer.write() = Some(dialer);
     }
 
     // -- High-level API -------------------------------------------------------
@@ -810,7 +812,6 @@ impl RpcClient {
     ) -> Result<RPCResponse, RpcClientError> {
         // A1 P2：iroh 形态地址 → QUIC 叠加层拨号（前缀分派第一闸）。TCP 路径
         // 字节不变。
-        #[cfg(feature = "cluster-roaming")]
         if crate::roaming::bridge::is_roaming_address(addr) {
             return self
                 .roaming_connect_and_send(addr, request, io_timeout)
@@ -862,51 +863,78 @@ impl RpcClient {
         .map_err(|e| RpcClientError::Connection(format!("blocking task join: {}", e)))?
     }
 
-    /// A1 P2（feature=cluster-roaming）：iroh 叠加层帧交换（`iroh:<node_id_hex>`
-    /// 地址）。
+    /// A1 P2：iroh 叠加层帧交换（`iroh:<node_id_hex>`
+    /// 地址；QUIC 插件化 M3）。
     ///
-    /// 与 TCP 路径逐语义对齐：同一 [`wire_from_request`] 转换、同一 AEAD
-    /// token 语义（[`RoamingConn`] 帧内加解密，帧格式字节一致）、同一
-    /// [`Frame::decode_response`] 解析与 RemoteError 提升。拨号限时 10s
-    /// （对齐 TCP）；单次读写限时 `io_timeout`（QUIC 流无 socket 级读写
-    /// 超时概念，由外层 tokio timeout 承担——黑洞对端不会挂住调用）。
-    #[cfg(feature = "cluster-roaming")]
+    /// 拨号走 [`crate::roaming::plugin_bridge::RoamingDialer`]（生产 BridgeDialer
+    /// 经桥打插件——插件 iroh 拨号 + loopback 一次性监听；测试可注入
+    /// LocalDialer）。拿到 loopback 端口后 `TcpStream::connect(127.0.0.1:port)`
+    /// 帧协议照跑：同一 [`wire_from_request`] 转换、同一 AEAD token 语义
+    /// （[`RoamingConn`] 帧内加解密，帧格式字节一致）、同一
+    /// [`Frame::decode_response`] 解析与 RemoteError 提升。拨号限时
+    /// 10s（插件 DIAL_TIMEOUT）+ loopback connect 余量，下限 `io_timeout`；
+    /// 单次帧读写限时 `io_timeout`（外层 tokio timeout 承担——黑洞对端
+    /// 不会挂住调用）。拨号成功后链路中途失败 best-effort `dialer.close`
+    /// 收半开连接。
     async fn roaming_connect_and_send(
         &self,
         addr: &str,
         request: &RPCRequest,
         io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
-        use crate::roaming::bridge::{RoamingConn, parse_roaming_address};
+        use crate::roaming::bridge::RoamingConn;
         use tokio::time::timeout;
 
-        let endpoint = self.roaming_endpoint.read().clone().ok_or_else(|| {
+        let dialer = self.roaming_dialer.read().clone().ok_or_else(|| {
             RpcClientError::Connection(format!(
-                "iroh 地址 {addr} 需要漫游端点（cluster-roaming 已编译但本节点未装配漫游身份，\
+                "iroh 地址 {addr} 需要漫游拨号出口（roaming 插件已装载但本节点未装配漫游身份，\
                  无法解析 iroh: 拨号目标）"
             ))
         })?;
-        let target_addr = parse_roaming_address(addr).map_err(RpcClientError::Connection)?;
 
-        // 拨号 + bi-stream 打开。Connection handle 即弃安全——SendStream/
-        // RecvStream 各持一个 ConnectionRef（noq 引用计数），流活着连接不关。
-        let (send, recv) = timeout(
-            Duration::from_secs(10).max(io_timeout),
-            endpoint.connect_stream_addr(target_addr),
+        // 拨号（插件 iroh connect + loopback 监听）。插件内拨号限时 10s，
+        // 叠 loopback TCP connect 余量；下限 io_timeout（重 LLM 调用场景
+        // 外层放宽时不被内层先卡死）。
+        let dial_budget = Duration::from_secs(10).max(io_timeout) + Duration::from_secs(5);
+        let (port, conn_id) = timeout(dial_budget, dialer.dial(addr))
+            .await
+            .map_err(|_| RpcClientError::Connection(format!("iroh dial timeout to {}", addr)))?
+            .map_err(|e| RpcClientError::Connection(format!("iroh connect to {}: {}", addr, e)))?;
+
+        // loopback 交接：帧协议照跑（AEAD token 语义与 TCP 路径同源——同一
+        // auth_token，同一派生）。
+        let stream = match timeout(
+            Duration::from_secs(5),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
         )
         .await
-        .map_err(|_| RpcClientError::Connection(format!("iroh dial timeout to {}", addr)))?
-        .map_err(|e| RpcClientError::Connection(format!("iroh connect to {}: {}", addr, e)))?;
-
-        // AEAD token 语义与 TCP 路径同源（同一 auth_token，同一派生）。
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                dialer.close(conn_id); // 半开兜底（插件侧整条 QUIC 连接关闭）
+                return Err(RpcClientError::Connection(format!(
+                    "iroh loopback 交接失败（port {port}）: {e}"
+                )));
+            }
+            Err(_) => {
+                dialer.close(conn_id);
+                return Err(RpcClientError::Connection(format!(
+                    "iroh loopback 交接超时（port {port}）"
+                )));
+            }
+        };
+        let (read_half, write_half) = stream.into_split();
         let token = self.auth_token.lock().clone().unwrap_or_default();
-        let mut mc = RoamingConn::new(send, recv, &token);
+        let mut mc = RoamingConn::new(write_half, read_half, &token);
 
         let wire = wire_from_request(request);
         let json_bytes =
             serde_json::to_vec(&wire).map_err(|e| RpcClientError::Serialization(e.to_string()))?;
-        timeout(io_timeout, mc.send_frame(&json_bytes))
-            .await
+        let send_res = timeout(io_timeout, mc.send_frame(&json_bytes)).await;
+        if matches!(send_res, Err(_) | Ok(Err(_))) {
+            dialer.close(conn_id);
+        }
+        send_res
             .map_err(|_| RpcClientError::Connection(format!("iroh send timeout to {}", addr)))?
             .map_err(|e| RpcClientError::Connection(format!("iroh send to {}: {}", addr, e)))?;
 
@@ -916,8 +944,11 @@ impl RpcClient {
             "[RpcClient] iroh RPC request sent, waiting for response"
         );
 
-        let resp_bytes = timeout(io_timeout, mc.recv_frame())
-            .await
+        let recv_res = timeout(io_timeout, mc.recv_frame()).await;
+        if matches!(recv_res, Err(_) | Ok(Err(_))) {
+            dialer.close(conn_id);
+        }
+        let resp_bytes = recv_res
             .map_err(|_| RpcClientError::Connection(format!("iroh recv timeout from {}", addr)))?
             .map_err(|e| RpcClientError::Connection(format!("iroh recv from {}: {}", addr, e)))?;
 

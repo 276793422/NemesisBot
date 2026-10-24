@@ -208,6 +208,10 @@ jobs:
           # wasm 插件子系统诚实关闭——全量 nightly 必须带壳，non-fatal 仅兜
           # 编译环境意外，不构成常态缺席的理由。
           (cd plugins/plugin-wasm && cargo build --release)
+          # plugin-roaming 是 QUIC 中继/漫游面（独立 workspace，QUIC 插件化
+          # M1：iroh-relay/rcgen/rustls/axum 栈整体住进这个库，宿主零增量）。
+          # 缺席 = QUIC 漫游诚实降级——全量 nightly 必须带，non-fatal 同上。
+          (cd plugins/plugin-roaming && cargo build --release)
           # eval-monitor 是 Windows-only 注入 DLL（注入签名的 SbieCtrl.exe
           # 采集 Sandboxie 事件），只在 Windows 编
           if [ "${{ matrix.platform }}" = "windows" ]; then
@@ -262,6 +266,10 @@ jobs:
           cp plugins/plugin-wasm/target/release/libplugin_wasm.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-wasm/target/release/plugin_wasm.dll   staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-eval-monitor/target/release/eval_monitor_dll.dll staging/plugins/ 2>/dev/null || true
+          # plugin-roaming（QUIC 中继/漫游面，QUIC 插件化 M1）：缺件 = QUIC
+          # 漫游诚实降级，non-fatal 同上——拷贝跳过不拦主包
+          cp plugins/plugin-roaming/target/release/libplugin_roaming.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-roaming/target/release/plugin_roaming.dll   staging/plugins/ 2>/dev/null || true
           # plugin-vm 单文件部署（2026-10-22 资源内嵌拍板）：与其他插件同住
           # plugins/ 子目录（装载器 plugins/ 优先 + exe 同目录回落）；镜像
           # 脚本 + guest 双架构 musl ELF 已编译期内嵌进库文件（上方构建步
@@ -622,6 +630,28 @@ jobs:
              bin/bin_android/arm64-v8a/nemesisbot
           ls -la bin/bin_android/arm64-v8a/
 
+      # plugin-roaming（QUIC 中继/漫游面，QUIC 插件化 M1）：与本地
+      # build-android.bat Step 4 同款——独立 workspace 交叉编译，iroh/ring
+      # 原生依赖失败诚实 WARN 降级不阻塞出包（non-fatal）。产物不进 APK
+      # （Android 装载面是文件系统 plugins/ 目录，非 jniLibs），独立
+      # nightly-android-plugins.zip 分发，用户解压到设备 plugins/ 即用。
+      - name: Build plugin-roaming (.so, non-fatal)
+        shell: bash
+        continue-on-error: true
+        run: |
+          if [ ! -f plugins/plugin-roaming/Cargo.toml ]; then
+            echo "SKIP plugins/plugin-roaming/Cargo.toml not found"
+            exit 0
+          fi
+          cd plugins/plugin-roaming
+          export CARGO_TARGET_DIR=../../target/target_android/plugins/plugin-roaming
+          export CARGO_NDK_PLATFORM=36
+          cargo ndk -t arm64-v8a build --release
+          mkdir -p ../../bin/bin_android/arm64-v8a/plugins
+          cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/libplugin_roaming.so" \
+             ../../bin/bin_android/arm64-v8a/plugins/
+          ls -la ../../bin/bin_android/arm64-v8a/plugins/
+
       - name: Configure signing (Secrets 正式 keystore，缺省 debug 兜底)
         shell: bash
         working-directory: test-tools/android-shell
@@ -669,13 +699,30 @@ jobs:
           sha256sum "$APK"
 
       - name: Package
-        run: cp bin/bin_android_apk/nemesisbot-arm64-release.apk nightly-android.apk
+        run: |
+          cp bin/bin_android_apk/nemesisbot-arm64-release.apk nightly-android.apk
+          # plugin-roaming 插件包（non-fatal：.so 缺席 = 诚实跳过不出残包，
+          # 对齐 release body「插件包视编译情况可能缺席」声明）
+          if [ -f bin/bin_android/arm64-v8a/plugins/libplugin_roaming.so ]; then
+            (cd bin/bin_android/arm64-v8a && zip -q ../../../../nightly-android-plugins.zip plugins/libplugin_roaming.so)
+            ls -la nightly-android-plugins.zip
+          else
+            echo "WARN libplugin_roaming.so 缺席（构建步 non-fatal 失败）——跳过 nightly-android-plugins.zip"
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: nightly-android.apk
           path: nightly-android.apk
+          retention-days: 7
+
+      - name: Upload android plugins artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-android-plugins.zip
+          path: nightly-android-plugins.zip
+          if-no-files-found: ignore
           retention-days: 7
 
   # ============================================================
@@ -772,6 +819,7 @@ jobs:
           # plugins / signserver / sign-tools / locked-full / skins 包视构建
           # 情况可能缺席（non-fatal 或无锚/无产物跳过），在才计入校验和
           for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip \
+                   nightly-android-plugins.zip \
                    nightly-signserver-linux.tar.gz nightly-signserver-windows.zip \
                    nightly-sign-tools-linux.tar.gz nightly-sign-tools-windows.zip \
                    nightly-locked-full.zip nightly-skins.zip nightly-wasm-devkit.zip; do
@@ -810,6 +858,7 @@ jobs:
             artifacts/nightly-android.apk
             artifacts/nightly-linux-plugins.tar.gz
             artifacts/nightly-windows-plugins.zip
+            artifacts/nightly-android-plugins.zip
             artifacts/nightly-signserver-linux.tar.gz
             artifacts/nightly-signserver-windows.zip
             artifacts/nightly-sign-tools-linux.tar.gz
@@ -836,8 +885,9 @@ jobs:
             - **Linux**: `nightly-linux.tar.gz`（解压后运行 `./nemesisbot gateway`）
             - **Android**: `nightly-android.apk`（arm64-v8a；签名模式见 build-android job 日志——配置了 ANDROID_KEYSTORE_* Secrets 为正式签名（与本地 sign.bat 同源），未配置为 debug 签名兜底（覆盖安装需先卸载））
             - **VM 显示中继**: 已编译进 Windows/Linux 主二进制（vm-display）——主包内 `plugins/` 目录带 `plugin_vm.dll`/`libplugin_vm.so` 单文件（镜像构建脚本 + guest 双架构 musl ELF 已内嵌库内，首次构建镜像时自动释放），零额外安装
-            - **Windows 插件包**: `nightly-windows-plugins.zip`（包内放插件 .dll：plugin_ui / plugin_onnx / plugin_wasm / eval_monitor_dll / plugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
-            - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内放插件 .so：plugin_ui / plugin_onnx / plugin_wasm / libplugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
+            - **Windows 插件包**: `nightly-windows-plugins.zip`（包内放插件 .dll：plugin_ui / plugin_onnx / plugin_wasm / plugin_roaming / eval_monitor_dll / plugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
+            - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内放插件 .so：plugin_ui / plugin_onnx / plugin_wasm / plugin_roaming / libplugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
+            - **Android 插件包**: `nightly-android-plugins.zip`（包内放 arm64-v8a 插件 .so：libplugin_roaming；解压到设备 nemesisbot 数据目录的 `plugins/` 子目录；APK 本体不内置插件——Android 装载面是文件系统 plugins/ 目录）
             - **锁定版全家桶**: `nightly-locked-full.zip`（签名验证强制（enforce）的锁定版 Windows/Linux 客户端 + Android APK + 全部插件 + signserver + sign-tools 一站式；启动日志/侧栏带 🔒 标识；信任根未配置时本包缺席）
             - **皮肤包**: `nightly-skins.zip`（全部 `.nbskin` 皮肤 + v4 签名（与主程序同一信任根）+ `signatures.json` 清单 + `certs/root_cert.der`；解压后把 `.nbskin` 放到 exe 同级 `skins/` 目录即可，Dashboard 设置页「皮肤」tab 管理与热切换；未配置 `NMB_ISSUING_*` Secrets 时包内皮肤无签名但照常可用）
             - **插件开发包**: `nightly-wasm-devkit.zip`（WASM 插件最小可编译集合源码包：三方 SDK + 打包工具 + 全部示例，平台无关；解压后 `cargo run -p pack` 一键编译打包示例——配套 Dashboard「插件」页「下载插件开发包」一键取用）

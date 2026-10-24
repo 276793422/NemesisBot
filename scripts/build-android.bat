@@ -27,6 +27,9 @@ REM       nemesisbot
 REM       plugins\
 REM         libplugin_ui.so
 REM         libplugin_onnx.so
+REM         libplugin_roaming.so  (QUIC relay server + rendezvous registry; QUIC plugin
+REM                                M1 - iroh stack lives here, host zero increment;
+REM                                absent = relay/roaming honestly degraded)
 
 REM ============================================
 REM Parse Arguments
@@ -42,8 +45,9 @@ if /i "%~1"=="--clean" (
     shift
     goto parse_args
 )
-REM S6（2026-10-14 审计）：--skip-plugin 死参数已删——本脚本本无插件构建步
-REM （Android 产物不含 plugin .so），解析后无任何消费点。
+REM S6（2026-10-14 审计）：--skip-plugin 死参数已删——当时本脚本无插件构建步。
+REM QUIC 插件化 M1（2026-10-23）起脚本含 plugin-roaming 构建步（non-fatal），
+REM 但该旗标仍未恢复解析——插件构建失败按 WARN 降级不阻塞出包，无需跳过开关。
 if /i "%~1"=="--target" (
     if "%~2"=="" (
         echo [ERROR] --target requires an architecture argument
@@ -170,7 +174,7 @@ REM ============================================
 REM Step 1: Clean (optional)
 REM ============================================
 if "%CLEAN%"=="1" (
-    echo [Step 1/4] Cleaning target\target_android...
+    echo [Step 1/5] Cleaning target\target_android...
     if exist "target\target_android" (
         rmdir /s /q "target\target_android" 2>nul
         echo   OK Cleaned
@@ -179,14 +183,14 @@ if "%CLEAN%"=="1" (
     )
     echo.
 ) else (
-    echo [Step 1/4] Clean skipped ^(use --clean to enable^)
+    echo [Step 1/5] Clean skipped ^(use --clean to enable^)
     echo.
 )
 
 REM ============================================
 REM Step 2: Build Vue frontend (web dashboard)
 REM ============================================
-echo [Step 2/4] Building Vue frontend...
+echo [Step 2/5] Building Vue frontend...
 
 if exist "web\package.json" (
     pushd web
@@ -235,7 +239,7 @@ echo.
 REM ============================================
 REM Step 3: Build main workspace (release, Android)
 REM ============================================
-echo [Step 3/4] Building Android release ^(%TARGET_ARCH%^)...
+echo [Step 3/5] Building Android release ^(%TARGET_ARCH%^)...
 
 echo   Injecting version info...
 set NEMESISBOT_VERSION=%VERSION%
@@ -256,9 +260,35 @@ echo   OK Build completed
 echo.
 
 REM ============================================
-REM Step 4: Copy to bin\bin_android\
+REM Step 4: Build plugin-roaming (QUIC relay server + rendezvous registry;
+REM        QUIC plugin M1 2026-10-23 — iroh-relay/rcgen/rustls/axum stack lives
+REM        entirely in this .so, host binary zero increment; absent = server-side
+REM        relay honestly degraded + CLI dynamic-hide). Non-fatal: Android 交叉
+REM        编译含原生依赖（ring/tokio/iroh），失败诚实 WARN 降级不阻塞出包。
 REM ============================================
-echo [Step 4/4] Copying to bin\bin_android\%TARGET_ARCH%\...
+echo [Step 4/5] Building plugin-roaming ^(%TARGET_ARCH%^)...
+
+if exist "plugins\plugin-roaming\Cargo.toml" (
+    pushd plugins\plugin-roaming
+    set CARGO_TARGET_DIR=..\..\target\target_android\plugins\plugin-roaming
+    cargo ndk -t %TARGET_ARCH% build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-roaming build failed ^(non-fatal, QUIC relay/roaming unavailable^)
+    ) else (
+        popd
+        echo   OK Plugin-roaming built
+    )
+    set CARGO_TARGET_DIR=target\target_android
+) else (
+    echo   SKIP plugins\plugin-roaming\Cargo.toml not found
+)
+echo.
+
+REM ============================================
+REM Step 5: Copy to bin\bin_android\
+REM ============================================
+echo [Step 5/5] Copying to bin\bin_android\%TARGET_ARCH%\...
 
 set BIN_DIR=bin\bin_android\%TARGET_ARCH%
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
@@ -284,6 +314,16 @@ for %%s in (libplugin_ui.so libplugin-ui.so libplugin_onnx.so libplugin-onnx.so)
         set /a COPIED+=1
         echo   OK %%s copied
     )
+)
+
+REM Copy plugin-roaming .so (QUIC relay/roaming face; QUIC plugin M1 —
+REM absent = relay/roaming honestly degraded + CLI dynamic-hide)
+if exist "target\target_android\plugins\plugin-roaming\%RUST_TARGET%\release\libplugin_roaming.so" (
+    copy /y "target\target_android\plugins\plugin-roaming\%RUST_TARGET%\release\libplugin_roaming.so" "%BIN_DIR%\plugins\" >nul 2>&1
+    set /a COPIED+=1
+    echo   OK libplugin_roaming.so copied
+) else (
+    echo   WARN libplugin_roaming.so not found ^(QUIC relay/roaming unavailable^)
 )
 
 REM Copy test-tools binaries

@@ -70,9 +70,8 @@ fn test_broadcast_flag_passes_on_any_platform() {
     assert_eq!(r["pass"], true);
 }
 
-// --- iroh 跨网漫游开关面（feature=cluster-roaming；config 闸 + enable/disable） ---
+// --- iroh 跨网漫游开关面（config 闸 + enable/disable） ---
 
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_roaming_config_write_and_gate_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
@@ -91,12 +90,12 @@ fn test_roaming_config_write_and_gate_roundtrip() {
     assert_eq!(v["roaming"]["enabled"], serde_json::json!(false));
 }
 
-#[cfg(feature = "cluster-roaming")]
-#[test]
-fn test_roaming_status_payload_default_disabled() {
+#[tokio::test]
+async fn test_roaming_status_payload_default_disabled() {
     let dir = tempfile::tempdir().unwrap();
     let payload =
         roaming_status_payload(dir.path().to_str().unwrap(), None, serde_json::Value::Null)
+            .await
             .unwrap()
             .unwrap();
     assert_eq!(payload["available"], serde_json::json!(true));
@@ -108,29 +107,30 @@ fn test_roaming_status_payload_default_disabled() {
     assert_eq!(payload["trust"]["enabled"], serde_json::json!(false));
 }
 
-#[cfg(feature = "cluster-roaming")]
-#[test]
-fn test_roaming_status_payload_requires_restart_consistency() {
+#[tokio::test]
+async fn test_roaming_status_payload_requires_restart_consistency() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
     update_cluster_config_roaming(ws, true).unwrap();
     // config 开了但运行态未知（None→false）：requires_restart=true
     let p = roaming_status_payload(ws, None, serde_json::Value::Null)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(p["requires_restart"], serde_json::json!(true));
     // 运行态跟上（active=true）：requires_restart=false
     let p = roaming_status_payload(ws, Some(true), serde_json::Value::Null)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(p["requires_restart"], serde_json::json!(false));
     assert_eq!(p["active"], serde_json::json!(true));
 }
 
-#[cfg(feature = "cluster-roaming")]
-#[test]
-fn test_roaming_status_payload_carries_rendezvous_state() {
+#[tokio::test]
+async fn test_roaming_status_payload_carries_rendezvous_state() {
     // rendezvous 段透传：同步状态原样进 payload；Null = 循环未挂（N0 形态）。
+    // QUIC 插件化 M2：node_id 读走桥（测试环境插件缺席 = null 诚实降级）。
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
     let state = nemesis_cluster::roaming::rendezvous::RendezvousClientState {
@@ -141,7 +141,10 @@ fn test_roaming_status_payload_carries_rendezvous_state() {
         last_error: String::new(),
     };
     let rv = serde_json::to_value(&state).unwrap();
-    let p = roaming_status_payload(ws, Some(true), rv).unwrap().unwrap();
+    let p = roaming_status_payload(ws, Some(true), rv)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         p["rendezvous"]["registry_url"],
         serde_json::json!("http://vps.example.com:3341")
@@ -149,6 +152,7 @@ fn test_roaming_status_payload_carries_rendezvous_state() {
     assert_eq!(p["rendezvous"]["last_sync_ok"], serde_json::json!(true));
     assert_eq!(p["rendezvous"]["member_count"], serde_json::json!(4));
     let p = roaming_status_payload(ws, Some(true), serde_json::Value::Null)
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -157,7 +161,6 @@ fn test_roaming_status_payload_carries_rendezvous_state() {
     );
 }
 
-#[cfg(any(feature = "cluster-roaming", feature = "quic-relay"))]
 #[test]
 fn test_cluster_gate_payload_reads_both_config_layers() {
     // 集群闸链快照：与 gateway cluster_should_start 同源两道闸的读面回归。
@@ -210,31 +213,44 @@ fn test_cluster_gate_payload_reads_both_config_layers() {
     assert_eq!(g["open"], serde_json::json!(false));
 }
 
-#[cfg(feature = "cluster-roaming")]
-#[test]
-fn test_roaming_set_enabled_creates_key_once() {
+#[tokio::test]
+async fn test_roaming_set_enabled_gate_write_and_plugin_absent_note() {
+    // QUIC 插件化 M2 语义：身份备料面（keygen）在 plugin_roaming——闸写是
+    // 主操作照常落盘；插件缺席（测试环境桥空）= key_created=false + node_id
+    // null + identity_note 诚实注记（闸写不回滚，gateway 启动时叠加层诚实
+    // 降级）。插件在场的备料语义由 live 形态覆盖（本处是宿主面回归锁）。
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
-    // enable：缺 key 顺手生成
+    // enable：闸写生效 + 插件缺席诚实注记
     let p = roaming_set_enabled_impl(ws.to_str().unwrap(), true)
+        .await
         .unwrap()
         .unwrap();
-    assert_eq!(p["key_created"], serde_json::json!(true));
-    let node1 = p["node_id"].as_str().unwrap();
-    assert_eq!(node1.len(), 64);
-    assert!(roaming_key_path(ws).exists());
+    assert_eq!(p["key_created"], serde_json::json!(false));
+    assert!(p["node_id"].is_null());
+    assert!(
+        p["identity_note"]
+            .as_str()
+            .unwrap()
+            .contains("plugin_roaming"),
+        "缺席注记要点名插件: {:?}",
+        p["identity_note"]
+    );
+    assert!(!roaming_key_path(ws).exists());
     // config 闸同步为 true
     assert!(Cluster::roaming_enabled_in_config(&cluster_config_path(
         ws.to_str().unwrap()
     )));
-    // 二次 enable：key 不重建、身份稳定
+    // 二次 enable：闸幂等、注记稳定
     let p2 = roaming_set_enabled_impl(ws.to_str().unwrap(), true)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(p2["key_created"], serde_json::json!(false));
-    assert_eq!(p2["node_id"].as_str().unwrap(), node1);
+    assert!(p2["node_id"].is_null());
     // disable：只落闸，requires_restart=true
     let p3 = roaming_set_enabled_impl(ws.to_str().unwrap(), false)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(p3["enabled"], serde_json::json!(false));
@@ -244,22 +260,8 @@ fn test_roaming_set_enabled_creates_key_once() {
     )));
 }
 
-#[cfg(not(feature = "cluster-roaming"))]
-#[test]
-fn test_roaming_status_payload_feature_off_degrades() {
-    let dir = tempfile::tempdir().unwrap();
-    let payload =
-        roaming_status_payload(dir.path().to_str().unwrap(), None, serde_json::Value::Null)
-            .unwrap()
-            .unwrap();
-    assert_eq!(payload["available"], serde_json::json!(false));
-    assert_eq!(payload["enabled"], serde_json::json!(false));
-    assert!(payload["reason"].as_str().unwrap().contains("feature"));
-}
+// --- QUIC 自建中继管理面 ---
 
-// --- QUIC 自建中继管理面（feature=quic-relay） ---
-
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_roaming_enabled_write_preserves_relay_siblings() {
     // 回归锁：roaming.enabled 单键写曾整段替换 roaming 对象，把段内兄弟键

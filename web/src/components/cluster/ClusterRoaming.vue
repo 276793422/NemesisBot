@@ -13,8 +13,8 @@ const toast = useToast()
 const loading = ref(true)
 const switching = ref(false)
 
-// cluster.roaming.status 载荷。available=false = 网关未编译 cluster-roaming
-// feature（降级面板）；requires_restart = config 开关与运行态不一致。
+// cluster.roaming.status 载荷。available=false = 管理面未就绪（防御性降级
+// 面板；M4 起 feature 已删恒编译）；requires_restart = config 开关与运行态不一致。
 const status = ref<any>(null)
 
 const available = computed(() => status.value?.available === true)
@@ -52,7 +52,7 @@ const gateHint = computed(() => {
 // 运行态徽标词表：active=漫游层在跑；enabled 但被闸链挡住=集群未启用/token
 // 异常（重启无用）；enabled 且闸开但没跑=改了开关没重启；都没有=停用。
 const stateLabel = computed(() => {
-  if (!available.value) return '未编译'
+  if (!available.value) return '未就绪'
   if (active.value) return '运行中'
   if (enabled.value && gateTokenBroken.value) return 'token 异常'
   if (enabled.value && gateClosed.value) return '集群未启用'
@@ -115,9 +115,9 @@ onMounted(loadStatus)
         <div class="spinner" style="margin:0 auto" />
       </div>
 
-      <!-- feature 未编译：诚实降级（卡片恒在，能力缺席可见） -->
+      <!-- 管理面未就绪：诚实降级（卡片恒在，能力缺席可见；防御性保留） -->
       <div v-else-if="!available" class="roam-summary muted">
-        当前网关未编译跨网漫游能力（cluster-roaming feature 关闭）。
+        跨网漫游管理面未就绪（管理面恒编译，此形态仅防御性保留）。
       </div>
 
       <template v-else>

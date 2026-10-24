@@ -14,7 +14,10 @@
 #   └── plugins/
 #       ├── libplugin_ui.dylib
 #       ├── libplugin_onnx.dylib
-#       └── libplugin_wasm.dylib
+#       ├── libplugin_wasm.dylib
+#       └── libplugin_roaming.dylib  (QUIC relay server + rendezvous registry; QUIC plugin
+#                                    M1 — iroh stack lives here, host binary zero
+#                                    increment; absent = relay honestly degraded)
 #
 # Note: Only builds the main nemesisbot binary (+ its crate dependencies).
 #       Test-tools (integration-test / cluster-test / ...) are NOT compiled.
@@ -234,6 +237,24 @@ else
         echo "  SKIP $PLUGIN_WASM_DIR/Cargo.toml not found"
     fi
     echo ""
+
+    # --- plugin-roaming（QUIC 中继服务器 + 名册注册表；QUIC 插件化 M1
+    #     2026-10-23：iroh-relay/rcgen/rustls/axum 栈整体住进这个 .dylib，宿主
+    #     二进制零增量；缺席 = 服务端面诚实降级 + CLI 动态隐藏，绝非装载失败） ---
+    PLUGIN_ROAMING_DIR="plugins/plugin-roaming"
+    if [ -f "$PLUGIN_ROAMING_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-roaming..."
+        ROAMING_START=$SECONDS
+        if (cd "$PLUGIN_ROAMING_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_macos/plugins/plugin-roaming" cargo build --release 2>&1); then
+            ROAMING_DURATION=$(( SECONDS - ROAMING_START ))
+            echo "  OK Plugin-roaming built in ${ROAMING_DURATION}s"
+        else
+            echo "  WARN Plugin-roaming build failed (non-fatal — QUIC relay server unavailable)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_ROAMING_DIR/Cargo.toml not found"
+    fi
+    echo ""
 fi
 
 # ============================================
@@ -305,6 +326,24 @@ for dylib_path in "target/target_macos/plugins/plugin-wasm/release/libplugin_was
 done
 if [ "$WASM_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_wasm.dylib not found in build output (wasm 插件子系统将不可用)"
+fi
+
+# plugin-roaming QUIC 中继/名册面（exe 旁 plugins/ 查找——QUIC 插件化 M1：
+# iroh 栈在 .dylib 内，宿主零增量；缺席 = 中继诚实降级 + CLI 动态隐藏）
+ROAMING_FOUND=false
+for dylib_path in "target/target_macos/plugins/plugin-roaming/release/libplugin_roaming.dylib" \
+                  "target/target_macos/plugins/plugin-roaming/release/libplugin_roaming.so"; do
+    if [ -f "$dylib_path" ]; then
+        cp "$dylib_path" "$BIN_DIR/plugins/"
+        SIZE=$(wc -c < "$dylib_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("libplugin_roaming.dylib (${SIZE_MB} MB)")
+        ROAMING_FOUND=true
+        break
+    fi
+done
+if [ "$ROAMING_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN libplugin_roaming.dylib not found in build output (QUIC relay server unavailable)"
 fi
 
 echo "  OK Copied ${#COPIED[@]} file(s) to $BIN_DIR/"

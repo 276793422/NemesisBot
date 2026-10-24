@@ -9,9 +9,7 @@ use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_cluster::cluster::Cluster;
 use nemesis_cluster::cluster_log_reader;
-#[cfg(feature = "cluster-roaming")]
-use nemesis_cluster::roaming::endpoint::{RoamingIdentity, roaming_key_path};
-#[cfg(feature = "cluster-roaming")]
+use nemesis_cluster::roaming::roaming_key_path;
 use nemesis_cluster::roaming::trust::TrustBook;
 use nemesis_types::cluster::{NodeRole, TaskStatus};
 use std::path::{Path, PathBuf};
@@ -108,9 +106,8 @@ impl ModuleHandler for ClusterHandler {
             "firewall.check",
             "firewall.add_rules",
             "diagnostics.run",
-            // iroh 跨网漫游（feature=cluster-roaming；关 = status 诚实降级
-            // available:false，enable/disable 运行期报未编译——命令面恒注册，
-            // L1 清单稳定，voice-capture 先例）
+            // iroh 跨网漫游（M4 起 cluster-roaming feature 已删，恒编译——命令面
+            // 恒注册，L1 清单稳定，voice-capture 先例）
             "roaming.status",
             "roaming.enable",
             "roaming.disable",
@@ -130,7 +127,7 @@ impl ModuleHandler for ClusterHandler {
             "runtime.status" => self.runtime_status(ctx),
             "runtime.start" => self.runtime_start(ctx),
             "runtime.stop" => self.runtime_stop(ctx),
-            "nodes.list" => self.nodes_list(ctx),
+            "nodes.list" => self.nodes_list(ctx).await,
             "nodes.ping" => {
                 let data = data.ok_or("missing data")?;
                 let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
@@ -232,10 +229,10 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.diagnostics_run(&data, ctx).await
             }
-            // iroh 跨网漫游开关面（feature=cluster-roaming 穿透）
-            "roaming.status" => self.roaming_status(ctx),
-            "roaming.enable" => self.roaming_enable(ctx),
-            "roaming.disable" => self.roaming_disable(ctx),
+            // iroh 跨网漫游开关面
+            "roaming.status" => self.roaming_status(ctx).await,
+            "roaming.enable" => self.roaming_enable(ctx).await,
+            "roaming.disable" => self.roaming_disable(ctx).await,
             // QUIC 自建中继管理面已迁 handlers/quic.rs（2026-10-23 与集群
             // 解耦：quic.relay.* / quic.registry.members；零 Cluster 类型依赖）
             _ => Err(format!("unknown command: cluster.{}", cmd)),
@@ -305,7 +302,6 @@ fn cluster_config_path(workspace: &str) -> PathBuf {
 /// 形态与 [`update_cluster_config_enabled`] 同源）。**段内 RMW 保留兄弟键**
 ///（2026-10-23 解耦后段内兄弟键只剩无害遗留——QUIC 键真相源已迁
 /// config.quic.json，首读迁移只拷贝不删除）。
-#[cfg(feature = "cluster-roaming")]
 fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), String> {
     let _cfg_serial = nemesis_config::config_write_lock();
     let path = cluster_config_path(workspace);
@@ -343,7 +339,6 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
 /// 「待重启」与「集群未启用」，否则徽标恒说「重启网关」误导用户无限重启
 /// （2026-10-22 用户实录）。QUIC 中继面（quic.relay.*）不消费此闸——
 /// 2026-10-23 与集群解耦后中继装配独立于集群闸链。
-#[cfg(feature = "cluster-roaming")]
 fn cluster_gate_payload(
     home: Option<&str>,
     workspace: &str,
@@ -378,7 +373,6 @@ fn cluster_gate_payload(
 }
 
 /// 把集群闸链快照注入 status 载荷（handler 层——payload 纯函数不带 home/ctx）。
-#[cfg(any(feature = "cluster-roaming", feature = "quic-relay"))]
 fn inject_cluster_gate(
     payload: &mut Option<serde_json::Value>,
     ctx: &RequestContext,
@@ -402,23 +396,25 @@ fn inject_cluster_gate(
 /// `Cluster::roaming_enabled_in_config`）；active=运行态（roaming 层在跑）；
 /// requires_restart = 两者不一致（用户改了开关还没重启网关）。
 /// `rendezvous` = 名册同步状态（已序列化；Null = 循环未挂——N0 形态/未启用）。
-#[cfg(feature = "cluster-roaming")]
-fn roaming_status_payload(
+/// QUIC 插件化 M2：node_id 走桥（派生在插件内；桥缺席/失败 = null——
+/// 观测面偏差见 PLAN 注记）。
+async fn roaming_status_payload(
     workspace: &str,
     cluster_active: Option<bool>,
     rendezvous: serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
+    use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
     let wspath = Path::new(workspace);
     let cfg_path = cluster_config_path(workspace);
     let enabled = Cluster::roaming_enabled_in_config(&cfg_path);
-    let key_path = roaming_key_path(wspath);
-    let key_present = key_path.exists();
-    let node_id = if key_present {
-        RoamingIdentity::load(&key_path)
-            .ok()
-            .map(|i| i.node_id_hex())
-    } else {
-        None
+    let key_present = roaming_key_path(wspath).exists();
+    let node_id = match plugin_bridge::get_iroh_id().await {
+        BridgeOutcome::Ok(hex) => Some(hex),
+        BridgeOutcome::Failed(e) => {
+            tracing::debug!("[roaming] node_id 读取失败（状态面降级 null）: {e}");
+            None
+        }
+        BridgeOutcome::Absent => None,
     };
     let trust = TrustBook::load(wspath).unwrap_or(None);
     let (trust_enabled, trusted_n, revoked_n) = match &trust {
@@ -445,47 +441,38 @@ fn roaming_status_payload(
     })))
 }
 
-#[cfg(not(feature = "cluster-roaming"))]
-fn roaming_status_payload(
-    _workspace: &str,
-    _cluster_active: Option<bool>,
-    _rendezvous: serde_json::Value,
-) -> Result<Option<serde_json::Value>, String> {
-    Ok(Some(serde_json::json!({
-        "available": false,
-        "enabled": false,
-        "active": false,
-        "requires_restart": false,
-        "reason": "cluster-roaming feature 未编译（iroh 跨网漫游层不可用）",
-    })))
-}
-
-/// cluster.roaming.enable/disable 实现。enable 时缺 key 顺手生成（备料），
+/// cluster.roaming.enable/disable 实现。enable 时缺 key 顺手生成（备料，
+/// QUIC 插件化 M2：走桥 identity_ensure——身份面在插件内；桥缺席 =
+/// 闸照写 + 诚实注记（gateway 启动时同款 warn 降级），Failed = Err），
 /// 返回身份 hex 供 UI 展示；disable 只写闸。
-#[cfg(feature = "cluster-roaming")]
-fn roaming_set_enabled_impl(
+async fn roaming_set_enabled_impl(
     workspace: &str,
     enabled: bool,
 ) -> Result<Option<serde_json::Value>, String> {
+    use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
     update_cluster_config_roaming(workspace, enabled)?;
     if !enabled {
         return Ok(Some(
             serde_json::json!({ "enabled": false, "requires_restart": true }),
         ));
     }
-    let wspath = Path::new(workspace);
-    let key_path = roaming_key_path(wspath);
-    let (key_created, node_id) = if key_path.exists() {
-        let id = RoamingIdentity::load(&key_path)?;
-        (false, Some(id.node_id_hex()))
-    } else {
-        let (id, _) = RoamingIdentity::load_or_create(wspath)?;
-        (true, Some(id.node_id_hex()))
+    let (key_created, node_id, identity_note) = match plugin_bridge::identity_ensure().await {
+        BridgeOutcome::Ok(info) => (info.created, Some(info.iroh_id), serde_json::Value::Null),
+        BridgeOutcome::Absent => (
+            false,
+            None,
+            serde_json::json!(
+                "plugin_roaming 未装载——身份未备料（gateway 启动时叠加层将诚实降级；\
+                 请随发行包安装 plugins/plugin_roaming/plugin_roaming.dll）"
+            ),
+        ),
+        BridgeOutcome::Failed(e) => return Err(e),
     };
     Ok(Some(serde_json::json!({
         "enabled": true,
         "key_created": key_created,
         "node_id": node_id,
+        "identity_note": identity_note,
         "requires_restart": true,
     })))
 }
@@ -740,7 +727,7 @@ impl ClusterHandler {
 
     // -- Node commands --------------------------------------------------------
 
-    fn nodes_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn nodes_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
         let nodes = cluster.list_nodes();
         let local_node_id = cluster.node_id();
@@ -750,6 +737,10 @@ impl ClusterHandler {
             Ok(log_dir) => cluster_log_reader::aggregate_node_stats(Path::new(&log_dir)),
             Err(_) => std::collections::HashMap::new(),
         };
+
+        // 漫游拨号路径观测批量预查（QUIC 插件化 M3：观测槽在插件，一次 FFI
+        // 往返取全量快照；逐节点经 roaming_hex_of 映射，非漫游节点 = null）。
+        let dial_paths = cluster.roaming_dial_paths().await;
 
         let result: Vec<serde_json::Value> = nodes
             .iter()
@@ -763,7 +754,9 @@ impl ClusterHandler {
                 let success_rate = stats.map(|s| s.success_rate);
 
                 // 漫游拨号路径观测（打洞直连/经中继转发；非漫游节点 = null）
-                let roaming_path = cluster.roaming_path_of(&n.base.id);
+                let roaming_path = cluster
+                    .roaming_hex_of(&n.base.id)
+                    .and_then(|hex| dial_paths.get(&hex).cloned());
 
                 serde_json::json!({
                     "id": n.base.id,
@@ -797,41 +790,32 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
-        let node = cluster
+        cluster
             .get_node_info(node_id)
             .ok_or_else(|| format!("node not found: {}", node_id))?;
 
-        // TCP connect to measure latency
-        let addr = node.base.address.clone();
+        // 帧级连通性探针（G2 同款 `Custom("ping")`）：走集群传输层，对
+        // 漫游地址（iroh:<id>@<relay>）与普通 tcp: 地址同等有效。此前这里
+        // 是裸 `TcpStream::connect(node.base.address)`——漫游节点把整个
+        // iroh URI 当主机名喂 getaddrinfo，恒报 DNS 查找失败（QUIC UAT
+        // 2026-10-24 实录：Windows os error 11003 / Linux EAI_NONAME），
+        // 且 user-initiated 失败还会把实际在线的对端打成 Offline。
         let start = std::time::Instant::now();
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            tokio::net::TcpStream::connect(&addr),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {
-                let latency = start.elapsed().as_millis() as u64;
-                // Probe succeeded → peer is reachable. Refresh health state so
-                // the dashboard reflects reality even when UDP discovery is
-                // silent (different subnet, asymmetric routes, etc.).
-                cluster.mark_peer_healthy(node_id);
-                Ok(Some(serde_json::json!({ "latency": latency })))
-            }
-            Ok(Err(e)) => {
-                // TCP connect explicitly failed (RST, refused, unreachable).
-                // User-initiated probe observing failure → flip to Offline
-                // immediately rather than waiting for check_timeouts.
-                let reason = format!("ping failed: {}", e);
-                cluster.mark_peer_offline(node_id, &reason);
-                Err(reason)
-            }
-            Err(_) => {
-                // 5s timeout — host is silent, likely down or firewalled.
-                let reason = "ping timeout (5s)".to_string();
-                cluster.mark_peer_offline(node_id, &reason);
-                Err(reason)
-            }
+        if cluster.probe_peer(node_id).await {
+            // Probe succeeded → peer is reachable. Refresh health state so
+            // the dashboard reflects reality even when UDP discovery is
+            // silent (different subnet, asymmetric routes, etc.) —
+            // probe_peer 内部已 mark_peer_healthy。
+            let latency = start.elapsed().as_millis() as u64;
+            Ok(Some(serde_json::json!({ "latency": latency })))
+        } else {
+            // User-initiated probe observing failure → flip to Offline
+            // immediately rather than waiting for check_timeouts（单次用户
+            // 主动探针失败即翻状态的 UX 语义保留；瞬态抖动由名册/announce
+            // 下一轮拉回）。
+            let reason = "ping failed (frame probe, 5s timeout)".to_string();
+            cluster.mark_peer_offline(node_id, &reason);
+            Err(reason)
         }
     }
 
@@ -2013,65 +1997,77 @@ impl ClusterHandler {
     }
 
     // ------------------------------------------------------------------
-    // iroh 跨网漫游开关面（feature=cluster-roaming 穿透；开关+UI 接入）
+    // iroh 跨网漫游开关面（M4 起恒编译：cluster-roaming feature 已删）
     // ------------------------------------------------------------------
 
     /// cluster.roaming.status：config 闸 + key 在场 + 身份 + 信任簿 + 运行态
     /// + rendezvous 名册同步状态（Null = 循环未挂）。
     ///
-    /// feature 关 = Ok(available:false)——TAB 恒在、前端据此渲染降级面板。
-    fn roaming_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    /// 管理面恒编译（M4 起 feature 已删）——available 恒 true；插件缺席
+    /// 表现为 node_id:null + identity_note（前端按未装配渲染诚实注记）。
+    /// QUIC 插件化 M2：身份派生走桥（插件内）——异步化。
+    /// Phase 2 观测性：rendezvous 段 = 宿主成功快照 × 插件运行态 merge
+    /// （[`plugin_bridge::effective_rendezvous_state`]）——失败态（连败
+    /// streak/last_error/失败时刻）从插件出（此前只进日志，前端失败徽标
+    /// 是死分支）；桥缺席/失败/旧插件无段 = 宿主快照原样（旧行为）。
+    async fn roaming_status(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
         let workspace = require_workspace(ctx)?.to_string();
-        #[cfg(feature = "cluster-roaming")]
-        let rendezvous = ctx
+        let host_snap = ctx
             .state
             .cluster
             .as_ref()
-            .and_then(|c| c.rendezvous_status_snapshot())
+            .and_then(|c| c.rendezvous_status_snapshot());
+        let plugin_sync = match plugin_bridge::registry_sync_snapshot().await {
+            BridgeOutcome::Ok(v) => v,
+            BridgeOutcome::Failed(e) => {
+                tracing::debug!("[roaming] 插件 registry_sync 读取失败（宿主快照兜底）: {e}");
+                None
+            }
+            BridgeOutcome::Absent => None,
+        };
+        let rendezvous = plugin_bridge::effective_rendezvous_state(host_snap, plugin_sync)
             .map(|s| serde_json::to_value(&s).unwrap_or(serde_json::Value::Null))
             .unwrap_or(serde_json::Value::Null);
-        #[cfg(not(feature = "cluster-roaming"))]
-        let rendezvous = serde_json::Value::Null;
-        let payload = roaming_status_payload(
+        let mut payload = roaming_status_payload(
             &workspace,
             ctx.state.cluster.as_ref().map(|c| c.roaming_active()),
             rendezvous,
-        )?;
-        // 闸链快照随定义走（inject_cluster_gate = cfg(cluster-roaming)；
-        // quic-relay 蕴含 cluster-roaming）——desktop 等裁剪组合无叠加层
-        // 时 status 只有降级载荷，无 gate 注入（前端裁剪后面板不存在）。
-        #[cfg(feature = "cluster-roaming")]
-        let payload = {
-            let mut payload = payload;
-            inject_cluster_gate(&mut payload, ctx, &workspace);
-            payload
-        };
+        )
+        .await?;
+        // 闸链快照注入（QUIC 插件化 M4：恒编译——插件缺席时 inject 本身
+        // 诚实降级，取代旧 cluster-roaming cfg 裁剪形态）。
+        inject_cluster_gate(&mut payload, ctx, &workspace);
         Ok(payload)
     }
 
     /// cluster.roaming.enable / roaming.disable：写 config `roaming.enabled`，
     /// enable 时缺 key 顺手生成（备料语义与 setup_roaming 同源）。重启网关生效。
-    fn roaming_set_enabled(
+    /// QUIC 插件化 M2：身份面走桥——异步化。
+    async fn roaming_set_enabled(
         &self,
         ctx: &RequestContext,
         enabled: bool,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?.to_string();
-        #[cfg(feature = "cluster-roaming")]
-        return roaming_set_enabled_impl(&workspace, enabled);
-        #[cfg(not(feature = "cluster-roaming"))]
-        {
-            let _ = (workspace, enabled);
-            Err("cluster-roaming feature 未编译（iroh 跨网漫游层不可用）".to_string())
-        }
+        roaming_set_enabled_impl(&workspace, enabled).await
     }
 
-    fn roaming_enable(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        self.roaming_set_enabled(ctx, true)
+    async fn roaming_enable(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.roaming_set_enabled(ctx, true).await
     }
 
-    fn roaming_disable(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        self.roaming_set_enabled(ctx, false)
+    async fn roaming_disable(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.roaming_set_enabled(ctx, false).await
     }
 
     // ------------------------------------------------------------------

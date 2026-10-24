@@ -19,7 +19,6 @@ default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
-    "cluster-roaming", "quic-relay",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
     "connectors", "ziwei",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
@@ -40,16 +39,11 @@ auth = ["dep:nemesis-auth"]
 voice = ["dep:nemesis-voice", "nemesis-web/voice"]
 voice-capture = ["voice", "nemesis-voice/voice-capture", "nemesis-web/voice-capture"]
 cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
-# A1 iroh 跨网 P2P 叠加层：iroh 依赖随 nemesis-cluster 的 cluster-roaming 进出；
-# CLI `cluster roaming` 子命令同 feature 门控。默认开（2026-10-22）——UDP 打洞
-# 是跨网组网的基础能力，dashboard 中继页/roaming 状态面开箱可用；IoT 最小形态
-# 经 customize 预设显式裁掉（minimal-iot/minimal-agent 恒关）。
-cluster-roaming = ["cluster", "nemesis-cluster/cluster-roaming", "nemesis-web/cluster-roaming"]
-# QUIC 中继服务器：自建中继（`quic` CLI 子命令 + 随 gateway 进程内启动）。
-# 隐含 cluster-roaming；nemesis-web/quic-relay = relay.* WSAPI 管理面。
-# 默认开（2026-10-22，同上）——自建中继回落是客户端配对流程的另一半；
-# rcgen/ACME 编译增量由全量构建承担，IoT 形态不受影响。
-quic-relay = ["cluster-roaming", "nemesis-cluster/quic-relay", "nemesis-web/quic-relay"]
+# QUIC 漫游面（2026-10-24 QUIC 插件化 M4 收口）：cluster-roaming/quic-relay
+# feature 整体删除（拍板②——少一个 feature 少一分组合矩阵）。代理层
+# （roaming_plugin_loader + CLI/WSAPI 管理面代理，无重依赖）恒编译；
+# plugin_roaming 插件在场与否是唯一功能开关（缺席=诚实报错/诚实降级）。
+# iroh 家族重依赖随迁进插件，主二进制零 iroh 依赖。
 forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
 workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]
@@ -63,16 +57,17 @@ scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
 # P5 桌面级 VM 后端（executor.vm）：穿透 nemesis-sandbox/vm 模块 + Dashboard
 # VM 页。关 = vm 模块整包不编译、executor.vm 配置缺消费者（诚实报未编译）。
-# IoT/无虚拟化环境默认关（IoT 预设钉 false）。libloading 挂这里（2026-10-22
-# 拍板：VM 资源内嵌进 plugin_vm.dll 用时释放——资源释放臂 dlopen 属 vm
-# 语义，纯 vm 构建 + 插件在场即能构建镜像，不绑 vm-display）。
-vm = ["dep:nemesis-sandbox", "nemesis-sandbox/vm", "nemesis-web/vm", "dep:libloading"]
+# IoT/无虚拟化环境默认关（IoT 预设钉 false）。libloading 已恒编译（M4 起非
+# optional：roaming 插件装载臂共用；2026-10-22 拍板的 VM 资源释放臂 dlopen
+# 同源，纯 vm 构建 + 插件在场即能构建镜像，不绑 vm-display）。
+vm = ["dep:nemesis-sandbox", "nemesis-sandbox/vm", "nemesis-web/vm"]
 # P5-R2 带界面 VM：显示通道 shim（nemesis-web/vm-display）+ plugin-vm 宿主
 # loader（nemesis-plugin vtable + v4 签名装载闸 + 双向 ABI 闸）。implies
 # vm（display_port_query 数据源是 VmSupervisor；资源释放链同源）。
 # plugin-vm cdylib 本体非 workspace member，不随 feature 进二进制——
-# 关 = /ws/vm-display 不编译。
-vm-display = ["vm", "nemesis-web/vm-display", "dep:nemesis-plugin"]
+# 关 = /ws/vm-display 不编译。nemesis-plugin 已恒编译（M4 起非 optional，
+# roaming 代理层契约共用），不再经 dep: 挂本 feature。
+vm-display = ["vm", "nemesis-web/vm-display"]
 # Managed-agent board (W2 P1). board = 注入 + nemesis-web/board 管理面双开：
 # nemesis-board 是 web 的 optional 依赖（rusqlite bundled 随它进出——iotsmall
 # 里最后一个 SQLite 来源）；关 = `nemesisbot issue` CLI、board.* WSAPI、
@@ -257,12 +252,13 @@ nemesis-verify = { workspace = true, optional = true }
 # WASM 插件框架宿主运行时（plugins-wasm feature 门控；implies security，
 # 并转发 nemesis-web 同名 feature 装配 plugins.wasm.* WSAPI 管理面）。
 nemesis-plugins-wasm = { workspace = true, optional = true }
-# plugin-vm 宿主 loader（vm-display feature 门控）：HostServices 同族的
-# vm-display vtable 类型 + 装载点。
-nemesis-plugin = { workspace = true, optional = true }
-# cdylib dlopen：vm-display 装载臂 + vm 资源释放臂共用（与 nemesis-desktop/
-# nemesis-verify 同 crate 同版本）
-libloading = { workspace = true, optional = true }
+# 契约 crate：plugin-vm 宿主 loader（vm-display vtable）+ roaming 代理层
+# （RoamingPluginHandle / HostRoamingVTable，M4 起 roaming 代理层恒编译
+# ——拍板②「少一个 feature 少一分组合矩阵」，feature 门控不到它）。
+nemesis-plugin = { workspace = true }
+# cdylib dlopen：vm-display 装载臂 + vm 资源释放臂 + roaming 插件装载臂共用
+# （与 nemesis-desktop/nemesis-verify 同 crate 同版本；恒编译同上）。
+libloading = { workspace = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-ziwei = { workspace = true, optional = true }

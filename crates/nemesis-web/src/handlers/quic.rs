@@ -1,27 +1,25 @@
-//! QUIC 中继 WSAPI（2026-10-23 与集群解耦）——`quic.relay.*` + `quic.registry.members`。
+//! QUIC 中继 WSAPI（2026-10-23 与集群解耦；QUIC 插件化 M1 起**代理化**）
+//! —— `quic.relay.*` + `quic.registry.members`。
 //!
-//! **零 Cluster 类型依赖**（解耦的编译级验收点）：本模块不 import
-//! `nemesis_cluster::cluster::Cluster`、不读 `AppState.cluster`——集群未编译/
-//! 未启用时 QUIC 中继管理面照常工作。config 真相源 = `config.quic.json`
-//! （`relay` 服务端段 + `client` 客户端段，见
-//! `nemesis_cluster::roaming::quic_config`）；运行态 = `AppState.quic_relay`
-//! 槽（`QuicRelayManager`，gateway 未装配时诚实降级）。
+//! **零 Cluster 运行面类型依赖 + 零 iroh 依赖**：config 真相源 =
+//! `config.quic.json`（`relay` 服务端段 + `client` 客户端段，见
+//! `nemesis_cluster::roaming::quic_config`，纯 serde 解析函数）；运行态 =
+//! `AppState.quic_relay` 槽（plugin_roaming C-ABI 句柄，fn 指针 Copy）——
+//! 启停/成员查询经 `spawn_blocking` 调插件（拍板 10），ok:false 展开
+//! 与 nemesisbot loader `call_roaming` 同源形态。插件未装载 =
+//! 诚实降级（status 带插件缺席注记、启停/名册报 not loaded）。
 //!
-//! feature：无模块级闸（命令面恒注册，L1 清单稳定，voice-capture/roaming
-//! 先例）；`quic-relay` 关 = status 诚实降级 `available:false`，写面命令
-//! 运行期报「feature 未编译」。`client.roaming_enabled` 观测键读集群
-//! config（纯 config 函数，非 Cluster 类型——客户端是否消费 relay_url
-//! 由集群 roaming 开关决定，展示给用户判断连通形态）。
+//! feature：无模块级闸（M4 起 cluster-roaming feature 已删，本模块恒编译
+//! ——命令面恒注册，L1 清单稳定）。`client.roaming_enabled` 观测键读集群
+//! config（纯 config 函数——客户端是否消费 relay_url 由集群 roaming 开关
+//! 决定，展示给用户判断连通形态）。
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
-#[cfg(feature = "quic-relay")]
 use nemesis_cluster::roaming::config::{RelayTls, resolved_roaming};
-#[cfg(feature = "quic-relay")]
 use nemesis_cluster::roaming::quic_config::resolved_quic;
-#[cfg(feature = "quic-relay")]
-use nemesis_cluster::roaming::relay_server;
-#[cfg(feature = "quic-relay")]
+use nemesis_cluster::roaming::relay_info;
+use nemesis_plugin::roaming::RoamingPluginHandle;
 use std::path::{Path, PathBuf};
 
 pub struct QuicHandler {
@@ -48,9 +46,9 @@ impl ModuleHandler for QuicHandler {
 
     fn commands(&self) -> &'static [&'static str] {
         &[
-            // QUIC 自建中继（feature=quic-relay；关 = status 诚实降级
-            // available:false，config 保存/开关/名册运行期报未编译——命令面
-            // 恒注册，L1 清单稳定，roaming.status 同款先例）
+            // QUIC 自建中继（运行面在 plugin_roaming 插件；插件缺席 = status
+            // 诚实降级 available:false，config 保存/开关/名册报 not loaded——
+            // 命令面恒注册，L1 清单稳定，roaming.status 同款先例）
             "relay.status",
             "relay.config",
             // 实时开关（免重启网关）：config 闸落盘 + 进程内拉起/停掉一体。
@@ -69,42 +67,37 @@ impl ModuleHandler for QuicHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
-            "relay.status" => self.relay_status(ctx),
+            "relay.status" => self.relay_status(ctx).await,
             "relay.config" => {
                 let data = data.as_ref().ok_or("missing data")?;
                 self.relay_config_save(ctx, data)
             }
             "relay.enable" => self.relay_toggle(ctx, true).await,
             "relay.disable" => self.relay_toggle(ctx, false).await,
-            "registry.members" => self.registry_members(ctx),
+            "registry.members" => self.registry_members(ctx).await,
             _ => Err(format!("unknown command: quic.{}", cmd)),
         }
     }
 }
 
 impl QuicHandler {
-    /// quic.relay.status：config 闸 + 运行态 + 证书状态 + 客户端面。
-    /// feature 关 = Ok(available:false)——前端据此渲染降级面板。
-    #[cfg(feature = "quic-relay")]
-    fn relay_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    /// quic.relay.status：config 闸 + 插件运行态 + 证书状态 + 客户端面。
+    /// 插件未装载 = Ok(available:false)——前端据此渲染降级面板。
+    async fn relay_status(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?.to_string();
-        let (active, http_addr, quic_addr) = match ctx.state.quic_relay.as_ref() {
-            Some(mgr) => mgr.status(),
-            None => (false, None, None),
-        };
-        relay_status_payload(&workspace, active, http_addr, quic_addr)
-    }
-
-    #[cfg(not(feature = "quic-relay"))]
-    fn relay_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let _ = require_workspace(ctx)?;
-        Ok(Some(serde_json::json!({
-            "available": false,
-            "enabled": false,
-            "active": false,
-            "requires_restart": false,
-            "reason": "quic-relay feature 未编译（QUIC 中继层不可用）",
-        })))
+        let (plugin_loaded, active, http_addr, quic_addr) =
+            plugin_runtime_state(ctx.state.quic_relay).await;
+        let mut p = relay_status_payload(&workspace, active, http_addr, quic_addr)?;
+        if let Some(obj) = p.as_mut().and_then(|v| v.as_object_mut()) {
+            obj.insert(
+                "plugin_loaded".to_string(),
+                serde_json::json!(plugin_loaded),
+            );
+        }
+        Ok(p)
     }
 
     /// quic.relay.config：保存服务端 relay 段（合并写，兄弟键保留；
@@ -117,65 +110,121 @@ impl QuicHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?.to_string();
-        #[cfg(feature = "quic-relay")]
-        return relay_config_save_impl(&workspace, data);
-        #[cfg(not(feature = "quic-relay"))]
-        {
-            let _ = (workspace, data);
-            Err("quic-relay feature 未编译（QUIC 中继层不可用）".to_string())
-        }
+        relay_config_save_impl(&workspace, data)
     }
 
     /// quic.relay.enable / relay.disable：**实时开关**（免重启网关）。config 闸
-    /// 落盘（relay_config_save_impl 同源合并语义）+ 进程内拉起/停掉中继
-    /// （QuicRelayManager::setup 幂等 / stop 与停机 teardown 同源单一实现）。
-    /// 返回与 relay.status 同款载荷——动态启停后 enabled/active 恒
-    /// 同步，requires_restart 自然熄灭。enable 失败（token 空 fail-closed）Err
-    /// 上抛且 config 闸保持开——修复后重开开关即重试，与「配置说了算」语义一致。
+    /// 落盘（relay_config_save_impl 同源合并语义）+ 插件内拉起/停掉中继
+    /// （roaming_start 幂等 / roaming_stop 与停机链同源单一实现；拍板 10
+    /// spawn_blocking）。返回与 relay.status 同款载荷——动态启停后
+    /// enabled/active 恒同步，requires_restart 自然熄灭。enable 失败
+    /// （token 空 fail-closed）Err 上抛且 config 闸保持开——修复后重开开关
+    /// 即重试，与「配置说了算」语义一致。插件未装载 = 只落 config 闸
+    /// （requires_restart 诚实呈现，不假成功）。
     async fn relay_toggle(
         &self,
         ctx: &RequestContext,
         enable: bool,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?.to_string();
-        #[cfg(feature = "quic-relay")]
-        return relay_toggle_impl(ctx.state.quic_relay.as_deref(), &workspace, enable).await;
-        #[cfg(not(feature = "quic-relay"))]
-        {
-            let _ = (workspace, enable);
-            Err("quic-relay feature 未编译（QUIC 中继层不可用）".to_string())
-        }
+        relay_toggle_impl(ctx.state.quic_relay, &workspace, enable).await
     }
 
     /// quic.registry.members：服务端全量名册（中继机视角，含 TTL 内全部
-    /// 报到成员）。中继未运行 / 注册表未拉起 = 空表（不是错误——状态诚实）。
-    #[cfg(feature = "quic-relay")]
-    fn registry_members(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    /// 报到成员）。中继未运行 / 注册表未拉起 = 空表（不是错误——状态诚实）；
+    /// 插件未装载 = available:false + reason（空表会伪装「在跑没人」）。
+    async fn registry_members(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let _ = require_workspace(ctx)?;
-        let members = match ctx.state.quic_relay.as_ref() {
-            Some(mgr) => mgr.registry_members(),
-            None => Vec::new(),
+        let Some(handle) = ctx.state.quic_relay else {
+            return Ok(Some(serde_json::json!({
+                "available": false,
+                "count": 0,
+                "members": [],
+                "reason": "roaming 插件未装载（plugins/plugin_roaming 缺席或装载失败）",
+            })));
         };
+        let v = plugin_call(handle, "roaming_status", RoamingPluginHandle::status).await?;
+        let members = v
+            .get("registry_members")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        let count = members.as_array().map(|a| a.len()).unwrap_or(0);
         Ok(Some(serde_json::json!({
             "available": true,
-            "count": members.len(),
+            "count": count,
             "members": members,
         })))
-    }
-
-    #[cfg(not(feature = "quic-relay"))]
-    fn registry_members(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let _ = require_workspace(ctx)?;
-        Err("quic-relay feature 未编译（QUIC 中继层不可用）".to_string())
     }
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数（feature=quic-relay 穿透）
+// 插件调用辅助（拍板 10：同步 FFI 内 block_on 插件 runtime——宿主 spawn_blocking；
+// ok:false 展开与 nemesisbot roaming_plugin_loader::call_roaming 同源形态）
+// ---------------------------------------------------------------------------
+
+/// 单次插件调用：spawn_blocking + JSON 解析 + ok:false 展开。
+async fn plugin_call(
+    handle: RoamingPluginHandle,
+    what: &'static str,
+    f: impl FnOnce(RoamingPluginHandle) -> Result<String, String> + Send + 'static,
+) -> Result<serde_json::Value, String> {
+    let raw = tokio::task::spawn_blocking(move || f(handle))
+        .await
+        .map_err(|e| format!("{what}: spawn_blocking join 失败: {e}"))??;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("{what}: 返回非 JSON: {e}"))?;
+    if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+        let code = v
+            .get("err_code")
+            .and_then(|c| c.as_str())
+            .unwrap_or("unknown");
+        let msg = v.get("err_msg").and_then(|m| m.as_str()).unwrap_or("");
+        return Err(format!("{what}: [{code}] {msg}"));
+    }
+    Ok(v)
+}
+
+/// 运行态四元组（plugin_loaded / running / http_addr / quic_addr）。
+/// 插件缺席或 status 失败 = 未运行诚实呈现（地址 null）。
+async fn plugin_runtime_state(
+    handle: Option<RoamingPluginHandle>,
+) -> (bool, bool, serde_json::Value, serde_json::Value) {
+    let Some(h) = handle else {
+        return (
+            false,
+            false,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+    };
+    match plugin_call(h, "roaming_status", RoamingPluginHandle::status).await {
+        Ok(v) => (
+            true,
+            v.get("running").and_then(|b| b.as_bool()).unwrap_or(false),
+            v.get("http_addr")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            v.get("quic_addr")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        Err(_) => (
+            true,
+            false,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 自由函数
 // ---------------------------------------------------------------------------
 
 /// QUIC 中继配置路径（config.quic.json；2026-10-23 与集群解耦后的真相源）。
-#[cfg(feature = "quic-relay")]
 pub(crate) fn quic_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_quic_config_path_in_workspace(Path::new(workspace))
 }
@@ -184,7 +233,6 @@ pub(crate) fn quic_config_path(workspace: &str) -> PathBuf {
 /// 只有 token_set bool（凭据面纪律，与漫游信任簿同源）。证书面按 TLS 档：
 /// self-signed = workspace 路径 + generated/pending；manual = 用户路径回显
 /// + ready/missing；none = unused。
-#[cfg(feature = "quic-relay")]
 fn relay_settings_payload(
     relay: &nemesis_cluster::roaming::config::RelaySettings,
     workspace: &str,
@@ -215,8 +263,9 @@ fn relay_settings_payload(
         }
         RelayTls::None => (String::new(), "unused", String::new(), "unused"),
         RelayTls::SelfSigned => {
-            let cert = relay_server::relay_cert_path(Path::new(workspace));
-            let key = relay_server::relay_key_path(Path::new(workspace));
+            // 插件化 M1 后路径真相源 = relay_info（与插件副本同源对账）。
+            let cert = relay_info::relay_cert_path(Path::new(workspace));
+            let key = relay_info::relay_key_path(Path::new(workspace));
             (
                 cert.display().to_string(),
                 if cert.exists() {
@@ -240,21 +289,20 @@ fn relay_settings_payload(
         "cert_state": cert_state,
         "key_path": key_path,
         "key_state": key_state,
-        "advertised_url": relay_server::advertised_relay_url(relay),
+        "advertised_url": relay_info::advertised_relay_url(relay),
     })
 }
 
 /// quic.relay.status 载荷。enabled=config 闸（resolved_quic 单一真相
-/// 源，config.quic.json）；active=运行态（gateway 进程内中继在跑）；
-/// requires_restart = 两者不一致。client 面带客户端三键（roaming_enabled
-/// 来自 cluster.json roaming 段 / relay_url/relay_token_set 来自 quic.json
-/// client 段——令牌只给 bool）。
-#[cfg(feature = "quic-relay")]
+/// 源，config.quic.json）；active=运行态（插件内中继在跑）；requires_restart
+/// = 两者不一致。client 面带客户端三键（roaming_enabled 来自 cluster.json
+/// roaming 段 / relay_url/relay_token_set 来自 quic.json client 段——令牌只
+/// 给 bool）。地址为插件回执的字符串/null 原样透传。
 fn relay_status_payload(
     workspace: &str,
     active: bool,
-    http_addr: Option<std::net::SocketAddr>,
-    quic_addr: Option<std::net::SocketAddr>,
+    http_addr: serde_json::Value,
+    quic_addr: serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
     let resolved = resolved_quic(&quic_config_path(workspace));
     let roaming_enabled = resolved_roaming(&cluster_config_path(workspace)).enabled;
@@ -263,8 +311,8 @@ fn relay_status_payload(
         "enabled": resolved.relay.enabled,
         "active": active,
         "requires_restart": resolved.relay.enabled != active,
-        "http_addr": http_addr.map(|a| a.to_string()),
-        "quic_addr": quic_addr.map(|a| a.to_string()),
+        "http_addr": http_addr,
+        "quic_addr": quic_addr,
         "relay": relay_settings_payload(&resolved.relay, workspace),
         "client": {
             "roaming_enabled": roaming_enabled,
@@ -276,7 +324,6 @@ fn relay_status_payload(
 
 /// 集群 config 路径（roaming_enabled 观测键数据源；纯路径换算——
 /// 路径唯一真相源 = nemesis-path）。
-#[cfg(feature = "quic-relay")]
 fn cluster_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
 }
@@ -289,7 +336,6 @@ fn cluster_config_path(workspace: &str) -> PathBuf {
 /// URL 变 host:0 废话）；tls 强校验三值——解析层对未知 tls 宽容降级
 /// SelfSigned，写面不许（写面是当次意志，静默纠偏会把 manual 写成
 /// self-signed）。
-#[cfg(feature = "quic-relay")]
 fn relay_config_save_impl(
     workspace: &str,
     data: &serde_json::Value,
@@ -454,32 +500,28 @@ fn relay_config_save_impl(
     })))
 }
 
-/// relay_toggle 的实现核心（ctx 解耦——tests 以 manager=None 直接验证
-/// config+载荷契约；真中继拉起/停掉的 roundtrip 归 cluster 侧 cov 测试，
-/// [`crate::handlers::quic::tests`] 只钉 None 臂）。
+/// relay_toggle 的实现核心（ctx 解耦——tests 以 handle=None 直接验证
+/// config+载荷契约；真中继拉起/停掉的 roundtrip 归插件侧 e2e +
+/// gateway 装载冒烟，[`crate::handlers::quic::tests`] 只钉 None 臂）。
 ///
 /// ① config 闸先动（单一真相源，config.quic.json relay.enabled）：enable
 /// 中途失败（token 空 fail-closed）闸保持开——修复后重开开关即重试。
-/// ② 进程内拉起/停掉（幂等；manager 未装配时只落 config 闸——运行态诚实
+/// ② 插件内拉起/停掉（幂等；句柄未装载时只落 config 闸——运行态诚实
 /// 呈现 requires_restart）。③ 最新状态回前端。
-#[cfg(feature = "quic-relay")]
 async fn relay_toggle_impl(
-    manager: Option<&nemesis_cluster::roaming::relay_manager::QuicRelayManager>,
+    handle: Option<RoamingPluginHandle>,
     workspace: &str,
     enable: bool,
 ) -> Result<Option<serde_json::Value>, String> {
     relay_config_save_impl(workspace, &serde_json::json!({ "enabled": enable }))?;
-    if let Some(mgr) = manager {
+    if let Some(h) = handle {
         if enable {
-            mgr.setup().await?;
+            plugin_call(h, "roaming_start", RoamingPluginHandle::start).await?;
         } else {
-            mgr.stop();
+            plugin_call(h, "roaming_stop", RoamingPluginHandle::stop).await?;
         }
     }
-    let (active, http_addr, quic_addr) = match manager {
-        Some(mgr) => mgr.status(),
-        None => (false, None, None),
-    };
+    let (_, active, http_addr, quic_addr) = plugin_runtime_state(handle).await;
     relay_status_payload(workspace, active, http_addr, quic_addr)
 }
 

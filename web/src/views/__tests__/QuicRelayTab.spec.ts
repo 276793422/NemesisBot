@@ -105,14 +105,14 @@ describe('QuicRelayTab 降级面板', () => {
             enabled: false,
             active: false,
             requires_restart: false,
-            reason: 'quic-relay feature 未编译（QUIC 中继层不可用）',
+            reason: 'QUIC 管理面未就绪（网关为裁剪构建）',
           }
         : {},
     )
     const w = mount(QuicRelayTab)
     await flushPromises()
     expect(w.text()).toContain('QUIC 中继（内网穿透）')
-    expect(w.text()).toContain('quic-relay feature 未编译')
+    expect(w.text()).toContain('QUIC 管理面未就绪')
     expect(w.findAll('button').filter(b => b.text() === '保存配置').length).toBe(0)
   })
 })

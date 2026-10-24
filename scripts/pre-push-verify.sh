@@ -58,6 +58,12 @@ if [ "$FULL" -eq 1 ]; then
     step "本地全量 cargo test --workspace（数十分钟）"
     cargo test --workspace 2>&1 | tail -3
     [ "${PIPESTATUS[0]}" -ne 0 ] && FAIL=1
+
+    # plugin-roaming 独立 workspace——cargo test --workspace 永远够不到
+    # （QUIC 插件化 M1；与 extended-tests.yml 同款显式补跑）
+    step "本地 plugin-roaming 测试（独立 workspace）"
+    cargo test --manifest-path plugins/plugin-roaming/Cargo.toml 2>&1 | tail -3
+    [ "${PIPESTATUS[0]}" -ne 0 ] && FAIL=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -171,6 +177,11 @@ if [ "$FULL" -eq 1 ]; then
     step "远程全量 cargo test --workspace + ulimit -n 8192（= CI nightly job，可达 1-2 小时）"
     net_retry ssh -o ConnectTimeout=10 "$REMOTE" \
         "bash -lic 'cd ${WORKTREE} && ulimit -n 8192 && cargo test --workspace --no-fail-fast 2>&1 | tail -5; exit \${PIPESTATUS[0]}'" \
+        || FAIL=1
+
+    step "远程 plugin-roaming 测试（独立 workspace，= extended-tests 补跑项）"
+    net_retry ssh -o ConnectTimeout=10 "$REMOTE" \
+        "bash -lic 'cd ${WORKTREE} && cargo test --manifest-path plugins/plugin-roaming/Cargo.toml --release 2>&1 | tail -3; exit \${PIPESTATUS[0]}'" \
         || FAIL=1
 fi
 

@@ -1,6 +1,6 @@
 //! [`super`] 单测：端口查询语义 + workspace 写入约定。不 dlopen（真插件
-//! cdylib 归 build 脚本/e2e 面）。签名闸口径与 find_plugin_path 的钉死
-//! 用例在 [`crate::vm_plugin_lib`]（单一真相源搬家，测试跟着搬）。
+//! cdylib 归 build 脚本/e2e 面）。签名闸口径与 find_path 的钉死
+//! 用例在 [`crate::plugin_lib`]（单一真相源搬家，测试跟着搬）。
 
 use super::*;
 

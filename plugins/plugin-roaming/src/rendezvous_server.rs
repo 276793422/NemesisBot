@@ -1,10 +1,11 @@
-//! rendezvous 成员名册——服务端半边（axum 注册表；quic-relay feature）。
+//! rendezvous 成员名册——服务端半边（axum 注册表）。
 //!
-//! 见 [`super::rendezvous`] 模块文档（设计/分层/token 即命名空间）。本文件
-//! 只关心服务面：token 门禁、载荷校验与钳制（公网面纪律：非法 loud 拒、
-//! 超长截断不放大存储）、TTL 剔除、容量闸、axum 薄壳两个端点。
+//! 搬自宿主 `nemesis-cluster::roaming::rendezvous_server`（QUIC 插件化 M1）。
+//! 差异：类型走本插件 `types.rs` 副本；日志走 vtable 转发（插件不落自己的
+//! 日志文件）；其余（token 门禁、载荷校验与钳制、TTL 剔除、容量闸、axum
+//! 薄壳两端点）逐行同源。
 
-use crate::roaming::rendezvous::{MAX_MEMBERS, MEMBER_TTL_SECS, RendezvousMember};
+use crate::types::{MAX_MEMBERS, MEMBER_TTL_SECS, RendezvousMember, valid_iroh_id};
 use axum::response::IntoResponse;
 use serde_json::json;
 use std::collections::HashMap;
@@ -45,8 +46,8 @@ pub fn sanitize_member(mut m: RendezvousMember) -> Result<RendezvousMember, Regi
         )));
     }
     m.iroh_id = m.iroh_id.trim().to_lowercase();
-    // 64-hex 校验（复用 endpoint 的单一真相源——非法身份对谁都没用）。
-    if let Err(e) = crate::roaming::endpoint::node_id_from_hex(&m.iroh_id) {
+    // 64-hex 校验（镜像宿主 endpoint 单一真相源——非法身份对谁都没用）。
+    if let Err(e) = valid_iroh_id(&m.iroh_id) {
         return Err(RegisterError::Invalid(format!("iroh_id 非法: {e}")));
     }
     m.name = clamp_str(&m.name, NAME_MAX);
@@ -148,7 +149,8 @@ impl RendezvousRegistry {
         out
     }
 
-    /// TTL 内成员数。
+    /// TTL 内成员数（测试消费；宿主状态面 M2 接线后走 status 汇总）。
+    #[allow(dead_code)]
     pub fn live_count(&self) -> usize {
         let mut members = self.members.write();
         sweep_expired(&mut members);
@@ -183,12 +185,13 @@ pub struct RegistryServerHandle {
 }
 
 impl RegistryServerHandle {
-    /// TTL 内成员（观测面：quic status / banner）。
+    /// TTL 内成员（观测面：status / 名册快照）。
     pub fn live_members(&self) -> Vec<RendezvousMember> {
         self.registry.live_members()
     }
 
-    /// TTL 内成员数。
+    /// TTL 内成员数（测试消费；宿主状态面 M2 接线后走 status 汇总）。
+    #[allow(dead_code)]
     pub fn live_count(&self) -> usize {
         self.registry.live_count()
     }
@@ -201,7 +204,11 @@ impl RegistryServerHandle {
                 .await
                 .is_err()
         {
-            tracing::warn!("[Rendezvous] 注册表停机超时（best-effort 放弃等待）");
+            crate::plugin_log(
+                crate::roaming::ROAMING_LOG_WARN,
+                "rendezvous",
+                "注册表停机超时（best-effort 放弃等待）",
+            );
         }
     }
 }
@@ -222,10 +229,18 @@ pub async fn spawn_registry_server(port: u16, token: &str) -> Result<RegistrySer
             let _ = shutdown_rx.changed().await;
         });
         if let Err(e) = server.await {
-            tracing::warn!(error = %e, "[Rendezvous] 注册表服务退出（best-effort 记录）");
+            crate::plugin_log(
+                crate::roaming::ROAMING_LOG_WARN,
+                "rendezvous",
+                &format!("注册表服务退出（best-effort 记录）: {e}"),
+            );
         }
     });
-    tracing::info!(addr = %addr, "[Rendezvous] 成员注册表已启动");
+    crate::plugin_log(
+        crate::roaming::ROAMING_LOG_INFO,
+        "rendezvous",
+        &format!("成员注册表已启动 addr={addr}"),
+    );
     Ok(RegistryServerHandle {
         addr,
         registry,
