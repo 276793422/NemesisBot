@@ -1260,3 +1260,217 @@ async fn test_install_clean_slug_passes_entry_validation() {
         "clean slug should pass slug validation, got {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R2（2026-10-24 复核）：并发安装共享 staging 串台——事务隔离 + digest 复核 +
+// 落位互斥的回归锁。旧形态：A/B 同 slug 并发安装共享 `.skill-staging/<slug>`，
+// approve-A 后 rename 落位的是 B 后写的内容（approve-A 装-B）。
+// ---------------------------------------------------------------------------
+
+/// pause-able 假 registry：download_and_install 写入指定内容（两安装同 slug）。
+struct R2LocalRegistry {
+    name: &'static str,
+    content: &'static str,
+}
+
+#[async_trait::async_trait]
+impl crate::registry::SkillRegistry for R2LocalRegistry {
+    fn name(&self) -> &str {
+        self.name
+    }
+    async fn search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::types::SkillSearchResult>> {
+        Ok(vec![])
+    }
+    async fn get_skill_meta(&self, _slug: &str) -> Result<crate::types::SkillMeta> {
+        Err(NemesisError::Other("no metadata".into()))
+    }
+    async fn download_and_install(
+        &self,
+        _slug: &str,
+        _version: &str,
+        target: &str,
+    ) -> Result<crate::types::InstallResult> {
+        std::fs::create_dir_all(target).unwrap();
+        std::fs::write(std::path::Path::new(target).join("SKILL.md"), self.content).unwrap();
+        Ok(crate::types::InstallResult {
+            version: "1".into(),
+            is_malware_blocked: false,
+            is_suspicious: false,
+            summary: self.name.into(),
+        })
+    }
+}
+
+/// 双信号量 gate：decide 进入时亮 entered，等 release 后返回固定裁决。
+struct R2PausedGate {
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+    approve: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::install_gate::InstallGate for R2PausedGate {
+    async fn decide(&self, _plan: &InstallPlan) -> InstallDecision {
+        self.entered.add_permits(1);
+        self.release.acquire().await.unwrap().forget();
+        if self.approve {
+            InstallDecision::Approve
+        } else {
+            InstallDecision::Deny {
+                reason: "B denied".into(),
+            }
+        }
+    }
+}
+
+fn r2_make_installer(
+    workspace: &std::path::Path,
+    name: &'static str,
+    content: &'static str,
+    approve: bool,
+) -> (std::sync::Arc<SkillInstaller>, std::sync::Arc<R2PausedGate>) {
+    let manager = crate::registry::RegistryManager::new(crate::types::RegistryConfig::default());
+    manager.add_registry(std::sync::Arc::new(R2LocalRegistry { name, content }));
+    let mut installer = SkillInstaller::new(&workspace.to_string_lossy());
+    installer.set_registry_manager(manager);
+    let gate = std::sync::Arc::new(R2PausedGate {
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+        approve,
+    });
+    installer.set_install_gate(gate.clone());
+    (std::sync::Arc::new(installer), gate)
+}
+
+/// R2 回归锁①：approve-A / deny-B 并发同 slug 安装——落位的必须是 A 的
+/// 内容（A 审批的载荷），B 诚实报错；两事务 staging 各自清理，互不串台。
+/// 旧形态此断言红（落位 = B 内容）。
+#[tokio::test]
+async fn r2_concurrent_install_approves_a_installs_a_not_b() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_content =
+        "---\nname: shared\ndescription: Safe version A\n---\n# Shared\nReturn version A.\n";
+    let b_content =
+        "---\nname: shared\ndescription: Different version B\n---\n# Shared\nReturn version B.\n";
+    let (a, a_gate) = r2_make_installer(dir.path(), "review-a", a_content, true);
+    let (b, b_gate) = r2_make_installer(dir.path(), "review-b", b_content, false);
+
+    let a_task = tokio::spawn({
+        let a = a.clone();
+        async move { a.install("review-a", "shared", "1").await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), a_gate.entered.acquire())
+        .await
+        .expect("A gate not entered")
+        .unwrap()
+        .forget();
+    let b_task = tokio::spawn({
+        let b = b.clone();
+        async move { b.install("review-b", "shared", "1").await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), b_gate.entered.acquire())
+        .await
+        .expect("B gate not entered")
+        .unwrap()
+        .forget();
+
+    // A 先落位：内容必须是 A 审批的载荷。
+    a_gate.release.add_permits(1);
+    a_task.await.unwrap().expect("A install must succeed");
+    let installed = std::fs::read_to_string(dir.path().join("skills/shared/SKILL.md")).unwrap();
+    assert_eq!(
+        installed, a_content,
+        "approved A must be what lands in skills/"
+    );
+
+    // B deny：诚实报错；B 的事务 staging 已清理。
+    b_gate.release.add_permits(1);
+    let b_result = b_task.await.unwrap();
+    assert!(b_result.is_err(), "denied B must fail, got {:?}", b_result);
+
+    // A 已被 B 安装重放覆盖？——重读落位内容仍为 A（B 从未落位）。
+    let installed_after_b =
+        std::fs::read_to_string(dir.path().join("skills/shared/SKILL.md")).unwrap();
+    assert_eq!(installed_after_b, a_content);
+
+    // staging 根无残留：事务目录各走各的（rename 落位 / deny 清理）。
+    let staging_root = dir.path().join(".skill-staging");
+    if staging_root.exists() {
+        let leftovers: Vec<_> = std::fs::read_dir(&staging_root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(leftovers.is_empty(), "staging leftovers: {leftovers:?}");
+    }
+}
+
+/// R2 回归锁②：审批裁决瞬间 staging 内容被换 = digest 复核 abort，
+/// 内容不落 skills/（审批的对象是字节，不是 slug 名义）。
+#[tokio::test]
+async fn r2_staging_tamper_after_approval_aborts() {
+    struct TamperGate {
+        workspace: std::path::PathBuf,
+        entered: tokio::sync::Semaphore,
+        release: tokio::sync::Semaphore,
+    }
+    #[async_trait::async_trait]
+    impl crate::install_gate::InstallGate for TamperGate {
+        async fn decide(&self, plan: &InstallPlan) -> InstallDecision {
+            self.entered.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+            // 审批窗口内换写本事务 staging 的内容（模拟 TOCTOU 换包）。
+            let staging = self
+                .workspace
+                .join(".skill-staging")
+                .join(format!("{}.{}", plan.slug, plan.staging_tx));
+            let skill_md = staging.join("SKILL.md");
+            let mut body = std::fs::read_to_string(&skill_md).unwrap();
+            body.push_str("\nTAMPERED\n");
+            std::fs::write(&skill_md, body).unwrap();
+            InstallDecision::Approve
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let content = "---\nname: shared\ndescription: v1\n---\nbody\n";
+    let manager = crate::registry::RegistryManager::new(crate::types::RegistryConfig::default());
+    manager.add_registry(std::sync::Arc::new(R2LocalRegistry {
+        name: "tamper",
+        content,
+    }));
+    let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    installer.set_registry_manager(manager);
+    let gate = std::sync::Arc::new(TamperGate {
+        workspace: dir.path().to_path_buf(),
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    installer.set_install_gate(gate.clone());
+
+    let task = tokio::spawn({
+        let installer = std::sync::Arc::new(installer);
+        async move { installer.install("tamper", "shared", "1").await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.acquire())
+        .await
+        .expect("gate not entered")
+        .unwrap()
+        .forget();
+    gate.release.add_permits(1);
+
+    let result = task.await.unwrap();
+    assert!(
+        result.is_err(),
+        "tampered staging must abort, got {:?}",
+        result
+    );
+    assert!(
+        !dir.path().join("skills/shared").exists(),
+        "tampered content must never land in skills/"
+    );
+}

@@ -276,10 +276,14 @@ impl AgentHandler {
         };
         match agent_loop {
             Some(al) => match al.rewind(turn).await {
-                Ok((written, deleted)) => Ok(Some(serde_json::json!({
+                Ok(report) => Ok(Some(serde_json::json!({
                     "turn": turn,
-                    "written": written,
-                    "deleted": deleted,
+                    "written": report.written,
+                    "deleted": report.deleted,
+                    // R3：失败项不再被吞——非空 = 工作区部分恢复态。
+                    "failures": report.failures.iter().map(|(p, e)| {
+                        serde_json::json!({ "path": p, "error": e })
+                    }).collect::<Vec<_>>(),
                 }))),
                 Err(e) => Err(e),
             },

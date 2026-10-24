@@ -952,6 +952,28 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
     });
 }
 
+/// meta 文件原子落盘单一出口（2026-10-24 R1）：序列化 → 同目录 temp 唯一
+/// 后缀 → rename 替换（Windows `MoveFileEx(REPLACE_EXISTING)` 语义）。此前
+/// 六处 meta 写全部直写 `fs::write`：进程中途死 = 半截 JSON（读取侧按
+/// corrupt 起空 meta 静默吃掉），写失败 = 吞错。调用方决定 warn 还是上浮。
+fn write_meta_file_atomic(path: &std::path::Path, meta: &SessionMeta) -> Result<(), String> {
+    let data = serde_json::to_string(meta).map_err(|e| format!("serialize: {e}"))?;
+    let tmp = path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default()
+    ));
+    fs::write(&tmp, data).map_err(|e| format!("tmp write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("replace {}: {e}", path.display())
+    })?;
+    Ok(())
+}
+
 /// Shared read-modify-write for the sidecar meta (single fs read + write).
 ///
 /// 进程级互斥（2026-09-26 复查 F3）：read-modify-write 期间持锁——并发
@@ -960,7 +982,9 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
 /// 跨进程一致性不在此担保（sidecar 是单 gateway 进程私有）。
 static META_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
+/// Result 变体（R1）：持久化失败上浮给关心持久语义的调用方
+/// （`write_session_allow_all`——撤销放行写失败必须让 handler 诚实响应）。
+fn upsert_meta_result(session_key: &str, f: impl FnOnce(&mut SessionMeta)) -> Result<(), String> {
     let _guard = META_LOCK.lock();
     let path = meta_path(session_key);
     if let Some(parent) = path.parent() {
@@ -970,8 +994,12 @@ fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
     // warn-and-continue posture as before; nothing readable is lost).
     let mut meta = read_meta_full(session_key).unwrap_or_default();
     f(&mut meta);
-    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
-        tracing::warn!("[chat_log] failed to write meta {}: {}", path.display(), e);
+    write_meta_file_atomic(&path, &meta)
+}
+
+fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
+    if let Err(e) = upsert_meta_result(session_key, f) {
+        tracing::warn!("[chat_log] failed to write meta: {e}");
     }
 }
 
@@ -1005,7 +1033,7 @@ pub fn clear_session_project(session_key: &str) -> bool {
     meta.project_id = None;
     meta.project_path = None;
     let path = meta_path(session_key);
-    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+    if let Err(e) = write_meta_file_atomic(&path, &meta) {
         tracing::warn!(
             "[chat_log] failed to clear session project {}: {}",
             path.display(),
@@ -1045,7 +1073,7 @@ pub fn clear_session_lineage(session_key: &str) -> bool {
     meta.fork_reason = None;
     meta.branch_summary = None;
     let path = meta_path(session_key);
-    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+    if let Err(e) = write_meta_file_atomic(&path, &meta) {
         tracing::warn!(
             "[chat_log] failed to clear session lineage {}: {}",
             path.display(),
@@ -1082,7 +1110,7 @@ pub fn clear_undelivered_replies(session_key: &str) -> bool {
     }
     meta.undelivered = 0;
     let path = meta_path(session_key);
-    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+    if let Err(e) = write_meta_file_atomic(&path, &meta) {
         tracing::warn!(
             "[chat_log] failed to clear undelivered marker {}: {}",
             path.display(),
@@ -1110,7 +1138,7 @@ pub fn clear_session_snooze(session_key: &str) -> Option<(String, Option<String>
     let until = meta.snoozed_until.take()?;
     let note = meta.snooze_note.take();
     let path = meta_path(session_key);
-    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+    if let Err(e) = write_meta_file_atomic(&path, &meta) {
         tracing::warn!(
             "[chat_log] failed to clear snooze {}: {}",
             path.display(),
@@ -1165,39 +1193,39 @@ pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
 ///   两半边不各打各的时间戳）；空串回落现在（防御性，正常调用不触发）。
 /// - enabled=false：摘除 `allow_all`/`allow_all_since`（关闭即回默认，不留
 ///   陈旧真值；`session_key` 字段保留无害）。无 meta / 本就没开 = no-op
-///   不空写文件（同 clear_session_snooze 姿态）。
-pub fn write_session_allow_all(session_key: &str, enabled: bool, since: &str) {
+///   返 `Ok`（同 clear_session_snooze 姿态）。
+///
+/// 返回 `Err` = 持久化失败（2026-10-24 R1）：磁盘半边与本意不一致——调用方
+/// （WSAPI handler）必须诚实响应（`persisted:false` + warning），不得静默
+/// 当成功。写路径走 [`write_meta_file_atomic`] 原子替换，不再直写。
+pub fn write_session_allow_all(
+    session_key: &str,
+    enabled: bool,
+    since: &str,
+) -> Result<(), String> {
     if enabled {
         let since = if since.is_empty() {
             Local::now().to_rfc3339()
         } else {
             since.to_string()
         };
-        upsert_meta(session_key, |m| {
+        return upsert_meta_result(session_key, |m| {
             m.allow_all = true;
             m.allow_all_since = Some(since);
             m.session_key = Some(session_key.to_string());
         });
-        return;
     }
     // 关 = 摘除（与 upsert_meta 同锁——check-then-write 原子性）。
     let _guard = META_LOCK.lock();
     let Some(mut meta) = read_meta_full(session_key) else {
-        return;
+        return Ok(());
     };
     if !meta.allow_all {
-        return;
+        return Ok(());
     }
     meta.allow_all = false;
     meta.allow_all_since = None;
-    let path = meta_path(session_key);
-    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
-        tracing::warn!(
-            "[chat_log] failed to clear allow_all {}: {}",
-            path.display(),
-            e
-        );
-    }
+    write_meta_file_atomic(&meta_path(session_key), &meta)
 }
 
 /// 读会话级全部放行持久位 `(enabled, since)`；无 meta / 未记 = `None`。

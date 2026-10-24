@@ -22,7 +22,9 @@ async fn restore_reverts_modified_file() {
         .await
         .unwrap();
 
-    let (written, deleted) = store.restore_code(0).await;
+    let report = store.restore_code(0).await;
+    let written = report.written;
+    let deleted = report.deleted;
     assert_eq!(written, vec!["a.txt".to_string()]);
     assert!(deleted.is_empty());
     let restored = tokio::fs::read_to_string(root.join("a.txt")).await.unwrap();
@@ -48,7 +50,9 @@ async fn restore_deletes_created_file() {
         .unwrap();
     assert!(root.join("new.txt").exists());
 
-    let (_, deleted) = store.restore_code(0).await;
+    let report = store.restore_code(0).await;
+    let _ = report.written;
+    let deleted = report.deleted;
     assert_eq!(deleted, vec!["new.txt".to_string()]);
     assert!(!root.join("new.txt").exists());
 }
@@ -92,7 +96,9 @@ async fn persistence_reloads_across_instances() {
     tokio::fs::write(root.join("p.txt"), "modified")
         .await
         .unwrap();
-    let (written, _) = store2.restore_code(0).await;
+    let report = store2.restore_code(0).await;
+    let written = report.written;
+    let _ = report.deleted;
     assert_eq!(written, vec!["p.txt".to_string()]);
     let restored = tokio::fs::read_to_string(root.join("p.txt")).await.unwrap();
     assert_eq!(restored, "orig");
@@ -118,7 +124,9 @@ async fn restore_nonexistent_turn_returns_empty() {
     // Boundary: rewinding a turn with no checkpoints must return empty, not panic.
     let dir = tempfile::tempdir().unwrap();
     let store = CheckpointStore::new(None, dir.path().to_path_buf());
-    let (w, d) = store.restore_code(99).await;
+    let report = store.restore_code(99).await;
+    let w = report.written;
+    let d = report.deleted;
     assert!(w.is_empty() && d.is_empty());
 }
 
@@ -135,7 +143,9 @@ async fn path_escape_is_rejected_on_restore() {
         kind: FileChangeKind::Delete,
     };
     store.snapshot(&change).await;
-    let (w, d) = store.restore_code(0).await;
+    let report = store.restore_code(0).await;
+    let w = report.written;
+    let d = report.deleted;
     assert!(w.is_empty(), "escape path must not be written: {:?}", w);
     assert!(d.is_empty(), "escape path must not be deleted: {:?}", d);
     // And nothing was created outside the workspace.
@@ -262,7 +272,9 @@ async fn restore_respects_from_turn_and_earliest_wins() {
         .await
         .unwrap();
 
-    let (written, _) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let written = report.written;
+    let _ = report.deleted;
     // old-only belongs to turn 0 (< from_turn) → skipped.
     assert!(!written.contains(&"old-only.txt".to_string()));
     assert!(written.contains(&"new-only.txt".to_string()));
@@ -274,7 +286,9 @@ async fn restore_respects_from_turn_and_earliest_wins() {
     assert_eq!(shared, "turn1-content", "earliest in-scope snapshot wins");
 
     // Restoring from turn 0 must pick turn-0 content for shared.txt.
-    let (written0, _) = store.restore_code(0).await;
+    let report = store.restore_code(0).await;
+    let written0 = report.written;
+    let _ = report.deleted;
     assert!(written0.contains(&"old-only.txt".to_string()));
     let shared0 = tokio::fs::read_to_string(root.join("shared.txt"))
         .await
@@ -304,7 +318,9 @@ async fn restore_recreates_parent_directories() {
     // Simulate the tool deleting the whole subtree.
     let _ = tokio::fs::remove_dir_all(root.join("sub")).await;
 
-    let (written, _) = store.restore_code(0).await;
+    let report = store.restore_code(0).await;
+    let written = report.written;
+    let _ = report.deleted;
     assert_eq!(written, vec!["sub/dir/f.txt".to_string()]);
     let body = tokio::fs::read_to_string(root.join("sub").join("dir").join("f.txt"))
         .await
@@ -422,11 +438,72 @@ async fn out_of_workspace_declared_path_is_restored_d2_hybrid() {
     store.snapshot(&change).await;
     std::fs::write(&outside, "clobbered").unwrap();
 
-    let (w, _) = store.restore_code(0).await;
+    let report = store.restore_code(0).await;
+    let w = report.written;
+    let _ = report.deleted;
     assert!(
         w.iter().any(|p| p.ends_with("o.txt")),
         "工作区外声明路径照常恢复（D2 hybrid）: {:?}",
         w
     );
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside-orig");
+}
+
+// —— R4（2026-10-24 第四次外评）：并发会话 snapshot 归属桶化 ——
+//
+// 旧实现 Inner.cur 是单槽：A begin(1) → B begin(2) 之后，A 的工具写入
+// snapshot 落进 B 名下的 cur——跨会话串档（A 的文件被记到 B 的 checkpoint，
+// session-a 视角的 rewind 冲突预检把 a.txt 误列成「其他会话波及面」）。
+// 修复 = cur/seen per-session 桶化，生产调用点（tool_dispatch →
+// snapshot_for_session）与 admission 的 begin_for_session 同键。
+// 回归锁：外评探针 review_oct24_parallel_session_snapshot_is_owned_by_
+// last_begin 的安全反转。
+#[tokio::test]
+async fn r4_concurrent_session_snapshot_lands_in_own_session_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CheckpointStore::new(None, dir.path().to_path_buf());
+    std::fs::write(dir.path().join("a.txt"), "A before").unwrap();
+    store.begin_for_session(1, "A starts", Some("session-a"));
+    store.begin_for_session(2, "B starts while A awaits", Some("session-b"));
+    // A 恢复执行写工具（生产形态：tool_dispatch 传会话键，与 begin 同源）。
+    store
+        .snapshot_for_session(
+            &FileChange {
+                path: "a.txt".into(),
+                kind: FileChangeKind::Modify,
+            },
+            Some("session-a"),
+        )
+        .await;
+
+    // ① 归属正确：a.txt 声明落在 session-a 的 turn 1，B 的 turn 2 干净。
+    let metas = store.list_meta();
+    let turn1 = metas.iter().find(|c| c.turn == 1).unwrap();
+    let turn2 = metas.iter().find(|c| c.turn == 2).unwrap();
+    assert!(
+        turn1.paths.contains(&"a.txt".to_string()),
+        "A 的写入未落进自己的桶: {turn1:?}"
+    );
+    assert!(turn2.paths.is_empty(), "B 的桶被 A 的写入污染: {turn2:?}");
+
+    // ② session-a 视角的冲突预检不得把 a.txt 列成其他会话波及面。
+    let report = store.conflict_scan_scoped(2, Some("session-a"));
+    assert!(
+        !report.other_session_paths.contains(&"a.txt".to_string()),
+        "跨会话串档: {:?}",
+        report.other_session_paths
+    );
+
+    // ③ 桶化封印链路仍闭环：A 的下一 turn finalize 自己的桶（turn 1 进
+    // done），封印指纹生效——外部改动可检出（seal/scan 与桶键解耦不断链）。
+    store.begin_for_session(3, "B next turn", Some("session-b"));
+    store.begin_for_session(4, "A next turn", Some("session-a"));
+    store.seal_turn(1);
+    std::fs::write(dir.path().join("a.txt"), "externally clobbered").unwrap();
+    let report = store.conflict_scan_scoped(1, Some("session-a"));
+    assert!(
+        report.conflicts.iter().any(|c| c.path == "a.txt"),
+        "turn 1 封印指纹未生效（桶化后 seal/scan 断链）: {:?}",
+        report.conflicts
+    );
 }
