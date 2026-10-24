@@ -553,3 +553,36 @@ fn l2_concurrent_publish_keeps_replay_buffer_in_seq_order() {
         assert_eq!(e.seq, idx as u64 + 1, "replay 必须严格升序且无洞");
     }
 }
+
+#[test]
+fn test_subscription_guard_returns_count_on_drop() {
+    // BUG-20261025-14：SSE 端点断连时 axum 直接 drop 流体，手工尾部
+    // unsubscribe 永不执行 → 计数单调泄漏。守卫的 Drop 必须归还计数。
+    let hub = EventHub::new();
+    {
+        let _rx = hub.subscribe();
+        let guard = hub.subscription_guard();
+        assert_eq!(hub.subscriber_count(), 1);
+        drop(guard); // 模拟客户端断连：流体 drop，守卫析构
+        assert_eq!(hub.subscriber_count(), 0, "守卫 drop 必须归还计数");
+    }
+    // 老路径不受影响：手工 unsubscribe 仍可用（无守卫配对时计数守恒由调用方负责）。
+    let _rx = hub.subscribe();
+    hub.unsubscribe();
+    assert_eq!(hub.subscriber_count(), 0);
+}
+
+#[test]
+fn test_subscription_guard_multiple_live_subscribers() {
+    let hub = EventHub::new();
+    let mut guards = Vec::new();
+    for _ in 0..3 {
+        let _rx = hub.subscribe();
+        guards.push(hub.subscription_guard());
+    }
+    assert_eq!(hub.subscriber_count(), 3);
+    guards.pop(); // 一个客户端离开
+    assert_eq!(hub.subscriber_count(), 2, "单守卫 drop 只归还一份");
+    drop(guards); // 其余全部离开
+    assert_eq!(hub.subscriber_count(), 0);
+}
