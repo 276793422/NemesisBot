@@ -19,9 +19,7 @@ fn resolve_autopilot_job<'a>(
     ),
     String,
 > {
-    let ap_id: i64 = job_name
-        .strip_prefix("board-ap:")
-        .and_then(|s| s.parse().ok())
+    let ap_id: i64 = nemesis_web::handlers::board::autopilot_id_from_job_name(job_name)
         .ok_or_else(|| format!("autopilot job 名无法解析: {job_name}"))?;
     let store = board_store.ok_or("board service not available (autopilot)")?;
     let ap = store

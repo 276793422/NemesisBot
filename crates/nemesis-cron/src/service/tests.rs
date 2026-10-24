@@ -2953,3 +2953,72 @@ fn ledger_cron_execute_job_records_runs() {
         assert_eq!(attempts[0].status, r.status, "attempt 与 run 同态收口");
     }
 }
+
+// -------------------------------------------------------------------------
+// 保留命名空间（BUG-20261024-10）：`board-ap:` / `memory-dreaming:` 是系统
+// 内部作业的按名路由命名空间——用户面创建 loud 拒绝，内部装配走
+// add_job_internal 旁路。
+// -------------------------------------------------------------------------
+
+fn every_60s() -> CronSchedule {
+    CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60000),
+        expr: None,
+        tz: None,
+    }
+}
+
+#[test]
+fn reserved_prefix_hit_unit() {
+    assert_eq!(reserved_prefix_hit("board-ap:5"), Some("board-ap:"));
+    assert_eq!(
+        reserved_prefix_hit("memory-dreaming:sweep"),
+        Some("memory-dreaming:")
+    );
+    // 前缀判定：子串在中间 / 缺冒号尾巴都不算命中。
+    assert_eq!(reserved_prefix_hit("my-board-ap:5"), None);
+    assert_eq!(reserved_prefix_hit("board-ap"), None);
+    assert_eq!(reserved_prefix_hit("plain-name"), None);
+}
+
+#[test]
+fn reserved_names_rejected_on_user_paths_and_not_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    for name in ["board-ap:5", "memory-dreaming:sweep", "board-ap:abc"] {
+        let err = svc
+            .add_job(name, every_60s(), "hello", false, None, None)
+            .unwrap_err();
+        assert!(
+            err.contains("保留前缀"),
+            "{name}: 报错应点明保留前缀: {err}"
+        );
+        // Err 必须意味着「没建」——不留半成品（与 BUG #16 同纪律）。
+        assert!(
+            svc.list_jobs(true).iter().all(|j| j.name != name),
+            "被拒绝的名字不应产生 job: {name}"
+        );
+    }
+}
+
+#[test]
+fn add_job_internal_bypasses_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    // 内部装配点（autopilot / dreaming）同形名字必须能注册。
+    for name in ["board-ap:5", "memory-dreaming:sweep"] {
+        let job = svc
+            .add_job_internal(name, every_60s(), "", false, None, None, None, None, true)
+            .unwrap_or_else(|e| panic!("内部旁路应放行 {name}: {e}"));
+        assert_eq!(job.name, name);
+    }
+    // 旁路只服务内部装配：用户面同前缀依旧拒绝。
+    assert!(
+        svc.add_job("board-ap:6", every_60s(), "x", false, None, None)
+            .is_err()
+    );
+}

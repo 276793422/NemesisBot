@@ -6705,8 +6705,11 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
             expr: Some("*/9 * * * *".into()),
             tz: None,
         };
-        svc.add_job_ext(
-            "board-ap:ghost",
+        // BUG-20261024-10 后 `board-ap:{i64}` 是保留命名空间：内部旁路
+        // （add_job_internal）是这类名字的唯一来源，这里用它造幽灵作业。
+        // 孤儿判据按全形态——整数 id 且未注册才在射程内。
+        svc.add_job_internal(
+            "board-ap:999999",
             sched,
             "",
             false,
@@ -6741,7 +6744,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
         let svc = cron.lock().unwrap();
         let names: Vec<String> = svc.list_jobs(true).iter().map(|j| j.name.clone()).collect();
         assert!(
-            !names.iter().any(|n| n == "board-ap:ghost"),
+            !names.iter().any(|n| n == "board-ap:999999"),
             "孤儿 job 已清理: {names:?}"
         );
         assert!(names.contains(&missing_job_name), "{names:?}");
@@ -12165,4 +12168,128 @@ fn a1_duration_weighted_candidates_wiring() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------------------------------
+// autopilot cron 孤儿清理判据（BUG-20261024-10）：按 `board-ap:{i64}` 全
+// 形态判定（autopilot_id_from_job_name），保留命名空间外的撞名用户作业
+// 不再被启动同步误删；真孤儿（整数形态 + 未注册）照常清理。
+// -------------------------------------------------------------------------
+
+#[test]
+fn autopilot_orphan_sweep_spares_user_collision_names_and_sweeps_real_orphans() {
+    let dir = unique_dir("ap-sweep-collision");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    let cron_path = dir.join("cron.json").to_string_lossy().to_string();
+    let cron = Arc::new(std::sync::Mutex::new(
+        nemesis_cron::service::CronService::new(&cron_path),
+    ));
+    let sched = nemesis_cron::service::CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60000),
+        expr: None,
+        tz: None,
+    };
+
+    // ① 存量撞名作业：修复前用户面可创建 `board-ap:abc`（旧判据按前缀
+    //    识别 → 会被启动同步当孤儿删除）。修复后用户面创建被保留命名
+    //    空间拒绝，这里用内部旁路模拟存量数据。
+    let svc = cron.lock().unwrap();
+    let legacy = svc
+        .add_job_internal(
+            "board-ap:abc",
+            sched.clone(),
+            "用户消息",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let plain = svc
+        .add_job_internal(
+            "plain-user-job",
+            sched.clone(),
+            "用户消息",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    drop(svc);
+
+    // ② 两条真规则：一条存活，一条随后从 store 删除（造真孤儿）。
+    let mk_ap = |name: &str| nemesis_board::NewAutopilot {
+        name: name.to_string(),
+        cron: "0 9 * * *".to_string(),
+        title: "周期任务 {date}".to_string(),
+        description: String::new(),
+        priority: priority::MEDIUM,
+        project_id: None,
+        target: String::new(),
+        enabled: true,
+        auto_plan: false,
+        acceptance_criteria: None,
+    };
+    let ap_live = store.create_autopilot(&mk_ap("存活规则")).unwrap();
+    let ap_orphan = store.create_autopilot(&mk_ap("将删除规则")).unwrap();
+    sync_autopilot_jobs(&cron, &store).unwrap();
+    let (live_job_id, orphan_job_id) = {
+        let live = store.get_autopilot(ap_live.id).unwrap();
+        let orphan = store.get_autopilot(ap_orphan.id).unwrap();
+        (
+            live.cron_job_id.clone().expect("存活规则应已装配"),
+            orphan.cron_job_id.clone().expect("待删规则应已装配"),
+        )
+    };
+    assert_ne!(live_job_id, orphan_job_id);
+
+    store.remove_autopilot(ap_orphan.id).unwrap();
+    sync_autopilot_jobs(&cron, &store).unwrap();
+
+    // ③ 断言：真孤儿作业被清理；存量撞名/普通用户作业全部幸存；存活
+    //    规则的作业保留。
+    let after: Vec<(String, String)> = {
+        let svc = cron.lock().unwrap();
+        svc.list_jobs(true)
+            .into_iter()
+            .map(|j| (j.id, j.name))
+            .collect()
+    };
+    assert!(
+        !after.iter().any(|(id, _)| id == &orphan_job_id),
+        "真孤儿作业应被清理: {after:?}"
+    );
+    for (id, label) in [
+        (&legacy.id, "存量撞名作业 board-ap:abc"),
+        (&plain.id, "普通用户作业"),
+        (&live_job_id, "存活规则的作业"),
+    ] {
+        assert!(
+            after.iter().any(|(jid, _)| jid == id),
+            "{label} 不应被孤儿清理误删: {after:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn autopilot_id_from_job_name_shape_unit() {
+    assert_eq!(autopilot_id_from_job_name("board-ap:42"), Some(42));
+    assert_eq!(autopilot_id_from_job_name("board-ap:0"), Some(0));
+    // 非整数形态 / 负数 / 前缀异形 / 无后缀 → 非 autopilot 作业。
+    assert_eq!(autopilot_id_from_job_name("board-ap:abc"), None);
+    // 负数也是整数形态（i64 parse 接受）——解析出 Some(-1) 无害：规则 id
+    // 是自增正整数，get_autopilot(-1) 必不命中，消费侧自然失败。
+    assert_eq!(autopilot_id_from_job_name("board-ap:-1"), Some(-1));
+    assert_eq!(autopilot_id_from_job_name("my-board-ap:5"), None);
+    assert_eq!(autopilot_id_from_job_name("board-ap:"), None);
+    assert_eq!(autopilot_id_from_job_name("memory-dreaming:sweep"), None);
 }

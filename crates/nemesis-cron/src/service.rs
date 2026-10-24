@@ -127,6 +127,22 @@ use crate::store::CronStoreData;
 #[allow(dead_code)]
 type JobHandlerFn = Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>;
 
+/// 系统内部 cron 作业的保留名字前缀（单一真相源）。这些前缀是 gateway
+/// on_job 分派分支（`ctx.rs` 按 `job.name.starts_with` 路由）与 board 启动
+/// 孤儿清理（按前缀 + id 判定）的**按名约定**——用户作业撞名会被劫持
+/// （message 被忽略、劫进系统分支）或被误删。用户面创建入口
+/// （[`CronService::add_job`] / [`CronService::add_job_ext`]）loud 拒绝；
+/// 内部装配点走 [`CronService::add_job_internal`]。
+pub const RESERVED_NAME_PREFIXES: &[&str] = &["board-ap:", "memory-dreaming:"];
+
+/// 名字命中的保留前缀（None = 不命中）。
+pub fn reserved_prefix_hit(name: &str) -> Option<&'static str> {
+    RESERVED_NAME_PREFIXES
+        .iter()
+        .copied()
+        .find(|p| name.starts_with(p))
+}
+
 /// Cron service.
 pub struct CronService {
     store_path: String,
@@ -404,7 +420,47 @@ impl CronService {
     /// Add a new job with full control over `session_key`, `max_rounds` and
     /// `enabled`. This is the path used by the web UI (`tasks.cron.add`) and
     /// the agent's CronTool (`continue_session` + `max_rounds`).
+    ///
+    /// 保留命名空间（[`RESERVED_NAME_PREFIXES`]）loud 拒绝——`board-ap:`/
+    /// `memory-dreaming:` 前缀是系统内部作业的按名路由命名空间（on_job
+    /// 分派分支与启动孤儿清理都按名字前缀判定），用户作业撞名会在触发时
+    /// 被劫持进系统分支（message 被忽略）、在 gateway 启动 sync 被当孤儿
+    /// 误删。内部注册走 [`Self::add_job_internal`]。
     pub fn add_job_ext(
+        &self,
+        name: &str,
+        schedule: CronSchedule,
+        message: &str,
+        deliver: bool,
+        channel: Option<&str>,
+        to: Option<&str>,
+        session_key: Option<&str>,
+        max_rounds: Option<u32>,
+        enabled: bool,
+    ) -> Result<CronJob, String> {
+        if let Some(prefix) = reserved_prefix_hit(name) {
+            return Err(format!(
+                "cron job 名字以保留前缀 {prefix:?} 开头（系统内部作业命名空间），\
+                 触发时会被劫持、启动同步时会被误删，请换名字: {name:?}"
+            ));
+        }
+        self.add_job_internal(
+            name,
+            schedule,
+            message,
+            deliver,
+            channel,
+            to,
+            session_key,
+            max_rounds,
+            enabled,
+        )
+    }
+
+    /// 内部注册旁路：跳过保留命名空间检查（autopilot `board-ap:{id}`、
+    /// dreaming `memory-dreaming:sweep` 等系统作业的装配点专用）。用户面
+    /// 入口一律走 [`Self::add_job_ext`] / [`Self::add_job`]。
+    pub fn add_job_internal(
         &self,
         name: &str,
         schedule: CronSchedule,

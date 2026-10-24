@@ -5648,7 +5648,9 @@ fn arm_autopilot_job_with(
         return Ok(());
     }
     // add_job_ext 返回随机 id（不支持指定 id），注册后回存映射。
-    let job = svc.add_job_ext(
+    // add_job_internal：`board-ap:{id}` 是保留命名空间（用户面创建被
+    // nemesis-cron loud 拒绝），内部装配走旁路。
+    let job = svc.add_job_internal(
         &format!("board-ap:{}", ap.id),
         schedule,
         "",
@@ -5687,7 +5689,8 @@ fn disarm_autopilot_job(ctx: &RequestContext, ap: &nemesis_board::Autopilot) {
 /// store 是唯一真相源，把 cron 服务对齐到 store：
 ///   1. 删孤儿：cron 里 `board-ap:*` 命名空间的 job 在 store 侧已无对应
 ///      登记（规则被删/改时 backfill 失败留下的幽灵 job）→ 移除，防到点
-///      触发；只动 board-ap: 前缀，不碰用户自己的 cron job。
+///      触发；只动 `board-ap:{i64}` 形态的作业（BUG-20261024-10 起按全
+///      形态判定，非整数形态撞名不误删），不碰用户自己的 cron job。
 ///   2. 补登记：规则缺 job（上次登记时 cron 未注入、进程崩溃丢内存态）→
 ///      走 arm 重新登记并回存 job id。
 ///   3. 跟随：已登记的 job schedule/enabled 跟随 store（与 arm 同一逻辑，
@@ -5708,7 +5711,14 @@ pub fn sync_autopilot_jobs(
             .lock()
             .map_err(|_| "cron service lock poisoned".to_string())?;
         for job in svc.list_jobs(true) {
-            if job.name.starts_with("board-ap:") && !valid_job_ids.contains(job.id.as_str()) {
+            // 孤儿判据：名字是 autopilot 作业形态（`board-ap:{i64}` 后缀可
+            // 解析，与 Autopilot.id 同型）且 id 不在任何规则的注册映射里。
+            // BUG-20261024-10：旧判据只看前缀——用户撞名作业（随机 id）会被
+            // 当孤儿静默删除；保留命名空间拒绝创建后新撞名不可能，这里再按
+            // 形态收紧，存量非整数形态撞名作业不再被清理误伤。
+            if autopilot_id_from_job_name(&job.name).is_some()
+                && !valid_job_ids.contains(job.id.as_str())
+            {
                 tracing::info!(
                     "[Board] autopilot sync: removing orphan cron job {} ({})",
                     job.id,
@@ -5740,6 +5750,13 @@ pub fn sync_autopilot_jobs(
         }
     }
     Ok(rearmed)
+}
+
+/// 解析 autopilot cron 作业名 `board-ap:{i64}` → 规则 id（None = 非该形态）。
+/// 名字形态的单一真相源：孤儿清理（[`sync_autopilot_jobs`]）与分派解析
+/// （nemesisbot `resolve_autopilot_job`）都按这里判定，两侧口径不分叉。
+pub fn autopilot_id_from_job_name(job_name: &str) -> Option<i64> {
+    job_name.strip_prefix("board-ap:")?.parse().ok()
 }
 
 #[async_trait::async_trait]

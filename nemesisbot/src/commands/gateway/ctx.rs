@@ -854,8 +854,14 @@ impl GatewayCtx {
                     // +（可选）派发，不走消息总线。必须放在 message 判空前——
                     // autopilot job 的 message 恒为空，否则落 "No message to
                     // deliver"。
+                    // BUG-20261024-10：分派与孤儿清理同口径——按
+                    // `board-ap:{i64}` 全形态判定（autopilot_id_from_job_name），
+                    // 不再按裸前缀劫持存量撞名用户作业（非整数形态的到点
+                    // 落回普通消息投递）。
                     #[cfg(feature = "board")]
-                    if job.name.starts_with("board-ap:") {
+                    if nemesis_web::handlers::board::autopilot_id_from_job_name(&job.name)
+                        .is_some()
+                    {
                         // F-U4-5：急停中定时触发跳过（记入 job run 历史，诚实
                         // 可见；非 Err——到点跳过与 disabled 规则同语义）。
                         if estop_for_ap.is_engaged() {
@@ -888,8 +894,11 @@ impl GatewayCtx {
                     // 全量条目 6 信号打分 + LLM 决策 + 宿主产出，不走消息总线。
                     // 必须放在 message 判空前——dreaming job 的 message 恒为空
                     //（同 board-ap 的拦截次序）。
+                    // BUG-20261024-10：dreaming 作业名是精确单值（保留命名
+                    // 空间内只有 sweep 一个合法作业），按精确名分派——存量
+                    // 撞名（memory-dreaming:x）不再被劫持进 sweep。
                     #[cfg(feature = "memory")]
-                    if job.name.starts_with("memory-dreaming:") {
+                    if job.name == super::dreaming_job::DREAMING_JOB_NAME {
                         // 急停中定时触发诚实跳过（与 autopilot 同语义；释放后
                         // 下个周期自然恢复）。
                         if estop_for_dream.is_engaged() {
