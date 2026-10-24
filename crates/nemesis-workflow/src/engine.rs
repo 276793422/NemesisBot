@@ -263,6 +263,15 @@ pub enum EngineError {
     RecursionLimitExceeded(String),
 }
 
+/// executions 跟踪表上限（R53 资源生命周期审计）：字段语义是「Active and
+/// completed executions」——终态条目原本永不移除，常驻 gateway 里 cron
+/// 工作流周期性落 Execution（node_results 携带 LLM 输出，KB 级/条），
+/// 随进程寿命无界增长。超上限逐出最老的**终态**条目（Completed/Failed/
+/// Cancelled）；磁盘 JSONL 持久化仍是全量历史，内存表只是近期视图。
+/// 全部活跃（无终态可逐）时放行超限——活跃数受并发上限约束，不误删
+/// in-flight 条目（取消/列表语义不受影响）。
+const MAX_TRACKED_EXECUTIONS: usize = 256;
+
 /// The core workflow engine.
 ///
 /// Stores registered workflows, tracks executions, and supports optional
@@ -1102,6 +1111,7 @@ impl WorkflowEngine {
                 let mut execs = self.executions.write().await;
                 execs.insert(exec_id.clone(), execution);
             }
+            self.evict_oldest_terminal_execution().await;
             restored += 1;
             info!(
                 target: "nemesis_workflow::engine",
@@ -1532,6 +1542,41 @@ impl WorkflowEngine {
         self.workflows.remove(name);
     }
 
+    /// executions 表有界化：超 [`MAX_TRACKED_EXECUTIONS`] 时逐出最老的
+    /// **终态**条目（started_at 升序，id 决胜毫秒并列）。无终态可逐
+    /// （全部活跃）则停止——宁可短暂超限也不误删 in-flight 条目。
+    /// 写锁内循环，逐出批量为常数（上限 256，单次插入至多逐 1 条）。
+    async fn evict_oldest_terminal_execution(&self) {
+        if self.executions.read().await.len() <= MAX_TRACKED_EXECUTIONS {
+            return;
+        }
+        let mut execs = self.executions.write().await;
+        while execs.len() > MAX_TRACKED_EXECUTIONS {
+            let victim = execs
+                .iter()
+                .filter(|(_, e)| {
+                    matches!(
+                        e.state,
+                        ExecutionState::Completed
+                            | ExecutionState::Failed
+                            | ExecutionState::Cancelled
+                    )
+                })
+                .min_by(|a, b| {
+                    a.1.started_at
+                        .cmp(&b.1.started_at)
+                        .then_with(|| a.0.cmp(b.0))
+                })
+                .map(|(id, _)| id.clone());
+            match victim {
+                Some(id) => {
+                    execs.remove(&id);
+                }
+                None => break,
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Execution Lifecycle
     // -----------------------------------------------------------------------
@@ -1574,6 +1619,7 @@ impl WorkflowEngine {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
         }
+        self.evict_oldest_terminal_execution().await;
 
         // Persist initial state
         self.persist_execution(&execution).await;
