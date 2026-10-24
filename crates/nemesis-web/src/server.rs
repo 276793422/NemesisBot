@@ -1721,6 +1721,11 @@ pub async fn handle_events_stream(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     // 浏览器 EventSource 重连自动回传的断点游标（HeaderMap 键大小写不敏感）。
     let mut receiver = state.event_hub.subscribe();
+    // BUG-20261025-14：订阅计数 RAII 守卫。客户端断连时 axum 直接 drop 流体
+    // （不是跑完循环），尾部手工 unsubscribe 永不执行 → subscriber_count 单调
+    // 泄漏，board/usage 空闲跳过 watcher 的 `== 0` 闸永久失效。守卫 move 进
+    // 生成器：无论自然结束还是中途 drop 都析构归还。
+    let subscription_guard = state.event_hub.subscription_guard();
     let last_id = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
@@ -1740,6 +1745,8 @@ pub async fn handle_events_stream(
     let _running = state.running.clone();
 
     let stream = async_stream::stream! {
+        // 守卫移入生成器状态机：drop 即归还订阅计数（BUG-20261025-14）。
+        let _subscription_guard = subscription_guard;
         tracing::debug!("[WebServer] SSE stream started");
         // Send initial heartbeat
         let heartbeat_data = serde_json::json!({"ts": chrono::Local::now().to_rfc3339()});
@@ -1813,7 +1820,8 @@ pub async fn handle_events_stream(
             }
         }
 
-        state.event_hub.unsubscribe();
+        // 订阅计数由 _subscription_guard 析构归还（BUG-20261025-14）——
+        // 此处曾手工 unsubscribe，断连 drop 路径覆盖不到。
         tracing::debug!("[WebServer] SSE stream ended");
     };
 
