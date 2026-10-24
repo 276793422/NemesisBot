@@ -389,8 +389,26 @@ async fn rt_start_stop_error_arms_and_no_workspace() {
 }
 
 // -----------------------------------------------------------------------
-// nodes.ping（真实 TCP 探测）
+// nodes.ping（帧级探针：自 QUIC 插件化起走集群传输层 Custom("ping") RPC，
+// 可达的定义 = 对端帧级应答，不再是裸 TCP connect）
 // -----------------------------------------------------------------------
+
+/// 测试内静态单地址 resolver：把探针拨号钉死到一个地址（对齐
+/// ClusterPeerResolver 的「base.address 原样端口，无推导」语义）。
+struct SingleAddrResolver {
+    addr: String,
+}
+impl nemesis_cluster::rpc::client::PeerResolver for SingleAddrResolver {
+    fn get_peer_info(&self, _peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
+        Some((vec![self.addr.clone()], 0, true))
+    }
+    fn get_local_interfaces(&self) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
+        Vec::new()
+    }
+    fn get_node_id(&self) -> String {
+        "test-local".to_string()
+    }
+}
 
 #[tokio::test]
 async fn nodes_ping_unknown_node() {
@@ -411,13 +429,24 @@ async fn nodes_ping_unknown_node() {
 
 #[tokio::test]
 async fn nodes_ping_success_marks_peer_healthy() {
+    use nemesis_cluster::rpc::server::{RpcServer, RpcServerConfig};
+
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    // 本地监听器保持存活 → TCP connect 成功。
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    // 帧级探针要求对端应答——起真 RpcServer（构造器自带 "ping"→pong 默认
+    // handler）；哑 TcpListener 不再构成成功面（恒 5s 超时假红，c46306ff 实录）。
+    let server = Arc::new(RpcServer::new(RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(),
+        ..Default::default()
+    }));
+    server.start().await.unwrap();
+    let addr = format!("127.0.0.1:{}", server.port());
     let cluster = test_cluster(&dir);
     cluster.register_node(node("n1", "alpha", NodeRole::Worker, false, &addr));
+    // 探针经 cluster 内 RpcClient 拨号——测试簇未 start()，须注入 client。
+    cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(Arc::new(
+        SingleAddrResolver { addr: addr.clone() },
+    ))));
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     let result = handler
@@ -438,12 +467,17 @@ async fn nodes_ping_success_marks_peer_healthy() {
 async fn nodes_ping_refused_marks_peer_offline() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    // 先占后放 → 端口空闲，connect 被拒绝。
+    // 先占后放 → 端口空闲，帧级探针拨号被拒。探针走 cluster 内 RpcClient，
+    // 须注入 client 才能真走到拨号失败路径（无 client = probe_peer 早退
+    // false，同样能过断言但测的不是目标路径）。
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     drop(listener);
     let cluster = test_cluster(&dir);
     cluster.register_node(node("n1", "alpha", NodeRole::Worker, true, &addr));
+    cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(Arc::new(
+        SingleAddrResolver { addr: addr.clone() },
+    ))));
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     let err = handler
