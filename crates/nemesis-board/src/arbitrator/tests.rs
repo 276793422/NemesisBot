@@ -138,6 +138,36 @@ fn test_rule4_issue_comment_routes_to_assignee() {
     assert_eq!(plan.skipped[0].reason, "not_found");
 }
 
+/// 规则④发送者排除（BUG-20261025-17）：worker 在自己被派的单上发进度/
+/// 交付评论（无 @）→ 指派节点就是发送者本人，按 push_target_or_skip 同
+/// 语义 skip(sender)——否则 worker 被自己的消息唤醒，自问自答循环烧线程
+/// 额度。人类发送者 id 不在节点表，天然不受影响（同测对照）。
+#[test]
+fn test_rule4_assignee_is_sender_skipped_not_woken() {
+    let nodes = vec![node("node-b", "Builder", "worker", true)];
+
+    // worker 本人评论自己被派的单：不唤醒，诚实记 sender。
+    let mut inp = input("issue", "进度更新：模块 A 已完成，交付评论见下。", "node-b");
+    inp.issue_assignee = Some("node-b");
+    let plan = resolve_wake_targets(&inp, &nodes);
+    assert!(plan.targets.is_empty(), "发送者本人不得被规则④唤醒");
+    assert_eq!(
+        plan.skipped,
+        vec![SkipRecord {
+            node_id: "node-b".to_string(),
+            reason: "sender"
+        }]
+    );
+    assert!(!plan.to_moderator);
+
+    // 对照：同指派、人类发送者（admin 不在节点表）照常唤醒 worker。
+    let mut inp = input("issue", "辛苦了，请继续。", "admin");
+    inp.issue_assignee = Some("node-b");
+    let plan = resolve_wake_targets(&inp, &nodes);
+    assert_eq!(plan.targets, vec!["node-b"]);
+    assert!(plan.skipped.is_empty());
+}
+
 /// ①②可混用（并集、按解析顺序去重）；不唤醒发送者本人。
 #[test]
 fn test_mixed_mentions_dedupe_and_skip_sender() {
