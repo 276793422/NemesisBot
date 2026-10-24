@@ -461,6 +461,117 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
     delete_chat_log(&key);
 }
 
+// —— BUG-HUNT R71（BUG-20261024-02）：R31 scoped 截断 × redo 守卫口径 ——
+
+/// R71 git 多会话摆法：A 两 turn（v1→v2→v3，turn 边界 begin 捕树）+ B 一
+/// turn（无文件变更，begin 树={v3}）。B 的条目经 `begin_for_session` 穿针
+/// ——R31 起 scoped 截断按 session 字段放行其在 A 的回退中存活。
+#[allow(clippy::type_complexity)]
+async fn stage_git_sessions_ab(
+    tag: &str,
+) -> (
+    AgentLoop,
+    String,
+    String,
+    Arc<crate::checkpoint::CheckpointStore>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(None, root.clone()));
+    assert_eq!(store.backend(), crate::checkpoint::CheckpointBackend::Git);
+    al.set_checkpoint_store(store);
+    let key_a = e3_uniq_key(&format!("{tag}-a"));
+    let key_b = e3_uniq_key(&format!("{tag}-b"));
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+
+    let cp = al.attached_checkpoint().unwrap();
+
+    // A turn 1：begin（树={v1}）→ v2 → 行落盘。
+    cp.begin_for_session(1, "a1", Some(&key_a));
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    e3_append(&key_a, "user", "a turn 1 q", Some(1));
+    e3_append(&key_a, "assistant", "a turn 1 a", None);
+
+    // A turn 2：begin（树={v2}）→ v3 → 行落盘（v3 只在实况）。
+    cp.begin_for_session(2, "a2", Some(&key_a));
+    std::fs::write(root.join("code.txt"), "v3").unwrap();
+    e3_append(&key_a, "user", "a turn 2 q", Some(2));
+    e3_append(&key_a, "assistant", "a turn 2 a", None);
+
+    // B turn 3：begin（树={v3}）——A 回退时 scoped 截断保留这条带树条目。
+    cp.begin_for_session(3, "b1", Some(&key_b));
+    e3_append(&key_b, "user", "b turn 3 q", Some(3));
+    e3_append(&key_b, "assistant", "b turn 3 a", None);
+
+    (al, key_a, key_b, cp, dir)
+}
+
+/// 核心回归臂：B 会话在 A 锚点之后 begin 过 turn（带树），A 回退时 scoped
+/// 截断保留 B 的条目。修复前 post 基线在截断前按 tree_hex_before(t) 采集
+/// （={v1}），redo 守卫 2 拿截断后 latest_tree_hex()（=B turn-3 的 {v3}）
+/// 对照，把 B 的存量条目误判成「undo 后工作区变了」——零变化也恒拒，且
+/// 弹出条目作废、redo 永久死亡。修复后两侧同读截断后索引，redo 通行且回
+/// 填/前向恢复正确。
+#[tokio::test]
+async fn r71_git_redo_not_blocked_by_other_session_turns() {
+    let (al, key_a, key_b, _cp, dir) = stage_git_sessions_ab("r71redo").await;
+    let root = dir.path().join("ws");
+
+    // A 回退到 turn 1 的 user 行：A 的 turn 2 截掉（文件回 {v2}），B 存活。
+    let out = al.rewind_to_message(&key_a, 0, false).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert_eq!(out["redoable"], true);
+    assert_eq!(
+        std::fs::read_to_string(root.join("code.txt")).unwrap(),
+        "v2",
+        "文件回 turn 2 begin 树"
+    );
+
+    // 零变化直接 redo：修复前守卫 2 恒假拒。
+    let out = al.redo_rewind(&key_a).await.unwrap();
+    assert_eq!(out["restored_count"], 2, "{out}");
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    let (_, total, _, _) = read_chat_log(&key_a, 100, None);
+    assert_eq!(total, 4, "A 的行回填");
+    assert_eq!(
+        std::fs::read_to_string(root.join("code.txt")).unwrap(),
+        "v3",
+        "前向恢复到 undo 时刻实时树（含 A turn 2 的 v3）"
+    );
+
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+}
+
+/// 真阳性保持：undo 之后其他会话又 begin 新 turn（工作区真的变了）→
+/// redo 仍诚实拒绝，行保持截断态（截断后索引基线的陈旧性语义不丢）。
+#[tokio::test]
+async fn r71_git_redo_still_rejects_after_genuinely_new_turn() {
+    let (al, key_a, key_b, cp, dir) = stage_git_sessions_ab("r71stale").await;
+    let root = dir.path().join("ws");
+
+    let out = al.rewind_to_message(&key_a, 0, false).await.unwrap();
+    assert_eq!(out["redoable"], true, "{out}");
+
+    // undo 之后 B 再开新 turn：先改文件再 begin（begin 捕 {v4} 新树）。
+    std::fs::write(root.join("code.txt"), "v4").unwrap();
+    cp.begin_for_session(4, "b2", Some(&key_b));
+
+    let err = al.redo_rewind(&key_a).await.unwrap_err();
+    assert!(err.contains("失效"), "{err}");
+    let (_, total, _, _) = read_chat_log(&key_a, 100, None);
+    assert_eq!(total, 2, "行保持截断态");
+
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+}
+
 // —— 重新生成支撑（2026-10-20）：rewind_before_message ——
 
 /// 三轮摆法（两轮 stage 的直延长：turn 3 begin → snapshot 捕 v3 → 工具改

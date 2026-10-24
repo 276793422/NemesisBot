@@ -298,29 +298,30 @@ impl AgentLoop {
             );
         }
 
-        // undo 依据在任何突变前采集（truncate_from 会清掉 turn ≥ restore 的
-        // 索引，tree 值要趁索引还在时读）。
-        let (forward_tree, post_tree) = match self.attached_checkpoint() {
+        // undo 依据采集：forward（redo 前向恢复目标）必须在任何突变前读
+        // （truncate_from 会清掉 turn ≥ restore 的索引，兜底 latest 要趁
+        // 索引还在时读）；post 基线相反——必须在 scoped 截断**之后**读
+        // （见步骤 1，R71 口径修复）。
+        let forward_tree = match self.attached_checkpoint() {
+            // redo 前向恢复目标 = rewind 时刻的实时 tree（begin 树只到
+            // 各 turn 开始态，最后一个 turn 的变更只在实况里）。仅文件
+            // 恢复路径活跃（有 restore_turn 锚）时采集实时树；无锚时保
+            // 持 begin 树语义（可能 None）。
             Some(cp) => {
-                // redo 前向恢复目标 = rewind 时刻的实时 tree（begin 树只到
-                // 各 turn 开始态，最后一个 turn 的变更只在实况里）。仅文件
-                // 恢复路径活跃（有 restore_turn 锚）时采集实时树；无锚时保
-                // 持 begin 树语义（可能 None），redo 只回填行、文件步诚实跳
-                // 过，陈旧性守卫基线不变。
-                let forward = if restore_turn.is_some() {
+                if restore_turn.is_some() {
                     cp.current_tree_hex().or_else(|| cp.latest_tree_hex())
                 } else {
                     cp.latest_tree_hex()
-                };
-                // post 基线 = truncate 之后索引里剩的最新 tree（restore 无
-                // 锚 = 索引不动，基线就是现状）。
-                let post = match restore_turn {
-                    Some(t) => cp.tree_hex_before(t),
-                    None => forward.clone(),
-                };
-                (forward, post)
+                }
             }
-            None => (None, None),
+            None => None,
+        };
+        // post 基线初值：restore 无锚 = 索引不动，基线就是现状；有锚在
+        // scoped 截断后于步骤 1 读取。
+        let mut post_tree = if restore_turn.is_none() {
+            forward_tree.clone()
+        } else {
+            None
         };
 
         // 1) 文件恢复（先于 jsonl 截断——中途崩溃时对话完好，可重试）。
@@ -343,6 +344,15 @@ impl AgentLoop {
                 // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘
                 // JSON）原样保留，其回退历史不被本会话的回退摧毁。
                 cp.truncate_from_scoped(t, Some(session_key));
+                // R71（BUG-20261024-02）：post 基线 = scoped 截断后的真实索引
+                // 态。R31 改 scoped 截断时这里没跟着改口径——此前在截断前按
+                // tree_hex_before(t) 采集（unscoped 时代与截断后 latest_tree_hex
+                // 等值），其他会话 turn ≥ t 的条目截断后存活且带树，redo 守卫
+                // 2 拿 latest_tree_hex() 对照会把它们误判成「undo 后工作区变
+                // 了」：零变化也恒拒，且弹出条目作废、redo 永久死亡。两侧同
+                // 读截断后索引即同口径（真阳性不变：截断后任何新 turn 仍会
+                // 改变 latest → 拒绝）。
+                post_tree = cp.latest_tree_hex();
                 file_restore = "applied";
             } else {
                 let partial = !report.written.is_empty() || !report.deleted.is_empty();
@@ -503,6 +513,8 @@ impl AgentLoop {
             ));
         }
         // 守卫 2：工作区 tree 基线未变（undo 后没有新 checkpoint turn）。
+        // 基线两侧同口径：post 在 undo 侧 scoped 截断后采集（R71），其他
+        // 会话的存量条目两侧同现，不构成「变化」。
         let cur_tree = self
             .attached_checkpoint()
             .and_then(|cp| cp.latest_tree_hex());

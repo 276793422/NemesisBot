@@ -220,6 +220,143 @@ async fn cron_create_legacy_schedule_oversized_interval_rejected() {
     assert!(err.contains("too large"), "got: {err}");
 }
 
+// --- 静默僵尸根修（2026-10-24 R74）：create 无校验臂 ---
+//
+// 本工具曾是唯一不校验 schedule 的生产创建入口（CLI/web/autopilot/
+// dreaming/board 全部前置 validate_schedule + 0 值守卫）。坏表达式 /
+// 0 间隔 / 过去时刻经 compute_next_run 静默返 None → 任务以
+// enabled + next_run=None 入库：永不触发、无报错、跨重启持久，模型
+// 与用户都以为排上了。以下用例钉住诚实拒绝 + Err 意味着不落库。
+
+#[tokio::test]
+async fn cron_create_invalid_cron_expr_rejected_store_stays_empty() {
+    let (tool, svc) = fresh_tool("cron-bad-expr");
+    let err = tool
+        .execute(
+            &serde_json::json!({
+                "action": "create",
+                "name": "zombie",
+                "cron_expr": "not a cron expression",
+                "message": "hi"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("Invalid cron expression"), "got: {err}");
+    assert!(
+        svc.lock().unwrap().list_jobs(true).is_empty(),
+        "rejected create must not leave a job behind"
+    );
+}
+
+#[tokio::test]
+async fn cron_create_legacy_raw_cron_string_validated_too() {
+    // legacy 裸字符串臂（无 every:/at: 前缀 = 按 cron 表达式处理）同源校验。
+    let (tool, svc) = fresh_tool("cron-legacy-bad");
+    let err = tool
+        .execute(
+            &serde_json::json!({
+                "action": "create",
+                "name": "zombie-legacy",
+                "schedule": "totally not cron",
+                "message": "hi"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("Invalid cron expression"), "got: {err}");
+    assert!(svc.lock().unwrap().list_jobs(true).is_empty());
+}
+
+#[tokio::test]
+async fn cron_create_every_zero_rejected() {
+    // every_seconds=0 曾直通 compute_next_run 的 ms>0 过滤 → next_run=None
+    // 静默僵尸（CLI 入口同形态在 add 里明确拒绝 every<=0，此处对齐）。
+    let (tool, svc) = fresh_tool("cron-every-zero");
+    let err = tool
+        .execute(
+            &serde_json::json!({
+                "action": "create",
+                "name": "zero-interval",
+                "every_seconds": 0,
+                "message": "hi"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("every_seconds"), "got: {err}");
+    assert!(svc.lock().unwrap().list_jobs(true).is_empty());
+}
+
+#[tokio::test]
+async fn cron_create_legacy_every_zero_rejected() {
+    let (tool, svc) = fresh_tool("cron-legacy-zero");
+    let err = tool
+        .execute(
+            &serde_json::json!({
+                "action": "create",
+                "name": "zero-legacy",
+                "schedule": "every:0s",
+                "message": "hi"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("every_seconds"), "got: {err}");
+    assert!(svc.lock().unwrap().list_jobs(true).is_empty());
+}
+
+#[tokio::test]
+async fn cron_create_at_zero_rejected() {
+    // at_seconds=0 → at_ms=now → compute_next_run 的 t>now 过滤恒失 →
+    // next_run=None 静默僵尸。
+    let (tool, svc) = fresh_tool("cron-at-zero");
+    let err = tool
+        .execute(
+            &serde_json::json!({
+                "action": "create",
+                "name": "now-at",
+                "at_seconds": 0,
+                "message": "hi"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("future"), "got: {err}");
+    assert!(svc.lock().unwrap().list_jobs(true).is_empty());
+}
+
+#[tokio::test]
+async fn cron_create_past_at_timestamp_rejected() {
+    // legacy at: 过去时刻同形态：t>now 过滤恒失 → 静默僵尸。诚实拒绝。
+    let (tool, svc) = fresh_tool("cron-at-past");
+    let err = tool
+        .execute(
+            &serde_json::json!({
+                "action": "create",
+                "name": "past-at",
+                "schedule": "at:2020-01-01T00:00:00+00:00",
+                "message": "hi"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("future"), "got: {err}");
+    assert!(svc.lock().unwrap().list_jobs(true).is_empty());
+}
+
 // --- delete：schema 声明的 id 全链 ---
 
 #[tokio::test]
