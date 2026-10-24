@@ -23,7 +23,11 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 //（snooze/unsnooze/到期 sweeper 唤醒都会广播）——侧栏据此刷新灰显。
 // L9（2026-10-21 自更新按钮流）：'selfupdate-progress' = 更新包下载进度
 //（ephemeral：无 id 不参与补拉——回放旧进度值无意义），侧栏三态按钮消费。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress']
+// 2026-10-24 补登记：'voice-setup' = 语音环境安装进度（后端 voice.rs 安装
+// 链 hub.publish 播报 starting/cancelled/complete/error）——此前白名单
+// 漏登记，EventSource 从不为该 type 挂 listener，VoiceTab 的订阅收不到
+// 帧（订阅存在 + 后端发布存在 + 白名单缺席 = 实时进度静默失效）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []
