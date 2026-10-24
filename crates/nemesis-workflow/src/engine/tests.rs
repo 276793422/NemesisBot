@@ -4454,3 +4454,55 @@ async fn concurrent_settlers_remove_own_frame_not_stack_top() {
     }
     assert!(engine.call_stack().is_empty());
 }
+
+#[tokio::test]
+async fn test_executions_tracking_cap_evicts_oldest_terminal() {
+    // R53 资源生命周期审计：executions 表原先只增不删（字段语义
+    // 「Active and completed executions」），常驻 gateway 里 cron 工作流
+    // 周期性落 Execution（node_results 携带 LLM 输出）→ 随进程寿命无界
+    // 增长。契约：超 MAX_TRACKED_EXECUTIONS 逐最老**终态**；全活跃时
+    // 放行超限，绝不误删 in-flight 条目。
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "cap_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    // 阶段 1：全部 Running（活跃）→ 允许超上限。
+    let mut ids = Vec::new();
+    for _ in 0..(MAX_TRACKED_EXECUTIONS + 10) {
+        let e = engine
+            .create_execution("cap_wf", HashMap::new(), None)
+            .await
+            .unwrap();
+        ids.push(e.id);
+    }
+    assert_eq!(
+        engine.executions.read().await.len(),
+        MAX_TRACKED_EXECUTIONS + 10,
+        "全活跃时不得逐出（取消/列表语义不受上限影响）"
+    );
+
+    // 阶段 2：全部标终态 → 再建 1 条触发逐出，回到上限。
+    {
+        let mut execs = engine.executions.write().await;
+        for id in &ids {
+            execs.get_mut(id).unwrap().state = ExecutionState::Completed;
+        }
+    }
+    let fresh = engine
+        .create_execution("cap_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    let execs = engine.executions.read().await;
+    assert_eq!(execs.len(), MAX_TRACKED_EXECUTIONS, "终态逐出后回到上限");
+    assert!(execs.contains_key(&fresh.id), "活跃新条目不得被逐出");
+    let original_survivors = ids.iter().filter(|id| execs.contains_key(*id)).count();
+    assert_eq!(
+        original_survivors,
+        MAX_TRACKED_EXECUTIONS - 1,
+        "逐出只发生在终态集合内（幸存终态 + 活跃新条目 = 上限）"
+    );
+}
