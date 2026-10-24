@@ -412,6 +412,75 @@ async fn test_broadcast_after_session_removed() {
     assert!(result.is_err());
 }
 
+// BUG 2026-10-24（僵尸连接）：逐出只删映射不断连，socket 仍活——WSAPI 响应
+// 走 dispatch 捕获队列照常送达，而会话路由的帧（agent 回复/用户回声/历史/
+// 推送）查表失败静默丢失，无心跳客户端永无自愈。逐出必须先 close 队列
+// （发 Close 帧握手 → 前端 onclose 非 1008/4001 自动重连拿新会话）。
+// 直驱 evict_inactive（cleanup 循环 300s 一拍，测试等不起）；合成 now=+7200s
+// 配 timeout 3600s 只命中陈旧会话——后台线程持真实 now 永不干扰。
+#[test]
+fn test_evict_inactive_closes_live_send_queue() {
+    let mgr = SessionManager::new(std::time::Duration::from_secs(3600));
+
+    // 陈旧会话（带活队列）+ 新鲜会话（对照组）。
+    let stale = mgr.create_session();
+    let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
+    mgr.set_send_queue(&stale.id, queue.clone());
+    let fresh = mgr.create_session();
+    let (fresh_queue, _hi_rx2, _lo_rx2, _done_tx2) =
+        crate::websocket_handler::SendQueue::test_channels(16);
+    let fresh_queue = Arc::new(fresh_queue);
+    mgr.set_send_queue(&fresh.id, fresh_queue.clone());
+
+    let now = Local::now() + chrono::Duration::seconds(7200);
+    // 新鲜会话的活跃时间对齐合成 now（否则它同样"陈旧"——两条都是测试时刻建的）。
+    if let Some(mut entry) = mgr.sessions.get_mut(&fresh.id) {
+        entry.session.last_active = now;
+    }
+
+    let evicted = super::SessionManager::evict_inactive(
+        &mgr.sessions,
+        &mgr.send_queues,
+        std::time::Duration::from_secs(3600),
+        now,
+    );
+
+    assert_eq!(evicted, 1, "只有陈旧会话被逐出");
+    assert!(mgr.get_session(&stale.id).is_none(), "陈旧会话映射必须删除");
+    assert!(
+        !mgr.send_queues.contains_key(&stale.id),
+        "陈旧会话队列映射必须删除"
+    );
+    assert!(
+        queue.close_requested(),
+        "逐出必须对存活队列发起 close（Close 帧握手 → 客户端自动重连）"
+    );
+
+    // 对照组：新鲜会话原样保留、队列未关闭。
+    assert!(mgr.get_session(&fresh.id).is_some());
+    assert!(mgr.send_queues.contains_key(&fresh.id));
+    assert!(!fresh_queue.close_requested(), "新鲜会话不得被逐出误伤");
+}
+
+// 无队列的陈旧会话（纯死映射残骸）也要能逐出——close 是尽力而为不是前置条件。
+#[test]
+fn test_evict_inactive_without_queue_still_removes() {
+    let mgr = SessionManager::new(std::time::Duration::from_secs(3600));
+    let stale = mgr.create_session(); // 无 send_queue
+
+    let evicted = super::SessionManager::evict_inactive(
+        &mgr.sessions,
+        &mgr.send_queues,
+        std::time::Duration::from_secs(3600),
+        Local::now() + chrono::Duration::seconds(7200),
+    );
+
+    assert_eq!(evicted, 1);
+    assert!(mgr.get_session(&stale.id).is_none());
+    assert!(!mgr.send_queues.contains_key(&stale.id));
+}
+
 #[test]
 fn test_shutdown_double() {
     let rt = tokio::runtime::Runtime::new().unwrap();

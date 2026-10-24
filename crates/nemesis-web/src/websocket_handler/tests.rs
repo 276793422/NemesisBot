@@ -862,8 +862,18 @@ impl futures::Sink<axum::extract::ws::Message> for MockSink {
         if this.fail_feed {
             return Err(std::io::Error::other("mock feed failure"));
         }
-        if let axum::extract::ws::Message::Text(t) = item {
-            this.frames.lock().unwrap().push_back(t.to_string());
+        match item {
+            axum::extract::ws::Message::Text(t) => {
+                this.frames.lock().unwrap().push_back(t.to_string());
+            }
+            axum::extract::ws::Message::Close(_) => {
+                // Close 帧记哨兵串——帧序断言能覆盖「在途帧先于 Close」。
+                this.frames
+                    .lock()
+                    .unwrap()
+                    .push_back("__CLOSE__".to_string());
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -890,6 +900,7 @@ async fn writer_prioritizes_hi_over_lo_and_batches_flush() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(16);
     let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(16);
     let (done_tx, _done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
     // 全部先入队再起写者：时序确定，无竞态。
     hi_tx.send(b"hi-first".to_vec()).await.unwrap();
@@ -906,6 +917,7 @@ async fn writer_prioritizes_hi_over_lo_and_batches_flush() {
         sink,
         hi_rx,
         lo_rx,
+        close_rx,
         done_tx,
         "t".into(),
     ));
@@ -944,6 +956,7 @@ async fn writer_exits_when_channels_closed_and_signals_done() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
     let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
     drop(hi_tx);
     drop(lo_tx);
@@ -952,6 +965,7 @@ async fn writer_exits_when_channels_closed_and_signals_done() {
         MockSink::default(),
         hi_rx,
         lo_rx,
+        close_rx,
         done_tx,
         "t".into(),
     ));
@@ -972,6 +986,7 @@ async fn writer_feed_failure_signals_done() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
     let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
     hi_tx.send(b"boom".to_vec()).await.unwrap();
     drop(hi_tx);
@@ -985,6 +1000,7 @@ async fn writer_feed_failure_signals_done() {
         sink,
         hi_rx,
         lo_rx,
+        close_rx,
         done_tx,
         "t".into(),
     ));
@@ -997,6 +1013,47 @@ async fn writer_feed_failure_signals_done() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+}
+
+/// close 请求（SessionManager 逐出路径）：biased 序 close 臂排在 hi/lo 之后
+/// → 在途必达帧先排空，再发 Close 帧收尾。僵尸逐出根修（2026-10-24）的
+/// 契约面：客户端必须收到 Close 才会走 onclose 自动重连。
+#[tokio::test]
+async fn writer_close_request_drains_pending_then_sends_close_frame() {
+    let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (_lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+
+    // 1 帧在途 + 信号 close（不关发送端——模拟存活连接被逐出）。
+    hi_tx.send(b"hi-frame".to_vec()).await.unwrap();
+    close_tx.send(true).unwrap();
+
+    let sink = MockSink::default();
+    let frames = sink.frames.clone();
+    tokio::spawn(super::run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        close_rx,
+        done_tx,
+        "t".into(),
+    ));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !*done_rx.borrow() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "writer must exit after close request"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let got: Vec<_> = frames.lock().unwrap().drain(..).collect();
+    assert_eq!(
+        got,
+        vec!["hi-frame".to_string(), "__CLOSE__".to_string()],
+        "在途 hi 帧先送达，Close 帧最后（biased 序 close 臂不抢在途必达帧）"
+    );
 }
 
 #[test]

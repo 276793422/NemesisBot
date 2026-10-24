@@ -266,23 +266,7 @@ impl SessionManager {
                 let mut interval = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
                 loop {
                     interval.tick().await;
-
-                    let now = Local::now();
-                    let mut to_remove = Vec::new();
-
-                    for entry in sessions.iter() {
-                        let inactive_duration = now.signed_duration_since(entry.session.last_active);
-                        let inactive_secs = inactive_duration.num_seconds();
-                        if inactive_secs > timeout.as_secs() as i64 {
-                            to_remove.push(entry.session.id.clone());
-                        }
-                    }
-
-                    for session_id in to_remove {
-                        sessions.remove(&session_id);
-                        send_queues.remove(&session_id);
-                        tracing::info!(session_id = %session_id, "[WebSocket] Removed inactive session");
-                    }
+                    Self::evict_inactive(&sessions, &send_queues, timeout, Local::now());
                 }
             });
         });
@@ -292,6 +276,47 @@ impl SessionManager {
         // Since we can't easily convert, we just store a dummy and drop the std handle.
         // The cleanup thread will run until the DashMap is dropped.
         let _ = handle; // Thread will terminate when DashMaps are dropped
+    }
+
+    /// 逐出非活跃会话并**关闭其仍存活的发送队列**（返回逐出数）。
+    ///
+    /// 为什么逐出必须断连（2026-10-24）：cleanup 的本意是 GC 死连接的残骸，
+    /// 但 WS 连接 halves 在 handler 手里——只删映射不断连，会产生僵尸态：
+    /// socket 仍活、入站照收（WSAPI 响应走 dispatch 捕获的队列照常送达），
+    /// 而一切会话路由的帧（agent 回复 send_to_session / user 回声 / 历史
+    /// 响应 / push 推送）在 manager 查表失败后静默丢失。无心跳的客户端
+    /// （自动化脚本、第三方集成；dashboard 有 30s 心跳不受影响）静默 1h
+    /// 即落入此态且永无自愈路径。关闭 = 发 Close 帧走正常握手 → 前端
+    /// onclose 非 1008/4001 自动重连拿新会话，状态重归一致。
+    ///
+    /// 单独成关联函数：cleanup 循环 300s 一拍，测试等不起，直驱验证。
+    fn evict_inactive(
+        sessions: &DashMap<String, SessionEntry>,
+        send_queues: &DashMap<String, Arc<SendQueue>>,
+        timeout: Duration,
+        now: DateTime<Local>,
+    ) -> usize {
+        let mut to_remove = Vec::new();
+        for entry in sessions.iter() {
+            let inactive_duration = now.signed_duration_since(entry.session.last_active);
+            let inactive_secs = inactive_duration.num_seconds();
+            if inactive_secs > timeout.as_secs() as i64 {
+                to_remove.push(entry.session.id.clone());
+            }
+        }
+
+        for session_id in &to_remove {
+            // 先关队列再删映射：close 触发 Close 帧握手，随 writer 退出
+            // hi/lo receiver 被 drop，残余 send()/send_droppable() 诚实报错
+            // （不会把帧静默排进无人消费的通道）。
+            if let Some(queue) = send_queues.get(session_id) {
+                queue.close();
+            }
+            sessions.remove(session_id);
+            send_queues.remove(session_id);
+            tracing::info!(session_id = %session_id, "[WebSocket] Removed inactive session (queue closed)");
+        }
+        to_remove.len()
     }
 }
 

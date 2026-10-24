@@ -60,6 +60,15 @@ pub struct SendQueue {
     hi_tx: mpsc::Sender<Vec<u8>>,
     lo_tx: mpsc::Sender<Vec<u8>>,
     done: tokio::sync::watch::Receiver<bool>,
+    /// 外部关闭请求（SessionManager 逐出非活跃会话时对仍存活的连接发起
+    /// 礼貌断连）。writer 收到后发 Close 帧收尾；此后 `send`/`send_droppable`
+    /// 随 writer 退出（rx 被 drop）诚实报错，不再静默入死队列。
+    close_tx: tokio::sync::watch::Sender<bool>,
+    /// close 通道保活 receiver：通道内无存活 receiver 时 `send()` 会因
+    /// 关闭而丢值（borrow 读不到置位）。生产路径 writer 持另一份 receiver，
+    /// 本字段持克隆；测试构造器（from_channels，无 writer）由本字段独持
+    /// ——与 `done` receiver 存struct 同一对称。
+    _close_rx_keepalive: tokio::sync::watch::Receiver<bool>,
     dropped: Arc<AtomicU64>,
 }
 
@@ -79,14 +88,20 @@ impl SendQueue {
         let (hi_tx, hi_rx) = mpsc::channel(SEND_QUEUE_HI_CAP);
         let (lo_tx, lo_rx) = mpsc::channel(SEND_QUEUE_LO_CAP);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+        let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+        let _close_rx_keepalive = close_rx.clone();
         let dropped = Arc::new(AtomicU64::new(0));
 
-        tokio::spawn(run_send_writer(sink, hi_rx, lo_rx, done_tx, session_id));
+        tokio::spawn(run_send_writer(
+            sink, hi_rx, lo_rx, close_rx, done_tx, session_id,
+        ));
 
         Self {
             hi_tx,
             lo_tx,
             done: done_rx,
+            close_tx,
+            _close_rx_keepalive,
             dropped,
         }
     }
@@ -123,9 +138,28 @@ impl SendQueue {
         self.dropped.load(Ordering::Relaxed)
     }
 
+    /// 请求礼貌关闭：writer 排空就绪帧后发送 Close 帧并退出。此后
+    /// `send`/`send_droppable` 诚实报错（通道已停），对端收到 Close 走
+    /// 正常关闭握手（前端 onclose 非 1008/4001 → 自动重连拿新会话）。
+    ///
+    /// 消费方：SessionManager 逐出非活跃会话——此前逐出只删映射不关连接，
+    /// 存活的 socket 落成僵尸（入站照收、WSAPI 响应仍走捕获队列，但
+    /// 会话路由的回复/推送全部静默丢失，且客户端永远无从得知）。
+    /// 幂等：writer 已退出或已关闭时无害。
+    pub fn close(&self) {
+        let _ = self.close_tx.send(true);
+    }
+
     /// Check if the send queue is still active.
     pub fn is_done(&self) -> bool {
         *self.done.borrow()
+    }
+
+    /// 测试可观测：close 是否已被请求（管理侧逐出断言用——无 writer 的
+    /// test_channels 队列上 done 永不翻转，只能读发送端值）。
+    #[cfg(test)]
+    pub fn close_requested(&self) -> bool {
+        *self.close_tx.borrow()
     }
 
     /// Create a SendQueue from raw channels (for testing).
@@ -136,10 +170,15 @@ impl SendQueue {
         done_rx: tokio::sync::watch::Receiver<bool>,
         dropped: Arc<AtomicU64>,
     ) -> Self {
+        let (close_tx, close_rx) = tokio::sync::watch::channel(false);
         Self {
             hi_tx,
             lo_tx,
             done: done_rx,
+            close_tx,
+            // 无 writer 的测试队列：保活 receiver 由本字段独持，否则
+            // close() 的 send 撞「无 receiver=通道关闭」丢值。
+            _close_rx_keepalive: close_rx,
             dropped,
         }
     }
@@ -170,12 +209,16 @@ impl SendQueue {
 /// 单写者循环：每轮 hi 优先取一批（biased select），非阻塞捎带两通道的
 /// 现成帧，合并 feed 后**单次 flush**。泛型 over sink——生产用
 /// `SplitSink<WebSocket, Message>`，测试用假 sink 验证优先级/合批语义。
-/// 两条通道的发送端同生命周期（都持在 `SendQueue` 手里），任一关闭即
+/// `close_rx` 置位（SessionManager 逐出非活跃会话）= 礼貌收尾：等 hi/lo
+/// 就绪帧排空（biased 序 close 臂最后，不抢在途必达帧），发 Close 帧
+/// 让对端走正常关闭握手后退出。两条通道的发送端同生命周期（都持在
+/// `SendQueue` 手里），任一关闭即
 /// 结构已弃用，直接收尾（对端 socket 已死，余帧无意义）。
 async fn run_send_writer<S>(
     mut sink: S,
     mut hi_rx: mpsc::Receiver<Vec<u8>>,
     mut lo_rx: mpsc::Receiver<Vec<u8>>,
+    mut close_rx: tokio::sync::watch::Receiver<bool>,
     done_tx: tokio::sync::watch::Sender<bool>,
     session_id: String,
 ) where
@@ -195,6 +238,10 @@ async fn run_send_writer<S>(
                 if n == 0 {
                     break 'writer;
                 }
+            }
+            _ = close_rx.changed() => {
+                let _ = sink.send(Message::Close(None)).await;
+                break 'writer;
             }
         }
         // 非阻塞捎带：hi 排前、lo 跟后（各自有界，单轮有限）。

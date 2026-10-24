@@ -59,6 +59,7 @@ async fn agt_writer_lo_closed_breaks_writer() {
     let (hi_tx, hi_rx) = mpsc::channel(8);
     let (lo_tx, lo_rx) = mpsc::channel(8);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
     // 1 帧 hi，lo 关闭（且已排空）；hi 发送端存活 → hi 臂阻塞时 lo 臂
     // recv_many=0 → 走 lo 收尾 break。
@@ -70,6 +71,7 @@ async fn agt_writer_lo_closed_breaks_writer() {
         AgtVecSink(seen.clone()),
         hi_rx,
         lo_rx,
+        close_rx,
         done_tx,
         "agt-lo".to_string(),
     );
@@ -85,6 +87,7 @@ async fn agt_writer_hi_piggyback_takes_frames_beyond_batch() {
     let (hi_tx, hi_rx) = mpsc::channel(256);
     let (lo_tx, lo_rx) = mpsc::channel(256);
     let (done_tx, _done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
     // 68 帧 hi（> 64 批量）：recv_many 吃 64，try_recv 捎带走剩余 4。
     for i in 0..(SEND_QUEUE_HI_BATCH + 4) {
@@ -101,6 +104,7 @@ async fn agt_writer_hi_piggyback_takes_frames_beyond_batch() {
         AgtVecSink(seen.clone()),
         hi_rx,
         lo_rx,
+        close_rx,
         done_tx,
         "agt-hi".to_string(),
     );
