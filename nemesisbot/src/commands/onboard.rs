@@ -350,24 +350,38 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
     // Cli：总是覆盖——default/ 是新装机的权威源（mirrors Go's
     // copyDefaultFiles，re-onboard 修复损坏人格）。Seed：only-if-absent——
     // 用户装过的人格（persona install/activate）绝不被 auto-init clobber。
-    install_if_absent(
+    // 写失败计数汇总（诚实报告：不再无条件宣称安装成功）。
+    let mut persona_failures = 0usize;
+    if !install_if_absent(
         &workspace_dir.join("IDENTITY.md"),
         crate::DEFAULT_IDENTITY,
         mode,
-    );
-    install_if_absent(&workspace_dir.join("SOUL.md"), crate::DEFAULT_SOUL, mode);
-    install_if_absent(&workspace_dir.join("USER.md"), crate::DEFAULT_USER, mode);
+    ) {
+        persona_failures += 1;
+    }
+    if !install_if_absent(&workspace_dir.join("SOUL.md"), crate::DEFAULT_SOUL, mode) {
+        persona_failures += 1;
+    }
+    if !install_if_absent(&workspace_dir.join("USER.md"), crate::DEFAULT_USER, mode) {
+        persona_failures += 1;
+    }
     // Cluster identity — extracted to workspace/cluster/IDENTITY.md.
     let cluster_id_dir = nemesis_path::cluster_dir_in_workspace(&workspace_dir);
     let _ = std::fs::create_dir_all(&cluster_id_dir);
-    install_if_absent(
+    if !install_if_absent(
         &cluster_id_dir.join("IDENTITY.md"),
         crate::DEFAULT_IDENTITY_CLUSTER,
         mode,
-    );
-    println!(
-        "  Default personality files installed (IDENTITY.md, SOUL.md, USER.md, cluster/IDENTITY.md)"
-    );
+    ) {
+        persona_failures += 1;
+    }
+    if persona_failures == 0 {
+        println!(
+            "  Default personality files installed (IDENTITY.md, SOUL.md, USER.md, cluster/IDENTITY.md)"
+        );
+    } else {
+        println!("  Warning: {persona_failures} personality file(s) failed to install (see above)");
+    }
 
     // --- Step 10: Create additional directories ---
     let _ = std::fs::create_dir_all(workspace_dir.join("logs"));
@@ -448,16 +462,34 @@ fn write_if_absent(path: &Path, content: &str, mode: OnboardMode, label: &str) {
     }
     // REL-002：统一原子写入（MCP/Skills/Scanner/内存/Chat/Forge 配置共用
     // 本 helper 单点——半截配置文件 = 对应子系统启动失败）。
-    let _ = nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600);
-    println!("  {} created", label);
+    // 写失败诚实报 Warning，不再打印假成功（同 Step 8 模板提取的口径）。
+    match nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600) {
+        Ok(()) => println!("  {} created", label),
+        Err(e) => println!("  Warning: failed to write {}: {e}", label),
+    }
 }
 
 /// 人格文件安装（按模式分叉）：Cli = 总是覆盖；Seed = only-if-absent。
-fn install_if_absent(path: &Path, content: &str, mode: OnboardMode) {
+/// 返回 false = 写盘失败（调用方汇总计数，不再无条件宣称安装成功）。
+fn install_if_absent(path: &Path, content: &str, mode: OnboardMode) -> bool {
     if matches!(mode, OnboardMode::Seed) && path.exists() {
-        return;
+        return true;
     }
-    let _ = std::fs::write(path, content);
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        println!("  Warning: failed to create {}: {e}", parent.display());
+        return false;
+    }
+    // REL-002：原子写（半截 IDENTITY.md = 截断人格，与配置文件同类伤害——
+    // 此前横扫遗漏点，裸 std::fs::write 崩溃窗口可落半截人格文件）。
+    match nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600) {
+        Ok(()) => true,
+        Err(e) => {
+            println!("  Warning: failed to write {}: {e}", path.display());
+            false
+        }
+    }
 }
 
 #[cfg(test)]
