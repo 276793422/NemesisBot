@@ -1024,6 +1024,9 @@ async fn run_command(cli: Cli) -> Result<()> {
         }
         Commands::Cron { action } => {
             common::ensure_default_logger();
+            // gateway 在位守卫：运行中用 CLI 增删改会被 gateway 下次保存
+            // 整体覆盖（静默丢失），拦下并指引 Dashboard / 先停 gateway。
+            commands::cron::ensure_no_live_gateway(&action, cli.local).await?;
             commands::cron::run(action, cli.local)?;
         }
         Commands::Mcp { action } => {
