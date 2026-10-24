@@ -28,9 +28,11 @@ pub mod status {
     pub const FAILED: &str = "failed";
     /// 跨节点迁移进行中（P6-R2）：A 端迁移编排置入，源端 loop 冻结
     /// （resolve_or_build 的 `status != ACTIVE` 闸拒绝新消息）。收敛由
-    /// [`super::store`] 的 sweep 负责——commit ACK 已达（本地墓碑在场）=
-    /// 迁移成功，删记录+删墓碑；墓碑缺席 = commit 未达，回滚 active 照常
-    /// 服务。
+    /// [`super::store`] 的 sweep 负责——本地墓碑在场 = commit ACK 已达
+    /// （迁移成功终局），删记录+删墓碑；墓碑缺席 + 意图日志在场 = commit
+    /// 已发出、结果未知，**冻结**转人工（绝不自动回滚——B 端可能已激活，
+    /// 回滚 = 同 uuid 双活且 ACTIVE 让 sweep 失明）；两锚皆缺席 = commit
+    /// 未发出，回滚 active 照常服务。
     pub const MIGRATING: &str = "migrating";
 }
 
