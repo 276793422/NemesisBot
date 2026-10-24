@@ -58,6 +58,20 @@ fn extract_usage(u: &serde_json::Value) -> UsageInfo {
     }
 }
 
+/// 块内全部 data: 行载荷（按行保序）。SSE 规范 `data` 字段名后的空格
+/// 可选——两种形态都识别；此前只认 `"data: "` 带空格形态，无空格上游
+/// （合规服务存在）事件全被跳过 → 流式回复静默变空。
+fn data_payloads(block: &str) -> Vec<&str> {
+    block
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+        })
+        .collect()
+}
+
 /// HTTP provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpProviderConfig {
@@ -554,17 +568,13 @@ impl HttpProvider {
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
-                // Process complete SSE lines.
-                while let Some(pos) = buffer.find("\n\n") {
+                // Process complete SSE lines. 事件边界双形态（\n\n / \r\n\r\n，
+                // SSE 规范行终止三态；CRLF-only 上游按单一 \n\n 扫描零事件）。
+                while let Some((pos, sep)) = crate::stream_util::next_event_boundary(&buffer) {
                     let block = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
+                    buffer = buffer[pos + sep..].to_string();
 
-                    for line in block.lines() {
-                        let line = line.trim();
-                        if !line.starts_with("data: ") {
-                            continue;
-                        }
-                        let data = &line[6..];
+                    for data in data_payloads(&block) {
                         if data.trim() == "[DONE]" {
                             if finish_emitted {
                                 // 正常收尾（OpenAI 语义 finish → [DONE]）：终态

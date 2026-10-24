@@ -610,9 +610,10 @@ impl AnthropicProvider {
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
-                while let Some(pos) = buffer.find("\n\n") {
+                // 事件边界双形态（\n\n / \r\n\r\n，SSE 规范行终止三态）。
+                while let Some((pos, sep)) = crate::stream_util::next_event_boundary(&buffer) {
                     let block = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
+                    buffer = buffer[pos + sep..].to_string();
 
                     // 拼接 block 内全部 data: 行（稳妥；anthropic 实际单行）。
                     let mut data = String::new();
