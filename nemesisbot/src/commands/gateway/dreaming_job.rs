@@ -115,7 +115,9 @@ pub fn sync_dreaming_job(
         None => {
             // message 留空——dreaming job 不走消息总线（on_job 分支在 message
             // 判空前拦截）；deliver=false（结果落报告文件，不投递通道）。
-            match svc.add_job_ext(
+            // add_job_internal：`memory-dreaming:` 是保留命名空间（用户面
+            // 创建被 nemesis-cron loud 拒绝），内部装配走旁路。
+            match svc.add_job_internal(
                 DREAMING_JOB_NAME,
                 schedule,
                 "",
