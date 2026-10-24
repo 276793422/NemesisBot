@@ -42,6 +42,12 @@ pub struct Handshake {
 pub struct PipeLink {
     stream: tokio::net::windows::named_pipe::NamedPipeServer,
     pub handshake: Handshake,
+    /// R5（2026-10-24 第四次外评）：请求-应答交换窗标志。会话层用外部
+    /// `tokio::time::timeout` 包裹每条命令——取消落在 roundtrip 内部任意
+    /// await 点时，「关窗」行不会执行，标志滞留 true = 迟到应答与新请求
+    /// 的应答无法区分（帧协议无请求 ID），后续 roundtrip 诚实拒绝
+    /// （[`PipeError::LinkUnreliable`]），绝不把上一请求的应答张冠李戴。
+    exchange_inflight: bool,
 }
 
 /// 建管道 server（第一步——必须在注入**之前**落定：payload 连回重试窗口
@@ -92,6 +98,7 @@ pub async fn finish_handshake(
             arch: String::new(),
             pid: 0,
         },
+        exchange_inflight: false,
     };
     let frame = timeout(HANDSHAKE_TIMEOUT, link.read_frame())
         .await
@@ -163,7 +170,27 @@ impl PipeLink {
     }
 
     /// 请求-响应往返（JSON 文本帧；单请求串行——payload 命令循环也是串行）。
+    ///
+    /// R5 交换窗纪律：本方法被外部超时取消（会话层把每条命令包在
+    /// `tokio::time::timeout` 里）时，写请求与读应答之间的任意 await 点都
+    /// 可能是取消点——此后迟到应答滞留管道缓冲，与本链路后续请求的应答
+    /// 无法区分（帧协议无请求 ID）。取消路径不走「关窗」行，标志滞留 =
+    /// 后续 roundtrip 恒 [`PipeError::LinkUnreliable`]（结果未知，重建会话，
+    /// 不自动重发）。正常完成/对端断开（传输已死，无迟到应答可言）正常
+    /// 关窗。
     pub async fn roundtrip(&mut self, req: &str) -> Result<String, PipeError> {
+        if self.exchange_inflight {
+            return Err(PipeError::LinkUnreliable);
+        }
+        self.exchange_inflight = true;
+        let result = self.exchange(req).await;
+        // 取消路径（外部超时）永远走不到这一行——标志滞留即毒化标记。
+        self.exchange_inflight = false;
+        result
+    }
+
+    /// 单次写请求 + 读应答（roundtrip 的交换体；无状态管理）。
+    async fn exchange(&mut self, req: &str) -> Result<String, PipeError> {
         self.write_frame(req.as_bytes()).await?;
         let frame = self.read_frame().await?;
         Ok(String::from_utf8_lossy(&frame).to_string())
@@ -258,3 +285,11 @@ fn verify_client_pid(
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// R5 回归锁（2026-10-24 第四次外评）：外部超时取消交换后的应答冒领。
+// Windows 形态测试（具名管道）——#[path] 挂独立文件，非 Windows 编译期消失。
+// ---------------------------------------------------------------------------
+#[cfg(all(test, windows))]
+#[path = "pipe/review_oct24_tests.rs"]
+mod review_oct24_tests;

@@ -36,7 +36,7 @@
 //! `begin` 时若工作区 tree 与上一 turn 不同（shell 副作用已发生）也落盘，
 //! 否则空 turn 同样跳过——翻页请求不留壳。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
@@ -145,6 +145,33 @@ pub struct CheckpointBase {
     pub content: Option<String>,
 }
 
+/// R3（2026-10-24 外评）：恢复动作的结构化报告——成功与失败分明，失败项
+/// 带原因。此前 restore 家族只回 `(written, deleted)` 两 vec，写失败/删失败
+/// 被 `is_ok()` 过滤静默吞掉，rewind 侧无从感知、无条件盖「applied」戳并
+/// 摧毁 checkpoint（失败后无法重试）。消费方（rewind 编排）以
+/// [`RestoreReport::ok`] 决定是否推进截断。
+#[derive(Debug, Default, Clone)]
+pub struct RestoreReport {
+    pub written: Vec<String>,
+    pub deleted: Vec<String>,
+    /// 恢复失败项 `(path, 原因)`。整体性失败（如影子 tree 不可达、diff
+    /// 失败）以 path=`"*"` 单条承载。非空 = 工作区处于部分恢复态，调用方
+    /// 不得推进任何截断。
+    pub failures: Vec<(String, String)>,
+}
+
+impl RestoreReport {
+    pub fn ok(&self) -> bool {
+        self.failures.is_empty()
+    }
+
+    fn merge(&mut self, other: RestoreReport) {
+        self.written.extend(other.written);
+        self.deleted.extend(other.deleted);
+        self.failures.extend(other.failures);
+    }
+}
+
 /// P4（交付门）：一次交付分支捕获的结果——可审分支的寻址面。
 ///
 /// 影子库本无 commit 流（只有 tree 流）：capture = 写当前工作区 tree →
@@ -229,8 +256,14 @@ pub enum CheckpointBackend {
 
 struct Inner {
     done: Vec<Checkpoint>,
-    cur: Option<Checkpoint>,
-    seen: HashSet<String>, // paths already snapshotted in the current turn
+    /// R4（2026-10-24 第四次外评）：per-session 进行中 turn 桶，键 = 会话键
+    /// （None = 旧全局语义：`begin()`/`snapshot()` 兼容路径与存量测试）。
+    /// 旧单 `Option<Checkpoint>` 槽被后 begin 的并发会话整体收编——前一
+    /// 会话的 snapshot 全落进后一会话名下的 checkpoint（跨会话串档，
+    /// rewind 波及面误判）。桶化后各会话各归各位。
+    cur: HashMap<Option<String>, Checkpoint>,
+    /// per-session 首 touch 去重（与 cur 桶同键同生命周期）。
+    seen: HashMap<Option<String>, HashSet<String>>,
 }
 
 /// git2 `Repository` is Send but !Sync — Mutex 使其可跨 await 共享。
@@ -317,8 +350,8 @@ impl CheckpointStore {
             git,
             inner: Mutex::new(Inner {
                 done: Vec::new(),
-                cur: None,
-                seen: HashSet::new(),
+                cur: HashMap::new(),
+                seen: HashMap::new(),
             }),
         };
         store.load();
@@ -501,27 +534,32 @@ impl CheckpointStore {
     }
 
     /// restore（git 模式）核心：diff target..current 分类出要恢复/要删除的
-    /// 路径集，然后 checkout_tree（按路径）+ 逐文件删除。
+    /// 路径集，然后 checkout_tree（按路径）+ 逐文件删除。R3：整体性失败
+    /// （tree 写入/解析/diff）与逐文件失败都进 `failures`（整体失败以
+    /// path=`"*"` 承载），不再静默返空。
     #[cfg(feature = "checkpoint-git")]
-    fn git_restore(
-        root: &Path,
-        repo: &mut git2::Repository,
-        target_hex: &str,
-    ) -> (Vec<String>, Vec<String>) {
+    fn git_restore(root: &Path, repo: &mut git2::Repository, target_hex: &str) -> RestoreReport {
+        let mut report = RestoreReport::default();
         // 现状 tree（同样跳过运行时属主目录）。先做可变操作（index 写入），
         // 再拿 immutable 的 Tree 句柄——git2 的 Tree 借用 repo，顺序不能反。
         let cur_hex = match Self::write_current_tree(repo) {
             Ok(h) => h,
             Err(e) => {
                 warn!("[checkpoint] 现状 tree 写入失败，放弃 git restore: {e}");
-                return (Vec::new(), Vec::new());
+                report
+                    .failures
+                    .push(("*".into(), format!("现状 tree 写入失败: {e}")));
+                return report;
             }
         };
         let target_oid = match git2::Oid::from_str(target_hex) {
             Ok(o) => o,
             Err(e) => {
                 warn!("[checkpoint] tree oid 解析失败 {target_hex}: {e}");
-                return (Vec::new(), Vec::new());
+                report
+                    .failures
+                    .push(("*".into(), format!("tree oid 解析失败: {e}")));
+                return report;
             }
         };
         let target_tree = match repo.find_tree(target_oid) {
@@ -529,23 +567,39 @@ impl CheckpointStore {
             Err(e) => {
                 // 影子库对象缺失（如真实仓库 gc 掉了 alternates 引用的对象）。
                 warn!("[checkpoint] 影子 tree 不可达 {target_hex}: {e}");
-                return (Vec::new(), Vec::new());
+                report
+                    .failures
+                    .push(("*".into(), format!("影子 tree 不可达: {e}")));
+                return report;
             }
         };
         let cur_oid = match git2::Oid::from_str(&cur_hex) {
             Ok(o) => o,
-            Err(_) => return (Vec::new(), Vec::new()),
+            Err(e) => {
+                report
+                    .failures
+                    .push(("*".into(), format!("现状 oid 解析失败: {e}")));
+                return report;
+            }
         };
         let cur_tree = match repo.find_tree(cur_oid) {
             Ok(t) => t,
-            Err(_) => return (Vec::new(), Vec::new()),
+            Err(e) => {
+                report
+                    .failures
+                    .push(("*".into(), format!("现状 tree 不可达: {e}")));
+                return report;
+            }
         };
 
         let diff = match repo.diff_tree_to_tree(Some(&target_tree), Some(&cur_tree), None) {
             Ok(d) => d,
             Err(e) => {
                 warn!("[checkpoint] tree diff 失败: {e}");
-                return (Vec::new(), Vec::new());
+                report
+                    .failures
+                    .push(("*".into(), format!("tree diff 失败: {e}")));
+                return report;
             }
         };
 
@@ -575,8 +629,8 @@ impl CheckpointStore {
 
         // checkout_tree 一次调用带全部路径（force 覆写本地改动=restore 的本
         // 意；update_index(false) 不动影子 index——下次 add_all 靠 stat 失配
-        // 重哈希，正确性不受影响）。
-        let mut written = Vec::new();
+        // 重哈希，正确性不受影响）。R3：checkout 失败 = 全部待恢复路径记
+        // failures（一次调用整体失败，无部分成功可言）。
         if !to_checkout.is_empty() {
             let mut cb = git2::build::CheckoutBuilder::new();
             cb.force().update_index(false);
@@ -584,26 +638,36 @@ impl CheckpointStore {
                 cb.path(p.as_str());
             }
             match repo.checkout_tree(target_tree.as_object(), Some(&mut cb)) {
-                Ok(()) => written = to_checkout,
-                Err(e) => warn!("[checkpoint] checkout_tree 失败（工作区保持现状）: {e}"),
+                Ok(()) => report.written = to_checkout,
+                Err(e) => {
+                    warn!("[checkpoint] checkout_tree 失败（工作区保持现状）: {e}");
+                    report.failures.extend(
+                        to_checkout
+                            .into_iter()
+                            .map(|p| (p, format!("checkout 失败: {e}"))),
+                    );
+                }
             }
         }
 
         // 删除多余文件（target 没有而现状有的——含 shell 产物）。经 safe_path
-        // 语义防逃逸（git 相对路径理论上不含 ..，防御性保留）。
-        let mut deleted = Vec::new();
+        // 语义防逃逸（git 相对路径理论上不含 ..，防御性保留）。R3：删除失败
+        // 进 failures（NotFound = 快照语义已达成，不计失败）。
         for rel in to_remove {
             if rel.split(['/', '\\']).any(|seg| seg == "..") {
                 continue;
             }
             let abs = root.join(&rel);
             match std::fs::remove_file(&abs) {
-                Ok(()) => deleted.push(rel),
+                Ok(()) => report.deleted.push(rel),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => warn!("[checkpoint] 删除 {rel} 失败: {e}"),
+                Err(e) => {
+                    warn!("[checkpoint] 删除 {rel} 失败: {e}");
+                    report.failures.push((rel, format!("删除失败: {e}")));
+                }
             }
         }
-        (written, deleted)
+        report
     }
 
     // ------------------------------------------------------------------
@@ -968,11 +1032,17 @@ impl CheckpointStore {
         prompt: impl Into<String>,
         session_key: Option<&str>,
     ) {
-        // P20 兜底封印：上一 turn 若因崩溃未走到 process_admitted 的收尾
-        // 封印点，在开启新 turn 前补封（幂等——已封印的 turn 直接跳过）。
+        // R4：桶键——本会话的进行中 turn 归属（None = 旧全局语义）。
+        let bucket: Option<String> = session_key.map(str::to_string);
+
+        // P20 兜底封印：**本会话**上一 turn 若因崩溃未走到 process_admitted
+        // 的收尾封印点，在开启新 turn 前补封（幂等——已封印的 turn 直接跳
+        // 过）。只补封本会话桶：其他会话的进行中 turn 由其自身收尾/下次
+        // begin 兜底，提前代封会把别人 turn 中途的盘面钉成 after 指纹
+        // （其 turn 后半段的合法写入会被冲突预检误报为外部修改）。
         let fallback_seal = {
             let guard = self.inner.lock();
-            guard.cur.as_ref().filter(|c| !c.sealed).map(|c| c.turn)
+            guard.cur.get(&bucket).filter(|c| !c.sealed).map(|c| c.turn)
         };
         if let Some(t) = fallback_seal {
             self.seal_turn(t);
@@ -1013,7 +1083,9 @@ impl CheckpointStore {
         };
 
         let mut guard = self.inner.lock();
-        let prev = guard.cur.take();
+        // R4：只 finalize 本会话桶的上一个 cur（其他会话的进行中 turn 原位
+        // 不动——旧单槽会被整体收编成跨会话串档）。
+        let prev = guard.cur.remove(&bucket);
         if let Some(prev) = &prev {
             guard.done.push(prev.clone());
         }
@@ -1023,8 +1095,9 @@ impl CheckpointStore {
             .and_then(|p| p.tree.clone())
             .or_else(|| guard.done.last().and_then(|c| c.tree.clone()));
         let changed_since_prev = cp.tree.is_some() && (prev_tree.is_none() || prev_tree != cp.tree);
-        guard.cur = Some(cp.clone());
-        guard.seen.clear();
+        guard.cur.insert(bucket.clone(), cp.clone());
+        // 首 touch 去重只重置本会话桶（新 turn 新去重集；其他会话不动）。
+        guard.seen.insert(bucket, HashSet::new());
         drop(guard);
 
         if changed_since_prev {
@@ -1040,6 +1113,14 @@ impl CheckpointStore {
     /// git 模式：工作区内文件不再读内容（begin 的 tree 已覆盖——省一次全文
     /// 读）；工作区外的声明路径仍读全文（影子树罩不住，见 FileSnap doc）。
     pub async fn snapshot(&self, change: &FileChange) {
+        self.snapshot_for_session(change, None).await;
+    }
+
+    /// R4：会话归属版 snapshot——写入落进**本会话**的进行中 turn 桶。
+    /// `session_key = None` = 旧全局语义（`begin()` 兼容路径、存量测试）。
+    /// 生产调用点（tool_dispatch preview 阶段）传 `Some(&ctx.session_key)`，
+    /// 与 `admission.rs` 的 `begin_for_session` 同键——并发会话各归各位。
+    pub async fn snapshot_for_session(&self, change: &FileChange, session_key: Option<&str>) {
         if change.path.is_empty() {
             return;
         }
@@ -1059,22 +1140,25 @@ impl CheckpointStore {
             }
         };
 
+        let bucket = session_key.map(str::to_string);
         let mut guard = self.inner.lock();
-        if guard.cur.is_none() {
+        // 借用拆分：cur / seen 是不相交字段，可同时可变借用。
+        let Inner { cur, seen, .. } = &mut *guard;
+        let Some(cp) = cur.get_mut(&bucket) else {
             return;
-        }
-        if !guard.seen.insert(change.path.clone()) {
+        };
+        let seen = seen.entry(bucket).or_default();
+        if !seen.insert(change.path.clone()) {
             return; // already snapshotted this turn
         }
-        let cur = guard.cur.as_mut().expect("checked non-none above");
-        cur.files.push(FileSnap {
+        cp.files.push(FileSnap {
             path: change.path.clone(),
             content,
         });
-        cur.paths.push(change.path.clone());
-        let cp = cur.clone();
+        cp.paths.push(change.path.clone());
+        let snap = cp.clone();
         drop(guard);
-        self.persist(&cp);
+        self.persist(&snap);
     }
 
     // ------------------------------------------------------------------
@@ -1091,24 +1175,23 @@ impl CheckpointStore {
     /// 不是强一致锁。调用点：process_admitted 收尾（admission.rs）+ begin
     /// 顶部崩溃兜底。
     pub fn seal_turn(&self, turn: usize) {
-        // 段一：定位 checkpoint + 收集待封印路径（幂等检查）。
-        let (paths, is_cur) = {
+        // 段一：定位 checkpoint + 收集待封印路径（幂等检查）。R4：turn 序号
+        // loop 全局唯一——done 优先，其次遍历所有会话的 cur 桶。
+        let (paths, cur_bucket) = {
             let guard = self.inner.lock();
-            let found = guard
-                .done
-                .iter()
-                .find(|c| c.turn == turn)
-                .or_else(|| guard.cur.as_ref().filter(|c| c.turn == turn));
-            let Some(cp) = found else { return };
-            if cp.sealed {
-                return; // 幂等
-            }
-            let paths: Vec<String> = if cp.paths.is_empty() {
-                cp.files.iter().map(|f| f.path.clone()).collect()
+            if let Some(cp) = guard.done.iter().find(|c| c.turn == turn) {
+                if cp.sealed {
+                    return; // 幂等
+                }
+                (Self::declared_paths(cp), None)
+            } else if let Some((k, cp)) = guard.cur.iter().find(|(_, c)| c.turn == turn) {
+                if cp.sealed {
+                    return; // 幂等
+                }
+                (Self::declared_paths(cp), Some(k.clone()))
             } else {
-                cp.paths.clone()
-            };
-            (paths, guard.cur.as_ref().is_some_and(|c| c.turn == turn))
+                return;
+            }
         };
 
         // 段二（锁外）：逐路径读现盘哈希。
@@ -1126,8 +1209,8 @@ impl CheckpointStore {
         // turn-N.json——无指纹可失，冲突预检也不需要它。
         let (snap, should_persist) = {
             let mut guard = self.inner.lock();
-            let target = if is_cur {
-                guard.cur.as_mut()
+            let target = if let Some(k) = &cur_bucket {
+                guard.cur.get_mut(k)
             } else {
                 guard.done.iter_mut().find(|c| c.turn == turn)
             };
@@ -1145,6 +1228,16 @@ impl CheckpointStore {
         };
         if should_persist {
             self.persist(&snap);
+        }
+    }
+
+    /// R4：checkpoint 的声明路径集（paths 空时回退 files 的路径——老 JSON
+    /// 无 paths 字段）。seal/conflict/list 多处共用，单一真相源。
+    fn declared_paths(cp: &Checkpoint) -> Vec<String> {
+        if cp.paths.is_empty() {
+            cp.files.iter().map(|f| f.path.clone()).collect()
+        } else {
+            cp.paths.clone()
         }
     }
 
@@ -1204,9 +1297,8 @@ impl CheckpointStore {
         {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-            if let Some(cur) = guard.cur.as_ref() {
-                all.push(cur);
-            }
+            // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+            all.extend(guard.cur.values());
             all.sort_by_key(|c| c.turn);
             has_post = all.iter().any(|c| c.turn >= from_turn);
             for c in all.iter().filter(|c| c.turn >= from_turn) {
@@ -1369,20 +1461,21 @@ impl CheckpointStore {
     }
 
     /// Restore the workspace to its state at the start of turn `from_turn`.
-    /// Returns (written, deleted) paths.
+    /// Returns a [`RestoreReport`]（R3：成功/失败分明，失败项带原因——此前
+    /// (written, deleted) 两 vec 把失败静默吞掉，rewind 侧无条件盖
+    /// 「applied」戳并摧毁 checkpoint，失败后无法重试）。
     ///
     /// git 模式：target = 最新 `turn <= from_turn` 的影子 tree；对 target..现状
     /// 的真实 diff 逐文件恢复/删除——覆盖 shell 副作用（preview 声明之外的
     /// 文件）。工作区外的 hybrid 内容快照（files 里 content Some 的）在 tree
     /// 恢复后按 JSON 语义补写。
-    pub async fn restore_code(&self, from_turn: usize) -> (Vec<String>, Vec<String>) {
+    pub async fn restore_code(&self, from_turn: usize) -> RestoreReport {
         // ---- 第一段：inner 锁内定 target tree + hybrid 集合，随即放锁 ----
         let (target_hex, hybrid) = {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-            if let Some(cur) = guard.cur.as_ref() {
-                all.push(cur);
-            }
+            // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+            all.extend(guard.cur.values());
             all.sort_by_key(|c| c.turn);
 
             // 与 JSON 模式同款语义守卫：from_turn 之后没有任何 checkpoint → no-op。
@@ -1437,62 +1530,60 @@ impl CheckpointStore {
                 // 跨模式（会话曾以 git 模式记录，现 .git 消失回落 JSON）：tree
                 // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
                 warn!("[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复");
-                (Vec::new(), Vec::new())
+                RestoreReport::default()
             }
         };
         // checkpoint-git 关：git 时代索引（tree Some）诚实 no-op，不误删。
         #[cfg(not(feature = "checkpoint-git"))]
-        let mut result: (Vec<String>, Vec<String>) = {
+        let mut result: RestoreReport = {
             warn!(
                 "[checkpoint] 目标 tree {target_hex} 存在但影子库未编译（checkpoint-git 关），跳过工作区内恢复"
             );
-            (Vec::new(), Vec::new())
+            RestoreReport::default()
         };
 
         // ---- 第三段：hybrid 工作区外内容恢复 ----
-        let (hw, hd) = self.hybrid_restore(hybrid).await;
-        result.0.extend(hw);
-        result.1.extend(hd);
+        let hw = self.hybrid_restore(hybrid).await;
+        result.merge(hw);
         result
     }
 
     /// JSON 语义的内容恢复（git 模式下仅工作区外路径走这里）。
-    async fn hybrid_restore(
-        &self,
-        hybrid: Vec<(String, Option<String>)>,
-    ) -> (Vec<String>, Vec<String>) {
-        let mut written = Vec::new();
-        let mut deleted = Vec::new();
+    /// R3：失败项进 `failures`（带原因），不再 `is_ok()` 静默吞。
+    async fn hybrid_restore(&self, hybrid: Vec<(String, Option<String>)>) -> RestoreReport {
+        let mut report = RestoreReport::default();
         for (path, content) in hybrid {
             let Some(abs) = self.safe_path(&path) else {
                 continue;
             };
             match content {
-                None => {
-                    if tokio::fs::remove_file(&abs).await.is_ok() {
-                        deleted.push(path);
+                None => match tokio::fs::remove_file(&abs).await {
+                    Ok(()) => report.deleted.push(path),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // 目标本就不存在 = 恢复语义已达成（快照也记录它不存在）。
                     }
-                }
+                    Err(e) => report.failures.push((path, e.to_string())),
+                },
                 Some(body) => {
                     if let Some(parent) = abs.parent() {
                         let _ = tokio::fs::create_dir_all(parent).await;
                     }
-                    if tokio::fs::write(&abs, body).await.is_ok() {
-                        written.push(path);
+                    match tokio::fs::write(&abs, body).await {
+                        Ok(()) => report.written.push(path),
+                        Err(e) => report.failures.push((path, e.to_string())),
                     }
                 }
             }
         }
-        (written, deleted)
+        report
     }
 
     /// Metadata for all checkpoints (oldest turn first), for the rewind picker.
     pub fn list_meta(&self) -> Vec<CheckpointMeta> {
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-        if let Some(cur) = guard.cur.as_ref() {
-            all.push(cur);
-        }
+        // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+        all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
             .map(|c| {
@@ -1532,16 +1623,22 @@ impl CheckpointStore {
         {
             let mut guard = self.inner.lock();
             // 保留：旧 turn（< from_turn）∪ 其他会话条目；清：本会话 turn ≥
-            // from_turn。cur 同判定（本会话才清；其他会话的进行中 turn 不动）。
+            // from_turn。R4：cur 桶化——逐桶同判定，只清「本会话」的进行中
+            // 桶（其他会话的 cur 连同其去重集原位不动）。
             guard
                 .done
                 .retain(|c| c.turn < from_turn || is_other_session(&c.session, rewind_session));
-            if let Some(cur) = guard.cur.as_ref()
-                && cur.turn >= from_turn
-                && !is_other_session(&cur.session, rewind_session)
-            {
-                guard.cur = None;
-                guard.seen.clear();
+            let stale: Vec<Option<String>> = guard
+                .cur
+                .iter()
+                .filter(|(_, c)| {
+                    c.turn >= from_turn && !is_other_session(&c.session, rewind_session)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in stale {
+                guard.cur.remove(&k);
+                guard.seen.remove(&k);
             }
         }
         if let Some(dir) = &self.dir
@@ -1603,9 +1700,8 @@ impl CheckpointStore {
     fn tree_hex_at_or_before(&self, bound: usize) -> Option<String> {
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-        if let Some(cur) = guard.cur.as_ref() {
-            all.push(cur);
-        }
+        // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+        all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
             .filter(|c| c.turn <= bound)
@@ -1619,7 +1715,7 @@ impl CheckpointStore {
     /// 言）。只覆盖工作区内（tree 覆盖范围）；工作区外的 hybrid 内容快照
     /// 不参与（redo 诚实边界）。
     #[cfg(feature = "checkpoint-git")]
-    pub fn restore_to_tree(&self, tree_hex: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    pub fn restore_to_tree(&self, tree_hex: &str) -> Result<RestoreReport, String> {
         let Some(gb) = self.git.as_ref() else {
             return Err("影子库不可用（JSON 形态），无法按 tree 恢复文件".to_string());
         };
@@ -1629,7 +1725,7 @@ impl CheckpointStore {
 
     /// checkpoint-git 关：诚实报未编译（无 tree 可言）。
     #[cfg(not(feature = "checkpoint-git"))]
-    pub fn restore_to_tree(&self, _tree_hex: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    pub fn restore_to_tree(&self, _tree_hex: &str) -> Result<RestoreReport, String> {
         Err("影子库未编译（checkpoint-git 关），无法按 tree 恢复文件".to_string())
     }
 
@@ -1649,9 +1745,8 @@ impl CheckpointStore {
     pub fn base_for_path(&self, path: &str) -> Option<CheckpointBase> {
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-        if let Some(cur) = guard.cur.as_ref() {
-            all.push(cur);
-        }
+        // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+        all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
             .filter(|c| c.paths.iter().any(|p| p == path) || c.files.iter().any(|f| f.path == path))

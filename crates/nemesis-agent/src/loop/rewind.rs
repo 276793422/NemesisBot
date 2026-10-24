@@ -44,10 +44,14 @@ impl AgentLoop {
 
     /// Rewind the workspace to the start of turn `from_turn`: restores every file
     /// changed at or after that turn to its pre-edit content (the edit safety
-    /// net). Returns `(written, deleted)` paths. Errors if no checkpoint store is
-    /// attached. Conversation rewinding (truncating session history) is handled
+    /// net). Returns a structured [`RestoreReport`]（R3：失败项分明，不再只回
+    /// 两 vec 吞掉写失败）。Errors if no checkpoint store is attached.
+    /// Conversation rewinding (truncating session history) is handled
     /// by the caller — this only restores code.
-    pub async fn rewind(&self, from_turn: usize) -> Result<(Vec<String>, Vec<String>), String> {
+    pub async fn rewind(
+        &self,
+        from_turn: usize,
+    ) -> Result<crate::checkpoint::RestoreReport, String> {
         let cp = self
             .security
             .checkpoint_store
@@ -320,18 +324,47 @@ impl AgentLoop {
         };
 
         // 1) 文件恢复（先于 jsonl 截断——中途崩溃时对话完好，可重试）。
+        // R3（2026-10-24 外评）：恢复**不完整时零推进**——jsonl 不截断、
+        // checkpoint 索引不清（可重试），返回 blocked 结构化失败清单。旧形
+        // 态吞掉恢复失败后照常盖「applied」戳 + 无条件 truncate_from_scoped
+        // 摧毁 checkpoint：文件没恢复、对话被截、重试不可能，三输。
         let mut file_restore = "skipped";
         let mut file_note: Option<String> = None;
+        // 成功路径恒空（失败走上方 blocked 提前返回）——字段保留为响应形状
+        // 稳定性（前端/工具可统一读取）。
+        let restore_failures: Vec<(String, String)> = Vec::new();
         let mut written: Vec<String> = Vec::new();
         let mut deleted: Vec<String> = Vec::new();
         if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
-            let (w, d) = cp.restore_code(t).await;
-            written = w;
-            deleted = d;
-            // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）
-            // 原样保留，其回退历史不被本会话的回退摧毁。
-            cp.truncate_from_scoped(t, Some(session_key));
-            file_restore = "applied";
+            let report = cp.restore_code(t).await;
+            if report.ok() {
+                written = report.written;
+                deleted = report.deleted;
+                // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘
+                // JSON）原样保留，其回退历史不被本会话的回退摧毁。
+                cp.truncate_from_scoped(t, Some(session_key));
+                file_restore = "applied";
+            } else {
+                let partial = !report.written.is_empty() || !report.deleted.is_empty();
+                warn!(
+                    "[AgentLoop] rewind 文件恢复不完整（{} 成功 / {} 失败）——会话与 checkpoint 均未改动，可处理后重试：session={session_key} restore_turn={t} 失败项={:?}",
+                    report.written.len() + report.deleted.len(),
+                    report.failures.len(),
+                    report.failures,
+                );
+                return Ok(serde_json::json!({
+                    "blocked": true,
+                    "reason": "restore_failed",
+                    "session_key": session_key,
+                    "message_index": report_index,
+                    "restore_turn": t,
+                    "file_restore": if partial { "partial" } else { "failed" },
+                    "restore_failures": report.failures.iter().map(|(p, e)| {
+                        serde_json::json!({ "path": p, "error": e })
+                    }).collect::<Vec<_>>(),
+                    "note": "文件恢复不完整，会话对话与 checkpoint 均未改动——解决失败原因后可重试本操作",
+                }));
+            }
         } else if restore_turn.is_some() {
             file_note = Some("checkpoint store 未挂载，文件未回滚".to_string());
         } else if cut < rows.len() {
@@ -429,6 +462,9 @@ impl AgentLoop {
             "file_restore": file_restore,
             "file_restore_note": file_note,
             "restored_files": { "written": written, "deleted": deleted },
+            "restore_failures": restore_failures.iter().map(|(p, e)| {
+                serde_json::json!({ "path": p, "error": e })
+            }).collect::<Vec<_>>(),
             "redoable": redoable,
             "forced": forced,
             "unchecked_paths": report.unchecked_paths,
@@ -474,17 +510,38 @@ impl AgentLoop {
             return Err("回退后工作区发生了新的变化，redo 已失效".to_string());
         }
 
-        // 1) 文件前向恢复（best-effort——失败只注记，行回填照常进行）。
+        // 1) 文件前向恢复（best-effort——失败只注记，行回填照常进行；
+        // R3：失败项现在带原因进 file_note/restore_failures，不再静默空转）。
         let mut file_restore = "skipped";
         let mut file_note: Option<String> = None;
+        let mut restore_failures: Vec<(String, String)> = Vec::new();
         let mut written: Vec<String> = Vec::new();
         let mut deleted: Vec<String> = Vec::new();
         match (entry.forward_tree.as_deref(), self.attached_checkpoint()) {
             (Some(hex), Some(cp)) => match cp.restore_to_tree(hex) {
-                Ok((w, d)) => {
-                    written = w;
-                    deleted = d;
-                    file_restore = "applied";
+                Ok(report) => {
+                    if report.ok() {
+                        written = report.written;
+                        deleted = report.deleted;
+                        file_restore = "applied";
+                    } else {
+                        file_restore = if report.written.is_empty() && report.deleted.is_empty() {
+                            "failed"
+                        } else {
+                            "partial"
+                        };
+                        restore_failures = report.failures.clone();
+                        file_note = Some(format!(
+                            "前向恢复不完整（{} 失败）：{}",
+                            report.failures.len(),
+                            report
+                                .failures
+                                .iter()
+                                .map(|(p, e)| format!("{p}: {e}"))
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ));
+                    }
                 }
                 Err(e) => file_note = Some(e),
             },
@@ -517,6 +574,9 @@ impl AgentLoop {
             "file_restore": file_restore,
             "file_restore_note": file_note,
             "restored_files": { "written": written, "deleted": deleted },
+            "restore_failures": restore_failures.iter().map(|(p, e)| {
+                serde_json::json!({ "path": p, "error": e })
+            }).collect::<Vec<_>>(),
         }))
     }
 

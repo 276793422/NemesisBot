@@ -534,52 +534,120 @@ impl SkillsHandler {
             installer.set_install_gate(gate);
         }
 
+        // R6（2026-10-24 复核）：force 更新事务化——旧形态「先卸后装」，源
+        // 校验/下载/安全闸/审批任一失败 = 已装的可用技能被销毁。现在：
+        // ① GitHub ref 语法预检提前；② registry 名预检提前；③ 旧目录原子
+        // 备份改名（不删除）→ 装成功清备份，装失败原样复位。
+        // lockfile/origin 记账随安装成功被同 slug upsert 覆盖（失败时旧记账
+        // 与旧目录保持一致）；备份放 `.skill-staging/`（点开头 loader 不扫描，
+        // 24h 残留清扫兜底）。
+        let repo_ref = match repo {
+            Some(r) => Some(normalize_repo_ref(
+                r,
+                data.get("ref").and_then(|v| v.as_str()),
+            )?),
+            None => None,
+        };
+        let mut backup: Option<PathBuf> = None;
         if force {
-            // force = 先卸旧目录（含 lockfile 记账清理）；未装过则忽略 NotFound。
-            let _ = installer.uninstall(&slug);
+            if repo.is_none() {
+                let config = load_registry_config(&skills_config_path(workspace));
+                let probe = nemesis_skills::registry::RegistryManager::from_config(config);
+                let registry_name = registry
+                    .as_deref()
+                    .expect("validated above when repo is none");
+                if probe.get_registry(registry_name).is_none() {
+                    return Err(format!("源 '{}' 不存在", registry_name));
+                }
+            }
+            if target_dir.is_dir() {
+                let suffix = format!(
+                    "old-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                );
+                let backup_dir = PathBuf::from(workspace)
+                    .join(".skill-staging")
+                    .join(format!("{}.{}", slug, suffix));
+                std::fs::create_dir_all(backup_dir.parent().unwrap())
+                    .map_err(|e| format!("备份目录创建失败（未做任何改动）: {}", e))?;
+                std::fs::rename(&target_dir, &backup_dir)
+                    .map_err(|e| format!("备份旧版本失败（未做任何改动）: {}", e))?;
+                backup = Some(backup_dir);
+            }
         }
 
-        if let Some(repo) = repo {
-            let repo_ref = normalize_repo_ref(repo, data.get("ref").and_then(|v| v.as_str()))?;
-            let outcome = installer
-                .install_github(&repo_ref)
+        let install_result: Result<Option<serde_json::Value>, String> = async {
+            if let Some(repo_ref) = repo_ref.as_deref() {
+                let outcome = installer
+                    .install_github(repo_ref)
+                    .await
+                    .map_err(|e| format!("安装失败: {}", e))?;
+                return Ok(Some(serde_json::json!({
+                    "installed": true,
+                    "slug": outcome.slug,
+                    "source": outcome.source,
+                    "commit": outcome.commit,
+                    "trust": outcome.trust.as_str(),
+                    "files_installed": outcome.files_installed,
+                })));
+            }
+
+            let registry = registry
+                .as_deref()
+                .expect("validated above when repo is none");
+            let config_path = skills_config_path(workspace);
+            let config = load_registry_config(&config_path);
+            installer.set_registry_manager(nemesis_skills::registry::RegistryManager::from_config(
+                config,
+            ));
+            if !installer.has_registry(registry) {
+                return Err(format!("源 '{}' 不存在", registry));
+            }
+
+            let result = installer
+                .install(registry, &slug, "latest")
                 .await
                 .map_err(|e| format!("安装失败: {}", e))?;
-            return Ok(Some(serde_json::json!({
+
+            Ok(Some(serde_json::json!({
                 "installed": true,
-                "slug": outcome.slug,
-                "source": outcome.source,
-                "commit": outcome.commit,
-                "trust": outcome.trust.as_str(),
-                "files_installed": outcome.files_installed,
-            })));
+                "slug": slug,
+                "version": result.version,
+                "is_malware_blocked": result.is_malware_blocked,
+                "is_suspicious": result.is_suspicious,
+                "summary": result.summary,
+            })))
         }
+        .await;
 
-        let registry = registry
-            .as_deref()
-            .expect("validated above when repo is none");
-        let config_path = skills_config_path(workspace);
-        let config = load_registry_config(&config_path);
-        installer.set_registry_manager(nemesis_skills::registry::RegistryManager::from_config(
-            config,
-        ));
-        if !installer.has_registry(registry) {
-            return Err(format!("源 '{}' 不存在", registry));
+        match install_result {
+            Ok(v) => {
+                // 装成功：备份退役（best-effort；残留被 24h sweep 兜底）。
+                if let Some(b) = &backup {
+                    nemesis_utils::fsutil::remove_dir_all_resilient(b);
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                // 装失败：旧目录原样复位（回滚失败 = 备份原地保留 + 诚实报错）。
+                if let Some(b) = &backup {
+                    let _ = std::fs::create_dir_all(target_dir.parent().unwrap());
+                    if let Err(re) = std::fs::rename(b, &target_dir) {
+                        return Err(format!(
+                            "{}；回滚失败——旧版本完整备份保留在 {}（可手动复位）：{}",
+                            e,
+                            b.display(),
+                            re
+                        ));
+                    }
+                }
+                Err(e)
+            }
         }
-
-        let result = installer
-            .install(registry, &slug, "latest")
-            .await
-            .map_err(|e| format!("安装失败: {}", e))?;
-
-        Ok(Some(serde_json::json!({
-            "installed": true,
-            "slug": slug,
-            "version": result.version,
-            "is_malware_blocked": result.is_malware_blocked,
-            "is_suspicious": result.is_suspicious,
-            "summary": result.summary,
-        })))
     }
 
     /// P14 漂移检测：`{slug}` 查单条（未记账报错），无 slug 全量扫描 lockfile。

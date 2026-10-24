@@ -366,6 +366,7 @@ async fn late_skills_gate_ignores_install_rules_always_card() {
         trust_detail: String::new(),
         security: nemesis_skills::security_check::check_skill_security("", "demo", ""),
         warnings: Vec::new(),
+        staging_tx: String::new(),
     };
 
     match gate.decide(&plan).await {

@@ -27,6 +27,11 @@
 //!   回滚**、保持 migrating 等墓碑收敛（旧行为一视同仁回滚 active =
 //!   ACK 后删除失败即永久双活且 sweep 失明）；墓碑写入重试 ×3，全败
 //!   且记录删除也失败时 sweep 按无墓碑回滚 = 上述第二类诚实窗口。
+//!   R7 根修（2026-10-24 复核）：上窗「墓碑全败 + 删除全败 → sweep 回滚
+//!   active」的自动双活不可接受——commit 发出前落**意图日志**（R7），sweep
+//!   对「日志在场、墓碑缺席」一律冻结 migrating 转人工（B 可能已激活，
+//!   自动回滚 = 同 uuid 双活且 ACTIVE 让 sweep 永久失明）；两锚皆缺席
+//!   （崩溃在日志写入前）才回滚 active。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -272,6 +277,50 @@ fn remove_tombstone(workspace: &Path, agent_id: &str) {
     let _ = std::fs::remove_file(tombstone_path(workspace, agent_id));
 }
 
+/// 迁移意图日志（R7，2026-10-24 复核：`<workspace>/agents/<id>.migrating.json`）。
+///
+/// 写入时机 = ⑩ commit RPC **发出前**——给 sweep 的「无墓碑 = commit 未达」
+/// 推断一个下界：日志在场 = commit 已发出（或正在发出），B 端**可能已激活**，
+/// sweep 禁止自动回滚 active（同 uuid 双活），冻结 migrating + WARN 转人工。
+/// 人工裁决路径：B 端确认已激活 → 落墓碑（sweep 下一轮收敛删记录）；B 端
+/// 确认未收到 → 删日志（sweep 下一轮回滚 active 照常服务）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MigrationIntentJournal {
+    pub agent_id: String,
+    pub target_node: String,
+    pub started_at: String,
+}
+
+pub fn journal_path(workspace: &Path, agent_id: &str) -> PathBuf {
+    workspace
+        .join("agents")
+        .join(format!("{agent_id}.migrating.json"))
+}
+
+pub fn journal_exists(workspace: &Path, agent_id: &str) -> bool {
+    journal_path(workspace, agent_id).is_file()
+}
+
+/// 写意图日志（commit 发出前的安全锚；写入点在不可逆点**之前**，失败必须
+/// 重试争取、全败 = 诚实中止迁移——此时回滚零代价，带锚带病上路不可接受；
+/// 与墓碑的「不可逆点之后尽力而为」刻意不对称）。
+fn write_journal(workspace: &Path, agent_id: &str, target_node: &str) -> Result<(), String> {
+    let path = journal_path(workspace, agent_id);
+    let j = MigrationIntentJournal {
+        agent_id: agent_id.to_string(),
+        target_node: target_node.to_string(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let json = serde_json::to_vec_pretty(&j).map_err(|e| format!("意图日志序列化失败: {e}"))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("意图日志写入失败 ({}): {e}", path.display()))?;
+    Ok(())
+}
+
+fn remove_journal(workspace: &Path, agent_id: &str) {
+    let _ = std::fs::remove_file(journal_path(workspace, agent_id));
+}
+
 /// 迁移 staging 根（A 端打包目录；B 端 landing 由 transfer sink 布局
 /// `<inbox>/<task_id>/files/` 派生，见 [`landing_files_dir`]）。
 pub fn migrate_staging_root(workspace: &Path, agent_id: &str) -> PathBuf {
@@ -370,6 +419,9 @@ pub async fn migrate_agent(
             }
             // ⑫ 回滚 migrating→active（回滚失败不吞——诚实并入错误信息；
             // 残留 migrating 由启动 sweep 收敛回 active）。
+            // R7：本臂 = commit 确认未完成（call Err / 响应异常 / commit 前
+            // 失败）——意图日志使命终结，随回滚清除（残留会让 sweep 误冻结）。
+            remove_journal(&mgr.workspace, agent_id);
             match mgr.store.transition_status(
                 agent_id,
                 agent_status::MIGRATING,
@@ -489,6 +541,29 @@ async fn migrate_inner(
     }
 
     // ⑩ commit RPC：B 端 rename + vault import + 记录落库（同步 handler）。
+    // R7：commit 发出前先落意图日志（安全锚，见 MigrationIntentJournal 注）
+    // ——sweep 据此区分「commit 未达」（回滚）与「commit 已发出」（冻结转
+    // 人工）。重试 ×3 全败 = 诚实中止（此刻尚未 commit，回滚零代价）。
+    let mut journal_ok = false;
+    for attempt in 1..=3u32 {
+        match write_journal(&workspace, agent_id, target) {
+            Ok(()) => {
+                journal_ok = true;
+                break;
+            }
+            Err(e) => {
+                tracing::warn!("[agents] 迁移意图日志写入失败（第 {attempt}/3 次）: {e}");
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        }
+    }
+    if !journal_ok {
+        return Err(
+            "迁移意图日志写入失败（三试全败）——迁移中止（commit 未发出，回滚 active）".to_string(),
+        );
+    }
     let payload = serde_json::json!({
         "agent_id": agent_id,
         "record": record,
@@ -569,13 +644,19 @@ fn migrate_agent_local_finalize(
     let _ =
         nemesis_utils::fsutil::remove_dir_all_retry(migrate_staging_root(&mgr.workspace, agent_id));
     remove_tombstone(&mgr.workspace, agent_id);
+    // 意图日志使命完成（记录已删 = 收敛终局；孤儿日志 sweep 不看会留残骸）。
+    remove_journal(&mgr.workspace, agent_id);
     Ok(())
 }
 
-/// sweep 收敛扩展（`agents.rs::sweep` 的 migrating 分支，cfg cluster 调用）：
-/// - migrating + 墓碑在场 = commit ACK 已达 → 删记录 + 删墓碑 + 清 staging；
-/// - migrating + 无墓碑 = commit 未达（崩溃在 push/commit 前）→ 回滚
-///   active 照常服务。
+/// sweep 收敛扩展（`agents.rs::sweep` 的 migrating 分支，cfg cluster 调用）。
+/// R7（2026-10-24 复核）三分支：
+/// - migrating + 墓碑在场 = commit ACK 已达 → 删记录 + 删墓碑/日志 + 清 staging；
+/// - migrating + 意图日志在场、无墓碑 = commit **已发出**（B 端可能已激活）
+///   → **冻结**：保持 migrating + loud WARN 转人工（自动回滚 active 会造
+///   同 uuid 双活且 ACTIVE 让 sweep 永久失明——旧形态缺陷）。人工裁决：
+///   B 已激活 → 落墓碑；B 未收到 → 删日志（下轮 sweep 各自收敛）。
+/// - 两者皆无 = commit 未发出（崩溃在 push/日志前）→ 回滚 active 照常服务。
 pub fn sweep_migrating(
     store: &SqliteAgentsStore,
     workspace: &Path,
@@ -589,10 +670,19 @@ pub fn sweep_migrating(
         if tombstone_exists(workspace, &agent_id) {
             store.remove(&agent_id)?;
             remove_tombstone(workspace, &agent_id);
+            remove_journal(workspace, &agent_id);
             let _ = nemesis_utils::fsutil::remove_dir_all_retry(migrate_staging_root(
                 workspace, &agent_id,
             ));
             report.migrated_removed.push(agent_id);
+        } else if journal_exists(workspace, &agent_id) {
+            tracing::warn!(
+                "[Agents] sweep: agent {agent_id} migrating + 意图日志在场（commit 已发出，\
+                 B 端可能已激活）——冻结转人工：确认 B 已激活则落墓碑 \
+                 (<workspace>/agents/{agent_id}.migrated.json)，确认未收到则删意图日志 \
+                 (<workspace>/agents/{agent_id}.migrating.json)，下轮 sweep 自动收敛"
+            );
+            report.frozen_migrating.push(agent_id);
         } else if store.transition_status(
             &agent_id,
             agent_status::MIGRATING,
