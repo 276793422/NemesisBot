@@ -639,6 +639,16 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
             continue;
         }
 
+        // 词法闸（is_unsafe_rel_path）：canonicalize 型检查（下方）在父目录
+        // 不存在时被静默跳过——`newdir/../../../evil` 这类经不存在中间目录
+        // 的穿越必须由词法闸兜死（ClawHub 包内容是发布者可控的）。
+        if nemesis_utils::zip_util::is_unsafe_rel_path(relative) {
+            return Err(NemesisError::Security(format!(
+                "path traversal detected: {}",
+                relative
+            )));
+        }
+
         let dest_path = std::path::Path::new(target_dir).join(relative);
 
         // Path traversal check.

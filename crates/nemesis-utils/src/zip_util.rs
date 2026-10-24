@@ -61,12 +61,10 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
             ));
         }
 
-        // Additional check: reject entries with path traversal components
-        let entry_name_lower = entry_name.to_lowercase();
-        if entry_name_lower.starts_with("..")
-            || entry_name_lower.contains("/..")
-            || entry_name_lower.contains("\\..")
-        {
+        // 词法闸（单一真相源 [`is_unsafe_rel_path`]）：不依赖文件系统状态。
+        // 上方 canonicalize 型检查在父目录不存在时被静默跳过，而新装目录的
+        // 常态恰是父目录缺席——`..`/盘符穿越必须由词法闸兜死。
+        if is_unsafe_rel_path(&entry_name) {
             return Err(format!(
                 "invalid file path: {} (zip slip detected)",
                 entry_name
@@ -108,6 +106,27 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// 词法级相对路径安全闸（zip-slip / 归档穿越判定的单一真相源）。
+///
+/// canonicalize 型检查（父目录规范化后 `starts_with` 目标目录）在**父目录
+/// 尚不存在**时会被静默跳过——而新装目录的常态恰是父目录缺席，穿越路径
+/// 只要经过一个不存在的中间目录即可绕过（`newdir/../../../evil`）。词法
+/// 闸不依赖文件系统状态：拒绝绝对路径（含 Windows 盘符前缀——`C:/x` 在
+/// Unix 解析为普通组件，按字节显式识别）与一切非 Normal 组件（`..`、根
+/// 分隔符、`.` 自引用）。合法名字如 `a..b.txt` 不误伤（按组件而非子串）。
+pub fn is_unsafe_rel_path(rel: &str) -> bool {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return true;
+    }
+    let b = rel.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return true; // Windows 盘符前缀（"C:/x"、"C:\x"），跨平台一致拒绝
+    }
+    p.components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
 }
 
 /// Create a ZIP file from all files in a source directory.

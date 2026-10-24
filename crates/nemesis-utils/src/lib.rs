@@ -41,4 +41,4 @@ pub use string_utils::{
     deref_str, format_datetime_compact, format_timestamp, is_blank, json_get_bool, json_get_f64,
     json_get_i64, json_get_str, parse_json, pretty_json, random_id, random_short_id, truncate,
 };
-pub use zip_util::{create_zip, extract_zip, is_path_within_dir};
+pub use zip_util::{create_zip, extract_zip, is_path_within_dir, is_unsafe_rel_path};
