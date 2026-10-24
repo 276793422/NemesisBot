@@ -9,25 +9,44 @@
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind};
 
 /// 目标架构（bitness 是 iced-x86 的 Decoder 入参）。
+/// P0 容器归一：PE machine 与 ELF e_machine 两套命名空间都归一到此枚举；
+/// Arm64 变体位已就位，但 iced-x86 仅支持 x86/x64 解码——Arm64 在分析入口
+/// 处诚实拒绝（区分「不认识的 machine」与「认识但反汇编器缺席」）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
     X64,
     X86,
+    Arm64,
 }
 
 impl Arch {
     pub fn bitness(self) -> u32 {
         match self {
-            Arch::X64 => 64,
+            Arch::X64 | Arch::Arm64 => 64,
             Arch::X86 => 32,
         }
     }
+    /// PE IMAGE_FILE_MACHINE 命名空间。
     pub fn from_machine(machine: u16) -> Option<Arch> {
         match machine {
             0x8664 => Some(Arch::X64),
             0x14C => Some(Arch::X86),
+            0xAA64 => Some(Arch::Arm64),
             _ => None,
         }
+    }
+    /// ELF e_machine 命名空间（ELF 容器解析器 P1 批次消费）。
+    pub fn from_elf_machine(e_machine: u16) -> Option<Arch> {
+        match e_machine {
+            0x3E => Some(Arch::X64),   // EM_X86_64
+            0x03 => Some(Arch::X86),   // EM_386
+            0xB7 => Some(Arch::Arm64), // EM_AARCH64
+            _ => None,
+        }
+    }
+    /// 分析可用性：iced-x86 只解 x86/x64。Some(false) = 架构认识但反汇编器缺席。
+    pub fn disassembler_available(self) -> bool {
+        matches!(self, Arch::X64 | Arch::X86)
     }
 }
 
@@ -50,6 +69,10 @@ pub struct Insn {
     pub rip_rel_target: Option<u32>,
     /// 操作数里的内存访问（存在 data ref 可能性）。
     pub has_mem_operand: bool,
+    /// 操作数轻投影（decoder-only 形态；formatter feature 未启用）——
+    /// 寄存器名 / `[0xRVA]`（rip-rel 解析为绝对地址）/ `[base+disp]` /
+    /// 立即数 hex / 分支目标 hex。查询面 disasm 的可读性素材。
+    pub ops: Vec<String>,
 }
 
 impl Insn {
@@ -76,6 +99,52 @@ impl Insn {
     pub fn is_indirect_branch(&self) -> bool {
         (self.is_call() || self.is_jmp()) && self.branch_target.is_none()
     }
+}
+
+/// 操作数轻投影：单操作数 → 可读文本（寄存器名小写 / `[0xRVA]` /
+/// `[base+disp]` / 立即数与分支目标 hex）。副作用：Memory 操作数顺带
+/// 维护 `has_mem_operand` / `rip_rel_target`（与主循环同源，不重复扫）。
+fn render_op(insn: &Instruction, i: u32, cur: &mut Insn) -> String {
+    match insn.op_kind(i) {
+        OpKind::Register => format!("{:?}", insn.op_register(i)).to_ascii_lowercase(),
+        OpKind::Memory => {
+            cur.has_mem_operand = true;
+            if insn.memory_base() == iced_x86::Register::RIP {
+                let t = insn.ip_rel_memory_address() as u32;
+                cur.rip_rel_target = Some(t);
+                format!("[0x{t:X}]")
+            } else {
+                let base = insn.memory_base();
+                let disp = insn.memory_displacement64();
+                if base == iced_x86::Register::None {
+                    format!("[0x{disp:X}]")
+                } else if disp != 0 {
+                    format!("[{:?}{:+#x}]", base, disp as i64).to_ascii_lowercase()
+                } else {
+                    format!("[{base:?}]").to_ascii_lowercase()
+                }
+            }
+        }
+        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => {
+            format!("0x{:X}", insn.near_branch_target())
+        }
+        k if is_immediate_kind(k) => format!("0x{:X}", insn.immediate(i)),
+        k => format!("{k:?}").to_ascii_lowercase(),
+    }
+}
+
+fn is_immediate_kind(k: OpKind) -> bool {
+    matches!(
+        k,
+        OpKind::Immediate8
+            | OpKind::Immediate8to16
+            | OpKind::Immediate8to32
+            | OpKind::Immediate8to64
+            | OpKind::Immediate16
+            | OpKind::Immediate32
+            | OpKind::Immediate32to64
+            | OpKind::Immediate64
+    )
 }
 
 /// 块解码：从 `bytes`（RVA 起）线性解码至多 `max_insns` 条或坏字节。
@@ -109,30 +178,16 @@ pub fn decode_block(arch: Arch, bytes: &[u8], rva: u32, max_insns: usize) -> Vec
             branch_target,
             rip_rel_target: None,
             has_mem_operand: false,
+            ops: Vec::new(),
         };
-        // 立即数 + 内存操作数扫描
+        // 立即数 + 内存操作数扫描（顺带产出操作数投影）
         for i in 0..insn.op_count() {
-            match insn.op_kind(i) {
-                OpKind::Immediate8
-                | OpKind::Immediate8to16
-                | OpKind::Immediate8to32
-                | OpKind::Immediate8to64
-                | OpKind::Immediate16
-                | OpKind::Immediate32
-                | OpKind::Immediate32to64
-                | OpKind::Immediate64
-                    if cur.imm.is_none() =>
-                {
-                    cur.imm = Some(insn.immediate(i));
-                }
-                OpKind::Memory => {
-                    cur.has_mem_operand = true;
-                    if insn.memory_base() == iced_x86::Register::RIP {
-                        cur.rip_rel_target = Some(insn.ip_rel_memory_address() as u32);
-                    }
-                }
-                _ => {}
+            let kind = insn.op_kind(i);
+            if is_immediate_kind(kind) && cur.imm.is_none() {
+                cur.imm = Some(insn.immediate(i));
             }
+            let text = render_op(&insn, i, &mut cur);
+            cur.ops.push(text);
         }
         out.push(cur);
     }

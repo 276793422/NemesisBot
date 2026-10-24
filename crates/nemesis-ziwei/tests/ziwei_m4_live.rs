@@ -246,14 +246,17 @@ fn m4_profile(profile_id: &str) -> Profile {
                 args: vec![
                     ArgSpec {
                         reg: "rcx".into(),
+                        ty: None,
                         desc: Some("DataArea*（regs[0]，解码锚）".into()),
                     },
                     ArgSpec {
                         reg: "rdx".into(),
+                        ty: None,
                         desc: Some("idx（0..5）".into()),
                     },
                     ArgSpec {
                         reg: "r8".into(),
+                        ty: None,
                         desc: Some("delta（1..=3）".into()),
                     },
                 ],
@@ -269,6 +272,7 @@ fn m4_profile(profile_id: &str) -> Profile {
                 conv: Conv::MsX64,
                 args: vec![ArgSpec {
                     reg: "rcx".into(),
+                    ty: None,
                     desc: Some("spin_ms（u32）".into()),
                 }],
                 capture: None,

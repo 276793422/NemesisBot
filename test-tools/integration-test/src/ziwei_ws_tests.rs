@@ -52,7 +52,25 @@ pub async fn test_ziwei_surface(ws: &TestWorkspace, _bin: &Path) -> Vec<TestResu
     };
 
     // ── 门关面（默认配置 ziwei.enabled 缺席 = false）──
-    for cmd in ["list", "attach", "invoke", "refresh", "setup.select_target"] {
+    // B1 查询面：bridge-only（WSAPI 不加查询命令），此处扩的是既有管理面
+    // 命令的门关拒绝覆盖（5 → 15）。
+    for cmd in [
+        "list",
+        "attach",
+        "invoke",
+        "refresh",
+        "setup.select_target",
+        "show",
+        "detach",
+        "status",
+        "remove",
+        "verify",
+        "recover",
+        "setup.snapshot",
+        "setup.analyze",
+        "setup.candidates",
+        "setup.annotate",
+    ] {
         let (dat, err) = api.call("ziwei", cmd, None).await;
         match (&dat, &err) {
             (None, Some(e)) if e.contains(GATE_CLOSED) => {

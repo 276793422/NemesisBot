@@ -89,9 +89,41 @@ async function saveTopN() {
   foldingSaving.value = false
 }
 
+// codemode 开关（2026-10-25 默认开拍板）：agents.codemode.enabled。
+// 开关热生效——check_config_reload 每轮 LLM 前重读 config.json，改动下一条
+// 消息起生效，无需重启；timeout/memory 是构造期值，改动需重启 Agent。
+const codemodeEnabled = ref(true)
+const codemodeLoaded = ref(false)
+const codemodeSaving = ref(false)
+
+async function loadCodemode() {
+  try {
+    const data = await request('config', 'get')
+    // 缺键 = 默认开（serde default true），所以判定是 !== false 而非 === true。
+    codemodeEnabled.value = data?.agents?.codemode?.enabled !== false
+    codemodeLoaded.value = true
+  } catch {
+    codemodeLoaded.value = false
+  }
+}
+
+async function setCodemode(enabled: boolean) {
+  if (codemodeSaving.value) return
+  codemodeSaving.value = true
+  try {
+    await request('config', 'set_field', { path: 'agents.codemode.enabled', value: enabled })
+    codemodeEnabled.value = enabled
+    toast.success(enabled ? 'codemode 已开启（下一条消息起生效）' : 'codemode 已关闭（下一条消息起生效）')
+  } catch (e: any) {
+    toast.error('设置失败: ' + e)
+  }
+  codemodeSaving.value = false
+}
+
 onMounted(() => {
   loadTools()
   loadFolding()
+  loadCodemode()
 })
 </script>
 
@@ -119,7 +151,7 @@ onMounted(() => {
             <div class="folding-controls">
               <span v-if="!foldingLoaded" class="folding-unavailable">配置读取不可用</span>
               <template v-else>
-                <div class="toggle" :class="{ active: foldingEnabled }" @click="setFolding(!foldingEnabled)"></div>
+                <div class="toggle folding-toggle" :class="{ active: foldingEnabled }" @click="setFolding(!foldingEnabled)"></div>
                 <span class="folding-state">{{ foldingEnabled ? '已开启' : '已关闭' }}</span>
                 <template v-if="foldingEnabled">
                   <template v-if="!topNEditing">
@@ -132,6 +164,29 @@ onMounted(() => {
                     <button class="btn btn-sm" @click="topNEditing = false">取消</button>
                   </template>
                 </template>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- codemode 开关（agents.codemode.enabled；热生效——下一条消息起生效，无需重启） -->
+        <div class="card codemode-card">
+          <div class="card-body folding-row">
+            <div class="folding-info">
+              <h3>⚡ codemode — JS 脚本批量编排</h3>
+              <p class="folding-desc">
+                允许模型在单次 <code>code_run</code> 调用里跑一段 JavaScript 脚本，脚本内
+                <code>tool(name, args)</code> 编排任意已注册工具 —— 批量文件操作、循环检索、
+                条件分支一次搞定，中间结果不进对话。仅 big 能力档模型可见；脚本内每次工具调用
+                照走完整安全管线与审批（审批等待消耗脚本墙钟预算，默认 300s 与审批卡对齐）。
+              </p>
+              <p class="folding-note">默认开启。开关改动下一条消息起生效，无需重启；墙钟/内存上限改动需重启 Agent。</p>
+            </div>
+            <div class="folding-controls">
+              <span v-if="!codemodeLoaded" class="folding-unavailable">配置读取不可用</span>
+              <template v-else>
+                <div class="toggle codemode-toggle" :class="{ active: codemodeEnabled }" @click="setCodemode(!codemodeEnabled)"></div>
+                <span class="folding-state">{{ codemodeEnabled ? '已开启' : '已关闭' }}</span>
               </template>
             </div>
           </div>
@@ -210,4 +265,18 @@ onMounted(() => {
 .folding-topn-input { width: 90px; }
 
 .folding-unavailable { color: var(--text-muted); font-size: var(--text-sm); }
+
+/* codemode 开关卡（2026-10-25 默认开拍板） */
+.codemode-card {
+  margin-bottom: var(--space-4);
+  border-left: 3px solid var(--accent);
+}
+
+.codemode-card code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--surface-hover);
+  padding: 0 var(--space-1);
+  border-radius: 3px;
+}
 </style>

@@ -103,7 +103,7 @@ terminal = ["nemesis-web/terminal"]
 skins = ["nemesis-web/skins"]
 
 # T2（L1 codemode）：code_run 脚本工具（rquickjs 随它进出；运行开关
-# config agents.codemode.enabled 默认关——编译裁剪 + 运行双闸）。
+# config agents.codemode.enabled 默认开——Tools 页可关，开关热生效）。
 codemode = ["nemesis-agent/codemode"]
 
 # L9 版本自切换通道（`nemesisbot selfupdate check/apply/status` CLI + gateway

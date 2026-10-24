@@ -45,15 +45,15 @@ describe('ToolsView 工具文档折叠开关（G6）', () => {
     withConfig({ enabled: false, expand_top_n: 8 })
     const w = await mountView()
 
-    expect(w.find('.toggle.active').exists()).toBe(false)
+    expect(w.find('.folding-toggle.active').exists()).toBe(false)
     expect(w.text()).toContain('已关闭')
 
-    await w.find('.toggle').trigger('click')
+    await w.find('.folding-toggle').trigger('click')
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('config', 'set_field', {
       path: 'agents.tool_doc_folding.enabled', value: true,
     })
-    expect(w.find('.toggle.active').exists()).toBe(true)
+    expect(w.find('.folding-toggle.active').exists()).toBe(true)
     expect(w.text()).toContain('已开启')
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('即时生效'))).toBe(true)
     // 开启后出现保留数 + 调整入口
@@ -64,7 +64,7 @@ describe('ToolsView 工具文档折叠开关（G6）', () => {
   it('开启态回显 expand_top_n；调整 → saveTopN 非法值拒绝、合法值 set_field', async () => {
     withConfig({ enabled: true, expand_top_n: 12 })
     const w = await mountView()
-    expect(w.find('.toggle.active').exists()).toBe(true)
+    expect(w.find('.folding-toggle.active').exists()).toBe(true)
     expect(w.text()).toContain('保留 12 个')
 
     await w.findAll('button').find(b => b.text() === '调整')!.trigger('click')
@@ -96,7 +96,58 @@ describe('ToolsView 工具文档折叠开关（G6）', () => {
     })
     const w = await mountView()
     expect(w.find('.folding-unavailable').exists()).toBe(true)
-    expect(w.find('.toggle').exists()).toBe(false)
+    expect(w.find('.folding-toggle').exists()).toBe(false)
+    wrapper_clean(w)
+  })
+})
+
+describe('ToolsView codemode 开关（2026-10-25 默认开拍板）', () => {
+  function withCodemodeConfig(codemode: unknown) {
+    requestMock.mockImplementation((m: string, cmd: string) => {
+      if (m === 'tools' && cmd === 'get') return Promise.resolve({ content: '# notes' })
+      if (m === 'config' && cmd === 'get') return Promise.resolve({ agents: { codemode: codemode } })
+      return Promise.resolve({ updated: true })
+    })
+  }
+
+  it('缺键 = 默认开启（serde default true）；关闭走 set_field', async () => {
+    withCodemodeConfig(undefined)
+    const w = await mountView()
+    expect(w.find('.codemode-toggle.active').exists()).toBe(true)
+    expect(w.text()).toContain('已开启')
+
+    await w.find('.codemode-toggle').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', {
+      path: 'agents.codemode.enabled', value: false,
+    })
+    expect(w.find('.codemode-toggle.active').exists()).toBe(false)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('codemode 已关闭'))).toBe(true)
+    wrapper_clean(w)
+  })
+
+  it('显式 enabled=false 回显已关闭；开启走 set_field', async () => {
+    withCodemodeConfig({ enabled: false })
+    const w = await mountView()
+    expect(w.find('.codemode-toggle.active').exists()).toBe(false)
+
+    await w.find('.codemode-toggle').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', {
+      path: 'agents.codemode.enabled', value: true,
+    })
+    expect(w.find('.codemode-toggle.active').exists()).toBe(true)
+    wrapper_clean(w)
+  })
+
+  it('config.get 失败 → codemode 卡显示不可用、无开关', async () => {
+    requestMock.mockImplementation((m: string, cmd: string) => {
+      if (m === 'tools' && cmd === 'get') return Promise.resolve({ content: '' })
+      if (m === 'config' && cmd === 'get') return Promise.reject(new Error('down'))
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(w.find('.codemode-toggle').exists()).toBe(false)
     wrapper_clean(w)
   })
 })
