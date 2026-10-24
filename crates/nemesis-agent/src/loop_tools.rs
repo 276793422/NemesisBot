@@ -2825,6 +2825,36 @@ impl Tool for CronTool {
                         }
                     }
                 };
+                // 同源校验，与其余全部创建入口对齐（CLI cron.rs / web
+                // tasks.rs / autopilot / dreaming / board autopilot 都前置
+                // validate_schedule + 0 值守卫）。缺这层时坏表达式 / 0 间隔 /
+                // 过去时刻的任务会以 enabled + next_run=None 的静默僵尸入库：
+                // compute_next_run 对这类 schedule 恒返 None，任务永不触
+                // 发、无任何报错、跨重启持久，模型与用户都以为排上了。
+                match schedule.kind.as_str() {
+                    "cron" => {
+                        let expr = schedule.expr.as_deref().unwrap_or("");
+                        nemesis_cron::service::CronService::validate_schedule(expr)
+                            .map_err(|e| format!("Invalid cron expression '{expr}': {e}"))?;
+                    }
+                    // 0 间隔：compute_next_run 的 ms>0 过滤恒失 → 静默僵尸。
+                    "every" if schedule.every_ms.unwrap_or(0) <= 0 => {
+                        return Err(
+                            "every_seconds must be > 0 (a zero interval never fires)".to_string()
+                        );
+                    }
+                    // 时刻必须严格在未来：compute_next_run 对 at_ms <= now
+                    // 恒返 None（at_seconds=0 即此形态）。
+                    "at" if schedule
+                        .at_ms
+                        .is_none_or(|t| t <= chrono::Local::now().timestamp_millis()) =>
+                    {
+                        return Err(
+                            "at time must be in the future (at_seconds must be >= 1)".to_string()
+                        );
+                    }
+                    _ => {}
+                }
                 // message is the declared field; content is the legacy alias
                 // kept readable for backward compatibility.
                 let content = val
