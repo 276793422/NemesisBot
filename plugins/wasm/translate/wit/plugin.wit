@@ -99,6 +99,9 @@ interface host {
     tool-invoke: func(tool: string, args-json: json-string) -> result<json-string, host-error>;
 
     /// 杂务 LLM 补全（2026-10-22 批 2 新增；组件内调 LLM 的唯一通道）。
+    /// 帧纪律：仅策略帧可用（world `plugin-loop-policy`）——tool/observer
+    /// 帧调用恒 unavailable，LLM 花销能力只授循环治理路径（壳侧按 world
+    /// 恒注册是 link 兼容，授权在宿主调用时闸）。
     ///
     /// 走宿主 bypass_llm 护栏同源：max_tokens 钳 8192 上限、墙钟超时、
     /// 输出校验；模型 = `agents.small_model` 杂务槽（与 /compact 同源）。
