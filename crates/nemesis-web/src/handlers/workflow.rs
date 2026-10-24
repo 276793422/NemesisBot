@@ -1309,8 +1309,11 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: execution_id")?;
                 let review = parse_input_object(data.get("review"));
+                // BUG-20261024-13：可选 `node_id` 定向评审落点——多个
+                // human_review 并行等待时必须指定；单等待节点缺省兼容。
+                let node_id = data.get("node_id").and_then(|v| v.as_str());
                 let exec = engine
-                    .resume_execution(id, review)
+                    .resume_execution_node(id, review, node_id)
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(Some(execution_to_json(&exec)))
