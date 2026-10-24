@@ -204,14 +204,16 @@ impl TaskDb {
 
     /// 确认交付（recorded/delivered → confirmed，幂等：已确认 = Ok(false)）。
     /// 通知义务同步升 confirmed（义务走完终点；无论此前 pending 还是
-    /// channel_accepted）。
+    /// channel_accepted）。**rejected 终态不可翻转**——`WHERE` 收窄到
+    /// `IN ('recorded','delivered')`：拒绝是人工复核结论，确认撞拒绝 =
+    /// `Ok(false)` 原样保留（确认不得盖掉拒绝；推翻拒绝走新交付重跑）。
     pub fn confirm_delivery(&self, idempotency_key: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
                 .execute(
                     "UPDATE deliveries SET status = 'confirmed', confirmed_at = ?2, \
                      notify_state = 'confirmed', notify_next_retry_at = NULL \
-                     WHERE idempotency_key = ?1 AND status != 'confirmed'",
+                     WHERE idempotency_key = ?1 AND status IN ('recorded', 'delivered')",
                     params![idempotency_key, now_rfc3339()],
                 )
                 .map_err(|e| format!("tasks.db confirm delivery failed: {e}"))?;

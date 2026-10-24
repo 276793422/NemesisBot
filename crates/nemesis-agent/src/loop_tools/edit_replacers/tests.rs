@@ -32,6 +32,51 @@ fn line_trimmed_negative_line_count_differs_falls_through() {
 }
 
 #[test]
+fn line_trimmed_new_has_more_lines_at_eof_falls_through_no_panic() {
+    // 回归锁（2026-10-25 P0 实机 panic 实录：len 84 index 84）：匹配块触及
+    // EOF 且 new 比 old 多行时，旧实现按 new 行数索引文件行越界 panic，杀死
+    // agent loop 任务（无回调无失败上报）。守卫后本级不适用，落后续级
+    // verbatim 路径安全完成追加。
+    let content = "def f():\n    return compute()\n";
+    let old = "    return compute()";
+    let new = "    value = compute()\n    return value";
+    let m = cascade_replace(content, old, new).unwrap();
+    assert_ne!(
+        m.level, "line-trimmed",
+        "count-differing edit must not enter line-trimmed"
+    );
+    assert!(
+        m.content.contains("value = compute()") && m.content.contains("return value"),
+        "appended lines must land: {:?}",
+        m.content
+    );
+    assert_eq!(
+        m.content,
+        "def f():\n    value = compute()\n    return value\n"
+    );
+}
+
+#[test]
+fn line_trimmed_new_has_more_lines_mid_file_borrows_no_unrelated_indent() {
+    // mid-file 同族：旧实现 i+k 越入匹配块之后的无关行静默借缩进（len 够
+    // 长就不崩、结果悄悄错）。守卫后同样不适用，verbatim 保留模型缩进。
+    let content = "a = 1\n    target()\nz = 9\n";
+    let old = "target()";
+    let new = "target()\n    follow_up()";
+    let m = cascade_replace(content, old, new).unwrap();
+    assert_ne!(m.level, "line-trimmed");
+    assert!(
+        m.content.contains("    follow_up()"),
+        "model indentation must be preserved verbatim: {:?}",
+        m.content
+    );
+    assert!(
+        !m.content.contains("z = 9\n    "),
+        "must not borrow following line's indent"
+    );
+}
+
+#[test]
 fn line_trimmed_multi_hit_reports_ambiguous_with_lines() {
     let content = "  foo\nbar\n  foo\nbar\n";
     let old = "foo\nbar\n";
@@ -85,6 +130,23 @@ fn block_anchor_ambiguous_pairs_reports_first_anchor_lines() {
     };
     assert!(msg.contains("2 times via block-anchor"), "{msg}");
     assert!(msg.contains("[1, 5]"), "{msg}");
+}
+
+#[test]
+fn block_anchor_single_candidate_not_at_line_zero_matches() {
+    // 回归锁（2026-10-25 P0 实机 panic 实录：len 1 index 23）：build 曾收到
+    // 起始行号却被当下标回查 cands——唯一候选起始行 >0 且 cands.len()==1 时
+    // 必崩（此前只有起始行 0 的匹配侥幸活着）。契约修正后 build 收候选元组
+    // 本身，任意起始行都安全。
+    let content = "import os\n\nalpha\nbeta()\ngamma()\ndelta()\nepsilon\n";
+    let old = "beta()\ngamma\ndelta()";
+    let new = "beta()\nGAMMA()\ndelta()";
+    let m = cascade_replace(content, old, new).unwrap();
+    assert_eq!(m.level, "block-anchor");
+    assert_eq!(
+        m.content,
+        "import os\n\nalpha\nbeta()\nGAMMA()\ndelta()\nepsilon\n"
+    );
 }
 
 #[test]
