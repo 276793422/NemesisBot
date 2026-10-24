@@ -13,11 +13,25 @@
 //! ——命令面恒注册，L1 清单稳定）。`client.roaming_enabled` 观测键读集群
 //! config（纯 config 函数——客户端是否消费 relay_url 由集群 roaming 开关
 //! 决定，展示给用户判断连通形态）。
+//!
+//! BUG-20261025-15：config 投影面（relay 段/客户端三键的解析回显）依赖
+//! `nemesis-cluster` 的**纯 serde 解析函数**（optional dep，`cluster`
+//! feature 启用）——模块恒编译但裸 `-p nemesis-web`（无 feature）此前直接
+//! E0433 编译红，违反「不带 feature 只能跑基础测试」约定。修法 = 解析投影
+//! 三点 cfg 门控：cluster 在 = 原行为；cluster 关 = status/save 回显诚实
+//! 降级（available:false + reason / saved:true + note），校验+落盘照常
+//! （纯 JSON RMW 零 cluster 依赖），命令面恒注册不变（voice「未编译诚实
+//! 报」同款惯例）。
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
+// 解析投影三点的 cfg 门控见模块头注（BUG-20261025-15）：cluster 关时
+// 以下导入与消费函数整体让位给诚实降级形态。
+#[cfg(feature = "cluster")]
 use nemesis_cluster::roaming::config::{RelayTls, resolved_roaming};
+#[cfg(feature = "cluster")]
 use nemesis_cluster::roaming::quic_config::resolved_quic;
+#[cfg(feature = "cluster")]
 use nemesis_cluster::roaming::relay_info;
 use nemesis_plugin::roaming::RoamingPluginHandle;
 use std::path::{Path, PathBuf};
@@ -233,6 +247,7 @@ pub(crate) fn quic_config_path(workspace: &str) -> PathBuf {
 /// 只有 token_set bool（凭据面纪律，与漫游信任簿同源）。证书面按 TLS 档：
 /// self-signed = workspace 路径 + generated/pending；manual = 用户路径回显
 /// + ready/missing；none = unused。
+#[cfg(feature = "cluster")]
 fn relay_settings_payload(
     relay: &nemesis_cluster::roaming::config::RelaySettings,
     workspace: &str,
@@ -298,6 +313,7 @@ fn relay_settings_payload(
 /// = 两者不一致。client 面带客户端三键（roaming_enabled 来自 cluster.json
 /// roaming 段 / relay_url/relay_token_set 来自 quic.json client 段——令牌只
 /// 给 bool）。地址为插件回执的字符串/null 原样透传。
+#[cfg(feature = "cluster")]
 fn relay_status_payload(
     workspace: &str,
     active: bool,
@@ -322,8 +338,28 @@ fn relay_status_payload(
     })))
 }
 
+/// cluster feature 关的诚实降级形态（BUG-20261025-15）：config 解析面缺席
+/// ——enabled/requires_restart/relay/client 投影全部省略，available:false +
+/// reason 说明，运行态字段原样透传（不伪装）。命令面照常注册。
+#[cfg(not(feature = "cluster"))]
+fn relay_status_payload(
+    _workspace: &str,
+    active: bool,
+    http_addr: serde_json::Value,
+    quic_addr: serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(Some(serde_json::json!({
+        "available": false,
+        "reason": "cluster feature 未编译：QUIC 配置解析投影面缺席",
+        "active": active,
+        "http_addr": http_addr,
+        "quic_addr": quic_addr,
+    })))
+}
+
 /// 集群 config 路径（roaming_enabled 观测键数据源；纯路径换算——
 /// 路径唯一真相源 = nemesis-path）。
+#[cfg(feature = "cluster")]
 fn cluster_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
 }
@@ -488,8 +524,15 @@ fn relay_config_save_impl(
     // 统一原子写入（config.quic.json 含 token，REL-002 同款）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
         .map_err(|e| format!("failed to write quic config: {}", e))?;
-    let resolved = resolved_quic(&path);
-    Ok(Some(serde_json::json!({
+    Ok(Some(save_echo(&path, workspace)))
+}
+
+/// 保存后的回显载荷（BUG-20261025-15 cfg 拆分：cluster 在 = 解析投影回显；
+/// cluster 关 = saved/note 双键诚实降级——落盘已成功，投影面缺席不伪装）。
+#[cfg(feature = "cluster")]
+fn save_echo(path: &std::path::Path, workspace: &str) -> serde_json::Value {
+    let resolved = resolved_quic(path);
+    serde_json::json!({
         "saved": true,
         "requires_restart": true,
         "relay": relay_settings_payload(&resolved.relay, workspace),
@@ -497,7 +540,16 @@ fn relay_config_save_impl(
             "relay_url": resolved.client.relay_url,
             "relay_token_set": !resolved.client.relay_token.is_empty(),
         },
-    })))
+    })
+}
+
+#[cfg(not(feature = "cluster"))]
+fn save_echo(_path: &std::path::Path, _workspace: &str) -> serde_json::Value {
+    serde_json::json!({
+        "saved": true,
+        "requires_restart": true,
+        "note": "cluster feature 未编译：回显投影省略（config 已落盘）",
+    })
 }
 
 /// relay_toggle 的实现核心（ctx 解耦——tests 以 handle=None 直接验证

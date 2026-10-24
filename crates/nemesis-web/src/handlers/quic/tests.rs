@@ -5,6 +5,7 @@
 use super::*;
 
 #[test]
+#[cfg(feature = "cluster")]
 fn test_relay_config_save_merge_and_clear_semantics() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
@@ -64,6 +65,7 @@ fn test_relay_config_save_merge_and_clear_semantics() {
 }
 
 #[test]
+#[cfg(feature = "cluster")]
 fn test_relay_status_payload_shape() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
@@ -108,6 +110,7 @@ fn test_relay_status_payload_shape() {
 }
 
 #[test]
+#[cfg(feature = "cluster")]
 fn test_relay_config_save_client_face() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
@@ -166,6 +169,7 @@ fn test_relay_config_save_client_face() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[cfg(feature = "cluster")]
 async fn test_relay_toggle_config_contract_without_cluster() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
@@ -217,4 +221,45 @@ fn quic_module_commands_surface_is_stable() {
 fn registry_members_command_registered_when_plugin_absent() {
     let h = QuicHandler::new();
     assert!(h.commands().contains(&"registry.members"));
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261025-15 双形态锚点（cluster 关形态）：解析投影缺席 = status/回显
+// 诚实降级，校验+落盘（纯 JSON RMW）照常。裸 `cargo test -p nemesis-web`
+// （无 feature）跑这里；全量 feature 构建跑上方 cfg(feature) 臂。
+// ---------------------------------------------------------------------------
+
+#[cfg(not(feature = "cluster"))]
+#[test]
+fn quic_status_payload_degrades_honestly_without_cluster() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+    let p = relay_status_payload(ws, false, serde_json::Value::Null, serde_json::Value::Null)
+        .unwrap()
+        .unwrap();
+    assert_eq!(p["available"], serde_json::json!(false));
+    assert!(p["reason"].as_str().unwrap().contains("cluster"));
+    // 运行态字段透传，不伪装
+    assert_eq!(p["active"], serde_json::json!(false));
+    assert!(p.get("enabled").is_none(), "降级形态不得伪装 config 投影");
+    assert!(p.get("relay").is_none());
+}
+
+#[cfg(not(feature = "cluster"))]
+#[test]
+fn quic_config_save_writes_file_without_cluster_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+    let cfg_path = quic_config_path(ws);
+    let p = relay_config_save_impl(ws, &serde_json::json!({ "http_port": 4000 }))
+        .unwrap()
+        .unwrap();
+    // 落盘成功 + 降级注记，无投影伪装
+    assert_eq!(p["saved"], serde_json::json!(true));
+    assert!(p["note"].as_str().unwrap().contains("cluster"));
+    assert!(p.get("relay").is_none());
+    // 纯 JSON RMW 不依赖 cluster：文件内容正确
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["relay"]["http_port"], serde_json::json!(4000));
 }
