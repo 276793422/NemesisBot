@@ -208,6 +208,39 @@ fn migrate_reports_broken_yaml_reference() {
     assert!(cfg_text.contains("yaml:no-such-alias"));
 }
 
+/// 持久化顺序（回归锁）：`migrate_model_keys` 返回时 vault 必须**已落盘**
+/// ——vault 落盘先于 config/yaml 回写（旧顺序在「config 回写成功、vault
+/// 落盘失败/进程中断」窗口内留下「配置指 vault:<alias> 但盘上 vault 无此
+/// 别名」的断链态，且明文已离盘）。
+#[test]
+fn migrate_persists_vault_before_config_writeback() {
+    let _g = MIGRATE_LOCK.lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let config_path = seed_config(
+        home,
+        r#"{"model_name":"ord","model":"openai/ord","api_key":"sk-order-1"}"#,
+    );
+    let cred_path = home.join("config").join("credentials.yaml");
+    std::fs::create_dir_all(cred_path.parent().unwrap()).unwrap();
+
+    let mut store = test_store(home);
+    let report = super::migrate_model_keys(&config_path, &cred_path, &mut store).unwrap();
+    assert_eq!(report.migrated.len(), 1);
+
+    // 关键断言：函数返回时重开盘上 vault 文件，新别名已在内。
+    let vp = nemesis_path::resolve_vault_path_in_workspace(&crate::common::workspace_path(home));
+    let mut on_disk = VaultStore::open(&vp).unwrap();
+    if on_disk.mode() == VaultMode::Argon2id {
+        on_disk.unlock("migrate-test-pw").unwrap();
+    }
+    assert_eq!(
+        on_disk.get("ord").unwrap(),
+        "sk-order-1",
+        "vault 必须先于 config 回写落盘"
+    );
+}
+
 /// 测试用 vault store（默认模式；argon2 走固定口令）。
 fn test_store(home: &Path) -> VaultStore {
     let vp = nemesis_path::resolve_vault_path_in_workspace(&crate::common::workspace_path(home));
