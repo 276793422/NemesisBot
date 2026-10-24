@@ -80,8 +80,11 @@ pub(crate) fn set_session_allow_all_for_test(
 }
 
 /// 槽触碰类测试的共享串行锁（APPROVAL_AUTO_TEST_LOCK 同款纪律）。
+/// 用 tokio Mutex 而非 parking_lot：异步用例持锁跨 await（tokio::test 单线程
+/// 串行执行，无竞争），sync guard 跨 await 会撞 clippy await_holding_lock。
 #[cfg(test)]
-pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 fn session_allow_all_state()
 -> Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>> {

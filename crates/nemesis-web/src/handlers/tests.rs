@@ -5623,7 +5623,9 @@ async fn test_sessions_list_projects_allow_all_by_same_key_family() {
     // E0433（CI 三 shard 实证）。门控修复后钉行为：开着会话行带
     // allow_all:true、未开会话行 false——键族与 security handler 的
     // derive_session_key 同源（该公式另有专项测试）。
-    let _serial = crate::handlers::security::SESSION_ALLOW_ALL_TEST_LOCK.lock();
+    let _serial = crate::handlers::security::SESSION_ALLOW_ALL_TEST_LOCK
+        .lock()
+        .await;
     let state =
         std::sync::Arc::new(nemesis_security::session_allow_all::SessionAllowAllState::new());
     crate::handlers::security::install_session_allow_all(state.clone());
