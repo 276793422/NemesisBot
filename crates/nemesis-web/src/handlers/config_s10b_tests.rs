@@ -439,3 +439,81 @@ fn config_update_entry_closure_err_leaves_disk_untouched() {
     assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
     assert_eq!(raw["model_list"][0]["model_name"], "seed");
 }
+
+// ---------------------------------------------------------------------------
+// 掩码还原（2026-10-25 实机实证回归锁）：config.get 脱敏 → 编辑器原样保存，
+// 旧实现把 model_list[].api_key 落盘成 '****'（真 key 丢失——channels.save /
+// cluster.config.save 都有 restore_masked_named_fields，config.save 漏接）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn config_save_restores_masked_sensitive_fields_from_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let real_key = "sk-real-secret-key";
+    // 盘上种一个带真 key 的模型条目（>8 字符：掩码形态 = 首4+****+尾4）。
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({
+            "model_list": [ { "model_name": "seed", "model": "test/model", "api_key": real_key } ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let handler = ConfigHandler::new();
+
+    // 1) get 响应脱敏：api_key 是掩码形态。
+    let got = handler
+        .handle_cmd("get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let masked = got["model_list"][0]["api_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(masked.contains("****"), "get 应脱敏：{masked}");
+    assert_ne!(masked, real_key);
+
+    // 2) 编辑器原样回存（不改任何东西）：修复前 api_key 落盘 '****'。
+    handler
+        .handle_cmd("save", Some(got), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // 3) 盘上真 key 原样保留。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(raw["model_list"][0]["api_key"].as_str().unwrap(), real_key);
+    assert_eq!(raw["model_list"][0]["model_name"], "seed");
+}
+
+#[tokio::test]
+async fn config_save_masked_value_without_counterpart_loud_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, false);
+    // 盘上 api_key 本身就是掩码（历史脏数据）：含掩码的回存 loud 拒绝，
+    // 绝不把掩码当真值再写一遍（与 channels.save 同一语义）。
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({
+            "model_list": [ { "model_name": "seed", "api_key": "****" } ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let handler = ConfigHandler::new();
+    let err = handler
+        .handle_cmd(
+            "save",
+            Some(serde_json::json!({
+                "model_list": [ { "model_name": "seed", "api_key": "****" } ]
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("掩码值"), "{err}");
+}

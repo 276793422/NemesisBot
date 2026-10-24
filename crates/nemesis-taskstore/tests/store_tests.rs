@@ -368,6 +368,53 @@ fn delivery_reject_semantics() {
     assert!(!db.reject_delivery("ghost", "x").expect("ghost"));
 }
 
+// 回归锁（2026-10-25）：confirm_delivery 旧 WHERE（status != 'confirmed'）
+// 会把已拒绝交付翻成 confirmed——rejected 终态被确认盖掉。修复后确认撞
+// 拒绝 = Ok(false)，记录原样保持 rejected。
+#[test]
+fn delivery_confirm_after_reject_is_noop() {
+    let (_dir, path) = temp_db("deliveries_confirm_reject");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({"branch": "nemesis/run-2"});
+
+    assert!(
+        db.record_delivery("branch", Some("run-2"), "run-2:branch", &payload, false)
+            .expect("record")
+    );
+    assert!(
+        db.reject_delivery("run-2:branch", "评审 FAIL")
+            .expect("reject")
+    );
+
+    // rejected 上确认 = Ok(false)，状态/时间戳不被翻转。
+    assert!(
+        !db.confirm_delivery("run-2:branch").expect("confirm"),
+        "确认不得盖掉拒绝（rejected 终态）"
+    );
+    let rec = db
+        .delivery_by_key("run-2:branch")
+        .expect("read")
+        .expect("present");
+    assert_eq!(rec.status, "rejected");
+    assert!(rec.confirmed_at.is_none(), "确认失败不得写 confirmed_at");
+    assert_eq!(rec.reject_reason.as_deref(), Some("评审 FAIL"));
+    assert_ne!(rec.notify_state, "confirmed");
+
+    // 正常通路不受影响：recorded → confirmed 仍一次成功。
+    assert!(
+        db.record_delivery("branch", Some("run-3"), "run-3:branch", &payload, false)
+            .expect("record")
+    );
+    assert!(db.confirm_delivery("run-3:branch").expect("confirm"));
+    assert_eq!(
+        db.delivery_by_key("run-3:branch")
+            .expect("read")
+            .expect("present")
+            .status,
+        "confirmed"
+    );
+}
+
 /// G4（2026-10-18 批六）：payload 浅合并——patch 顶层键逐一覆盖、既有键
 /// 保留；返回合并后全文；幂等键不存在 = Err（注记必须落在真实交付上）。
 #[test]

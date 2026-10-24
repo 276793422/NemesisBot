@@ -238,8 +238,17 @@ impl ConfigHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         // 编辑器整档保存语义：闭包整体替换（锁在 update_config 内）。
+        // get 响应是脱敏形态（api_key/token 等掩码为 `****` 串）：UI 回存
+        // 时掩码值必须还原为存量原值，绝不落盘掩码——channels.save 同款
+        // 纪律，且在锁内做（杜绝与并发写之间的丢更新）。漏接实证
+        // （2026-10-25）：编辑器原样保存把 model_list[].api_key 覆盖成
+        // '****'，真 key 丢失。
         update_config(home, |config| {
-            *config = serde_json::from_value(data.clone())
+            let existing = serde_json::to_value(&*config)
+                .map_err(|e| format!("failed to serialize existing config: {}", e))?;
+            let mut incoming = data.clone();
+            crate::handlers::restore_masked_named_fields(&mut incoming, &existing)?;
+            *config = serde_json::from_value(incoming)
                 .map_err(|e| format!("invalid config data: {}", e))?;
             Ok(())
         })?;

@@ -212,7 +212,10 @@ fn splice_span(
 /// 候选唯一性 + 跨度保护。`cands` 是 `(0-based 起始行, span 字节数)`；
 /// span 字节由各 level 按自己的候选块行数算好。
 /// 全部候选超限 → `Disproportionate`；无候选 → `NoCandidate`；唯一 →
-/// `build(起始行)` 构造替换结果；多候选 → `Err(歧义消息)`。
+/// `build(候选下标)` 构造替换结果——下标指向传入的 `cands`（各 level 闭包
+/// 自持与 `cands` 位置一一对应的候选数据自行解构）。**契约禁止把起始行号
+/// 当下标用**（2026-10-25 实机 panic：唯一候选起始行 23、`cands.len()==1`
+/// → `cands[23]` 越界）；多候选 → `Err(歧义消息)`。
 fn accept_unique_spans(
     level: &'static str,
     cands: Vec<(usize, usize)>,
@@ -222,12 +225,12 @@ fn accept_unique_spans(
     let limit = span_limit(old_text);
     let mut rejected: Option<usize> = None;
     let mut within: Vec<usize> = Vec::new();
-    for (i, span_bytes) in cands {
-        if span_bytes > limit {
-            rejected = Some(rejected.map_or(span_bytes, |b| b.max(span_bytes)));
+    for (pos, (_, span_bytes)) in cands.iter().enumerate() {
+        if *span_bytes > limit {
+            rejected = Some(rejected.map_or(*span_bytes, |b| b.max(*span_bytes)));
             continue;
         }
-        within.push(i);
+        within.push(pos);
     }
     match within.len() {
         0 => Ok(match rejected {
@@ -239,7 +242,7 @@ fn accept_unique_spans(
         }),
         1 => build(within[0]),
         _ => {
-            let starts: Vec<usize> = within.iter().map(|i| i + 1).collect();
+            let starts: Vec<usize> = within.iter().map(|&p| cands[p].0 + 1).collect();
             Err(ambiguous(level, &starts))
         }
     }
@@ -275,14 +278,23 @@ fn same_count_candidates(
 
 fn line_trimmed(content: &str, old_text: &str, new_text: &str) -> Result<LevelOutcome, String> {
     let old_lines: Vec<&str> = old_text.lines().collect();
+    // 行数必须一致（本级语义前提）：下方重建按 new 行数逐行映射文件行取
+    // 原缩进，new 与 old 行数不等时该映射无定义（越界 panic 或借到无关行
+    // 的缩进）。行数可变的编辑交给支持行数可变的后续级（block-anchor /
+    // whitespace-normalized 按 verbatim splice，天然安全）。
+    if new_text.lines().count() != old_lines.len() {
+        return Ok(LevelOutcome::NoCandidate);
+    }
     let lines = line_infos(content);
     let old_trim: Vec<&str> = old_lines.iter().map(|l| l.trim()).collect();
     let cands = same_count_candidates(&lines, old_lines.len(), |fl, k| {
         fl.text.trim() == old_trim[k]
     });
-    accept_unique_spans("line-trimmed", cands, old_text, |i| {
+    let starts: Vec<usize> = cands.iter().map(|c| c.0).collect();
+    accept_unique_spans("line-trimmed", cands, old_text, move |pos| {
+        let i = starts[pos];
         // 计划语义：替换保留目标行原缩进——new 各行内容 + 文件对应行的
-        // 原缩进（行数一致由匹配条件保证）。
+        // 原缩进（new 与 old 行数一致已由上方守卫保证）。
         let rebuilt: Vec<String> = new_text
             .lines()
             .enumerate()
@@ -376,8 +388,8 @@ fn block_anchor(content: &str, old_text: &str, new_text: &str) -> Result<LevelOu
         .iter()
         .map(|&(i, j)| (i, lines[j].term_end - lines[i].start))
         .collect();
-    accept_unique_spans("block-anchor", spanned, old_text, |idx| {
-        let (i, j) = cands[idx];
+    accept_unique_spans("block-anchor", spanned, old_text, move |pos| {
+        let (i, j) = cands[pos];
         let new_lines: Vec<String> = new_text.lines().map(String::from).collect();
         Ok(LevelOutcome::Match {
             content: splice_span(content, &lines, i, j, &new_lines),
@@ -417,7 +429,9 @@ fn whitespace_normalized(
     let cands = same_count_candidates(&lines, old_lines.len(), |fl, k| {
         normalize_ws(fl.text) == old_norm[k]
     });
-    accept_unique_spans("whitespace-normalized", cands, old_text, |i| {
+    let starts: Vec<usize> = cands.iter().map(|c| c.0).collect();
+    accept_unique_spans("whitespace-normalized", cands, old_text, move |pos| {
+        let i = starts[pos];
         let new_lines: Vec<String> = new_text.lines().map(String::from).collect();
         Ok(LevelOutcome::Match {
             content: splice_span(content, &lines, i, i + old_lines.len() - 1, &new_lines),
@@ -496,7 +510,9 @@ fn indentation_flexible(
         let span_bytes = lines[i + old_lines.len() - 1].term_end - lines[i].start;
         cands.push((i, span_bytes));
     }
-    accept_unique_spans("indentation-flexible", cands, old_text, |i| {
+    let starts: Vec<usize> = cands.iter().map(|c| c.0).collect();
+    accept_unique_spans("indentation-flexible", cands, old_text, move |pos| {
+        let i = starts[pos];
         let delta = delta_of_pair(leading_ws(lines[i + k0].text), leading_ws(old_lines[k0]));
         // 把同一 delta 应用到 new 各行首（空白行不动）。
         let rebuilt: Vec<String> = new_text
@@ -539,7 +555,9 @@ fn trimmed_boundary(content: &str, old_text: &str, new_text: &str) -> Result<Lev
     let core = &old_lines[cs..=ce];
     let lines = line_infos(content);
     let cands = same_count_candidates(&lines, core.len(), |fl, k| fl.text == core[k]);
-    accept_unique_spans("trimmed-boundary", cands, old_text, |i| {
+    let starts: Vec<usize> = cands.iter().map(|c| c.0).collect();
+    accept_unique_spans("trimmed-boundary", cands, old_text, move |pos| {
+        let i = starts[pos];
         let new_lines: Vec<String> = new_text.lines().map(String::from).collect();
         Ok(LevelOutcome::Match {
             content: splice_span(content, &lines, i, i + core.len() - 1, &new_lines),
