@@ -71,6 +71,8 @@ jobs:
 
       # workspaces 收编示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
+      # plugins/plugin-roaming 同理（QUIC 插件化 M1：独立 workspace，
+      # iroh 全家桶冷构建 10 分钟级，不收编则每夜白烧）。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -81,6 +83,7 @@ jobs:
             plugins/wasm/activity-log
             plugins/wasm/textstat
             plugins/wasm/policy-sample
+            plugins/plugin-roaming
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -125,6 +128,16 @@ jobs:
         run: |
           ulimit -n 8192
           cargo test --workspace --no-fail-fast
+
+      # plugin-roaming（QUIC 插件化 M1）独立 workspace——主 cargo test
+      # --workspace 永远够不到（根 Cargo.toml 的 members 不含它），不在此
+      # 显式跑 = 32 个测试（drift/identity/Phase 2 merge 规则等）零 CI
+      # 覆盖。失败不掐后面步（与 --no-fail-fast 同哲学：nightly 要全量
+      # 体检报告）。跨平台面：先 Linux 夜更一处兜底，Windows 形态测试
+      # 出现后再挂 ci.yml Windows 全量 job。
+      - name: plugin-roaming tests (independent workspace)
+        if: always()
+        run: cargo test --manifest-path plugins/plugin-roaming/Cargo.toml --release
 
   feature-matrix:
     name: Feature trimming matrix (Linux)${{ inputs.seed_cache == true && ' 【SEED·仅构建落缓存·不跑测试·故意红】' || '' }}
