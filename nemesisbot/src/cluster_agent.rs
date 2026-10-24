@@ -1687,8 +1687,21 @@ async fn handle_discussion(
     post_discussion_reply(rpc_client, self_node_id, event, trimmed).await;
 }
 
+/// 发送者身份标签：board 开 = [`crate::board_bus::actor_label`] 权威实现；
+/// 关 = 裸 id 降级（board_bus 模块随 all(board, cluster) 闸不编译，而讨论
+/// 子系统在 board 关时本就不装配——此臂只为 cluster-only 裁剪形态编译完整）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn actor_label(kind: &str, id: &str) -> String {
+    crate::board_bus::actor_label(kind, id)
+}
+#[cfg(not(all(feature = "board", feature = "cluster")))]
+fn actor_label(kind: &str, id: &str) -> String {
+    let _ = kind;
+    id.to_string()
+}
+
 /// 组装讨论 prompt：线程历史 + 唤醒原因 + 回复预算 + 发言/沉默二选一指令。
-/// 发送者身份经 [`crate::board_bus::actor_label`] 渲染（admin=human user /
+/// 发送者身份经 [`actor_label`] 渲染（admin=human user /
 /// agent=agent node——2026-10-23 身份透传：LLM 由此知道说话的是人还是节点，
 /// 不再对着人类只能 @ 自己）。
 fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> String {
@@ -1703,7 +1716,7 @@ fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> Strin
         for m in &event.messages {
             ctx.push_str(&format!(
                 "- {}: {}\n",
-                crate::board_bus::actor_label(&m.kind, &m.sender),
+                actor_label(&m.kind, &m.sender),
                 m.content
             ));
         }
@@ -1726,7 +1739,7 @@ fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> Strin
          - If nothing needs to be said (informational only, not directed at \
          you, or outdated), output exactly [SILENT].",
         event.event,
-        crate::board_bus::actor_label(&event.sender_kind, &event.new_sender),
+        actor_label(&event.sender_kind, &event.new_sender),
         event.new_content
     )
 }
