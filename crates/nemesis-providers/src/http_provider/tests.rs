@@ -2004,6 +2004,74 @@ async fn test_b_chat_stream_json_200_with_choices_synthesizes_stream() {
     let fin = chunks[1].as_ref().unwrap();
     assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
     assert_eq!(fin.usage.as_ref().unwrap().total_tokens, 5);
+    // 无 reasoning 字段 → 终态帧 None（不误造）。
+    assert_eq!(fin.reasoning_content, None);
+}
+
+#[tokio::test]
+async fn test_b_chat_stream_json_200_carries_reasoning_content() {
+    // BUG-20261025-23：合成路径此前硬编码 reasoning_content=None，stream=yes
+    // 撞上忽略 stream 的思考型模型端点时丢 reasoning——该字段是多轮回放的
+    // 功能性输入（deepseek 形态 API 第二轮缺它直接 400）。契约：合成终态帧
+    // 与非流式 parse 同源携带 message.reasoning_content。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "answer",
+                    "reasoning_content": "step 1: think; step 2: answer"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 2);
+    // 增量帧不携带（对齐 SSE 正常路径「reasoning 只在终态帧」契约）。
+    assert_eq!(chunks[0].as_ref().unwrap().reasoning_content, None);
+    let fin = chunks[1].as_ref().unwrap();
+    assert_eq!(
+        fin.reasoning_content.as_deref(),
+        Some("step 1: think; step 2: answer")
+    );
+}
+
+#[tokio::test]
+async fn test_b_chat_yes_mode_json_200_response_keeps_reasoning_content() {
+    // chat() 层（stream=yes 内部流式化）端到端：聚合后的 LLMResponse 必须
+    // 保留 reasoning_content——agent 侧多轮 replay 链路的直接输入形态。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {"content": "ok", "reasoning_content": "why"},
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = HttpProvider::new(HttpProviderConfig {
+        stream_mode: "yes".to_string(),
+        ..b_wire_provider(server.uri()).config
+    });
+    let resp = provider
+        .chat(&b_one_message(), &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "ok");
+    assert_eq!(resp.reasoning_content.as_deref(), Some("why"));
 }
 
 #[tokio::test]

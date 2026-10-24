@@ -442,6 +442,13 @@ impl HttpProvider {
                             })
                             .unwrap_or_default();
                     let usage = parsed.get("usage").map(extract_usage);
+                    // message.reasoning_content 同源提取（对齐非流式 parse
+                    // 的字段口径）：该字段是多轮回放的功能性输入——deepseek
+                    // 形态 API 第二轮缺它直接 400；合成路径此前硬编码 None，
+                    // stream=yes 撞上忽略 stream 的端点时静默丢 reasoning。
+                    let reasoning_content = parsed["choices"][0]["message"]["reasoning_content"]
+                        .as_str()
+                        .map(|s| s.to_string());
                     if !content.is_empty() {
                         let _ = tx
                             .send(Ok(StreamChunk {
@@ -459,7 +466,7 @@ impl HttpProvider {
                             tool_calls: msg_tool_calls,
                             finish_reason: Some(finish),
                             usage,
-                            reasoning_content: None,
+                            reasoning_content,
                         }))
                         .await;
                 } else {
