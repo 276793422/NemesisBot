@@ -131,7 +131,9 @@ async fn git_mode_rewinds_edits_and_shell_products() {
     store.snapshot(&modify("code.txt")).await;
 
     // rewind 到 turn 1 开始时：code.txt=v1，shell 产物消失
-    let (written, deleted) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let written = report.written;
+    let deleted = report.deleted;
     assert!(
         written.contains(&"code.txt".to_string()),
         "written: {written:?}"
@@ -157,7 +159,9 @@ async fn git_mode_restores_shell_deleted_file() {
     std::fs::remove_file(root.join("doomed.txt")).unwrap(); // shell rm
 
     store.begin(2, "turn 2");
-    let (written, _) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let written = report.written;
+    let _ = report.deleted;
     assert!(
         written.contains(&"doomed.txt".to_string()),
         "written: {written:?}"
@@ -188,7 +192,9 @@ async fn git_mode_excludes_runtime_owned_dirs_from_tree() {
 
     // tree 写入成功即证明 add_all 正确跳过 logs/**（否则会把影子 gitdir
     // 自身加进 index——自引用）。rewind 不触碰 logs/。
-    let (w, d) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let w = report.written;
+    let d = report.deleted;
     assert!(!w.iter().any(|p| p.starts_with("logs")), "w: {w:?}");
     assert!(!d.iter().any(|p| p.starts_with("logs")), "d: {d:?}");
     assert!(root.join("logs").join("junk.log").exists());
@@ -239,7 +245,9 @@ async fn git_mode_persistence_reloads_and_restores() {
     let metas = store2.list_meta();
     assert_eq!(metas.len(), 1);
     assert_eq!(metas[0].turn, 1);
-    let (written, _) = store2.restore_code(1).await;
+    let report = store2.restore_code(1).await;
+    let written = report.written;
+    let _ = report.deleted;
     assert!(
         written.contains(&"doc.txt".to_string()),
         "written: {written:?}"
@@ -288,7 +296,9 @@ async fn git_mode_hybrid_restores_out_of_workspace_paths() {
         .await;
     std::fs::write(&outside, "clobbered").unwrap();
 
-    let (w, _) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let w = report.written;
+    let _ = report.deleted;
     assert!(w.iter().any(|p| p.ends_with("o.txt")), "w: {w:?}");
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside-orig");
 }
@@ -321,7 +331,9 @@ async fn cross_mode_git_index_loaded_as_json_never_false_deletes() {
     let store2 = CheckpointStore::new(Some(cp_dir), root.clone());
     assert_eq!(store2.backend(), CheckpointBackend::Json);
 
-    let (w, dd) = store2.restore_code(2).await;
+    let report = store2.restore_code(2).await;
+    let w = report.written;
+    let dd = report.deleted;
     assert!(
         w.is_empty() && dd.is_empty(),
         "cross-mode restore must be honest no-op: {w:?} {dd:?}"

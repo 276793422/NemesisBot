@@ -58,10 +58,14 @@ fn restore_to_tree_bad_hex_and_missing_tree_degrade_to_empty() {
     let store = CheckpointStore::new(None, root.clone());
     store.begin(1, "turn 1");
 
-    let (w, d) = store.restore_to_tree("zzzz-not-hex").unwrap();
+    let report = store.restore_to_tree("zzzz-not-hex").unwrap();
+    let w = report.written;
+    let d = report.deleted;
     assert!(w.is_empty() && d.is_empty(), "bad hex: {w:?} {d:?}");
 
-    let (w, d) = store.restore_to_tree(&"e".repeat(40)).unwrap();
+    let report = store.restore_to_tree(&"e".repeat(40)).unwrap();
+    let w = report.written;
+    let d = report.deleted;
     assert!(w.is_empty() && d.is_empty(), "missing tree: {w:?} {d:?}");
 }
 
@@ -83,7 +87,9 @@ async fn checkout_tree_failure_when_file_became_dir() {
     std::fs::create_dir(root.join("f.txt")).unwrap();
     std::fs::write(root.join("f.txt").join("inner.txt"), "x").unwrap();
 
-    let (_w, _d) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let _w = report.written;
+    let _d = report.deleted;
     // 诚实降级：不 panic 即可；checkout 若被目录挡住则 f.txt 仍是目录。
     let still_dir = root.join("f.txt").is_dir();
     let restored = root.join("f.txt").is_file();
@@ -103,7 +109,9 @@ async fn delete_failure_when_removed_file_became_dir() {
 
     // 盘上同名位置现在是目录 → remove_file 失败臂。
     std::fs::create_dir(root.join("doomed.txt")).unwrap();
-    let (_w, d) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let _w = report.written;
+    let d = report.deleted;
     assert!(!d.contains(&"doomed.txt".to_string()), "d: {d:?}");
 }
 
@@ -166,23 +174,32 @@ fn read_file_from_tree_error_faces() {
     );
 }
 
-/// hybrid_restore 失败面：写入目标在盘上是目录（写失败不进 written）；
-/// 待删文件不存在（删失败不进 deleted）；`..` 路径 safe_path 拒绝。
+/// hybrid_restore 失败面（R3 语义）：写入目标在盘上是目录 → **进 failures**
+/// （旧形态静默吞掉——rewind 据此零推进）；待删文件不存在 = 快照语义已
+/// 达成（不计失败）；`..` 路径 safe_path 拒绝（不进任何 vec）。
 #[tokio::test]
 async fn hybrid_restore_failures_are_honest() {
     let (_d, root) = git_root();
     let store = CheckpointStore::new(None, root.clone());
     std::fs::create_dir_all(root.join("sub")).unwrap();
 
-    let (w, d) = store
+    let report = store
         .hybrid_restore(vec![
             ("sub".to_string(), Some("blocked".to_string())), // 目录 → 写失败
-            ("ghost.txt".to_string(), None),                  // 不存在 → 删失败
+            ("ghost.txt".to_string(), None),                  // 不存在 → 语义已达成
             ("../escape.txt".to_string(), Some("x".to_string())), // safe_path 拒
         ])
         .await;
-    assert!(w.is_empty(), "w: {w:?}");
-    assert!(d.is_empty(), "d: {d:?}");
+    assert!(report.written.is_empty(), "w: {:?}", report.written);
+    assert!(report.deleted.is_empty(), "d: {:?}", report.deleted);
+    assert_eq!(
+        report.failures.len(),
+        1,
+        "目录写失败必须进 failures（R3）：{:?}",
+        report.failures
+    );
+    assert_eq!(report.failures[0].0, "sub");
+    assert!(!report.ok(), "有失败项 = 非完整恢复");
 }
 
 /// 影子库在构造后被外力删除 → begin 的 tree 写入失败 → 该 turn 无 tree

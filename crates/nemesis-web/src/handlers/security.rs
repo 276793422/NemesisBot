@@ -86,6 +86,13 @@ pub(crate) fn set_session_allow_all_for_test(
 pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 
+/// 内存裁决与 sidecar 持久半边的串行锁（2026-10-24 R1）：`state.set` 与
+/// `write_session_allow_all` 必须相邻原子——快速开/关交错时，若无此锁，
+/// 「后发的 disable 先写盘、先发的 enable 后写盘」会让内存终值=关而磁盘
+/// 终值=开（重启恢复出放行）。parking_lot 同步锁：handler 全同步（fs 写），
+/// 无 await 点。
+static SESSION_ALLOW_PERSIST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn session_allow_all_state()
 -> Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>> {
     SESSION_ALLOW_ALL
@@ -349,7 +356,9 @@ impl SecurityHandler {
     }
 
     /// 会话级全部放行 set：双写（内存态即时生效 + sidecar 持久位重启恢复）。
-    /// 返回 set 后快照 `(enabled, since, count)` 供前端即时渲染。
+    /// 返回 set 后快照 `(enabled, since, count)` 供前端即时渲染；`persisted`
+    /// 标注持久半边是否真的落盘（2026-10-24 R1：持久化失败不再谎报普通成功
+    /// ——响应带 `persisted:false` + `warning`，内存态按用户当次意志保留）。
     fn session_allow(
         &self,
         session_id: &str,
@@ -359,20 +368,42 @@ impl SecurityHandler {
             return Ok(Some(serde_json::json!({ "injected": false })));
         };
         let session_key = derive_session_key(session_id);
+        // 内存裁决与持久半边串行（R1：快速开/关交错不得让内存与磁盘终值
+        // 相反）。parking_lot 同步锁——本 handler 全同步（fs 写），无 await。
+        let _serial = SESSION_ALLOW_PERSIST_LOCK.lock();
         let (since, count) = state.set(&session_key, enabled);
         // sidecar 持久半边（nemesis-web 直调 chat_log 有先例——handlers/
         // sessions.rs clear_undelivered_replies）。since 传内存态返回值——
         // 单一真相，两半边不各打各的时间戳。写失败不回滚内存态：运行期裁决
-        // 已生效，重启后回默认关（诚实降级）+ warn 可查。
-        nemesis_agent::chat_log::write_session_allow_all(&session_key, enabled, &since);
-        Ok(Some(serde_json::json!({
+        // 已生效（关=安全方向保持关；开=用户当次意志），但重启恢复面不可信
+        // ——响应显式 `persisted:false` + warning，由前端向用户告警。
+        let mut body = serde_json::json!({
             "injected": true,
             "session_id": session_id,
             "session_key": session_key,
             "enabled": enabled,
             "since": since,
             "count": count,
-        })))
+            "persisted": true,
+        });
+        if let Err(e) =
+            nemesis_agent::chat_log::write_session_allow_all(&session_key, enabled, &since)
+        {
+            body["persisted"] = serde_json::Value::Bool(false);
+            let direction = if enabled {
+                "已启用（本进程内生效）；持久化失败，重启后不保持"
+            } else {
+                "已关闭（本进程内生效）；持久化失败，重启后将恢复放行——请立即重试或人工核对 sidecar"
+            };
+            body["warning"] = serde_json::Value::String(format!("{direction}：{e}"));
+            tracing::warn!(
+                "[security] session_allow 持久化失败 session_key={} enabled={}：{}",
+                session_key,
+                enabled,
+                e
+            );
+        }
+        Ok(Some(body))
     }
 
     /// 会话级全部放行状态（前端刷新用；未注入 = `injected: false`）。

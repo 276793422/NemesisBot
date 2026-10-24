@@ -22,6 +22,101 @@ use super::*;
 use std::io::Write;
 use std::sync::Arc;
 
+// R6（2026-10-24 复核）回归锁：force 更新失败必须保留已装技能。
+// 旧形态「先卸后验源」——registry 名不存在时旧目录已被删（可用技能被
+// 销毁）。现在：registry 预检在动旧目录**之前**报错，旧目录原样保留。
+#[tokio::test]
+async fn r6_force_update_failed_source_keeps_installed_skill() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("skills/review-existing");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let old = skill_dir.join("SKILL.md");
+    let old_content = "# Existing working skill\nKeep me on failed update.\n";
+    std::fs::write(&old, old_content).unwrap();
+
+    let result = SkillsHandler::new()
+        .install(
+            &serde_json::json!({
+                "slug": "review-existing",
+                "registry": "review-no-such-registry",
+                "force": true
+            }),
+            &dir.path().to_string_lossy(),
+        )
+        .await;
+
+    // 源不存在诚实报错（预检语义不变）。
+    let error = result.unwrap_err();
+    assert!(error.contains("不存在"), "err: {error}");
+
+    // 旧技能必须原样保留（内容逐字节一致，不是残留半态）。
+    assert!(
+        old.exists(),
+        "failed force-update must keep the installed skill"
+    );
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), old_content);
+
+    // 无备份残留（预检失败发生在备份之前）。
+    let staging = dir.path().join(".skill-staging");
+    if staging.exists() {
+        let leftovers: Vec<_> = std::fs::read_dir(&staging)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no backup leftovers expected: {leftovers:?}"
+        );
+    }
+}
+
+// R6 回归锁②：备份-回滚臂——装失败（GitHub 下载路径，语法合法但源不可达）
+// 时旧目录从备份原样复位。
+#[tokio::test]
+async fn r6_force_update_install_failure_restores_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("skills/review-restore");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let old = skill_dir.join("SKILL.md");
+    let old_content = "# Existing working skill\nRestore me on failed install.\n";
+    std::fs::write(&old, old_content).unwrap();
+
+    // repo 语法合法（预检通过）→ 进入备份 → GitHub 网络面失败 → 回滚。
+    // 例程禁外网：指向保留域名的不可达端点（example.invalid 不解析）。
+    let result = SkillsHandler::new()
+        .install(
+            &serde_json::json!({
+                "slug": "review-restore",
+                "repo": "acme/review-restore",
+                "force": true
+            }),
+            &dir.path().to_string_lossy(),
+        )
+        .await;
+
+    // 安装失败诚实报错（网络错误形态随环境，不做精确匹配）。
+    assert!(result.is_err(), "unreachable source must fail");
+
+    // 旧技能从备份原样复位。
+    assert!(old.exists(), "failed install must restore the backup");
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), old_content);
+
+    // 备份已回滚消化（.skill-staging 无遗留）。
+    let staging = dir.path().join(".skill-staging");
+    if staging.exists() {
+        let leftovers: Vec<_> = std::fs::read_dir(&staging)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "backup must be consumed by rollback: {leftovers:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------

@@ -95,6 +95,9 @@ pub struct SweepReport {
     pub migrated_removed: Vec<String>,
     /// P6-R2：migrating + 无墓碑（commit 未达）→ 回滚 active 照常服务。
     pub reactivated: Vec<String>,
+    /// R7（2026-10-24 复核）：migrating + 意图日志在场、无墓碑（commit 已
+    /// 发出，B 端可能已激活）→ 冻结转人工（自动回滚 = 同 uuid 双活风险）。
+    pub frozen_migrating: Vec<String>,
 }
 
 /// Agent 记录管理器（clone 廉价；与任务真相源共享同一 `Arc<TaskDb>`）。
@@ -492,6 +495,7 @@ impl AgentManager {
             failed: Vec::new(),
             migrated_removed: Vec::new(),
             reactivated: Vec::new(),
+            frozen_migrating: Vec::new(),
         };
         for record in self.store.list_all()? {
             if record.status != agent_status::PROVISIONING {

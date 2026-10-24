@@ -76,6 +76,11 @@ export function useSessionAllowAll() {
         enabled,
       })
       applyPayload(sessionId, res)
+      // 持久化失败（2026-10-24 R1）：内存态已生效但重启不保持（关）或会恢复
+      // 放行（开）——必须 loud 告警，不能只当普通成功。
+      if (res?.persisted === false) {
+        toast.error(res.warning || '会话放行状态已生效，但持久化失败：重启后不保持')
+      }
     } catch (err: any) {
       const msg = String(err ?? '')
       if (msg.includes('未装配')) sessionAllowAvailable.value = false

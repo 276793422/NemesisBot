@@ -51,7 +51,9 @@ async fn git_mode_tree_queries_and_restore_to_tree() {
     assert_eq!(store.latest_tree_hex().as_deref(), Some(t1.as_str()));
 
     // 绕过索引恢复：索引已无 turn 2，影子对象仍在 → 打回 v1。
-    let (written, _deleted) = store.restore_to_tree(&t1).unwrap();
+    let report = store.restore_to_tree(&t1).unwrap();
+    let written = report.written;
+    let _deleted = report.deleted;
     assert!(written.contains(&"code.txt".to_string()), "{written:?}");
     assert_eq!(
         std::fs::read_to_string(root.join("code.txt")).unwrap(),

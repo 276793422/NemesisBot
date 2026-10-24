@@ -147,6 +147,61 @@ async fn e3_rewind_truncates_turn_aligned_and_restores_files() {
     delete_chat_log(&key);
 }
 
+/// R3 回归锁（2026-10-24 外评探针反转）：文件恢复失败时 rewind **零推进**
+/// ——jsonl 不截断、checkpoint 保留、返回 blocked 结构化失败清单；解锁后
+/// 重试恢复正常推进。旧形态：恢复失败被吞、照常盖「applied」戳 + 无条件
+/// 截断对话 + 摧毁 checkpoint（文件没恢复、对话被截、重试不可能，三输）。
+/// share_mode(1)（仅 FILE_SHARE_READ）锁目标文件逼 hybrid_restore 写失败。
+#[cfg(windows)]
+#[tokio::test]
+async fn rewind_restore_failure_blocks_without_discarding_history() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (al, key, dir) = stage_two_turns("r3-locked").await;
+    let path = dir.path().join("ws/code.txt");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .expect("打开锁句柄");
+
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["blocked"], true, "恢复失败必须 blocked: {out}");
+    assert_eq!(out["reason"], "restore_failed");
+    assert_eq!(
+        out["file_restore"], "failed",
+        "不完整恢复不得盖 applied 戳: {out}"
+    );
+    assert!(
+        out["restore_failures"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "失败清单非空: {out}"
+    );
+
+    // 零推进三断言：文件未动 + 会话未截 + checkpoint 保留（重试依据）。
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "v3",
+        "恢复失败文件不得半途而废地保持错误内容"
+    );
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4, "恢复失败 = 会话不截断");
+    assert!(
+        al.checkpoint_list().iter().any(|c| c.turn == 2),
+        "checkpoint turn 2 保留（重试依据不被摧毁）"
+    );
+
+    // 解锁重试：恢复正常推进（恢复幂等——重写同样内容）。
+    drop(lock);
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2, "重试后截断生效");
+
+    delete_chat_log(&key);
+}
+
 /// redo：行 VERBATIM 回填（时间戳/标记原样）；JSON 形态 forward_tree=None
 /// → 文件步诚实 skipped 不装成功；栈空后诚实报错。
 #[tokio::test]

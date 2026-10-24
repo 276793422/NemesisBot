@@ -35,6 +35,12 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 /// 的原子性，无需入锁（对齐 learned::MANIFEST_WRITE_LOCK 先例）。
 static LOCKFILE_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
+/// R2（2026-10-24）：安装落位临界区互斥——exists 检查→rename 落位→记账
+/// 三段必须原子（并发同名安装不得双双通过 exists 检查后互相覆盖/一输一赢
+/// 静默串台）。临界区全同步无 await，parking_lot 停等安全；异步审批在锁外。
+/// 技能安装是低频管理操作，全局一把锁足够（毫秒级落位段）。
+static INSTALL_COMMIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// GitHub 安装结果（P12 pinned 路径）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallOutcome {
@@ -174,8 +180,81 @@ impl SkillInstaller {
     // 不放 skills/ 下——loader 扫描不跳过点开头目录，放里面会被当成技能加载）。
 
     /// staging 目录（审批通过前下载暂存）。
+    ///
+    /// ⚠ 旧共享形态（`.skill-staging/<slug>`，R2 前的唯一形态）：审批等待
+    /// 窗口内另一安装的预清理/下载会换写同目录内容，approve-A 装-B。现在
+    /// 只作 `commit_install` 对外部手工构造 plan（无事务号）的兼容回落，
+    /// 生产两路安装一律走 [`Self::staging_dir_tx`]。
     fn staging_dir(&self, slug: &str) -> PathBuf {
         self.workspace.join(".skill-staging").join(slug)
+    }
+
+    /// staging 目录——R2（2026-10-24）逐事务唯一形态：`.skill-staging/<slug>.<tx>`。
+    /// 审批等待期间另一安装的下载与本次计划的内容源物理隔离。
+    fn staging_dir_tx(&self, slug: &str, tx: &str) -> PathBuf {
+        self.workspace
+            .join(".skill-staging")
+            .join(format!("{}.{}", slug, tx))
+    }
+
+    /// R2：安装事务号（pid + 毫秒 + 进程内序号）。
+    fn new_install_tx() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TX_SEQ: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "tx{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            TX_SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// R2：安装开始时清扫 staging 根下 24h 前的残留事务目录（崩溃/断电遗孤；
+    /// 成功与失败路径各自清理自己的，正常不积累）。best-effort：清扫失败
+    /// 不影响本次安装。
+    fn sweep_stale_staging(&self) {
+        let root = self.workspace.join(".skill-staging");
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return;
+        };
+        let cutoff = std::time::SystemTime::now() - Duration::from_secs(24 * 3600);
+        for ent in entries.flatten() {
+            let stale = ent
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t < cutoff)
+                .unwrap_or(false);
+            if stale {
+                debug!("sweeping stale skill staging: {}", ent.path().display());
+                nemesis_utils::fsutil::remove_dir_all_resilient(ent.path());
+            }
+        }
+    }
+
+    /// R2：提交前 digest 复核——staging 现内容必须与审批通过的逐文件 sha256
+    /// 完全一致（审批等待窗口内内容被换 = abort，不落位）。staging 缺席 +
+    /// 空审批清单 = 合法（registry 未写文件的 Stub 历史契约）。
+    fn verify_staging_matches_plan(
+        &self,
+        staging: &Path,
+        approved: &std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        let actual = if staging.exists() {
+            SkillsLockfile::compute_dir_hashes(staging)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        if actual == *approved {
+            return Ok(());
+        }
+        Err(NemesisError::Security(format!(
+            "staging content changed after approval (approved {} files, found {} on disk) — install aborted",
+            approved.len(),
+            actual.len()
+        )))
     }
 
     /// 解析 `owner/repo[@ref]` → (repo, requested_ref)。
@@ -360,8 +439,11 @@ impl SkillInstaller {
             Self::resolve_commit(&client, &self.github_api_url, &repo, &requested_ref).await?;
 
         // 下载到 staging（SHA 同时充当 trees API 与 raw URL 的 ref）。
-        let staging = self.staging_dir(&slug);
-        nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+        // R2：逐事务唯一目录——旧共享形态下，plan 阶段产出审批卡后，另一
+        // 并发安装的预清理/下载会换写本计划的内容源（approve-A 装-B）。
+        self.sweep_stale_staging();
+        let tx = Self::new_install_tx();
+        let staging = self.staging_dir_tx(&slug, &tx);
         if let Err(e) = crate::github_tree::download_skill_tree_from_github(
             &client,
             &self.github_api_url,
@@ -476,12 +558,18 @@ impl SkillInstaller {
             trust_detail,
             security,
             warnings,
+            staging_tx: tx,
         })
     }
 
     /// P13/P14：commit 阶段——gate 裁决；approve 则 staging rename 落位 + lockfile 记账。
     pub async fn commit_install(&self, plan: InstallPlan) -> Result<InstallOutcome> {
-        let staging = self.staging_dir(&plan.slug);
+        // R2：逐事务 staging（外部手工构造的旧形态 plan 无事务号 → 回落共享目录）。
+        let staging = if plan.staging_tx.is_empty() {
+            self.staging_dir(&plan.slug)
+        } else {
+            self.staging_dir_tx(&plan.slug, &plan.staging_tx)
+        };
         let gate = self.gate_or_default();
         match gate.decide(&plan).await {
             InstallDecision::Approve => {}
@@ -498,6 +586,22 @@ impl SkillInstaller {
                 )));
             }
         }
+
+        // R2：提交前 digest 复核——plan 阶段锁定的逐文件 sha256 与 staging
+        // 现内容比对（审批等待窗口内被换 = abort，不落位）。
+        let approved = plan
+            .files
+            .iter()
+            .map(|f| (f.path.clone(), f.sha256.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if let Err(e) = self.verify_staging_matches_plan(&staging, &approved) {
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            return Err(e);
+        }
+
+        // R2：落位临界区——exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下
+        // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段。
+        let _commit_guard = INSTALL_COMMIT_LOCK.lock();
 
         let target = self.workspace.join("skills").join(&plan.slug);
         // plan 阶段已检查不存在；二次防御（并发竞态兜底）。
@@ -701,8 +805,11 @@ impl SkillInstaller {
         })?;
 
         // 下载到 staging（审批通过前不落 skills/）。
-        let staging = self.staging_dir(slug);
-        nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+        // R2：逐事务唯一目录 + 残留清扫——旧共享形态下，plan 产出审批卡后
+        // 另一并发安装的预清理/下载会换写本计划的内容源（approve-A 装-B）。
+        self.sweep_stale_staging();
+        let tx = Self::new_install_tx();
+        let staging = self.staging_dir_tx(slug, &tx);
         let dl_result = match registry
             .download_and_install(slug, version, &staging.to_string_lossy())
             .await
@@ -835,6 +942,7 @@ impl SkillInstaller {
             },
             security: security_result,
             warnings: age_warnings,
+            staging_tx: tx,
         };
         let gate = self.gate_or_default();
         if let InstallDecision::Deny { reason } = gate.decide(&plan).await {
@@ -849,6 +957,18 @@ impl SkillInstaller {
                 }
             )));
         }
+
+        // R2：提交前 digest 复核——审批等待窗口内 staging 内容被换 = abort
+        // （不落位、内容不进 skills/）。
+        if let Err(e) = self.verify_staging_matches_plan(&staging, &files_map) {
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            return Err(e);
+        }
+
+        // R2：落位临界区——exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下
+        // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段，
+        // parking_lot 停等安全；异步审批在锁外。
+        let _commit_guard = INSTALL_COMMIT_LOCK.lock();
 
         // 落位 + P14 lockfile 记账（skills/ 父目录可能尚不存在；
         // staging 不存在 = registry 没写任何文件——建空目录落位，保持历史行为）。
