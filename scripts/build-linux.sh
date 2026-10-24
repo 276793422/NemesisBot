@@ -14,7 +14,10 @@
 #   ├── plugins/
 #   │   ├── plugin_ui.so
 #   │   ├── plugin_onnx.so
-#   │   └── libplugin_vm.so   (image script + guest ELFs embedded; released on first use)
+#   │   ├── libplugin_vm.so   (image script + guest ELFs embedded; released on first use)
+#   │   └── libplugin_roaming.so  (QUIC relay server + rendezvous registry; QUIC plugin
+#   │                              M1 — iroh stack lives here, host exe zero increment;
+#   │                              absent = relay honestly degraded)
 #   ├── plugins_wasm/          (WASM plugin payload dir, preset empty + README;
 #   │                           installed plugins land here, NOT loaded by default)
 #   └── tests/
@@ -328,6 +331,24 @@ else
         echo "  SKIP $PLUGIN_VM_DIR/Cargo.toml not found"
     fi
     echo ""
+
+    # --- plugin-roaming（QUIC 中继服务器 + 名册注册表；QUIC 插件化 M1
+    #     2026-10-23：iroh-relay/rcgen/rustls/axum 栈整体住进这个 .so，宿主
+    #     二进制零增量；缺席 = 服务端面诚实降级 + CLI 动态隐藏，绝非装载失败） ---
+    PLUGIN_ROAMING_DIR="plugins/plugin-roaming"
+    if [ -f "$PLUGIN_ROAMING_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-roaming..."
+        ROAMING_START=$SECONDS
+        if (cd "$PLUGIN_ROAMING_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux/plugins/plugin-roaming" cargo build --release 2>&1); then
+            ROAMING_DURATION=$(( SECONDS - ROAMING_START ))
+            echo "  OK Plugin-roaming built in ${ROAMING_DURATION}s"
+        else
+            echo "  WARN Plugin-roaming build failed (non-fatal — QUIC relay server unavailable)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_ROAMING_DIR/Cargo.toml not found"
+    fi
+    echo ""
 fi
 
 # ============================================
@@ -397,6 +418,23 @@ for so_path in "target/target_linux/plugins/plugin-wasm/release/libplugin_wasm.s
 done
 if [ "$WASM_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_wasm.so not found in build output (wasm 插件子系统将不可用)"
+fi
+
+# plugin-roaming QUIC 中继/名册面（exe 旁 plugins/ 查找——QUIC 插件化 M1：
+# iroh 栈在 .so 内，宿主零增量；缺席 = 中继诚实降级 + CLI 动态隐藏）
+ROAMING_DLL_FOUND=false
+for so_path in "target/target_linux/plugins/plugin-roaming/release/libplugin_roaming.so"; do
+    if [ -f "$so_path" ]; then
+        cp "$so_path" "$BIN_DIR/plugins/"
+        SIZE=$(wc -c < "$so_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("libplugin_roaming.so (${SIZE_MB} MB)")
+        ROAMING_DLL_FOUND=true
+        break
+    fi
+done
+if [ "$ROAMING_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN libplugin_roaming.so not found in build output (QUIC relay server unavailable)"
 fi
 
 # 预置空 plugins_wasm/ 目录（2026-10-22 纪律：WASM 插件载荷落用户可见的

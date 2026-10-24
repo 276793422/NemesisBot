@@ -3560,13 +3560,12 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
 // `iroh:<hex>@<relay>` 完整地址作 primary（iroh 形态禁拼 :rpc_port）、裸
 // `iroh:<hex>` 身份候选入池；自己按 iroh_id 过滤。身份用真实 iroh keypair
 // （valid_iroh_id 走 25519 公钥校验，任意 hex 会被静默丢弃）。
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_rendezvous_merge_via_relay_tag_self_filter_and_address_forms() {
     let cluster = Cluster::new(make_config());
     cluster.start();
-    let self_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
-    let peer_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let self_hex = crate::roaming::random_valid_iroh_hex();
+    let peer_hex = crate::roaming::random_valid_iroh_hex();
     let relay_url = "http://relay.example.com:3340";
     let member = |node_id: &str, iroh: String| crate::roaming::rendezvous::RendezvousMember {
         node_id: node_id.to_string(),
@@ -3621,13 +3620,12 @@ fn test_rendezvous_merge_via_relay_tag_self_filter_and_address_forms() {
 
 // 稳态纪律：content_eq 不含 last_seen——名册每 30s 重同步仅 last_seen 增长
 // 时不得反复判变（不刷日志/事件）；首见判变一次，之后恒静默。
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_rendezvous_merge_steady_state_no_churn() {
     let cluster = Cluster::new(make_config());
     cluster.start();
-    let self_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
-    let peer_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let self_hex = crate::roaming::random_valid_iroh_hex();
+    let peer_hex = crate::roaming::random_valid_iroh_hex();
     let relay_url = "http://relay.example.com:3340";
     let mk = |seen: u64| crate::roaming::rendezvous::RendezvousMember {
         node_id: "relay-peer".to_string(),
@@ -3658,36 +3656,26 @@ fn test_rendezvous_merge_steady_state_no_churn() {
 // 拨号路径观测查询面（打洞直连 / 经中继转发——nodes.list roamingPath 数据源）
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "cluster-roaming")]
+/// `roaming_hex_of`：注册表节点地址抠 `iroh:<hex>`（裸形态 / 带 relay 后缀
+/// 形态都剥出，小写归一）；纯 LAN 节点 / 未注册节点 None。无 feature 门
+/// （纯字符串语义——QUIC 插件化 M3 后端点观测在插件，节点→hex 映射归宿主）。
 #[test]
-fn roaming_path_of_without_endpoint_is_none() {
+fn roaming_hex_of_extracts_iroh_hex_and_normalizes() {
     let cluster = Cluster::new(make_config());
-    // 未装配漫游端点（roaming.enabled 关 / 装配失败）：查询诚实 None。
-    assert_eq!(cluster.roaming_path_of("any-peer"), None);
-}
-
-#[cfg(feature = "cluster-roaming")]
-#[tokio::test]
-async fn roaming_path_of_reads_endpoint_observation_slot() {
-    use crate::roaming::endpoint::{RoamingEndpoint, RoamingIdentity, RoamingProtocolHandler};
-    use iroh::EndpointAddr;
-    let cluster = Cluster::new(make_config());
-    let server_id = RoamingIdentity::generate();
-    let client_id = RoamingIdentity::generate();
-    let peer_hex = server_id.node_id_hex();
+    let hex = "AA".repeat(32); // 大写入册 → 查询面小写归一
     cluster.register_node(ExtendedNodeInfo {
         base: nemesis_types::cluster::NodeInfo {
             id: "roam-peer".into(),
             name: "roam-worker".into(),
             role: nemesis_types::cluster::NodeRole::Worker,
-            address: format!("iroh:{peer_hex}@http://42.193.96.45:3340"),
+            address: format!("iroh:{}@http://42.193.96.45:3340", hex.to_lowercase()),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: Vec::new(),
         tags: vec!["via-relay".into()],
-        addresses: vec![format!("iroh:{peer_hex}")],
+        addresses: vec![format!("iroh:{hex}")],
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
@@ -3695,56 +3683,10 @@ async fn roaming_path_of_reads_endpoint_observation_slot() {
         node_type: "agent".into(),
         build: String::new(),
     });
-
-    // 无端点装配：None（诚实降级）。
-    assert_eq!(cluster.roaming_path_of("roam-peer"), None);
-
-    // 装配 client 端点进 cluster 槽 + 对端 echo server（Minimal 预设真连接
-    // ——观察任务拨号后自动开跑，查询面读的是真实观测非 mock）。
-    let ep = std::sync::Arc::new(
-        RoamingEndpoint::bind_direct(&client_id, false)
-            .await
-            .expect("client bind"),
-    );
-    *cluster.roaming_endpoint.lock() = Some(ep.clone());
-    let server = RoamingEndpoint::bind_direct(&server_id, true)
-        .await
-        .expect("server bind");
-    server
-        .serve(RoamingProtocolHandler::echo())
-        .await
-        .expect("server serve");
-    let port = server
-        .direct_addrs()
-        .iter()
-        .find(|a| a.is_ipv4())
-        .map(|a| a.port())
-        .expect("server 应有 IPv4 绑定");
-    let addr = EndpointAddr::new(server_id.node_id())
-        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
-    let (_send, _recv) = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        ep.connect_stream_addr(addr),
-    )
-    .await
-    .expect("connect 整体超时（测试级）")
-    .expect("connect 应成功");
-
-    // 观察任务首轮快照 ≤2s；loopback Minimal 无中继 → direct。
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut observed = None;
-    while tokio::time::Instant::now() < deadline {
-        if let Some(p) = cluster.roaming_path_of("roam-peer") {
-            observed = Some(p);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert_eq!(
-        observed.as_deref(),
-        Some("direct"),
-        "查询面应读出观察槽的 direct 观测"
-    );
+    let got = cluster
+        .roaming_hex_of("roam-peer")
+        .expect("漫游节点应有 hex");
+    assert_eq!(got, hex.to_lowercase(), "hex 应小写归一");
 
     // 纯 LAN 节点（无 iroh 地址）：None。
     let mut lan = cluster.registry.get("roam-peer").expect("已入册");
@@ -3752,11 +3694,26 @@ async fn roaming_path_of_reads_endpoint_observation_slot() {
     lan.base.address = "10.0.0.9:9000".into();
     lan.addresses = Vec::new();
     cluster.register_node(lan);
-    assert_eq!(cluster.roaming_path_of("lan-peer"), None);
-
-    ep.shutdown().await;
-    server.shutdown().await;
+    assert_eq!(cluster.roaming_hex_of("lan-peer"), None);
+    assert_eq!(cluster.roaming_hex_of("missing-peer"), None);
 }
+
+/// `roaming_dial_paths`：插件缺席（宿主测试进程不装载 plugin_roaming）→
+/// 空 map（消费面按无观测渲染，诚实降级）。双 feature 形态同语义：
+/// feature-on 走桥 Absent 分支，feature-off 恒空。
+#[tokio::test]
+async fn roaming_dial_paths_without_plugin_is_empty() {
+    let cluster = Cluster::new(make_config());
+    assert!(
+        cluster.roaming_dial_paths().await.is_empty(),
+        "插件缺席时空 map"
+    );
+}
+
+// QUIC 插件化 M3：端点观测槽真通路测试（bind_direct 双端点 loopback 互连
+// → 观察任务写槽 → 查询面读 direct）已随端点本体迁入 plugin_roaming
+// （插件侧 endpoint/dial path 测试覆盖）；宿主侧查询面语义由上方
+// roaming_hex_of / roaming_dial_paths 两测钉死。
 
 #[test]
 fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_semantics() {
@@ -10164,7 +10121,6 @@ fn test_set_capabilities_unions_static_identity_caps() {
 /// A1 P3：announce 携带合法 iroh_id → `iroh:<hex>` 拼接后作拨号候选
 /// 池尾追加（pin > 载荷 > 源地址 > iroh，不抢直连优先级）；重复 announce
 /// 不重复入池。feature 关闭时 valid_iroh_id 恒 None → 不入池（诚实裁剪）。
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_handle_discovered_node_iroh_id_pools() {
     let cluster = Cluster::new(make_config());
@@ -10172,8 +10128,8 @@ fn test_handle_discovered_node_iroh_id_pools() {
 
     // iroh EndpointId 是 ed25519 公钥——from_bytes 会做 curve point 校验，
     // 任意 32 字节（如 ab*32）会被 valid_iroh_id 诚实拒绝；必须用真实
-    // 身份派生 hex（RoamingIdentity::generate → node_id_hex）。
-    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    // 密钥派生 hex（random_valid_iroh_hex：ed25519 SigningKey 派生公钥）。
+    let hex = crate::roaming::random_valid_iroh_hex();
     cluster.handle_discovered_node_ex(
         "iroh-node-1",
         "roaming-worker",
@@ -10194,7 +10150,6 @@ fn test_handle_discovered_node_iroh_id_pools() {
     );
 
     let node = cluster.get_node_info("iroh-node-1").expect("node stored");
-    #[cfg(feature = "cluster-roaming")]
     {
         let cand = format!("iroh:{hex}");
         assert!(
@@ -10232,7 +10187,6 @@ fn test_handle_discovered_node_iroh_id_pools() {
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
     let node = cluster.get_node_info("iroh-node-1").unwrap();
-    #[cfg(feature = "cluster-roaming")]
     assert_eq!(
         node.addresses
             .iter()
@@ -10244,43 +10198,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
     );
 }
 
-/// A1 P3（feature 关侧）：valid_iroh_id 恒 None → iroh 候选不得入池
-/// （未编译时入池候选只会浪费拨号预算，诚实裁剪）。
-#[cfg(not(feature = "cluster-roaming"))]
-#[test]
-fn test_handle_discovered_node_iroh_id_absent_when_feature_off() {
-    let cluster = Cluster::new(make_config());
-    cluster.start();
-
-    cluster.handle_discovered_node_ex(
-        "iroh-node-1",
-        "roaming-worker",
-        vec!["10.0.0.20".into()],
-        21949,
-        "worker",
-        "development",
-        vec![],
-        vec![],
-        "agent",
-        vec![],
-        None,
-        vec![],
-        Some("ab".repeat(32)),
-        None, // runtime_backend：未宣告
-        None,
-        "",
-    );
-
-    let node = cluster.get_node_info("iroh-node-1").expect("node stored");
-    assert!(
-        !node.addresses.iter().any(|a| a.starts_with("iroh:")),
-        "feature 关闭时 iroh 候选不得入池：{:?}",
-        node.addresses
-    );
-}
-
 /// A1 P3：非法 iroh_id（长度不足 / 非 hex / 空白）被校验丢弃，不入池。
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_handle_discovered_node_iroh_id_invalid_rejected() {
     let cluster = Cluster::new(make_config());
@@ -10317,13 +10235,12 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
 
 /// A1 P3：iroh 形态地址（静态 pin 场景）作 announce 载荷首地址时，
 /// primary 不拼 rpc_port（拼了会造出 `iroh:<hex>:<port>` 非法地址）。
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
     let cluster = Cluster::new(make_config());
     cluster.start();
 
-    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let hex = crate::roaming::random_valid_iroh_hex();
     let roaming_addr = format!("iroh:{hex}@10.0.0.30:40001");
     cluster.handle_discovered_node_ex(
         "iroh-node-2",
@@ -10354,7 +10271,6 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
 /// 漫游显式开关（config.cluster.json `roaming.enabled`）三态判定：
 /// 缺文件 / 缺字段或 false / 显式 true。缺 key 不再等价于开启——
 /// 单一真相源是 config，key 只是身份材料。
-#[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_roaming_enabled_in_config_gate() {
     let dir = tempfile::tempdir().unwrap();
@@ -10383,25 +10299,10 @@ fn test_roaming_enabled_in_config_gate() {
     assert!(Cluster::roaming_enabled_in_config(&cfg));
 }
 
-/// 漫游开关打开但 key 缺席：`load_or_create` 幂等自动生成（首次 created=true
-/// 落盘，二次加载 created=false 且身份一致）——setup_roaming 的自动备料分支。
-#[cfg(feature = "cluster-roaming")]
-#[test]
-fn test_roaming_key_autocreate_on_enable() {
-    use crate::roaming::endpoint::RoamingIdentity;
-
-    let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path();
-
-    let (id1, created1) = RoamingIdentity::load_or_create(ws).unwrap();
-    assert!(created1, "首次 = 生成");
-    let key_path = crate::roaming::endpoint::roaming_key_path(ws);
-    assert!(key_path.exists(), "key 落盘");
-
-    let (id2, created2) = RoamingIdentity::load_or_create(ws).unwrap();
-    assert!(!created2, "二次 = 加载不重生成（轮换只走 keygen --force）");
-    assert_eq!(id1.node_id_hex(), id2.node_id_hex(), "身份一致");
-}
+// 漫游开关打开但 key 缺席：`load_or_create` 幂等自动生成（首次 created=true
+// 落盘，二次加载 created=false 且身份一致）——setup_roaming 的自动备料分支。
+// QUIC 插件化 M3：identity_ensure 全语义（含 created 报告与幂等）已随
+// 身份读写迁入 plugin_roaming（插件 identity_tests 钉死），宿主测试删除。
 
 // ===========================================================================
 // A1 运行时硬化批（2026-10-19）：构建号 wire 传播回归锁。

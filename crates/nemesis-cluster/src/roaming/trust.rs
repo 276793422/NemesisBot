@@ -136,3 +136,6 @@ impl TrustBook {
 fn normalize_id(s: &str) -> String {
     s.trim().trim_start_matches("iroh:").to_lowercase()
 }
+
+#[cfg(test)]
+mod tests;

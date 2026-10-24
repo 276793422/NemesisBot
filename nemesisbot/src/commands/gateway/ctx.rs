@@ -94,12 +94,10 @@ pub(crate) struct GatewayCtx {
     pub conv_router: nemesis_web::SharedConvRouter,
     /// estop 单例（C8：集群装配前创建，四方共享同一 Arc）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
-    /// QUIC 中继管理器（quic-relay，2026-10-23 与集群解耦）：独立生命周期
-    /// 单例——闸（config.quic.json relay.enabled）/装配/停机/状态全在
-    /// manager。init_cluster 独立闸拉起、post_agent 注入 web 面、runtime
-    /// teardown 停机；WSAPI cluster.relay.* 经 AppState 同一 Arc 消费。
-    #[cfg(feature = "quic-relay")]
-    pub quic_relay_manager: Option<Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>>,
+    // QUIC 中继（quic-relay）自 2026-10-23 QUIC 插件化 M1 起无 ctx 字段：
+    // 运行面在 plugin_roaming C-ABI 插件，句柄住 loader 静态槽
+    //（[`crate::roaming_plugin_loader::plugin_handle`]，进程级单例）——
+    // init_cluster 闸拉起、post_agent 注入 web 面、runtime teardown 停机。
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Step 8 出站桥的 agent 端 mpsc 发送半（PB-4 装入 SharedResources）。
     pub agent_outbound_tx: tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
@@ -1269,14 +1267,13 @@ impl GatewayCtx {
             }
         };
 
-        // 旧位置首读迁移（**cluster-roaming 闸，不只 quic-relay**）：客户端
-        // 消费面 Cluster::setup_roaming 在 cluster-roaming 下读 config.quic.json
-        // client 段——迁移若只挂 quic-relay 闸，「cluster-roaming 开 +
-        // quic-relay 裁掉」组合里老配置用户（cluster.json roaming 段三键）
-        // 会被静默回落 n0 公共中继（quic.json 缺席 → resolved_quic 全默认，
+        // 旧位置首读迁移（M4 起恒编译——cluster-roaming feature 已删，迁移与
+        // 消费面同闸恒在）：客户端消费面 Cluster::setup_roaming 读
+        // config.quic.json client 段——迁移缺失会让老配置用户（cluster.json
+        // roaming 段三键）被静默回落 n0 公共中继（quic.json 缺席 →
+        // resolved_quic 全默认，
         // 自建中继 + SharedToken 配对全丢）。ensure_quic_config 幂等（quic.json
         // 已在 = no-op）；只拷贝不删除。
-        #[cfg(feature = "cluster-roaming")]
         if nemesis_cluster::roaming::quic_config::ensure_quic_config(
             &common::cluster_config_path(&home),
             &common::quic_config_path(&home),
@@ -1284,13 +1281,29 @@ impl GatewayCtx {
             info!("[Gateway] config.quic.json created（旧位置 QUIC 键已迁移，原键保留不删）");
         }
 
-        // QUIC 中继管理器（quic-relay）：assemble 期构造单例（estop 同款
-        // 时机）。闸开没开由 init_cluster 的独立闸判（setup() 自读
-        // config.quic.json）。
-        #[cfg(feature = "quic-relay")]
-        let quic_relay_manager = Some(std::sync::Arc::new(
-            nemesis_cluster::roaming::relay_manager::QuicRelayManager::new(home.join("workspace")),
-        ));
+        // plugin_roaming 装载（QUIC 插件化 M1）：**文件在场即加载**（计划
+        // 拍板「插件在场开关 | 文件在场即加载」，对齐 vm-display）——功能
+        // 闸不前置：relay.enabled / roaming.enabled 在各自消费点判（start
+        // 处 token fail-closed 等），插件缺席/装载失败 = 服务端面诚实降级
+        // （CLI 动态隐藏 + WSAPI not loaded）。init 配置 = config.quic.json
+        // relay 段 **raw 直传**（loader 纪律：不走 typed 往返，插件侧宽容
+        // 解析同源）。幂等：已装载直接 Loaded。
+        {
+            let quic_path = common::quic_config_path(&home);
+            let init_json = crate::roaming_plugin_loader::relay_init_json(&quic_path);
+            match crate::roaming_plugin_loader::load_roaming_plugin(
+                &home.join("workspace"),
+                &init_json,
+            ) {
+                crate::roaming_plugin_loader::RoamingLoadOutcome::Absent => {}
+                crate::roaming_plugin_loader::RoamingLoadOutcome::Loaded => {
+                    info!("[Gateway] plugin_roaming loaded（中继/名册运行面走插件）");
+                }
+                crate::roaming_plugin_loader::RoamingLoadOutcome::Rejected(reason) => {
+                    warn!("[Gateway] plugin_roaming 拒载（服务端面诚实降级）: {reason}");
+                }
+            }
+        }
 
         Ok(Some(GatewayCtx {
             // 身份与配置
@@ -1305,8 +1318,6 @@ impl GatewayCtx {
             cron_service,
             conv_router,
             estop,
-            #[cfg(feature = "quic-relay")]
-            quic_relay_manager,
             data_store,
             agent_outbound_tx,
             bridge_outbound_handle,
@@ -1345,23 +1356,13 @@ impl GatewayCtx {
     }
 }
 
-/// `--quic-relay` 早退执行体（Step 5b-2）。feature 开 = 调进 `quic relay`
-/// 分类管理入口的同一实现（单一真相源，两入口行为必然一致）；feature 关 =
-/// 诚实报错（旗标恒编译——IoT 裁剪版不带中继也该有明确拒绝文案而非
-/// 「未知参数」）。
-#[cfg(feature = "quic-relay")]
+/// `--quic-relay` 早退执行体（Step 5b-2）。调进 `quic relay` 分类管理入口的
+/// 同一实现（单一真相源，两入口行为必然一致）；插件缺席 = 诚实报错（旗标
+/// 恒编译——M4 起 cluster-roaming/quic-relay feature 已删，无裁剪形态）。
 async fn run_quic_relay(home: &std::path::Path) -> Result<()> {
     crate::commands::quic::run_relay_server(home)
         .await
         .map_err(anyhow::Error::msg)
-}
-
-#[cfg(not(feature = "quic-relay"))]
-async fn run_quic_relay(_home: &std::path::Path) -> Result<()> {
-    anyhow::bail!(
-        "--quic-relay 需要 quic-relay feature 编译（当前二进制未含）；\
-         自建：cargo build --release -p nemesisbot --features quic-relay"
-    )
 }
 
 /// T3.6 LLM 建议标注底座：default_slot provider 裸调用（board_review

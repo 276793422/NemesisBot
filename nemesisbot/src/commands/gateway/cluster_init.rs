@@ -489,12 +489,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     cluster_app_cfg.rpc_port
                 );
 
-                // A1：iroh 漫游叠加层（feature=cluster-roaming）。仅在
+                // A1：iroh 漫游叠加层。仅在
                 // config.cluster.json `roaming.enabled=true`（Dashboard「跨网」
                 // TAB / `cluster roaming enable` CLI 显式 opt-in）时启用；缺
                 // key 自动备料。失败 warn 不炸集群——漫游是叠加层，TCP 主通
                 // 路不受影响。放 token fail-closed 分支内 = 拒绝无认证 iroh 面。
-                #[cfg(feature = "cluster-roaming")]
                 match cluster.setup_roaming().await {
                     Ok(true) => info!("[Gateway] Roaming overlay (iroh) active"),
                     Ok(false) => {
@@ -510,20 +509,31 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
         }
 
-        // QUIC 中继服务器随 gateway 进程内启动（quic-relay）。**独立闸**：
-        // 唯一依据 = config.quic.json relay.enabled（2026-10-23 与集群解耦
-        // ——「中继是 QUIC 的行为」，集群关了中继照起）。装配在集群分支外
-        //（ctx.quic_relay_manager 在 assemble 期构造，post_agent 注入 web
-        // 面、runtime teardown 停机）。失败 warn 不炸网关（端口占用/证书
-        // 非法/token 空在此显形）。
-        #[cfg(feature = "quic-relay")]
-        if let Some(mgr) = ctx.quic_relay_manager.as_ref() {
-            match mgr.setup().await {
-                Ok(true) => info!("[Gateway] Self-hosted relay server active (config.quic.json)"),
-                Ok(false) => tracing::debug!(
+        // QUIC 中继服务器随 gateway 进程内启动（QUIC 插件化 M1：运行面在
+        // plugin_roaming 插件，宿主只剩闸判定 + 调插件 start——iroh-relay
+        // 栈不在本进程）。**独立闸**：唯一依据 = config.quic.json
+        // relay.enabled（2026-10-23 与集群解耦——「中继是 QUIC 的行为」，
+        // 集群关了中继照起）。插件已在 assemble 期按「文件在场即加载」装载；
+        // relay.enabled=true 而插件缺席/拒载 = 诚实降级 warn，中继不起。
+        // token 空 = 插件内 fail-closed 拒启（token_missing 回执）。失败
+        // warn 不炸网关（端口占用/证书非法/token 空在此显形）。
+        {
+            let relay_cfg = nemesis_cluster::roaming::quic_config::resolved_quic(
+                &crate::common::quic_config_path(&home),
+            );
+            if !relay_cfg.relay.enabled {
+                tracing::debug!(
                     "[Gateway] Self-hosted relay not enabled (config.quic.json relay.enabled is not true)"
-                ),
-                Err(e) => warn!("[Gateway] Self-hosted relay setup failed: {}", e),
+                );
+            } else {
+                match crate::roaming_plugin_loader::roaming_start().await {
+                    Ok(status) => info!(
+                        "[Gateway] Self-hosted relay server active (plugin_roaming): http={:?} quic={:?}",
+                        status.get("http_addr"),
+                        status.get("quic_addr")
+                    ),
+                    Err(e) => warn!("[Gateway] Self-hosted relay setup failed: {}", e),
+                }
             }
         }
 
