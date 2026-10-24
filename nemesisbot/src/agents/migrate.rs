@@ -19,9 +19,14 @@
 //!   export → push_transfer_dir → commit RPC → 本地收敛/回滚）。任何
 //!   失败回滚 `migrating→active`；成功写墓碑 + 删记录（顺序不可倒——
 //!   崩溃窗口留给 sweep 收敛，见 `status::MIGRATING` 注）。
-//! - **诚实窗口**（v1 接受，文档留痕）：commit ACK 后本地删除前崩溃 =
-//!   短暂双活（B 真活，A 残记录由 sweep 经墓碑收敛）；B 激活后 ACK
-//!   丢失 = A 回滚 active 与 B 同 uuid 双活（B 份更新），人工二选一。
+//! - **诚实窗口**：commit ACK 后本地删除前崩溃 = 短暂双活（B 真活，A 残
+//!   记录由 sweep 经墓碑收敛）。v1 曾接受「B 激活后 ACK 丢失 = A 回滚
+//!   active 与 B 同 uuid 双活，人工二选一」——R79 残余面根修（2026-10-24
+//!   台账复核）随 R7 冻结机制建成一并关闭该窗：commit call **模糊类**
+//!   失败（超时/取消/连接中断，请求可能已被 B 处理）标记
+//!   [`COMMIT_ACK_LOST_MARK`] 走冻结轨（不回滚、不删意图日志，sweep
+//!   冻结转人工）；确定未发出（限流/序列化/客户端缺席）与对端明确拒绝
+//!   （resp.error）仍走回滚（B 端从未激活，回滚安全）。
 //!   N2 根修（2026-10-24）：ACK 后本地收敛失败（store.remove 报错等）
 //!   与崩溃同族处置——错误带 [`POST_ACK_ERR_MARK`] 前缀，外层 ⑫ **不
 //!   回滚**、保持 migrating 等墓碑收敛（旧行为一视同仁回滚 active =
@@ -58,6 +63,34 @@ const MIGRATION_FORMAT: u32 = 1;
 /// 前缀匹配是刻意选择：错误串经多层 format! 包裹（外层还要附保持语义
 /// 说明），结构化 enum 会强改全部消费面签名，标记前缀零涟漪。
 const POST_ACK_ERR_MARK: &str = "commit 已确认（B 端已激活）";
+
+/// commit 结果未知错误标记（2026-10-24 R79 残余面根修）：⑩ commit call
+/// 以**模糊类**传输错误失败（超时/取消/连接中断——请求可能已达 B 端并被
+/// 处理）时，错误串以本前缀起头——外层 ⑫ 与 POST_ACK 同款**不回滚、不删
+/// 意图日志**：保持 migrating，重启 sweep 冻结转人工（确认 B 已激活 → 落
+/// 墓碑收敛删记录；确认未收到 → 删日志，下轮 sweep 回滚 active）。旧行为
+/// 把模糊错误当「确定未达」回滚 active——B 端恰好已激活时 = 同 uuid 双活
+/// 且 ACTIVE 让 sweep 永久失明（v1 诚实窗口；R7 冻结机制建成后按其同款
+/// 判词「自动回滚 = 双活且失明不可接受」关闭）。前缀匹配是刻意选择，
+/// 理由同 [`POST_ACK_ERR_MARK`] 注。
+const COMMIT_ACK_LOST_MARK: &str = "commit 结果未知（B 端可能已激活）";
+
+/// commit call 错误分类：请求**可能已达对端**（响应等待阶段的失败——
+/// 超时/取消/连接中断/写后读 IO 错）= 模糊类 true；确定未发出（限流/
+/// 序列化/RPC 客户端缺席）或对端明确拒绝（resp.error 路径）= false。
+/// 锚定 outbox 层拍平后的 `RpcClientError` thiserror Display 稳定串——
+/// 错误串经多层 format! 包裹，结构化 enum 会强改全部消费面签名（本模块
+/// 既有形态，POST_ACK_ERR_MARK 同款理由）。pre-commit 各步错误不含这些
+/// 锚（std io Display 无此前缀），不会被误分类。
+fn commit_call_may_have_landed(err: &str) -> bool {
+    const AMBIGUOUS_ANCHORS: [&str; 4] = [
+        "Timeout waiting for response", // RpcClientError::Timeout
+        "Context cancelled",            // RpcClientError::Cancelled
+        "Connection error: ",           // RpcClientError::Connection（含响应等待中连接中断）
+        "IO error: ",                   // RpcClientError::Io（请求已写出、读响应失败形态）
+    ];
+    AMBIGUOUS_ANCHORS.iter().any(|a| err.contains(a))
+}
 
 // ---------------------------------------------------------------------------
 // 传输抽象（trait 化以便测试注入假 transport；生产实现包 `Arc<Cluster>`）
@@ -417,10 +450,21 @@ pub async fn migrate_agent(
                      重启 sweep 按墓碑收敛"
                 ));
             }
+            // R79 残余面：commit 结果未知（模糊类传输错误，请求可能已达 B）
+            // ——与 post-ACK 同轨：绝不回滚、绝不删意图日志（日志 = sweep
+            // 冻结锚），保持 migrating 转人工。
+            if e.starts_with(COMMIT_ACK_LOST_MARK) {
+                return Err(format!(
+                    "{e}；本端保持 migrating（B 端可能已激活，绝不回滚 active），\
+                     重启 sweep 冻结转人工"
+                ));
+            }
             // ⑫ 回滚 migrating→active（回滚失败不吞——诚实并入错误信息；
             // 残留 migrating 由启动 sweep 收敛回 active）。
-            // R7：本臂 = commit 确认未完成（call Err / 响应异常 / commit 前
-            // 失败）——意图日志使命终结，随回滚清除（残留会让 sweep 误冻结）。
+            // 本臂 = commit **确定未完成**（对端明确拒绝 / 确定未发出类
+            // call 错误 / commit 前失败）——意图日志使命终结，随回滚清除
+            // （残留会让 sweep 误冻结）；模糊类（结果未知）已被上面两闸
+            // 拦下走冻结轨，不进本臂。
             remove_journal(&mgr.workspace, agent_id);
             match mgr.store.transition_status(
                 agent_id,
@@ -570,14 +614,29 @@ async fn migrate_inner(
         "credential_blob_b64": credentials.as_ref().map(|(b, _)| b64_encode(b)),
         "credential_passphrase_b64": credentials.as_ref().map(|(_, p)| b64_encode(p.as_bytes())),
     });
-    let resp = transport
+    let resp = match transport
         .call(
             target,
             ACTION_AGENT_MIGRATE_COMMIT,
             payload,
             COMMIT_RPC_TIMEOUT,
         )
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        // R79 残余面：模糊类错误（请求可能已达 B）绝不按「确定未达」
+        // 回滚——标记上抛走冻结轨（此臂意图日志在场，冻结轨才有收敛锚）。
+        Err(e) if commit_call_may_have_landed(&e) => {
+            return Err(format!(
+                "{COMMIT_ACK_LOST_MARK}；{e}——本端保持 migrating + 意图日志在场，\
+                 重启后 sweep 冻结转人工（确认 B 已激活则落墓碑 \
+                 agents/{agent_id}.migrated.json；确认未收到则删 \
+                 agents/{agent_id}.migrating.json，下轮 sweep 回滚 active）"
+            ));
+        }
+        // 确定未发出/明确拒绝类：原样上抛走既有回滚臂。
+        Err(e) => return Err(e),
+    };
     if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return Err(format!("commit 响应异常（ok!=true）: {resp}——迁移中止"));
     }
@@ -609,8 +668,9 @@ async fn migrate_inner(
 /// 墓碑是 post-ACK 崩溃窗口的收敛锚（migrating+墓碑 = sweep 删记录），
 /// 写失败必须重试争取（Windows 瞬时句柄/索引器是常态失败源）——三试全
 /// 败仍继续删记录（记录删掉 = 已收敛，墓碑本就冗余）；若记录删除也失败，
-/// 外层保持 migrating 而墓碑缺席，sweep 会按「commit 未达」回滚 active
-/// ——那是与 ACK 丢失同族的双活诚实窗口，此处 loud WARN 提示人工核查。
+/// 外层保持 migrating 而墓碑缺席，意图日志仍在场（⑩ 已写、本函数未到
+/// 清除步）——sweep 按日志分支**冻结转人工**（绝不自动回滚，R7/R79 语义），
+/// 此处 WARN 与 sweep 冻结 WARN 双重留痕。
 fn migrate_agent_local_finalize(
     mgr: &super::AgentManager,
     agent_id: &str,

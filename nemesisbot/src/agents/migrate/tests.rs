@@ -353,10 +353,12 @@ fn sweep_migrating_converges_both_ways() {
 
 /// 本地 transport：call = 直调 B 端 [`handle_migrate_commit`]（真链路），
 /// push_dir = 拷贝 staging 到 B 端 landing（真实落位前置态）；`fail_push`
-/// 注入 pre-commit 失败。
+/// 注入 pre-commit 失败；`fail_call` 非空 = call 注入该错误串（模拟模糊
+/// 类/明确拒绝类传输错误——outbox 层拍平形态），None = 直调真 handler。
 struct LocalTransport {
     target: MigrateCommitDeps,
     fail_push: bool,
+    fail_call: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -392,6 +394,9 @@ impl super::MigrateTransport for LocalTransport {
         payload: serde_json::Value,
         _: std::time::Duration,
     ) -> Result<serde_json::Value, String> {
+        if let Some(e) = &self.fail_call {
+            return Err(e.clone());
+        }
         handle_migrate_commit(&self.target, payload)
     }
 }
@@ -428,6 +433,7 @@ async fn migrate_post_ack_delete_failure_stays_migrating_and_sweep_converges() {
             self_node_id: "node-b".into(),
         },
         fail_push: false,
+        fail_call: None,
     }));
     // 失败注入：源库 agents 表 DELETE 全拒（复用真 store，无 mock）。
     let conn =
@@ -508,6 +514,7 @@ async fn migrate_pre_commit_failure_rolls_back_active() {
             self_node_id: "node-b".into(),
         },
         fail_push: true,
+        fail_call: None,
     }));
 
     let error = super::migrate_agent(&mgr, AGENT_ID, "node-b")
@@ -601,6 +608,7 @@ async fn migrate_post_ack_marker_and_delete_failure_sweep_freezes_not_reactivate
             self_node_id: "node-b".into(),
         },
         fail_push: false,
+        fail_call: None,
     }));
     // 失败注入②：源库 DELETE 全拒（真 store，无 mock）。
     let conn =
@@ -714,4 +722,214 @@ fn sweep_journal_removed_by_human_then_reactivates() {
         store.get(AGENT_ID).unwrap().unwrap().status,
         agent_status::ACTIVE
     );
+}
+
+// ---------------------------------------------------------------------------
+// R79 残余面（2026-10-24 台账复核）：commit call **模糊类**失败（超时/取消/
+// 连接中断——请求可能已达 B 且被处理）——修复前 ⑫ 删意图日志 + 回滚 active，
+// B 端恰好已激活时 = 同 uuid 双活且 sweep 永久失明（v1 诚实窗口）；修复后
+// 标记 COMMIT_ACK_LOST_MARK 走冻结轨（与 R7 同机制）。明确拒绝/确定未发出
+// 类照旧回滚（防冻结轨扩大化）。
+// ---------------------------------------------------------------------------
+
+/// 模糊类（Timeout 锚串，outbox 层拍平真形态）→ 错误带 COMMIT_ACK_LOST_MARK
+/// + 保持 migrating + 意图日志在场（冻结锚）；sweep 冻结转人工（绝不进
+/// reactivated）；人工裁决「B 未收到」删日志后 sweep 回滚 active 复原。
+#[tokio::test]
+async fn migrate_commit_ack_lost_freezes_instead_of_rollback() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let (source_ws, source_store) = setup_ws(source_dir.path());
+    let (target_ws, target_store) = setup_ws(target_dir.path());
+    let source_db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &source_ws,
+    ))
+    .unwrap();
+    let mgr = super::super::AgentManager::from_db(source_ws.clone(), source_db);
+    let mut record = selfbuilt_record(AGENT_ID, "node-a");
+    record.credential_refs = serde_json::json!([]);
+    source_store.upsert(&record).unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_home_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_memory_dir_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    mgr.set_migrate_transport(std::sync::Arc::new(LocalTransport {
+        target: MigrateCommitDeps {
+            workspace: target_ws,
+            self_node_id: "node-b".into(),
+        },
+        fail_push: false,
+        fail_call: Some(
+            "[Transfer] RPC agent_migrate_commit → node-b 失败: Timeout waiting for response"
+                .into(),
+        ),
+    }));
+
+    let error = super::migrate_agent(&mgr, AGENT_ID, "node-b")
+        .await
+        .unwrap_err();
+
+    // 冻结轨语义：标记 + 根因保留 + 显式不回滚声明。
+    assert!(
+        error.starts_with(super::COMMIT_ACK_LOST_MARK),
+        "模糊类失败必须带结果未知标记: {error}"
+    );
+    assert!(
+        error.contains("Timeout waiting for response"),
+        "根因错误保留在链上: {error}"
+    );
+    assert!(error.contains("保持 migrating"), "{error}");
+    // A 端保持 migrating + 日志在场（sweep 冻结锚）；绝不回滚。
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::MIGRATING,
+        "commit 结果未知绝不回滚 active（B 可能已激活，回滚 = 双活）"
+    );
+    assert!(
+        journal_exists(&source_ws, AGENT_ID),
+        "意图日志必须保留（sweep 冻结锚）——修复前此臂删日志 + 回滚"
+    );
+    assert!(!tombstone_exists(&source_ws, AGENT_ID));
+    // call 注入失败 = 请求从未到 B 端 handler：B 端无记录。
+    assert!(
+        target_store.get(AGENT_ID).unwrap().is_none(),
+        "注入形态下 B 端未收到 commit"
+    );
+
+    // sweep 冻结转人工：migrating 保持 + frozen_migrating 上报 + 不回滚。
+    let report = mgr.sweep().unwrap();
+    assert!(
+        report.frozen_migrating.contains(&AGENT_ID.to_string()),
+        "模糊失败后 sweep 必须冻结转人工: {:?}",
+        report
+    );
+    assert!(
+        !report.reactivated.contains(&AGENT_ID.to_string()),
+        "此场景自动回滚 = 同 uuid 双活: {:?}",
+        report
+    );
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::MIGRATING
+    );
+
+    // 人工裁决（确认 B 未收到）→ 删日志 → sweep 回滚 active 复原。
+    std::fs::remove_file(journal_path(&source_ws, AGENT_ID)).unwrap();
+    let report = mgr.sweep().unwrap();
+    assert!(
+        report.reactivated.contains(&AGENT_ID.to_string()),
+        "人工确认未收到后回滚 active: {:?}",
+        report
+    );
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::ACTIVE
+    );
+}
+
+/// 明确拒绝类（对端错误锚串，B 端从未激活）→ 照旧回滚 active + 意图日志
+/// 清除——防冻结轨扩大化把可安全回滚的失败也卡在 migrating。
+#[tokio::test]
+async fn migrate_commit_definite_reject_still_rolls_back() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let (source_ws, source_store) = setup_ws(source_dir.path());
+    let (target_ws, _target_store) = setup_ws(target_dir.path());
+    let source_db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &source_ws,
+    ))
+    .unwrap();
+    let mgr = super::super::AgentManager::from_db(source_ws.clone(), source_db);
+    let mut record = selfbuilt_record(AGENT_ID, "node-a");
+    record.credential_refs = serde_json::json!([]);
+    source_store.upsert(&record).unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_home_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_memory_dir_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    mgr.set_migrate_transport(std::sync::Arc::new(LocalTransport {
+        target: MigrateCommitDeps {
+            workspace: target_ws,
+            self_node_id: "node-b".into(),
+        },
+        fail_push: false,
+        fail_call: Some(
+            "[Transfer] agent_migrate_commit 对端错误: agent id 冲突（B 端已有同 id 记录）".into(),
+        ),
+    }));
+
+    let error = super::migrate_agent(&mgr, AGENT_ID, "node-b")
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("对端错误"), "根因错误保留在链上: {error}");
+    assert!(
+        !error.starts_with(super::COMMIT_ACK_LOST_MARK),
+        "明确拒绝类不走冻结轨: {error}"
+    );
+    assert!(
+        error.contains("已回滚 active"),
+        "明确拒绝 = B 端从未激活，回滚安全: {error}"
+    );
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::ACTIVE
+    );
+    assert!(
+        !journal_exists(&source_ws, AGENT_ID),
+        "回滚臂清意图日志（残留会让 sweep 误冻结）"
+    );
+    assert!(!tombstone_exists(&source_ws, AGENT_ID));
+}
+
+/// 分类器锚串表：四模糊串（含 outbox 拍平后的真形态包裹）true；确定未发出
+/// （限流/序列化/客户端缺席）、对端明确拒绝、pre-commit 错误形态 false。
+#[test]
+fn commit_call_may_have_landed_anchors() {
+    use super::commit_call_may_have_landed;
+
+    // 模糊类（RpcClientError Display 经 outbox format! 包裹后的真形态）。
+    assert!(commit_call_may_have_landed(
+        "[Transfer] RPC agent_migrate_commit → node-b 失败: Timeout waiting for response"
+    ));
+    assert!(commit_call_may_have_landed(
+        "[Transfer] RPC agent_migrate_commit → node-b 失败: Context cancelled"
+    ));
+    assert!(commit_call_may_have_landed(
+        "[Transfer] RPC agent_migrate_commit → node-b 失败: Connection error: dial: no route"
+    ));
+    assert!(commit_call_may_have_landed(
+        "[Transfer] RPC agent_migrate_commit → node-b 失败: IO error: broken pipe"
+    ));
+
+    // 确定未发出（请求未离开本节点）。
+    assert!(!commit_call_may_have_landed(
+        "[Transfer] RPC agent_migrate_commit → node-b 失败: Rate limited: bucket exhausted"
+    ));
+    assert!(!commit_call_may_have_landed(
+        "[Transfer] RPC agent_migrate_commit → node-b 失败: Serialization error: bad payload"
+    ));
+    assert!(!commit_call_may_have_landed(
+        "集群 RPC 客户端未装配（集群未启动？）"
+    ));
+
+    // 对端明确拒绝（resp.error 路径——B 端处理过且拒绝）。
+    assert!(!commit_call_may_have_landed(
+        "[Transfer] agent_migrate_commit 对端错误: agent id 冲突"
+    ));
+
+    // pre-commit 各步错误形态（不含传输锚）。
+    assert!(!commit_call_may_have_landed(
+        "staging 目录创建失败 (C:\\tmp\\x): Access is denied (os error 5)"
+    ));
+    assert!(!commit_call_may_have_landed("push 注入失败（pre-commit）"));
+    assert!(!commit_call_may_have_landed(""));
 }
