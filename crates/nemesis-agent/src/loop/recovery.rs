@@ -175,9 +175,22 @@ impl AgentLoop {
                     }
                     _ => {}
                 }
-                let is_context_error = ["token", "context", "length", "invalid"]
-                    .iter()
-                    .any(|keyword| err_lower.contains(keyword));
+                // 传输层盖章错误永不可能是 context 错误：`connect error`
+                // （2026-10-13 诚实化盖章，llm_error_class 早判分支同源锚）
+                // = 请求根本没拿到 HTTP 响应，而 token/context/length/
+                // invalid 全是**响应体**（应用层）特征词。盖章错误的根因链
+                // 携带的词（rustls TLS 失败 "invalid peer certificate:
+                // Expired/UnknownIssuer" 等）会被下面词表误判进 context
+                // 压缩环——不退避立即重呼 2 次 + summary cache 被强制推进
+                // （即便瞬断恢复后侥幸成功，会话上下文也被静默压缩），正确
+                // 归宿是 transient 环（带退避、不动压缩状态）。分类器
+                // Timeout 判定对压缩环此前兑现不到（它只在下方 else 臂
+                // 取并集）——此闸补齐「双保险」的最后一臂。
+                let is_transport_connect_error = err_lower.contains("connect error");
+                let is_context_error = !is_transport_connect_error
+                    && ["token", "context", "length", "invalid"]
+                        .iter()
+                        .any(|keyword| err_lower.contains(keyword));
 
                 if is_context_error {
                     // 器官 4a：context 压缩重试环（recovery.rs 方法）。

@@ -7,7 +7,11 @@
 //!   误吞——回归锁，必须单次调用终局）；
 //! - 词表盲区配额文案（Gemini "resource has been exhausted"）→ 限流环
 //!   恢复（分类器覆盖盲区的增量收益）；
-//! - 词表盲区 deadline 文案 → transient 环恢复。
+//! - 词表盲区 deadline 文案 → transient 环恢复；
+//! - 传输层盖章（"connect error"）+ TLS 词（"invalid peer certificate"）→
+//!   transient 环而非 context 压缩环（盖章错误无 HTTP 响应体，永远不是
+//!   context 错误——2026-10-13 双保险的最后一条臂）；
+//! - 含 "invalid" 的真实 context 溢出照旧进压缩环（闸的对照面）。
 //!
 //! 间隔 sleep 经 tokio `start_paused` 自动推进（零真实等待），同
 //! rate_limit_retry_tests 形态。
@@ -256,7 +260,97 @@ async fn quota_wording_enters_rate_limit_ring_and_recovers() {
     assert!(saw_progress, "限流环进度通知必须发出");
 }
 
-// -- ⑤ deadline 文案（词表盲区）→ transient 环恢复 ----------------------------
+// -- ⑤ 传输层盖章 + TLS 词 → transient 环，不进 context 压缩环 ---------------
+
+#[tokio::test(start_paused = true)]
+async fn connect_error_with_invalid_word_enters_transient_ring_not_compression() {
+    // 2026-10-13 诚实化盖章的遗留缝隙：TLS 失败根因链含 rustls 文案
+    // "invalid peer certificate: Expired"——'invalid' 命中 is_context_error
+    // 词表，会把传输层错误劫进 context 压缩环（2 次立即重呼 + summary
+    // cache 强制推进），正确归宿是 transient 环（3 次重试预算）。用
+    // fail_times=3 区分：旧路由（压缩环只有 2 发子弹）= 3 次调用后 Error
+    // 终局；修复后（transient 环 3 发）= 第 4 次调用成功恢复。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 3,
+        err_text: "unknown error from provider anthropic: connect error (model m): \
+                   error sending request for url (https://api.example.com/v1): \
+                   error trying to connect: invalid peer certificate: Expired"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "传输层盖章错误必须进 transient 环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        4,
+        "首败 + transient 环 3 次重试 = 恰好 4 次调用（压缩环路由 = 3 次即 Error 终局）"
+    );
+}
+
+// -- ⑥ 真实 context 溢出不受传输层闸影响（闸的对照面） ------------------------
+
+#[tokio::test(start_paused = true)]
+async fn genuine_context_error_still_enters_compression_ring() {
+    // 传输层闸只拦 "connect error" 盖章——真实 context 溢出（应用层响应体
+    // 文案，无盖章）必须照旧进压缩环恢复（l3_guess_too_big… 已锁机制，
+    // 这里锁的是闸没有误伤含 "invalid" 的 context 文案这一对照面）。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "invalid request: this model's maximum context length is \
+                   32768 tokens, however you requested 40000"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "含 'invalid' 的真实 context 溢出必须照旧进压缩环恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "首败 + 压缩环摘要生成 + 压缩环重呼成功 = 恰好 3 次调用（force_compression \
+         推进摘要缓存时经 resolve_summary_provider(false) 走主 provider 发一次真实 \
+         摘要 LLM 调用，被同一计数器计入；限流/transient 环不压缩故无此臂）"
+    );
+}
+
+// -- ⑦ deadline 文案（词表盲区）→ transient 环恢复 ----------------------------
 
 #[tokio::test(start_paused = true)]
 async fn deadline_wording_enters_transient_ring_and_recovers() {
