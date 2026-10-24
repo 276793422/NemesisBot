@@ -210,17 +210,10 @@ fn sanitize_reason(reason: &str) -> String {
     utils::truncate(&s, 100)
 }
 
-/// Sanitize a string for CSV output.
-///
-/// Escapes double quotes by doubling them, and wraps the string in quotes
-/// if it contains commas, quotes, or newlines.
+/// Sanitize a string for CSV output（单一真相源：原地委托
+/// `nemesis_utils::sanitize::sanitize_csv`，语义含 `\r` 触发）。
 pub fn sanitize_csv(s: &str) -> String {
-    if s.contains('"') || s.contains(',') || s.contains('\n') {
-        let escaped = s.replace('"', "\"\"");
-        format!("\"{}\"", escaped)
-    } else {
-        s.to_string()
-    }
+    nemesis_utils::sanitize::sanitize_csv(s)
 }
 
 #[cfg(test)]

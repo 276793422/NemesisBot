@@ -75,6 +75,24 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     format!("{head}__{:016x}", fnv1a64(out.as_bytes()))
 }
 
+/// Escape one untrusted field for CSV output (RFC 4180)。
+///
+/// 含 `"` / `,` / `\n` / `\r` 的字段用引号包裹并把内部引号翻倍；普通字段
+/// 逐字节直通（不加无谓引号）。单一真相源：nemesis-security 审计链的
+/// 同名函数（原地委托至此）与 board 档案 usage.csv 的 task_id/worker_id
+/// 列都走这里——worker_id 是用户自设自由文本（cluster init --name /
+/// node.update_identity，无字符集校验），裸拼会把逗号/换行拼进结构化
+/// CSV 错位移列（BUG-20261024-06）。比原 audit_log 版多认 `\r` 触发
+/// （RFC 4180 同属须引号字符，审计链历史输出域无裸 CR，行为不变）。
+pub fn sanitize_csv(s: &str) -> String {
+    if s.contains('"') || s.contains(',') || s.contains('\n') || s.contains('\r') {
+        let escaped = s.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
+}
+
 /// hash 后缀输出形态判定：78 字节 = 头 60 + `__` + 16 个小写 hex。
 /// 只认 hash 分支会产出的形态（小写 hex、精确 78 字节）——直通域里的
 /// 撞形输入由此识别并强制改道 hash 分支。

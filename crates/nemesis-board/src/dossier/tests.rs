@@ -366,3 +366,37 @@ fn test_inbox_unplaced_hostile_task_id_sanitized() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+/// usage.csv 字段消毒（BUG-20261024-06）：worker_id 是用户自设自由文本
+/// （cluster init --name / node.update_identity，无字符集校验），含逗号/
+/// 引号的名字此前裸拼错位移列。现在走 nemesis_utils 单一真相源消毒
+/// （RFC 4180 引号包裹 + 内部引号翻倍）；普通名字逐字节直通由
+/// test_project_export_records_inbox_usage 的 `task-a1,node-w,100,20,120`
+/// 断言钉住（无谓引号即红）。
+#[test]
+fn test_usage_csv_escapes_hostile_worker_id() {
+    let (store, dir) = temp_store("csv");
+    let ws = temp_dir("ws");
+    let issue = store.create_issue(new_issue("账")).unwrap();
+    let hostile = "bad,\"quote\" name";
+    store
+        .insert_dispatch("task-c1", issue.id, hostile, &admin())
+        .unwrap();
+    let usage_of = |tid: &str| {
+        (tid == "task-c1").then_some(DossierUsage {
+            input_tokens: 100,
+            output_tokens: 20,
+        })
+    };
+    let outcome =
+        export_issue_tree(&store, &issue.number, &ws, &ws.join("out"), &usage_of).unwrap();
+    let csv = std::fs::read_to_string(outcome.root.join("usage.csv")).unwrap();
+    // 恰两行（表头 + 一行数据）：引号字段不得把行拆碎。
+    assert_eq!(csv.lines().count(), 2, "csv: {csv}");
+    assert_eq!(
+        csv.lines().nth(1).unwrap(),
+        "task-c1,\"bad,\"\"quote\"\" name\",100,20,120"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&ws);
+}
