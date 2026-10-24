@@ -121,6 +121,50 @@ fn snippet_around_ellipsis_and_boundary_arms() {
 }
 
 #[test]
+fn snippet_around_lowercase_expanding_char_offset_mapping() {
+    // to_lowercase 变长字符（İ U+0130：2B→3B）之后的命中偏移必须映射回
+    // 原文偏移——此前直接把 lower 的偏移当 content 偏移用，窗口错切掉
+    // 命中词首字符（"İ abc" 查 "abc"：lower 偏移 4 = content 的 'b'）。
+    let content = "İ abc";
+    let s = snippet_around(content, "abc", 32);
+    assert!(
+        s.contains("abc"),
+        "expanding case: snippet must contain the hit word: {s}"
+    );
+    assert!(
+        s.starts_with("İ"),
+        "expanding case: window must not clip into the word: {s}"
+    );
+
+    // 收缩变体（ẞ U+1E9E：3B→2B）同理：命中点在收缩字符之后。
+    let content2 = "Aẞ B";
+    let s2 = snippet_around(content2, "b", 32);
+    assert!(s2.contains('B'), "shrinking case: {s2}");
+
+    // 变长字符在命中点之后不构成错位（命中在前面）。
+    let content3 = "abc İ";
+    let s3 = snippet_around(content3, "abc", 32);
+    assert!(s3.starts_with("abc"), "hit before expanding char: {s3}");
+}
+
+#[test]
+fn lower_offset_to_source_alignment() {
+    // 直接钉住映射函数：命中段首/段中/越界三臂。
+    let content = "İ abc";
+    let lower = content.to_lowercase(); // "i̇ abc"：İ 展开 2B→3B
+    assert_eq!(lower.len(), content.len() + 1);
+    // lower 里 "abc" 起点 = 4 → 原文 'a' 起点 = 3。
+    assert_eq!(lower_offset_to_source(content, 4), 3);
+    // pos=0 → 首字符起点。
+    assert_eq!(lower_offset_to_source(content, 0), 0);
+    // pos 落在展开段中间（1..3）→ 归位到源字符（İ）起点 0。
+    assert_eq!(lower_offset_to_source(content, 1), 0);
+    assert_eq!(lower_offset_to_source(content, 2), 0);
+    // 越界 → content.len()。
+    assert_eq!(lower_offset_to_source(content, 999), content.len());
+}
+
+#[test]
 fn char_boundary_helpers_floor_and_ceil() {
     // 直接钉住边界回路：中文字符 3 字节，切在中间必须被 floor/ceil 归位。
     let s = "中文边界检查";

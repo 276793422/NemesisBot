@@ -332,10 +332,14 @@ fn snippet_around(content: &str, query: &str, max_chars: usize) -> String {
     let max_chars = max_chars.max(32);
     let lower = content.to_lowercase();
     let ql = query.trim().to_lowercase();
-    let pos = ql
+    let lower_pos = ql
         .split_whitespace()
         .find_map(|w| lower.find(w).filter(|_| !w.is_empty()))
         .unwrap_or(0);
+    // to_lowercase 对个别字符变长（İ U+0130 2B→3B、ẞ U+1E9E 3B→2B），
+    // lower 里的字节偏移不能直接当 content 偏移用——否则命中点之后的
+    // snippet 窗口错位（切掉命中词或显示错位上下文）。先映射回原文偏移。
+    let pos = lower_offset_to_source(content, lower_pos);
     // Char-boundary-safe window (multibyte panic discipline).
     let start = pos.saturating_sub(max_chars / 3);
     let start = floor_char_boundary(content, start);
@@ -349,6 +353,28 @@ fn snippet_around(content: &str, query: &str, max_chars: usize) -> String {
         s.push('…');
     }
     s
+}
+
+/// `content.to_lowercase()` 域中的字节偏移 → 原文 content 字节偏移。
+/// 对齐到命中处所在源字符的起点；pos 超出 lower 总长时回落 content.len()。
+fn lower_offset_to_source(content: &str, pos: usize) -> usize {
+    let mut lower_off = 0usize;
+    for (i, c) in content.char_indices() {
+        if lower_off >= pos {
+            return i;
+        }
+        // ASCII 字符折叠恒 1 字节（快路径零分配）；非 ASCII 才实际展开。
+        let span = if c.is_ascii() {
+            1
+        } else {
+            c.to_lowercase().collect::<String>().len()
+        };
+        if lower_off + span > pos {
+            return i;
+        }
+        lower_off += span;
+    }
+    content.len()
 }
 
 fn floor_char_boundary(s: &str, i: usize) -> usize {
