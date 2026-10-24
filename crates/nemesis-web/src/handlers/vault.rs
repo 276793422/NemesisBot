@@ -32,6 +32,16 @@ use std::path::{Path, PathBuf};
 
 pub struct VaultHandler;
 
+/// vault 写路径互斥（RMW 串行锁，2026-10-24）：`set`/`remove` 是
+/// 「open→内存改→save 整文件」的读改写序列，而 WSAPI 每条消息独立
+/// `tokio::spawn` 派发（websocket_handler dispatch）——并发 set∥set /
+/// set∥remove 各持旧快照互相整文件覆盖，先落盘的条目**静默丢失**（无任何
+/// 报错）。与 share.rs `SHARE_LOCK`（2026-10-13 RMW 横扫同款）同一缺陷类，
+/// vault 当时漏网。只罩进程内并发面；跨进程（CLI ∥ gateway）仍可能竞——
+/// 与 share 面同一诚实边界（单用户操作速率，现实触发面即 Dashboard 双发/
+/// 双标签页）。`list`/`status`/`unlock` 不落盘，不入锁。
+static VAULT_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[async_trait::async_trait]
 impl ModuleHandler for VaultHandler {
     fn module_name(&self) -> &str {
@@ -119,6 +129,8 @@ impl ModuleHandler for VaultHandler {
                 let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
                 let path = vault_path(ctx)?;
+                // RMW 串行锁：罩 open→set→save 全序列（VAULT_IO_LOCK 注）。
+                let _io = VAULT_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
                 let mut store = if path.exists() {
                     // 写路径必须真解锁——set 需要 DEK；锁死 = 诚实报错带指引。
                     let mut s = open_store(&path)?;
@@ -156,6 +168,8 @@ impl ModuleHandler for VaultHandler {
                         path.display()
                     ));
                 }
+                // RMW 串行锁：罩 open→remove→save 全序列（VAULT_IO_LOCK 注）。
+                let _io = VAULT_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
                 let mut store = open_store(&path)?;
                 // remove 只动 BTreeMap + 落盘，不需要 DEK；锁定也可删。
                 let removed = store
