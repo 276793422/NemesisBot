@@ -5,6 +5,7 @@ async fn test_whatsapp_channel_new_validates_url() {
     let config = WhatsAppConfig {
         bridge_url: String::new(),
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -16,6 +17,7 @@ async fn test_whatsapp_channel_lifecycle() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".to_string(),
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -34,6 +36,7 @@ async fn test_whatsapp_send_queues_on_bridge_failure() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:19999".to_string(), // unreachable
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -59,6 +62,7 @@ fn test_process_inbound_message() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".to_string(),
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -84,6 +88,7 @@ fn test_process_inbound_non_message() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".to_string(),
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -109,6 +114,7 @@ fn test_whatsapp_config_fields() {
     let config = WhatsAppConfig {
         bridge_url: "http://bridge:8080".into(),
         api_key: Some("key123".into()),
+        proxy: None,
         allow_from: vec!["+1234567890".into()],
     };
     assert_eq!(config.bridge_url, "http://bridge:8080");
@@ -121,6 +127,7 @@ fn test_process_inbound_with_media() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".into(),
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -144,6 +151,7 @@ async fn test_whatsapp_double_stop() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".into(),
         api_key: None,
+        proxy: None,
         allow_from: Vec::new(),
     };
     let (tx, _rx) = broadcast::channel(256);
@@ -163,6 +171,7 @@ fn test_process_inbound_is_a_pure_parser_no_allow_from_filter() {
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".into(),
         api_key: None,
+        proxy: None,
         allow_from: vec!["+999".into()],
     };
     let (tx, _rx) = broadcast::channel(256);

@@ -317,6 +317,7 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
 
     // 直接经 service 塞一个无 expr 的 job（kind="at"）——cron.add 路径
     // 永远带 expr，空 expr 视图臂只有这种历史/服务侧数据能触发。
+    // （BUG-20261024-11 后创建漏斗拒绝死排程，at 必须保持未来时刻。）
     let svc = ctx.state.cron.as_ref().unwrap();
     svc.lock()
         .unwrap()
@@ -324,7 +325,7 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
             "one-shot",
             CronSchedule {
                 kind: "at".to_string(),
-                at_ms: Some(1),
+                at_ms: Some(chrono::Local::now().timestamp_millis() + 3_600_000),
                 every_ms: None,
                 expr: None,
                 tz: None,

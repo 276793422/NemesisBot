@@ -2704,12 +2704,9 @@ impl CronTool {
 }
 
 /// Convert a whole-second duration from tool args to milliseconds
-/// (overflow-honest: rejects values that cannot be represented as i64 ms).
+/// (overflow-honest; 换算单一真相源在 [`nemesis_cron::secs_to_ms_checked`]).
 fn secs_arg_to_ms(secs: u64) -> Result<i64, String> {
-    i64::try_from(secs)
-        .ok()
-        .and_then(|s| s.checked_mul(1000))
-        .ok_or_else(|| "seconds value too large".to_string())
+    nemesis_cron::secs_to_ms_checked(secs)
 }
 
 #[async_trait]

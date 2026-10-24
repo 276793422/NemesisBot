@@ -150,10 +150,16 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 if secs == 0 {
                     anyhow::bail!("--every 必须 > 0 秒（0 秒间隔的任务永远不会触发）");
                 }
+                // BUG-20261024-11：受检换算——旧的 `(secs * 1000) as i64`
+                // 在超大 --every 下 u64 乘法回绕（release）/ panic（debug），
+                // 回绕负值还会被 compute_next_run 的 ms>0 过滤成永不触发的
+                // 静默僵尸任务。
                 CronSchedule {
                     kind: "every".to_string(),
                     at_ms: None,
-                    every_ms: Some((secs * 1000) as i64),
+                    every_ms: Some(nemesis_cron::secs_to_ms_checked(secs).map_err(|_| {
+                        anyhow::anyhow!("--every {secs} 秒超出可表示范围（毫秒时间戳溢出）")
+                    })?),
                     expr: None,
                     tz: None,
                 }

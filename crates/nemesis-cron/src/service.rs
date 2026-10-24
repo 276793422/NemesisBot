@@ -426,6 +426,10 @@ impl CronService {
     /// 分派分支与启动孤儿清理都按名字前缀判定），用户作业撞名会在触发时
     /// 被劫持进系统分支（message 被忽略）、在 gateway 启动 sync 被当孤儿
     /// 误删。内部注册走 [`Self::add_job_internal`]。
+    ///
+    /// 死排程闸（BUG-20261024-11）：`enabled=true` 时若在创建时刻就算不出
+    /// 任何下一次触发（过期 at / 非正或溢出的 every / 永不匹配的 cron /
+    /// 未知 kind），loud 拒绝——否则任务会以「已排程」的假象永不触发。
     pub fn add_job_ext(
         &self,
         name: &str,
@@ -442,6 +446,17 @@ impl CronService {
             return Err(format!(
                 "cron job 名字以保留前缀 {prefix:?} 开头（系统内部作业命名空间），\
                  触发时会被劫持、启动同步时会被误删，请换名字: {name:?}"
+            ));
+        }
+        // BUG-20261024-11：死排程闸——enabled 作业在创建时刻就算不出任何
+        // 下一次触发（过期 at / 非正 every / 间隔溢出 / 永不匹配的 cron
+        // 表达式 / 未知 kind）＝ 永远不会 fire 的静默僵尸任务，loud 拒绝
+        // 而非假装已排程。disabled 作业放行（W1b 语义：不排程不触发，
+        // enable_job 重算时才落 next_run）。
+        if enabled && compute_next_run(&schedule, Local::now().timestamp_millis()).is_none() {
+            return Err(format!(
+                "调度永远不会有下一次触发，拒绝创建死排程任务: {name:?} \
+                 （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
             ));
         }
         self.add_job_internal(
@@ -985,10 +1000,27 @@ fn save_store_to_path(path: &str, data: &CronStoreData) -> Result<(), String> {
     crate::store::save(std::path::Path::new(path), data)
 }
 
+/// u64 秒 → i64 毫秒的唯一受检换算（CLI `cron add --every` 与 agent
+/// CronTool 共用的单一真相源）。溢出 = 诚实 Err，绝不回绕：回绕成负值
+/// 会产生永不触发的静默僵尸任务（`compute_next_run` 按 ms > 0 过滤），
+/// 正值错拍则产生错误间隔。
+pub fn secs_to_ms_checked(secs: u64) -> Result<i64, String> {
+    i64::try_from(secs)
+        .ok()
+        .and_then(|s| s.checked_mul(1000))
+        .ok_or_else(|| "seconds value too large".to_string())
+}
+
 pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
     match schedule.kind.as_str() {
         "at" => schedule.at_ms.filter(|&t| t > now_ms),
-        "every" => schedule.every_ms.filter(|&ms| ms > 0).map(|ms| now_ms + ms),
+        "every" => schedule
+            .every_ms
+            .filter(|&ms| ms > 0)
+            // BUG-20261024-11：受检加法——超大间隔把 next_run 推出 i64
+            // 毫秒时间戳时 honest None，绝不回绕成负值（裸加法回绕负值
+            // 会让 next_run <= now 恒真 → 每 tick 自旋触发 = 触发风暴）。
+            .and_then(|ms| now_ms.checked_add(ms)),
         "cron" => {
             let expr = match &schedule.expr {
                 Some(e) if !e.is_empty() => e,

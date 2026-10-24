@@ -35,6 +35,22 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
+/// BUG-20261025-14：订阅计数 RAII 守卫。`subscribe()` 手工 +1、`unsubscribe()`
+/// 手工 -1 的配对只覆盖「流自然跑完」路径——SSE 端点的流体被客户端断连时
+/// axum 直接 drop 生成器（不是跑完循环），尾部归还永不执行，计数单调泄漏：
+/// board/usage 两个空闲跳过 watcher 以 `subscriber_count == 0` 做闸，泄漏后
+/// 永假，「无订阅者零成本轮询」契约静默失效。守卫持在流体内，drop 即归还，
+/// 与取消点无关。
+pub struct SubscriptionGuard {
+    count: Arc<AtomicUsize>,
+}
+
+impl Drop for SubscriptionGuard {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Event hub that manages SSE subscribers and broadcasts events.
 pub struct EventHub {
     sender: broadcast::Sender<Event>,
@@ -64,6 +80,15 @@ impl EventHub {
     /// Unsubscribe (decrement counter).
     pub fn unsubscribe(&self) {
         self.subscriber_count.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// 取一条计数守卫（与刚执行的 `subscribe()` 配对）：守卫 drop 时归还
+    /// 本次订阅的计数。调用形态固定为 `let rx = hub.subscribe(); let guard =
+    /// hub.subscription_guard();`——两行间计数已被 +1，守卫保证终有一 -1。
+    pub fn subscription_guard(&self) -> SubscriptionGuard {
+        SubscriptionGuard {
+            count: Arc::clone(&self.subscriber_count),
+        }
     }
 
     /// Publish an event to all subscribers.

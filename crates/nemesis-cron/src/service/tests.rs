@@ -866,8 +866,10 @@ fn test_add_job_at_schedule_past_time() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let past_ms = Local::now().timestamp_millis() - 60000; // 1 min ago
+    // 过期 at 属死排程，用户漏斗 add_job_ext 已 loud 拒绝（BUG-20261024-11）；
+    // 这里钉的是服务侧数据形态的落库语义，走内部旁路。
     let job = svc
-        .add_job(
+        .add_job_internal(
             "past_one_time",
             CronSchedule {
                 kind: "at".to_string(),
@@ -880,6 +882,9 @@ fn test_add_job_at_schedule_past_time() {
             false,
             None,
             None,
+            None,
+            None,
+            true,
         )
         .unwrap();
     // Past time means compute_next_run returns None
@@ -2747,7 +2752,9 @@ async fn test_cron_startup_disarmed_until_arm() {
     {
         let svc = CronService::new(&path);
         svc.arm(); // the OLD process was armed; its jobs are enabled
-        svc.add_job(
+        // 已到期 job 是「上一进程遗留的盘上状态」形态：走内部旁路造数
+        // （BUG-20261024-11 后用户漏斗拒绝过期 at）。
+        svc.add_job_internal(
             "due-job",
             CronSchedule {
                 kind: "at".to_string(),
@@ -2760,6 +2767,9 @@ async fn test_cron_startup_disarmed_until_arm() {
             true,
             Some("web"),
             Some("chat1"),
+            None,
+            None,
+            true,
         )
         .unwrap();
     }
@@ -2828,8 +2838,9 @@ fn test_recompute_does_not_resurrect_failed_one_shot() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
+    // 遗留僵尸形态造数走内部旁路（BUG-20261024-11 后用户漏斗拒绝过期 at）。
     let job = svc
-        .add_job(
+        .add_job_internal(
             "zombie_one_shot",
             CronSchedule {
                 kind: "at".to_string(),
@@ -2842,6 +2853,9 @@ fn test_recompute_does_not_resurrect_failed_one_shot() {
             false,
             None,
             None,
+            None,
+            None,
+            true,
         )
         .unwrap();
     // 模拟旧代码失败臂留下的磁盘僵尸形态（fire loop 内 store 修改后由
@@ -3021,4 +3035,184 @@ fn add_job_internal_bypasses_reservation() {
         svc.add_job("board-ap:6", every_60s(), "x", false, None, None)
             .is_err()
     );
+}
+
+// ===========================================================================
+// BUG-20261024-11：时间算术受检化——溢出 honest None / 死排程创建闸
+// ===========================================================================
+
+#[test]
+fn test_compute_next_run_every_overflow_returns_none_not_wrap() {
+    // 旧的 now_ms + ms 裸加法在 release 下回绕成负值 → next_run <= now
+    // 恒真 → 每 tick 自旋触发（触发风暴）。受检加法必须 honest None。
+    let schedule = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(i64::MAX),
+        expr: None,
+        tz: None,
+    };
+    assert!(compute_next_run(&schedule, 1_000).is_none());
+
+    // 边界：不溢出的极限间隔仍给出 Some（而非一刀切拒绝大间隔）。
+    let schedule = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(i64::MAX - 2_000),
+        expr: None,
+        tz: None,
+    };
+    assert_eq!(compute_next_run(&schedule, 1_000), Some(i64::MAX - 1_000));
+}
+
+#[test]
+fn test_secs_to_ms_checked_overflow_honest() {
+    assert_eq!(secs_to_ms_checked(5).unwrap(), 5_000);
+    assert_eq!(
+        secs_to_ms_checked(i64::MAX as u64).unwrap_err(),
+        "seconds value too large"
+    );
+    // u64 值可转 i64 但 ×1000 溢出：同样 Err（旧 CLI 裸乘法在此回绕）。
+    assert!(secs_to_ms_checked((i64::MAX as u64) / 100 + 1).is_err());
+}
+
+#[test]
+fn add_job_ext_rejects_dead_schedules_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+
+    // 过期 at。
+    let past_at = CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(1),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    let err = svc
+        .add_job_ext("dead-at", past_at, "m", false, None, None, None, None, true)
+        .unwrap_err();
+    assert!(err.contains("死排程"), "错误要点明死排程: {err}");
+
+    // 非正 every（0 与负值）。
+    for ms in [0i64, -1] {
+        let sched = CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(ms),
+            expr: None,
+            tz: None,
+        };
+        assert!(
+            svc.add_job_ext(
+                "dead-every",
+                sched,
+                "m",
+                false,
+                None,
+                None,
+                None,
+                None,
+                true
+            )
+            .is_err(),
+            "every_ms={ms} 必须拒绝"
+        );
+    }
+
+    // 未知 kind。
+    let unknown = CronSchedule {
+        kind: "rapture".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    assert!(
+        svc.add_job_ext(
+            "dead-unknown",
+            unknown,
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true
+        )
+        .is_err()
+    );
+
+    // 永不匹配的 cron 表达式（2 月 30 日不存在）——parse 合法但无下一次触发。
+    let never = CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some("0 0 30 2 *".to_string()),
+        tz: None,
+    };
+    assert!(
+        svc.add_job_ext(
+            "dead-never",
+            never,
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true
+        )
+        .is_err(),
+        "parse 合法但永不触发的 cron 也必须拒绝"
+    );
+
+    // 四个死排程一个都不在册。
+    let names: Vec<String> = svc.list_jobs(true).into_iter().map(|j| j.name).collect();
+    assert!(names.is_empty(), "死排程一个都不能建: {names:?}");
+}
+
+#[test]
+fn add_job_ext_allows_disabled_dead_schedule_but_stays_dormant() {
+    // enabled=false 放行（W1b 语义：不排程不触发；enable_job 重算时才落
+    // next_run）——闸只挡「已排程」的假象。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let past_at = CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(1),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    let job = svc
+        .add_job_ext(
+            "dormant", past_at, "m", false, None, None, None, None, false,
+        )
+        .unwrap();
+    assert!(!job.enabled);
+    assert_eq!(job.state.next_run_at_ms, None);
+}
+
+#[test]
+fn add_job_internal_still_allows_legacy_dead_schedule() {
+    // 内部旁路保持原语义（board sync / dreaming 装配点 + 历史 store 修复
+    // 路径），死排程闸只设在用户漏斗 add_job_ext。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let past_at = CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(1),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    let job = svc
+        .add_job_internal("legacy", past_at, "m", false, None, None, None, None, true)
+        .unwrap();
+    assert!(job.enabled);
+    assert_eq!(job.state.next_run_at_ms, None, "死排程内部注册＝不排程");
 }
