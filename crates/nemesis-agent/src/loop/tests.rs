@@ -3915,7 +3915,10 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     // Pre-existing file whose turn-start content must be captured.
     let file = root.join("target.txt");
     tokio::fs::write(&file, "ORIGINAL").await.unwrap();
-    store.begin(0, "edit the file"); // simulate process_inbound_message opening a turn
+    // simulate process_inbound_message opening a turn（R4：与生产同键——
+    // turn_preamble 带 session_key begin，下方 handle_tool_call 的 snapshot
+    // 同键落桶）。
+    store.begin_for_session(0, "edit the file", Some("session1"));
 
     let context = RequestContext::new("web", "chat1", "user1", "session1");
     let tc = ToolCallInfo {
@@ -3933,7 +3936,9 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     );
 
     // Rewind turn 0 restores the turn-start content (ORIGINAL).
-    let (written, _) = agent_loop.rewind(0).await.unwrap();
+    let report = agent_loop.rewind(0).await.unwrap();
+    let written = report.written;
+    let _ = report.deleted;
     assert!(
         !written.is_empty(),
         "rewind should restore at least one file"

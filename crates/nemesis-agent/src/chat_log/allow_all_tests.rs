@@ -23,7 +23,7 @@ fn allow_all_write_read_roundtrip() {
     assert!(read_session_allow_all(&key).is_none());
 
     // 开（显式 since 透传——调用方传内存态 set() 的返回值，单一真相）。
-    write_session_allow_all(&key, true, "2026-10-24T08:00:00+08:00");
+    write_session_allow_all(&key, true, "2026-10-24T08:00:00+08:00").expect("持久化须成功");
     let (enabled, since) = read_session_allow_all(&key).expect("meta 应存在");
     assert!(enabled);
     assert_eq!(since, "2026-10-24T08:00:00+08:00", "since 原样落盘");
@@ -35,19 +35,19 @@ fn allow_all_write_read_roundtrip() {
     );
 
     // 空 since 回落现在（防御臂；正常调用不触发）。
-    write_session_allow_all(&key, true, "");
+    write_session_allow_all(&key, true, "").expect("持久化须成功");
     let (_, since) = read_session_allow_all(&key).unwrap();
     assert!(!since.is_empty(), "空 since 须回落现在");
 
     // 其余 meta 字段共存不互伤（RMW 保留语义）。
     write_session_meta(&key, "长任务会话");
-    write_session_allow_all(&key, true, "2026-10-24T09:00:00+08:00"); // 幂等重开
+    write_session_allow_all(&key, true, "2026-10-24T09:00:00+08:00").expect("持久化须成功"); // 幂等重开
     let meta = read_session_meta_full(&key).unwrap();
     assert_eq!(meta.title.as_deref(), Some("长任务会话"));
     assert!(meta.allow_all);
 
     // 关：allow_all 摘除（回默认），title 保留（since 入参关闭路径忽略）。
-    write_session_allow_all(&key, false, "");
+    write_session_allow_all(&key, false, "").expect("持久化须成功");
     let (enabled, since) = read_session_allow_all(&key).expect("关后 meta 仍在");
     assert!(!enabled);
     assert!(since.is_empty(), "关闭后 since 摘除");
@@ -56,7 +56,7 @@ fn allow_all_write_read_roundtrip() {
     assert!(meta.allow_all_since.is_none());
 
     // 关后再关 = no-op（不炸不空写）。
-    write_session_allow_all(&key, false, "");
+    write_session_allow_all(&key, false, "").expect("no-op 须成功");
     assert!(!read_session_allow_all(&key).unwrap().0);
 
     let _ = std::fs::remove_file(super::meta_path(&key));
@@ -85,9 +85,9 @@ fn allow_all_sessions_scans_enabled_only_with_real_key() {
     let key_on = unique_key("scan-on");
     let key_off = unique_key("scan-off");
 
-    write_session_allow_all(&key_on, true, "2026-10-24T08:00:00+08:00");
-    write_session_allow_all(&key_off, true, "2026-10-24T08:00:00+08:00");
-    write_session_allow_all(&key_off, false, ""); // 开了又关
+    write_session_allow_all(&key_on, true, "2026-10-24T08:00:00+08:00").expect("持久化须成功");
+    write_session_allow_all(&key_off, true, "2026-10-24T08:00:00+08:00").expect("持久化须成功");
+    write_session_allow_all(&key_off, false, "").expect("持久化须成功"); // 开了又关
 
     let found = allow_all_sessions();
     let hit = found

@@ -23,6 +23,7 @@ fn sample_plan() -> InstallPlan {
         trust_detail: "unsigned".to_string(),
         security: check_skill_security(content, "demo-skill", ""),
         warnings: vec!["suspicious flag".to_string()],
+        staging_tx: String::new(),
     }
 }
 

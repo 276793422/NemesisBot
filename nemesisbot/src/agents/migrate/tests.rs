@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use super::{
-    MigrateCommitDeps, handle_migrate_commit, landing_files_dir, migrate_staging_root,
-    migrate_task_id, rewrite_record_for_target, sweep_migrating, tombstone_exists, tombstone_path,
-    validate_migrate_agent_id,
+    MigrateCommitDeps, handle_migrate_commit, journal_exists, journal_path, landing_files_dir,
+    migrate_staging_root, migrate_task_id, rewrite_record_for_target, sweep_migrating,
+    tombstone_exists, tombstone_path, validate_migrate_agent_id,
 };
 use nemesis_taskstore::agents::{kind as agent_kind, status as agent_status};
 use nemesis_taskstore::{AgentRecord, SqliteAgentsStore, TaskDb};
@@ -282,16 +282,31 @@ fn sweep_migrating_converges_both_ways() {
     rec2.status = agent_status::MIGRATING.to_string();
     store.upsert(&rec2).unwrap();
 
+    // 案例三（R7）：migrating + 意图日志在场、无墓碑 = commit 已发出
+    // （B 端可能已激活）→ 冻结转人工，绝不自动回滚。
+    let frozen_id = "ffffffffffffffffffffffffffffffff";
+    let mut rec3 = selfbuilt_record(frozen_id, "node-a");
+    rec3.status = agent_status::MIGRATING.to_string();
+    store.upsert(&rec3).unwrap();
+    std::fs::write(
+        journal_path(&ws, frozen_id),
+        serde_json::json!({"agent_id": frozen_id, "target_node": "node-b", "started_at": "t"})
+            .to_string(),
+    )
+    .unwrap();
+
     let mut report = crate::agents::SweepReport {
         activated: vec![],
         failed: vec![],
         migrated_removed: vec![],
         reactivated: vec![],
+        frozen_migrating: vec![],
     };
     sweep_migrating(&store, &ws, &mut report).unwrap();
 
     assert_eq!(report.migrated_removed, vec![done_id.to_string()]);
     assert_eq!(report.reactivated, vec![stuck_id.to_string()]);
+    assert_eq!(report.frozen_migrating, vec![frozen_id.to_string()]);
     assert!(store.get(done_id).unwrap().is_none(), "成功终局记录应已删");
     assert!(!tombstone_exists(&ws, done_id));
     assert!(!staging.exists(), "staging 残留应被清扫");
@@ -300,6 +315,33 @@ fn sweep_migrating_converges_both_ways() {
         agent_status::ACTIVE,
         "commit 未达应回滚 active"
     );
+    assert_eq!(
+        store.get(frozen_id).unwrap().unwrap().status,
+        agent_status::MIGRATING,
+        "意图日志在场绝不自动回滚（B 端可能已激活）"
+    );
+
+    // 人工裁决路径 A：确认 B 已激活 → 落墓碑 → 下轮 sweep 收敛删记录。
+    std::fs::write(
+        tombstone_path(&ws, frozen_id),
+        serde_json::json!({"agent_id": frozen_id, "target_node": "node-b", "migrated_at": "t"})
+            .to_string(),
+    )
+    .unwrap();
+    let mut report2 = crate::agents::SweepReport {
+        activated: vec![],
+        failed: vec![],
+        migrated_removed: vec![],
+        reactivated: vec![],
+        frozen_migrating: vec![],
+    };
+    sweep_migrating(&store, &ws, &mut report2).unwrap();
+    assert!(report2.migrated_removed.contains(&frozen_id.to_string()));
+    assert!(
+        store.get(frozen_id).unwrap().is_none(),
+        "人工落墓碑后应收敛删记录"
+    );
+    assert!(!journal_exists(&ws, frozen_id), "收敛时应一并清意图日志");
 }
 
 // ---------------------------------------------------------------------------
@@ -516,4 +558,160 @@ fn vault_alias_mapping_strips_prefix() {
     // 非数组/空 = 空清单。
     rec.credential_refs = serde_json::json!(null);
     assert!(credential_alias_list(&rec).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// R7（2026-10-24 复核，外评探针反演）：post-ACK「墓碑全败 + 记录删除全败」
+// 复合失败——修复前 sweep 按无墓碑回滚 active = 同 uuid 双活且永久失明；
+// 修复后 sweep 冻结 migrating 转人工，绝不自动回滚。
+// ---------------------------------------------------------------------------
+
+/// R7 回归锁：墓碑路径占位成目录（全部写墓碑失败）+ 源库 DELETE trigger
+/// （store.remove 失败）→ post-ACK 复合失败；解除注入后 sweep 必须**冻结**
+/// （migrating 保持 + frozen_migrating 上报），绝不回滚 active；人工落墓碑
+/// 后 sweep 收敛删记录。
+#[tokio::test]
+async fn migrate_post_ack_marker_and_delete_failure_sweep_freezes_not_reactivates() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let (source_ws, source_store) = setup_ws(source_dir.path());
+    let (target_ws, target_store) = setup_ws(target_dir.path());
+    let source_db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &source_ws,
+    ))
+    .unwrap();
+    let mgr = super::super::AgentManager::from_db(source_ws.clone(), source_db);
+    let mut record = selfbuilt_record(AGENT_ID, "node-a");
+    record.credential_refs = serde_json::json!([]);
+    source_store.upsert(&record).unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_home_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_memory_dir_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    // 失败注入①：墓碑路径占位成目录 → 三试写墓碑全败。
+    let marker = tombstone_path(&source_ws, AGENT_ID);
+    std::fs::create_dir_all(&marker).unwrap();
+    mgr.set_migrate_transport(std::sync::Arc::new(LocalTransport {
+        target: MigrateCommitDeps {
+            workspace: target_ws.clone(),
+            self_node_id: "node-b".into(),
+        },
+        fail_push: false,
+    }));
+    // 失败注入②：源库 DELETE 全拒（真 store，无 mock）。
+    let conn =
+        rusqlite::Connection::open(nemesis_path::resolve_tasks_db_path_in_workspace(&source_ws))
+            .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER review_oct24_delete BEFORE DELETE ON agents \
+         BEGIN SELECT RAISE(ABORT, 'review delete failure'); END;",
+    )
+    .unwrap();
+
+    let error = super::migrate_agent(&mgr, AGENT_ID, "node-b")
+        .await
+        .unwrap_err();
+
+    // B 端已激活、A 端保持 migrating（N2 语义），墓碑缺席 + 意图日志在场。
+    assert!(error.starts_with(super::POST_ACK_ERR_MARK), "{error}");
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::MIGRATING
+    );
+    assert_eq!(
+        target_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::ACTIVE,
+        "commit ACK 已达 = B 端已激活"
+    );
+    assert!(!tombstone_exists(&source_ws, AGENT_ID), "墓碑三试全败");
+    assert!(
+        journal_exists(&source_ws, AGENT_ID),
+        "意图日志在场（commit 已发出）= sweep 冻结锚"
+    );
+
+    // 解除注入② → sweep：冻结（绝不回滚 active——B 已激活，回滚 = 双活）。
+    conn.execute_batch("DROP TRIGGER review_oct24_delete;")
+        .unwrap();
+    let report = mgr.sweep().unwrap();
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::MIGRATING,
+        "复合失败后 sweep 必须冻结，绝不自动回滚 active"
+    );
+    assert!(
+        report.frozen_migrating.contains(&AGENT_ID.to_string()),
+        "冻结必须上报转人工: {:?}",
+        report
+    );
+    assert!(
+        !report.reactivated.contains(&AGENT_ID.to_string()),
+        "此场景回滚 = 同 uuid 双活: {:?}",
+        report
+    );
+
+    // 人工裁决（确认 B 已激活）→ 落墓碑 → sweep 收敛删记录，双活归零。
+    // （先清注入①的占位目录——人工到场修复磁盘问题后墓碑路径恢复可写。）
+    std::fs::remove_dir(&marker).unwrap();
+    std::fs::write(
+        tombstone_path(&source_ws, AGENT_ID),
+        serde_json::json!({"agent_id": AGENT_ID, "target_node": "node-b", "migrated_at": "t"})
+            .to_string(),
+    )
+    .unwrap();
+    let report = mgr.sweep().unwrap();
+    assert!(report.migrated_removed.contains(&AGENT_ID.to_string()));
+    assert!(
+        source_store.get(AGENT_ID).unwrap().is_none(),
+        "人工落墓碑后收敛删记录"
+    );
+    assert!(!journal_exists(&source_ws, AGENT_ID), "收敛时清意图日志");
+}
+
+/// R7 对照臂：意图日志在场、人工确认 B 未收到 commit → 删日志 → sweep
+/// 回滚 active 照常服务（三分支的人工路径 B）。
+#[test]
+fn sweep_journal_removed_by_human_then_reactivates() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, store) = setup_ws(dir.path());
+    std::fs::create_dir_all(ws.join("agents")).unwrap();
+    let mut rec = selfbuilt_record(AGENT_ID, "node-a");
+    rec.status = agent_status::MIGRATING.to_string();
+    store.upsert(&rec).unwrap();
+    std::fs::write(
+        journal_path(&ws, AGENT_ID),
+        serde_json::json!({"agent_id": AGENT_ID, "target_node": "node-b", "started_at": "t"})
+            .to_string(),
+    )
+    .unwrap();
+
+    // 冻结在先（日志在场不动手）。
+    let mut report = crate::agents::SweepReport {
+        activated: vec![],
+        failed: vec![],
+        migrated_removed: vec![],
+        reactivated: vec![],
+        frozen_migrating: vec![],
+    };
+    sweep_migrating(&store, &ws, &mut report).unwrap();
+    assert_eq!(report.frozen_migrating, vec![AGENT_ID.to_string()]);
+
+    // 人工裁决（确认 B 未收到）→ 删日志 → 下轮 sweep 回滚 active。
+    std::fs::remove_file(journal_path(&ws, AGENT_ID)).unwrap();
+    let mut report = crate::agents::SweepReport {
+        activated: vec![],
+        failed: vec![],
+        migrated_removed: vec![],
+        reactivated: vec![],
+        frozen_migrating: vec![],
+    };
+    sweep_migrating(&store, &ws, &mut report).unwrap();
+    assert_eq!(report.reactivated, vec![AGENT_ID.to_string()]);
+    assert_eq!(
+        store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::ACTIVE
+    );
 }

@@ -4,8 +4,13 @@
 use super::*;
 
 /// 槽触碰类测试统一在锁内跑（进程级共享态串行纪律）。
+/// 同步 #[test] 形态：tokio Mutex 的 `blocking_lock()` 在无运行时的测试
+/// 线程上停等获取——此前 `lock()` 不 await 只拿到未 poll 的 Future，串行
+/// 从未生效（2026-10-24 外评 T0）。切勿在 async 运行时内调用本 helper
+/// （blocking_lock 会 loud panic）；异步用例直接 `LOCK.lock().await`
+/// （handlers/tests.rs sessions 投影用例即此形态）。
 fn with_slot<T>(f: impl FnOnce() -> T) -> T {
-    let _serial = SESSION_ALLOW_ALL_TEST_LOCK.lock();
+    let _serial = SESSION_ALLOW_ALL_TEST_LOCK.blocking_lock();
     set_session_allow_all_for_test(None);
     let out = f();
     set_session_allow_all_for_test(None);
@@ -138,6 +143,121 @@ fn session_allow_persisted_flag_survives_state_rebuild() {
 
         // 清理：关 + 删 sidecar。
         handler.session_allow(&sid, false).unwrap().unwrap();
+        cleanup_meta(&key);
+    });
+}
+
+// --- R1 回归锁（2026-10-24 外评探针反转）：持久化失败必须诚实响应 ---
+//
+// 旧形态：write_session_allow_all 吞错返 ()，handler 无视结果照常返回普通
+// 成功——「关闭放行」持久化失败后磁盘残留 true，重启 hydrate 把放行复活。
+// 修复后：persisted:false + warning；内存态按当次意志保留（关=安全方向）。
+// share_mode(1)（仅 FILE_SHARE_READ）锁 meta 文件逼原子替换失败。Windows
+// 独有 API，非 Windows 不编译（探针原样 cfg(windows)）。
+
+#[cfg(windows)]
+#[test]
+fn session_allow_disable_persist_failure_is_honest() {
+    use std::os::windows::fs::OpenOptionsExt;
+    with_slot(|| {
+        let _home = crate::test_home::lock_home();
+        let sid = format!("test-allowpersist-{}", std::process::id());
+        let handler = SecurityHandler::new();
+        let state =
+            std::sync::Arc::new(nemesis_security::session_allow_all::SessionAllowAllState::new());
+        install_session_allow_all(state.clone());
+        let key = derive_session_key(&sid);
+        let safe = nemesis_utils::sanitize::sanitize_path_segment(&key);
+        let meta_path = nemesis_path::default_path_manager()
+            .sessions_log_dir()
+            .join(format!("{safe}.meta.json"));
+
+        // 开：正常路径持久化成功。
+        let v = handler.session_allow(&sid, true).unwrap().unwrap();
+        assert_eq!(v["persisted"], true, "正常路径 persisted=true");
+
+        // 锁住 meta 文件（拒写/删/替换）。
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&meta_path)
+            .expect("打开锁句柄");
+
+        // 关：持久化失败 → persisted:false + warning；内存态安全方向（关）。
+        let v = handler.session_allow(&sid, false).unwrap().unwrap();
+        assert_eq!(v["enabled"], false);
+        assert_eq!(v["persisted"], false, "持久化失败必须诚实标注");
+        assert!(
+            !v["warning"].as_str().unwrap_or_default().is_empty(),
+            "必须带 warning"
+        );
+        assert!(!state.check(&key), "内存态安全方向：关闭即时生效");
+        let (persisted, _) =
+            nemesis_agent::chat_log::read_session_allow_all(&key).expect("meta 仍在");
+        assert!(
+            persisted,
+            "磁盘残留旧 true——正是 warning 声明的「重启将恢复放行」"
+        );
+
+        // 解锁重试：关闭成功落盘。
+        drop(lock);
+        let v = handler.session_allow(&sid, false).unwrap().unwrap();
+        assert_eq!(v["persisted"], true, "解锁后重试成功");
+        let (persisted, _) = nemesis_agent::chat_log::read_session_allow_all(&key).unwrap();
+        assert!(!persisted);
+
+        // 重启恢复面：hydrate 后不命中（撤销最终收敛）。
+        let state2 =
+            std::sync::Arc::new(nemesis_security::session_allow_all::SessionAllowAllState::new());
+        state2.hydrate(nemesis_agent::chat_log::allow_all_sessions());
+        assert!(!state2.check(&key), "hydrate 后必须不命中");
+
+        cleanup_meta(&key);
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn session_allow_enable_persist_failure_keeps_memory_intent() {
+    use std::os::windows::fs::OpenOptionsExt;
+    with_slot(|| {
+        let _home = crate::test_home::lock_home();
+        let sid = format!("test-allowpersist2-{}", std::process::id());
+        let handler = SecurityHandler::new();
+        let state =
+            std::sync::Arc::new(nemesis_security::session_allow_all::SessionAllowAllState::new());
+        install_session_allow_all(state.clone());
+        let key = derive_session_key(&sid);
+        let safe = nemesis_utils::sanitize::sanitize_path_segment(&key);
+        let meta_path = nemesis_path::default_path_manager()
+            .sessions_log_dir()
+            .join(format!("{safe}.meta.json"));
+
+        // 预置 meta（enable 走 upsert 需对既有文件做原子替换）。
+        std::fs::create_dir_all(meta_path.parent().unwrap()).unwrap();
+        std::fs::write(&meta_path, "{}").unwrap();
+
+        // 锁住 → 开：持久化失败，内存保留用户当次意志。
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&meta_path)
+            .expect("打开锁句柄");
+        let v = handler.session_allow(&sid, true).unwrap().unwrap();
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["persisted"], false, "enable 持久化失败同样诚实标注");
+        assert!(
+            !v["warning"].as_str().unwrap_or_default().is_empty(),
+            "必须带 warning"
+        );
+        assert!(state.check(&key), "内存态保留用户当次意志（开）");
+        let (persisted, _) = nemesis_agent::chat_log::read_session_allow_all(&key).unwrap();
+        assert!(!persisted, "磁盘未落 allow_all");
+
+        // 解锁后关：收敛干净。
+        drop(lock);
+        let v = handler.session_allow(&sid, false).unwrap().unwrap();
+        assert_eq!(v["persisted"], true);
         cleanup_meta(&key);
     });
 }

@@ -1048,7 +1048,10 @@ impl AgentLoop {
                             .or_default()
                             .push(change.clone());
                         if let Some(cp) = cp.as_ref() {
-                            cp.snapshot(&change).await;
+                            // R4：写入归属本会话的进行中 turn 桶（与 admission
+                            // 的 begin_for_session 同键）——并发会话不串档。
+                            cp.snapshot_for_session(&change, Some(&ctx.session_key))
+                                .await;
                         }
                     }
                     match tool_opt {

@@ -46,7 +46,9 @@ async fn restore_code_writes_back_and_deletes_by_snapshot_kind() {
     std::fs::write(root.join("a.txt"), "modified").unwrap();
     std::fs::write(root.join("made_up.txt"), "created during turn").unwrap();
 
-    let (written, deleted) = store.restore_code(1).await;
+    let report = store.restore_code(1).await;
+    let written = report.written;
+    let deleted = report.deleted;
     assert_eq!(written, vec!["a.txt".to_string()]);
     assert_eq!(deleted, vec!["made_up.txt".to_string()]);
     assert_eq!(

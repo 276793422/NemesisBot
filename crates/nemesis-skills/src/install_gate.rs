@@ -62,6 +62,13 @@ pub struct InstallPlan {
     /// 非阻断性警告聚合（suspicious 标记 / lint 警告 / 龄 warn）。
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// 本次安装的独立事务 staging 目录后缀（R2，2026-10-24）：`.skill-staging/<slug>.tx<id>`。
+    /// 逐次安装唯一——审批等待期间另一安装不得共享/换写本计划的内容源。
+    /// `#[serde(skip)]`：审批卡不落盘内务路径；plan 只序列化展示（plan_to_json），
+    /// 从不反序列化回传，进程内字段随结构体走。空串 = 兼容外部手工构造的
+    /// 旧形态 plan（commit_install 回落共享 staging 目录）。
+    #[serde(skip)]
+    pub staging_tx: String,
 }
 
 impl InstallPlan {
