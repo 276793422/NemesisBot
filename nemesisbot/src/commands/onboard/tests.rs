@@ -112,3 +112,52 @@ mod w5b2 {
         );
     }
 }
+
+// ===========================================================================
+// R55 持久化静默失败审计：人格文件安装（install_if_absent）此前是裸
+// std::fs::write——(1) 漏掉 REL-002 原子写横扫（半截 IDENTITY.md = 截断
+// 人格，与配置文件同类伤害）；(2) 写失败静默 + 调用方无条件打印「installed」
+// 假成功提示。修复后返回 bool 汇总计数，失败诚实报 Warning。
+// ===========================================================================
+
+mod r55_install_if_absent_contract {
+    use super::super::{OnboardMode, install_if_absent};
+    use std::fs;
+
+    /// 父路径是文件 → create_dir_all 必败 → 返回 false（不再静默假成功）。
+    #[test]
+    fn r55_install_failure_parent_is_file_returns_false() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, "x").unwrap();
+        let ok = install_if_absent(&blocker.join("IDENTITY.md"), "content", OnboardMode::Cli);
+        assert!(!ok, "父路径为文件时安装必须报失败（返回 false）");
+        assert!(
+            !blocker.join("IDENTITY").exists(),
+            "失败路径不得留下半截产物"
+        );
+    }
+
+    /// 正常路径：原子写内容完整 + Cli 覆盖语义 + Seed 跳过视为成功（true）。
+    #[test]
+    fn r55_install_happy_path_atomic_and_intact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("nested").join("IDENTITY.md");
+        assert!(
+            install_if_absent(&path, "v1", OnboardMode::Cli),
+            "正常路径必须返回 true"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v1");
+        assert!(install_if_absent(&path, "v2", OnboardMode::Cli));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v2", "Cli 模式总是覆盖");
+        assert!(
+            install_if_absent(&path, "v3", OnboardMode::Seed),
+            "Seed 存在即跳过 = 视为成功（返回 true）"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "v2",
+            "Seed 不覆盖用户文件"
+        );
+    }
+}
