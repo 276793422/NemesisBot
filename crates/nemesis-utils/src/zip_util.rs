@@ -116,12 +116,17 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
 /// 闸不依赖文件系统状态：拒绝绝对路径（含 Windows 盘符前缀——`C:/x` 在
 /// Unix 解析为普通组件，按字节显式识别）与一切非 Normal 组件（`..`、根
 /// 分隔符、`.` 自引用）。合法名字如 `a..b.txt` 不误伤（按组件而非子串）。
+///
+/// 判定前先做反斜杠归一：`\` 在 Unix 是合法文件名字符，Path 组件解析不切
+/// 分，`foo\..\..\bar.txt` 会整体落成单个 Normal 组件而漏放（Linux CI 实
+/// 证）。归一只会更严不更松，Windows/POSIX 形态同判。
 pub fn is_unsafe_rel_path(rel: &str) -> bool {
-    let p = Path::new(rel);
+    let normalized = rel.replace('\\', "/");
+    let p = Path::new(&normalized);
     if p.is_absolute() {
         return true;
     }
-    let b = rel.as_bytes();
+    let b = normalized.as_bytes();
     if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
         return true; // Windows 盘符前缀（"C:/x"、"C:\x"），跨平台一致拒绝
     }
