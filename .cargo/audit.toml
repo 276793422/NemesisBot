@@ -33,4 +33,9 @@ ignore = [
     # 残留 0.102.8 = rumqttc 0.25 → rustls 0.23 钉死链，mqtt default-off，
     # 详见该处注释）。（2026-10-21）
     "RUSTSEC-2026-0382",
+    # crypto-bigint 0.5.5 恒定时间运算时序可变（RUSTSEC-2026-0387，修复在
+    # ≥0.7.6 跨 major）。与 deny.toml 同源豁免（p256 0.13/ecdsa 0.16 →
+    # elliptic-curve 0.13.8 钉死链；RFC 6979 确定性 nonce、本机签名无远程
+    # oracle 暴露，详见该处注释 + 台账）。（2026-10-24）
+    "RUSTSEC-2026-0387",
 ]
