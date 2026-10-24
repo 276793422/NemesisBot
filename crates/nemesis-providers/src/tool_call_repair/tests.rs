@@ -235,3 +235,88 @@ fn test_call_type_always_function() {
     let calls = repair_tool_calls(&content);
     assert_eq!(calls[0].call_type.as_ref().unwrap(), "function");
 }
+
+// ---- BUG-20261025-16：白名单过滤（repair_tool_calls_in_whitelist）----
+// 不变量：恢复出的调用必须可执行——名字 ∈ 本请求提供的工具白名单。
+
+fn whitelist_defs(names: &[&str]) -> Vec<ToolDefinition> {
+    names
+        .iter()
+        .map(|n| ToolDefinition {
+            tool_type: "function".to_string(),
+            function: crate::types::ToolFunctionDefinition {
+                name: (*n).to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            },
+        })
+        .collect()
+}
+
+#[test]
+fn test_documentation_fenced_json_not_hijacked() {
+    // 正常文档回复：配置示例含 "name" 键——修复前被劫持成幻影工具调用
+    // （name="my-app"）且 finish_reason 强改 tool_calls。
+    let content = "配置文件这样写：\n\
+        ```json\n\
+        {\"name\": \"my-app\", \"version\": \"1.0\"}\n\
+        ```\n\
+        保存为 config.json 即可。";
+    let tools = whitelist_defs(&["read_file", "write_file"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert!(
+        calls.is_empty(),
+        "documentation JSON must not become a tool call"
+    );
+}
+
+#[test]
+fn test_documentation_bare_span_not_hijacked() {
+    // 无围栏的裸 JSON 跨度（find_json_spans 路径）同样滤净。
+    let content = r#"例如 {"name": "alice", "role": "admin"} 就是合法条目。"#;
+    let tools = whitelist_defs(&["exec"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn test_genuine_emit_with_whitelisted_name_still_repaired() {
+    // 恢复场景本体不受影响：小模型文本发射白名单内工具 → 照常恢复。
+    let content = "I'll read the file:\n\
+        ```json\n\
+        [{\"name\": \"read_file\", \"arguments\": {\"path\": \"/tmp/x\"}}]\n\
+        ```";
+    let tools = whitelist_defs(&["read_file", "write_file"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.as_ref().unwrap().name, "read_file");
+}
+
+#[test]
+fn test_mixed_real_and_phantom_keeps_only_whitelisted() {
+    // 混合：白名单内的真调用保留，幻影（未知工具名）滤掉。
+    let content =
+        r#"[{"name":"read_file","arguments":{"path":"a"}},{"name":"do_magic","arguments":{}}]"#;
+    let tools = whitelist_defs(&["read_file"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.as_ref().unwrap().name, "read_file");
+}
+
+#[test]
+fn test_whitelist_match_is_case_sensitive() {
+    // dispatch 按精确名匹配——大小写不符的名字执行不了，一律滤掉。
+    let content = r#"{"name": "Read_File", "arguments": {}}"#;
+    let tools = whitelist_defs(&["read_file"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn test_xml_invoke_phantom_name_filtered() {
+    // XML/DSML 分支同治：文档示例 <invoke name="x"> 不在白名单 → 滤净。
+    let content = "<invoke name=\"docs_example\"><parameter name=\"p\">1</parameter></invoke>";
+    let tools = whitelist_defs(&["read_file"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert!(calls.is_empty());
+}
