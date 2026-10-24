@@ -4695,13 +4695,26 @@ pub fn is_local_mode(config_path: &Path) -> bool {
 /// - NEMESISBOT_HEARTBEAT_INTERVAL
 /// - NEMESISBOT_SECURITY_ENABLED
 /// - NEMESISBOT_FORGE_ENABLED
+///
+/// BUG-20261025-22：布尔覆盖（`*_ENABLED` / `RESTRICT_TO_WORKSPACE`）的
+/// 识别集 = Go `strconv.ParseBool` 全集（true/false/t/f/1/0，大小写不敏感）
+/// 与项目自身宽容惯例 yes/no/on/off；值无法识别时**保留 config 文件值 +
+/// warn 留痕**——与同函数数值臂的「解析失败 = 不动 config」惯例一致，
+/// 严禁旧形态的 `parse().unwrap_or(硬编码默认)`（设 `=1` 想开安全会被
+/// 静默关掉、设 `=0` 想关 web 会被静默打开——intent 反转 + fail-open）。
 pub fn apply_env_overrides(config: &mut Config) {
     // Agent defaults
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE") {
         config.agents.defaults.workspace = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE") {
-        config.agents.defaults.restrict_to_workspace = v.parse().unwrap_or(true);
+        match parse_env_bool(&v) {
+            Some(b) => config.agents.defaults.restrict_to_workspace = b,
+            None => warn!(
+                "[Config] NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE={v:?} 值无法识别——保留 config 文件值 {}",
+                config.agents.defaults.restrict_to_workspace
+            ),
+        }
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_LLM") {
         config.agents.defaults.llm = v;
@@ -4740,7 +4753,13 @@ pub fn apply_env_overrides(config: &mut Config) {
 
     // Web channel
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_ENABLED") {
-        config.channels.web.enabled = v.parse().unwrap_or(true);
+        match parse_env_bool(&v) {
+            Some(b) => config.channels.web.enabled = b,
+            None => warn!(
+                "[Config] NEMESISBOT_CHANNELS_WEB_ENABLED={v:?} 值无法识别——保留 config 文件值 {}",
+                config.channels.web.enabled
+            ),
+        }
     }
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_HOST") {
         config.channels.web.host = v;
@@ -4763,7 +4782,13 @@ pub fn apply_env_overrides(config: &mut Config) {
 
     // Heartbeat
     if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_ENABLED") {
-        config.heartbeat.enabled = v.parse().unwrap_or(true);
+        match parse_env_bool(&v) {
+            Some(b) => config.heartbeat.enabled = b,
+            None => warn!(
+                "[Config] NEMESISBOT_HEARTBEAT_ENABLED={v:?} 值无法识别——保留 config 文件值 {}",
+                config.heartbeat.enabled
+            ),
+        }
     }
     if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_INTERVAL")
         && let Ok(n) = v.parse()
@@ -4773,19 +4798,42 @@ pub fn apply_env_overrides(config: &mut Config) {
 
     // Security
     if let Ok(v) = std::env::var("NEMESISBOT_SECURITY_ENABLED") {
-        let enabled = v.parse().unwrap_or(false);
-        config.security = Some(SecurityFlagConfig { enabled });
+        match parse_env_bool(&v) {
+            Some(enabled) => config.security = Some(SecurityFlagConfig { enabled }),
+            None => warn!(
+                "[Config] NEMESISBOT_SECURITY_ENABLED={v:?} 值无法识别——保留 config 文件值（安全开关不会被静默翻转，当前 {:?}）",
+                config.security.as_ref().map(|s| s.enabled)
+            ),
+        }
     }
 
     // Forge
     if let Ok(v) = std::env::var("NEMESISBOT_FORGE_ENABLED") {
-        let enabled = v.parse().unwrap_or(false);
-        config.forge = Some(ForgeFlagConfig { enabled });
+        match parse_env_bool(&v) {
+            Some(enabled) => config.forge = Some(ForgeFlagConfig { enabled }),
+            None => warn!(
+                "[Config] NEMESISBOT_FORGE_ENABLED={v:?} 值无法识别——保留 config 文件值（当前 {:?}）",
+                config.forge.as_ref().map(|f| f.enabled)
+            ),
+        }
     }
 
     // Session
     if let Ok(v) = std::env::var("NEMESISBOT_SESSION_DM_SCOPE") {
         config.session.dm_scope = v;
+    }
+}
+
+/// 布尔 env 覆盖的宽容识别（BUG-20261025-22 单一真相源）。
+///
+/// 识别集：`true/false/t/f/1/0`（= Go `strconv.ParseBool` 全集，大小写
+/// 不敏感）+ `yes/no/on/off`（项目宽容布尔惯例，同 `normalize_stream_value`
+/// 的出发点）。其余值返回 `None`——调用方保留 config 文件值并 warn。
+fn parse_env_bool(v: &str) -> Option<bool> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "true" | "t" | "1" | "yes" | "on" => Some(true),
+        "false" | "f" | "0" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 

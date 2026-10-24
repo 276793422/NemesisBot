@@ -1723,6 +1723,102 @@ fn test_apply_env_overrides_forge_enabled() {
     }
 }
 
+/// BUG-20261025-22 回归锁（宽容识别集）：布尔 env 覆盖必须认得 Go
+/// strconv.ParseBool 全集（true/false/t/f/1/0，大小写不敏感）+ 项目自身的
+/// yes/no/on/off 宽容惯例（同 normalize_stream_value 出发点）——设
+/// `NEMESISBOT_SECURITY_ENABLED=1` 想开安全必须真的开，不得因严格 parse
+/// 失败而走「静默强制 false」的反转臂。
+#[test]
+fn test_apply_env_overrides_bool_lenient_forms() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let mut config = Config::default();
+
+    for form in ["1", "TRUE", "True", "yes", "on", " true "] {
+        unsafe {
+            std::env::set_var("NEMESISBOT_SECURITY_ENABLED", form);
+        }
+        apply_env_overrides(&mut config);
+        assert!(
+            config.security.as_ref().is_some_and(|s| s.enabled),
+            "NEMESISBOT_SECURITY_ENABLED={form:?} should enable security"
+        );
+    }
+    for form in ["0", "FALSE", "False", "no", "off", "f"] {
+        unsafe {
+            std::env::set_var("NEMESISBOT_SECURITY_ENABLED", form);
+        }
+        apply_env_overrides(&mut config);
+        assert!(
+            config.security.as_ref().is_some_and(|s| !s.enabled),
+            "NEMESISBOT_SECURITY_ENABLED={form:?} should disable security"
+        );
+    }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_SECURITY_ENABLED");
+    }
+}
+
+/// BUG-20261025-22 回归锁（不识别 = 保留 config 文件值）：布尔 env 覆盖
+/// 设了但值无法识别时，必须与同函数数值臂同惯例——不动 config、warn 留痕，
+/// 严禁静默用硬编码默认覆盖（旧 unwrap_or(false) 会把 security 静默关掉、
+/// unwrap_or(true) 会把 web/heartbeat/restrict 静默打开）。
+#[test]
+fn test_apply_env_overrides_bool_unparseable_keeps_config_value() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+
+    // security/forge：文件值 enabled=true + env 乱值 → 保持 true（不静默关）。
+    let mut config = Config::default();
+    config.security = Some(SecurityFlagConfig { enabled: true });
+    unsafe {
+        std::env::set_var("NEMESISBOT_SECURITY_ENABLED", "maybe");
+    }
+    apply_env_overrides(&mut config);
+    assert!(
+        config.security.as_ref().is_some_and(|s| s.enabled),
+        "unparseable NEMESISBOT_SECURITY_ENABLED must keep the config value (not force-disable)"
+    );
+    unsafe {
+        std::env::remove_var("NEMESISBOT_SECURITY_ENABLED");
+    }
+
+    let mut config = Config::default();
+    config.forge = Some(ForgeFlagConfig { enabled: true });
+    unsafe {
+        std::env::set_var("NEMESISBOT_FORGE_ENABLED", "2");
+    }
+    apply_env_overrides(&mut config);
+    assert!(
+        config.forge.as_ref().is_some_and(|f| f.enabled),
+        "unparseable NEMESISBOT_FORGE_ENABLED must keep the config value"
+    );
+    unsafe {
+        std::env::remove_var("NEMESISBOT_FORGE_ENABLED");
+    }
+
+    // web/heartbeat/restrict：文件值 false + env 乱值 → 保持 false（不静默开）。
+    let mut config = Config::default();
+    config.channels.web.enabled = false;
+    config.heartbeat.enabled = false;
+    config.agents.defaults.restrict_to_workspace = false;
+    unsafe {
+        std::env::set_var("NEMESISBOT_CHANNELS_WEB_ENABLED", "banana");
+        std::env::set_var("NEMESISBOT_HEARTBEAT_ENABLED", "banana");
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE", "banana");
+    }
+    apply_env_overrides(&mut config);
+    assert!(
+        !config.channels.web.enabled,
+        "unparseable NEMESISBOT_CHANNELS_WEB_ENABLED must keep config false"
+    );
+    assert!(!config.heartbeat.enabled);
+    assert!(!config.agents.defaults.restrict_to_workspace);
+    unsafe {
+        std::env::remove_var("NEMESISBOT_CHANNELS_WEB_ENABLED");
+        std::env::remove_var("NEMESISBOT_HEARTBEAT_ENABLED");
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE");
+    }
+}
+
 #[test]
 fn test_apply_env_overrides_workspace() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1896,7 +1992,9 @@ fn test_apply_env_overrides_invalid_bool() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    // Invalid bool for restrict_to_workspace defaults to true
+    // BUG-20261025-22：无法识别的布尔 env 覆盖 = 保留 config 值 + warn
+    // （旧语义「强制 true」已废除）。Config::default() 的
+    // restrict_to_workspace 恰为 true，此处钉的是「保留文件值」不翻转。
     unsafe {
         std::env::set_var(
             "NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE",
