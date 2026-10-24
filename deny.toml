@@ -87,6 +87,13 @@ ignore = [
   # 链才可达。移除条件：rumqttc 升级到 rustls 0.24+/webpki ≥0.103.16 后
   # cargo update -p rustls-webpki。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-10-21）
   { id = "RUSTSEC-2026-0382", reason = "rustls-webpki accepts distrusted emSign intermediates; fix in webpki >=0.103.16, 0.103.x updated in lock, 0.102.8 pinned via rustls 0.23 (rumqttc 0.25, mqtt default-off); client-only, mainstream-CA exposure" },
+  # crypto-bigint 0.5.5 恒定时间运算时序可变（RUSTSEC-2026-0387，修复在
+  # ≥0.7.6，跨 major）。钉死链：p256 0.13.2 / ecdsa 0.16.9 → elliptic-curve
+  # 0.13.8 → crypto-bigint 0.5.x，semver 无升级路径。
+  # 暴露面：nemesis-verify 签名走 RFC 6979 确定性 nonce（无可泄露随机数），
+  # 用法是本机工具签名 + 自有二进制验签，无远程签名 oracle 暴露；时序攻击
+  # 需对本地签名操作做大量高精度测量，实际不可达。（2026-10-24）
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 timing variability in constant-time ops; fix >=0.7.6 cross-major; pinned via p256 0.13/ecdsa 0.16 -> elliptic-curve 0.13; RFC 6979 deterministic nonce, local-only signing, no remote oracle exposure" },
 ]
 
 [licenses]
