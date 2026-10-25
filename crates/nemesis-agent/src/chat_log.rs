@@ -805,22 +805,20 @@ pub fn write_chat_log_from_store(
 /// bytes on disk; `clear` deliberately KEEPS the meta because the
 /// conversation stays alive with its title). No-op if absent.
 pub fn delete_chat_log(session_key: &str) {
+    // BUG-20261025-35 同族：会话删除的落盘面必须真删——裸单发 remove 被
+    // Windows 瞬时句柄（Defender/索引器）打败时 jsonl 残留，`sessions.list`
+    // 扫 jsonl 会把「已删除」的会话复活。走 fsutil 韧性重试（NotFound 在
+    // 重试原语内部已归一为成功），耗尽才 warn 留痕。
     let path = log_path(session_key);
-    if let Err(e) = std::fs::remove_file(&path)
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&path) {
         tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
     }
     let bpath = boundary_path(session_key);
-    if let Err(e) = std::fs::remove_file(&bpath)
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&bpath) {
         tracing::warn!("[chat_log] Failed to delete {}: {}", bpath.display(), e);
     }
     let mpath = meta_path(session_key);
-    if let Err(e) = std::fs::remove_file(&mpath)
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&mpath) {
         tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
     }
 }

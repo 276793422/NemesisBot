@@ -490,7 +490,10 @@ impl CheckpointStore {
                 let stale = name.starts_with("tmp_obj_")
                     || name.starts_with("tmp_pack_")
                     || name.ends_with(".lock");
-                if stale && std::fs::remove_file(&p).is_ok() {
+                // BUG-20261025-35 同族：stale 残留（尤其 .lock）清不掉会让
+                // git 操作持续报锁——同样走韧性重试，瞬时句柄不致自愈失效
+                //（装配期一次性清扫，重试窗口无碍）。
+                if stale && nemesis_utils::fsutil::remove_file_retry(&p).is_ok() {
                     removed += 1;
                 }
             }
@@ -1659,7 +1662,20 @@ impl CheckpointStore {
                     && t >= from_turn
                     && !persisted_checkpoint_belongs_to_other_session(&ent.path(), rewind_session)
                 {
-                    let _ = std::fs::remove_file(ent.path());
+                    // BUG-20261025-35：裸单发 remove + `let _` 吞错——Windows
+                    // 上刚落盘的 turn 镜像被 Defender/索引器瞬时持句是常态
+                    // （fsutil 模块头注记的 CI 实证教训），删除静默失败后
+                    // `load()` 重启回载会把**已回退的 turn 复活**进索引：
+                    // redo 陈旧性守卫被幻影 tree 永久误杀、回退选择器出幻
+                    // 影条目、后续冲突预检对已回滚盘面假阳性逼 force。走
+                    // 韧性重试；耗尽才 warn 留痕（诚实可见，不伪装成功）。
+                    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(ent.path()) {
+                        tracing::warn!(
+                            file = %ent.path().display(),
+                            error = %e,
+                            "[checkpoint] turn 镜像删除重试耗尽（重启后 load 将复活已回退 turn，redo 守卫失效/选择器幻影）: turn-{t}"
+                        );
+                    }
                 }
             }
         }

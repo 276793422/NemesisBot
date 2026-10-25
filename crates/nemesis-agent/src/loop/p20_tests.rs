@@ -472,3 +472,51 @@ async fn r31_old_payload_without_session_field_loads_as_same_session() {
     );
     assert!(cp.list_meta().is_empty());
 }
+
+/// BUG-20261025-35 回归锁：scoped 截断的盘上镜像删除必须真实生效——截断
+/// 后以同目录新建 store（重启模拟），`load()` 不得复活已回退 turn。此前
+/// 裸单发 `remove_file` + `let _` 吞错：Windows 瞬时句柄（Defender/索引器
+/// ，fsutil 模块头注记的 CI 实证教训）删除失败静默残留，重启回载把已回退
+/// turn 塞回索引——redo 陈旧性守卫被幻影 tree 永久误杀、回退选择器幻影
+/// 条目、后续冲突预检对已回滚盘面假阳性逼 force。
+#[tokio::test]
+async fn r35_scoped_truncate_mirror_gone_no_resurrection_on_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let ckpt_dir = dir.path().join(".ck");
+    std::fs::create_dir_all(&ckpt_dir).unwrap();
+    let cp = crate::checkpoint::CheckpointStore::new(Some(ckpt_dir.clone()), root.clone());
+
+    // 会话 sA 两个带声明路径的 turn（seal 有路径即落盘镜像，与 git feature 无关）。
+    cp.begin_for_session(1, "a1", Some("sA"));
+    std::fs::write(root.join("a.txt"), "a1").unwrap();
+    cp.snapshot_for_session(&p20_modify("a.txt"), Some("sA"))
+        .await;
+    cp.seal_turn(1);
+    cp.begin_for_session(2, "a2", Some("sA"));
+    std::fs::write(root.join("a.txt"), "a2").unwrap();
+    cp.snapshot_for_session(&p20_modify("a.txt"), Some("sA"))
+        .await;
+    cp.seal_turn(2);
+    assert!(
+        ckpt_dir.join("turn-1.json").exists() && ckpt_dir.join("turn-2.json").exists(),
+        "前置：两个 turn 镜像必须已落盘"
+    );
+
+    // 回退 turn≥2：内存索引与盘上镜像同清。
+    cp.truncate_from_scoped(2, Some("sA"));
+    assert!(
+        !ckpt_dir.join("turn-2.json").exists(),
+        "已回退 turn 的盘上镜像必须已删"
+    );
+
+    // 重启模拟：同目录新 store 走 load() 回载——幻影不得出现。
+    let cp2 = crate::checkpoint::CheckpointStore::new(Some(ckpt_dir.clone()), root);
+    let turns: Vec<usize> = cp2.list_meta().iter().map(|m| m.turn).collect();
+    assert_eq!(
+        turns,
+        vec![1],
+        "重启回载不得复活已回退 turn（镜像残留 = redo 守卫误杀 + 选择器幻影 + 冲突预检假阳性）"
+    );
+}
