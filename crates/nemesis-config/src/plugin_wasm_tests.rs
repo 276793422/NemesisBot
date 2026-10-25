@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // set_enabled/set_config/remove 走 config_write_lock（进程级串行锁）；
-// 读路径迁移写（temp 时间戳命名）不锁但同毫秒并发可撞 tmp 同名——
-// 各测试目录本互不相干，此锁纯为消除极端抖动。
+// 读路径迁移写不罩锁——BUG-20261025-45 修复后写侧走 write_file_atomic
+// 唯一临时名（.tmp-{pid}-{seq}-{nanos}），同毫秒撞名已消除；
+// 此锁保留为廉价的串行卫生。
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn temp_config_dir(tag: &str) -> PathBuf {
@@ -158,4 +159,60 @@ fn legacy_dir_noise_handled() {
         "已迁移的旧文件删除"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ==================== BUG-20261025-45（BUG-HUNT R123）回归锁 ====================
+//
+// write_switch_file 曾是手搓 tmp+rename：tmp 名只到毫秒精度（读路径迁移写
+// 不罩锁，同毫秒并发可撞名），且无 sync_all（崩溃/断电撕裂目标文件——读侧
+// fail-closed 全禁 + 下次写以空底重建）。修复 = 走 write_file_atomic（唯一
+// 临时名 + fsync 先于 rename + 失败清理）。进程内无法真实注入写中崩溃
+// （BUG-43/44 同族诚实边界），本批锁可观察不变量：兄弟条目跨写保留、
+// 文件字节形态（尾随换行）不变、写路径与迁移路径盘上零 .tmp 残留。
+
+#[test]
+fn r45_writes_preserve_siblings_trailing_newline_and_no_tmp_residue() {
+    let dir = temp_config_dir("r45_atomic");
+    let _g = SERIAL.lock().unwrap();
+    set_enabled(&dir, "alpha", true).unwrap();
+    set_enabled(&dir, "beta", false).unwrap();
+    let mut cfg = BTreeMap::new();
+    cfg.insert("include_spaces".to_string(), serde_json::json!("true"));
+    set_config(&dir, "alpha", cfg).unwrap();
+    set_enabled(&dir, "beta", true).unwrap();
+    // 多轮 RMW 后兄弟条目 + config 全保留
+    assert!(switch(&dir, "alpha").enabled);
+    assert!(switch(&dir, "beta").enabled);
+    assert_eq!(
+        switch(&dir, "alpha").config.get("include_spaces"),
+        Some(&serde_json::json!("true"))
+    );
+    // 字节形态：尾随换行保留（与修复前 json + "\n" 一致，文件消费者无感）
+    let raw = std::fs::read(plugin_wasm_config_path(&dir)).unwrap();
+    assert!(raw.ends_with(b"\n"), "尾随换行必须保留");
+    assert_no_tmp_residue(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r45_migration_write_via_read_path_leaves_no_residue() {
+    let dir = temp_config_dir("r45_migrate");
+    let _g = SERIAL.lock().unwrap();
+    legacy_instance(&dir, "old-plugin", r#"{"k":"v"}"#);
+    // 首读触发迁移写（不罩锁的路径）——迁移条目落盘 + 零 .tmp 残留
+    let sw = switch(&dir, "old-plugin");
+    assert!(!sw.enabled);
+    assert_eq!(sw.config.get("k"), Some(&serde_json::json!("v")));
+    assert_no_tmp_residue(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 盘上零临时文件残留（新旧两种 tmp 命名形态都含 `.tmp` 子串）。
+fn assert_no_tmp_residue(dir: &Path) {
+    let residue: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
 }

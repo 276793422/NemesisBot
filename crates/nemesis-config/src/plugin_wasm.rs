@@ -128,30 +128,16 @@ fn read_switch_file(config_dir: &Path) -> SwitchFile {
     }
 }
 
-/// 原子写（temp + rename；tmp 名带进程+毫秒后缀防并发互踩；失败清理 temp）。
+/// 原子写（BUG-20261025-45 起走 `nemesis_utils::write_file_atomic`：唯一
+/// 临时名 + `sync_all` 先于 rename + 失败清理——旧手搓 tmp 名只到毫秒精度，
+/// 读路径迁移写不罩锁时同毫秒并发可撞名，且无 fsync 崩溃可撕裂目标文件）。
 fn write_switch_file(config_dir: &Path, file: &SwitchFile) -> Result<(), String> {
     let path = plugin_wasm_config_path(config_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败：{e}"))?;
     }
     let json = serde_json::to_string_pretty(file).map_err(|e| format!("序列化失败：{e}"))?;
-    let stem = "config.plugin.wasm.json";
-    let tmp = path.with_file_name(format!(
-        "{stem}.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&tmp, json + "\n").map_err(|e| format!("写入失败：{e}"))?;
-    match std::fs::rename(&tmp, &path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(format!("写入失败：{e}"))
-        }
-    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), (json + "\n").as_bytes(), 0o600)
 }
 
 /// 旧实例文件并入（一次性惰性迁移）：扫 `<config_dir>/plugins/*.json`，

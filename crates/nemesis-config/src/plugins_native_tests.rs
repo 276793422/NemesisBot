@@ -130,3 +130,60 @@ fn legacy_file_discarded_when_new_name_present() {
     assert!(!dir.join("plugins_native.json").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ==================== BUG-20261025-45（BUG-HUNT R123）回归锁 ====================
+//
+// set_enabled 曾是裸 std::fs::write 直写目标（崩溃撕裂整文件 → 读侧
+// fail-open 短期放行，但下次 set_enabled 的 RMW 从撕裂内容解析失败落到
+// 空 SwitchFile，静默抹掉全部兄弟插件条目）；legacy 迁移曾是「读+写+删」
+// 非原子（中段崩溃新旧两份全丢）。修复 = 写侧走 write_file_atomic、
+// 迁移改同目录 rename。进程内无法真实注入写中崩溃（BUG-43/44 同族诚实
+// 边界），本批锁可观察不变量：兄弟条目跨写保留、迁移字节保真 + 旧名
+// 消失、写路径盘上零 .tmp 残留。
+
+#[test]
+fn r45_repeated_writes_preserve_siblings_and_leave_no_tmp_residue() {
+    let dir = temp_config_dir("r45_atomic");
+    set_enabled(&dir, NativePluginId::PluginUi, false).unwrap();
+    set_enabled(&dir, NativePluginId::PluginOnnx, false).unwrap();
+    set_enabled(&dir, NativePluginId::PluginWasm, false).unwrap();
+    set_enabled(&dir, NativePluginId::PluginOnnx, true).unwrap();
+    // 多轮 RMW 后全部条目仍在（撕裂后果的镜像面：兄弟条目不被静默抹掉）
+    assert!(!load_enabled(&dir, NativePluginId::PluginUi));
+    assert!(load_enabled(&dir, NativePluginId::PluginOnnx));
+    assert!(!load_enabled(&dir, NativePluginId::PluginWasm));
+    assert!(
+        load_enabled(&dir, NativePluginId::EvalMonitor),
+        "未动过的键保持缺省启用"
+    );
+    assert_no_tmp_residue(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r45_legacy_migration_is_byte_fidelity_rename() {
+    let dir = temp_config_dir("r45_rename");
+    let legacy_body =
+        r#"{"plugins":{"plugin_ui":{"enabled":false},"plugin_onnx":{"enabled":false}}}"#;
+    std::fs::write(dir.join("plugins_native.json"), legacy_body).unwrap();
+    // 首读迁移：新名内容与旧名字节一致（rename 语义，非重序列化）+ 旧名消失
+    assert!(!load_enabled(&dir, NativePluginId::PluginUi));
+    let migrated = std::fs::read_to_string(plugins_native_config_path(&dir)).unwrap();
+    assert_eq!(
+        migrated, legacy_body,
+        "迁移必须字节保真（rename 而非读+写+删）"
+    );
+    assert!(!dir.join("plugins_native.json").exists());
+    assert_no_tmp_residue(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 盘上零临时文件残留（write_file_atomic 的 `.tmp-*` 形态）。
+fn assert_no_tmp_residue(dir: &std::path::Path) {
+    let residue: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
+}

@@ -92,21 +92,23 @@ const LEGACY_FILE_NAME: &str = "plugins_native.json";
 fn migrate_legacy_file(path: &Path) {
     let Some(parent) = path.parent() else { return };
     let legacy = parent.join(LEGACY_FILE_NAME);
-    let Ok(legacy_content) = std::fs::read_to_string(&legacy) else {
+    if !legacy.exists() {
         return; // 旧文件不在场 = 无可迁移
-    };
+    }
     if path.exists() {
         // 新版已在场（并发或先前迁移过写了一半）——旧文件作废弃副本清理。
         let _ = std::fs::remove_file(&legacy);
         return;
     }
-    match std::fs::write(path, legacy_content.as_bytes()).map(|_| std::fs::remove_file(&legacy)) {
-        Ok(Ok(())) => tracing::info!(
+    // 同目录 rename = 原子迁移（BUG-20261025-45：旧「读+写+删」中段崩溃
+    // 新旧两份全丢；rename 失败源文件原位留守，下次读重试）。
+    match std::fs::rename(&legacy, path) {
+        Ok(()) => tracing::info!(
             from = %legacy.display(),
             to = %path.display(),
             "[NativePlugin] 开关文件已迁移为规范命名"
         ),
-        Ok(Err(e)) | Err(e) => tracing::warn!(
+        Err(e) => tracing::warn!(
             from = %legacy.display(),
             to = %path.display(),
             error = %e,
@@ -151,7 +153,9 @@ pub fn load_enabled(config_dir: &Path, id: NativePluginId) -> bool {
 }
 
 /// 写开关（读-改-写整文件；文件不存在 = 只写目标键。保留其他插件条目）。
-/// 罩 config 家族写串行锁（与 config 写臂族互斥，同 approval_rules 惯例）。
+/// 原子落盘（`write_file_atomic`，BUG-20261025-45：直写撕裂会让下次 RMW
+/// 以空底重建、静默抹掉全部兄弟插件条目）；罩 config 家族写串行锁
+/// （与 config 写臂族互斥，同 approval_rules 惯例）。
 pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Result<(), String> {
     let _serial = crate::config_write_lock();
     let path = plugins_native_config_path(config_dir);
@@ -166,5 +170,5 @@ pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Resu
         std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败：{e}"))?;
     }
     let json = serde_json::to_string_pretty(&file).map_err(|e| format!("序列化失败：{e}"))?;
-    std::fs::write(&path, json + "\n").map_err(|e| format!("写入失败：{e}"))
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), (json + "\n").as_bytes(), 0o600)
 }
