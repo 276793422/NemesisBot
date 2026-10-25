@@ -4579,6 +4579,18 @@ variables: {}
         job["payload"]["max_rounds"] = serde_json::json!(3);
         r10_seed_cron_store(&home, vec![job]);
 
+        // W3 闸（f44c4a0f）：session_key 非空的 job 触发期查父会话磁盘存在
+        // 性（sessions json ∨ session_logs jsonl 任一），双臂全 miss = 已删
+        // 除 → 自动暂停不发布。本场景驱动的是 Opt2 路由分支 + T3 元数据，
+        // 不是闸本身（闸有 w3_session_gate_tests 专项）——种子父会话文件让
+        // 闸放行（存在性只看文件名，空对象即可；消毒名与写入方同源）。
+        let sess_json = crate::common::sessions_dir(&home).join(format!(
+            "{}.json",
+            nemesis_utils::sanitize::sanitize_path_segment("agent:r10umbrella")
+        ));
+        std::fs::create_dir_all(sess_json.parent().unwrap()).unwrap();
+        std::fs::write(&sess_json, "{}").unwrap();
+
         let state =
             r9_spawn_until_ready_then_graceful_stop("gateway-r10-umbrella", &ws, Some(cfg)).await;
 
