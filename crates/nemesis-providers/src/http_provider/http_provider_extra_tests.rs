@@ -984,6 +984,64 @@ async fn test_chat_stream_multiple_tool_calls_with_index() {
     panic!("never received tool_calls finish chunk");
 }
 
+/// BUG-20261025-53 回归锁：多工具调用终态 flush 必须按模型 index 升序
+/// （index 序 = 执行顺序语义；非流式路径按 JSON 数组序保留，anthropic lane
+/// 用显式 tool_order 同语义）。旧形态用 HashMap 累积 + .iter() 展开——迭代序
+/// 不定，多工具调用顺序被打乱（执行乱序且逐次运行不同）。本测试让 6 个
+/// index 乱序到达：修复后确定性绿；旧 HashMap 形态下恰好按升序迭代的概率
+/// 仅 1/720（近似确定性红）。
+#[tokio::test]
+async fn test_chat_stream_multiple_tool_calls_flush_in_index_order() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // 到达顺序故意打乱（5,2,4,0,3,1）：既证「按 index 排序」也证「不按到达序」。
+    let arrival = [5usize, 2, 4, 0, 3, 1];
+    let mut sse = String::new();
+    for &i in &arrival {
+        sse.push_str(&format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":{i},\"id\":\"id{i}\",\"function\":{{\"name\":\"tool_{i}\",\"arguments\":\"{{}}\"}}}}]}}}}]}}\n\n"
+        ));
+    }
+    sse.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n");
+    sse.push_str("data: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(
+        &[user_message("run six tools")],
+        &[],
+        "gpt-4",
+        &ChatOptions::default(),
+    );
+
+    while let Some(Ok(chunk)) = rx.recv().await {
+        if chunk.finish_reason.as_deref() == Some("tool_calls") {
+            assert_eq!(chunk.tool_calls.len(), 6);
+            let names: Vec<&str> = chunk
+                .tool_calls
+                .iter()
+                .map(|tc| tc.function.as_ref().unwrap().name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4", "tool_5"],
+                "终态 flush 必须按 index 升序（执行顺序语义）"
+            );
+            return;
+        }
+    }
+    panic!("never received tool_calls finish chunk");
+}
+
 #[tokio::test]
 async fn test_chat_stream_http_error_returns_error_chunk() {
     let server = MockServer::start().await;

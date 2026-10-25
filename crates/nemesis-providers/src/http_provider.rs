@@ -511,8 +511,15 @@ impl HttpProvider {
             // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符，BUG-HUNT R38）。
             let mut utf8_pending: Vec<u8> = Vec::new();
             // Accumulated tool calls across chunks (index -> partial ToolCall).
-            let mut pending_tool_calls: std::collections::HashMap<usize, (String, String, String)> =
-                std::collections::HashMap::new();
+            // BTreeMap 而非 HashMap：终态 flush 三处（finish 帧 / [DONE] 合成 /
+            // EOF 合成）直接 .iter() 展开——模型下发的 index 序就是执行顺序语义
+            // （非流式路径按 JSON 数组序保留；anthropic lane 用显式 tool_order
+            // 同语义），HashMap 迭代序不定会把多工具调用顺序打乱（执行乱序、
+            // 且逐次运行不同）。BUG-20261025-53。
+            let mut pending_tool_calls: std::collections::BTreeMap<
+                usize,
+                (String, String, String),
+            > = std::collections::BTreeMap::new();
             // Accumulated reasoning content from thinking-mode models.
             let mut accumulated_reasoning = String::new();
             // 终态帧是否已发（finish chunk 正常先行，[DONE] 只收尾不再补发；
