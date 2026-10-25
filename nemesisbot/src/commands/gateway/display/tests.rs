@@ -59,3 +59,28 @@ fn w6_select_advertised_lan_ip_all_loopback_returns_none() {
     let ips = vec!["127.0.0.1".to_string(), "127.9.9.9".to_string()];
     assert_eq!(select_advertised_lan_ip(&ips, &[]), None);
 }
+
+// BUG-20261025-29 回归锁：浏览器启动命令不得经过 shell（与 nemesis-auth
+// oauth.rs 同型修复）。旧实现 `cmd /c start {url}` + raw_arg 让 URL 里的
+// 字面 `&` 成为 cmd 命令分隔符——URL 在第一个 & 处被截断、余段被当命令执行。
+// 不变量：程序是 explorer（非 shell）、完整 URL 是唯一参数。
+#[test]
+#[cfg(all(windows, feature = "desktop"))]
+fn browser_command_keeps_ampersand_url_as_single_argument() {
+    let url = "http://127.0.0.1:49000/chat?session=abc&tab=1";
+    let cmd = super::windows_browser_command(url);
+    assert_eq!(
+        cmd.get_program(),
+        "explorer",
+        "必须直启 explorer，不得经过 cmd shell"
+    );
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [url],
+        "完整 URL 必须是唯一参数（& 不得被 shell 拆开）"
+    );
+}

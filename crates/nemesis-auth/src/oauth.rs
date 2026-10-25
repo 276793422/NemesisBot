@@ -749,14 +749,15 @@ fn url_encode(s: &str) -> String {
 fn open_browser_impl(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        // gateway 以托盘/无控制台运行(release windows 子系统)时,console
-        // 子进程 cmd 会各自弹新控制台;输出无人收集,压掉(先例
-        // background_registry.rs CREATE_NO_WINDOW 纪律)。
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .creation_flags(CREATE_NO_WINDOW)
-            .raw_arg(format!("/c start {}", url))
+        // BUG-20261025-29：旧实现 `cmd /c start {url}`（raw_arg 原样拼接）把
+        // 未加引号的 URL 直通 cmd——查询串里的字面 `&` 是 cmd 命令分隔符，
+        // 浏览器只收到第一个 & 之前的残缺 URL（缺 client_id/PKCE/state，
+        // OAuth 浏览器登录必败），余下每个 key=value 段被当独立命令执行
+        // （本机实证：'client_id' is not recognized）。改 explorer 直启：
+        // URL 走单一 argv（无 shell 中间层，& 不经任何解析），explorer 对
+        // http(s) 经 ShellExecute 打开默认浏览器；GUI 子系统无控制台窗，
+        // 无需 CREATE_NO_WINDOW。
+        windows_browser_command(url)
             .spawn()
             .map_err(|e| format!("opening browser: {}", e))?;
         Ok(())
@@ -785,6 +786,15 @@ fn open_browser_impl(url: &str) -> Result<(), String> {
         let _ = url;
         Err("unsupported platform".to_string())
     }
+}
+
+/// Windows 默认浏览器命令构造（独立函数便于单测锁定不变量：程序不是
+/// shell、完整 URL 是唯一参数——BUG-20261025-29 回归锁）。
+#[cfg(target_os = "windows")]
+fn windows_browser_command(url: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("explorer");
+    cmd.arg(url);
+    cmd
 }
 
 #[cfg(test)]

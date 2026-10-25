@@ -2247,3 +2247,32 @@ fn open_browser_unsupported_platform_is_err() {
     let err = open_browser("https://auth.example").unwrap_err();
     assert!(err.contains("unsupported platform"), "{err}");
 }
+
+// ===========================================================================
+// BUG-20261025-29 回归锁：浏览器启动命令不得经过 shell。旧实现
+// `cmd /c start {url}`（raw_arg 原样拼接）把未加引号的 URL 直通 cmd——授权
+// 查询串里的字面 `&` 是 cmd 命令分隔符，浏览器只收到第一个 & 之前的残缺
+// URL（缺 client_id/PKCE/state，OAuth 浏览器登录必败），余下 key=value 段
+// 被当独立命令执行（本机实证：'client_id' is not recognized）。
+// 不变量：程序是 explorer（非 shell）、完整 URL 是唯一参数。
+// ===========================================================================
+#[test]
+#[cfg(windows)]
+fn browser_command_keeps_ampersand_url_as_single_argument() {
+    let url = "https://auth.example/oauth/authorize?response_type=code&client_id=app_X&code_challenge=abc&state=s1";
+    let cmd = windows_browser_command(url);
+    assert_eq!(
+        cmd.get_program(),
+        "explorer",
+        "必须直启 explorer，不得经过 cmd shell"
+    );
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [url],
+        "完整 URL 必须是唯一参数（& 不得被 shell 拆开）"
+    );
+}

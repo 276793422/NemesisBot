@@ -8,19 +8,27 @@ use tracing::warn;
 
 use crate::common;
 
+/// Windows 默认浏览器命令构造（独立函数便于单测锁定不变量：程序不是
+/// shell、完整 URL 是唯一参数——BUG-20261025-29 回归锁）。门随 open_browser
+/// 收放（desktop 非 android），非 desktop 构建下不参与编译。
+#[cfg(all(windows, feature = "desktop", not(target_os = "android")))]
+fn windows_browser_command(url: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("explorer");
+    cmd.arg(url);
+    cmd
+}
+
 /// Open a URL in the default browser.
 #[cfg(all(feature = "desktop", not(target_os = "android")))]
 pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        // gateway 以托盘/无控制台运行(release windows 子系统)时,console
-        // 子进程 cmd 会各自弹新控制台;输出无人收集,压掉(先例
-        // background_registry.rs CREATE_NO_WINDOW 纪律)。
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .creation_flags(CREATE_NO_WINDOW)
-            .raw_arg(format!("/c start {}", url))
+        // BUG-20261025-29 同病灶（与 nemesis-auth oauth.rs 同型）：旧实现
+        // `cmd /c start {url}` + raw_arg 让 URL 里的字面 `&` 被 cmd 当命令
+        // 分隔符——带查询串的 URL 在第一个 & 处被截断，余下 key=value 段被
+        // 当独立命令执行。改 explorer 直启：URL 单一 argv 无 shell 中间层
+        // （& 逐字保留）；GUI 子系统无控制台窗，无需 CREATE_NO_WINDOW。
+        windows_browser_command(url)
             .spawn()
             .map_err(|e| format!("opening browser: {}", e))?;
         Ok(())
