@@ -115,6 +115,8 @@ extern "C" fn host_notify_incoming(conn_id: u64, port: u16, remote_hex: *const c
     // M3 接线：插件 accept iroh 连接后开 loopback 端口 → 宿主受理
     // （TcpStream::connect + 帧协议照跑）。v2 追加 remote_hex（对端
     // EndpointId hex）——经桥分发给受理器漏斗（server 臂消费），日志留痕。
+    // BUG-20261025-20：桥面随 cluster feature——关裁剪形态无受理器，事件
+    // 无消费方，留痕丢弃（插件下 tick 自愈语义不受影响）。
     let remote = if remote_hex.is_null() {
         String::new()
     } else {
@@ -122,7 +124,10 @@ extern "C" fn host_notify_incoming(conn_id: u64, port: u16, remote_hex: *const c
             .to_string_lossy()
             .into_owned()
     };
+    #[cfg(feature = "cluster")]
     nemesis_cluster::roaming::plugin_bridge::dispatch_incoming(conn_id, port, &remote);
+    #[cfg(not(feature = "cluster"))]
+    let _ = (&conn_id, &port, &remote);
     tracing::info!(
         target: "plugin_roaming",
         "[incoming] conn={conn_id} port={port} remote=iroh:{remote}"
@@ -133,8 +138,12 @@ extern "C" fn host_notify_members(json: *const c_char) {
     // QUIC 插件化 M2 接线：名册循环拉到成员 → 桥漏斗（集群
     // merge_rendezvous_members）。漏斗未挂载（集群装配前/已停机）时桥内
     // debug 丢弃——插件下 tick 重推全量包，自愈语义无需补发。
+    // BUG-20261025-20：桥面随 cluster feature——关裁剪形态留痕丢弃。
     let json = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+    #[cfg(feature = "cluster")]
     nemesis_cluster::roaming::plugin_bridge::dispatch_members_json(&json);
+    #[cfg(not(feature = "cluster"))]
+    let _ = &json;
     tracing::debug!(target: "plugin_roaming", "[members] {json}");
 }
 
@@ -307,6 +316,9 @@ pub fn load_roaming_plugin(workspace: &Path, config_json: &str) -> RoamingLoadOu
         Ok(()) => {
             // QUIC 插件化 M2：装载成功即注入 nemesis-cluster 桥——集群/WSAPI/
             // CLI 消费面统一走桥（`HANDLE.get()` 的引用即 'static）。
+            // BUG-20261025-20：桥注入随 cluster feature——关裁剪形态无桥可注，
+            // 装载照常成功（插件自持面不受影响）。
+            #[cfg(feature = "cluster")]
             if let Some(h) = HANDLE.get() {
                 nemesis_cluster::roaming::plugin_bridge::set_plugin_handle(h);
             }
