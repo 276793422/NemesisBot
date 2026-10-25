@@ -468,7 +468,10 @@ fn execute_config_migration(src_config_path: &str, dst_config_path: &str) -> Res
 
     let json_str = serde_json::to_string_pretty(&incoming)
         .map_err(|e| format!("serializing config: {}", e))?;
-    fs::write(dst_config_path, json_str).map_err(|e| format!("writing config: {}", e))?;
+    // BUG-20261025-67：config 落盘统一原子写（唯一临时名 + rename），
+    // 半路崩溃不再留半截 config（与 bot 侧 write_migrated_config 同纪律）。
+    nemesis_utils::file::write_file_atomic(dst_config_path, json_str.as_bytes(), 0o644)
+        .map_err(|e| format!("writing config: {}", e))?;
 
     Ok(())
 }

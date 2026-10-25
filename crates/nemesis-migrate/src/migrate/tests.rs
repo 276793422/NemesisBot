@@ -2056,3 +2056,56 @@ fn run_confirm_scenarios_parent() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// execute() 的 ConvertConfig 臂端到端（BUG-20261025-67 原子写收编锁）
+// ---------------------------------------------------------------------------
+
+/// ConvertConfig 经 execute() 全链：合并既有（现有模型保留、迁移模型追加），
+/// 原子写产物正确、无 .tmp-* 残留。旧形态裸 fs::write 语义产物相同
+/// （半锁），机制收编由写点唯一化保证。
+///
+/// 与 bot 侧 write_migrated_config 同纪律、同 helper。
+#[test]
+fn test_execute_convert_config_merges_and_writes_atomically() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("openclaw.json");
+    std::fs::write(
+        &src,
+        r#"{"providers": {"zhipu": {"api_key": "zk", "api_base": "https://o.api"}}}"#,
+    )
+    .unwrap();
+
+    let dst = tmp.path().join("home").join("config.json");
+    std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+    std::fs::write(
+        &dst,
+        r#"{"model_list": [{"model_name": "mine", "model": "x/mine"}]}"#,
+    )
+    .unwrap();
+
+    let actions = vec![FullMigrationAction {
+        action_type: FullMigrationActionType::ConvertConfig,
+        source: Some(src.to_string_lossy().to_string()),
+        destination: dst.to_string_lossy().to_string(),
+        description: "test".to_string(),
+    }];
+
+    let result = execute(&actions, tmp.path().to_string_lossy().as_ref(), "/unused");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(result.config_migrated);
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dst).unwrap()).unwrap();
+    let models = written["model_list"].as_array().unwrap();
+    assert_eq!(models.len(), 2, "existing mine + migrated zhipu coexist");
+    assert!(models.iter().any(|m| m["model_name"] == "mine"));
+    assert!(models.iter().any(|m| m["model_name"] == "glm-4.7"));
+
+    let residue: Vec<_> = std::fs::read_dir(dst.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".tmp-"))
+        .collect();
+    assert!(residue.is_empty(), "no temp residue, got {residue:?}");
+}

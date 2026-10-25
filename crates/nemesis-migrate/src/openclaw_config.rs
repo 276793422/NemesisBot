@@ -258,7 +258,9 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
 /// Merge an incoming NemesisBot config into an existing one.
 /// Models are added only if not present. Channels are merged (existing takes priority).
 pub fn merge_config(existing: &mut Value, incoming: &Value) {
-    // Merge model_list
+    // Merge model_list（契约：只并入既有结构，不补建缺失键——
+    // test_merge_config_existing_without_model_list / coverage 279 钉死；
+    // 「最小化既有配置补模型」是调用方的迁移策略，不在这层）
     if let (Some(existing_models), Some(incoming_models)) = (
         existing
             .get_mut("model_list")

@@ -169,36 +169,36 @@ fn test_copy_dir_recursive_creates_dst() {
     assert!(dst.join("file.txt").exists());
 }
 
+// BUG-20261025-68 回归锁（旧形态必红：旧实现按 PROMPT/TERM 环境变量猜测
+// tty——PowerShell 交互态两变量皆缺恒判「非交互」confirm 自动拒，管道继承
+// TERM 又误判「交互」；设了变量会翻转旧实现的结果）。新实现委托 std stdin
+// 探测，环境变量必须不再影响判定。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
-fn test_atty_isnt_with_prompt() {
+fn test_atty_isnt_ignores_env_vars() {
+    use std::io::IsTerminal;
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     unsafe {
         std::env::set_var("PROMPT", "1");
-    }
-    let result = atty_isnt();
-    unsafe {
-        std::env::remove_var("PROMPT");
-    }
-    assert!(!result);
-}
-
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[test]
-fn test_atty_isnt_with_term() {
-    let _guard = crate::GLOBAL_STATE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    unsafe {
         std::env::set_var("TERM", "xterm");
     }
-    let result = atty_isnt();
+    let with_vars = atty_isnt();
     unsafe {
+        std::env::remove_var("PROMPT");
         std::env::remove_var("TERM");
     }
-    assert!(!result);
+    let without_vars = atty_isnt();
+    assert_eq!(
+        with_vars, without_vars,
+        "env vars must not influence tty detection"
+    );
+    assert_eq!(
+        atty_isnt(),
+        !std::io::stdin().is_terminal(),
+        "delegation to std stdin probe"
+    );
 }
 
 #[test]
@@ -357,6 +357,174 @@ fn test_backup_file_json_extension() {
 
     let bak = tmp.path().join("config.json.bak");
     assert!(bak.exists());
+}
+
+// ---------------------------------------------------------------------------
+// write_migrated_config（BUG-20261025-66 合并语义 + BUG-20261025-67 原子写）
+// ---------------------------------------------------------------------------
+
+/// BUG-66 锁（旧形态必红：旧实现把转换结果整体写盘，merge stub 是空 if——
+/// 现有 model_list 被替换、已启用通道被迁移默认值冲掉）。
+#[test]
+fn test_write_migrated_config_merges_existing() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{
+            "model_list": [
+                {"model_name": "mine", "model": "x/mine", "api_key": "k1"}
+            ],
+            "channels": {
+                "telegram": {"enabled": true, "token": "T"},
+                "qq": {"enabled": false}
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let incoming = serde_json::json!({
+        "model_list": [
+            {"model_name": "glm-4.7", "model": "zhipu/glm-4.7-flash", "api_key": "k2"}
+        ],
+        "channels": {
+            "telegram": {"enabled": false},
+            "qq": {"enabled": true, "host": "h"}
+        }
+    });
+
+    let merged = write_migrated_config(&cfg, &incoming).unwrap();
+    assert!(merged, "existing config must be reported as merged");
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+
+    // 模型合并：现有 mine 保留 + 迁移 glm-4.7 追加（按 model_name 去重）。
+    let models = written["model_list"].as_array().unwrap();
+    assert_eq!(models.len(), 2, "existing + incoming models coexist");
+    assert!(
+        models
+            .iter()
+            .any(|m| m["model_name"] == "mine" && m["api_key"] == "k1")
+    );
+    assert!(models.iter().any(|m| m["model_name"] == "glm-4.7"));
+
+    // 通道合并：已启用通道（telegram）现有优先不被冲掉；禁用通道（qq）由迁移值回填。
+    assert_eq!(
+        written["channels"]["telegram"]["enabled"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        written["channels"]["telegram"]["token"],
+        serde_json::json!("T")
+    );
+    assert_eq!(
+        written["channels"]["qq"]["enabled"],
+        serde_json::json!(true)
+    );
+    assert_eq!(written["channels"]["qq"]["host"], serde_json::json!("h"));
+}
+
+#[test]
+fn test_write_migrated_config_fresh_write() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let incoming = serde_json::json!({"model_list": [], "gateway": {"port": 18790}});
+
+    let merged = write_migrated_config(&cfg, &incoming).unwrap();
+    assert!(!merged, "no existing config = fresh write");
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(written, incoming);
+}
+
+/// 既有文件不是合法 JSON（半截/坏档）：警告后由迁移值覆盖，.bak 兜底。
+#[test]
+fn test_write_migrated_config_invalid_existing_overwrites() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    std::fs::write(&cfg, r#"{"model_list": [broken"#).unwrap();
+
+    let incoming = serde_json::json!({"model_list": [{"model_name": "a"}]});
+    let merged = write_migrated_config(&cfg, &incoming).unwrap();
+    assert!(!merged);
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(written, incoming);
+}
+
+/// BUG-69 锁（旧形态必红：merge_config 契约是「只并入既有结构，不补建
+/// 缺失键」且被 crate 覆盖测试钉死——最小化既有 config（无 model_list
+/// 键/键为 null）时全部迁移模型静默丢失。CLI 层迁移策略 = 合并前预填
+/// 缺失的 model_list；channels 刻意不预填，不给无 channels 段的 config
+/// 强插 enabled:true 的 web 通道）。
+#[test]
+fn test_write_migrated_config_prefills_missing_model_list() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+
+    // ① 缺 model_list 键的最小化既有配置：模型落地、既有未知键保留。
+    std::fs::write(&cfg, r#"{"old": true}"#).unwrap();
+    let incoming = serde_json::json!({
+        "model_list": [
+            {"model_name": "m1", "model": "p/m1", "api_key": "k1"},
+            {"model_name": "m2", "model": "p/m2", "api_key": "k2"}
+        ]
+    });
+    assert!(write_migrated_config(&cfg, &incoming).unwrap());
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(written["old"], serde_json::json!(true), "既有未知键保留");
+    let models = written["model_list"].as_array().expect("模型预填落地");
+    assert_eq!(models.len(), 2, "迁移模型不再静默丢失: {models:?}");
+
+    // ② model_list 键为 null 同视为缺失。
+    std::fs::write(&cfg, r#"{"model_list": null}"#).unwrap();
+    let incoming = serde_json::json!({
+        "model_list": [{"model_name": "m1", "model": "p/m1", "api_key": "k1"}]
+    });
+    assert!(write_migrated_config(&cfg, &incoming).unwrap());
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(written["model_list"].as_array().unwrap().len(), 1);
+
+    // ③ 迁移产物无模型不预填——不造空的 model_list 键。
+    std::fs::write(&cfg, r#"{"old": true}"#).unwrap();
+    let incoming = serde_json::json!({"model_list": []});
+    write_migrated_config(&cfg, &incoming).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert!(
+        written.get("model_list").is_none(),
+        "无模型不预填空键: {written:?}"
+    );
+}
+
+/// BUG-67 锁（半锁：黑盒测不了崩溃窗口，钉的是权威原子 helper 的可观察
+/// 面——产物正确 + 无 .tmp-* 残留 + 覆盖重写幂等）。旧形态裸 fs::write
+/// 在此同样「通过」，真正的机制收编由代码路径唯一化保证（全仓 config 写
+/// 统一 write_file_atomic，BUG-59 同纪律）。
+#[test]
+fn test_write_migrated_config_no_temp_residue_and_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let incoming = serde_json::json!({"gateway": {"port": 18790}});
+
+    write_migrated_config(&cfg, &incoming).unwrap();
+    write_migrated_config(&cfg, &incoming).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(written, incoming);
+
+    let residue: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".tmp-"))
+        .collect();
+    assert!(residue.is_empty(), "no temp residue, got {residue:?}");
 }
 
 #[test]
@@ -632,7 +800,27 @@ fn run_backs_up_existing_target_config_before_overwrite() {
     let new: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(target.join("config.json")).unwrap())
             .unwrap();
-    assert!(new.get("old").is_none(), "新 config 是转换产物而非旧文件");
+    // BUG-20261025-66 收编后既有 config 不再被整体覆盖而是「现有优先」合并：
+    // 未知既有键（old）保留 + 迁移产物（models.yaml 的 m1/m2）合入。
+    // 旧形态断言 `old` 不存在（纯覆盖），正是被修掉的丢数据行为。
+    assert_eq!(
+        new.get("old"),
+        Some(&serde_json::json!(true)),
+        "既有未知键必须保留（现有优先合并）"
+    );
+    let models = new["model_list"].as_array().expect("model_list 合入");
+    // 本夹具无 openclaw.json → fallback 路径，条目形态 {model, key}（既有
+    // fallback 测试钉死的契约）；crate 路径形态是 {model_name, ...}。两者
+    // 都认——断言的是「models.yaml 的模型确实落入 model_list」。
+    assert!(
+        models
+            .iter()
+            .any(|m| m["model"] == "m1" || m["model_name"] == "m1")
+            && models
+                .iter()
+                .any(|m| m["model"] == "m2" || m["model_name"] == "m2"),
+        "迁移产物合入（models.yaml 的 m1/m2）: {models:?}"
+    );
 }
 
 #[test]

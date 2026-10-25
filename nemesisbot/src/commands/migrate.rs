@@ -85,6 +85,58 @@ fn backup_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Write the converted config to `cfg_path`.
+///
+/// BUG-20261025-66：既有 config 不再被整体覆盖——先读现有配置，经
+/// `nemesis_migrate::merge_config` 按「现有优先」合并（模型按 model_name
+/// 去重保留现有、已启用通道不动、禁用通道由迁移值回填），再落盘合并
+/// 结果。旧形态把转换结果直接写盘，用户迁移前配好的模型/密钥/通道全部
+/// 丢失（只剩 .bak 可手工捞回）——「Try merge」注释是空 stub。
+/// BUG-20261025-67：落盘统一走 `write_file_atomic`（唯一临时名 + rename），
+/// 半路崩溃不再留半截 config.json。
+/// 返回 `Ok(true)` = 与既有配置合并过；`Ok(false)` = 全新写入（或既有文件
+/// 不是合法 JSON，警告后由迁移值覆盖，.bak 已兜底）。
+fn write_migrated_config(cfg_path: &Path, incoming: &serde_json::Value) -> Result<bool> {
+    let mut merged = incoming.clone();
+    let mut merged_with_existing = false;
+    if cfg_path.exists() {
+        let existing_content = std::fs::read_to_string(cfg_path).map_err(|e| {
+            anyhow::anyhow!("reading existing config {}: {}", cfg_path.display(), e)
+        })?;
+        match serde_json::from_str::<serde_json::Value>(&existing_content) {
+            Ok(mut existing) => {
+                // BUG-20261025-69：merge_config 契约是「只并入既有结构，不补建
+                // 缺失键」（crate 覆盖测试钉死）。最小化既有配置（无 model_list
+                // 键/键为 null）会让全部迁移模型静默丢失——迁移承诺是「模型跟着
+                // 迁移走」，这层是调用方策略：合并前把 incoming 的模型预填进
+                // 缺失的 model_list。channels 刻意不预填：给无 channels 段的
+                // config 强插 enabled:true 的 web 通道 = 替用户开 8080 端口。
+                let models_missing = existing
+                    .get("model_list")
+                    .map(|v| v.is_null())
+                    .unwrap_or(true);
+                if models_missing
+                    && let Some(models) = merged.get("model_list").and_then(|v| v.as_array())
+                    && !models.is_empty()
+                {
+                    existing["model_list"] = merged["model_list"].clone();
+                }
+                nemesis_migrate::merge_config(&mut existing, &merged);
+                merged = existing;
+                merged_with_existing = true;
+            }
+            Err(_) => {
+                println!("  Warning: existing config is not valid JSON, overwritten (backup kept)");
+            }
+        }
+    }
+    let json = serde_json::to_string_pretty(&merged)
+        .map_err(|e| anyhow::anyhow!("serializing migrated config: {e}"))?;
+    nemesis_utils::file::write_file_atomic(&cfg_path.to_string_lossy(), json.as_bytes(), 0o644)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(merged_with_existing)
+}
+
 /// Copy a directory tree from src to dst.
 /// If refresh is false, skip files that already exist in dst.
 fn copy_dir_recursive(src: &Path, dst: &Path, refresh: bool) -> Result<u32> {
@@ -132,8 +184,14 @@ fn confirm(prompt: &str) -> bool {
 }
 
 /// Check if stdin is not a terminal (non-interactive mode).
+///
+/// BUG-20261025-68：旧实现用 `PROMPT`/`TERM` 环境变量猜测 tty——PowerShell
+/// 交互态两个变量都没有（PROMPT 是 CMD 的环境变量/PS 里是函数，TERM 通常
+/// 不设），恒判「非交互」→ confirm 自动拒，交互用户被迫 --force；而管道
+/// 运行若继承了父 shell 的 TERM 又被误判「交互」。改用 std 的 stdin 真探测。
 fn atty_isnt() -> bool {
-    !(std::env::var("PROMPT").is_ok() || std::env::var("TERM").is_ok())
+    use std::io::IsTerminal;
+    !std::io::stdin().is_terminal()
 }
 
 // ---------------------------------------------------------------------------
@@ -403,18 +461,22 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
 
         match convert_config_with_crate(&openclaw_home) {
             Ok((new_config, warnings)) => {
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&new_config).unwrap_or_default(),
-                )?;
-                migrated_files += 1;
-                println!("  Migrated config -> {}", cfg_path.display());
-
-                // Try merge if target already had config
-                if cfg_path.exists() {
-                    // Re-read what we just wrote — merge is a no-op on fresh config
+                match write_migrated_config(&cfg_path, &new_config) {
+                    Ok(true) => {
+                        migrated_files += 1;
+                        println!(
+                            "  Migrated config -> {} (merged with existing, existing takes priority)",
+                            cfg_path.display()
+                        );
+                    }
+                    Ok(false) => {
+                        migrated_files += 1;
+                        println!("  Migrated config -> {}", cfg_path.display());
+                    }
+                    Err(e) => {
+                        println!("  Error writing config: {e}");
+                    }
                 }
-
                 for w in &warnings {
                     println!("  Warning: {}", w);
                 }
