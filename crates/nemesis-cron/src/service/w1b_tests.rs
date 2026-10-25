@@ -624,6 +624,131 @@ fn test_w1b_toggle_disable_clears_next_run() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261025-41 回归锁：触发期停用 + delete_after_run 派生
+// ---------------------------------------------------------------------------
+
+/// BUG-20261025-41a：作业在 handler 执行期内被停用（W3 pause_job 生产路径
+/// ——触发期父会话已删除自动暂停，pause 落盘先于 fire loop 的 post-handler
+/// 段）时，post-handler 不得为已停用作业重算 next_run——W1b 不变量
+/// （disabled 作业不排程）必须跨「触发路径」同样成立，幻影 next_run 会
+/// 持久化且跨重启存留（recompute_next_runs 只碰 enabled 作业）。
+#[tokio::test]
+async fn test_bug41_fire_loop_pause_in_handler_leaves_no_phantom_next_run() {
+    let (_dir, path) = tmp_store_path("cron.json");
+    let svc = CronService::new(&path);
+    let pause_handle = svc.job_pause_handle();
+    let fired = Arc::new(AtomicUsize::new(0));
+    let paused_out = Arc::new(AtomicUsize::new(0));
+    let fired2 = fired.clone();
+    let paused2 = paused_out.clone();
+    svc.set_on_job(move |job: &CronJob| {
+        fired2.fetch_add(1, Ordering::SeqCst);
+        // 生产 W3 语义镜像：pause 自己（enabled=false 落盘）+ 诚实 Err。
+        let paused = pause_handle.pause_job(&job.id);
+        paused2.store(if paused { 1 } else { 2 }, Ordering::SeqCst);
+        Err("[定时任务] 已自动暂停".to_string())
+    });
+
+    let job = svc
+        .add_job("pausable", every_schedule(1000), "m", false, None, None)
+        .unwrap();
+    assert!(job.enabled);
+    assert!(job.state.next_run_at_ms.is_some());
+
+    svc.arm();
+    svc.start().await.unwrap();
+    // 最多等 8s 观察首次触发（1s tick + 1s 间隔，留足慢机余量）。
+    let mut observed = false;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if svc
+            .get_job(&job.id)
+            .is_some_and(|j| j.state.last_run_at_ms.is_some())
+        {
+            observed = true;
+            break;
+        }
+    }
+    svc.stop();
+
+    assert!(observed, "job must have fired within the wait window");
+    assert_eq!(
+        paused_out.load(Ordering::SeqCst),
+        1,
+        "handler must have paused the job via the pause handle"
+    );
+    let after = svc.get_job(&job.id).expect("paused job must be retained");
+    assert!(
+        !after.enabled,
+        "pause during handler must leave job disabled"
+    );
+    assert_eq!(
+        after.state.next_run_at_ms, None,
+        "post-handler must NOT recompute next_run for a job disabled during its own handler (W1b)"
+    );
+    assert_eq!(after.state.last_status.as_deref(), Some("error"));
+}
+
+/// BUG-20261025-41b：delete_after_run 是 kind=="at" 的派生旗标，换调度必须
+/// 重算——at→周期 改期若保留旧 true，任务首次成功触发即被 retain 静默删除
+/// （周期任务无声消失）。update_job 与 patch_job 两条改期路径都钉。
+#[test]
+fn test_bug41_schedule_change_rederives_delete_after_run() {
+    let (_dir, path) = tmp_store_path("cron.json");
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "one_shot",
+            at_schedule(Local::now().timestamp_millis() + 3_600_000),
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(job.delete_after_run, "at 创建即带单发删除旗标");
+
+    // update_job：at → every，旗标必须随 kind 重算为 false。
+    svc.update_job(&job.id, None, Some(every_schedule(60_000)))
+        .unwrap();
+    let upd = svc.get_job(&job.id).unwrap();
+    assert_eq!(upd.schedule.kind, "every");
+    assert!(
+        !upd.delete_after_run,
+        "update at→every must re-derive delete_after_run=false (else first ok fire deletes the recurring job)"
+    );
+
+    // patch_job：every → cron，旗标保持 false。
+    svc.patch_job(
+        &job.id,
+        &CronJobPatch {
+            schedule: Some(cron_schedule("*/5 * * * *")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let patched = svc.get_job(&job.id).unwrap();
+    assert!(
+        !patched.delete_after_run,
+        "patch to cron keeps delete_after_run=false"
+    );
+
+    // 反向：周期 → at（未来时刻，过死排程闸），旗标重算回 true（单发语义恢复）。
+    svc.update_job(
+        &job.id,
+        None,
+        Some(at_schedule(Local::now().timestamp_millis() + 3_600_000)),
+    )
+    .unwrap();
+    let back = svc.get_job(&job.id).unwrap();
+    assert_eq!(back.schedule.kind, "at");
+    assert!(
+        back.delete_after_run,
+        "update back to at re-derives delete_after_run=true"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Fire-loop branches (async, short waits)
 // ---------------------------------------------------------------------------
 

@@ -402,11 +402,20 @@ impl CronService {
                                     job.enabled = false;
                                     job.state.next_run_at_ms = None;
                                 }
-                            } else {
+                            } else if job.enabled {
                                 job.state.next_run_at_ms = compute_next_run(
                                     &job.schedule,
                                     Local::now().timestamp_millis(),
                                 );
+                            } else {
+                                // BUG-20261025-41：作业在 handler 执行期内被并发
+                                // 停用（W3 pause_job 生产路径——触发期父会话已删
+                                // 除自动暂停，pause 落盘先于本段）不得回填
+                                // next_run。裸重算会让停用作业带幻影「下次触发」
+                                // 持久化且跨重启存留（recompute_next_runs 只碰
+                                // enabled 作业）——违反 W1b 不变量（disabled 作业
+                                // 不排程，与 toggle/enable/patch 同一约束）。
+                                job.state.next_run_at_ms = None;
                             }
                         }
                         // Remove delete_after_run jobs that have completed
@@ -705,6 +714,11 @@ impl CronService {
         }
         if let Some(s) = schedule {
             job.schedule = s;
+            // BUG-20261025-41：delete_after_run 是 kind=="at" 的派生旗标（与
+            // add_job_internal 同一派生式），换调度必须重算——at→周期 的改期
+            // 若保留旧 true，任务首次成功触发即被 retain 静默删除（周期任务
+            // 无声消失、零日志）。
+            job.delete_after_run = job.schedule.kind == "at";
             // W1b 不变量（对齐 patch_job）：disabled 作业不排程——裸写
             // next_run 会让禁用作业带上幻影「下次触发」。
             if job.enabled {
@@ -773,6 +787,9 @@ impl CronService {
         }
         if let Some(sched) = &patch.schedule {
             job.schedule = sched.clone();
+            // BUG-20261025-41：delete_after_run 派生旗标随 kind 重算（同
+            // update_job——at→周期改期后不得保留单发删除语义）。
+            job.delete_after_run = job.schedule.kind == "at";
             if job.enabled {
                 job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
             }
