@@ -98,19 +98,14 @@ impl McpManager {
     }
 
     /// Save current config to disk.
+    ///
+    /// 2026-10-25 BUG-20261025-47：写路径收编到 `nemesis_config::save_mcp_config`
+    /// （write_file_atomic 原子写，与 Dashboard/CLI 写同一实现）；此前本地手搓
+    /// tmp+rename 无 sync/cleanup，与同文件 web 写路径漂移（同族 BUG-45 形态）。
+    /// 错误保留 "Failed to write MCP config" 前缀（S1 Windows 钉住依赖）。
     pub fn save_config(&self) -> Result<(), String> {
-        if let Some(parent) = self.config_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create MCP config dir: {}", e))?;
-        }
-        let content = serde_json::to_string_pretty(&self.config)
-            .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
-        let tmp_path = self.config_path.with_extension("mcp.tmp");
-        std::fs::write(&tmp_path, &content)
-            .map_err(|e| format!("Failed to write MCP config: {}", e))?;
-        std::fs::rename(&tmp_path, &self.config_path)
-            .map_err(|e| format!("Failed to rename MCP config: {}", e))?;
-        Ok(())
+        nemesis_config::save_mcp_config(&self.config_path, &self.config)
+            .map_err(|e| format!("Failed to write MCP config: {}", e))
     }
 
     // -----------------------------------------------------------------------

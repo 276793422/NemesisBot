@@ -1085,3 +1085,73 @@ fn r17_helper_matches_find_new_servers_prefix_shape() {
     // manager 层语义复算：b 的前缀已被 a 占位 → b 会被过滤
     assert!(registered.contains(&prefix));
 }
+
+// --- BUG-20261025-47：sanitize_schema 全深度递归 + items 回归锁 -------
+// 旧实现只展开两层 properties 且完全不碰 items——4 层深嵌套或数组项的
+// type 数组原样透传给 provider（部分 provider 拒绝数组形态 type）。
+
+#[test]
+fn r47_sanitize_schema_flattens_deep_nesting_and_items() {
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "l1": {
+                "type": "object",
+                "properties": {
+                    "l2": {
+                        "type": "object",
+                        "properties": {
+                            "l3": {
+                                "type": "object",
+                                "properties": {
+                                    "l4": {"type": ["string", "null"]}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "arr": {
+                "type": ["array", "null"],
+                "items": {"type": ["integer", "null"]}
+            },
+            "matrix": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": ["number", "null"]}
+                }
+            },
+            "tuple": {
+                "type": "array",
+                "items": [
+                    {"type": ["string", "null"]},
+                    {"type": ["boolean", "null"]}
+                ]
+            }
+        }
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("deep", None, schema));
+    let p = &adapter.definition().parameters;
+    let props = &p["properties"];
+    // 4 层深嵌套的最内层 type 数组也必须展平（旧实现只到第 2 层）
+    assert_eq!(
+        props["l1"]["properties"]["l2"]["properties"]["l3"]["properties"]["l4"]["type"], "string",
+        "deep nesting must be flattened at full depth"
+    );
+    // items 单 schema 形态
+    assert_eq!(props["arr"]["type"], "array");
+    assert_eq!(
+        props["arr"]["items"]["type"], "integer",
+        "items must be flattened"
+    );
+    // items 嵌套 items
+    assert_eq!(
+        props["matrix"]["items"]["items"]["type"], "number",
+        "nested items must be flattened recursively"
+    );
+    // items tuple 形态（schema 数组）逐位展平
+    assert_eq!(props["tuple"]["items"][0]["type"], "string");
+    assert_eq!(props["tuple"]["items"][1]["type"], "boolean");
+}

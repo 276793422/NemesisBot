@@ -469,30 +469,43 @@ fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
     }
 
     // Sanitize nested property schemas
-    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        for (_key, prop_schema) in props.iter_mut() {
-            flatten_type(prop_schema);
-            // Recursively sanitize nested object properties
-            if let Some(nested) = prop_schema
-                .get_mut("properties")
-                .and_then(|p| p.as_object_mut())
-            {
-                for (_nk, ns) in nested.iter_mut() {
-                    flatten_type(ns);
-                }
-            }
-        }
-    }
+    // 2026-10-25 BUG-20261025-47：flatten_type 现已递归覆盖 properties/items
+    // 全深度（含数组元素），此处一遍调用即可，无需分层手抄。
+    flatten_type(&mut schema);
 
     schema
 }
 
-/// Flatten `type` arrays to the first element (e.g. `["string", "null"]` → `"string"`).
+/// Flatten `type` arrays to the first element (e.g. `["string", "null"]` → `"string"`),
+/// recursing into `properties` members and `items` at full depth.
+///
+/// 背景（BUG-20261025-47）：部分 LLM provider 拒绝数组形态的 `type`；旧实现
+/// 只处理两层 properties 且完全不碰 `items`——深层嵌套或数组项带
+/// `type: ["x","null"]` 时原样透传，provider 侧报 schema 非法。
 fn flatten_type(schema: &mut serde_json::Value) {
     if let Some(types) = schema.get("type").and_then(|t| t.as_array())
         && let Some(first) = types.first()
     {
         schema["type"] = first.clone();
+    }
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    if let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        for prop in props.values_mut() {
+            flatten_type(prop);
+        }
+    }
+    // 数组项 schema：items 可能是单个 schema 或按位置排列的 schema 数组
+    // （tuple validation 形态）。
+    match obj.get_mut("items") {
+        Some(serde_json::Value::Array(items)) => {
+            for item in items.iter_mut() {
+                flatten_type(item);
+            }
+        }
+        Some(item @ serde_json::Value::Object(_)) => flatten_type(item),
+        _ => {}
     }
 }
 

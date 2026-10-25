@@ -1119,3 +1119,43 @@ fn r17_load_config_with_colliding_names_succeeds_intact() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].0, "mcp_pet_v2_");
 }
+
+// --- BUG-20261025-47：save_config 原子写收编回归锁 --------------------
+// 旧实现手搓 config.mcp.mcp.tmp + rename（无 sync/cleanup），与同文件
+// web 写路径（nemesis_config::save_mcp_config → write_file_atomic）漂移；
+// 收编后两条纪律必须同时成立：无 .tmp 残留 + 盘上可被权威读侧读回。
+
+#[test]
+fn r47_save_config_atomic_no_tmp_residue_and_round_trips() {
+    let tmp = TempDir::new().unwrap();
+    let path = make_config_path(&tmp);
+    let mut config = McpConfig::default();
+    config.enabled = true;
+    config.timeout = 42;
+    config.servers.push(ServerConfig::new("atomic-srv", "node"));
+    let mut mgr = McpManager::new(path.clone());
+    mgr.config = config.clone();
+
+    mgr.save_config().expect("save_config must succeed");
+
+    // 纪律一：目录里只有目标文件本身，任何 .tmp 形态残留都不允许
+    // （旧手搓路径失败时留下 config.mcp.mcp.tmp；write_file_atomic 失败即清理）。
+    let entries: Vec<String> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "exactly the target file expected: {entries:?}"
+    );
+    assert!(entries[0].ends_with("config.mcp.json"), "got: {entries:?}");
+
+    // 纪律二：盘上产物与 nemesis_config 权威读侧互认（同一真相源家族）。
+    let reloaded = nemesis_config::load_mcp_config(&path).expect("reload");
+    assert!(reloaded.enabled);
+    assert_eq!(reloaded.timeout, 42);
+    assert_eq!(reloaded.servers.len(), 1);
+    assert_eq!(reloaded.servers[0].name, "atomic-srv");
+    assert_eq!(reloaded, config, "round-trip must be lossless");
+}
