@@ -51,6 +51,7 @@ members = [
     "nemesisbot",
     "test-tools/integration-test",
     "test-tools/agent-bench",
+    "test-tools/task-eval",
     "test-tools/cluster-test",
     "test-tools/cluster-uat",
     "test-tools/test-harness",

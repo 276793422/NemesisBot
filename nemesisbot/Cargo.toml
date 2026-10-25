@@ -145,7 +145,7 @@ lsp = ["dep:nemesis-lsp", "nemesis-agent/lsp", "nemesis-web/lsp"]
 # image-process：J6 图片降采样（~0.8MB）；关 = 超限图按原图链路（验真链照常把关）
 # history-search：U20 FTS 会话检索；关 = 工具/CLI/WSAPI 诚实报未编译
 #   （与 usage-store 一起构成 SQLite 拆分两半：账本本体随 usage-store 进出）
-checkpoint-git = ["nemesis-agent/checkpoint-git", "nemesis-board/checkpoint-git"]
+checkpoint-git = ["nemesis-agent/checkpoint-git", "nemesis-board/checkpoint-git", "dep:git2"]
 image-process = ["nemesis-agent/image-process"]
 history-search = ["nemesis-agent/history-search", "nemesis-web/history-search"]
 
@@ -196,6 +196,9 @@ channels-line = ["nemesis-channels/line"]
 nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-config = { workspace = true }
+# P2 交付版本链（repo_head_sha）：只在 checkpoint-git 形态命名（影子库已在
+# 依赖图内——nemesis-agent；此为同 feature 门的生产面直用，零额外体积）。
+git2 = { workspace = true, optional = true }
 nemesis-security = { workspace = true, optional = true }
 # P1 统一任务层：tasks.db（审批台账 SqliteApprovalJournal 挂 security 面，
 # 集群侧 SqliteTaskStore 适配在 nemesis-cluster 内）。P2 起 agents 表成为

@@ -583,12 +583,16 @@ async fn execute_new_task(
     // P4 交付门：成功交付才捕获分支（error/取消没有交付物可捕获）。
     // 失败 = None（交付门是增强证据面，绝不阻断回调主链路）。
     let delivery = if status.1 == "success" {
+        // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
+        // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
+        let checks_head_tree = delivery_base_tree(agent_loop);
         capture_task_delivery(
             agent_loop,
             &task.task_id,
             delivery_base.as_deref(),
             self_node_id,
             checks,
+            checks_head_tree.as_deref(),
         )
     } else {
         None
@@ -805,12 +809,16 @@ async fn resume_task(
     // P4 交付门：同 execute_new_task——成功才捕获（diff 基线 = 本轮续行前
     // 快照）；失败 = None 不阻断回调主链路。
     let delivery = if status.1 == "success" {
+        // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
+        // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
+        let checks_head_tree = delivery_base_tree(agent_loop);
         capture_task_delivery(
             agent_loop,
             &task.task_id,
             delivery_base.as_deref(),
             self_node_id,
             checks,
+            checks_head_tree.as_deref(),
         )
     } else {
         None

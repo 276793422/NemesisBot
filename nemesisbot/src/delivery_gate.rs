@@ -39,10 +39,13 @@ pub(crate) fn delivery_base_tree(_agent_loop: &AgentLoop) -> Option<String> {
 /// 无基线（JSON 形态 / 影子库异常）→ 按空树基线整包 diff（capture 层
 /// canonical 语义）。`checks` = 任务窗口内检查类工具的执行证据
 /// （`checks_capture` 捕获，cluster_agent run 前后 begin/take；空 = 没跑
-/// 过检查，诚实缺席不造值）。
+/// 过检查，诚实缺席不造值）。`checks_head_tree` = checks 窗口关闭时刻的
+/// 实时影子 tree（take 后同源快照；P2 版本绑定——与 capture 时刻的
+/// `tree` 独立派生，评审门交叉对账「检查就是在交付那棵树上跑的」）。
 ///
 /// 返回 payload["delivery"] 值：`DeliveryBranchCapture` 序列化 + `branch`
-/// /`task_id`/`node`/`patch_path`/`checks` 上下文字段。任何失败 = None + warn。
+/// /`task_id`/`node`/`patch_path`/`checks`/`checks_binds`/`repo_base_sha`
+/// 上下文字段。任何失败 = None + warn。
 #[cfg(feature = "checkpoint-git")]
 pub(crate) fn capture_task_delivery(
     agent_loop: &AgentLoop,
@@ -50,9 +53,17 @@ pub(crate) fn capture_task_delivery(
     base_tree: Option<&str>,
     self_node_id: &str,
     checks: Vec<CheckRecord>,
+    checks_head_tree: Option<&str>,
 ) -> Option<serde_json::Value> {
     let store = agent_loop.checkpoint_store()?;
-    capture_task_delivery_with_store(&store, task_id, base_tree, self_node_id, checks)
+    capture_task_delivery_with_store(
+        &store,
+        task_id,
+        base_tree,
+        self_node_id,
+        checks,
+        checks_head_tree,
+    )
 }
 
 /// checkpoint-git 关：交付门是 git 影子库增强证据面——恒 None。模块头
@@ -64,8 +75,25 @@ pub(crate) fn capture_task_delivery(
     _base_tree: Option<&str>,
     _self_node_id: &str,
     _checks: Vec<CheckRecord>,
+    _checks_head_tree: Option<&str>,
 ) -> Option<serde_json::Value> {
     None
+}
+
+/// 工作区根若是真实 git 仓库（P1 任务专属 clone 等），取 HEAD commit SHA
+/// ——交付版本链的「基于哪个 SHA」。 unborn HEAD（init 后无提交）/ 非
+/// 仓库 / 打开失败 = None（诚实缺席，不造值）。
+#[cfg(feature = "checkpoint-git")]
+fn repo_head_sha(root: &std::path::Path) -> Option<String> {
+    let repo = git2::Repository::open_ext(
+        root,
+        git2::RepositoryOpenFlags::NO_SEARCH,
+        std::path::Path::new("/"),
+    )
+    .ok()?;
+    let head = repo.head().ok()?;
+    let commit = head.peel_to_commit().ok()?;
+    Some(commit.id().to_string())
 }
 
 /// [`capture_task_delivery`] 的可测内核：直接收影子库句柄（测试用
@@ -77,6 +105,7 @@ pub(crate) fn capture_task_delivery_with_store(
     base_tree: Option<&str>,
     self_node_id: &str,
     checks: Vec<CheckRecord>,
+    checks_head_tree: Option<&str>,
 ) -> Option<serde_json::Value> {
     if task_id.is_empty() {
         return None;
@@ -162,6 +191,26 @@ pub(crate) fn capture_task_delivery_with_store(
         {
             obj.insert("checks".into(), v);
         }
+        // P2 版本绑定（2026-10-25）：checks 窗口的基线/关闭 tree 与 capture
+        // 时刻的 `base_tree`/`tree` 独立派生——评审门交叉对账「这些检查就
+        // 是在交付的那棵树上跑的」。两者都缺席（JSON 形态调用方）= 键不出
+        // 现（诚实缺席，加法演进不破旧 payload 形态）。
+        if base_tree.is_some() || checks_head_tree.is_some() {
+            let mut binds = serde_json::Map::new();
+            if let Some(b) = base_tree {
+                binds.insert("base_tree".into(), serde_json::Value::String(b.to_string()));
+            }
+            if let Some(h) = checks_head_tree {
+                binds.insert("head_tree".into(), serde_json::Value::String(h.to_string()));
+            }
+            obj.insert("checks_binds".into(), serde_json::Value::Object(binds));
+        }
+        // P2 版本链「基于哪个 SHA」：工作区根若是真实 git 仓库（任务专属
+        // clone），HEAD commit SHA 随包上行——PR 发布（P3）与审计知道交付
+        // 基于远端仓库的哪个提交。非仓库/ unborn HEAD = 键不出现。
+        if let Some(sha) = repo_head_sha(store.root()) {
+            obj.insert("repo_base_sha".into(), serde_json::Value::String(sha));
+        }
     }
     Some(value)
 }
@@ -176,6 +225,7 @@ pub(crate) fn capture_task_delivery_with_store(
     base_tree: Option<&str>,
     self_node_id: &str,
     _checks: Vec<CheckRecord>,
+    _checks_head_tree: Option<&str>,
 ) -> Option<serde_json::Value> {
     let _ = (store, task_id, base_tree, self_node_id);
     None

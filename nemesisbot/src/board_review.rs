@@ -1410,6 +1410,25 @@ async fn review_issue(
             nemesis_board::render_anchor_summary(&anchor_results)
         ));
     }
+    // P2 必检计划对账表注入（SKIP≠PASS，2026-10-25）：任务文本反引号命令
+    // = 必检计划（确定性派生），× delivery.checks 执行证据的**系统对账表**
+    // 作为客观数据进 prompt——评审 agent 读表裁决，不再凭 worker 自述
+    // 「已测试」放行。开关关闭 / 无计划项 = 诚实跳过（prompt 零注水）。
+    if cfg.review.require_check_plan {
+        let plan = nemesis_board::derive_check_plan(&[
+            &issue.title,
+            issue.description.as_str(),
+            issue.acceptance_criteria.as_deref().unwrap_or(""),
+        ]);
+        if !plan.is_empty() {
+            let checks = delivery_checks_for(deps, &dispatches);
+            let statuses = nemesis_board::reconcile_check_plan(&plan, &checks);
+            prompt.push_str(&format!(
+                "\n## 必检计划对账（系统客观数据）\n任务文本中的反引号命令 = 本单必检计划；下表是系统把计划与 worker 执行证据（检查类工具运行记录）逐条对账的结果。未执行 ≠ 通过：计划内必检项没跑或失败，交付不完整：\n{}",
+                nemesis_board::render_check_plan_reconciliation(&statuses)
+            ));
+        }
+    }
     // 评审分层（gap ②）：config `board.review.tier` → 档位（无法识别安全
     // 回落 Thorough）。提升到 LLM 评审分支之前（vision 与文本两路共用同一
     // system prompt）。先例注入只走 Thorough——fast 档追求精简，参考性
@@ -1891,6 +1910,37 @@ async fn review_issue(
                     }
                 }
             }
+            // P2 版本绑定交叉对账（2026-10-25；加法演进：checks_binds 在场
+            // 才验）：checks 窗口的基线/关闭 tree 必须与 capture 元数据一致
+            // ——「这些检查就是在交付的那棵树上跑的」。base≠base（检查跑在
+            // 别的基线上）或 head≠tree（检查跑完后又改了文件）= 证据失真，
+            // 按结构事实降级 FAIL（零 token 可判）。键缺席 = 旧形态 payload，
+            // 诚实跳过不追溯。
+            if let Some(binds) = delivery.get("checks_binds") {
+                let Some(binds) = binds.as_object() else {
+                    return Some(Err(
+                        "交付证据 checks_binds 块形态非法：必须是对象。请重跑任务以重新捕获交付。".to_string(),
+                    ));
+                };
+                let bind_base = binds.get("base_tree").and_then(|v| v.as_str());
+                let bind_head = binds.get("head_tree").and_then(|v| v.as_str());
+                let cap_base = delivery.get("base_tree").and_then(|v| v.as_str());
+                let cap_tree = delivery.get("tree").and_then(|v| v.as_str());
+                if let (Some(bb), Some(cb)) = (bind_base, cap_base)
+                    && bb != cb
+                {
+                    return Some(Err(format!(
+                        "交付证据版本绑定不一致：checks 基线 tree（{bb}）≠ capture 基线 tree（{cb}）——检查证据跑在别的版本上。请重跑任务以重新捕获交付。"
+                    )));
+                }
+                if let (Some(bh), Some(ct)) = (bind_head, cap_tree)
+                    && bh != ct
+                {
+                    return Some(Err(format!(
+                        "交付证据版本绑定不一致：checks 关窗 tree（{bh}）≠ capture 交付 tree（{ct}）——检查跑完后又改了文件，检查证据已失真。请重跑任务以重新捕获交付。"
+                    )));
+                }
+            }
             // 严格闸（默认 false 烧入期，翻闸须用户裁决）：files 必须在场。
             // R5 后 files 恒序列化（空数组 = 「零文件变更」的真实派生事实，
             // 仍按证据面残缺处置——git 交付的文件清单不应为空）。
@@ -1936,6 +1986,98 @@ async fn review_issue(
             );
             warn!("[BoardReview] issue {issue_id} 交付证据缺失：PASS 降级 FAIL（缺交付记录）");
         }
+    }
+
+    // ---- P2 必检计划闸（SKIP≠PASS，2026-10-25）：评审 PASS 后确定性对账
+    // ——任务文本反引号命令 = 必检计划（derive 纯函数，与 prompt 注入同源
+    // 现算），× delivery.checks 执行证据（delivery_checks_for）。计划内没跑
+    // （⏭）或跑了失败（❌）= 交付不完整 → PASS 降级 FAIL（结构事实零 token
+    // 可判，不劳语义评审，也不进 B2b 自检挂起——取证改变不了执行记录）。
+    // 后续重派/熔断/转人工全走既有 FAIL 决策表，无新分支。开关 =
+    // board.review.require_check_plan（默认 false 烧入期）。无计划项 =
+    // 诚实跳过（本闸只管「计划内必检项」，不强制所有单都跑检查）。
+    if cfg.review.require_check_plan && output.verdict == nemesis_board::ReviewVerdict::Pass {
+        let plan = nemesis_board::derive_check_plan(&[
+            &issue.title,
+            issue.description.as_str(),
+            issue.acceptance_criteria.as_deref().unwrap_or(""),
+        ]);
+        if !plan.is_empty() {
+            let checks = delivery_checks_for(deps, &dispatches);
+            let statuses = nemesis_board::reconcile_check_plan(&plan, &checks);
+            let unmet: Vec<&nemesis_board::CheckPlanStatus> = statuses
+                .iter()
+                .filter(|s| !s.ran || s.ok == Some(false))
+                .collect();
+            if !unmet.is_empty() {
+                let gap = format!(
+                    "必检计划未满足：计划内 {} 项必检项未跑或失败（SKIP≠PASS）——交付不完整。未满足项：{}",
+                    unmet.len(),
+                    unmet
+                        .iter()
+                        .map(|s| format!(
+                            "`{}`（{}）",
+                            s.check,
+                            if s.ran { "执行失败" } else { "未执行" }
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                );
+                output.verdict = nemesis_board::ReviewVerdict::Fail;
+                output.gap = gap.clone();
+                output
+                    .reasons
+                    .push("必检计划未满足（评审门强制，SKIP≠PASS）".to_string());
+                let _ = post_review_comment(
+                    store,
+                    issue_id,
+                    &deps.cluster,
+                    &format!(
+                        "🔍 必检计划闸：评审结论 PASS 但计划内必检项未全部执行通过，按交付不完整降级 FAIL 处置（重派/转人工走既有 FAIL 流程）。\n\n{}",
+                        nemesis_board::render_check_plan_reconciliation(&statuses)
+                    ),
+                );
+                warn!("[BoardReview] issue {issue_id} 必检计划未满足：PASS 降级 FAIL（{gap}）");
+            }
+        }
+    }
+
+    // P2 coding_delivery 整包行（2026-10-25）：所有闸走完、结论终态后把
+    // 整包证据索引 + 终态结论入账（kind="coding_delivery"，幂等键 =
+    // `{task_id}:coding_delivery`——复评重放幂等跳过，同一交付只出一行整
+    // 包账）。patch 全文不重复入库（branch 行/盘上留底已有）。无派发或无
+    // 交付记录（人工转入/旧流程单）= 诚实跳过。任何失败只 warn 不炸评审。
+    {
+        let task_id = dispatches.last().map(|d| d.task_id.clone());
+        let delivery_obj = task_id.as_deref().and_then(|tid| {
+            let db = deps.cluster.task_db()?;
+            db.delivery_by_key(tid).ok().flatten().and_then(|rec| {
+                rec.payload
+                    .get("delivery")
+                    .filter(|d| !d.is_null())
+                    .cloned()
+            })
+        });
+        let anchor_summary = if anchor_results.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({
+                "passed": nemesis_board::all_passed(&anchor_results),
+                "total": anchor_results.len(),
+                "detail": nemesis_board::render_anchor_summary(&anchor_results),
+            })
+        };
+        crate::review_ledger::coding_delivery_record(
+            deps.cluster.task_db().as_ref(),
+            task_id.as_deref(),
+            issue_id,
+            &issue.number,
+            output.verdict.as_str(),
+            &output.gap,
+            &output.reasons,
+            delivery_obj.as_ref(),
+            anchor_summary,
+        );
     }
 
     // 经验落库（M4.5 集体记忆 §6.5.1 蒸馏唯一写闸）：评审 agent 的
@@ -3037,6 +3179,28 @@ fn last_dispatch_env(dispatches: &[nemesis_board::models::DispatchRecord]) -> se
         }),
         None => serde_json::json!({ "last_worker": null }),
     }
+}
+
+/// P2 必检对账取数（2026-10-25）：最新派发任务交付记录里的 `delivery.checks`
+/// 块。无派发 / tasks.db 不在 / 无交付记录 / 无 checks 块 = 空数组——对账
+/// 语义即「没跑过检查」（诚实缺席形态，本闸正是为它存在）。
+fn delivery_checks_for(
+    deps: &BoardReviewDeps,
+    dispatches: &[nemesis_board::models::DispatchRecord],
+) -> Vec<serde_json::Value> {
+    dispatches
+        .last()
+        .map(|d| d.task_id.clone())
+        .and_then(|task_id| {
+            let db = deps.cluster.task_db()?;
+            let rec = db.delivery_by_key(&task_id).ok().flatten()?;
+            rec.payload
+                .get("delivery")
+                .and_then(|d| d.get("checks"))
+                .and_then(|v| v.as_array())
+                .cloned()
+        })
+        .unwrap_or_default()
 }
 
 /// S-O2 迟到评审守卫（2026-09-16 showcase 复跑实证）：评审 LLM 异步跑数

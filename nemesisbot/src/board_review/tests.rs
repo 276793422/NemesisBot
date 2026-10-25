@@ -5557,6 +5557,7 @@ async fn deletion_only_capture_satisfies_strict_evidence_gate() {
         Some(&base),
         "node-b",
         Vec::new(),
+        None,
     )
     .unwrap();
     assert_eq!(delivery["files_changed"], 1);
@@ -5815,6 +5816,321 @@ async fn evidence_typed_absent_with_strict_off_passes() {
         deps.store.get_issue(issue_id).unwrap().status,
         IssueStatus::Done,
         "默认闸关 + typed 块缺席 = 旧形态照常放行（烧入期零行为变化）"
+    );
+}
+
+// ===== P2 外循环：版本绑定 + 必检计划 + coding_delivery（2026-10-25） =====
+
+#[tokio::test]
+async fn check_plan_unran_item_downgrades_pass_to_fail() {
+    use nemesis_board::IssueStatus;
+
+    // 计划项（AC 反引号命令）在 delivery.checks 里没有对应执行记录 →
+    // PASS 降级 FAIL（SKIP≠PASS）→ 零预算转人工。
+    let (deps, _ws) = review_deps_taskdb("checkplan-unran");
+    write_board_config(
+        &deps.home,
+        r#"{"max_redispatch":0,"review":{"require_delivery_evidence":true,"require_check_plan":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "必检计划未跑降级",
+        "完成后运行 `cargo test -p demo` 验证。",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "t-checkplan-unran", issue.id, "node-b");
+    // 交付在场但 checks 只跑了别的东西——计划项没跑（结构完整，证据失实）。
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery(
+            "cluster_result",
+            None,
+            "t-checkplan-unran",
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "cpunrancommit",
+                    "tree": "cpunrantree1",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-checkplan-unran.patch",
+                    "checks": [
+                        {"tool": "exec", "cmd": "npm run build", "ok": true, "summary": "built"}
+                    ]
+                }
+            }),
+            false,
+        )
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("必检未跑降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "计划内必检项未跑 → PASS 降级 FAIL → 零预算转人工"
+    );
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("必检计划闸")),
+        "必须落必检计划闸留痕评论: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("cargo test -p demo") && c.content.contains("未执行")),
+        "留痕必须列出未执行的计划项: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn check_plan_failed_run_downgrades_pass_to_fail() {
+    use nemesis_board::IssueStatus;
+
+    // 计划项跑了但失败 → 同样降级（失败也是事实，PASS 不得越过）。
+    let (deps, _ws) = review_deps_taskdb("checkplan-failed");
+    write_board_config(
+        &deps.home,
+        r#"{"max_redispatch":0,"review":{"require_delivery_evidence":true,"require_check_plan":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "必检计划失败降级",
+        "完成后运行 `cargo test -p demo` 验证。",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "t-checkplan-failed", issue.id, "node-b");
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery(
+            "cluster_result",
+            None,
+            "t-checkplan-failed",
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "cpfailcommit",
+                    "tree": "cpfailtree01",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-checkplan-failed.patch",
+                    "checks": [
+                        {"tool": "exec", "cmd": "cargo test -p demo", "ok": false, "summary": "3 failed"}
+                    ]
+                }
+            }),
+            false,
+        )
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("必检失败降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "计划项执行失败 → PASS 降级 FAIL → 转人工"
+    );
+    assert!(
+        deps.store.list_comments(issue.id).unwrap().iter().any(|c| c
+            .content
+            .contains("必检计划闸")
+            && c.content.contains("❌")
+            && c.content.contains("cargo test -p demo")),
+        "留痕必须区分「执行失败」（❌）与「未执行」（⏭）"
+    );
+}
+
+#[tokio::test]
+async fn check_plan_covered_allows_auto_accept_and_coding_delivery_row() {
+    use nemesis_board::IssueStatus;
+
+    // 计划项有通过证据 → 闸放行 → auto_accept 落 done；coding_delivery
+    // 整包行 round-trip（证据索引 + 终态结论一处可查）。
+    let (deps, _ws) = review_deps_taskdb("checkplan-ok");
+    write_board_config(
+        &deps.home,
+        r#"{"auto_accept":true,"review":{"require_delivery_evidence":true,"require_check_plan":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "必检计划覆盖放行",
+        "完成后运行 `cargo test -p demo` 验证。",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "t-checkplan-ok", issue.id, "node-b");
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery(
+            "cluster_result",
+            None,
+            "t-checkplan-ok",
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "cpokcommit",
+                    "tree": "cpoktree01",
+                    "base_tree": "cpokbase01",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-checkplan-ok.patch",
+                    "repo_base_sha": "a".repeat(40),
+                    "checks": [
+                        // 归一子串覆盖：跑得比计划更细（--lib）也算覆盖。
+                        {"tool": "exec", "cmd": "cargo test -p demo --lib", "ok": true, "summary": "5 passed"}
+                    ],
+                    "checks_binds": {
+                        "base_tree": "cpokbase01",
+                        "head_tree": "cpoktree01"
+                    }
+                }
+            }),
+            false,
+        )
+        .unwrap();
+    let provider = Arc::new(CapturingLlm {
+        prompts: std::sync::Mutex::new(Vec::new()),
+        reply: review_json("PASS", ""),
+    });
+    attach_loop(&deps, provider.clone());
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("必检覆盖放行闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::Done,
+        "计划项有通过证据 → 闸放行 → auto_accept 落 done"
+    );
+    // 对账表注入评审 prompt（系统客观数据；评审 agent 读表不凭自述）。
+    let prompts = provider.prompts.lock().unwrap().join("\n");
+    assert!(
+        prompts.contains("必检计划对账") && prompts.contains("cargo test -p demo"),
+        "评审 prompt 必须带必检对账表: {prompts}"
+    );
+    // coding_delivery 整包行 round-trip。
+    let db = deps.cluster.task_db().unwrap();
+    let rec = db
+        .delivery_by_key("t-checkplan-ok:coding_delivery")
+        .unwrap()
+        .expect("整包行在场");
+    assert_eq!(rec.kind, "coding_delivery");
+    assert_eq!(rec.payload["task_id"], "t-checkplan-ok");
+    assert_eq!(rec.payload["verdict"], "PASS");
+    assert_eq!(rec.payload["branch_key"], "t-checkplan-ok:branch");
+    assert_eq!(rec.payload["checks_count"], serde_json::json!(1));
+    assert_eq!(
+        rec.payload["patch_path"], "logs/deliveries/t-checkplan-ok.patch",
+        "证据索引字段从 delivery 对象投影"
+    );
+    assert_eq!(
+        rec.payload["repo_base_sha"],
+        "a".repeat(40),
+        "版本链「基于哪个 SHA」随包入账"
+    );
+    assert!(
+        rec.payload["anchor_summary"].is_null(),
+        "无锚点单诚实 Null（不造空壳摘要）"
+    );
+}
+
+#[tokio::test]
+async fn evidence_binds_mismatch_fails() {
+    use nemesis_board::IssueStatus;
+
+    // 版本绑定交叉对账：binds.base_tree ≠ delivery.base_tree 或
+    // binds.head_tree ≠ delivery.tree = 证据失真 → FAIL（双臂）。
+    for (tag, binds) in [
+        (
+            "binds-bad-head",
+            serde_json::json!({"base_tree": "cpokbase01", "head_tree": "staleoldtree"}),
+        ),
+        (
+            "binds-bad-base",
+            serde_json::json!({"base_tree": "foreignbase", "head_tree": "cpoktree01"}),
+        ),
+    ] {
+        let payload = serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "cpbindcommit",
+                "tree": "cpoktree01",
+                "base_tree": "cpokbase01",
+                "patch_truncated": false,
+                "patch_path": "logs/deliveries/t-binds.patch",
+                "checks": [
+                    {"tool": "exec", "cmd": "cargo test -p demo", "ok": true, "summary": "5 passed"}
+                ],
+                "checks_binds": binds,
+            }
+        });
+        let (deps, _ws, issue_id) = evidence_gate_fixture(payload, tag).await;
+        let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+            .await
+            .expect("binds 失真降级闭环");
+        assert!(reviewed);
+        assert_eq!(
+            deps.store.get_issue(issue_id).unwrap().status,
+            IssueStatus::InReview,
+            "{tag}：binds 与 capture 元数据不一致必须 FAIL"
+        );
+        assert!(
+            deps.store
+                .list_comments(issue_id)
+                .unwrap()
+                .iter()
+                .any(|c| c.content.contains("版本绑定不一致")),
+            "{tag}：缺口文案必须指明版本绑定不一致"
+        );
+    }
+}
+
+#[tokio::test]
+async fn evidence_binds_absent_legacy_payload_still_passes() {
+    use nemesis_board::IssueStatus;
+
+    // binds 键缺席 = 旧形态 payload，诚实跳过不追溯（加法演进回归锁）。
+    let payload = serde_json::json!({
+        "node": "node-b",
+        "delivery": {
+            "commit": "cplegacycommit",
+            "tree": "cplegacytree",
+            "patch_truncated": false,
+            "patch_path": "logs/deliveries/t-binds-legacy.patch",
+            "checks": [
+                {"tool": "exec", "cmd": "cargo test -p demo", "ok": true, "summary": "5 passed"}
+            ]
+        }
+    });
+    let (deps, _ws, issue_id) = evidence_gate_fixture(payload, "binds-legacy").await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("旧形态放行闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::Done,
+        "binds 缺席 = 旧形态照常放行（不追溯）"
     );
 }
 

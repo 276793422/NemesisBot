@@ -73,3 +73,13 @@ risk = "low"
 class = "network"
 http = { method = "GET", path = "/repos/{owner}/{repo}/pulls/{index}" }
 args_schema = { type = "object", required = ["owner", "repo", "index"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" } } }
+
+[[op]]
+id = "create_pull"
+intent = ["创建 PR", "建合并请求", "发布交付"]
+risk = "high"
+class = "write"
+confirm = "required"
+receipt = "number"
+http = { method = "POST", path = "/repos/{owner}/{repo}/pulls" }
+args_schema = { type = "object", required = ["owner", "repo", "head", "base", "title"], properties = { owner = { type = "string" }, repo = { type = "string" }, head = { type = "string", description = "源分支名（已推送到远端）" }, base = { type = "string", description = "目标基分支名" }, title = { type = "string" }, body = { type = "string", description = "PR 描述（Markdown，可省）" } } }
