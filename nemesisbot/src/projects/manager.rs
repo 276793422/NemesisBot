@@ -276,6 +276,18 @@ impl ProjectLoopManager {
         self.state.lock().unwrap().keys().cloned().collect()
     }
 
+    /// 停机 drain 面快照（BUG-20261025-33）：全部在跑项目 loop 的 Arc，
+    /// 供 gateway teardown 与主 loop 同一窗口 begin_shutdown_drain +
+    /// 联合 gauge 轮询（此前只 drain 主 loop，项目会话在途 turn 停机即杀）。
+    pub fn drain_snapshot(&self) -> Vec<Arc<nemesis_agent::r#loop::AgentLoop>> {
+        self.state
+            .lock()
+            .unwrap()
+            .values()
+            .map(|h| Arc::clone(&h.agent_loop))
+            .collect()
+    }
+
     /// 项目 loop 是否在运行（bridge list 的 running 字段用）。
     pub fn is_running(&self, project_id: &str) -> bool {
         self.state.lock().unwrap().contains_key(project_id)

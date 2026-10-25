@@ -216,6 +216,45 @@ async fn manager_spawn_stop_lifecycle() {
     assert!(!mgr.stop_project("p_life0001"));
 }
 
+// BUG-20261025-33：drain 面快照与在跑 loop 一一对应，且经快照可置位
+// draining 闸——gateway teardown 对项目 loop 的统一入口闸取数路径
+// （此前 teardown stop_all 直接 abort 项目会话在途 turn）。
+#[tokio::test]
+async fn drain_snapshot_covers_running_loops_and_gates_entry() {
+    let home = unique_home("drainsnap");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let mgr = manager_for(&home);
+    assert!(mgr.drain_snapshot().is_empty(), "无在跑 loop 时快照为空");
+
+    let entry = registry::ProjectEntry {
+        id: "p_drain001".to_string(),
+        name: "drain".to_string(),
+        path: project_dir.clone(),
+        created_at: "2026-10-25T00:00:00Z".to_string(),
+        instructions_trusted: true,
+    };
+    mgr.spawn_project(&entry).expect("spawn succeeds");
+    let snap = mgr.drain_snapshot();
+    assert_eq!(
+        snap.len(),
+        mgr.running_pids().len(),
+        "快照覆盖全部在跑 loop"
+    );
+    for l in &snap {
+        assert!(!l.is_draining());
+        l.begin_shutdown_drain();
+        assert!(l.is_draining(), "经快照置位 draining 闸");
+        assert!(
+            l.wait_turns_drained(std::time::Duration::from_secs(1))
+                .await,
+            "空闲 loop 立即排干"
+        );
+    }
+    assert!(mgr.stop_project("p_drain001"));
+}
+
 // ---------------------------------------------------------------------------
 // start_all（注册表驱动）+ 归属索引
 // ---------------------------------------------------------------------------

@@ -256,3 +256,37 @@ async fn remove_stops_loop_and_rebuild_works() {
     fx.manager.stop_all();
     assert!(!fx.manager.is_running(id));
 }
+
+// BUG-20261025-33：drain 面快照覆盖在跑 loop——gateway teardown 与主 loop
+// 同一窗口联合 drain 的取数面（此前 teardown 直接 abort 在途轮次）。
+#[tokio::test]
+async fn drain_snapshot_covers_running_agent_loops() {
+    let fx = fixture();
+    assert!(
+        fx.manager.drain_snapshot().is_empty(),
+        "无在跑 loop 时快照为空"
+    );
+    let id = "dddddddddddddddddddddddddddddddd";
+    put_record(
+        &fx.store,
+        &fx.workspace,
+        id,
+        agent_kind::SELFBUILT,
+        agent_status::ACTIVE,
+    );
+    let loop_arc = fx.manager.loop_for_agent(id).expect("selfbuilt resolves");
+    let snap = fx.manager.drain_snapshot();
+    assert_eq!(snap.len(), 1, "快照覆盖在跑 loop");
+    assert!(Arc::ptr_eq(&snap[0], &loop_arc), "快照即注册表内实例");
+    snap[0].begin_shutdown_drain();
+    assert!(snap[0].is_draining(), "经快照置位 draining 闸");
+    assert!(
+        snap[0]
+            .wait_turns_drained(std::time::Duration::from_secs(1))
+            .await,
+        "空闲 loop 立即排干"
+    );
+    // teardown 收口（防 tokio 测试运行时退出时在跑任务噪音）。
+    fx.manager.stop_all();
+    assert!(!fx.manager.is_running(id));
+}

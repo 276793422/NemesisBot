@@ -177,3 +177,37 @@ async fn spawned_turn_gauge_visible_via_wait_and_cleanup_after_finish() {
     );
     assert_eq!(al.in_flight_turns(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261025-33：联合 drain 面必须覆盖全部常驻 loop——gateway 此前只等
+// 主 loop，项目/G1 loop 在途时假报「已归零」（停机假完成日志的根因形态）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wait_loops_drained_requires_all_loops_idle() {
+    let a = std::sync::Arc::new(AgentLoop::new(Box::new(QuietProvider), cov_config()));
+    let b = std::sync::Arc::new(AgentLoop::new(Box::new(QuietProvider), cov_config()));
+
+    // 空闲两 loop：立即 true。
+    assert!(
+        AgentLoop::wait_loops_drained(&[a.clone(), b.clone()], Duration::from_millis(50)).await
+    );
+
+    // b 在途：联合等待必须超时 false（只看 a 会假绿——本缺陷的回归锁）。
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let (picked_up, picked_rx) = tokio::sync::oneshot::channel::<()>();
+    b.spawn_turn_task(async move {
+        let _ = picked_up.send(());
+        let _ = release_rx.await;
+    });
+    picked_rx.await.unwrap();
+    assert_eq!(b.in_flight_turns(), 1);
+    assert!(
+        !AgentLoop::wait_loops_drained(&[a.clone(), b.clone()], Duration::from_millis(150)).await,
+        "任一 loop 在途 = 未排干"
+    );
+
+    // 放行 → guard Drop 减账 → 联合归零 true。
+    let _ = release_tx.send(());
+    assert!(AgentLoop::wait_loops_drained(&[a.clone(), b.clone()], Duration::from_secs(2)).await);
+}

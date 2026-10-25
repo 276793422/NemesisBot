@@ -293,6 +293,18 @@ impl AgentLoopManager {
         }
     }
 
+    /// 停机 drain 面快照（BUG-20261025-33）：全部在跑自建 agent loop 的
+    /// Arc，供 gateway teardown 与主 loop 同一窗口联合 drain（此前 teardown
+    /// 直接 abort，在途轮次被杀）。
+    pub fn drain_snapshot(&self) -> Vec<Arc<nemesis_agent::r#loop::AgentLoop>> {
+        self.state
+            .lock()
+            .unwrap()
+            .values()
+            .map(|h| Arc::clone(&h.agent_loop))
+            .collect()
+    }
+
     /// agent loop 是否在跑（可观测面）。`#[allow(dead_code)]`：当前唯一
     /// 消费方是本 crate 测试（round-trip/remove 用例）；Dashboard agent
     /// 管理页接入「loop 存活」徽标时转正（同 credential_alias 的 P5 形态）。

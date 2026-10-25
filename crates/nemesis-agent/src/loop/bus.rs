@@ -580,6 +580,26 @@ impl AgentLoop {
         }
     }
 
+    /// W6/BUG-20261025-33：多 loop 联合 drain 等待——gateway teardown 的
+    /// drain 面不止主 loop（L6++ 项目 loop 与 G1 自建 agent loop 同为常驻
+    /// AgentLoop，在途 turn 同样不该被停机 abort），全部 loop 共享同一有界
+    /// 窗口轮询，任一在途即未排干。空列表视为已排干。
+    pub async fn wait_loops_drained(
+        loops: &[std::sync::Arc<AgentLoop>],
+        timeout: std::time::Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if loops.iter().all(|l| l.in_flight_turns() == 0) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     pub(crate) fn spawn_turn_task<F>(&self, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,

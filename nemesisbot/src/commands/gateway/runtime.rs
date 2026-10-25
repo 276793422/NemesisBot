@@ -1382,17 +1382,37 @@ pub(crate) async fn run_runtime(
     // run_runtime，不受影响。
     let drain_secs = cfg.agents.defaults.shutdown_drain_secs;
     if drain_secs > 0 {
-        agent_loop.begin_shutdown_drain();
-        let drained = agent_loop
-            .wait_turns_drained(std::time::Duration::from_secs(drain_secs))
-            .await;
+        // BUG-20261025-33：drain 面不止主 loop——L6++ 项目 loop 与 G1 自建
+        // agent loop 同为常驻 AgentLoop（teardown stop_all 直接 abort 在途
+        // 轮次），只 drain 主 loop 时项目/agent 会话的在途 turn 停机即杀，
+        // 且主 loop 空闲时会打出「已归零」假完成。三处同一窗口关入口
+        // （draining 闸对外部通道回执）+ 有界等全部 gauge 归零。
+        let mut draining: Vec<Arc<nemesis_agent::r#loop::AgentLoop>> =
+            vec![Arc::clone(&agent_loop)];
+        draining.extend(projects_manager.drain_snapshot());
+        if let Some(lm) = crate::agents::manager().and_then(|m| m.loop_manager()) {
+            draining.extend(lm.drain_snapshot());
+        }
+        for l in &draining {
+            l.begin_shutdown_drain();
+        }
+        let drained = nemesis_agent::r#loop::AgentLoop::wait_loops_drained(
+            &draining,
+            std::time::Duration::from_secs(drain_secs),
+        )
+        .await;
+        let remaining: usize = draining.iter().map(|l| l.in_flight_turns()).sum();
         if drained {
-            info!("[Gateway] 停机 drain 完成：在途 turn 已归零");
+            info!(
+                "[Gateway] 停机 drain 完成：在途 turn 已归零（覆盖 {} 个 loop）",
+                draining.len()
+            );
         } else {
             warn!(
-                "[Gateway] 停机 drain 超时（{}s）：仍有 {} 个在途 turn，强制进入 teardown",
+                "[Gateway] 停机 drain 超时（{}s）：仍有 {} 个在途 turn（{} 个 loop），强制进入 teardown",
                 drain_secs,
-                agent_loop.in_flight_turns()
+                remaining,
+                draining.len()
             );
         }
     } else {
