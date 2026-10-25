@@ -93,4 +93,7 @@ fn concurrent_appends_never_tear_lines() {
         );
     }
     delete_chat_log(&k);
+    // delete_chat_log 不清事件账本（jsonl/边界侧车/标题元数据三件套之外），
+    // 账本文件按 t6 惯例单独摘除，防绿跑逐次泄漏。
+    let _ = std::fs::remove_file(crate::event_ledger::ledger_path(&k));
 }
