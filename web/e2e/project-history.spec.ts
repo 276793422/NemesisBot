@@ -75,7 +75,9 @@ test('项目会话历史：目录删除后组不可用但历史完整可读', as
   // 历史在飞窗口内空态占位气泡（ChatPanel v-else-if，同为 .message assistant）
   // 也可见且恰 1 条——last+count 两段断言会被占位态采样命中（本地实测竞态）。
   // toHaveCount 自动重试到确切条数：占位（1）≠10 继续等，落地即 10。
-  await expect(page.locator('.message')).toHaveCount(ROUNDS * 2, { timeout: 30_000 })
+  // 只数 user/assistant：未知窗口模型首 turn 会落一条「压缩已停用」system
+  // 注记（产品行为），.message.system 不计入。
+  await expect(page.locator('.message.user, .message.assistant')).toHaveCount(ROUNDS * 2, { timeout: 30_000 })
 
   // U3/U4: 无伪消息、无失败横幅
   await expect(page.locator('.message', { hasText: '当前不可用' }).first()).toBeHidden()
@@ -88,7 +90,7 @@ test('项目会话历史：目录删除后组不可用但历史完整可读', as
     await expect(page.locator('.session-item').first()).toBeVisible({ timeout: 20_000 })
   }
   await sessionRow.click()
-  await expect(page.locator('.message')).toHaveCount(ROUNDS * 2, { timeout: 30_000 })
+  await expect(page.locator('.message.user, .message.assistant')).toHaveCount(ROUNDS * 2, { timeout: 30_000 })
   await expect(page.locator('.message', { hasText: '历史消息加载失败' }).first()).toBeHidden()
 
   await page.context().close()

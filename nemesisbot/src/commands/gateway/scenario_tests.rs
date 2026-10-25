@@ -241,6 +241,10 @@ async fn fetch_history(stream: &mut WsStream, sid: &str) -> Vec<(String, String)
         .as_array()
         .unwrap_or_else(|| panic!("history [{sid}] missing messages array: {frame}"))
         .iter()
+        // W2（2026-10-25）：未知窗口模型的首 turn 会落一条「压缩已停用」system
+        // 注记进 chat_log（产品行为，agent crate 有专项单测）。本组测试只断言
+        // user/assistant 消息流，system 注记行在此过滤掉。
+        .filter(|m| m["role"].as_str() != Some("system"))
         .map(|m| {
             (
                 m["role"].as_str().unwrap_or_default().to_string(),
