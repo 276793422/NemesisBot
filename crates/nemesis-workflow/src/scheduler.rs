@@ -8,12 +8,13 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::context::WorkflowContext;
 use crate::nodes::NodeExecutorRegistry;
-use crate::types::{Edge, ExecutionState, NodeDef};
+use crate::types::{Edge, ExecutionState, NodeDef, NodeResult};
 
 /// Optional progress hook invoked by the scheduler after each level finishes.
 ///
@@ -332,8 +333,12 @@ async fn schedule_inner(
         // Build context from current workflow state (before spawning tasks)
         let exec_ctx = build_executor_context(wf_ctx);
 
-        // Execute all nodes in this level concurrently
-        let mut handles = Vec::new();
+        // Execute all nodes in this level concurrently. JoinSet (not a
+        // plain Vec of handles) so results are collected in COMPLETION
+        // order: a fail-fast sibling must surface immediately instead of
+        // waiting behind a long-running node collected earlier by spawn
+        // order (the level order is non-deterministic).
+        let mut tasks: JoinSet<(String, Option<NodeResult>, Option<String>)> = JoinSet::new();
 
         for node_id in runnable {
             let node = match node_map.get(&node_id) {
@@ -358,7 +363,7 @@ async fn schedule_inner(
             let wf_ctx_clone = wf_ctx.clone();
             let task_cancel = cancel.clone();
 
-            let handle = tokio::spawn(async move {
+            tasks.spawn(async move {
                 // Execute with retry; bail out if cancelled between attempts.
                 let mut last_result = None;
                 let mut last_error: Option<String> = None;
@@ -416,17 +421,38 @@ async fn schedule_inner(
 
                 (node_id, last_result, last_error)
             });
-
-            handles.push(handle);
         }
 
-        // Collect results; abort waiting if cancelled.
-        for handle in handles {
-            let collected = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Ok(ScheduleOutcome::Cancelled),
-                r = handle => r,
-            };
+        // Collect results; abort waiting if cancelled. A node failure must
+        // cancel the remaining in-flight siblings and join them before
+        // returning Err (BUG-20261025-27): dropping the JoinHandles would
+        // detach those tasks — their side effects (exec/file writes) keep
+        // running after the workflow was already declared Failed, and with
+        // the token removed from the engine's cancel map there is no way to
+        // cancel them anymore.
+        let mut first_err: Option<String> = None;
+        while !tasks.is_empty() {
+            let collected: Result<(String, Option<NodeResult>, Option<String>), String> =
+                if first_err.is_some() {
+                    // Draining after a recorded failure: our own cancellation
+                    // is in flight, so don't select on the token (it would
+                    // misread the failure-driven cancel as a user cancel).
+                    match tasks.join_next().await {
+                        Some(Ok(triple)) => Ok(triple),
+                        Some(Err(e)) => Err(format!("node task panicked: {}", e)),
+                        None => break,
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Ok(ScheduleOutcome::Cancelled),
+                        r = tasks.join_next() => match r {
+                            Some(Ok(triple)) => Ok(triple),
+                            Some(Err(e)) => Err(format!("node task panicked: {}", e)),
+                            None => break,
+                        },
+                    }
+                };
 
             match collected {
                 Ok((node_id, Some(result), None)) => {
@@ -440,22 +466,43 @@ async fn schedule_inner(
                     wf_ctx.set_node_result(&node_id, result);
                 }
                 Ok((node_id, _, Some(err))) => {
-                    return Err(format!("node {:?} execution failed: {}", node_id, err));
+                    // A user cancel racing a failure (or cancel fallout after
+                    // an already-recorded error) must not overwrite the first
+                    // outcome: no failure recorded yet → user cancel wins.
+                    if cancel.is_cancelled() {
+                        if first_err.is_none() {
+                            return Ok(ScheduleOutcome::Cancelled);
+                        }
+                    } else if first_err.is_none() {
+                        first_err = Some(format!("node {:?} execution failed: {}", node_id, err));
+                        cancel.cancel();
+                    }
                 }
                 Ok((node_id, None, None)) => {
                     // Could be a cancellation during retry/backoff: check flag.
                     if cancel.is_cancelled() {
-                        return Ok(ScheduleOutcome::Cancelled);
+                        if first_err.is_none() {
+                            return Ok(ScheduleOutcome::Cancelled);
+                        }
+                    } else if first_err.is_none() {
+                        first_err = Some(format!("node {:?} produced no result", node_id));
+                        cancel.cancel();
                     }
-                    return Err(format!("node {:?} produced no result", node_id));
                 }
-                Err(e) => {
+                Err(panic_msg) => {
                     if cancel.is_cancelled() {
-                        return Ok(ScheduleOutcome::Cancelled);
+                        if first_err.is_none() {
+                            return Ok(ScheduleOutcome::Cancelled);
+                        }
+                    } else if first_err.is_none() {
+                        first_err = Some(panic_msg);
+                        cancel.cancel();
                     }
-                    return Err(format!("node task panicked: {}", e));
                 }
             }
+        }
+        if let Some(e) = first_err {
+            return Err(e);
         }
 
         // After all nodes in this level have settled (some may be in Waiting
@@ -549,5 +596,7 @@ fn eval_edge_conditions(
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod orphan_drain_tests;
 #[cfg(test)]
 mod tests;
