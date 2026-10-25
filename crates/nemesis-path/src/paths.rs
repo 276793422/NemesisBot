@@ -212,9 +212,14 @@ pub fn default_path_manager() -> &'static PathManager {
 /// Priority:
 /// 1. LocalMode → `{cwd}/.nemesisbot`
 /// 2. `NEMESISBOT_HOME` env → `{NEMESISBOT_HOME}/.nemesisbot`
-/// 3. Auto-detect cwd → if `{cwd}/.nemesisbot` exists
-/// 4. Exe directory → if `{exe_dir}/.nemesisbot` exists
+/// 3. Exe directory → if `{exe_dir}/.nemesisbot` exists
+/// 4. Auto-detect cwd → if `{cwd}/.nemesisbot` exists
 /// 5. Default → `~/.nemesisbot`
+///
+/// （3/4 的实况是 exe 目录先于 cwd——自 init 提交即如此，测试
+/// `test_resolve_home_dir_exe_dir` 以「exe directory takes precedence over
+/// cwd」钉死。旧 doc 注释写反过（cwd 在前），与代码和 CLAUDE.md 三处口径
+/// 已统一为本序。）
 pub fn resolve_home_dir() -> Result<PathBuf, String> {
     // Priority 1: LocalMode
     let local_mode = LOCAL_MODE.load(std::sync::atomic::Ordering::Relaxed);

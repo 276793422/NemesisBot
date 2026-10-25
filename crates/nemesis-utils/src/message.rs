@@ -6,12 +6,14 @@ pub fn format_message(content: &str, max_len: usize) -> String {
         content.to_string()
     } else {
         // 截断点是算术字节上限，可能落在多字节 UTF-8 字符中间（CJK panic）：
-        // 回退到最近的字符边界再切片。
+        // 回退到最近的字符边界再切片。尾注单位是「chars」，必须真报字符数
+        // ——`content.len()` 是字节数，CJK 文本会虚报 3 倍（ASCII 下两单位
+        // 恒等，旧测试测不出来）。
         let end = floor_char_boundary(content, max_len.min(content.len()));
         format!(
             "{}... (truncated, {} chars total)",
             &content[..end],
-            content.len()
+            content.chars().count()
         )
     }
 }

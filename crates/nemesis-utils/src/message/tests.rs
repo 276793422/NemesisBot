@@ -77,6 +77,18 @@ fn test_format_message_truncated_total_count() {
     assert!(result.contains("300 chars total"));
 }
 
+// 旧形态必红锁：尾注报的是 `content.len()`（字节数），CJK 文本每字 3 字节
+// 会虚报 3 倍（ASCII 下 bytes==chars，上方 300-x 测试测不出该错标）。
+#[test]
+fn test_format_message_truncated_count_is_chars_not_bytes() {
+    let long = "中".repeat(100); // 100 chars = 300 bytes
+    let result = format_message(&long, 50);
+    assert!(
+        result.contains("100 chars total"),
+        "label must report char count, got: {result}"
+    );
+}
+
 #[test]
 fn test_sanitize_tabs() {
     assert_eq!(sanitize_for_log("hello\tworld"), "hello\\tworld");
@@ -664,11 +676,13 @@ fn test_split_message_cjk_with_unclosed_code_block_no_panic() {
 
 #[test]
 fn test_format_message_cjk_no_panic_byte_boundary() {
-    // 修复前：content[..5] panic（"字"占 3 字节）
+    // 修复前：content[..5] panic（"字"占 3 字节）。尾注数字曾断言 30——
+    // 那是字节数当 chars 报的旧 bug 形态（BUG-20261025-73），10 个字符
+    // 必须真报 10。
     let text = "字".repeat(10);
     let result = format_message(&text, 5);
     assert!(result.contains("truncated"));
-    assert!(result.contains("30 chars total"));
+    assert!(result.contains("10 chars total"));
     assert!(result.starts_with("字"));
 }
 
@@ -678,7 +692,8 @@ fn test_format_message_emoji_no_panic_byte_boundary() {
     //（一个完整 emoji），不得 panic 也不得切出残字节
     let text = "🦀".repeat(5);
     let result = format_message(&text, 6);
-    assert_eq!(result, format!("🦀... (truncated, 20 chars total)"));
+    // 5 个字符（20 字节）必须真报 5 chars——旧形态报字节数 20。
+    assert_eq!(result, "🦀... (truncated, 5 chars total)");
 }
 
 #[test]
