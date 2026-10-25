@@ -1223,7 +1223,11 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             // 身份段走桥（seed→node_id 派生是 ed25519 运算，在插件内）；
             // 缺席/拒载/读失败 = 诚实注记，状态面不因身份读不到而失败。
             if key_path.exists() {
-                match load_roaming_plugin(&workspace, &relay_init_json(&quic_path)) {
+                match load_roaming_plugin(
+                    &workspace,
+                    &relay_init_json(&quic_path),
+                    &nemesis_path::workspace_config_dir(&workspace),
+                ) {
                     RoamingLoadOutcome::Loaded => match plugin_bridge::get_iroh_id().await {
                         BridgeOutcome::Ok(hex) => {
                             println!("  密钥: {}（已配置）", key_path.display());
@@ -1237,6 +1241,12 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                             println!("  密钥: 未装载（plugin_roaming 桥槽空——身份面在插件内）");
                         }
                     },
+                    RoamingLoadOutcome::DisabledBySwitch => {
+                        println!(
+                            "  密钥: {}（plugin_roaming 已停用——本地插件库开关）",
+                            key_path.display()
+                        );
+                    }
                     RoamingLoadOutcome::Absent => {
                         println!(
                             "  密钥: {}（plugin_roaming 未安装——身份派生面在插件内）",
@@ -1280,8 +1290,16 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                 // QUIC 插件化 M2：备料面（load_or_create）在插件内——装载走
                 // 桥；插件缺席/拒载 = 诚实报错（CLI 显式意志，闸已写不回滚）。
                 let key_path = roaming_key_path(&workspace);
-                match load_roaming_plugin(&workspace, &relay_init_json(&quic_path)) {
+                match load_roaming_plugin(
+                    &workspace,
+                    &relay_init_json(&quic_path),
+                    &nemesis_path::workspace_config_dir(&workspace),
+                ) {
                     RoamingLoadOutcome::Loaded => {}
+                    RoamingLoadOutcome::DisabledBySwitch => anyhow::bail!(
+                        "plugin_roaming 已停用（本地插件库开关 config.plugin.native.json）\
+——身份面在插件内，请启用后重试"
+                    ),
                     RoamingLoadOutcome::Absent => anyhow::bail!(
                         "plugin_roaming 未找到（exe 旁 plugins/plugin_roaming 缺席）——\
 身份面在插件内，请随发行包安装 plugins/plugin_roaming/plugin_roaming.dll"

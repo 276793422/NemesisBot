@@ -10,6 +10,8 @@
 //!    （[`HOST_VTABLE`]——插件侧虽只拷字段，宿主侧照契约给稳态）。
 //!
 //! 装载链（任一步失败 = 诚实拒绝 + warn/error 留痕，绝不静默降级）：
+//! 0. 名册开关闸：`config.plugin.native.json` 的 plugin_roaming 键
+//!    （缺省启用）——关 = `DisabledBySwitch`（vm/onnx/ui 同款义务）；
 //! 1. 在场探测：[`crate::plugin_lib`]（单一真相源，VM 同款查找链）——
 //!    缺席 = `Absent`（常态；服务端面诚实降级，装载失败才是错误）；
 //! 2. v4 签名闸：Valid 放行 / Unsigned dev warn 放行 release 拒 / 其余拒；
@@ -45,12 +47,15 @@ use nemesis_plugin::roaming::{
 use crate::plugin_lib::{PluginLibSpec, SignatureVerdict, unsigned_dev_allow, verify_signature};
 
 /// 装载结果：`Absent` = 插件文件缺席（常态，静默）；`Loaded` = 装载成功；
-/// `Rejected` = 在场但装载被拒（签名/ABI/初始化失败——原因已留痕）。
+/// `Rejected` = 在场但装载被拒（签名/ABI/初始化失败——原因已留痕）；
+/// `DisabledBySwitch` = 本地插件库开关停用（`config.plugin.native.json`，
+/// 名册开关闸前置——文件在不在无关，关了就是不装）。
 #[derive(Debug)]
 pub enum RoamingLoadOutcome {
     Absent,
     Loaded,
     Rejected(String),
+    DisabledBySwitch,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +180,13 @@ pub fn roaming_plugin_present() -> bool {
 /// raw 直传不走 typed 往返（插件 parse_relay_settings 与宿主 quic_config
 /// 逐字段同源宽容解析）。幂等：已装载直接回 `Loaded`（init 重入 = 刷新
 /// 配置，插件侧语义承接；重复 load 不重复 dlopen）。
+///
+/// `config_dir`：本地插件库开关闸（`config.plugin.native.json`）读取根
+/// ——与 plugin_vm/post_agent 闸同款名册消费义务（Dashboard 开关不是
+/// 摆设）；签名裁决不在此闸（enforce 策略语义属五老插件装载点，本装载
+/// 器自带更严的无条件 v4 四分支闸，叠罗汉只会造矛盾）。功能闸
+/// （relay.enabled 等）不在此——既有拍板「文件在场即加载」，功能开关在
+/// 各自消费点判。
 /// init 配置构造单点：读 config.quic.json 取 `relay` 段 **raw 直传**，
 /// 包成 `{"relay": <原节>}` 字符串（[`load_roaming_plugin`] 的 `config_json`
 /// 形参口径）。文件缺席 / 无 relay 段 / 非对象 = `{}`（空节——插件侧宽容
@@ -189,7 +201,18 @@ pub fn relay_init_json(quic_config_path: &Path) -> String {
     serde_json::json!({ "relay": relay_section }).to_string()
 }
 
-pub fn load_roaming_plugin(workspace: &Path, config_json: &str) -> RoamingLoadOutcome {
+pub fn load_roaming_plugin(
+    workspace: &Path,
+    config_json: &str,
+    config_dir: &Path,
+) -> RoamingLoadOutcome {
+    // ---- 名册开关闸（vm/onnx/ui 同款义务；文件探测之前——关了就是不装） ----
+    if !nemesis_config::plugins_native::load_enabled(
+        config_dir,
+        nemesis_config::plugins_native::NativePluginId::PluginRoaming,
+    ) {
+        return RoamingLoadOutcome::DisabledBySwitch;
+    }
     if HANDLE.get().is_some() {
         return RoamingLoadOutcome::Loaded;
     }

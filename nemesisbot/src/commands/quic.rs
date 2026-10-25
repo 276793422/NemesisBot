@@ -100,8 +100,19 @@ async fn run_keygen(home: &Path, force: bool) -> Result<(), String> {
 
     // 装载（幂等——gateway 形态已装载时直接 Loaded）。身份文件解析根 =
     // workspace（init 时经 get_workspace_dir 注入插件，与 gateway 同口径）。
-    match load_roaming_plugin(&workspace, &relay_init_json(&config_path)) {
+    match load_roaming_plugin(
+        &workspace,
+        &relay_init_json(&config_path),
+        &nemesis_path::workspace_config_dir(&workspace),
+    ) {
         RoamingLoadOutcome::Loaded => {}
+        RoamingLoadOutcome::DisabledBySwitch => {
+            return Err(
+                "plugin_roaming 已停用（本地插件库开关 config.plugin.native.json）\
+——身份面在插件内，请启用后重试"
+                    .to_string(),
+            );
+        }
         RoamingLoadOutcome::Absent => {
             return Err(
                 "plugin_roaming 未找到（exe 旁 plugins/plugin_roaming 缺席）——\
@@ -187,8 +198,19 @@ pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
     // 插件装载（幂等——gateway 已装载时直接 Loaded）。init 配置 = relay 段
     // raw 直传（loader 纪律：不走 typed 往返）。
     let init_json = crate::roaming_plugin_loader::relay_init_json(&config_path);
-    match load_roaming_plugin(&workspace, &init_json) {
+    match load_roaming_plugin(
+        &workspace,
+        &init_json,
+        &nemesis_path::workspace_config_dir(&workspace),
+    ) {
         RoamingLoadOutcome::Loaded => {}
+        RoamingLoadOutcome::DisabledBySwitch => {
+            return Err(
+                "plugin_roaming 已停用（本地插件库开关 config.plugin.native.json）\
+——中继运行面在插件内，请启用后重试"
+                    .to_string(),
+            );
+        }
         RoamingLoadOutcome::Absent => {
             return Err(
                 "plugin_roaming 未找到（exe 旁 plugins/plugin_roaming 缺席）——\
@@ -282,6 +304,7 @@ async fn show_status(home: &Path) -> Result<(), String> {
     match crate::roaming_plugin_loader::load_roaming_plugin(
         &workspace,
         &crate::roaming_plugin_loader::relay_init_json(&config_path),
+        &nemesis_path::workspace_config_dir(&workspace),
     ) {
         crate::roaming_plugin_loader::RoamingLoadOutcome::Loaded => {
             match nemesis_cluster::roaming::plugin_bridge::get_iroh_id().await {
@@ -296,6 +319,9 @@ async fn show_status(home: &Path) -> Result<(), String> {
                     println!("本机 iroh 身份: 未装载（plugin_roaming 桥槽空）");
                 }
             }
+        }
+        crate::roaming_plugin_loader::RoamingLoadOutcome::DisabledBySwitch => {
+            println!("本机 iroh 身份: plugin_roaming 已停用（本地插件库开关）——身份面不装配");
         }
         crate::roaming_plugin_loader::RoamingLoadOutcome::Absent => {
             println!(

@@ -70,6 +70,8 @@ fn immediate_effect_only_eval() {
     assert!(!NativePluginId::PluginUi.immediate_effect());
     assert!(!NativePluginId::PluginOnnx.immediate_effect());
     assert!(!NativePluginId::PluginWasm.immediate_effect());
+    assert!(!NativePluginId::PluginVm.immediate_effect());
+    assert!(!NativePluginId::PluginRoaming.immediate_effect());
 }
 
 #[test]

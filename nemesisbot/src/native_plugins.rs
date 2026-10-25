@@ -94,6 +94,10 @@ fn signature_gate_mode(config_dir: &Path) -> SignatureGateMode {
 /// - `PluginWasm` → 宿主壳装载器候选扫描（`resolve_host_dll_path`，env
 ///   权威覆盖语义同源；plugins-wasm 未编译时回落 `plugins/`——该形态下
 ///   子系统根本不装配，解析只服务清单显示）。
+/// - `PluginRoaming` → [`PluginLibSpec::ROAMING`] 查找链（`plugins/` 优先
+///   → exe 同目录回落）——roaming 装载器（`roaming_plugin_loader`）的
+///   dlopen 就走这条链，无连字符变体层；与 `find_plugin_library` 语义
+///   不同，必须特判保持「清单/验签对象 = 实际装载对象」同文件。
 /// - 其余（plugin_ui / plugin_onnx / eval_monitor_dll 部署形态）→ exe 旁
 ///   `plugins/`。eval_monitor 的开发形态仓库路径由 eval.rs 自行解析后走
 ///   [`gate_load_path`]（查找规则留在消费点，闸不掺业务搜索）。
@@ -106,6 +110,7 @@ pub fn resolve_load_path(id: NativePluginId) -> Option<PathBuf> {
             }
             find_plugin_library(id.id())
         }
+        NativePluginId::PluginRoaming => crate::plugin_lib::PluginLibSpec::ROAMING.find_path(),
         _ => find_plugin_library(id.id()),
     }
 }

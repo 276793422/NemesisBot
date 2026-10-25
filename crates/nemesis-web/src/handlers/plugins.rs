@@ -244,6 +244,21 @@ impl PluginsHandler {
             "guest 工具链内嵌释放（build-vm-image）"
         ]);
 
+        // QUIC 中继/名册传输面（iroh 组网；gateway 装配期装载，v4 签名闸
+        // + 名册开关闸双闸，重启后生效）。
+        let mut roaming = self.native_entry(
+            "plugin_roaming",
+            "QUIC 中继/名册",
+            "iroh 组网传输面（中继/成员注册表/身份派生；重启后生效）",
+            &config_dir,
+            sig_of("plugin_roaming"),
+        );
+        roaming["capabilities"] = serde_json::json!([
+            "QUIC 中继服务器",
+            "成员注册表（rendezvous）",
+            "iroh 身份派生"
+        ]);
+
         // 管线插件（T2 三段化的进程内插件；启停经 set_metrics_enabled）。
         let metrics = nemesis_agent::hooks::metrics_plugin_slot();
         let pipeline_plugins = serde_json::json!([{
@@ -254,7 +269,7 @@ impl PluginsHandler {
         }]);
 
         Ok(serde_json::json!({
-            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display],
+            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display, roaming],
             "pipeline_plugins": pipeline_plugins,
             "unrecognized_libraries": unrecognized,
         }))

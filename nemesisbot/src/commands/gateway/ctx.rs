@@ -1289,17 +1289,26 @@ impl GatewayCtx {
         // 处 token fail-closed 等），插件缺席/装载失败 = 服务端面诚实降级
         // （CLI 动态隐藏 + WSAPI not loaded）。init 配置 = config.quic.json
         // relay 段 **raw 直传**（loader 纪律：不走 typed 往返，插件侧宽容
-        // 解析同源）。幂等：已装载直接 Loaded。
+        // 解析同源）。幂等：已装载直接 Loaded。名册开关闸在 loader 内
+        // （config.plugin.native.json，与 vm/onnx/ui 同款义务）。
         {
             let quic_path = common::quic_config_path(&home);
             let init_json = crate::roaming_plugin_loader::relay_init_json(&quic_path);
+            let native_config_dir =
+                nemesis_path::workspace_config_dir(&common::workspace_path(&home));
             match crate::roaming_plugin_loader::load_roaming_plugin(
                 &home.join("workspace"),
                 &init_json,
+                &native_config_dir,
             ) {
                 crate::roaming_plugin_loader::RoamingLoadOutcome::Absent => {}
                 crate::roaming_plugin_loader::RoamingLoadOutcome::Loaded => {
                     info!("[Gateway] plugin_roaming loaded（中继/名册运行面走插件）");
+                }
+                crate::roaming_plugin_loader::RoamingLoadOutcome::DisabledBySwitch => {
+                    info!(
+                        "[Gateway] plugin_roaming 已停用（本地插件库开关）——中继/名册不装配（重启后生效）"
+                    );
                 }
                 crate::roaming_plugin_loader::RoamingLoadOutcome::Rejected(reason) => {
                     warn!("[Gateway] plugin_roaming 拒载（服务端面诚实降级）: {reason}");

@@ -1,7 +1,8 @@
 //! 原生插件库开关（本地 C-ABI 插件 DLL 的启用/停用持久化）。
 //!
-//! 五个原生插件（plugin_ui / plugin_onnx / eval_monitor_dll / plugin_wasm /
-//! plugin_vm）共用一份开关文件 `<workspace>/config/config.plugin.native.json`（独立
+//! 六个原生插件（plugin_ui / plugin_onnx / eval_monitor_dll / plugin_wasm /
+//! plugin_vm / plugin_roaming）共用一份开关文件
+//! `<workspace>/config/config.plugin.native.json`（独立
 //! 配置文件作为长期记忆；2026-10-22 前身文件名 `plugins_native.json`，
 //! 首次读取时惰性迁移改名，见 [`migrate_legacy_file`]）。schema：
 //!
@@ -35,6 +36,8 @@ pub enum NativePluginId {
     PluginWasm,
     /// VM 显示通道（sandbox VM 画面中继到 Dashboard；C-ABI 解冻首例）。
     PluginVm,
+    /// QUIC 中继/名册传输面（iroh 组网；C-ABI 解冻第二例，新式交互插件）。
+    PluginRoaming,
 }
 
 impl NativePluginId {
@@ -45,6 +48,7 @@ impl NativePluginId {
         NativePluginId::EvalMonitor,
         NativePluginId::PluginWasm,
         NativePluginId::PluginVm,
+        NativePluginId::PluginRoaming,
     ];
 
     /// 库探测名（find_plugin_library base_name）。
@@ -55,6 +59,7 @@ impl NativePluginId {
             NativePluginId::EvalMonitor => "eval_monitor_dll",
             NativePluginId::PluginWasm => "plugin_wasm",
             NativePluginId::PluginVm => "plugin_vm",
+            NativePluginId::PluginRoaming => "plugin_roaming",
         }
     }
 
@@ -64,7 +69,7 @@ impl NativePluginId {
     }
 
     /// 开关是否即时生效（false = 重启后生效）。目前只有 eval 监控是
-    /// 事件驱动装载（每次 eval 会话开始查闸）——其余四个都在 gateway
+    /// 事件驱动装载（每次 eval 会话开始查闸）——其余五个都在 gateway
     /// 装配期一次性消费。
     pub fn immediate_effect(self) -> bool {
         matches!(self, NativePluginId::EvalMonitor)
