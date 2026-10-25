@@ -431,9 +431,13 @@ async fn test_cleanup_drops_legacy_aggregate_lines() {
 }
 
 #[tokio::test]
-async fn test_cleanup_rename_skipped_when_tmp_write_fails() {
-    // If the temp rewrite target cannot be written (blocked by a directory),
-    // the rename is skipped and the original flat file stays intact.
+// BUG-20261025-59 前身语义钉已随根修更新：旧实现固定 `experiences.jsonl.tmp`
+// 被目录形态残留垃圾占用时写入失败、重写被静默吞掉（本测试原名
+// `test_cleanup_rename_skipped_when_tmp_write_fails`，钉的正是「残留垃圾
+// 永久禁用修剪」这一缺陷姿态）。现走唯一临时名权威 helper——残留垃圾
+// 占不住唯一临时名，修剪照常生效；原子性（失败不损坏活文件）由 helper
+// 的 tmp+rename 语义继续担保。
+async fn bug59_cleanup_rewrite_survives_residue_at_legacy_fixed_tmp_path() {
     use crate::types::CollectedExperience;
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path();
@@ -456,18 +460,18 @@ async fn test_cleanup_rename_skipped_when_tmp_write_fails() {
         .unwrap()
     };
     std::fs::write(base.join("experiences.jsonl"), format!("{}\n", mk_old())).unwrap();
-    // Block the temp path with a directory.
+    // 旧固定临时名上种目录（残留垃圾的最顽固形态）。
     std::fs::create_dir_all(base.join("experiences.jsonl.tmp")).unwrap();
 
     let store = ExperienceStore::new(base.to_path_buf());
     let removed = store.cleanup(30).await.unwrap();
-    assert!(removed >= 1, "the old entry is still counted as removed");
+    assert_eq!(removed, 1, "the old entry is counted as removed");
 
-    // Original file untouched because the rewrite never happened.
+    // 重写照常生效：过期条目被修剪掉（旧固定临时名形态在此必红）。
     let remaining = std::fs::read_to_string(base.join("experiences.jsonl")).unwrap();
     assert!(
-        remaining.contains("old_tool"),
-        "rewrite failure must leave the original file intact: {}",
+        !remaining.contains("old_tool"),
+        "rewrite must survive residue at the legacy fixed tmp path: {}",
         remaining
     );
 }

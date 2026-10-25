@@ -121,10 +121,18 @@ impl ExperienceStore {
                         }
                     }
                 }
-                // Atomic rewrite (temp + rename) so a crash can't truncate the file.
-                let tmp = flat.with_extension("jsonl.tmp");
-                if tokio::fs::write(&tmp, new_content.as_bytes()).await.is_ok() {
-                    let _ = tokio::fs::rename(&tmp, &flat).await;
+                // Atomic rewrite (temp + rename) so a crash can't truncate the
+                // file. BUG-20261025-59：唯一临时名权威 helper——旧固定
+                // `experiences.jsonl.tmp` 与 Collector 对同一活文件的 append
+                // 共享目录，双写者同名互踩可产损坏内容被 rename 进活文件；
+                // 且旧名被残留垃圾占用时重写被静默吞掉。清理是 best-effort：
+                // 失败 warn 不上浮（与整个 cleanup 的容忍姿态一致）。
+                if let Err(e) = nemesis_utils::file::write_file_atomic(
+                    &flat.to_string_lossy(),
+                    new_content.as_bytes(),
+                    0o644,
+                ) {
+                    tracing::warn!(error = %e, "[ExperienceStore] flat trim rewrite failed");
                 }
                 removed += total.saturating_sub(kept);
             }

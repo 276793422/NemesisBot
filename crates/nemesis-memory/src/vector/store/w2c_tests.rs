@@ -101,15 +101,16 @@ fn persist_entry_sync_storage_path_is_dir_errors() {
 }
 
 // ============================================================
-// rewrite_persist_file failure is silent
+// persist 不可用时 delete 的内存语义不受影响（BUG-20261025-59 更新）
 // ============================================================
 
 #[test]
 fn delete_entry_with_unwritable_persist_path_still_deletes() {
     let dir = tempfile::tempdir().unwrap();
-    // Persist path inside a directory that does not exist — File::create on
-    // the tmp file fails, the failure must be swallowed (no panic) and the
-    // in-memory delete must still succeed.
+    // Persist 路径的父目录不存在：旧实现 File::create(tmp) 失败且全静默；
+    // BUG-20261025-59 起走唯一临时名权威 helper——helper 自带
+    // create_dir_all，持久化反而成功（行为差异见下方断言），但本测试钉的
+    // 核心契约不变：持久化成败不影响内存态 delete。
     let path = dir.path().join("missing_dir").join("v.jsonl");
 
     let store = VectorStore::new_from_embed(stub_embed(), make_cfg(&path));
@@ -119,7 +120,9 @@ fn delete_entry_with_unwritable_persist_path_still_deletes() {
 
     assert!(store.delete_entry("d1"));
     assert_eq!(store.len(), 1);
-    assert!(!path.exists(), "no persist file should have been created");
+    // helper 的 create_dir_all 使父目录与持久化文件落地（旧实现静默失败
+    // 不落盘）；空文件 = 删除已持久化。
+    assert!(path.exists(), "rewrite persists the deletion");
 }
 
 // ============================================================

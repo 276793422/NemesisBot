@@ -627,3 +627,35 @@ fn new_with_explicit_storage_path_still_requires_plugin() {
         "unexpected error: {err}"
     );
 }
+
+// BUG-20261025-59：rewrite_persist_file 走唯一临时名权威 helper。旧固定
+// `<persist>.jsonl.tmp` 被残留垃圾（目录形态最顽固）占用时全静默失败，
+// 活文件永不重写。预种活文件 + 在旧固定名上种目录：旧实现必红（删除未
+// 落盘，条目原样留在盘上），新实现经唯一临时名照常重写。
+#[test]
+fn bug59_rewrite_persist_survives_residue_at_fixed_tmp_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vector_store.jsonl");
+    std::fs::create_dir(dir.path().join("vector_store.jsonl.tmp")).unwrap();
+
+    let seeded = make_entry("bug59-1", "residue survivor entry");
+    std::fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string(&seeded).unwrap()),
+    )
+    .unwrap();
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|_: &str| Ok(vec![0.0; 4]));
+    let config = StoreConfig {
+        storage_path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let store = VectorStore::new_from_embed(embed, config);
+    assert!(store.delete_entry("bug59-1"), "seeded entry must be found");
+
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        !raw.contains("bug59-1"),
+        "rewrite must be applied (old fixed-tmp shape silently skipped it): {raw:?}"
+    );
+}

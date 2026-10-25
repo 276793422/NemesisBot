@@ -9,7 +9,6 @@
 //! and reloaded on startup, mirroring the Go `graph.Store` implementation.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -304,23 +303,24 @@ impl InMemoryGraphStore {
         std::fs::create_dir_all(dir).map_err(|e| format!("graph: create dir: {e}"))?;
 
         let final_path = dir.join("entities.jsonl");
-        let tmp_path = dir.join("entities.jsonl.tmp");
 
-        let mut file =
-            std::fs::File::create(&tmp_path).map_err(|e| format!("graph: create tmp: {e}"))?;
-
+        // BUG-20261025-59：唯一临时名权威 helper（旧固定 `entities.jsonl.tmp`
+        // 双写者同名互踩可产损坏文件；helper 内建 flush+sync+失败清理）。
+        // 任一条目序列化失败 = 整体重写放弃（活文件不动，与旧语义一致且
+        // 不再残留半截 tmp）。
+        let mut body = String::new();
         for entry in entities.iter() {
             let json = serde_json::to_string(entry.value())
                 .map_err(|e| format!("graph: serialize entity: {e}"))?;
-            writeln!(file, "{json}").map_err(|e| format!("graph: write entity: {e}"))?;
+            body.push_str(&json);
+            body.push('\n');
         }
-
-        file.flush()
-            .map_err(|e| format!("graph: flush entities: {e}"))?;
-        drop(file);
-
-        std::fs::rename(&tmp_path, &final_path)
-            .map_err(|e| format!("graph: rename entities: {e}"))?;
+        nemesis_utils::file::write_file_atomic(
+            &final_path.to_string_lossy(),
+            body.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("graph: write entities: {e}"))?;
 
         Ok(())
     }
@@ -340,12 +340,10 @@ impl InMemoryGraphStore {
         std::fs::create_dir_all(dir).map_err(|e| format!("graph: create dir: {e}"))?;
 
         let final_path = dir.join("triples.jsonl");
-        let tmp_path = dir.join("triples.jsonl.tmp");
 
-        let mut file =
-            std::fs::File::create(&tmp_path).map_err(|e| format!("graph: create tmp: {e}"))?;
-
-        // Deduplicate triples across both indices.
+        // BUG-20261025-59：唯一临时名权威 helper（同 persist_entities_locked）。
+        // 去重语义不变：同一 (subject, predicate, object) 只落一行。
+        let mut body = String::new();
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
         for entry in triples_by_subject.iter() {
             for t in entry.value().iter() {
@@ -353,17 +351,17 @@ impl InMemoryGraphStore {
                 if seen.insert(key) {
                     let json = serde_json::to_string(t)
                         .map_err(|e| format!("graph: serialize triple: {e}"))?;
-                    writeln!(file, "{json}").map_err(|e| format!("graph: write triple: {e}"))?;
+                    body.push_str(&json);
+                    body.push('\n');
                 }
             }
         }
-
-        file.flush()
-            .map_err(|e| format!("graph: flush triples: {e}"))?;
-        drop(file);
-
-        std::fs::rename(&tmp_path, &final_path)
-            .map_err(|e| format!("graph: rename triples: {e}"))?;
+        nemesis_utils::file::write_file_atomic(
+            &final_path.to_string_lossy(),
+            body.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("graph: write triples: {e}"))?;
 
         Ok(())
     }

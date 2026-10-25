@@ -321,22 +321,26 @@ impl VectorStore {
 
     /// Rewrite the entire JSONL persist file from the current docs.
     fn rewrite_persist_file(&self, docs: &[IndexedDoc]) {
-        use std::io::Write;
-        let tmp_path = self.persist_path.with_extension("jsonl.tmp");
-        let file = std::fs::File::create(&tmp_path);
-        match file {
-            Ok(mut f) => {
-                for doc in docs {
-                    if let Ok(line) = serde_json::to_string(&doc.entry) {
-                        let _ = writeln!(f, "{}", line);
-                    }
-                }
-                drop(f);
-                let _ = std::fs::rename(&tmp_path, &self.persist_path);
+        // BUG-20261025-59：唯一临时名权威 helper（旧固定 `*.jsonl.tmp` 双写者
+        // 同名互踩 + 失败残留 tmp）。不可序列化条目跳过（与旧姿态一致）；
+        // 写失败 warn（旧实现全静默——静默丢持久化连排查线索都没有）。
+        let mut body = String::new();
+        for doc in docs {
+            if let Ok(line) = serde_json::to_string(&doc.entry) {
+                body.push_str(&line);
+                body.push('\n');
             }
-            Err(_) => {
-                let _ = std::fs::remove_file(&tmp_path);
-            }
+        }
+        if let Err(e) = nemesis_utils::file::write_file_atomic(
+            &self.persist_path.to_string_lossy(),
+            body.as_bytes(),
+            0o644,
+        ) {
+            tracing::warn!(
+                error = %e,
+                path = %self.persist_path.display(),
+                "[VectorStore] persist rewrite failed"
+            );
         }
     }
 

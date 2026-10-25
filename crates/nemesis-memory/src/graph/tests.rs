@@ -886,3 +886,35 @@ async fn persist_triples_dedupes_identical_keys_on_save() {
         "dup keys collapse on disk"
     );
 }
+
+// BUG-20261025-59：persist 走唯一临时名权威 helper。旧固定
+// `entities.jsonl.tmp` / `triples.jsonl.tmp` 被残留垃圾（目录形态最顽固）
+// 占用时 File::create 失败 → 落盘被静默吞掉（变更永不落盘）。种目录在旧
+// 固定名上：旧实现必红，新实现经唯一临时名照常落盘。
+#[tokio::test]
+async fn bug59_persist_survives_residue_at_fixed_tmp_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("entities.jsonl.tmp")).unwrap();
+    std::fs::create_dir(dir.path().join("triples.jsonl.tmp")).unwrap();
+
+    let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+    store
+        .upsert_entity(GraphEntity::new("alice".into(), "person".into()))
+        .await
+        .unwrap();
+    store
+        .add_triple(GraphTriple::new("a".into(), "knows".into(), "b".into()))
+        .await
+        .unwrap();
+
+    let ent = std::fs::read_to_string(dir.path().join("entities.jsonl")).unwrap_or_default();
+    assert!(
+        ent.contains("alice"),
+        "entities persist must be applied (old fixed-tmp shape silently defeated): {ent:?}"
+    );
+    let tri = std::fs::read_to_string(dir.path().join("triples.jsonl")).unwrap_or_default();
+    assert!(
+        tri.contains("knows"),
+        "triples persist must be applied (old fixed-tmp shape silently defeated): {tri:?}"
+    );
+}
