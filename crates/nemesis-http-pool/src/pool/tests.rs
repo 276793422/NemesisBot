@@ -983,12 +983,25 @@ async fn test_post_json_with_retry_connection_refused() {
 // retry_request internal logic tests
 // ================================================================
 
+// 旧硬编码形态直调适配器（3 次重试 / 500ms 基数 / GET 重试面 = 原默认
+// 语义）：内部逻辑测试专注重试状态机本身，配置接线由 bug61 回归锁覆盖。
+async fn retry_request_get_defaults<F, Fut>(f: F) -> Result<reqwest::Response, reqwest::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
+    retry_request(3, Duration::from_millis(500), f, |e: &reqwest::Error| {
+        e.is_connect() || e.is_timeout()
+    })
+    .await
+}
+
 #[tokio::test]
 async fn test_retry_request_succeeds_immediately() {
     let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let count_clone = call_count.clone();
 
-    let result = retry_request(move || {
+    let result = retry_request_get_defaults(move || {
         let c = count_clone.clone();
         async move {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1013,7 +1026,7 @@ async fn test_retry_request_non_retryable_error_returns_immediately() {
 
     // Use a URL that will cause a non-connect/timeout error
     // Invalid URL scheme causes a builder error
-    let result = retry_request(move || {
+    let result = retry_request_get_defaults(move || {
         let c = count_clone.clone();
         async move {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1045,7 +1058,7 @@ async fn test_retry_request_backoff_timing() {
     let _ = pool.get_with_retry("http://127.0.0.1:1/retry-timing").await;
     let elapsed = start.elapsed();
 
-    // retry_request uses fixed: 500 * 2^attempt ms delays
+    // retry_request 默认配置（max_retries=3 / retry_delay=500ms）：
     // attempt 0: delay 500ms, attempt 1: delay 1000ms, attempt 2: delay 2000ms
     // Total minimum delay: ~3500ms
     assert!(elapsed >= Duration::from_millis(3000));
@@ -1312,7 +1325,7 @@ async fn test_retry_request_succeeds_after_transient_failure() {
     let target_url = base_url.clone();
     let fail_until = 2; // fail twice, succeed on third attempt
 
-    let result = retry_request(|| {
+    let result = retry_request_get_defaults(|| {
         let url = target_url.clone();
         let fc = fail_count.clone();
         async move {
@@ -1350,7 +1363,7 @@ async fn test_retry_request_succeeds_on_last_attempt() {
     let fail_count = Arc::new(AtomicU32::new(0));
     let target_url = base_url.clone();
 
-    let result = retry_request(|| {
+    let result = retry_request_get_defaults(|| {
         let url = target_url.clone();
         let fc = fail_count.clone();
         async move {
@@ -1385,7 +1398,7 @@ async fn test_retry_request_timeout_error_retries() {
     let cc = call_count.clone();
 
     // Use a server that accepts connections but never responds, causing timeouts
-    let result = retry_request(move || {
+    let result = retry_request_get_defaults(move || {
         let c = cc.clone();
         async move {
             c.fetch_add(1, Ordering::SeqCst);
@@ -1420,7 +1433,7 @@ async fn test_retry_request_non_connect_non_timeout_returns_immediately() {
 
     // Use an invalid URL that causes a URL parse/redirect error
     // A URL with invalid unicode in host or a bad scheme
-    let result = retry_request(move || {
+    let result = retry_request_get_defaults(move || {
         let c = cc.clone();
         async move {
             c.fetch_add(1, Ordering::SeqCst);
@@ -2285,7 +2298,7 @@ async fn test_retry_request_all_four_attempts() {
     let call_count = Arc::new(AtomicU32::new(0));
     let cc = call_count.clone();
 
-    let _ = retry_request(move || {
+    let _ = retry_request_get_defaults(move || {
         let c = cc.clone();
         async move {
             c.fetch_add(1, Ordering::SeqCst);
@@ -2424,4 +2437,109 @@ async fn test_download_file_with_auth_params() {
 
     assert!(result.is_ok());
     assert_eq!(std::fs::read(&file_path).unwrap(), b"authorized_download");
+}
+
+// ================================================================
+// BUG-20261025-61 回归锁（旧形态必红）：重试配置接线两面——
+// PoolConfig.max_retries / retry_delay 此前声名从未消费（retry_request
+// 硬编码 3 / 500ms 基数），max_retries=0（关重试）完全无效；POST 非幂等
+// 此前对请求超时也重试（服务端可能已处理后双提交）。
+// ================================================================
+
+#[tokio::test]
+async fn bug61_config_max_retries_zero_disables_retry() {
+    let pool = ConnectionPool::new(PoolConfig {
+        max_retries: 0,
+        retry_delay: Duration::from_millis(100),
+        connect_timeout: Duration::from_millis(50),
+        ..Default::default()
+    });
+
+    let start = std::time::Instant::now();
+    let result = pool.get_with_retry("http://127.0.0.1:1/retry-off").await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err());
+    // max_retries=0 = 只 1 次尝试、零 sleep。旧硬编码形态此处至少 3.5s
+    // sleep → 必红。
+    assert!(
+        elapsed < Duration::from_millis(1000),
+        "max_retries=0 must not sleep-retry: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn bug61_config_max_retries_and_delay_consumed() {
+    let pool = ConnectionPool::new(PoolConfig {
+        max_retries: 1,
+        retry_delay: Duration::from_millis(100),
+        connect_timeout: Duration::from_millis(50),
+        ..Default::default()
+    });
+
+    let start = std::time::Instant::now();
+    let result = pool.get_with_retry("http://127.0.0.1:1/retry-once").await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err());
+    // 恰 1 次重试 = 2 次尝试 + 一个 100ms sleep：≥ 100ms 且 < 1.5s
+    // （旧硬编码形态 500+1000=1.5s sleep → 上界必红）。
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "one 100ms retry sleep expected: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "exactly one retry expected: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn bug61_post_json_request_timeout_not_retried() {
+    // 挂起服务器：accept 后永不响应 → 请求命中 request_timeout（POST 可能
+    // 已被服务端接收并处理 = 非幂等重试的双提交窗口）。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // 只握连接不响应，让客户端命中 request_timeout。
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                drop(sock);
+            });
+        }
+    });
+
+    let pool = ConnectionPool::new(PoolConfig {
+        request_timeout: Duration::from_millis(200),
+        max_retries: 3,
+        retry_delay: Duration::from_millis(100),
+        ..Default::default()
+    });
+
+    let url = format!("http://{addr}/hang");
+    let start = std::time::Instant::now();
+    let result = pool
+        .post_json_with_retry(&url, serde_json::json!({"op": "once"}))
+        .await;
+    let post_elapsed = start.elapsed();
+
+    assert!(result.is_err());
+    // POST + 请求超时：不重试（只连连接级错误）≈ 200ms。旧 is_timeout
+    // 重试形态 → 4 次尝试 + 3.5s sleep ≥ 4s → 必红。
+    assert!(
+        post_elapsed < Duration::from_millis(1500),
+        "POST must not retry on request timeout: {post_elapsed:?}"
+    );
+
+    // GET 幂等语义不变：同一挂起服务器照常重试——2 次尝试（各 ≥200ms
+    // 超时）+ 100ms sleep ≥ 500ms。
+    let start = std::time::Instant::now();
+    let result = pool.get_with_retry(&url).await;
+    let get_elapsed = start.elapsed();
+    assert!(result.is_err());
+    assert!(
+        get_elapsed >= Duration::from_millis(400),
+        "GET must still retry on timeout: {get_elapsed:?}"
+    );
 }

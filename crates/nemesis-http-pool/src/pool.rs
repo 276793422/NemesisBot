@@ -86,7 +86,13 @@ impl ConnectionPool {
 
     /// Execute a GET request with retry.
     pub async fn get_with_retry(&self, url: &str) -> Result<reqwest::Response, reqwest::Error> {
-        retry_request(|| self.client.get(url).send()).await
+        retry_request(
+            self.config.max_retries,
+            self.config.retry_delay,
+            || self.client.get(url).send(),
+            retryable_get,
+        )
+        .await
     }
 
     /// Execute a POST request with JSON body.
@@ -104,10 +110,15 @@ impl ConnectionPool {
         url: &str,
         body: serde_json::Value,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        retry_request(|| {
-            let body = body.clone();
-            async move { self.client.post(url).json(&body).send().await }
-        })
+        retry_request(
+            self.config.max_retries,
+            self.config.retry_delay,
+            || {
+                let body = body.clone();
+                async move { self.client.post(url).json(&body).send().await }
+            },
+            retryable_connect_only,
+        )
         .await
     }
 
@@ -231,24 +242,46 @@ pub fn shared_pool() -> Arc<ConnectionPool> {
         .clone()
 }
 
-/// Execute a request with retry logic.
-async fn retry_request<F, Fut>(mut f: F) -> Result<reqwest::Response, reqwest::Error>
+/// GET（幂等）的可重试判定：连接级失败 + 请求超时。
+fn retryable_get(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout()
+}
+
+/// POST（非幂等）的可重试判定：只认连接级失败——请求尚未发出，天然幂等。
+/// 请求超时可能在服务端已接收并处理后触发，重试 = 双提交（webhook/通知
+/// 类端点双投递）。
+fn retryable_connect_only(e: &reqwest::Error) -> bool {
+    e.is_connect()
+}
+
+/// Execute a request with retry logic (total attempts = 1 + `max_retries`;
+/// backoff = `retry_delay` × 2^attempt).
+///
+/// BUG-20261025-61：此前 `max_retries`/`retry_delay` 硬编码（3 / 500ms
+/// 基数），[`PoolConfig`] 的两个配置项声名从未消费（配置 max_retries=0
+/// 关重试完全无效）。现由调用方传入实际消费；重试面按请求幂等性分派
+/// （[`retryable_get`] / [`retryable_connect_only`]）。
+async fn retry_request<F, Fut, P>(
+    max_retries: u32,
+    retry_delay: Duration,
+    mut f: F,
+    retryable: P,
+) -> Result<reqwest::Response, reqwest::Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    P: Fn(&reqwest::Error) -> bool,
 {
-    let max_retries = 3;
     let mut last_err = None;
 
     for attempt in 0..=max_retries {
         match f().await {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                if e.is_connect() || e.is_timeout() {
+                if retryable(&e) {
                     last_err = Some(e);
                     if attempt < max_retries {
-                        let delay = Duration::from_millis(500 * (2u64.pow(attempt)));
-                        tokio::time::sleep(delay).await;
+                        tokio::time::sleep(retry_delay * 2u32.pow(attempt)).await;
                     }
                 } else {
                     return Err(e);
