@@ -544,6 +544,38 @@ time.sleep(30)
     t.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn bug56_stdio_server_request_before_response_not_consumed() {
+    // BUG-20261025-56：server→client 请求（id+method 并存，sampling 形态）
+    // 先于真响应到达，且 id 撞车（客户端与服务器请求计数器都从 1 起）。
+    // 旧形态：该行误归 Response → 被当成本请求的响应吞掉（result=None）→
+    // 断言 unwrap panic；修复后：跳过，真响应正常返回。
+    let script = r#"
+import sys, json, time
+line = sys.stdin.readline()
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sampling/createMessage", "params": {}}) + "\n")
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) + "\n")
+sys.stdout.flush()
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let resp = t.send(&req, 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(1.into()));
+    assert_eq!(resp.result.unwrap()["ok"], true);
+    t.close().await.unwrap();
+}
+
 // classify_line 纯函数分类（响应/progress/通知/垃圾）。
 #[test]
 fn classify_line_kinds() {
@@ -565,6 +597,29 @@ fn classify_line_kinds() {
         LineKind::Notification(_)
     ));
     assert!(matches!(classify_line("banner text"), LineKind::Garbage));
+}
+
+// BUG-20261025-56：id + method 并存 = server→client 请求（sampling/roots/
+// elicitation 形态）——JSON-RPC 响应永不携带 method，旧形态误归 Response。
+#[test]
+fn bug56_classify_server_to_client_request() {
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","id":1,"method":"sampling/createMessage","params":{}}"#),
+        LineKind::ServerRequest(m) if m == "sampling/createMessage"
+    ));
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","id":7,"method":"roots/list"}"#),
+        LineKind::ServerRequest(_)
+    ));
+    // 对照：无 method 的带 id 行仍是 Response；通知分类不受影响。
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+        LineKind::Response
+    ));
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#),
+        LineKind::Notification(_)
+    ));
 }
 
 #[tokio::test]

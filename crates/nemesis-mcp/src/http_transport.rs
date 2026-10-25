@@ -354,9 +354,11 @@ enum SsePayload {
 }
 
 /// 判定 SSE `data:` 载荷类别（第十四轮）：无 `id` 字段 = 通知，跳过；
+/// `id` + `method` 并存 = server→client 请求（BUG-20261025-56——JSON-RPC
+/// 响应永不携带 `method`，此前误归响应形态，id 撞车即被吞成空成功），跳过；
 /// 非 JSON = 垃圾，跳过（与 stdio 侧 J3 `classify_line` 的
-/// Notification/Garbage 分类同语义）；带 `id` 但形状非法 = 协议违例，
-/// 硬报错（保留旧失败面）。
+/// Notification/ServerRequest/Garbage 分类同语义）；带 `id` 无 `method` 但
+/// 形状非法 = 协议违例，硬报错（保留旧失败面）。
 fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) else {
         tracing::trace!("[mcp.http] SSE data 非 JSON，跳过");
@@ -368,6 +370,13 @@ fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {
             .and_then(|m| m.as_str())
             .unwrap_or("unknown");
         tracing::trace!(method = %method, "[mcp.http] SSE JSON-RPC notification skipped");
+        return Ok(SsePayload::Skipped);
+    }
+    if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+        tracing::trace!(
+            method = %method,
+            "[mcp.http] SSE server-to-client request skipped (capability not implemented)"
+        );
         return Ok(SsePayload::Skipped);
     }
     serde_json::from_value(value)

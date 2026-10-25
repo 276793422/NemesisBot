@@ -109,6 +109,29 @@ fn test_extract_sse_data_ignores_comments() {
     assert_eq!(result.id, serde_json::Value::Number(6.into()));
 }
 
+// BUG-20261025-56：id + method 并存 = server→client 请求（JSON-RPC 响应
+// 永不携带 method）。旧形态：serde 忽略未知 method 字段 → 被解析成
+// result=None 的「响应」返回——id 撞车即被吞成本请求的空成功。
+#[test]
+fn bug56_sse_server_to_client_request_is_skipped() {
+    let req = r#"{"jsonrpc":"2.0","id":9,"method":"sampling/createMessage","params":{}}"#;
+    assert!(
+        matches!(response_payload(req).unwrap(), SsePayload::Skipped),
+        "server-to-client request must be skipped, not returned as response"
+    );
+    // 对照：无 id 通知照旧 Skipped；带 result 的响应照旧 Response。
+    let notif = r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#;
+    assert!(matches!(
+        response_payload(notif).unwrap(),
+        SsePayload::Skipped
+    ));
+    let resp = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+    assert!(matches!(
+        response_payload(resp).unwrap(),
+        SsePayload::Response(_)
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Session ID handling
 // ---------------------------------------------------------------------------
@@ -334,6 +357,28 @@ async fn test_w4c_http_send_sse_stream_parsed() {
     let server = MockServer::start().await;
     let body =
         "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"ok\":true}}\r\n\r\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("initialize", 9), 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(9.into()));
+    assert_eq!(resp.result.unwrap()["ok"], true);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn bug56_http_sse_server_request_before_response_is_skipped() {
+    // BUG-20261025-56：SSE 流里 server→client 请求（id+method 并存，id=9
+    // 与我方请求撞车）先于真响应。旧形态：被解析成 result=None 的「响应」
+    // 返回 → 断言 unwrap panic；修复后：跳过，第二个事件正常返回。
+    let server = MockServer::start().await;
+    let body = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"sampling/createMessage\",\"params\":{}}\r\n\r\n\
+                event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"ok\":true}}\r\n\r\n";
     Mock::given(method("POST"))
         .and(path("/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))

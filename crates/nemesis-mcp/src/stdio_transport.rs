@@ -127,16 +127,31 @@ enum LineKind {
     Progress(String),
     /// 其他通知（log / cancelled / initialized 等）。
     Notification(String),
+    /// BUG-20261025-56：server→client 请求（`id` + `method` 并存——
+    /// JSON-RPC 响应永不携带 `method`，sampling/roots/elicitation 等形态）。
+    /// 客户端未宣告这些能力，无法应答；只能跳过（吞成响应会让 id 撞车的
+    /// server 请求变成我方工具调用的「空成功」）。
+    ServerRequest(String),
     /// 非 JSON 行（服务器往 stdout 打的 banner / 日志）。
     Garbage,
 }
 
-/// 按行内容分类。判定规则：JSON 且带 `id` = 响应；JSON 无 `id` = 通知
-/// （JSON-RPC 通知就是无 id 请求）；其余 = 垃圾行。
+/// 按行内容分类。判定规则：JSON 且带 `id` 无 `method` = 响应；JSON 带
+/// `method` 无 `id` = 通知（JSON-RPC 通知就是无 id 请求）；`id` + `method`
+/// 并存 = server→client 请求（BUG-20261025-56，此前误归响应）；其余 =
+/// 垃圾行。
 fn classify_line(line: &str) -> LineKind {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
         return LineKind::Garbage;
     };
+    if v.get("id").is_some() && v.get("method").is_some() {
+        let method = v
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        return LineKind::ServerRequest(method);
+    }
     if v.get("id").is_some() {
         return LineKind::Response;
     }
@@ -396,6 +411,17 @@ impl Transport for StdioTransport {
                         tracing::trace!(
                             method = %method,
                             "[StdioTransport] MCP notification skipped"
+                        );
+                    }
+                    LineKind::ServerRequest(method) => {
+                        // BUG-20261025-56：server→client 请求（id+method 并存）
+                        // 不是本次请求的响应——旧形态归 Response，id 撞车时被
+                        // 当响应吞掉（result=None 空成功）。客户端未宣告
+                        // sampling/roots 能力，无法应答，跳过（server 侧自行
+                        // 超时）。
+                        tracing::trace!(
+                            method = %method,
+                            "[StdioTransport] server-to-client request skipped (capability not implemented)"
                         );
                     }
                     LineKind::Garbage => {
