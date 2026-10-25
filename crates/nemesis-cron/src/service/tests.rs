@@ -3604,3 +3604,124 @@ fn toggle_job_disable_clears_next_run() {
         "重新启用必须重算排程"
     );
 }
+
+// -- BUG-20261025-49：REL-002 损坏守卫（gateway 侧补位）+ pause_job W1b 补位 --
+
+#[test]
+fn r127_corrupt_store_blocks_save_and_preserves_file_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json");
+    let corrupt = r##"{"version":1,"jobs":[{"id":"a","##;
+    std::fs::write(&path, corrupt).unwrap();
+    let svc = CronService::new(&path.to_string_lossy());
+
+    // 变更面全拒绝（save_store 毒态闸），错误自带修复指引。
+    let err = svc
+        .add_job(
+            "x",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60_000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert!(err.contains("拒绝落盘"), "错误必须声明拒绝落盘语义: {err}");
+    assert!(err.contains(&path.to_string_lossy().to_string()), "{err}");
+
+    // 核心断言：盘上损坏文件原样保留（未被空 store 顶掉）。
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(on_disk, corrupt, "毒态下任何落盘都是数据销毁");
+
+    // 内存回滚：add 未留半态（列表为空，不是空 store 写穿后的假象）。
+    assert!(svc.list_jobs(true).is_empty());
+}
+
+#[tokio::test]
+async fn r127_corrupt_store_blocks_start_and_manual_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json");
+    std::fs::write(&path, "not json at all").unwrap();
+    let svc = CronService::new(&path.to_string_lossy());
+
+    let err = svc.start().await.unwrap_err();
+    assert!(err.contains("拒绝启动"), "{err}");
+    // start 拒绝后不得落盘（文件仍是原始损坏内容）。
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "not json at all");
+    assert_eq!(
+        svc.status()["enabled"],
+        serde_json::Value::Bool(false),
+        "毒态 start 失败不得置 running"
+    );
+
+    // 手动触发同拒（先拒绝后触发——不留「副作用已发生而记账落盘失败」态）。
+    let err2 = svc.execute_job("whatever").unwrap_err();
+    assert!(err2.contains("拒绝手动触发"), "{err2}");
+
+    // 恢复路径：文件修复 → reload 成功解毒 → 一切恢复。
+    let fixed = crate::store::CronStoreData {
+        version: 1,
+        jobs: vec![],
+    };
+    crate::store::save(&path, &fixed).unwrap();
+    svc.reload().unwrap();
+    let job = svc
+        .add_job(
+            "after-heal",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60_000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(job.state.next_run_at_ms.is_some());
+}
+
+#[test]
+fn r127_pause_job_clears_next_run_w1b() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "p",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60_000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(job.state.next_run_at_ms.is_some());
+    let handle = svc.job_pause_handle();
+    assert!(handle.pause_job(&job.id), "启用中作业应可暂停");
+    let after = svc.get_job(&job.id).unwrap();
+    assert!(!after.enabled);
+    assert_eq!(
+        after.state.next_run_at_ms, None,
+        "停用作业不得残留幻影「下次触发」（W1b，对齐 toggle/enable/patch）"
+    );
+    // 幂等：已停用再 pause = false（无状态变化）。
+    assert!(!handle.pause_job(&job.id));
+    // 不存在的 job = false。
+    assert!(!handle.pause_job("nope"));
+}

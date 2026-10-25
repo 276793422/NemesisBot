@@ -150,6 +150,13 @@ pub struct CronService {
     running: Arc<Mutex<bool>>,
     stop_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     on_job: Arc<Mutex<Option<Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>>>>,
+    /// REL-002 损坏守卫（BUG-20261025-49，gateway 侧补位）：store 加载失败
+    /// （损坏/半截/迁移失败）后置位——此后一切落盘拒绝，防止「空内存 store
+    /// 写穿盘上未知数据」。CLI（`commands/cron.rs` 的 REL-002 守卫）早已
+    /// 拒绝对损坏 store 做任何改动，gateway 侧此前只 warn + 空转，且
+    /// `start()` 无条件 save —— 一次重启即把用户全部定时任务静默顶掉。
+    /// `reload()` 成功 = 解毒（文件修复后的恢复入口）。
+    load_poisoned: Arc<Mutex<bool>>,
     /// Startup arm gate (H1, U12): a fresh process starts DISARMED —
     /// persisted jobs do not fire until the owning startup path calls
     /// [`CronService::arm`] (the gateway does this once bus+agent are ready).
@@ -186,6 +193,12 @@ impl JobPauseHandle {
             return false;
         }
         job.enabled = false;
+        // W1b 不变量（对齐 toggle_job / enable_job / patch_job；BUG-20261025-49
+        // 补位）：停用作业不排程——残留旧 next_run 会让禁用作业带上幻影
+        // 「下次触发」，且 recompute_next_runs 只碰 enabled 作业，幻影跨重启
+        // 存留。生产 W3 触发期路径此刻 next_run 已被触发循环置 None（本行
+        // no-op），此行封的是非触发期调用面的不变量缺口。
+        job.state.next_run_at_ms = None;
         job.updated_at_ms = Local::now().timestamp_millis();
         let _ = save_store_to_path(&self.store_path, &s);
         info!(
@@ -212,6 +225,7 @@ impl CronService {
             running: Arc::new(Mutex::new(false)),
             stop_handle: Arc::new(Mutex::new(None)),
             on_job: Arc::new(Mutex::new(None)),
+            load_poisoned: Arc::new(Mutex::new(false)),
             pending_arm: Arc::new(Mutex::new(true)),
         };
         if let Err(e) = svc.load_store() {
@@ -242,6 +256,17 @@ impl CronService {
         if *running {
             info!("[Cron] Cron service already running, skipping");
             return Ok(());
+        }
+        // REL-002 损坏守卫（BUG-20261025-49）：毒态下 start 的无条件
+        // recompute+save 正是把空内存 store 写穿损坏文件的元凶——先拒绝，
+        // 不落盘、不 spawn（毒态下循环内的 save_store_to_path 不可达：
+        // 解毒唯一入口是 load_store 成功，即 reload()/重建服务）。
+        if *self.load_poisoned.lock() {
+            return Err(format!(
+                "cron store 加载失败（损坏/不可解析），调度器拒绝启动以防空内存 \
+                 store 落盘顶掉盘上任务；请修复或删除后重启/reload: {}",
+                self.store_path
+            ));
         }
         self.recompute_next_runs();
         self.save_store()?;
@@ -929,6 +954,7 @@ impl CronService {
     }
 
     /// Reload jobs from disk. Mirrors Go's `CronService.Load()`.
+    /// 加载成功 = 清除 REL-002 毒态（文件修复后的恢复入口）；失败 = 置毒。
     pub fn reload(&self) -> Result<(), String> {
         self.load_store()
     }
@@ -960,6 +986,15 @@ impl CronService {
     pub fn execute_job(&self, job_id: &str) -> Result<(), String> {
         let start = std::time::Instant::now();
         info!("[Cron] Executing job: id={}", job_id);
+        // REL-002 损坏守卫（BUG-20261025-49）：毒态下拒绝「先触发后记账」
+        // ——handler 副作用已发生而状态落不了盘 = 记账与事实分叉。先拒绝。
+        if *self.load_poisoned.lock() {
+            return Err(format!(
+                "cron store 加载失败（损坏/不可解析），拒绝手动触发（状态无法落盘）;\
+                 请修复或删除后重载: {}",
+                self.store_path
+            ));
+        }
         let now_ms = Local::now().timestamp_millis();
 
         // Read-lock: copy job for callback (mirror the fire loop pattern).
@@ -1093,12 +1128,30 @@ impl CronService {
     }
 
     fn load_store(&self) -> Result<(), String> {
-        let store = crate::store::load(std::path::Path::new(&self.store_path))?;
-        *self.store.lock() = store;
-        Ok(())
+        match crate::store::load(std::path::Path::new(&self.store_path)) {
+            Ok(store) => {
+                *self.store.lock() = store;
+                // 加载成功 = 解毒（文件修复后 reload/restart 的恢复入口）。
+                *self.load_poisoned.lock() = false;
+                Ok(())
+            }
+            Err(e) => {
+                // 加载失败 = 内存停在空 store，此态下任何落盘都会顶掉盘上
+                // 未知数据——置毒，save/start/execute 全面拒绝（见 save_store）。
+                *self.load_poisoned.lock() = true;
+                Err(e)
+            }
+        }
     }
 
     fn save_store(&self) -> Result<(), String> {
+        if *self.load_poisoned.lock() {
+            return Err(format!(
+                "cron store 加载失败（损坏/不可解析），拒绝落盘以防空内存 store \
+                 顶掉盘上任务；请修复或删除后重载: {}",
+                self.store_path
+            ));
+        }
         let s = self.store.lock();
         crate::store::save(std::path::Path::new(&self.store_path), &s)
     }
