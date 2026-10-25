@@ -3,7 +3,8 @@
 //! 覆盖面：脚本执行/完成值四形态、脚本错误回传文本、脚本内 tool() 过完整
 //! dispatch 瀑布（hooks 观测）+ 拒绝可 catch（estop / 安全管线 deny / 未知
 //! 工具 / 递归闸 / loop 不可用）、资源闸（timeout 中断 / 内存上限）、输出
-//! 截断、tier 双闸（声明 + mini 档 dispatch 拒绝）、args 校验、config 默认关。
+//! 截断、tier 双闸（声明 + mini 档 dispatch 拒绝）、args 校验、config 默认开
+//!（2026-10-25 拍板）+ 开关热生效联动 + 预算超时文案（审批等待注记）。
 //!
 //! 全部 multi_thread flavor：execute → spawn_blocking → `Handle::block_on`
 //! 桥需要 driver 在后台线程被驱动（current_thread 会挂死——与生产形态
@@ -338,6 +339,47 @@ async fn memory_limit_rejects_allocation_bomb() {
     assert!(!out.contains("survived"), "不得跑完: {out}");
 }
 
+/// P1-3（2026-10-25）：单次 tool() 吃穿剩余预算的超时路径——错误文案必须
+/// 带审批等待注记（模型/用户可自诊断：审批卡最长 300s，预算耗在等待上时
+/// 提示调 agents.codemode.timeout_secs）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_call_budget_timeout_carries_approval_note() {
+    struct SlowTool;
+    #[async_trait::async_trait]
+    impl Tool for SlowTool {
+        fn description(&self) -> String {
+            "sleeps 3s then returns".to_string()
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            Ok("done".to_string())
+        }
+    }
+    let mut al = AgentLoop::new(Box::new(NoopProvider), test_config());
+    al.register_tool("slow_tool".to_string(), Box::new(SlowTool));
+    let al = Arc::new(al);
+    let tool = Arc::new(CodeRunTool::new(1, 64));
+    al.register_plugin_tool(CODE_RUN_TOOL_NAME.to_string(), tool.clone());
+    tool.set_loop(Arc::downgrade(&al));
+
+    let out = run_script_with(&tool, r#"tool("slow_tool", "{}")"#).await;
+    assert!(
+        out.contains("exceeded the script wall-clock budget"),
+        "预算超时文案: {out}"
+    );
+    assert!(
+        out.contains("approval waits consume budget"),
+        "审批等待注记: {out}"
+    );
+    assert!(
+        out.contains("agents.codemode.timeout_secs"),
+        "自诊断配置键: {out}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_output_is_truncated_with_note() {
     let (_al, tool) = build_loop();
@@ -389,30 +431,123 @@ async fn tier_dispatch_gate_rejects_mini() {
 }
 
 // ---------------------------------------------------------------------------
-// config 默认关 + 资源默认值
+// config 默认开（2026-10-25 拍板）+ 资源默认值（timeout 300 = 审批卡对齐）
 // ---------------------------------------------------------------------------
 
 #[test]
-fn codemode_config_defaults_off() {
+fn codemode_config_defaults_on() {
     let cfg = nemesis_config::CodeModeConfig::default();
-    assert!(!cfg.enabled, "运行开关默认关");
-    assert_eq!(cfg.timeout_secs, 30);
+    assert!(cfg.enabled, "运行开关默认开");
+    assert_eq!(cfg.timeout_secs, 300);
     assert_eq!(cfg.memory_limit_mb, 64);
     // 缺键反序列化 → 同一组默认。
     let parsed: nemesis_config::CodeModeConfig = serde_json::from_str("{}").unwrap();
-    assert!(!parsed.enabled);
-    assert_eq!(parsed.timeout_secs, 30);
+    assert!(parsed.enabled);
+    assert_eq!(parsed.timeout_secs, 300);
     assert_eq!(parsed.memory_limit_mb, 64);
+    // 用户显式 false 保持尊重（缺键才落默认）。
+    let explicit_off: nemesis_config::CodeModeConfig =
+        serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+    assert!(!explicit_off.enabled);
 }
 
 #[test]
 fn tool_description_documents_budget() {
-    let tool = CodeRunTool::new(30, 64);
+    let tool = CodeRunTool::new(300, 64);
     let d = tool.description();
-    assert!(d.contains("30s"), "墙钟预算在文档里: {d}");
+    assert!(d.contains("300s"), "墙钟预算在文档里: {d}");
     assert!(d.contains("64MB"), "内存上限在文档里: {d}");
     assert!(d.contains("tool(name, argsJson)"), "调用面在文档里: {d}");
     assert!(d.contains("console"), "console 聚合面在文档里: {d}");
+    assert!(d.contains("PREFERRED"), "批量编排引导语在文档里: {d}");
+    assert!(
+        d.contains("approval card consumes budget"),
+        "审批等待吃预算的诚实注记在文档里: {d}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 热生效联动（2026-10-25 默认开）：check_config_reload 比对注册状态增删
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_reload_toggles_code_run_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": true}}}"#).unwrap();
+
+    let al = Arc::new(AgentLoop::new(Box::new(NoopProvider), test_config()));
+    let tool = Arc::new(CodeRunTool::new(300, 64));
+    tool.set_loop(Arc::downgrade(&al));
+    al.install_code_run_tool(tool.clone());
+    // 装配期 enabled=true → 注册（agent_factory 同构）。
+    al.register_plugin_tool(CODE_RUN_TOOL_NAME.to_string(), tool.clone());
+
+    let has_code_run = || al.tool_names().iter().any(|n| n == CODE_RUN_TOOL_NAME);
+    assert!(has_code_run(), "初始注册在场");
+
+    // 建立基线 mtime（首次 check 记录，之后同 mtime 早退）。
+    al.set_config_path(cfg_path.clone());
+    al.check_config_reload();
+
+    // 关 → 下一轮 check 移除（注册表成员资格切换，实例不重建）。
+    std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": false}}}"#).unwrap();
+    al.check_config_reload();
+    assert!(!has_code_run(), "enabled=false 后 code_run 必须移除");
+
+    // 同 mtime 早退：再 check 仍是移除态。
+    al.check_config_reload();
+    assert!(!has_code_run());
+
+    // 开 → 恢复。
+    std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": true}}}"#).unwrap();
+    al.check_config_reload();
+    assert!(has_code_run(), "enabled=true 后 code_run 必须恢复");
+
+    // 已在册再 check（desired 不变）→ 不得产生 code_run_2（先查在册再注册）。
+    al.check_config_reload();
+    let names = al.tool_names();
+    assert_eq!(
+        names.iter().filter(|n| **n == CODE_RUN_TOOL_NAME).count(),
+        1,
+        "重复 check 不得产生 code_run_2: {names:?}"
+    );
+}
+
+#[test]
+fn config_reload_noop_when_tool_not_installed() {
+    // 未装配（headless/项目 loop/集群 agent）→ sync 诚实缺席，不 panic、
+    // 不自行注册。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": true}}}"#).unwrap();
+    let al = Arc::new(AgentLoop::new(Box::new(NoopProvider), test_config()));
+    al.set_config_path(cfg_path);
+    al.check_config_reload();
+    assert!(
+        !al.tool_names().iter().any(|n| n == CODE_RUN_TOOL_NAME),
+        "未装配时不得自行注册"
+    );
+}
+
+#[test]
+fn config_reload_missing_key_falls_back_to_enabled() {
+    // `agents.codemode` 缺键 → 落 serde 默认（enabled=true）→ 在册保持。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"agents": {}}"#).unwrap();
+
+    let al = Arc::new(AgentLoop::new(Box::new(NoopProvider), test_config()));
+    let tool = Arc::new(CodeRunTool::new(300, 64));
+    tool.set_loop(Arc::downgrade(&al));
+    al.install_code_run_tool(tool.clone());
+    al.register_plugin_tool(CODE_RUN_TOOL_NAME.to_string(), tool);
+    al.set_config_path(cfg_path);
+    al.check_config_reload();
+    assert!(
+        al.tool_names().iter().any(|n| n == CODE_RUN_TOOL_NAME),
+        "缺键落默认 enabled=true，在册保持"
+    );
 }
 
 // ---------------------------------------------------------------------------

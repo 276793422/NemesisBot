@@ -156,6 +156,7 @@ fn m5_profile(profile_id: &str) -> Profile {
         conv: Conv::MsX64,
         args: vec![ArgSpec {
             reg: "rcx".into(),
+            ty: None,
             desc: None,
         }],
         capture: None,

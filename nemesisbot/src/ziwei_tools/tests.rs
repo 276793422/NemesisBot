@@ -286,6 +286,17 @@ fn bridge_approval_gate_mapping() {
         "define_struct",
         "define_tool",
         "diff_window",
+        // 查询面 10 action（B1）：只读、无审批
+        "disasm",
+        "xref_to",
+        "xref_from",
+        "callers",
+        "search",
+        "read_data",
+        "pe",
+        "locate",
+        "functions",
+        "gaps",
     ] {
         assert!(
             ZiweiBridgeTool::approval_gate(a).is_none(),
@@ -309,15 +320,33 @@ fn bridge_projection_and_schema() {
     assert!(ov.force_approval.is_some(), "commit 强审批");
     let ov2 = t.operation_override(r#"{"action":"candidates"}"#).unwrap();
     assert!(ov2.force_approval.is_none());
-    // schema：action 必填 + enum 完整
+    // schema：action 必填 + enum 完整（向导 11 + 查询 10）
     let schema = t.parameters();
     assert_eq!(schema["required"], serde_json::json!(["action"]));
     assert_eq!(
         schema["properties"]["action"]["enum"]
             .as_array()
             .map(|a| a.len()),
-        Some(11)
+        Some(21)
     );
+}
+
+#[test]
+fn bridge_query_rva_param_normalization() {
+    // Number 直取（u32 界内）
+    assert_eq!(parse_rva_param(&serde_json::json!(4096)).unwrap(), 0x1000);
+    // 超 u32 的 Number 拒绝
+    assert!(parse_rva_param(&serde_json::json!(4294967296u64)).is_err());
+    // String：0x 前缀可选（与 manager 层同一真相源 parse_hex_u32）
+    assert_eq!(
+        parse_rva_param(&serde_json::json!("0x1000")).unwrap(),
+        0x1000
+    );
+    assert_eq!(parse_rva_param(&serde_json::json!("1000")).unwrap(), 0x1000);
+    assert!(parse_rva_param(&serde_json::json!("xyz")).is_err());
+    // 其它形态 loud 拒绝
+    assert!(parse_rva_param(&serde_json::json!(null)).is_err());
+    assert!(parse_rva_param(&serde_json::json!(true)).is_err());
 }
 
 /// 桥文件面全流程（单测串行：global() 单例——状态/草稿跨用例互斥）。

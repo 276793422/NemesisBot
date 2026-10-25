@@ -545,3 +545,31 @@ fn test_fork_inherits_project_binding() {
     delete_chat_log(&info2.new_key);
     delete_chat_log(&src2);
 }
+
+/// BUG-20261025-19 回归锁：steer 注入行（`"steer": true`）是轮中间的
+/// user 形态行——不计轮、不作 fork 切点；无标记行（含 `[steer] ` 内容
+/// 前缀的旧行——内容前缀不是契约，存储字段才是）按旧行为照常计轮。
+#[test]
+fn test_row_turn_count_and_cut_skip_steer_rows() {
+    let steer_row = serde_json::json!({
+        "role": "user",
+        "content": "[steer] 改买梨",
+        "timestamp": "2026-10-25T00:00:00+08:00",
+        "steer": true
+    });
+    let rows = vec![
+        row("user", "q1"),
+        row("assistant", "a1"),
+        steer_row,
+        row("assistant", "a1'"),
+        row("user", "q2"),
+        row("assistant", "a2"),
+    ];
+    assert_eq!(row_user_turn_count(&rows), 2, "steer 行不计轮");
+    // --at 1 keeps turn 1 complete：切点跳过 steer 行，落在 q2（idx 4）上
+    // ——旧行为切在 steer 行（idx 2）会分叉出半轮会话。
+    assert_eq!(row_turn_cut(&rows, 1), 4);
+    assert_eq!(row_turn_cut(&rows, 2), rows.len());
+    // 缺 steer 字段的行 = 旧行为（轮边界，修复前写入的行按旧行为退化）。
+    assert_eq!(row_user_turn_count(&[row("user", "legacy")]), 1);
+}

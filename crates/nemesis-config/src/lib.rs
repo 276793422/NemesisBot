@@ -1701,7 +1701,8 @@ pub struct AgentsConfig {
     /// I1 (devtool-upgrade 阶段 3): workspace fs-watcher settings.
     #[serde(default)]
     pub fs_watcher: FsWatcherConfig,
-    /// T2（L1 codemode）: `code_run` 脚本工具开关与资源限制（默认关）。
+    /// T2（L1 codemode）: `code_run` 脚本工具开关与资源限制（默认开，
+    /// 2026-10-25 拍板；Dashboard Tools 页可手动关）。
     #[serde(default)]
     pub codemode: CodeModeConfig,
     /// A3（委派持续操控）: delegate 四工具开关与子代理生命上限（默认关）。
@@ -1923,17 +1924,22 @@ fn default_subagent_max_depth() -> usize {
 
 /// T2（内部专项总计划 L1 codemode，2026-10-13）: `agents.codemode` config
 /// section — `code_run` 脚本工具（QuickJS 沙箱）的运行开关与资源限制。
-/// 编译闸是 `codemode` cargo feature；这里管运行态：`enabled` 默认关
-/// （不注册即供给不可见），注册发生在 AgentLoop 装配期（改键需 loop 重建
-/// ——切模型/人格重启自动带上，与插件工具同语义）。
+/// 编译闸是 `codemode` cargo feature；这里管运行态：`enabled` 默认**开**
+/// （2026-10-25 拍板转默认开 + Dashboard Tools 页手动关）。开关 enabled
+/// 经 check_config_reload 热生效（下一轮 LLM 前比对注册状态增删，无需
+/// 重启）；timeout/memory 是构造期值，改动需 loop 重建生效。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeModeConfig {
-    /// Enable the `code_run` tool registration (default false).
-    #[serde(default)]
+    /// Enable the `code_run` tool registration (default true since
+    /// 2026-10-25; explicit `false` in config keeps it off).
+    #[serde(default = "default_codemode_enabled")]
     pub enabled: bool,
     /// Per-call wall-clock budget in seconds; the QuickJS interrupt handler
-    /// checks it (default 30). Infinite JS loops are cut at the deadline and
-    /// the error is returned to the model as tool result text.
+    /// checks it (default 300, aligned with the approval-card lifetime —
+    /// script tool() calls that trigger an approval wait consume budget,
+    /// so the budget must not expire before the card does). Infinite JS
+    /// loops are cut at the deadline and the error is returned to the model
+    /// as tool result text.
     #[serde(default = "default_codemode_timeout_secs")]
     pub timeout_secs: u64,
     /// QuickJS memory cap in MB via `set_memory_limit` (default 64). A
@@ -1942,8 +1948,12 @@ pub struct CodeModeConfig {
     pub memory_limit_mb: u64,
 }
 
+fn default_codemode_enabled() -> bool {
+    true
+}
+
 fn default_codemode_timeout_secs() -> u64 {
-    30
+    300
 }
 
 fn default_codemode_memory_limit_mb() -> u64 {
@@ -1953,7 +1963,7 @@ fn default_codemode_memory_limit_mb() -> u64 {
 impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_codemode_enabled(),
             timeout_secs: default_codemode_timeout_secs(),
             memory_limit_mb: default_codemode_memory_limit_mb(),
         }

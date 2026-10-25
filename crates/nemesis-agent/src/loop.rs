@@ -697,6 +697,13 @@ pub struct AgentLoop {
     /// "system" restores the pre-I2 shape for strict chat templates that
     /// reject adjacent user/user pairs).
     snapshot_role: parking_lot::RwLock<String>,
+    /// T2 codemode（2026-10-25 默认开 + 热生效联动）：装配期构造并 set_loop
+    /// 的 code_run 工具实例。enabled 开关切的是注册表成员资格（本实例的
+    /// register/remove，见 config_watch::sync_codemode_registration），不是
+    /// 重建——timeout/memory 是构造期值，改键需 loop 重建生效。feature
+    /// 关/Android 时字段整体缺席。
+    #[cfg(all(feature = "codemode", not(target_os = "android")))]
+    code_run_tool: parking_lot::RwLock<Option<std::sync::Arc<crate::code_run::CodeRunTool>>>,
     /// X2 (U8 refinement): whether interactive approval (desktop popup
     /// adapter wired to the auditor by the gateway) is reachable. Rendered
     /// into the merged context snapshot's `# Runtime Policy` section. The
@@ -925,6 +932,8 @@ impl AgentLoop {
             external_changes: parking_lot::Mutex::new(Vec::new()),
             recent_self_writes: parking_lot::Mutex::new(std::collections::HashMap::new()),
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
+            #[cfg(all(feature = "codemode", not(target_os = "android")))]
+            code_run_tool: parking_lot::RwLock::new(None),
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
             pending_workflow_edit: parking_lot::RwLock::new(None),

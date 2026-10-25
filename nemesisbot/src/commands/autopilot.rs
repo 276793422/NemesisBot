@@ -143,8 +143,10 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             acceptance_criteria,
             disabled,
         } => {
-            nemesis_cron::CronService::validate_schedule(&cron)
-                .map_err(|e| anyhow::anyhow!("cron 表达式无效: {e}"))?;
+            // 语法 + 语义双闸（BUG-20261025-18）：解析通过但永不匹配的
+            // 表达式在写 store 前拒绝，与 WSAPI 同一校验单点。
+            nemesis_web::handlers::board::validate_autopilot_schedule(&cron, !disabled)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let ap = store
                 .create_autopilot(&NewAutopilot {
                     name,
@@ -177,10 +179,13 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             target,
             acceptance_criteria,
         } => {
-            if let Some(c) = cron.as_deref() {
-                nemesis_cron::CronService::validate_schedule(c)
-                    .map_err(|e| anyhow::anyhow!("cron 表达式无效: {e}"))?;
-            }
+            // 语法 + 语义双闸（BUG-20261025-18）：按「合并后的有效
+            // cron + 有效 enabled」校验，与 WSAPI 同一校验单点。
+            let old = store.get_autopilot(id).map_err(err)?;
+            let eff_cron = cron.clone().unwrap_or(old.cron);
+            let eff_enabled = old.enabled;
+            nemesis_web::handlers::board::validate_autopilot_schedule(&eff_cron, eff_enabled)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let ap = store
                 .update_autopilot(
                     id,
@@ -205,6 +210,11 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             print_autopilot(&ap);
         }
         AutopilotAction::Enable { id } => {
+            let ap = store.get_autopilot(id).map_err(err)?;
+            // 死排程闸（BUG-20261025-18）：启用死规则 = 复活静默僵尸，
+            // loud 拒绝（先修 cron 再启用）。
+            nemesis_web::handlers::board::validate_autopilot_schedule(&ap.cron, true)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let ap = store
                 .update_autopilot(
                     id,

@@ -1,5 +1,8 @@
 {
   "agents": {
+    "codemode": {
+      "enabled": true
+    },
     "defaults": {
       "workspace": "~/.nemesisbot/workspace",
       "restrict_to_workspace": true,

@@ -19,7 +19,7 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-use crate::types::{FunctionCall, ToolCall};
+use crate::types::{FunctionCall, ToolCall, ToolDefinition};
 
 /// Parse non-standard tool calls embedded in `content` into standard ToolCalls.
 ///
@@ -51,6 +51,29 @@ pub fn repair_tool_calls(content: &str) -> Vec<ToolCall> {
             function: Some(FunctionCall { name, arguments }),
             name: None,
             arguments: None,
+        })
+        .collect()
+}
+
+/// 白名单过滤版修复入口（生产唯一消费点，BUG-20261025-16）。
+///
+/// [`repair_tool_calls`] 的 JSON/XML/DSML 启发式对 `name` 键零校验——正常
+/// 文档回复（```json 配置示例、裸 JSON 跨度等只要含 `"name"` 字符串键）会
+/// 被劫持成幻影工具调用，且调用方会把 finish_reason 强改成 "tool_calls"，
+/// agent loop 随之发起一轮注定失败的未知工具 dispatch。恢复调用的不变量是
+/// 「可执行」：名字必须 ∈ 本请求提供的工具白名单（与 loop 供给闸 / dispatch
+/// 同一契约——不在白名单的工具无论如何都执行不了）。全被滤空时调用方维持
+/// 原 finish_reason，宁可不修复、不可误修复。
+pub fn repair_tool_calls_in_whitelist(
+    content: &str,
+    allowed_tools: &[ToolDefinition],
+) -> Vec<ToolCall> {
+    repair_tool_calls(content)
+        .into_iter()
+        .filter(|tc| {
+            tc.function
+                .as_ref()
+                .is_some_and(|f| allowed_tools.iter().any(|t| t.function.name == f.name))
         })
         .collect()
 }

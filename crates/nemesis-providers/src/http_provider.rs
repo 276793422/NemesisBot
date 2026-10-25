@@ -996,8 +996,13 @@ impl LLMProvider for HttpProvider {
         // tool calls as plain text in `content` (DSML / JSON / XML) instead of the
         // standard `tool_calls` structure. When the standard field is empty,
         // recover tool calls from the content so the agent loop still runs them.
+        // 白名单过滤（BUG-20261025-16）：启发式对 `name` 键零校验，文档性
+        // JSON（```json 配置示例等）会被劫持成幻影工具调用 + finish_reason
+        // 强改 "tool_calls"。恢复出的名字必须命中本请求的 tools 白名单
+        // （不在白名单的工具无论如何执行不了）；全滤空 = 维持原 finish，
+        // 宁可不修复不可误修复。
         if tool_calls.is_empty() && !content.is_empty() {
-            let repaired = crate::tool_call_repair::repair_tool_calls(&content);
+            let repaired = crate::tool_call_repair::repair_tool_calls_in_whitelist(&content, tools);
             if !repaired.is_empty() {
                 tracing::info!(
                     provider = %self.config.name,

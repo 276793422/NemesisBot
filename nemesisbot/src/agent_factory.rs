@@ -1309,15 +1309,18 @@ pub fn build_agent_loop(
         }
     }
     // T2 codemode（内部专项总计划 L1）：code_run 脚本工具。编译闸 `codemode`
-    // feature + 运行闸 `agents.codemode.enabled`（默认关）+ min_tier big 双闸
-    // （工具自带）。仅主 gateway loop 装配：项目 loop（L6++ 固定子集，与
-    // 插件工具同一挂账边界）与集群 agent 不含；脚本内 tool() 走完整 dispatch
-    // 瀑布（同 GatewayHostInvoker 桥形态），code_run 自身按 exec 档显式声明
-    // 操作类型（不声明会走未知名 fail-closed = ProcessExec，行为等价但每调
-    // 一次 warn 一次——显式声明去噪 + 分类明示）。
+    // feature + 运行闸 `agents.codemode.enabled`（2026-10-25 默认开，Dashboard
+    // Tools 页可关）+ min_tier big 双闸（工具自带）。仅主 gateway loop 装配：
+    // 项目 loop（L6++ 固定子集，与插件工具同一挂账边界）与集群 agent 不含；
+    // 脚本内 tool() 走完整 dispatch 瀑布（同 GatewayHostInvoker 桥形态），
+    // code_run 自身按 exec 档显式声明操作类型（不声明会走未知名 fail-closed
+    // = ProcessExec，行为等价但每调一次 warn 一次——显式声明去噪 + 分类明示）。
+    // 装配期无条件构造 + set_loop + 注入 loop（热生效联动的前提——开关切换
+    // 复用同一实例，check_config_reload 比对注册状态增删；timeout/memory 是
+    // 构造期值，改键需 loop 重建）。
     // （android 上 rquickjs 依赖缺席→ feature 静默无模块，注册点同 cfg 收口）。
     #[cfg(all(feature = "codemode", not(target_os = "android")))]
-    if cfg.agents.codemode.enabled {
+    {
         #[cfg(feature = "security")]
         nemesis_security::types::declare_tool_operation(
             nemesis_agent::code_run::CODE_RUN_TOOL_NAME,
@@ -1327,15 +1330,19 @@ pub fn build_agent_loop(
             cfg.agents.codemode.timeout_secs,
             cfg.agents.codemode.memory_limit_mb,
         ));
-        agent_loop.register_plugin_tool(
-            nemesis_agent::code_run::CODE_RUN_TOOL_NAME.to_string(),
-            code_tool.clone(),
-        );
         code_tool.set_loop(Arc::downgrade(&agent_loop));
+        agent_loop.install_code_run_tool(code_tool.clone());
+        if cfg.agents.codemode.enabled {
+            agent_loop.register_plugin_tool(
+                nemesis_agent::code_run::CODE_RUN_TOOL_NAME.to_string(),
+                code_tool.clone(),
+            );
+        }
         info!(
+            enabled = cfg.agents.codemode.enabled,
             timeout_secs = cfg.agents.codemode.timeout_secs,
             memory_limit_mb = cfg.agents.codemode.memory_limit_mb,
-            "[AgentFactory] codemode code_run registered"
+            "[AgentFactory] codemode code_run assembled"
         );
     }
     // A3 委派持续操控（2026-10-18）：delegate 四工具（start/send/output/

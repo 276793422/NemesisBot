@@ -1179,6 +1179,38 @@ impl AgentLoop {
             .unwrap_or(true)
     }
 
+    /// T2 codemode（2026-10-25 默认开 + 热生效联动）：注入装配期构造的
+    /// code_run 工具实例。agent_factory 在 `Arc<AgentLoop>` 定型后调用
+    /// （`set_loop` 需要弱引用，只能在装配期做）；此后开关切换全部走
+    /// [`Self::check_config_reload`] 的注册状态比对，本方法只在装配期调用。
+    #[cfg(all(feature = "codemode", not(target_os = "android")))]
+    pub fn install_code_run_tool(&self, tool: std::sync::Arc<crate::code_run::CodeRunTool>) {
+        *self.code_run_tool.write() = Some(tool);
+    }
+
+    /// T2 codemode 热生效联动：比对 config 新鲜值与 code_run 注册状态，增删
+    /// 注册表成员资格（复用装配期注入的同一实例）。**绝不盲目注册**——
+    /// `register_plugin_tool` 撞名会改名 `_2`，必须先查在册。声明
+    /// （declare_tool_operation）装配期已做且 dormant 无害，此处不撤销。
+    #[cfg(all(feature = "codemode", not(target_os = "android")))]
+    fn sync_codemode_registration(&self, cfg: &nemesis_config::CodeModeConfig) {
+        let stored = self.code_run_tool.read().clone();
+        let Some(tool) = stored else {
+            return; // 装配期未注入（headless/项目 loop/集群 agent）——诚实缺席
+        };
+        let registered = self
+            .tool_names()
+            .iter()
+            .any(|n| n == crate::code_run::CODE_RUN_TOOL_NAME);
+        if cfg.enabled && !registered {
+            self.register_plugin_tool(crate::code_run::CODE_RUN_TOOL_NAME.to_string(), tool);
+            info!("[AgentLoop] codemode enabled via config reload; code_run registered");
+        } else if !cfg.enabled && registered {
+            self.remove_plugin_tool(crate::code_run::CODE_RUN_TOOL_NAME);
+            info!("[AgentLoop] codemode disabled via config reload; code_run removed");
+        }
+    }
+
     /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
     /// the active model's tier if it changed. Runs once per LLM round, next to
     /// `check_mcp_reload`. Picks up dashboard model additions and CLI
@@ -1201,5 +1233,20 @@ impl AgentLoop {
         // §6.2：用户显式改 config = 重置翻倍阶梯学习（下次撞顶重新起步，
         // 不让陈旧学习覆盖用户刚改的 max_output_tokens）。
         self.clear_escalated_floors();
+        // T2 codemode 热生效（2026-10-25）：mtime 变化时顺带比对开关与注册
+        // 状态。config 新鲜解析，`agents.codemode` 缺键落 serde 默认
+        // （enabled=true）——与 Config 结构体的缺键语义同源。
+        #[cfg(all(feature = "codemode", not(target_os = "android")))]
+        if let Ok(s) = std::fs::read_to_string(&path)
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+        {
+            let cm = v
+                .pointer("/agents/codemode")
+                .and_then(|x| {
+                    serde_json::from_value::<nemesis_config::CodeModeConfig>(x.clone()).ok()
+                })
+                .unwrap_or_default();
+            self.sync_codemode_registration(&cm);
+        }
     }
 }

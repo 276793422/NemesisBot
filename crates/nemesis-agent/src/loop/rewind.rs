@@ -132,10 +132,12 @@ impl AgentLoop {
         }
 
         // 对话截断点：index 之后第一个 user 行（turn 边界——assistant 行
-        // 属于所在 turn，必须随 turn 一起保留/截掉）。
+        // 属于所在 turn，必须随 turn 一起保留/截掉）。轮边界判定走
+        // [`crate::chat_log::is_user_turn_boundary`] 单一真相源（steer 注入
+        // 行是轮中间的 user 形态行，不算轮首——BUG-20261025-19）。
         let cut = rows[message_index + 1..]
             .iter()
-            .position(|r| r.get("role").and_then(|v| v.as_str()) == Some("user"))
+            .position(crate::chat_log::is_user_turn_boundary)
             .map(|p| p + message_index + 1)
             .unwrap_or(rows.len());
         self.rewind_from_cut(session_key, &rows, cut, message_index, force)
@@ -158,11 +160,13 @@ impl AgentLoop {
         session_key: &str,
     ) -> Result<serde_json::Value, String> {
         let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
-        // 截断点 = 最后一个 user 行（turn 边界，user 行即轮首）。没有 user
-        // 行 = 没有可撤销的轮次（诚实拒绝）。
+        // 截断点 = 最后一个 user 行（turn 边界，user 行即轮首；steer 注入行
+        // 不是轮首，轮边界判定走单一真相源跳过——BUG-20261025-19，否则
+        // 「撤销最后一轮」切在 steer 行上只删尾巴、轮残留在会话里）。没有
+        // user 行 = 没有可撤销的轮次（诚实拒绝）。
         let cut = rows
             .iter()
-            .rposition(|r| r.get("role").and_then(|v| v.as_str()) == Some("user"))
+            .rposition(crate::chat_log::is_user_turn_boundary)
             .ok_or_else(|| "会话没有可撤销的轮次".to_string())?;
         // 回执/谱系引用的下标 = cut 本身（被撤销轮的 user 行原下标）。
         self.rewind_from_cut(session_key, &rows, cut, cut, false)
@@ -228,6 +232,12 @@ impl AgentLoop {
         if rows[message_index].get("role").and_then(|v| v.as_str()) != Some("user") {
             return Err(format!(
                 "message_index {} 不是 user 行（本入口按轮首回退，请指向提问行）",
+                message_index
+            ));
+        }
+        if rows[message_index].get("steer").and_then(|v| v.as_bool()) == Some(true) {
+            return Err(format!(
+                "message_index {} 是 steer 注入行（轮中间标记，不是轮首）——请指向提问行",
                 message_index
             ));
         }

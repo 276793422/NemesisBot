@@ -53,6 +53,10 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'agents.defaults.concurrent_request_mode': { label: '并发消息模式', type: 'enum', options: ['queue', 'reject', 'steer'] },
   'agents.defaults.queue_size': { label: '队列长度', type: 'number', range: { min: 1, max: 256, step: 1 } },
   'agents.defaults.max_continuation_permits': { label: '续行并发许可（0=不限）', type: 'number', range: { min: 0, max: 64, step: 1 } },
+  // ---- agents.codemode（2026-10-25 默认开拍板；Dashboard Tools 页有专属开关卡，
+  // 这里登记进 skins 设置 schema 只是防漂移 + 设置页可见。timeout_secs/
+  // memory_limit_mb 不在 config.default.json（serde 默认=单一真相源），故不登记。----
+  'agents.codemode.enabled': { label: 'codemode（JS 脚本批量编排，仅 big 档可见）', type: 'boolean' },
   // ---- executor ----
   'executor.enabled': { label: '执行体隔离（Layer 1）', type: 'boolean' },
   'executor.sandbox': { label: '沙盒隔离（Layer 2）', type: 'boolean' },

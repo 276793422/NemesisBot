@@ -39,6 +39,7 @@ fn sample_profile() -> Profile {
             conv: Conv::MsX64,
             args: vec![ArgSpec {
                 reg: "rcx".to_string(),
+                ty: None,
                 desc: Some("DataRecord 指针".to_string()),
             }],
             capture: Some(CaptureSpec {
@@ -124,6 +125,39 @@ fn roundtrip_full_profile() {
         FieldType::parse("char[32]").unwrap()
     );
     assert_eq!(p2.functions[0].conv, Conv::MsX64);
+}
+
+#[test]
+fn arg_ty_roundtrip_and_legacy_compat() {
+    // B4：ArgSpec.ty round-trip 保真
+    let mut p = sample_profile();
+    p.functions[0].args[0].ty = Some("u64".to_string());
+    let s = serde_json::to_string(&p).unwrap();
+    let p2: Profile = serde_json::from_str(&s).unwrap();
+    assert_eq!(p2.functions[0].args[0].ty.as_deref(), Some("u64"));
+    // 合法形态过 validate
+    p.validate().unwrap();
+    // 旧文件兼容：无 ty 键照读（serde default = None）
+    let mut v = serde_json::to_value(&p).unwrap();
+    v["functions"][0]["args"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("ty");
+    let legacy: Profile = serde_json::from_value(v).unwrap();
+    assert_eq!(legacy.functions[0].args[0].ty, None);
+    legacy.validate().unwrap();
+}
+
+#[test]
+fn reject_bad_arg_ty_and_empty_reg() {
+    let mut p = sample_profile();
+    p.functions[0].args[0].ty = Some("int*".to_string());
+    let err = p.validate().unwrap_err();
+    assert!(err.contains("类型") && err.contains("非法"), "{err}");
+    let mut p2 = sample_profile();
+    p2.functions[0].args[0].reg = "  ".to_string();
+    let err2 = p2.validate().unwrap_err();
+    assert!(err2.contains("reg 为空"), "{err2}");
 }
 
 #[test]

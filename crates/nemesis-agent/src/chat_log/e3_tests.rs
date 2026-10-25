@@ -110,3 +110,61 @@ fn test_e3_truncate_empty_keeps_file() {
 
     delete_chat_log(&key);
 }
+
+/// BUG-20261025-19 回归锁：`steer` 标记写入（ChatLogMeta.steer=true →
+/// 行带 `"steer": true`；false 不写）+ 轮边界判定谓词 is_user_turn_
+/// boundary——带标记的 user 行不是轮首；无标记行（含 `[steer] ` 内容
+/// 前缀的——内容前缀不是契约，存储字段才是）一律按轮边界处理。
+#[test]
+fn test_e3_steer_marker_and_turn_boundary_predicate() {
+    let key = e3_uniq_key("steer");
+    delete_chat_log(&key);
+
+    // 真实轮首（带 checkpoint_turn）。
+    append_chat_log_meta(
+        &key,
+        "user",
+        "买苹果",
+        &ChatLogMeta {
+            checkpoint_turn: Some(1),
+            ..Default::default()
+        },
+    );
+    // steer 注入行（run_loop 注入路径同构：role=user + steer 标记、无
+    // checkpoint_turn）。
+    append_chat_log_meta(
+        &key,
+        "user",
+        "[steer] 改买梨",
+        &ChatLogMeta {
+            steer: true,
+            ..Default::default()
+        },
+    );
+    // 手打 `[steer] ` 前缀的普通消息（无标记）。
+    append_chat_log(&key, "user", "[steer] 手打前缀的普通消息");
+    // assistant 行（永不是轮首）。
+    append_chat_log(&key, "assistant", "done");
+
+    let (rows, total, _, _) = read_chat_log(&key, 10, None);
+    assert_eq!(total, 4);
+    assert_eq!(
+        rows[1]["steer"],
+        serde_json::Value::Bool(true),
+        "{:?}",
+        rows[1]
+    );
+    assert!(rows[0].get("steer").is_none(), "普通行不写 steer 字段");
+    assert!(rows[2].get("steer").is_none());
+    assert!(rows[3].get("steer").is_none());
+
+    assert!(is_user_turn_boundary(&rows[0]), "真实轮首");
+    assert!(!is_user_turn_boundary(&rows[1]), "steer 注入行不算轮首");
+    assert!(
+        is_user_turn_boundary(&rows[2]),
+        "手打前缀但无标记 = 普通行（旧行为不变）"
+    );
+    assert!(!is_user_turn_boundary(&rows[3]), "assistant 行不是轮首");
+
+    delete_chat_log(&key);
+}

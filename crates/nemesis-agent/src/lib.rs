@@ -33,7 +33,8 @@ pub mod checks_capture;
 pub mod canvas;
 /// T2（内部专项总计划 L1 codemode）：`code_run` QuickJS 脚本工具——脚本内
 /// tool() 过完整 dispatch 瀑布；编译闸 `codemode` feature + 运行闸
-/// `agents.codemode.enabled`（默认关）+ min_tier big 双闸。**非 Android
+/// `agents.codemode.enabled`（默认开，Tools 页可关，开关热生效）+
+/// min_tier big 双闸。**非 Android
 /// only**：rquickjs-sys 无 android bindings（依赖声明在 target 门控表，
 /// 与本 cfg 同收口——android 上 codemode feature 在但无依赖，模块缺席）。
 #[cfg(all(feature = "codemode", not(target_os = "android")))]

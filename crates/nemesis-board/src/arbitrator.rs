@@ -193,7 +193,17 @@ pub fn resolve_wake_targets(input: &WakeInput<'_>, nodes: &[NodeCandidate]) -> W
                 Some(assignee) => {
                     match nodes.iter().find(|n| n.id == assignee) {
                         Some(node) => {
-                            if node.online {
+                            if node.id == input.sender_id {
+                                // 指派节点即发送者本人（worker 在自己被派
+                                // 的单上发进度/交付评论）——同 push_target_or_skip
+                                // 语义排除，否则 worker 被自己的消息唤醒，
+                                // 自问自答循环烧额度。人类发送者 id 不在节
+                                // 点表，天然不受影响。
+                                plan.skipped.push(SkipRecord {
+                                    node_id: assignee.to_string(),
+                                    reason: "sender",
+                                });
+                            } else if node.online {
                                 plan.targets.push(assignee.to_string());
                             } else {
                                 plan.skipped.push(SkipRecord {

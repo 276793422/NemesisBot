@@ -66,14 +66,20 @@ pub fn sync_dreaming_job(
         return;
     }
 
-    // 表达式合法性闸：非法 → 回落默认（warn 留痕）。
+    // 表达式合法性闸：非法 → 回落默认（warn 留痕）。语义死排程（解析
+    // 通过但永不匹配，如 `0 0 30 2 *`，BUG-20261025-18）同样回落——
+    // 挂着 enabled 恒不触发的 sweep job 就是静默僵尸。
     let expr = if !configured_cron.is_empty()
-        && nemesis_cron::service::CronService::validate_schedule(&configured_cron).is_ok()
-    {
+        && nemesis_cron::cron_expr_can_fire(
+            &configured_cron,
+            chrono::Local::now().timestamp_millis(),
+        ) {
         configured_cron
     } else {
         if !configured_cron.is_empty() {
-            warn!("[Dreaming] dreaming.cron `{configured_cron}` 非法 — 回落默认 `{FALLBACK_CRON}`");
+            warn!(
+                "[Dreaming] dreaming.cron `{configured_cron}` 非法或永不触发 — 回落默认 `{FALLBACK_CRON}`"
+            );
         }
         FALLBACK_CRON.to_string()
     };

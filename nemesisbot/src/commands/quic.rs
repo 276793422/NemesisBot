@@ -17,18 +17,39 @@
 //! 内同值兜底拒启，宿主前置检查只为了更清楚的错误文案）。首读触发旧位置
 //!（cluster.json roaming 段）一次性迁移（[`ensure_quic_config`]，幂等）。
 //! 插件缺席 = 诚实报错（CLI 是显式意志，没有降级可言）。
+//!
+//! BUG-20261025-20：「恒编译」撞上 cluster 本身可裁——本模块引用的
+//! `nemesis_cluster` 依赖是 optional（随 cluster feature），minimal-IoT 等
+//! 关 cluster 的裁剪组合此前直接 E0433 编译红。修法 = 解析/桥接面整体
+//! cfg 门控（voice「未编译诚实报」同款惯例）：命令面（clap 枚举）恒注册、
+//! L1 清单稳定；cluster 关 = 三个动作执行面诚实报「未编译」。
 
 use std::path::Path;
 
+#[cfg(feature = "cluster")]
 use nemesis_cluster::roaming::config::RelayTls;
+#[cfg(feature = "cluster")]
 use nemesis_cluster::roaming::quic_config::{QuicConfig, ensure_quic_config, resolved_quic};
 
 /// `nemesisbot quic <action>` 入口。
 pub async fn run(home: &Path, action: QuicAction) -> Result<(), String> {
-    match action {
-        QuicAction::Relay => run_relay_server(home).await,
-        QuicAction::Keygen { force } => run_keygen(home, force).await,
-        QuicAction::Status => show_status(home).await,
+    #[cfg(not(feature = "cluster"))]
+    {
+        let _ = (home, action);
+        return Err(
+            "cluster feature 未编译：QUIC 配置解析/身份桥面在 nemesis-cluster（\
+minimal-IoT 等裁剪形态缺席）——如需 quic 命令请启用 cluster feature 重新编译"
+                .to_string(),
+        );
+    }
+
+    #[cfg(feature = "cluster")]
+    {
+        match action {
+            QuicAction::Relay => run_relay_server(home).await,
+            QuicAction::Keygen { force } => run_keygen(home, force).await,
+            QuicAction::Status => show_status(home).await,
+        }
     }
 }
 
@@ -48,6 +69,7 @@ pub enum QuicAction {
 }
 
 /// QUIC 配置单一读取入口：旧位置首读迁移（幂等）→ config.quic.json 解析。
+#[cfg(feature = "cluster")]
 fn resolved(home: &Path) -> (QuicConfig, std::path::PathBuf) {
     let quic_path = crate::common::quic_config_path(home);
     let cluster_path = crate::common::cluster_config_path(home);
@@ -62,6 +84,7 @@ fn resolved(home: &Path) -> (QuicConfig, std::path::PathBuf) {
 /// QUIC 插件化 M2：身份面（seed→node_id 派生是 ed25519 运算）在
 /// plugin_roaming——CLI 先装载插件（幂等）再走桥；插件缺席 = 诚实报错
 /// （CLI 是显式意志，没有降级可言）。
+#[cfg(feature = "cluster")]
 async fn run_keygen(home: &Path, force: bool) -> Result<(), String> {
     use crate::roaming_plugin_loader::{RoamingLoadOutcome, load_roaming_plugin, relay_init_json};
     use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
@@ -130,6 +153,7 @@ async fn run_keygen(home: &Path, force: bool) -> Result<(), String> {
 /// runtime，宿主侧 loader 走 spawn_blocking）。与桥中继 `run_relay` 同款
 /// fail-closed 纪律：`relay.token` 空 = 拒绝启动（纯中继面向公网，无鉴权
 /// 裸奔不可放行）。插件缺席/拒载 = 诚实报错退出（显式意志不降级）。
+#[cfg(feature = "cluster")]
 pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
     use crate::roaming_plugin_loader::{
         RoamingLoadOutcome, load_roaming_plugin, roaming_start, roaming_stop,
@@ -218,6 +242,7 @@ pub(crate) async fn run_relay_server(home: &Path) -> Result<(), String> {
 }
 
 /// `quic status` 只读状态面。
+#[cfg(feature = "cluster")]
 async fn show_status(home: &Path) -> Result<(), String> {
     let (cfg, config_path) = resolved(home);
     let workspace = crate::common::workspace_path(home);
@@ -327,6 +352,7 @@ async fn show_status(home: &Path) -> Result<(), String> {
 /// 服务端证书/对外 URL 段：完整证书状态 + 对外 URL。路径/URL 计算是纯函数
 ///（[`nemesis_cluster::roaming::relay_info`]），不触插件——状态面零副作用、
 /// 不装载插件。
+#[cfg(feature = "cluster")]
 fn relay_server_status_lines(
     workspace: &Path,
     relay: &nemesis_cluster::roaming::config::RelaySettings,

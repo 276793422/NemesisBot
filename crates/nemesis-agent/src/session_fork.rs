@@ -77,20 +77,24 @@ pub struct ForkInfo {
 }
 
 /// Count COMPLETE user turns over chat_log rows (round-3 truth source: the
-/// same rows the fork dialog counts and the Dashboard renders).
+/// same rows the fork dialog counts and the Dashboard renders). 轮边界判定
+/// 走 [`crate::chat_log::is_user_turn_boundary`] 单一真相源——steer 注入行
+/// 是轮中间的 user 形态行，不计轮（BUG-20261025-19，否则轮计数虚增、分支
+/// 摘要阈值与 rewind 谱系 dropped_turns 失真）。
 pub fn row_user_turn_count(rows: &[Value]) -> usize {
     rows.iter()
-        .filter(|v| v.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .filter(|v| crate::chat_log::is_user_turn_boundary(v))
         .count()
 }
 
 /// Row index where the fork cut lands for `--at N`: right BEFORE the
 /// (N+1)-th user row, i.e. turns 1..N complete. `n >= turn count` (or
-/// `n == 0` with an empty turn set) keeps the whole log.
+/// `n == 0` with an empty turn set) keeps the whole log. 切点同样跳过
+/// steer 行（切在 steer 行上 = 分叉出半轮会话，同一根因）。
 fn row_turn_cut(rows: &[Value], n: usize) -> usize {
     let mut seen = 0usize;
     for (i, v) in rows.iter().enumerate() {
-        if v.get("role").and_then(|r| r.as_str()) == Some("user") {
+        if crate::chat_log::is_user_turn_boundary(v) {
             seen += 1;
             if seen > n {
                 return i;

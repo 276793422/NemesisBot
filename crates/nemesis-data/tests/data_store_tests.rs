@@ -447,11 +447,17 @@ fn test_rollup_old_logs() {
     let store = DataStore::open(&db_path).expect("Failed to open database");
 
     let now = chrono::Local::now().timestamp();
+    // 挂钟敏感边界（ET Linux UTC 23:xx 实证）：`now - N天 + i小时` 在 UTC
+    // 钟面 20:xx~23:xx 时 +1h~+5h 跨日界滚进 cutoff 所在日 → DELETE 不命中
+    // （每日 UTC 20:00-24:00 窗口跑必红）。改锚「当日 UTC 正午」+ 整日偏移：
+    // cutoff 恒为「30 天前 UTC 00:00」，31 天前 12:00 恒在其前、10 天前
+    // 12:00 恒在其后，任何钟面时刻都不跨日。
+    let day_noon = (now / 86400) * 86400 + 12 * 3600;
 
     // Insert old logs (>30 days ago)
     for i in 1..=5 {
         let mut log = create_test_log(i, &format!("old-trace-{}", i), "gpt-4");
-        log.created_at = now - 31 * 86400 + i * 3600;
+        log.created_at = day_noon - 31 * 86400 + i * 60;
         store
             .insert_request_log(&log)
             .expect("Failed to insert old log");
@@ -460,7 +466,7 @@ fn test_rollup_old_logs() {
     // Insert recent logs (<30 days ago)
     for i in 1..=3 {
         let mut log = create_test_log(i + 10, &format!("recent-trace-{}", i), "gpt-4");
-        log.created_at = now - 10 * 86400 + i * 3600;
+        log.created_at = day_noon - 10 * 86400 + i * 60;
         store
             .insert_request_log(&log)
             .expect("Failed to insert recent log");

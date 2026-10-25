@@ -183,6 +183,11 @@ pub enum Conv {
 pub struct ArgSpec {
     /// 寄存器名（x64：rcx/rdx/r8/r9；x86：栈槽序号 "stack:0"）。
     pub reg: String,
+    /// 参数类型（FieldType 同套字面量："u64"/"f64"/"char[32]"/"wchar[N]"；
+    /// validate 用 FieldType::parse 同源校验——单一真相源）。B4 增补，
+    /// `#[serde(default)]` 旧文件无此字段照读。
+    #[serde(default)]
+    pub ty: Option<String>,
     #[serde(default)]
     pub desc: Option<String>,
 }
@@ -547,6 +552,19 @@ impl Profile {
         }
 
         for f in &self.functions {
+            for arg in &f.args {
+                if arg.reg.trim().is_empty() {
+                    return Err(format!("函数 {} 参数 reg 为空", f.semantic));
+                }
+                if let Some(ty) = &arg.ty
+                    && FieldType::parse(ty).is_none()
+                {
+                    return Err(format!(
+                        "函数 {} 参数 {} 类型 {ty:?} 非法（FieldType 字面量，如 u64/char[32]）",
+                        f.semantic, arg.reg
+                    ));
+                }
+            }
             if let Some(cap) = &f.capture {
                 if let Some(decode) = &cap.decode {
                     validate_struct_ref(decode, &struct_names)?;
