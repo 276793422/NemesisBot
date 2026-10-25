@@ -4714,15 +4714,19 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             // Get the expected default workspace path
             let user_home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
             let default_workspace_path = user_home.join(".nemesisbot").join("workspace");
-            let default_workspace_str = default_workspace_path.to_string_lossy().to_string();
 
             let ws = &config.agents.defaults.workspace;
-            // Check if workspace is using default path pattern
-            if ws.starts_with("~/")
-                || ws.starts_with("~\\")
-                || ws.starts_with(&user_home.to_string_lossy().to_string())
-                || ws == &default_workspace_str
-            {
+            // 只重写「默认工作区」的等价拼法（BUG-20261025-76）：旧
+            // starts_with("~/")/starts_with(home) 会把任何 home 下的自定义
+            // 路径（甚至仅共享字符串前缀的 C:\Users\me2 家族）误判成默认
+            // 形态，每次落盘静默改写成 .nemesisbot/workspace，用户自定义
+            // workspace 被丢弃（会话/历史/记忆集体「消失」）。Path 组件相等
+            // 比较天然免疫字符串前缀堂亲与分隔符/大小写变体；空串不在此
+            // 处理（加载期 adjust_paths_for_environment 会解析默认值）。
+            let is_default_workspace = ws == "~/.nemesisbot/workspace"
+                || ws == "~\\.nemesisbot\\workspace"
+                || Path::new(ws) == default_workspace_path;
+            if is_default_workspace {
                 config.agents.defaults.workspace = PathBuf::from(".nemesisbot")
                     .join("workspace")
                     .to_string_lossy()
@@ -5173,11 +5177,18 @@ impl Config {
     pub fn adjust_paths_for_environment(&mut self) {
         let expected_workspace = WorkspaceResolver::resolve(false).join("workspace");
 
-        // Check if workspace is using a hardcoded default path
+        // Check if workspace is using a default path. BUG-20261025-77：旧
+        // `ends_with(".nemesisbot/workspace")` 把任何以该后缀结尾的绝对路径
+        // （如项目内自定义 D:/bots/proj/.nemesisbot/workspace）误判成默认
+        // 形态、每次加载强改回默认；且 Windows 下 save_config 落盘的反斜杠
+        // 相对形态（.nemesisbot\workspace）永不命中正斜杠后缀，保存→加载
+        // 回路在 Windows 上断裂。改为相对形态的 Path 组件相等（分隔符/
+        // 大小写免疫、拒绝绝对路径堂亲），外加波浪号默认拼法的两种分隔符。
         let ws = &self.agents.defaults.workspace;
         let is_default = ws.is_empty()
             || ws == "~/.nemesisbot/workspace"
-            || ws.ends_with(".nemesisbot/workspace");
+            || ws == "~\\.nemesisbot\\workspace"
+            || Path::new(ws) == Path::new(".nemesisbot").join("workspace");
 
         if is_default {
             self.agents.defaults.workspace = expected_workspace.to_string_lossy().to_string();

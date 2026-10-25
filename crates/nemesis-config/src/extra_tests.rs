@@ -280,8 +280,9 @@ fn extra_save_config_local_mode_tilde_workspace() {
 
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
-    // Workspace should have been rewritten to .nemesisbot-relative path.
-    assert!(config.agents.defaults.workspace.contains(".nemesisbot"));
+    // BUG-20261025-76：波浪号自定义路径不是默认形态，落盘必须原样保留
+    // （旧 `~/` 宽匹配会把它静默改写成 .nemesisbot/workspace）。
+    assert_eq!(config.agents.defaults.workspace, "~/some/path");
 
     std::env::set_current_dir(original).unwrap();
 }
@@ -1218,9 +1219,12 @@ fn extra_adjust_paths_ends_with_nemesisbot_workspace() {
     let mut cfg = Config::default();
     cfg.agents.defaults.workspace = "/something/.nemesisbot/workspace".into();
     cfg.adjust_paths_for_environment();
-    // The "ends_with" branch triggers a replacement.
-    let ws = cfg.agents.defaults.workspace.clone();
-    assert!(ws.contains(".nemesisbot"));
+    // BUG-20261025-77：以 .nemesisbot/workspace 结尾的**绝对路径**是自定义
+    // 形态，加载期必须原样保留（旧 ends_with 后缀匹配会强改回默认值）。
+    assert_eq!(
+        cfg.agents.defaults.workspace,
+        "/something/.nemesisbot/workspace"
+    );
 }
 
 #[test]
@@ -1465,9 +1469,9 @@ fn extra_save_config_local_mode_home_prefix_workspace() {
 
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
-    // Workspace should have been rewritten since it starts with the home dir.
-    assert_ne!(config.agents.defaults.workspace, home_workspace);
-    assert!(config.agents.defaults.workspace.contains(".nemesisbot"));
+    // BUG-20261025-76：home 下的自定义路径不是默认工作区，落盘必须原样
+    // 保留（旧 starts_with(home) 宽匹配会把它静默改写成 .nemesisbot/workspace）。
+    assert_eq!(config.agents.defaults.workspace, home_workspace);
 
     std::env::set_current_dir(original).unwrap();
 }

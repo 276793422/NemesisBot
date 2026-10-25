@@ -2447,6 +2447,32 @@ fn test_adjust_paths_for_environment_no_logging() {
     assert!(config.logging.is_none());
 }
 
+// BUG-20261025-77 锁：以 `.nemesisbot/workspace` 结尾的**绝对自定义路径**
+// 不是默认形态，加载期不得强改回默认（旧 ends_with 后缀匹配必红）。
+#[test]
+fn test_adjust_paths_for_environment_preserves_absolute_custom_local_form() {
+    let custom = "D:/bots/project/.nemesisbot/workspace";
+    let mut config = Config::default();
+    config.agents.defaults.workspace = custom.to_string();
+    config.adjust_paths_for_environment();
+    assert_eq!(
+        config.agents.defaults.workspace, custom,
+        "absolute path merely ending with the local form must not be rewritten"
+    );
+}
+
+// 反矫枉过正锁：相对形态（save_config 落盘形态）加载期仍解析为实际路径。
+#[test]
+fn test_adjust_paths_for_environment_resolves_relative_local_form() {
+    let mut config = Config::default();
+    config.agents.defaults.workspace = ".nemesisbot/workspace".to_string();
+    config.adjust_paths_for_environment();
+    assert_ne!(
+        config.agents.defaults.workspace, ".nemesisbot/workspace",
+        "relative default form must be resolved at load"
+    );
+}
+
 #[test]
 fn test_load_config_from_file_valid() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2835,6 +2861,99 @@ fn test_save_config_local_mode_detection() {
     assert!(result.is_ok());
 
     std::env::set_current_dir(original).unwrap();
+}
+
+// BUG-20261025-76 锁：local 模式落盘只重写「默认工作区」的等价拼法，
+// home 下的自定义路径与波浪号自定义路径必须原样保留（旧 starts_with
+// 宽匹配把它们静默改写成 .nemesisbot/workspace，必红）。
+#[test]
+fn test_save_config_local_mode_preserves_custom_workspace() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+
+    // 场景 A：home 下的自定义工作区
+    let dir = tempfile::tempdir().unwrap();
+    let local_dir = dir.path().join(".nemesisbot");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    let config_path = local_dir.join("config.json");
+    // Pre-create so canonicalize() inside is_local_mode can resolve it.
+    std::fs::write(&config_path, b"{}").unwrap();
+
+    let custom = home
+        .join("Documents")
+        .join("MyBotWs")
+        .to_string_lossy()
+        .to_string();
+    let mut config = Config::default();
+    config.agents.defaults.workspace = custom.clone();
+
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = save_config(&config_path, &mut config);
+    std::env::set_current_dir(original).unwrap();
+    result.unwrap();
+    assert_eq!(
+        config.agents.defaults.workspace, custom,
+        "custom workspace under home must survive a local-mode save"
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(
+        saved["agents"]["defaults"]["workspace"].as_str(),
+        Some(custom.as_str()),
+        "saved file must keep the custom workspace"
+    );
+
+    // 场景 B：波浪号自定义工作区
+    let dir2 = tempfile::tempdir().unwrap();
+    let local_dir2 = dir2.path().join(".nemesisbot");
+    std::fs::create_dir_all(&local_dir2).unwrap();
+    let config_path2 = local_dir2.join("config.json");
+    std::fs::write(&config_path2, b"{}").unwrap();
+
+    let mut config2 = Config::default();
+    config2.agents.defaults.workspace = "~/Projects/foo".to_string();
+
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir2.path()).unwrap();
+    let result = save_config(&config_path2, &mut config2);
+    std::env::set_current_dir(original).unwrap();
+    result.unwrap();
+    assert_eq!(
+        config2.agents.defaults.workspace, "~/Projects/foo",
+        "custom tilde workspace must survive a local-mode save"
+    );
+}
+
+// 反矫枉过正锁：默认工作区的绝对拼法在 local 模式落盘时仍折叠为相对形态。
+#[test]
+fn test_save_config_local_mode_still_rewrites_default_workspace() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local_dir = dir.path().join(".nemesisbot");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    let config_path = local_dir.join("config.json");
+    // Pre-create so canonicalize() inside is_local_mode can resolve it.
+    std::fs::write(&config_path, b"{}").unwrap();
+
+    let mut config = Config::default();
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    config.agents.defaults.workspace = home
+        .join(".nemesisbot")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string();
+
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let result = save_config(&config_path, &mut config);
+    std::env::set_current_dir(original).unwrap();
+    result.unwrap();
+    assert!(
+        Path::new(&config.agents.defaults.workspace) == Path::new(".nemesisbot").join("workspace"),
+        "exact default workspace must still collapse to the local relative form, got: {}",
+        config.agents.defaults.workspace
+    );
 }
 
 #[test]
