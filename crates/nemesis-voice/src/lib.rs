@@ -86,7 +86,11 @@ pub use audio::{
     AudioCapture, AudioPlayback, Resampler, StopHandle, far_end_buffer, far_end_sample_rate,
 };
 #[cfg(target_os = "windows")]
-pub use bootstrap::{download_aec_lib, init_sherpa, run_in_dir as bootstrap_run_in_dir};
+pub use bootstrap::{
+    ProgressSink, RuntimeProgress, aec_staging_dir, download_aec_lib, init_sherpa,
+    run_in_dir as bootstrap_run_in_dir,
+    run_in_dir_with_progress as bootstrap_run_in_dir_with_progress,
+};
 #[cfg(target_os = "windows")]
 pub use chunk_source::{AudioChunkSource, MicSource, WavSource};
 #[cfg(target_os = "windows")]

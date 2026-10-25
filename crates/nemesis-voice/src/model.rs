@@ -353,6 +353,108 @@ pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
     Ok(dir)
 }
 
+// ---------------------------------------------------------------------------
+// Install-by-name 通路（模型设置弹窗，2026-10-25）
+// ---------------------------------------------------------------------------
+
+/// Per-source 安装态判定（`voice.model_catalog` / `voice.set_model` 的单一真相源）：
+/// 该 (category, name) source 声明的全部文件都已落地且非空目录布局成立——与
+/// `ensure_model_core` 的本地命中同判（弱于「任一 .onnx 在场」的子目录扫描，
+/// 半截下载不会误报已安装）。空 files 列表 = 无法验证 = 未安装。
+pub fn model_source_installed(cfg: &AppConfig, category: &str, name: &str) -> bool {
+    let Some(source) = cfg
+        .models
+        .sources
+        .iter()
+        .find(|s| s.name == name && s.category == category)
+    else {
+        return false;
+    };
+    if source.files.is_empty() {
+        return false;
+    }
+    let dir = cfg.model_dir().join(category).join(name);
+    let files: Vec<(&str, &str)> = source
+        .files
+        .iter()
+        .map(|f| (f.local.as_str(), f.remote.as_str()))
+        .collect();
+    check_model_files(&dir, &files)
+}
+
+/// 按 (category, name) 安装指定模型变体（install-by-name）。**不改**
+/// `cfg.<category>.model_name`——装好 ≠ 启用，设为当前是 `voice.set_model`
+/// 的职责（两步解耦，与现有六个 `ensure_*_model`「装配置默认变体」并存）。
+pub fn ensure_model_by_name(cfg: &AppConfig, category: &str, name: &str) -> Result<PathBuf> {
+    let source = cfg
+        .models
+        .sources
+        .iter()
+        .find(|s| s.name == name)
+        .with_context(|| format!("模型 '{name}' 不在 config [models.sources] 目录中"))?;
+    if source.category != category {
+        anyhow::bail!(
+            "模型 '{name}' 属于类别 '{}'，与请求的类别 '{category}' 不符",
+            source.category
+        );
+    }
+    ensure_model_core(cfg, category, name)
+}
+
+/// ensure_*_model 共享内核（`ensure_model_by_name` 专用，避免第七份复制）：
+/// 本地命中短路 → auto_download 门 → 下载。现有六个 `ensure_*_model` 保持
+/// 原样不动（错误文案 / 日志前缀各自定制，VAD 还返回文件路径而非目录），
+/// 不为去重而动已验证代码。
+fn ensure_model_core(cfg: &AppConfig, category: &str, model_name: &str) -> Result<PathBuf> {
+    let dir = cfg.model_dir().join(category).join(model_name);
+
+    let source = cfg.find_model_source(model_name);
+    let files: Vec<(&str, &str)> = source
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !files.is_empty() && check_model_files(&dir, &files) {
+        tracing::info!(
+            "[{}] Model '{}' found at {}",
+            category,
+            model_name,
+            dir.display()
+        );
+        return Ok(dir);
+    }
+
+    if !cfg.models.auto_download {
+        anyhow::bail!(
+            "Model '{}' (category '{}') not found and auto_download is disabled",
+            model_name,
+            category
+        );
+    }
+
+    let source = source.with_context(|| {
+        format!(
+            "Model '{}' (category '{}') not found in config [models.sources]. Add it to config.toml.",
+            model_name, category
+        )
+    })?;
+
+    download_model_files(
+        &cfg.models.mirror.base,
+        &source.name,
+        &source.repo,
+        &source.files,
+        &dir,
+        &cfg.models.proxy.url,
+    )?;
+
+    Ok(dir)
+}
+
 /// Download all files for a model from the configured mirror with resume support.
 /// Downloads to `.part` temp files, renames to final name on completion.
 #[cfg(feature = "download")]

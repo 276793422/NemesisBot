@@ -31,6 +31,7 @@ fn source_with(name: &str, repo: &str, locals: &[&str]) -> ModelSource {
         name: name.to_string(),
         category: "test".to_string(),
         repo: repo.to_string(),
+        description: String::new(),
         files: locals
             .iter()
             .map(|l| ModelFile {
@@ -73,6 +74,22 @@ fn files(local: &str, remote: &str) -> Vec<ModelFile> {
         remote: remote.to_string(),
         url: String::new(),
     }]
+}
+
+/// 多文件变体（install-by-name 测试用：单文件列表验不出半截下载）
+fn files2(a: &str, b: &str) -> Vec<ModelFile> {
+    vec![
+        ModelFile {
+            local: a.to_string(),
+            remote: a.to_string(),
+            url: String::new(),
+        },
+        ModelFile {
+            local: b.to_string(),
+            remote: b.to_string(),
+            url: String::new(),
+        },
+    ]
 }
 
 /// 手动 current_thread runtime 上跑整个 async 测试体。
@@ -1244,4 +1261,147 @@ fn download_model_files_zero_byte_existing_file_is_redownloaded() {
             b"NEW"
         );
     });
+}
+
+// ===========================================================================
+// install-by-name 通路（2026-10-25 模型设置弹窗）：ensure_model_by_name +
+// model_source_installed。本地命中场景不需要网络，与 ensure_stt_model
+// 本地命中测试同构。
+// ===========================================================================
+
+#[test]
+fn ensure_model_by_name_local_hit_returns_dir_without_network() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data").join("tts").join("variant-b");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("model.onnx"), b"m").unwrap();
+    std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+
+    let cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![
+            source_with("variant-a", "user/a", &["model.onnx"]),
+            ModelSource {
+                name: "variant-b".to_string(),
+                category: "tts".to_string(),
+                repo: "user/b".to_string(),
+                description: String::new(),
+                files: files2("model.onnx", "tokens.txt"),
+            },
+        ],
+    );
+    // 注意：cfg.<category>.model_name 与 variant-b 无关——by-name 不读配置默认
+    let got = ensure_model_by_name(&cfg, "tts", "variant-b").unwrap();
+    assert_eq!(got, dir);
+}
+
+#[test]
+fn ensure_model_by_name_unknown_variant_bails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = cfg_with_model_dir(tmp.path(), vec![]);
+    let err = format!(
+        "{:#}",
+        ensure_model_by_name(&cfg, "tts", "no-such").unwrap_err()
+    );
+    assert!(err.contains("不在 config [models.sources] 目录中"), "{err}");
+}
+
+#[test]
+fn ensure_model_by_name_category_mismatch_bails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![ModelSource {
+            name: "mixed-up".to_string(),
+            category: "stt".to_string(),
+            repo: "user/m".to_string(),
+            description: String::new(),
+            files: files2("model.onnx", "tokens.txt"),
+        }],
+    );
+    let err = format!(
+        "{:#}",
+        ensure_model_by_name(&cfg, "tts", "mixed-up").unwrap_err()
+    );
+    assert!(err.contains("属于类别 'stt'"), "{err}");
+    assert!(err.contains("与请求的类别 'tts' 不符"), "{err}");
+}
+
+#[test]
+fn ensure_model_by_name_missing_files_with_no_autodownload_bails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![ModelSource {
+            name: "variant-b".to_string(),
+            category: "tts".to_string(),
+            repo: "user/b".to_string(),
+            description: String::new(),
+            files: files2("model.onnx", "tokens.txt"),
+        }],
+    );
+    cfg.models.auto_download = false;
+    let err = format!(
+        "{:#}",
+        ensure_model_by_name(&cfg, "tts", "variant-b").unwrap_err()
+    );
+    assert!(err.contains("auto_download is disabled"), "{err}");
+}
+
+#[test]
+fn model_source_installed_true_only_when_all_files_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data").join("tts").join("v");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("model.onnx"), b"m").unwrap();
+
+    let make_cfg = |locals: &[&str]| {
+        let mut cfg = cfg_with_model_dir(tmp.path(), vec![]);
+        cfg.models.sources = vec![ModelSource {
+            name: "v".to_string(),
+            category: "tts".to_string(),
+            repo: "user/v".to_string(),
+            description: String::new(),
+            files: locals
+                .iter()
+                .map(|l| ModelFile {
+                    local: l.to_string(),
+                    remote: l.to_string(),
+                    url: String::new(),
+                })
+                .collect(),
+        }];
+        cfg
+    };
+
+    // 半截下载（缺 tokens.txt）→ 未安装
+    let cfg = make_cfg(&["model.onnx", "tokens.txt"]);
+    assert!(!model_source_installed(&cfg, "tts", "v"));
+
+    // 补齐 → 已安装
+    std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+    let cfg = make_cfg(&["model.onnx", "tokens.txt"]);
+    assert!(model_source_installed(&cfg, "tts", "v"));
+}
+
+#[test]
+fn model_source_installed_false_for_unknown_source_or_empty_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = cfg_with_model_dir(tmp.path(), vec![]);
+    assert!(!model_source_installed(&cfg, "tts", "ghost"));
+
+    // 空 files 列表 = 无法验证 = 未安装
+    let mut cfg = cfg_with_model_dir(tmp.path(), vec![]);
+    cfg.models.sources = vec![ModelSource {
+        name: "empty".to_string(),
+        category: "tts".to_string(),
+        repo: "u/e".to_string(),
+        description: String::new(),
+        files: vec![],
+    }];
+    assert!(!model_source_installed(&cfg, "tts", "empty"));
+
+    // category 不匹配的同名 source 不算
+    cfg.models.sources[0].category = "stt".to_string();
+    assert!(!model_source_installed(&cfg, "tts", "empty"));
 }

@@ -327,7 +327,9 @@ fn download_aec_lib_existing_dll_returns_early_without_network() {
     let existing = tmp.path().join("aec.dll");
     std::fs::write(&existing, b"already-there").unwrap();
 
-    let got = download_aec_lib(tmp.path(), "").unwrap();
+    // staging 独立 tempdir：aec.dll 在场时早退，staging 不会被触碰。
+    let staging = tempfile::tempdir().unwrap();
+    let got = download_aec_lib(tmp.path(), "", staging.path()).unwrap();
     assert_eq!(got, existing);
     // 内容原样（没被重下覆盖）
     assert_eq!(std::fs::read(&existing).unwrap(), b"already-there");
@@ -360,6 +362,11 @@ mod download_paths {
     /// cargo test 单进程全绿掩盖至今）。生产调用方传 canonical 路径
     /// （bootstrap::sherpa_staging_dir），测试传 pid 派生目录，跨进程各走各的；
     /// 同进程（cargo test 线程并行）pid 相同，DOWNLOAD_TMP_LOCK 继续承担串行。
+    ///
+    /// 锁获取一律中毒恢复（PoisonError::into_inner）：一个测试断言失败 panic
+    /// 不该把同锁其余测试打成连锁假红（实录 2026-10-25：AEC 全链路测试曾因
+    /// 生产 staging 缓存残留翻车，连锁 9 假红掩盖真实失败面）。此锁只管
+    /// 目录互斥，中毒后继续持有不产生额外互踩。
     static DOWNLOAD_TMP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn voice_setup_tmp() -> std::path::PathBuf {
@@ -418,14 +425,21 @@ mod download_paths {
 
     #[test]
     fn download_runtime_libs_unreachable_proxy_bails_with_sources_failed() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
         let tmp = tempfile::tempdir().unwrap();
         // 127.0.0.1:9（discard 端口，连接拒绝，立即失败不超时）
         let err = format!(
             "{:#}",
-            download_runtime_libs(tmp.path(), "http://127.0.0.1:9", &voice_setup_tmp())
-                .unwrap_err()
+            download_runtime_libs(
+                tmp.path(),
+                "http://127.0.0.1:9",
+                &voice_setup_tmp(),
+                &noop_progress()
+            )
+            .unwrap_err()
         );
         assert!(err.contains("All download sources failed"), "{err}");
         // 提示文案带必需库清单
@@ -439,12 +453,14 @@ mod download_paths {
 
     #[test]
     fn download_aec_lib_unreachable_proxy_bails_with_hint() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
         let tmp = tempfile::tempdir().unwrap();
         let err = format!(
             "{:#}",
-            download_aec_lib(tmp.path(), "http://127.0.0.1:9").unwrap_err()
+            download_aec_lib(tmp.path(), "http://127.0.0.1:9", &aec_setup_tmp()).unwrap_err()
         );
         assert!(err.contains("[aec] All download sources failed"), "{err}");
         assert!(err.contains(AEC_WIN_ARTIFACT), "{err}");
@@ -458,7 +474,9 @@ mod download_paths {
 
     #[test]
     fn try_download_aec_full_success_installs_dll() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         // 现场打包：libaec-win-x86-64/aec.dll
@@ -504,7 +522,9 @@ mod download_paths {
 
     #[test]
     fn try_download_aec_cached_archive_skips_download() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         let src = tempfile::tempdir().unwrap();
@@ -540,7 +560,9 @@ mod download_paths {
 
     #[test]
     fn try_download_aec_http_404_bails() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         let dst = tempfile::tempdir().unwrap();
@@ -577,7 +599,9 @@ mod download_paths {
 
     #[test]
     fn try_download_and_extract_full_success_installs_runtime_libs() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         // 现场 bz2 打包：{SHERPA_RELEASE_NAME}/lib/{3 DLL}
@@ -616,9 +640,15 @@ mod download_paths {
                 .await;
             let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
 
-            try_download_and_extract(&url, exe_dir.path(), "", &voice_setup_tmp())
-                .await
-                .unwrap();
+            try_download_and_extract(
+                &url,
+                exe_dir.path(),
+                "",
+                &voice_setup_tmp(),
+                &noop_progress(),
+            )
+            .await
+            .unwrap();
             for lib in REQUIRED_LIBS {
                 let p = exe_dir.path().join(lib);
                 assert!(p.exists(), "{lib} must be installed to exe dir");
@@ -634,7 +664,9 @@ mod download_paths {
 
     #[test]
     fn try_download_and_extract_cached_archive_skips_download() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         let src = tempfile::tempdir().unwrap();
@@ -665,6 +697,7 @@ mod download_paths {
                 exe_dir.path(),
                 "",
                 &voice_setup_tmp(),
+                &noop_progress(),
             )
             .await
             .unwrap();
@@ -681,7 +714,9 @@ mod download_paths {
 
     #[test]
     fn try_download_and_extract_bad_archive_bails_and_cleans_up() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         let exe_dir = tempfile::tempdir().unwrap();
@@ -697,9 +732,15 @@ mod download_paths {
             let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
             let err = format!(
                 "{:#}",
-                try_download_and_extract(&url, exe_dir.path(), "", &voice_setup_tmp())
-                    .await
-                    .unwrap_err()
+                try_download_and_extract(
+                    &url,
+                    exe_dir.path(),
+                    "",
+                    &voice_setup_tmp(),
+                    &noop_progress()
+                )
+                .await
+                .unwrap_err()
             );
             assert!(err.contains("tar extraction failed"), "{err}");
             // bail 前删了归档 + .part
@@ -719,7 +760,9 @@ mod download_paths {
 
     #[test]
     fn try_download_and_extract_http_500_bails() {
-        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        let _g = DOWNLOAD_TMP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clean_all_setup_tmps();
 
         let exe_dir = tempfile::tempdir().unwrap();
@@ -732,9 +775,15 @@ mod download_paths {
             let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
             let err = format!(
                 "{:#}",
-                try_download_and_extract(&url, exe_dir.path(), "", &voice_setup_tmp())
-                    .await
-                    .unwrap_err()
+                try_download_and_extract(
+                    &url,
+                    exe_dir.path(),
+                    "",
+                    &voice_setup_tmp(),
+                    &noop_progress()
+                )
+                .await
+                .unwrap_err()
             );
             assert!(err.contains("HTTP 500"), "{err}");
             assert!(!exe_dir.path().join(REQUIRED_LIBS[0]).exists());

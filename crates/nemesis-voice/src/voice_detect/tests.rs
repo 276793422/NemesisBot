@@ -273,6 +273,7 @@ fn create_detector_with_local_vad_model_builds_silero_until_ffi() {
         name: "silero_vad".into(),
         category: "vad".into(),
         repo: "some/repo".into(),
+        description: String::new(),
         files: vec![crate::config::ModelFile {
             local: "silero_vad.onnx".into(),
             remote: "silero_vad.onnx".into(),

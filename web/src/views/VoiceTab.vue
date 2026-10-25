@@ -4,6 +4,7 @@ import { useWSAPI } from '../composables/useWSAPI'
 import { on as sseOn, off as sseOff } from '../composables/useSSE'
 import { addMessageHandler, removeMessageHandler } from '../composables/useWebSocket'
 import { useToast } from '../composables/useToast'
+import ModelInstallDialog from '../components/ModelInstallDialog.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -194,21 +195,28 @@ async function installRuntime() {
   }
 }
 
-async function installModel(model: string, label: string) {
-  setupProgress.value = `正在安装${label}模型...`
-  try {
-    await request('voice', 'install_model', { model }, 0)
-    toast.success(`${label}模型安装完成`)
-    setupProgress.value = ''
-    await loadStatus()
-    if (model === 'stt_stream') {
-      const engines = await request('voice', 'engine_status').catch(() => null)
-      sttStreamReady.value = !!engines?.stt_stream_model
-    }
-  } catch (e: any) {
-    toast.error(`${label}模型安装失败: ` + e)
-    setupProgress.value = ''
+// --- 模型设置弹窗（2026-10-25）---
+// 每行【设置】开弹窗（可选变体安装 + 设为当前）；AEC 是库非模型，保留直装。
+const dialogModel = ref<{ category: string; label: string } | null>(null)
+function openModelDialog(category: string, label: string) {
+  dialogModel.value = { category, label }
+}
+// 弹窗内安装/设为当前都可能改变 status 投影（ready/current/installed）→ 重拉
+async function onDialogChanged() {
+  await loadStatus()
+  if (dialogModel.value?.category === 'stt_stream') {
+    const engines = await request('voice', 'engine_status').catch(() => null)
+    sttStreamReady.value = !!engines?.stt_stream_model
   }
+}
+
+// 当前默认变体是否已安装（●/○ 判据）：status.models.<cat>.installed 包含
+// current；旧后端（无 installed 字段）回退 ready。
+function currentInstalled(cat: string): boolean {
+  const m = (status.value?.models || {})[cat]
+  if (!m) return false
+  if (Array.isArray(m.installed)) return !!m.current && m.installed.includes(m.current)
+  return !!m.ready
 }
 
 async function installAec() {
@@ -300,6 +308,9 @@ const currentSpeakerName = computed(() => {
 
 // --- SSE for setup progress ---
 _onSetupProgress = (data: any) => {
+  // phase=model（模型安装进度）由设置弹窗承接（行内展示），顶部条只管
+  // 一键安装/运行库/AEC；弹窗开着时这里抢进度文本会串台。
+  if (data?.phase === 'model') return
   if (data?.message) setupProgress.value = data.message
   if (data?.status === 'complete' || data?.status === 'error') {
     setTimeout(() => { setupProgress.value = '' }, 2000)
@@ -661,52 +672,58 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Models -->
+        <!-- Models：每行【设置】开弹窗（可选变体安装 + 设为当前）；●/○ = 当前默认变体已安装 -->
         <div>
           <div style="font-weight: 500; margin-bottom: var(--space-2);">模型</div>
           <div style="display: flex; flex-direction: column; gap: var(--space-2); padding-left: var(--space-4);">
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <span :style="{ color: models.stt?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ models.stt?.ready ? '●' : '○' }}</span>
+                <span :style="{ color: currentInstalled('stt') ? 'var(--success)' : 'var(--text-secondary)' }">{{ currentInstalled('stt') ? '●' : '○' }}</span>
                 <span>STT 模型</span>
+                <span v-if="models.stt?.current" style="color: var(--text-secondary); font-size: 11px;">{{ models.stt.current }}</span>
               </span>
-              <button class="btn btn-sm" @click="installModel('stt', 'STT')" :disabled="!!setupProgress || models.stt?.ready">安装</button>
+              <button class="btn btn-sm" @click="openModelDialog('stt', 'STT')">设置</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;" title="实时语音的流式识别小模型（可选；未安装则实时模式下退化为整段离线识别）">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <span :style="{ color: sttStreamReady ? 'var(--success)' : 'var(--text-secondary)' }">{{ sttStreamReady ? '●' : '○' }}</span>
+                <span :style="{ color: currentInstalled('stt_stream') ? 'var(--success)' : 'var(--text-secondary)' }">{{ currentInstalled('stt_stream') ? '●' : '○' }}</span>
                 <span>流式 STT 模型</span>
+                <span v-if="models.stt_stream?.current" style="color: var(--text-secondary); font-size: 11px;">{{ models.stt_stream.current }}</span>
                 <span style="color: var(--text-secondary); font-size: 11px;">（实时语音可选）</span>
               </span>
-              <button class="btn btn-sm" @click="installModel('stt_stream', '流式STT')" :disabled="!!setupProgress || sttStreamReady">安装</button>
+              <button class="btn btn-sm" @click="openModelDialog('stt_stream', '流式STT')">设置</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <span :style="{ color: models.vad?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ models.vad?.ready ? '●' : '○' }}</span>
+                <span :style="{ color: currentInstalled('vad') ? 'var(--success)' : 'var(--text-secondary)' }">{{ currentInstalled('vad') ? '●' : '○' }}</span>
                 <span>VAD 模型</span>
+                <span v-if="models.vad?.current" style="color: var(--text-secondary); font-size: 11px;">{{ models.vad.current }}</span>
               </span>
-              <button class="btn btn-sm" @click="installModel('vad', 'VAD')" :disabled="!!setupProgress || models.vad?.ready">安装</button>
+              <button class="btn btn-sm" @click="openModelDialog('vad', 'VAD')">设置</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <span :style="{ color: models.tts?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ models.tts?.ready ? '●' : '○' }}</span>
+                <span :style="{ color: currentInstalled('tts') ? 'var(--success)' : 'var(--text-secondary)' }">{{ currentInstalled('tts') ? '●' : '○' }}</span>
                 <span>TTS 模型</span>
+                <span v-if="models.tts?.current" style="color: var(--text-secondary); font-size: 11px;">{{ models.tts.current }}</span>
               </span>
-              <button class="btn btn-sm" @click="installModel('tts', 'TTS')" :disabled="!!setupProgress || models.tts?.ready">安装</button>
+              <button class="btn btn-sm" @click="openModelDialog('tts', 'TTS')">设置</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <span :style="{ color: models.punct?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ models.punct?.ready ? '●' : '○' }}</span>
+                <span :style="{ color: currentInstalled('punct') ? 'var(--success)' : 'var(--text-secondary)' }">{{ currentInstalled('punct') ? '●' : '○' }}</span>
                 <span>标点模型</span>
+                <span v-if="models.punct?.current" style="color: var(--text-secondary); font-size: 11px;">{{ models.punct.current }}</span>
               </span>
-              <button class="btn btn-sm" @click="installModel('punct', '标点')" :disabled="!!setupProgress || models.punct?.ready">安装</button>
+              <button class="btn btn-sm" @click="openModelDialog('punct', '标点')">设置</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <span :style="{ color: models.speaker?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ models.speaker?.ready ? '●' : '○' }}</span>
+                <span :style="{ color: currentInstalled('speaker') ? 'var(--success)' : 'var(--text-secondary)' }">{{ currentInstalled('speaker') ? '●' : '○' }}</span>
                 <span>声纹模型</span>
+                <span v-if="models.speaker?.current" style="color: var(--text-secondary); font-size: 11px;">{{ models.speaker.current }}</span>
               </span>
-              <button class="btn btn-sm" @click="installModel('speaker', '声纹')" :disabled="!!setupProgress || models.speaker?.ready">安装</button>
+              <button class="btn btn-sm" @click="openModelDialog('speaker', '声纹')">设置</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
@@ -1038,6 +1055,15 @@ onUnmounted(() => {
     </div>
 
     </div><!-- End Row 2 -->
+
+    <!-- 模型设置弹窗（唯一关闭途径 = 弹窗内显式【关闭】按钮） -->
+    <ModelInstallDialog
+      v-if="dialogModel"
+      :category="dialogModel.category"
+      :label="dialogModel.label"
+      @close="dialogModel = null"
+      @changed="onDialogChanged"
+    />
 
   </div>
 </template>

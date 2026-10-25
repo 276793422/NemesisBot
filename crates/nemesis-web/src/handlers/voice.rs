@@ -449,6 +449,8 @@ impl ModuleHandler for VoiceHandler {
             "install_runtime",
             "install_aec",
             "install_model",
+            "model_catalog",
+            "set_model",
             "config_get",
             "config_set",
             "voice_config_get",
@@ -515,7 +517,23 @@ impl ModuleHandler for VoiceHandler {
                         .get("model")
                         .and_then(|v| v.as_str())
                         .ok_or("missing field: model")?;
-                    self.cmd_install_model(&voice_dir, model, ctx).await
+                    // 可选 name（install-by-name，模型设置弹窗）：缺省 = 安装配置
+                    // 默认变体（旧行为，向后兼容）。
+                    let name = d.get("name").and_then(|v| v.as_str());
+                    self.cmd_install_model(&voice_dir, model, name, ctx).await
+                }
+                "model_catalog" => self.cmd_model_catalog(&voice_dir),
+                "set_model" => {
+                    let d = data.ok_or("missing data")?;
+                    let category = d
+                        .get("category")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: category")?;
+                    let name = d
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: name")?;
+                    self.cmd_set_model(&voice_dir, category, name)
                 }
                 "config_get" => self.cmd_config_get(&voice_dir),
                 "config_set" => {
@@ -967,24 +985,24 @@ impl VoiceHandler {
         let config_path = voice_dir.join("config.toml");
         let config_exists = config_path.exists();
 
-        let model_dir = if config_exists {
-            let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
-            cfg.model_dir()
-        } else {
-            voice_dir.join("data")
+        // load_or_default：config.toml 缺席时用内置默认（model_dir 解析结果
+        // 与下方旧 else 分支一致：voice_dir/data）——current 字段有默认名可报。
+        let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
+        let model_dir = cfg.model_dir();
+
+        let model_entry = |category: &str| {
+            let dir = model_dir.join(category);
+            let ready = check_model_subdir_any(&dir);
+            let current = current_model_name_of(&cfg, category).unwrap_or_default();
+            // read_dir 结果显式排序（NTFS/ext4 目录序是实现细节，不假设）
+            let installed = installed_variants(&model_dir, category);
+            serde_json::json!({
+                "ready": ready,
+                "path": dir.to_string_lossy(),
+                "current": current,
+                "installed": installed,
+            })
         };
-
-        let stt_model = model_dir.join("stt");
-        let vad_model = model_dir.join("vad");
-        let tts_model = model_dir.join("tts");
-        let punct_model = model_dir.join("punct");
-        let speaker_model = model_dir.join("speaker");
-
-        let stt_ready = check_model_subdir_any(&stt_model);
-        let vad_ready = check_model_subdir_any(&vad_model);
-        let tts_ready = check_model_subdir_any(&tts_model);
-        let punct_ready = check_model_subdir_any(&punct_model);
-        let speaker_ready = check_model_subdir_any(&speaker_model);
 
         // AEC 库（可选，单独下载到 tools/voice/aec/）
         let aec_lib = voice_dir.join("aec").join("aec.dll");
@@ -998,11 +1016,12 @@ impl VoiceHandler {
             "voice_dir": voice_dir.to_string_lossy(),
             "model_dir": model_dir.to_string_lossy(),
             "models": {
-                "stt": { "ready": stt_ready, "path": stt_model.to_string_lossy() },
-                "vad": { "ready": vad_ready, "path": vad_model.to_string_lossy() },
-                "tts": { "ready": tts_ready, "path": tts_model.to_string_lossy() },
-                "punct": { "ready": punct_ready, "path": punct_model.to_string_lossy() },
-                "speaker": { "ready": speaker_ready, "path": speaker_model.to_string_lossy() },
+                "stt": model_entry("stt"),
+                "stt_stream": model_entry("stt_stream"),
+                "vad": model_entry("vad"),
+                "tts": model_entry("tts"),
+                "punct": model_entry("punct"),
+                "speaker": model_entry("speaker"),
             },
             "aec": { "ready": aec_ready, "path": aec_lib.to_string_lossy() },
         })))
@@ -1115,6 +1134,22 @@ impl VoiceHandler {
         let dir = voice_dir.to_path_buf();
         let hub = ctx.state.event_hub.clone();
 
+        // 进度桥（2026-10-25 本地模型页进度条）：bootstrap 下载/解压回调 →
+        // SSE progress 事件（phase=runtime）。publish 同步 &self，跨线程安全。
+        let progress_hub = hub.clone();
+        let progress: nemesis_voice::ProgressSink =
+            std::sync::Arc::new(move |p: nemesis_voice::RuntimeProgress| {
+                progress_hub.publish(
+                    "voice-setup",
+                    serde_json::json!({
+                        "phase": "runtime", "status": "progress",
+                        "stage": p.stage,
+                        "pct": p.pct,
+                        "message": p.message,
+                    }),
+                );
+            });
+
         // panic 安全：JoinError 也必须清槽。
         let joined = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&dir)
@@ -1146,7 +1181,7 @@ impl VoiceHandler {
                 return Err("cancelled".to_string());
             }
 
-            match nemesis_voice::bootstrap_run_in_dir(&config_path, &dir) {
+            match nemesis_voice::bootstrap_run_in_dir_with_progress(&config_path, &dir, progress) {
                 Ok(_) => {
                     hub.publish(
                         "voice-setup",
@@ -1203,7 +1238,11 @@ impl VoiceHandler {
                     "phase": "aec", "status": "starting", "message": "正在安装回声消除库..."
                 }),
             );
-            match nemesis_voice::download_aec_lib(&dir, &proxy_url) {
+            match nemesis_voice::download_aec_lib(
+                &dir,
+                &proxy_url,
+                &nemesis_voice::aec_staging_dir(),
+            ) {
                 Ok(p) => {
                     hub.publish(
                         "voice-setup",
@@ -1235,15 +1274,22 @@ impl VoiceHandler {
         &self,
         voice_dir: &std::path::Path,
         model: &str,
+        name: Option<&str>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // Acquire per-model install lock
+        // per-model 锁键：by-name 安装锁到具体变体（`tts/kokoro-v1_0`），
+        // 缺省 name 锁类别（旧行为）。同一变体并发双跑被拒，不同变体仍靠
+        // 全局单飞槽（setup_cancel）串行化意图由前端保证。
+        let lock_key = match name {
+            Some(n) => format!("{model}/{n}"),
+            None => model.to_string(),
+        };
         {
             let mut locks = install_locks().lock().unwrap();
-            if locks.contains(model) {
+            if locks.contains(&lock_key) {
                 return Err(format!("{}模型正在安装中，请稍候", model_label(model)));
             }
-            locks.insert(model.to_string());
+            locks.insert(lock_key.clone());
         }
 
         let cancel = CancellationToken::new();
@@ -1254,7 +1300,12 @@ impl VoiceHandler {
 
         let dir = voice_dir.to_path_buf();
         let model_type = model.to_string();
+        let name_owned = name.map(|n| n.to_string());
         let hub = ctx.state.event_hub.clone();
+
+        // SSE 进度帧带 name（弹窗按 phase=model + model(+name) 匹配行）；
+        // 缺省 name 沿用旧帧形态（无 name 字段），VoiceTab 旧逻辑不受影响。
+        let progress_label = name_owned.clone().unwrap_or_else(|| model_type.clone());
 
         let result = tokio::task::spawn_blocking(move || {
             let config_path = dir.join("config.toml");
@@ -1268,12 +1319,14 @@ impl VoiceHandler {
             {
                 let hub_progress = hub.clone();
                 let mt = model_type.clone();
+                let n = name_owned.clone();
                 nemesis_voice::set_progress(Some(Box::new(move |msg: &str| {
                     hub_progress.publish(
                         "voice-setup",
                         serde_json::json!({
                             "phase": "model", "status": "progress",
                             "model": &mt,
+                            "name": &n,
                             "message": msg,
                         }),
                     );
@@ -1285,7 +1338,8 @@ impl VoiceHandler {
                 serde_json::json!({
                     "phase": "model", "status": "starting",
                     "model": &model_type,
-                    "message": format!("正在安装{}模型...", model_type)
+                    "name": &name_owned,
+                    "message": format!("正在安装{}模型...", progress_label)
                 }),
             );
 
@@ -1294,6 +1348,8 @@ impl VoiceHandler {
                     "voice-setup",
                     serde_json::json!({
                         "phase": "model", "status": "cancelled",
+                        "model": &model_type,
+                        "name": &name_owned,
                         "message": "安装已取消"
                     }),
                 );
@@ -1301,21 +1357,36 @@ impl VoiceHandler {
                 return Err("cancelled".to_string());
             }
 
-            let result = match model_type.as_str() {
-                "stt" => nemesis_voice::model::ensure_stt_model(&cfg).map_err(|e| e.to_string()),
-                // 流式 STT（realtime stream_stt）：zipformer 在线转写四件套
-                "stt_stream" => {
-                    nemesis_voice::model::ensure_stt_stream_model(&cfg).map_err(|e| e.to_string())
+            // by-name 通路：按 (category, name) 直装指定变体，不改配置默认；
+            // 缺省 name = 装配置默认变体（六分支旧行为）。
+            let result = match name_owned.as_deref() {
+                Some(variant) => {
+                    nemesis_voice::model::ensure_model_by_name(&cfg, &model_type, variant)
+                        .map_err(|e| e.to_string())
                 }
-                "vad" => nemesis_voice::model::ensure_vad_model(&cfg).map_err(|e| e.to_string()),
-                "tts" => nemesis_voice::model::ensure_tts_model(&cfg).map_err(|e| e.to_string()),
-                "punct" => {
-                    nemesis_voice::model::ensure_punct_model(&cfg).map_err(|e| e.to_string())
-                }
-                "speaker" => {
-                    nemesis_voice::model::ensure_speaker_model(&cfg).map_err(|e| e.to_string())
-                }
-                _ => Err(format!("unknown model type: {}", model_type)),
+                None => match model_type.as_str() {
+                    "stt" => {
+                        nemesis_voice::model::ensure_stt_model(&cfg).map_err(|e| e.to_string())
+                    }
+                    // 流式 STT（realtime stream_stt）：zipformer 在线转写四件套
+                    "stt_stream" => {
+                        nemesis_voice::model::ensure_stt_stream_model(&cfg)
+                            .map_err(|e| e.to_string())
+                    }
+                    "vad" => {
+                        nemesis_voice::model::ensure_vad_model(&cfg).map_err(|e| e.to_string())
+                    }
+                    "tts" => {
+                        nemesis_voice::model::ensure_tts_model(&cfg).map_err(|e| e.to_string())
+                    }
+                    "punct" => {
+                        nemesis_voice::model::ensure_punct_model(&cfg).map_err(|e| e.to_string())
+                    }
+                    "speaker" => {
+                        nemesis_voice::model::ensure_speaker_model(&cfg).map_err(|e| e.to_string())
+                    }
+                    _ => Err(format!("unknown model type: {}", model_type)),
+                },
             };
 
             nemesis_voice::set_progress(None);
@@ -1329,11 +1400,12 @@ impl VoiceHandler {
                         serde_json::json!({
                             "phase": "model", "status": "complete",
                             "model": &model_type,
-                            "message": format!("{}模型安装完成", model_type)
+                            "name": &name_owned,
+                            "message": format!("{}模型安装完成", progress_label)
                         }),
                     );
                     Ok(Some(
-                        serde_json::json!({ "success": true, "model": model_type }),
+                        serde_json::json!({ "success": true, "model": model_type, "name": name_owned }),
                     ))
                 }
                 Err(e) => {
@@ -1342,7 +1414,8 @@ impl VoiceHandler {
                         serde_json::json!({
                             "phase": "model", "status": "error",
                             "model": &model_type,
-                            "message": format!("{}模型安装失败: {}", model_type, e)
+                            "name": &name_owned,
+                            "message": format!("{}模型安装失败: {}", progress_label, e)
                         }),
                     );
                     Err(format!("model install failed: {}", e))
@@ -1355,7 +1428,7 @@ impl VoiceHandler {
         // Release install lock
         {
             let mut locks = install_locks().lock().unwrap();
-            locks.remove(model);
+            locks.remove(&lock_key);
         }
 
         // Clear cancel token
@@ -1365,6 +1438,104 @@ impl VoiceHandler {
         }
 
         result
+    }
+
+    /// 模型目录（模型设置弹窗数据源）：config.toml `[[models.sources]]` 按
+    /// category 分组，逐条附 installed（声明文件全在场，强判）/ is_current /
+    /// description。config.toml 缺席时用内嵌默认模板展示（可看不可装——
+    /// install/set_model 仍要求 config.toml 在场，诚实报错引导先装环境）。
+    fn cmd_model_catalog(
+        &self,
+        voice_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let config_path = voice_dir.join("config.toml");
+        let cfg = if config_path.exists() {
+            nemesis_voice::AppConfig::load_or_default(&config_path)
+        } else {
+            // 未初始化（config.toml 缺席）→ 用内嵌默认模板展示目录（可看不可装：
+            // install/set_model 仍要求 config.toml 在场，诚实报错引导先装环境）
+            nemesis_voice::bootstrap::default_app_config()
+        };
+        let model_dir = cfg.model_dir();
+
+        let mut categories: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+            Default::default();
+        for s in &cfg.models.sources {
+            let installed =
+                nemesis_voice::model::model_source_installed(&cfg, &s.category, &s.name);
+            let is_current = current_model_name_of(&cfg, &s.category).as_deref() == Some(&s.name);
+            categories
+                .entry(s.category.clone())
+                .or_default()
+                .push(serde_json::json!({
+                    "name": s.name,
+                    "repo": s.repo,
+                    "description": s.description,
+                    "file_count": s.files.len(),
+                    "installed": installed,
+                    "is_current": is_current,
+                }));
+        }
+
+        Ok(Some(serde_json::json!({
+            "categories": categories,
+            "model_dir": model_dir.to_string_lossy(),
+        })))
+    }
+
+    /// 设为当前变体（模型设置弹窗「设为当前」）：校验类别/变体存在/已安装后，
+    /// **就地文本改写** config.toml `[<category>]` 节的 model_name 行（保用户
+    /// 注释；serde 往返会抹注释，config 编辑器原文保存同哲学）。不做引擎热
+    /// 重启——前端提示「语音引擎重启后生效」。
+    fn cmd_set_model(
+        &self,
+        voice_dir: &std::path::Path,
+        category: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        const SETTABLE: &[&str] = &["stt", "stt_stream", "vad", "tts", "punct", "speaker"];
+        if !SETTABLE.contains(&category) {
+            return Err(format!("unknown model category: {}", category));
+        }
+        let config_path = voice_dir.join("config.toml");
+        if !config_path.exists() {
+            return Err("config.toml not found. Run setup first.".to_string());
+        }
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("failed to read config: {}", e))?;
+        let cfg = nemesis_voice::AppConfig::load(&config_path).map_err(|e| e.to_string())?;
+
+        // 变体存在 + 类别匹配（typed 校验读 AppConfig，与 set_model_name_in_config
+        // 的文本改写同读一份文件，窗口内手动改文件的双写竞态可忽略——单用户桌面场景）
+        let source = cfg
+            .models
+            .sources
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| format!("模型 '{name}' 不在 config [models.sources] 目录中"))?;
+        if source.category != category {
+            return Err(format!(
+                "模型 '{name}' 属于类别 '{}'，与请求的类别 '{category}' 不符",
+                source.category
+            ));
+        }
+        // 已安装才允许设为当前（未安装的变体设了也无法装载，诚实拒绝）
+        if !nemesis_voice::model::model_source_installed(&cfg, category, name) {
+            return Err(format!("模型 '{name}' 尚未安装，请先安装再设为当前"));
+        }
+
+        let new_content = nemesis_voice::config::set_model_name_in_config(&content, category, name)
+            .map_err(|e| e.to_string())?;
+        // REL-002：统一原子写入（voice config.toml，与 cmd_config_set 同源）
+        nemesis_utils::write_file_atomic(
+            &config_path.to_string_lossy(),
+            new_content.as_bytes(),
+            0o600,
+        )
+        .map_err(|e| format!("failed to write config: {}", e))?;
+        Ok(Some(
+            serde_json::json!({ "success": true, "category": category, "name": name }),
+        ))
     }
 
     fn cmd_config_get(
@@ -3911,6 +4082,39 @@ fn has_onnx_file(dir: &std::path::Path) -> bool {
     false
 }
 
+/// 当前配置变体名（`cfg.<category>.model_name` 投影；未知类别 = None）。
+/// `voice.status` 的 `models.<cat>.current` 与 `voice.model_catalog` 的
+/// `is_current` 共用（单一真相源）。
+#[cfg(target_os = "windows")]
+fn current_model_name_of(cfg: &nemesis_voice::AppConfig, category: &str) -> Option<String> {
+    match category {
+        "stt" => Some(cfg.stt.model_name.clone()),
+        "stt_stream" => Some(cfg.stt_stream.model_name.clone()),
+        "vad" => Some(cfg.vad.model_name.clone()),
+        "tts" => Some(cfg.tts.model_name.clone()),
+        "punct" => Some(cfg.punct.model_name.clone()),
+        "speaker" => Some(cfg.speaker.model_name.clone()),
+        _ => None,
+    }
+}
+
+/// 已安装变体名列表（扫 `<model_dir>/<category>/*/` 子目录）。目录粗扫：
+/// catalog 的 installed 用更严的 `model_source_installed`（声明文件全在场），
+/// 这里的列表只供 status 面板展示有哪些变体目录存在。结果显式排序
+/// （read_dir 目录序是平台实现细节）。
+#[cfg(target_os = "windows")]
+fn installed_variants(model_dir: &std::path::Path, category: &str) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(model_dir.join(category))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    out.sort();
+    out
+}
+
 // Phase 3 批次 18（2026-08-25）：voice.rs 纯逻辑子模块测试。子模块（而非
 // sibling 文件）是为了访问本文件私有项（DialogueSttOutput 缓冲语义 /
 // check_model_subdir_any / read_voice_config 回退 / cmd_status 文件探测 /
@@ -3939,3 +4143,10 @@ mod agt_tests;
 // tts_playback_stop 与 register_cancel 幂等成功、engine_status 空态投影。
 #[cfg(all(test, target_os = "windows"))]
 mod w4_tests;
+
+// MC 覆盖率批次（2026-10-25）：模型设置弹窗三命令——model_catalog 分组与
+// installed/is_current 投影（含缺 config 回退内嵌模板）、set_model 就地改写
+// 保注释 + 未安装/未知变体/类别错误拒绝、status 扩展字段（current/installed/
+// stt_stream 条目）。纯 FS 读写不触全局单例，无需 voice_state_lock。
+#[cfg(all(test, target_os = "windows"))]
+mod mc_tests;

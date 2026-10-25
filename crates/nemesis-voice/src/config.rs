@@ -210,6 +210,10 @@ pub struct ModelSource {
     pub name: String,
     pub category: String,
     pub repo: String,
+    /// 人类可读描述（模型管理弹窗展示）。可选：缺省 = 空串（前端回退显示
+    /// name+repo）。config.toml 是模型目录的单一真相源，描述跟随条目走。
+    #[serde(default)]
+    pub description: String,
     pub files: Vec<ModelFile>,
 }
 
@@ -263,6 +267,105 @@ impl AppConfig {
     pub fn find_model_source(&self, name: &str) -> Option<&ModelSource> {
         self.models.sources.iter().find(|s| s.name == name)
     }
+}
+
+/// 就地改写 config.toml 文本中 `[<category>]` 节的 `model_name` 行（`voice.set_model`
+/// 命令的单一真相源，纯函数便于单测）。
+///
+/// 设计：字节级最小改动——只替换 value 引号内的内容，缩进 / `=` 两侧空白 /
+/// 行尾注释 / 其余全部字节原样保留（serde 往返会抹掉用户注释，config 编辑器
+/// 「原文保存」同哲学）。支持 TOML basic（`"`）与 literal（`'`）两种引号。
+///
+/// 错误面（诚实报错，绝不静默重建文件）：
+/// - 找不到 `[<category>]` 节 → Err
+/// - 节内（到下一个 `[` 节头为止）没有 `model_name` 键行 → Err
+/// - 值没有成对引号 → Err
+pub fn set_model_name_in_config(content: &str, category: &str, new_name: &str) -> Result<String> {
+    let header = format!("[{category}]");
+    let mut in_section = false;
+    let mut section_found = false;
+    let mut done = false;
+    let mut out: Vec<String> = Vec::with_capacity(content.lines().count() + 1);
+
+    for line in content.lines() {
+        if done {
+            out.push(line.to_string());
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            // 节头精确匹配：`[stt_stream]` 不会误命中 `[stt]` 的扫描窗
+            in_section = trimmed == header;
+            if in_section {
+                section_found = true;
+            }
+            out.push(line.to_string());
+            continue;
+        }
+        if !in_section || trimmed.starts_with('#') || !trimmed.starts_with("model_name") {
+            out.push(line.to_string());
+            continue;
+        }
+        // 键精确判定：`model_name` 后（跳过空白）必须是 `=`（`model_name_x` 不误命中）
+        let after_key = trimmed["model_name".len()..].trim_start();
+        let Some(rest) = after_key.strip_prefix('=') else {
+            out.push(line.to_string());
+            continue;
+        };
+        // 找第一对引号（basic `"` 与 literal `'` 取先出现者）
+        let (q_char, q_open) = match (rest.find('"'), rest.find('\'')) {
+            (Some(a), Some(b)) => {
+                if a < b {
+                    ('"', a)
+                } else {
+                    ('\'', b)
+                }
+            }
+            (Some(a), None) => ('"', a),
+            (None, Some(b)) => ('\'', b),
+            (None, None) => anyhow::bail!(
+                "config.toml [{category}] 节的 model_name 值没有引号包裹，无法就地改写：{line}"
+            ),
+        };
+        let after_open = &rest[q_open + 1..];
+        let Some(q_close_rel) = after_open.find(q_char) else {
+            anyhow::bail!("config.toml [{category}] 节的 model_name 值引号不配对：{line}");
+        };
+        // rest 是 trimmed 的后缀切片 → 偏移换算安全（trimmed 同为 line 的中段子切片）
+        let indent_len = line.len() - line.trim_start().len();
+        let open_in_trimmed = trimmed.len() - rest.len() + q_open;
+        let close_in_trimmed = open_in_trimmed + 1 + q_close_rel;
+        out.push(format!(
+            "{}{}{new_name}{}",
+            &line[..indent_len],
+            &trimmed[..open_in_trimmed + 1],
+            &trimmed[close_in_trimmed..]
+        ));
+        done = true;
+    }
+
+    if !section_found {
+        anyhow::bail!("config.toml 中没有 [{category}] 节，无法设置 model_name");
+    }
+    if !done {
+        anyhow::bail!("config.toml [{category}] 节中没有 model_name 行");
+    }
+
+    // 行尾风格保真：CRLF 文件按 CRLF 回写，结尾换行保真（`\r\n` 文件补 `\r\n`，
+    // 否则只补 `\n`；`lines()` 会吞掉最后一行的终止符，必须还原）
+    let mut joined = if content.contains("\r\n") {
+        out.join("\r\n")
+    } else {
+        out.join("\n")
+    };
+    if content.ends_with("\r\n") {
+        if !joined.ends_with("\r\n") {
+            joined.push_str("\r\n");
+        }
+    } else if content.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    Ok(joined)
 }
 
 impl Default for AppConfig {

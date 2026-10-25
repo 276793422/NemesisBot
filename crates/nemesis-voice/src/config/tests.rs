@@ -94,12 +94,14 @@ fn app_config_find_model_source_returns_match_by_name() {
             name: "sensevoice".to_string(),
             category: "stt".to_string(),
             repo: "user/sensevoice".to_string(),
+            description: String::new(),
             files: vec![],
         },
         ModelSource {
             name: "silero".to_string(),
             category: "vad".to_string(),
             repo: "user/silero".to_string(),
+            description: String::new(),
             files: vec![],
         },
     ];
@@ -235,6 +237,7 @@ fn model_source_clones_correctly() {
         name: "x".to_string(),
         category: "stt".to_string(),
         repo: "user/x".to_string(),
+        description: "test model".to_string(),
         files: vec![ModelFile {
             local: "model.onnx".to_string(),
             remote: "v1/model.onnx".to_string(),
@@ -397,4 +400,105 @@ fn should_warn_missing_only_first_time_per_path() {
     // 不同路径独立记账。
     assert!(should_warn_missing(b));
     assert!(!should_warn_missing(b));
+}
+
+// ===========================================================================
+// set_model_name_in_config（2026-10-25 语音模型设置弹窗）：就地改写
+// `[<category>]` 节 model_name 行——注释/缩进/行尾注释/CRLF 全保真；
+// 错误面（无节/无键/引号不配对）诚实报错。
+// ===========================================================================
+
+#[test]
+fn set_model_name_basic_rewrite_preserves_rest() {
+    let content = "[stt]\nmodel_name = \"old\"\nlanguage = \"auto\"\n\n[tts]\nmodel_name = \"x\"\n";
+    let out = set_model_name_in_config(content, "stt", "new").unwrap();
+    assert_eq!(
+        out,
+        "[stt]\nmodel_name = \"new\"\nlanguage = \"auto\"\n\n[tts]\nmodel_name = \"x\"\n"
+    );
+}
+
+#[test]
+fn set_model_name_exact_section_match_not_prefix() {
+    // `[stt_stream]` 不被 `[stt]` 的扫描窗误命中（反之亦然）
+    let content = "[stt]\nmodel_name = \"a\"\n\n[stt_stream]\nmodel_name = \"b\"\n";
+    let out = set_model_name_in_config(content, "stt_stream", "c").unwrap();
+    assert!(!out.contains("model_name = \"b\""));
+    assert!(out.contains("model_name = \"c\""));
+    // [stt] 节原样
+    assert!(out.contains("[stt]\nmodel_name = \"a\""));
+}
+
+#[test]
+fn set_model_name_preserves_comments_and_trailing_comment() {
+    let content = "# top comment\n[stt]\n# section comment\nmodel_name = \"old\"  # keep me\nlanguage = \"auto\"\n";
+    let out = set_model_name_in_config(content, "stt", "new").unwrap();
+    assert!(out.contains("# top comment"));
+    assert!(out.contains("# section comment"));
+    assert!(out.contains("model_name = \"new\"  # keep me"));
+    assert!(out.contains("language = \"auto\""));
+}
+
+#[test]
+fn set_model_name_preserves_indentation() {
+    let content = "[stt]\n  model_name = \"old\"\n";
+    let out = set_model_name_in_config(content, "stt", "new").unwrap();
+    assert_eq!(out, "[stt]\n  model_name = \"new\"\n");
+}
+
+#[test]
+fn set_model_name_supports_literal_single_quotes() {
+    let content = "[stt]\nmodel_name = 'old'\n";
+    let out = set_model_name_in_config(content, "stt", "new").unwrap();
+    assert_eq!(out, "[stt]\nmodel_name = 'new'\n");
+}
+
+#[test]
+fn set_model_name_crlf_preserved() {
+    let content = "[stt]\r\nmodel_name = \"old\"\r\nlanguage = \"auto\"\r\n";
+    let out = set_model_name_in_config(content, "stt", "new").unwrap();
+    assert_eq!(
+        out,
+        "[stt]\r\nmodel_name = \"new\"\r\nlanguage = \"auto\"\r\n"
+    );
+}
+
+#[test]
+fn set_model_name_similar_key_not_matched() {
+    // model_name_x / model_names 不误命中；没有真键 → 诚实报错
+    let content = "[stt]\nmodel_name_x = \"old\"\n";
+    let err = set_model_name_in_config(content, "stt", "new").unwrap_err();
+    assert!(err.to_string().contains("没有 model_name 行"), "got: {err}");
+}
+
+#[test]
+fn set_model_name_missing_section_errors() {
+    let content = "[tts]\nmodel_name = \"old\"\n";
+    let err = set_model_name_in_config(content, "stt", "new").unwrap_err();
+    assert!(err.to_string().contains("没有 [stt] 节"), "got: {err}");
+}
+
+#[test]
+fn set_model_name_unquoted_value_errors() {
+    let content = "[stt]\nmodel_name = old\n";
+    let err = set_model_name_in_config(content, "stt", "new").unwrap_err();
+    assert!(err.to_string().contains("没有引号包裹"), "got: {err}");
+}
+
+#[test]
+fn set_model_name_section_match_resets_after_leaving() {
+    // 节窗随下一个节头关闭：model_name 只在 [stt] 内找
+    let content = "[stt]\nlanguage = \"auto\"\n\n[tts]\nmodel_name = \"old\"\n";
+    let err = set_model_name_in_config(content, "stt", "new").unwrap_err();
+    assert!(err.to_string().contains("没有 model_name 行"), "got: {err}");
+}
+
+#[test]
+fn set_model_name_roundtrip_parseable_toml() {
+    let content = "[stt]\n# c\nmodel_name = \"old\"  # tail\nlanguage = \"auto\"\n";
+    let out = set_model_name_in_config(content, "stt", "new-model").unwrap();
+    // 改写结果必须仍是合法 TOML 且值正确
+    let parsed: toml::Value = toml::from_str(&out).unwrap();
+    assert_eq!(parsed["stt"]["model_name"].as_str(), Some("new-model"));
+    assert_eq!(parsed["stt"]["language"].as_str(), Some("auto"));
 }

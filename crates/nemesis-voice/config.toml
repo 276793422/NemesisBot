@@ -92,6 +92,7 @@ base = "https://hf-mirror.com"
 name = "sensevoice-small"
 category = "stt"
 repo = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+description = "SenseVoice-Small 非流式识别 · 中英日韩粤 · int8 量化"
 files = [
     { local = "model.onnx", remote = "model.int8.onnx" },
     { local = "tokens.txt", remote = "tokens.txt" },
@@ -103,6 +104,7 @@ files = [
 name = "streaming-zipformer-bilingual-zh-en"
 category = "stt_stream"
 repo = "csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+description = "Streaming Zipformer 流式识别 · 中英双语 · int8（实时语音）"
 files = [
     { local = "encoder.onnx", remote = "encoder-epoch-99-avg-1.int8.onnx" },
     { local = "decoder.onnx", remote = "decoder-epoch-99-avg-1.int8.onnx" },
@@ -114,6 +116,7 @@ files = [
 name = "silero_vad"
 category = "vad"
 repo = ""   # Not on HuggingFace; uses direct URL below
+description = "Silero VAD 语音活动检测 · 轻量"
 files = [
     { local = "silero_vad.onnx", remote = "", url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" },
 ]
@@ -122,6 +125,7 @@ files = [
 name = "vits-melo-tts-zh_en"
 category = "tts"
 repo = "csukuangfj/vits-melo-tts-zh_en"
+description = "VITS Melo · 中英 · 44.1kHz · 2 音色"
 files = [
     { local = "model.onnx", remote = "model.onnx" },
     { local = "lexicon.txt", remote = "lexicon.txt" },
@@ -137,6 +141,7 @@ files = [
 name = "sherpa-onnx-vits-zh-ll"
 category = "tts"
 repo = "csukuangfj/sherpa-onnx-vits-zh-ll"
+description = "VITS 中文 · 44.1kHz · 单音色"
 files = [
     { local = "model.onnx", remote = "model.onnx" },
     { local = "lexicon.txt", remote = "lexicon.txt" },
@@ -147,6 +152,7 @@ files = [
 name = "kokoro-int8-multi-lang-v1_1"
 category = "tts"
 repo = "csukuangfj/kokoro-int8-multi-lang-v1_1"
+description = "Kokoro int8 量化 · 中英 · 103 音色 · 体积小速度快"
 files = [
     { local = "model.onnx", remote = "model.int8.onnx" },
     { local = "voices.bin", remote = "voices.bin" },
@@ -179,6 +185,7 @@ files = [
 name = "kokoro-multi-lang-v1_0"
 category = "tts"
 repo = "csukuangfj/kokoro-multi-lang-v1_0"
+description = "Kokoro 多语种 v1.0 · 中英 · 53 音色"
 files = [
     { local = "model.onnx", remote = "model.onnx" },
     { local = "voices.bin", remote = "voices.bin" },
@@ -211,6 +218,7 @@ files = [
 name = "kokoro-multi-lang-v1_1"
 category = "tts"
 repo = "csukuangfj/kokoro-multi-lang-v1_1"
+description = "Kokoro 多语种 v1.1 · 中英 · 103 音色 · 24kHz（默认推荐）"
 files = [
     { local = "model.onnx", remote = "model.onnx" },
     { local = "voices.bin", remote = "voices.bin" },
@@ -247,6 +255,7 @@ files = [
 name = "ct-transformer-zh-en"
 category = "punct"
 repo = "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12"
+description = "CT-Transformer 标点恢复 · 中英"
 files = [
     { local = "model.onnx", remote = "model.onnx" },
 ]
@@ -255,6 +264,7 @@ files = [
 name = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
 category = "speaker"
 repo = "csukuangfj/speaker-embedding-models"
+description = "3D-Speaker 声纹嵌入 · 中英 16kHz"
 files = [
     { local = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx", remote = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx" },
 ]

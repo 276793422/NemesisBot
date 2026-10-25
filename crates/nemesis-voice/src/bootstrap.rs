@@ -17,6 +17,8 @@ use std::fs;
 use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Windows-only constants
@@ -71,6 +73,13 @@ pub fn default_config_toml() -> &'static str {
     DEFAULT_CONFIG
 }
 
+/// 解析内嵌默认模板为 AppConfig（`voice.model_catalog` 在 config.toml 缺席时
+/// 的目录数据源：用户没初始化语音环境也能浏览可装模型目录）。
+#[cfg(target_os = "windows")]
+pub fn default_app_config() -> crate::AppConfig {
+    toml::from_str(DEFAULT_CONFIG).expect("embedded default config.toml must parse")
+}
+
 /// Full auto-setup: config + libraries. Libraries placed next to exe.
 #[cfg(target_os = "windows")]
 pub fn run(config_path: &Path) -> Result<bool> {
@@ -103,9 +112,41 @@ pub fn run(_config_path: &Path) -> Result<bool> {
     bail!("Voice pipeline is only supported on Windows")
 }
 
+/// 运行库安装进度事件（2026-10-25 本地模型页进度条）：下载/解压阶段经回调
+/// 上抛，调用方（voice.rs install_runtime）桥到 SSE `voice-setup` progress 事件。
+/// pct=None = 总长未知（content_length 缺席），前端退化为不确定条+文本。
+#[derive(Debug, Clone)]
+pub struct RuntimeProgress {
+    /// 阶段：download / extract / load
+    pub stage: &'static str,
+    /// 0-100；总长未知时 None
+    pub pct: Option<f64>,
+    /// 人读文本（下载含已收/总量/速度）
+    pub message: String,
+}
+
+/// 进度回调（跨线程：下载跑在专用 std::thread，闭包需 Send + Sync）。
+pub type ProgressSink = Arc<dyn Fn(RuntimeProgress) + Send + Sync>;
+
+/// 无操作进度槽（`run_in_dir` 旧签名共用一条执行路径，调用点零迁移）。
+#[cfg(target_os = "windows")]
+fn noop_progress() -> ProgressSink {
+    Arc::new(|_| {})
+}
+
 /// Full auto-setup with explicit library directory.
 #[cfg(target_os = "windows")]
 pub fn run_in_dir(config_path: &Path, lib_dir: &Path) -> Result<bool> {
+    run_in_dir_with_progress(config_path, lib_dir, noop_progress())
+}
+
+/// 带进度回调的完整装配（下载百分比/解压/加载阶段全部上抛）。
+#[cfg(target_os = "windows")]
+pub fn run_in_dir_with_progress(
+    config_path: &Path,
+    lib_dir: &Path,
+    progress: ProgressSink,
+) -> Result<bool> {
     if !config_path.exists() {
         tracing::info!("[setup] Creating default config: {}", config_path.display());
         fs::create_dir_all(lib_dir)?;
@@ -124,6 +165,11 @@ pub fn run_in_dir(config_path: &Path, lib_dir: &Path) -> Result<bool> {
 
     if all_present {
         tracing::info!("[setup] Runtime libraries found.");
+        progress(RuntimeProgress {
+            stage: "load",
+            pct: None,
+            message: "运行库已就绪，加载引擎...".to_string(),
+        });
     } else {
         // download feature 关：无下载能力，诚实 bail（2 参 stub），不静默。
         #[cfg(feature = "download")]
@@ -132,7 +178,7 @@ pub fn run_in_dir(config_path: &Path, lib_dir: &Path) -> Result<bool> {
                 "[setup] Downloading sherpa-onnx v{} runtime ...",
                 SHERPA_VERSION
             );
-            download_runtime_libs(lib_dir, &proxy_url, &sherpa_staging_dir())?;
+            download_runtime_libs(lib_dir, &proxy_url, &sherpa_staging_dir(), &progress)?;
             tracing::info!("[setup] Runtime libraries ready.");
         }
         #[cfg(not(feature = "download"))]
@@ -169,16 +215,25 @@ fn sherpa_staging_dir() -> PathBuf {
 }
 
 /// AEC 归档下载暂存目录（独立于 sherpa，同为跨启动缓存复用的固定路径）。
-#[cfg(all(target_os = "windows", feature = "download"))]
-fn aec_staging_dir() -> PathBuf {
+/// pub：生产调用方（voice handler）组装 `download_aec_lib` 第三参用。
+/// cfg 只挂 windows 不挂 download：与 `download_aec_lib` 的两 feature 形态
+/// 对齐（无 download 时 stub 也收这个参数，引用点不能缺符号）。
+#[cfg(target_os = "windows")]
+pub fn aec_staging_dir() -> PathBuf {
     std::env::temp_dir().join("nemesis-voice-aec-setup")
 }
 
 #[cfg(all(target_os = "windows", feature = "download"))]
-fn download_runtime_libs(exe_dir: &Path, proxy_url: &str, staging_dir: &Path) -> Result<()> {
+fn download_runtime_libs(
+    exe_dir: &Path,
+    proxy_url: &str,
+    staging_dir: &Path,
+    progress: &ProgressSink,
+) -> Result<()> {
     let exe_dir = exe_dir.to_path_buf();
     let proxy_url = proxy_url.to_string();
     let staging_dir = staging_dir.to_path_buf();
+    let progress = progress.clone();
     // Spawn a standalone thread to avoid "Cannot start a runtime from within a runtime"
     // (the caller may already be inside a tokio runtime) and to avoid reqwest::blocking
     // stack overflow (async reqwest + our own runtime is much lighter on stack).
@@ -201,13 +256,19 @@ fn download_runtime_libs(exe_dir: &Path, proxy_url: &str, staging_dir: &Path) ->
         ];
 
         let mut last_error = None;
-        for url in &urls {
+        for (idx, url) in urls.iter().enumerate() {
             tracing::info!("Trying: {}", url);
+            progress(RuntimeProgress {
+                stage: "download",
+                pct: Some(0.0),
+                message: format!("下载运行库（源 {}/{}）...", idx + 1, urls.len()),
+            });
             match rt.block_on(try_download_and_extract(
                 url,
                 &exe_dir,
                 &proxy_url,
                 &staging_dir,
+                &progress,
             )) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -257,6 +318,7 @@ async fn try_download_and_extract(
     exe_dir: &Path,
     proxy_url: &str,
     staging_dir: &Path,
+    progress: &ProgressSink,
 ) -> Result<()> {
     let temp_dir = staging_dir.to_path_buf();
     fs::create_dir_all(&temp_dir)?;
@@ -314,6 +376,7 @@ async fn try_download_and_extract(
             .with_context(|| format!("Failed to create temp file: {}", part_path.display()))?;
         let mut downloaded: u64 = 0;
         let mut last_report = std::time::Instant::now();
+        let mut last_progress = std::time::Instant::now();
         let mut last_downloaded: u64 = 0;
 
         use std::io::Write;
@@ -324,6 +387,32 @@ async fn try_download_and_extract(
             let chunk = chunk.context("Failed to read download chunk")?;
             file.write_all(&chunk)?;
             downloaded += chunk.len() as u64;
+
+            // SSE 进度回调：1s 节流（日志保持 5s 稀疏）。
+            if last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+                let elapsed = last_progress.elapsed().as_secs_f64();
+                let speed = (downloaded - last_downloaded) as f64 / elapsed.max(0.001);
+                progress(RuntimeProgress {
+                    stage: "download",
+                    pct: total_size.map(|t| downloaded as f64 / t as f64 * 100.0),
+                    message: match total_size {
+                        Some(total) => format!(
+                            "下载运行库 {:.1} / {:.1} MB（{:.0}%）· {}/s",
+                            downloaded as f64 / (1024.0 * 1024.0),
+                            total as f64 / (1024.0 * 1024.0),
+                            downloaded as f64 / total as f64 * 100.0,
+                            format_speed(speed)
+                        ),
+                        None => format!(
+                            "下载运行库 {:.1} MB · {}/s",
+                            downloaded as f64 / (1024.0 * 1024.0),
+                            format_speed(speed)
+                        ),
+                    },
+                });
+                last_progress = std::time::Instant::now();
+                last_downloaded = downloaded;
+            }
 
             if last_report.elapsed() >= std::time::Duration::from_secs(5) {
                 let elapsed = last_report.elapsed().as_secs_f64();
@@ -372,6 +461,11 @@ async fn try_download_and_extract(
     }
 
     tracing::info!("Extracting libraries ...");
+    progress(RuntimeProgress {
+        stage: "extract",
+        pct: None,
+        message: "下载完成，解压运行库...".to_string(),
+    });
     let extract_dir = temp_dir.join("extracted");
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir)?;
@@ -435,10 +529,17 @@ async fn try_download_and_extract(
 ///
 /// `dst_dir` 一般是 `{workspace}/tools/voice/aec/`（与 sherpa 运行时分开，
 /// 这样 AEC 模块可独立删除而不影响语音通道）。
+///
+/// `staging_dir` 归档下载暂存目录（.part/成品归档缓存）：生产传
+/// [`aec_staging_dir`]（跨启动缓存复用），测试传 pid 派生目录做隔离
+/// （与 `download_runtime_libs` 的 staging 透传同模式——曾因内部硬编码
+/// 生产目录，本机真实下载的缓存归档让「不可达代理」测试 0.09s 假成功，
+/// 实录 2026-10-25）。
 #[cfg(all(target_os = "windows", feature = "download"))]
-pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
+pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str, staging_dir: &Path) -> Result<PathBuf> {
     let dst_dir = dst_dir.to_path_buf();
     let proxy_url = proxy_url.to_string();
+    let staging_dir = staging_dir.to_path_buf();
     let handle = std::thread::spawn(move || -> Result<PathBuf> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -464,12 +565,7 @@ pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
         let mut last_error = None;
         for url in &urls {
             tracing::info!("[aec] Trying: {}", url);
-            match rt.block_on(try_download_aec(
-                url,
-                &dst_dir,
-                &proxy_url,
-                &aec_staging_dir(),
-            )) {
+            match rt.block_on(try_download_aec(url, &dst_dir, &proxy_url, &staging_dir)) {
                 Ok(p) => return Ok(p),
                 Err(e) => {
                     tracing::warn!("[aec] Failed: {}", e);
@@ -493,7 +589,7 @@ pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
 }
 
 #[cfg(all(target_os = "windows", not(feature = "download")))]
-pub fn download_aec_lib(_dst_dir: &Path, _proxy_url: &str) -> Result<PathBuf> {
+pub fn download_aec_lib(_dst_dir: &Path, _proxy_url: &str, _staging_dir: &Path) -> Result<PathBuf> {
     bail!(
         "AEC lib not found. Build with 'download' feature (default) for automatic \
          download, or copy {} manually next to the exe.",
