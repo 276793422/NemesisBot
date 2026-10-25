@@ -326,32 +326,41 @@ impl AgentLoop {
 
     /// B 线动态注入（2026-10-14）：用户画像段（mtime 门控每轮重渲染）。
     ///
-    /// - 门控：`<workspace>/config/user_profile.json` mtime 未变 → 走缓存
-    ///   （零磁盘 IO，字节稳定）；变了 → 重读文件并重渲染。config.json 的
-    ///   `user_profile.enabled` 开关在门控未命中时现读（enabled=false →
-    ///   空 section，disable 即时生效）；config mtime 变化本身另有
-    ///   `check_config_reload` 独立检测兜底。
+    /// - 门控：`<workspace>/config/user_profile.json` **与 config.json 的
+    ///   mtime 双键**任一未变 → 走缓存（字节稳定）；变了 → 重读并重渲染。
+    ///   config.json 的 `user_profile.enabled` 开关翻转**只动 config 不动
+    ///   画像文件**，且 disable 后 sweep no-op 永不再写画像（mtime 冻结）
+    ///   ——单键时代缓存永不过期，关闭的开关在进程生命周期内不生效
+    ///   （BUG-20261025-36：disable 后画像段仍持续注入每条消息）。config
+    ///   mtime 每轮一次 stat，与 `check_config_reload` 同款成本。
     /// - 失败语义：workspace 未设 / profile 文件不存在 / config 读取失败
     ///   → 空 section（诚实降级，不炸构建）；profile 解析失败 → 空 +
     ///   warn（损坏画像不注入，等用户修复或 sweep 重建）。
     /// - 内容纯状态派生（文件内容渲染）：两次变更之间字节稳定 → prompt
     ///   cache 前缀不受损；随 InjectionRecord 台账回放一致（同 I5 机制）。
-    fn user_profile_section_now(&self) -> String {
+    pub(crate) fn user_profile_section_now(&self) -> String {
         let Some(ref root) = *self.workspace_root.read() else {
             return String::new();
         };
+        let mtime_ns = |p: &std::path::Path| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                })
+        };
         let profile_path = crate::user_profile::profile_path(root);
-        let mtime = std::fs::metadata(&profile_path)
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            });
+        let profile_mtime = mtime_ns(&profile_path);
+        // config.json mtime 进缓存键：enabled 翻转（disable/enable）即时
+        // 失效重渲染，不再依赖画像文件自身变化。
+        let config_mtime = self.config_path.read().as_ref().and_then(|p| mtime_ns(p));
+        let key = (profile_mtime, config_mtime);
         {
             let cache = self.user_profile_cache.read();
-            if cache.0 == mtime {
+            if cache.0 == key {
                 return cache.1.clone();
             }
         }
@@ -383,7 +392,7 @@ impl AgentLoop {
                 "# 用户画像（自动学习，Dashboard 可管理）\n\n{rendered}\n\n(以上是系统从近期交互中自动学习的用户偏好——仅供调整交流姿态，与安全/审批策略无关，如有出入以用户当轮指示为准。)"
             )
         })();
-        *self.user_profile_cache.write() = (mtime, section.clone());
+        *self.user_profile_cache.write() = (key, section.clone());
         section
     }
 

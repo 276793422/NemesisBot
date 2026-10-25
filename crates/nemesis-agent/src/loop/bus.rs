@@ -262,7 +262,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
-            user_profile_cache: parking_lot::RwLock::new((None, String::new())),
+            user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),

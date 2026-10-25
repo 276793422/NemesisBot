@@ -750,7 +750,7 @@ pub struct AgentLoop {
     /// 走缓存（零磁盘 IO、字节稳定）。mtime 读取失败（文件不存在）缓存
     /// `None`。config 侧 `user_profile.enabled` 开关每次门控未命中时现读
     /// （config.json mtime 已有独立检测，开关热生效路径经它兜底）。
-    user_profile_cache: parking_lot::RwLock<(Option<u128>, String)>,
+    user_profile_cache: parking_lot::RwLock<((Option<u128>, Option<u128>), String)>,
     /// P32（cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
     /// 重放候选）。仅 `agents.cache_warmer.enabled=true` 时被写入（默认关 =
     /// 永空）；逻辑全在 cache_warmer.rs（计划 §冲突面登记：warmer 域改动
@@ -950,7 +950,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
-            user_profile_cache: parking_lot::RwLock::new((None, String::new())),
+            user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
@@ -1357,6 +1357,11 @@ mod p20_tests;
 // （small_model 通道 / 无小模型诚实跳过 / build_messages 注入）编排测试。
 #[cfg(test)]
 mod ws9_lineage_tests;
+
+// BUG-20261025-36：画像注入缓存键含 config.json mtime（enabled 翻转
+// 只动 config 不动画像文件，单键时代 disable 进程生命周期内不生效）。
+#[cfg(test)]
+mod r36_profile_cache_tests;
 
 // bypass_llm.rs 覆盖率补充（aux 杂务三层治理 2026-09-28）：重试原语 +
 // 重试版护栏（空输出触发重试 / 两次全败诚实上抛 / 超时包住全部尝试）+
