@@ -1840,26 +1840,87 @@ async fn wait_for_callback_accepts_and_parses_callback_request() {
 }
 
 #[tokio::test]
-async fn wait_for_callback_state_mismatch_errors() {
+// BUG-20261025-60 前身 `wait_for_callback_state_mismatch_errors` 钉的正是
+// 缺陷姿态：state 不匹配的连接整个登录流程 Err 退出——任何本地进程在
+// 5 分钟窗口内敲 /auth/callback（陈旧标签页/扫描）都能打死登录。现语义：
+// 错误 state 的连接拿 400 拒绝响应，流程继续等真回调。
+async fn bug60_state_mismatch_connection_does_not_kill_flow() {
     let cfg = OAuthProviderConfig::openai();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let client = tokio::spawn(async move {
-        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-        sock.write_all(b"GET /auth/callback?code=xyz&state=WRONG HTTP/1.1\r\nHost: x\r\n\r\n")
+        // 噪声连接：错误 state 的回调——旧实现在此整个流程退出，真回调
+        // 永远等不到。
+        let mut noise = tokio::net::TcpStream::connect(addr).await.unwrap();
+        noise
+            .write_all(b"GET /auth/callback?code=noise&state=WRONG HTTP/1.1\r\nHost: x\r\n\r\n")
             .await
             .unwrap();
-        let mut buf = vec![0u8; 4096];
-        let n = sock.read(&mut buf).await.unwrap_or(0);
+        let mut buf = vec![0u8; 512];
+        let n = noise.read(&mut buf).await.unwrap_or(0);
+        let noise_resp = String::from_utf8_lossy(&buf[..n]).to_string();
+        drop(noise);
+
+        // 真回调（正确 state）必须还能完成整个流程。
+        let mut real = tokio::net::TcpStream::connect(addr).await.unwrap();
+        real.write_all(b"GET /auth/callback?code=real&state=st60 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let n = real.read(&mut buf).await.unwrap_or(0);
+        (noise_resp, String::from_utf8_lossy(&buf[..n]).to_string())
+    });
+
+    let code = cfg
+        .wait_for_callback(&listener, "st60")
+        .await
+        .unwrap_or_else(|e| panic!("flow must survive a wrong-state connection: {e}"));
+    assert_eq!(code, "real");
+
+    let (noise_resp, real_resp) = client.await.unwrap();
+    assert!(noise_resp.contains("400 Bad Request"), "{noise_resp}");
+    assert!(noise_resp.contains("State mismatch"), "{noise_resp}");
+    assert!(real_resp.contains("200 OK"), "{real_resp}");
+}
+
+#[tokio::test]
+// BUG-20261025-60 传输层错误臂：端口扫描/健康检查形态——连接建立后立即
+// 以 SO_LINGER=0 复位（RST），服务端 read 出传输层错误。旧实现整个登录
+// 在此 Err 退出；现语义 warn 后继续监听，真回调照常完成。
+// set_linger 已被 tokio 标记 deprecated（担心 drop 阻塞线程）——此处
+// 刻意用裸 SO_LINGER=0 机制强制 RST 模拟扫描器，loopback 上瞬时完成。
+#[allow(deprecated)]
+async fn bug60_reset_connection_does_not_kill_flow() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 先建立再复位的噪声连接（accept 队列里排在真回调前面）。
+    let rst_sock = tokio::net::TcpSocket::new_v4().unwrap();
+    rst_sock
+        .set_linger(Some(std::time::Duration::from_secs(0)))
+        .unwrap();
+    let rst = rst_sock.connect(addr).await.unwrap();
+    drop(rst); // RST
+
+    let client = tokio::spawn(async move {
+        let mut real = tokio::net::TcpStream::connect(addr).await.unwrap();
+        real.write_all(b"GET /auth/callback?code=after_rst&state=st61 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 512];
+        let n = real.read(&mut buf).await.unwrap_or(0);
         String::from_utf8_lossy(&buf[..n]).to_string()
     });
 
-    let err = cfg.wait_for_callback(&listener, "st1").await.unwrap_err();
-    assert!(err.contains("state mismatch"), "{err}");
+    let code = cfg
+        .wait_for_callback(&listener, "st61")
+        .await
+        .unwrap_or_else(|e| panic!("flow must survive a reset connection: {e}"));
+    assert_eq!(code, "after_rst");
+
     let resp = client.await.unwrap();
-    assert!(resp.contains("400 Bad Request"), "{resp}");
-    assert!(resp.contains("State mismatch"), "{resp}");
+    assert!(resp.contains("200 OK"), "{resp}");
 }
 
 #[tokio::test]

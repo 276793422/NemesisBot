@@ -198,22 +198,37 @@ impl OAuthProviderConfig {
     // ---- Private helpers ----
 
     /// Wait for the OAuth callback on the local HTTP server.
+    ///
+    /// BUG-20261025-60：坏连接只淘汰该次连接（accept 错误 / 传输层读错误 /
+    /// state 不匹配 / 响应写出失败），warn 后继续监听——5 分钟窗口内任何
+    /// 本地进程敲端口（扫描、健康检查、陈旧回调标签页）都不该能打死整个
+    /// 登录流程；旧实现一次坏连接即整体 Err 退出。唯一完成路径 = state
+    /// 精确匹配 + code 在手；用户显式拒绝（合法 state 的 error 回调）保持
+    /// 终态。外层 `login_browser` 的 300s 超时兜底，继续监听不会无界空转。
     async fn wait_for_callback(
         &self,
         listener: &tokio::net::TcpListener,
         expected_state: &str,
     ) -> Result<String, String> {
         loop {
-            let (stream, _) = listener
-                .accept()
-                .await
-                .map_err(|e| format!("accepting connection: {}", e))?;
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                // accept 常见 per-connection 瞬态（连接在 accept 前被对端
+                // 重置等），继续收下一个；外层超时兜底。
+                Err(e) => {
+                    tracing::warn!(error = %e, "[oauth] callback accept failed, continuing");
+                    continue;
+                }
+            };
 
-            let result = self.handle_callback(stream, expected_state).await;
-            match result {
+            match self.handle_callback(stream, expected_state).await {
                 Ok(Some(code)) => return Ok(code),
                 Ok(None) => continue, // Not the callback path, keep listening
-                Err(e) => return Err(e),
+                Err(CallbackFailure::PerConnection(e)) => {
+                    tracing::warn!(error = %e, "[oauth] callback connection failed, continuing");
+                    continue;
+                }
+                Err(CallbackFailure::Terminal(e)) => return Err(e),
             }
         }
     }
@@ -223,15 +238,14 @@ impl OAuthProviderConfig {
         &self,
         mut stream: tokio::net::TcpStream,
         expected_state: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, CallbackFailure> {
         use tokio::io::AsyncReadExt;
         use tokio::io::AsyncWriteExt;
 
         let mut buf = vec![0u8; 4096];
-        let n = stream
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("reading callback request: {}", e))?;
+        let n = stream.read(&mut buf).await.map_err(|e| {
+            CallbackFailure::PerConnection(format!("reading callback request: {}", e))
+        })?;
 
         let request = String::from_utf8_lossy(&buf[..n]);
 
@@ -256,32 +270,29 @@ impl OAuthProviderConfig {
         let query_str = uri.split('?').nth(1).unwrap_or("");
         let params = parse_query_params(query_str);
 
-        let response_body = if params.get("state").is_none_or(|s| s != expected_state) {
-            let resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h2>State mismatch</h2></body></html>";
-            stream
-                .write_all(resp.as_bytes())
-                .await
-                .map_err(|e| format!("writing response: {}", e))?;
-            return Err("state mismatch".to_string());
-        } else if let Some(code) = params.get("code") {
-            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h2>Authentication successful!</h2><p>You can close this window.</p></body></html>";
-            stream
-                .write_all(resp.as_bytes())
-                .await
-                .map_err(|e| format!("writing response: {}", e))?;
-            code.clone()
-        } else {
-            let error_msg = params.get("error").cloned().unwrap_or_default();
-            let resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n<html><body><h2>No authorization code received</h2></body></html>";
-            stream
-                .write_all(resp.as_bytes())
-                .await
-                .map_err(|e| format!("writing response: {}", e))?;
-            return Err(format!("no code received: {}", error_msg));
-        };
-
+        // 响应一律 best-effort：对端提前关连接导致的写出失败不改变结论
+        // （code 已到手不该因回显失败作废；拒绝/终态也不因回显失败升级）。
+        if params.get("state").is_none_or(|s| s != expected_state) {
+            // BUG-20261025-60：state 不匹配只拒绝本次连接（RFC 6749 的
+            // CSRF 防御语义是丢弃伪造请求，不是终止等待真回调）。
+            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h2>State mismatch</h2></body></html>").await;
+            let _ = stream.flush().await;
+            return Err(CallbackFailure::PerConnection("state mismatch".to_string()));
+        }
+        if let Some(code) = params.get("code") {
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h2>Authentication successful!</h2><p>You can close this window.</p></body></html>").await;
+            let _ = stream.flush().await;
+            return Ok(Some(code.clone()));
+        }
+        let error_msg = params.get("error").cloned().unwrap_or_default();
+        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n<html><body><h2>No authorization code received</h2></body></html>").await;
         let _ = stream.flush().await;
-        Ok(Some(response_body))
+        // 合法 state 下的 error 回调（如 access_denied）= 用户显式决定，
+        // 终止整个流程让用户拿到反馈。
+        Err(CallbackFailure::Terminal(format!(
+            "no code received: {}",
+            error_msg
+        )))
     }
 
     /// Exchange an authorization code for tokens.
@@ -539,6 +550,15 @@ struct ParsedDeviceCode {
     device_auth_id: String,
     user_code: String,
     interval: i32,
+}
+
+/// 单次回调连接的失败分类（BUG-20261025-60）。
+enum CallbackFailure {
+    /// 只淘汰本次连接（accept/读/写 IO 错误、state 不匹配）——继续监听
+    /// 等真回调。
+    PerConnection(String),
+    /// 终态（合法 state 下的 error 回调 / 无 code）——终止整个登录流程。
+    Terminal(String),
 }
 
 /// Parse the device code API response, handling flexible `interval` field.
