@@ -954,15 +954,6 @@ pub fn verify_signature_ed25519(content: &[u8], signature_hex: &str, public_key_
     false
 }
 
-/// Compute a deterministic "signature" (SHA-256 hex digest) from content + public_key.
-/// Used as a fallback when Ed25519 keys are not available.
-pub fn compute_hash_signature(content: &str, public_key: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hasher.update(public_key.as_bytes());
-    hex_encode(&hasher.finalize())
-}
-
 // ---------------------------------------------------------------------------
 // Directory hash
 // ---------------------------------------------------------------------------
@@ -1117,21 +1108,17 @@ impl SignatureVerifier {
             return false;
         }
 
-        // Step 2: try Ed25519 verification.
-        if verify_signature_ed25519(content.as_bytes(), signature, public_key) {
-            return true;
-        }
-
-        // Fallback: hash-based signature check (for backward compatibility).
-        let expected = compute_hash_signature(content, public_key);
-        expected == signature
+        // Step 2: Ed25519 verification (BUG-20261025-28：哈希 fallback 已删——
+        // sha256(content||pubkey) 任何人可算，公钥是公开信息，留着它等于
+        // 任何持受信公钥字符串的攻击者都能对任意内容伪造"签名"）。
+        verify_signature_ed25519(content.as_bytes(), signature, public_key)
     }
 
     /// Verify a signature against raw bytes and a public key.
     ///
     /// 字节串变体（skills 目录签名用——文件原始字节不保证 UTF-8）；判定
-    /// 顺序与 [`Self::verify_signature`] 一致：信任检查 → Ed25519 → 哈希
-    /// fallback（同一 SHA-256 公式，content 以字节进入）。
+    /// 顺序与 [`Self::verify_signature`] 一致：信任检查 → Ed25519
+    /// （BUG-20261025-28：哈希 fallback 已删，理由同上）。
     pub fn verify_signature_bytes(
         &self,
         content: &[u8],
@@ -1143,16 +1130,8 @@ impl SignatureVerifier {
             return false;
         }
 
-        // Step 2: try Ed25519 verification.
-        if verify_signature_ed25519(content, signature, public_key) {
-            return true;
-        }
-
-        // Fallback: hash-based signature check (for backward compatibility).
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        hasher.update(public_key.as_bytes());
-        hex_encode(&hasher.finalize()) == signature
+        // Step 2: Ed25519 verification only.
+        verify_signature_ed25519(content, signature, public_key)
     }
 
     /// Convenience: add a trusted key through the verifier.

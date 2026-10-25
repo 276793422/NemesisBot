@@ -42,15 +42,25 @@ fn test_verify_rejects_tampered_content() {
 }
 
 #[test]
-fn test_backward_compat_hash_signature() {
+fn test_forged_hash_signature_rejected() {
+    // BUG-20261025-28 回归锁：哈希"签名"（sha256(content||pubkey)）不是签名——
+    // 公钥是公开信息（合法技能的 .signature 里就带着受信公钥），任何人都
+    // 能对任意内容算出这个哈希。旧实现把它当验签 fallback → 整个 Ed25519
+    // 信任模型被架空（改内容 + 自算哈希 = valid + trusted）。修复 = 验签
+    // 只认 Ed25519，哈希形态一律拒绝。
     let verifier = SignatureVerifier::new();
     let pk = "test-public-key-001";
     verifier.add_trusted_key(pk, "test-author");
 
     let content = "hello, this is a skill";
-    let sig = compute_hash_signature(content, pk);
+    // 攻击者视角：不需要任何私钥，受信公钥字符串 + 内容即可伪造。
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(content.as_bytes());
+    hasher.update(pk.as_bytes());
+    let forged = hex_encode(&hasher.finalize());
 
-    assert!(verifier.verify_signature(content, &sig, pk));
+    assert!(!verifier.verify_signature(content, &forged, pk));
+    assert!(!verifier.verify_signature_bytes(content.as_bytes(), &forged, pk));
 }
 
 #[test]
@@ -717,15 +727,6 @@ fn test_sign_content_hex_invalid_key() {
 }
 
 #[test]
-fn test_compute_hash_signature_deterministic() {
-    let content = "same content";
-    let key = "same-key";
-    let sig1 = compute_hash_signature(content, key);
-    let sig2 = compute_hash_signature(content, key);
-    assert_eq!(sig1, sig2);
-}
-
-#[test]
 fn test_compute_fingerprint_different_keys() {
     let fp1 = compute_fingerprint("key-1");
     let fp2 = compute_fingerprint("key-2");
@@ -742,11 +743,16 @@ fn test_signature_verifier_no_trusted_keys() {
 
 #[test]
 fn test_signature_verifier_remove_trusted_key() {
+    // BUG-20261025-28 顺带：信任移除语义改用真实 Ed25519 签名验证
+    // （旧版借哈希 fallback 凑断言，fallback 删除后该断言不再成立）。
     let verifier = SignatureVerifier::new();
-    verifier.add_trusted_key("key-1", "author-1");
-    // After adding, it should verify with hash sig
-    let hash_sig = compute_hash_signature("content", "key-1");
-    assert!(verifier.verify_signature("content", &hash_sig, "key-1"));
+    let kp = generate_key_pair().unwrap();
+    verifier.add_trusted_key(&kp.public_key, "author-1");
+    let sig = sign_content_hex("content", &kp.private_key).unwrap();
+    assert!(verifier.verify_signature("content", &sig, &kp.public_key));
+
+    assert!(verifier.trust_store.remove_key("author-1"));
+    assert!(!verifier.verify_signature("content", &sig, &kp.public_key));
 }
 
 #[test]
@@ -1102,22 +1108,6 @@ fn test_verifier_verify_skill_with_invalid_signature_json() {
 
     let result = v.verify_skill(&skill_dir);
     assert!(!result.valid);
-}
-
-#[test]
-fn test_compute_hash_signature_different_content() {
-    let key = "same-key";
-    let sig1 = compute_hash_signature("content-a", key);
-    let sig2 = compute_hash_signature("content-b", key);
-    assert_ne!(sig1, sig2);
-}
-
-#[test]
-fn test_compute_hash_signature_different_keys() {
-    let content = "same-content";
-    let sig1 = compute_hash_signature(content, "key-a");
-    let sig2 = compute_hash_signature(content, "key-b");
-    assert_ne!(sig1, sig2);
 }
 
 #[test]

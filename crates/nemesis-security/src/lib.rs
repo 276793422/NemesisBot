@@ -114,9 +114,9 @@ pub use scanner::{
 pub use session_allow_all::SessionAllowAllState;
 pub use signature::{
     Config as SignatureConfig, KeyPair, SignatureVerifier, TrustLevel, TrustStore, TrustedKey,
-    VerificationResult, Verifier, compute_fingerprint, compute_hash_signature, export_public_key,
-    generate_key_pair, import_public_key, sign_content_hex, sign_file, sign_skill,
-    verify_file_with_key, verify_signature_ed25519,
+    VerificationResult, Verifier, compute_fingerprint, export_public_key, generate_key_pair,
+    import_public_key, sign_content_hex, sign_file, sign_skill, verify_file_with_key,
+    verify_signature_ed25519,
 };
 #[cfg(feature = "security")]
 pub use types::*;
