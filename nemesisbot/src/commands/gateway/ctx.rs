@@ -1267,13 +1267,15 @@ impl GatewayCtx {
             }
         };
 
-        // 旧位置首读迁移（M4 起恒编译——cluster-roaming feature 已删，迁移与
-        // 消费面同闸恒在）：客户端消费面 Cluster::setup_roaming 读
-        // config.quic.json client 段——迁移缺失会让老配置用户（cluster.json
-        // roaming 段三键）被静默回落 n0 公共中继（quic.json 缺席 →
-        // resolved_quic 全默认，
+        // 旧位置首读迁移（BUG-20261025-20：迁移面随 cluster feature 门控——
+        // `ensure_quic_config` 在 nemesis-cluster，关裁剪形态无消费方
+        // （quic CLI/relay/status 同闸缺席），不做迁移是诚实语义）：客户端
+        // 消费面 Cluster::setup_roaming 读 config.quic.json client 段——
+        // 迁移缺失会让老配置用户（cluster.json roaming 段三键）被静默回落
+        // n0 公共中继（quic.json 缺席 → resolved_quic 全默认，
         // 自建中继 + SharedToken 配对全丢）。ensure_quic_config 幂等（quic.json
         // 已在 = no-op）；只拷贝不删除。
+        #[cfg(feature = "cluster")]
         if nemesis_cluster::roaming::quic_config::ensure_quic_config(
             &common::cluster_config_path(&home),
             &common::quic_config_path(&home),
@@ -1358,11 +1360,24 @@ impl GatewayCtx {
 
 /// `--quic-relay` 早退执行体（Step 5b-2）。调进 `quic relay` 分类管理入口的
 /// 同一实现（单一真相源，两入口行为必然一致）；插件缺席 = 诚实报错（旗标
-/// 恒编译——M4 起 cluster-roaming/quic-relay feature 已删，无裁剪形态）。
+/// 恒编译——BUG-20261025-20：解析面 cfg 门控随 cluster feature，关 = 诚实
+/// 报「未编译」，与 quic CLI 同源形态）。
 async fn run_quic_relay(home: &std::path::Path) -> Result<()> {
-    crate::commands::quic::run_relay_server(home)
-        .await
-        .map_err(anyhow::Error::msg)
+    #[cfg(not(feature = "cluster"))]
+    {
+        let _ = home;
+        anyhow::bail!(
+            "cluster feature 未编译：QUIC 中继配置解析面在 nemesis-cluster（\
+minimal-IoT 等裁剪形态缺席）——如需 --quic-relay 请启用 cluster feature 重新编译"
+        );
+    }
+
+    #[cfg(feature = "cluster")]
+    {
+        crate::commands::quic::run_relay_server(home)
+            .await
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 /// T3.6 LLM 建议标注底座：default_slot provider 裸调用（board_review
