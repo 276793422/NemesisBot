@@ -3037,6 +3037,79 @@ fn add_job_internal_bypasses_reservation() {
     );
 }
 
+#[test]
+fn reserved_names_rejected_on_rename_paths_and_name_unchanged() {
+    // BUG-HUNT R99：改名入口（update_job / patch_job）此前不查保留前缀——
+    // 用户经 tasks.cron.update 把作业改成 `board-ap:{i64}` 形态后，启动
+    // 孤儿清理按「形态+未注册 id」静默删除、on_job 分派按形态劫持（message
+    // 被忽略）：add 时的创建闸被 rename 完整绕过。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job("my-task", every_60s(), "hello", false, None, None)
+        .unwrap();
+
+    // update_job 改名路径 loud 拒绝。
+    let err = svc
+        .update_job(&job.id, Some("board-ap:7"), None)
+        .unwrap_err();
+    assert!(err.contains("保留前缀"), "update_job: {err}");
+    // patch_job 改名路径 loud 拒绝。
+    let err = svc
+        .patch_job(
+            &job.id,
+            &CronJobPatch {
+                name: Some("memory-dreaming:sweep".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(err.contains("保留前缀"), "patch_job: {err}");
+    // Err = 无副作用：名字原样保留。
+    assert_eq!(svc.get_job(&job.id).unwrap().name, "my-task");
+    // 正常改名放行（闸只拦保留前缀，不拦改名本身）。
+    svc.update_job(&job.id, Some("renamed-ok"), None).unwrap();
+    assert_eq!(svc.get_job(&job.id).unwrap().name, "renamed-ok");
+}
+
+#[test]
+fn update_job_schedule_on_disabled_job_keeps_next_run_none() {
+    // BUG-HUNT R99：update_job 的 schedule 分支此前不带 enabled 守卫裸写
+    // next_run（patch_job 有 `if job.enabled`）——禁用作业带上幻影「下次
+    // 触发」，违背 W1b「disabled 不排程，enable 重算」不变量。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job("t", every_60s(), "m", false, None, None)
+        .unwrap();
+    svc.enable_job(&job.id, false).unwrap();
+    assert_eq!(svc.get_job(&job.id).unwrap().state.next_run_at_ms, None);
+
+    let sched = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(120_000),
+        expr: None,
+        tz: None,
+    };
+    svc.update_job(&job.id, None, Some(sched)).unwrap();
+    let j = svc.get_job(&job.id).unwrap();
+    assert_eq!(j.schedule.every_ms, Some(120_000), "排程本身要更新");
+    assert_eq!(
+        j.state.next_run_at_ms, None,
+        "disabled 作业改排程不得落 next_run"
+    );
+
+    // 重新启用后重算（不变量闭环）。
+    svc.enable_job(&job.id, true).unwrap();
+    assert!(
+        svc.get_job(&job.id).unwrap().state.next_run_at_ms.is_some(),
+        "enable 后必须重新落 next_run"
+    );
+}
+
 // ===========================================================================
 // BUG-20261024-11：时间算术受检化——溢出 honest None / 死排程创建闸
 // ===========================================================================

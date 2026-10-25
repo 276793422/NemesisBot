@@ -630,6 +630,18 @@ impl CronService {
         schedule: Option<CronSchedule>,
     ) -> Result<(), String> {
         info!("[Cron] Job updated: id={}", job_id);
+        // 改名同受保留命名空间约束（与 add_job_ext 同一单一真相源）：改名
+        // 绕过创建闸 = 用户作业可被改成 `board-ap:{i64}` 形态——启动孤儿
+        // 清理按形态+未注册 id 静默删除、on_job 分派按形态劫持（message
+        // 被忽略），创建时防线防的正是这两个危害。
+        if let Some(n) = name
+            && let Some(prefix) = reserved_prefix_hit(n)
+        {
+            return Err(format!(
+                "新名字以保留前缀 {prefix:?} 开头（系统内部作业命名空间），\
+                 改名后会被触发劫持、启动同步时会被误删，请换名字: {n:?}"
+            ));
+        }
         let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store
@@ -644,7 +656,11 @@ impl CronService {
         }
         if let Some(s) = schedule {
             job.schedule = s;
-            job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
+            // W1b 不变量（对齐 patch_job）：disabled 作业不排程——裸写
+            // next_run 会让禁用作业带上幻影「下次触发」。
+            if job.enabled {
+                job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
+            }
         }
         job.updated_at_ms = now_ms;
         drop(store);
@@ -664,6 +680,18 @@ impl CronService {
     /// `tasks.cron.update` handler.
     pub fn patch_job(&self, job_id: &str, patch: &CronJobPatch) -> Result<CronJob, String> {
         info!("[Cron] Job patched: id={}", job_id);
+        // 改名同受保留命名空间约束（单一真相源 [`reserved_prefix_hit`]，
+        // 与 add_job_ext / update_job 同闸）：改名绕过创建闸 = 用户作业可被
+        // 改成 `board-ap:{i64}` 形态——启动孤儿清理按形态+未注册 id 静默
+        // 删除、on_job 分派按形态劫持。校验在任何变更应用前，Err = 无副作用。
+        if let Some(n) = &patch.name
+            && let Some(prefix) = reserved_prefix_hit(n)
+        {
+            return Err(format!(
+                "新名字以保留前缀 {prefix:?} 开头（系统内部作业命名空间），\
+                 改名后会被触发劫持、启动同步时会被误删，请换名字: {n:?}"
+            ));
+        }
         let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store

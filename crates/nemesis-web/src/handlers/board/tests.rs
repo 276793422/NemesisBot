@@ -6802,6 +6802,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_autopilot_validate_and_issues_listing() {
     let dir = unique_dir("agt-aplist");
