@@ -63,6 +63,19 @@ export const NAV_GROUPS: NavGroupModel[] = [
     ],
   },
   {
+    // 多智能体协作三件套（2026-10-25 用户拍板独立成组）：集群=执行入口、
+    // 看板=任务派发入口、交付=交付账本人审 + PR 发布。三者同一工作域，
+    // 原「配置」组混排语义不清。
+    title: '团队',
+    items: [
+      { id: 'cluster', label: '集群', route: '/cluster', icon: 'M6 3v18 M18 3v18 M3 6h18 M3 18h18 M3 12h18' },
+      // W2 P1 (2026-08-31)：托管 Agent 看板（board feature 门控，VITE_FEATURE_BOARD）。
+      { id: 'board', label: '看板', route: '/board', icon: 'M4 4h4v10H4zM10 4h4v16h-4zM16 4h4v7h-4z' },
+      // 交付（P4 人审闭环，2026-10-25 从「交付审核」更名并移入本组）：交付账本裁决 + PR 发布。
+      { id: 'deliveries', label: '交付', route: '/deliveries', icon: 'M12 2l4 4-4 4V7H8v10H6V7H2V3h4V2h6zm5 7h5v13H9v-5h2v3h7V11h-1V9z' },
+    ],
+  },
+  {
     title: '管理',
     items: [
       { id: 'logs', label: '日志', route: '/logs', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8' },
@@ -97,11 +110,6 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'settings', label: '设置', route: '/settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.18V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0-1.18-2.82H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 2.82-1.18V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1.08 1.51 1.65 1.65 0 0 0 1.82-.33l-.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0 1.18 2.82H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1.08z' },
       { id: 'tools', label: 'Tools', route: '/tools', icon: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' },
       { id: 'tasks', label: '任务', route: '/tasks', icon: 'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
-      // W2 P1 (2026-08-31)：托管 Agent 看板（board feature 门控，VITE_FEATURE_BOARD）。
-      { id: 'board', label: '看板', route: '/board', icon: 'M4 4h4v10H4zM10 4h4v16h-4zM16 4h4v7h-4z' },
-      // 交付审核（P4 人审闭环）：交付账本裁决 + PR 发布。
-      { id: 'deliveries', label: '交付审核', route: '/deliveries', icon: 'M12 2l4 4-4 4V7H8v10H6V7H2V3h4V2h6zm5 7h5v13H9v-5h2v3h7V11h-1V9z' },
-      { id: 'cluster', label: '集群', route: '/cluster', icon: 'M6 3v18 M18 3v18 M3 6h18 M3 18h18 M3 12h18' },
       { id: 'security', label: '安全', route: '/security', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
       // L7c：凭据 Vault（VITE_FEATURE_SECURITY 门控，与安全页同闸）。
       { id: 'vault', label: '凭据', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
