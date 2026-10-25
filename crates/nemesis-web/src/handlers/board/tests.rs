@@ -9707,6 +9707,46 @@ async fn test_board_config_set_exec_anchor_keys() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// P2 必检计划闸（SKIP≠PASS，2026-10-25）：config.set 白名单 round-trip
+// （typed 序列化自动透出 + 盘上落盘 + 布尔闸）。
+#[tokio::test]
+async fn test_board_config_set_require_check_plan_roundtrip() {
+    let dir = unique_dir("config-check-plan");
+    let ctx = make_ctx_with_board(&dir);
+
+    let out = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.require_check_plan", "value": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], true);
+
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["review"]["require_check_plan"], true);
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(raw["board"]["review"]["require_check_plan"], true);
+
+    // 非布尔 loud 拒绝。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.require_check_plan", "value": "yes" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(!err.is_empty(), "字符串值必须被布尔闸拒绝");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // P11 观测面（2026-10-10）：plan 预览查询（plan.list/plan.get）+ planner
 // 结果评论留痕（execute_plan_chain 三发布点）

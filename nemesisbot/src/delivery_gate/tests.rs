@@ -3,8 +3,10 @@
 //! - JSON 形态（无 .git）→ None（诚实降级，不造证据）。
 //! - 空 task_id → None。
 //! - git 形态 happy path：JSON 形状（branch/task_id/node/patch_path +
-//!   capture 元数据）+ patch 落盘留底内容一致。
+//!   capture 元数据）+ patch 落盘留底内容一致 + P2 版本绑定
+//!   （checks_binds / repo_base_sha）。
 //! - 坏 base tree hex → None（warn 不 panic，不阻断回调主链路）。
+//! - 有效 hex 但影子库不认识的 base tree（跨仓库形态）→ None。
 
 use super::*;
 use nemesis_agent::checkpoint::CheckpointStore;
@@ -19,6 +21,21 @@ fn git_root() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, root)
 }
 
+/// 在工作区根真仓库建首个 commit（unborn HEAD → 有 HEAD，repo_base_sha 可测）。
+fn seed_commit(root: &std::path::Path) -> String {
+    std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+    let repo = git2::Repository::open(root).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("seed.txt")).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("t", "t@t").unwrap();
+    let oid = repo
+        .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+        .unwrap();
+    oid.to_string()
+}
+
 #[test]
 fn json_backend_returns_none() {
     let dir = tempfile::tempdir().unwrap();
@@ -27,7 +44,8 @@ fn json_backend_returns_none() {
         store.backend(),
         nemesis_agent::checkpoint::CheckpointBackend::Json
     );
-    let out = capture_task_delivery_with_store(&store, "json-task", None, "node-b", Vec::new());
+    let out =
+        capture_task_delivery_with_store(&store, "json-task", None, "node-b", Vec::new(), None);
     assert!(out.is_none(), "JSON 形态无影子库 → None（诚实降级）");
 }
 
@@ -35,13 +53,17 @@ fn json_backend_returns_none() {
 fn empty_task_id_returns_none() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(CheckpointStore::new(None, dir.path().to_path_buf()));
-    assert!(capture_task_delivery_with_store(&store, "", None, "node-b", Vec::new()).is_none());
+    assert!(
+        capture_task_delivery_with_store(&store, "", None, "node-b", Vec::new(), None).is_none()
+    );
 }
 
 #[test]
 fn happy_path_json_shape_and_patch_file() {
     let (_d, root) = git_root();
     std::fs::write(root.join("a.txt"), "v1\n").unwrap();
+    // P2：先落首个 commit——交付带 repo_base_sha（版本链「基于哪个 SHA」）。
+    let repo_sha = seed_commit(&root);
     let store = Arc::new(CheckpointStore::new(None, root.clone()));
     store.begin(1, "任务开始");
     let base = store.current_tree_hex().expect("git 形态有实时 tree");
@@ -58,8 +80,18 @@ fn happy_path_json_shape_and_patch_file() {
         ok: true,
         summary: "test result: ok. 5 passed".into(),
     }];
-    let out = capture_task_delivery_with_store(&store, "t-happy", Some(&base), "node-b", checks)
-        .expect("git 形态成功捕获");
+    // P2 版本绑定：checks 窗口关闭时刻的实时 tree（生产语义 = take 后同源
+    // 快照；测试里 take 即 capture，恒等于 capture 时刻 tree）。
+    let checks_head_tree = store.current_tree_hex();
+    let out = capture_task_delivery_with_store(
+        &store,
+        "t-happy",
+        Some(&base),
+        "node-b",
+        checks,
+        checks_head_tree.as_deref(),
+    )
+    .expect("git 形态成功捕获");
     let obj = out.as_object().expect("delivery 是 JSON object");
 
     // 上下文字段。
@@ -85,6 +117,16 @@ fn happy_path_json_shape_and_patch_file() {
     assert_eq!(checks[0]["ok"], true);
     assert_eq!(checks[0]["summary"], "test result: ok. 5 passed");
 
+    // P2 版本绑定：binds 与 capture 元数据交叉一致（base 对 base、head 对
+    // capture tree）；repo_base_sha = 真 git 仓库 HEAD commit。
+    let binds = obj["checks_binds"].as_object().expect("checks_binds 在场");
+    assert_eq!(binds["base_tree"], base.as_str());
+    assert_eq!(
+        binds["head_tree"], obj["tree"],
+        "checks 关窗 tree = capture tree（同一快照点）"
+    );
+    assert_eq!(obj["repo_base_sha"], repo_sha.as_str());
+
     // patch 落盘留底与 wire JSON 一致（正斜杠相对路径）。
     let on_disk =
         std::fs::read_to_string(root.join("logs").join("deliveries").join("t-happy.patch"))
@@ -105,6 +147,30 @@ fn happy_path_json_shape_and_patch_file() {
     assert_eq!(commit.tree_id().to_string(), obj["tree"]);
 }
 
+/// P2 诚实缺席：非 git 真仓库（unborn HEAD）→ repo_base_sha 键不出现；
+/// base/head 双 None（JSON 形态调用方语义）→ checks_binds 键不出现（加法
+/// 演进不破旧形态）。
+#[test]
+fn unborn_head_and_absent_binds_are_honest_absence() {
+    let (_d, root) = git_root();
+    std::fs::write(root.join("a.txt"), "v1\n").unwrap();
+    let store = Arc::new(CheckpointStore::new(None, root.clone()));
+    std::fs::write(root.join("a.txt"), "v2\n").unwrap();
+
+    let out =
+        capture_task_delivery_with_store(&store, "t-unborn", None, "node-b", Vec::new(), None)
+            .expect("git 形态成功捕获（None 基线 = 空树整包 diff）");
+    let obj = out.as_object().expect("delivery 是 JSON object");
+    assert!(
+        obj.get("repo_base_sha").is_none(),
+        "unborn HEAD（init 后无 commit）→ repo_base_sha 键不出现"
+    );
+    assert!(
+        obj.get("checks_binds").is_none(),
+        "双缺席（JSON 形态调用方语义）→ checks_binds 键不出现"
+    );
+}
+
 #[test]
 fn bad_base_tree_hex_is_none_not_panic() {
     let (_d, root) = git_root();
@@ -117,8 +183,28 @@ fn bad_base_tree_hex_is_none_not_panic() {
         Some("deadbeef"),
         "node-b",
         Vec::new(),
+        None,
     );
     assert!(out.is_none(), "坏基线 = None（不造证据不炸链路）");
+}
+
+/// 有效 40 位 hex 但对象不在本影子库（跨仓库 base 形态：tree 存在于别的
+/// 仓库，这里解不到）→ capture 失败 → None（不 panic 不造证据）。
+#[test]
+fn unknown_base_tree_object_is_none() {
+    let (_d, root) = git_root();
+    std::fs::write(root.join("f.txt"), "x\n").unwrap();
+    let store = Arc::new(CheckpointStore::new(None, root));
+    let foreign = "a".repeat(40); // 合法 hex、几乎不可能在影子库里
+    let out = capture_task_delivery_with_store(
+        &store,
+        "t-foreign-base",
+        Some(foreign.as_str()),
+        "node-b",
+        Vec::new(),
+        None,
+    );
+    assert!(out.is_none(), "跨仓库 base tree = None（诚实失败）");
 }
 
 /// G4 截断契约（2026-10-18 批六）：patch 超 `PATCH_MAX_BYTES` 截断时，
@@ -138,9 +224,15 @@ fn truncated_patch_still_carries_patch_path() {
     let big = "y".repeat(1_200_000) + "\n";
     std::fs::write(root.join("big.txt"), &big).unwrap();
 
-    let out =
-        capture_task_delivery_with_store(&store, "t-trunc", Some(&base), "node-b", Vec::new())
-            .expect("git 形态成功捕获");
+    let out = capture_task_delivery_with_store(
+        &store,
+        "t-trunc",
+        Some(&base),
+        "node-b",
+        Vec::new(),
+        None,
+    )
+    .expect("git 形态成功捕获");
     let obj = out.as_object().expect("delivery 是 JSON object");
     assert_eq!(obj["patch_truncated"], true, "1.2MB diff 必须触发截断");
     // ②typed checks 块诚实缺席：没跑检查 = 键不出现（绝不造空壳）。

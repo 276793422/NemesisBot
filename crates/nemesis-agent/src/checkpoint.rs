@@ -740,9 +740,15 @@ impl CheckpointStore {
             .stats()
             .map_err(|e| format!("影子 diff 统计失败: {e}"))?;
         let mut buf = Vec::new();
-        // git2 0.21 无 Diff::format——patch 输出走 print 回调（line.content()
-        // 已含 +/-/@@ 前缀字节，逐行拼接即 unified diff 全文）。
+        // git2 0.21 无 Diff::format——patch 输出走 print 回调。⚠ line.content()
+        // **不含** +/-/空格 前缀字节（context/add/del 三类须手动补 origin 字符，
+        // FileHeader/HunkHeader 自带完整换行）——漏补产出的 patch 无法被
+        // Diff::from_buffer 回读（"invalid patch hunk"），P3 发布链实证。
         diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+            match line.origin() {
+                '+' | '-' | ' ' => buf.push(line.origin() as u8),
+                _ => {}
+            }
             buf.extend_from_slice(line.content());
             true
         })

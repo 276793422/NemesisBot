@@ -643,6 +643,66 @@ pub struct BoardFlagConfig {
     pub fingerprint_weighting: bool,
     /// LLM 端点不可用期封存（U-B 断网封存；`board.unavailable` 段）。
     pub unavailable: BoardUnavailableConfig,
+    /// 外部来源导入（P1 外循环 2026-10-25；`board.external_sources`）。
+    /// 逐仓配置：gateway 轮询连接器拉 open issue → 去重建单（origin 绑定）
+    /// → 状态回写。**只在期望承担导入的节点（master）配置**——每节点
+    /// config.json 独立，空数组 = 本节点不导入。
+    pub external_sources: Vec<ExternalSourceConfig>,
+}
+
+/// 外部来源单仓配置（P1 外循环；`board.external_sources[]` 条目）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ExternalSourceConfig {
+    /// 本源开关（默认 true）。置 false = 本节点跳过该源（不轮询不导入）。
+    pub enabled: bool,
+    /// connector id（注册表 `<workspace>/connectors/<id>/connector.toml`；
+    /// 默认 "gitea"）。同时是 TaskOrigin.origin_type 的值。
+    pub connector: String,
+    /// 仓库属主（Gitea 用户/组织名）。
+    pub owner: String,
+    /// 仓库名。
+    pub repo: String,
+    /// 轮询间隔秒数（默认 60；运行期下限 15s——低于它的值按下限钳制，
+    /// 防配置打满出网速率）。
+    pub poll_interval_secs: u64,
+    /// 导入后自动派发（默认 true）：新单走 matcher → 兜底松弛阶梯选目标；
+    /// 无匹配节点 = ⏸ 系统评论 + 等 sweep 承接（诚实停车，不盲派）。
+    pub auto_dispatch: bool,
+    /// 任务专属副本物化（默认 true）：首个导入前把远端仓库 clone 进看板
+    /// 项目目录（`board-projects/<安全化名>/`），绑定派发基线从此有真源码
+    /// （P0 #3 停车根修）。false = 只导 issue 不物化（派发会因空基线停车）。
+    pub clone: bool,
+    /// 克隆/推送凭据用户名（Gitea PAT basic auth 的 user 段；默认取
+    /// `owner`）。密码段来自 vault 别名 `connector/<connector>/pat`——缺失
+    /// 时先试匿名克隆（公共仓库），失败诚实报错停导。
+    pub clone_username: Option<String>,
+    /// 显式克隆 URL（默认从 connector.toml 的 http.base 推导：剥 `/api/v1`
+    /// 后缀拼 `/{owner}/{repo}.git`）。镜像/代理场景手工指定。
+    pub clone_url: Option<String>,
+    /// 派发目标钉住（None = matcher + 兜底松弛自动选）。钉住的节点不在线
+    /// = 诚实停车不悄悄换人（与 dispatch_fallback_target 同语义）。
+    pub target: Option<String>,
+    /// 标签过滤（空 = 全收；非空 = issue 至少命中一个标签才导入）。
+    pub labels: Vec<String>,
+}
+
+impl Default for ExternalSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connector: "gitea".to_string(),
+            owner: String::new(),
+            repo: String::new(),
+            poll_interval_secs: 60,
+            auto_dispatch: true,
+            clone: true,
+            clone_username: None,
+            clone_url: None,
+            target: None,
+            labels: Vec::new(),
+        }
+    }
 }
 
 impl Default for BoardFlagConfig {
@@ -669,6 +729,7 @@ impl Default for BoardFlagConfig {
             conflict_auto_resolve: false,
             fingerprint_weighting: false,
             unavailable: BoardUnavailableConfig::default(),
+            external_sources: Vec::new(),
         }
     }
 }
@@ -763,6 +824,15 @@ pub struct BoardReviewConfig {
     /// 双检既有短路。空 map = 契约关闭（默认，零回归）。
     #[serde(default)]
     pub required_checks: std::collections::HashMap<String, Vec<String>>,
+    /// 必检计划闸（P2 外循环，2026-10-25；默认 **false** 烧入期）。开启后
+    /// 验收 PASS 前对账必检计划：单据正文反引号包裹的多词命令（如
+    /// `` `cargo test` ``）= 本单必检项，worker 交付证据 `checks[]` 里没有
+    /// 对应执行记录 = 交付不完整（PASS 降级 FAIL「计划内检查未跑」），
+    /// 对账表同时注入评审 prompt。`[CHECK]` 锚点行不重复计（归锚点双检
+    /// 与 `required_checks` 契约管辖）。`[serde(default)]` 容器缺键兼容，
+    /// 旧 config 零迁移。
+    #[serde(default)]
+    pub require_check_plan: bool,
 }
 
 impl BoardReviewConfig {
@@ -889,6 +959,7 @@ impl Default for BoardReviewConfig {
             require_delivery_evidence: false,
             evidence_typed_required: false,
             required_checks: std::collections::HashMap::new(),
+            require_check_plan: false,
         }
     }
 }

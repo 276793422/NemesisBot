@@ -64,10 +64,10 @@ fn template_keys_survive_typed_config_roundtrip() {
             .map(|(k, _)| k)
             .collect();
         for (k, v) in &want {
-            if let Some(g) = got_map.get(k) {
-                if g != v {
-                    println!("value changed (tolerated): {k}: {v} -> {g}");
-                }
+            if let Some(g) = got_map.get(k)
+                && g != v
+            {
+                println!("value changed (tolerated): {k}: {v} -> {g}");
             }
         }
         if !missing.is_empty() {

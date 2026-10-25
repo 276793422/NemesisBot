@@ -3998,3 +3998,52 @@ fn test_connectors_script_default_timeout_semantics() {
     .unwrap();
     assert_eq!(cfg3.script_timeout_secs(), 120);
 }
+
+// ============================================================
+// P1 外循环：board.external_sources 默认值与 round-trip（2026-10-25）
+// ============================================================
+
+#[test]
+fn test_external_sources_defaults_and_roundtrip() {
+    // 缺段 / 空段 = 零源（本节点不导入）。
+    let empty: Config = serde_json::from_str("{}").unwrap();
+    assert!(empty.board.unwrap_or_default().external_sources.is_empty());
+
+    // 单条缺字段全落默认（enabled=true / connector=gitea / poll=60 /
+    // auto_dispatch=true / clone=true）。
+    let b: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "external_sources": [ { "owner": "demo", "repo": "notecli" } ]
+    }))
+    .unwrap();
+    assert_eq!(b.external_sources.len(), 1);
+    let s = &b.external_sources[0];
+    assert!(s.enabled);
+    assert_eq!(s.connector, "gitea");
+    assert_eq!(s.owner, "demo");
+    assert_eq!(s.repo, "notecli");
+    assert_eq!(s.poll_interval_secs, 60);
+    assert!(s.auto_dispatch);
+    assert!(s.clone);
+    assert!(s.target.is_none() && s.clone_url.is_none() && s.labels.is_empty());
+
+    // 显式值 round-trip 保真；禁用源与钉住目标不丢。
+    let b2: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "external_sources": [ {
+            "enabled": false, "connector": "gitea",
+            "owner": "demo", "repo": "notecli",
+            "poll_interval_secs": 30, "auto_dispatch": false, "clone": false,
+            "clone_username": "bot", "clone_url": "http://mirror/notecli.git",
+            "target": "Node-B", "labels": ["agent-ready"]
+        } ]
+    }))
+    .unwrap();
+    let s2 = &b2.external_sources[0];
+    assert!(!s2.enabled && !s2.auto_dispatch && !s2.clone);
+    assert_eq!(s2.poll_interval_secs, 30);
+    assert_eq!(s2.clone_username.as_deref(), Some("bot"));
+    assert_eq!(s2.clone_url.as_deref(), Some("http://mirror/notecli.git"));
+    assert_eq!(s2.target.as_deref(), Some("Node-B"));
+    assert_eq!(s2.labels, vec!["agent-ready".to_string()]);
+    let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&b2).unwrap()).unwrap();
+    assert_eq!(re.external_sources, b2.external_sources);
+}

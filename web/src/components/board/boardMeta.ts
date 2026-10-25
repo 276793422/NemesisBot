@@ -92,6 +92,15 @@ export function statusLabel(s: string): string {
   return STATUS_LABEL[s] || s
 }
 
+/** P1 外循环（2026-10-25）：内置来源族（不显示外部来源徽标）；集外类型
+ *  = 外部 connector 来源（gitea/github/…），看板卡片亮 🔗 徽标。与后端
+ *  external_source 回写过滤清单同口径（后端是裁决面，前端只是展示）。 */
+const INTERNAL_ORIGINS = new Set(['autopilot', 'cron', 'channel', 'cli', 'board', 'manual'])
+
+export function isInternalOrigin(t: string): boolean {
+  return INTERNAL_ORIGINS.has(t)
+}
+
 /** 压测⑥（2026-09-30 三设备）语义消歧：in_progress =「已派发至 worker」，
  *  worker 内部串行队列排队中的单子同样显示 in_progress（非 CPU 执行中）——
  *  徽标悬浮提示说明真实语义，空串 = 无提示。 */

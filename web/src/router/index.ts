@@ -47,6 +47,9 @@ const routes: RouteRecordRaw[] = [
   // W2 P3 (2026-08-31)：托管 Agent 看板（board feature / VITE_FEATURE_BOARD 门控）。
   // 容器视图 = 看板（Kanban 拖拽）/ 列表 / 项目 / 收件箱 四页签（ClusterView 同构）。
   ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/board', name: 'board', component: () => import('../views/BoardView.vue') }] : []),
+  // 交付审核（P4 人审闭环，2026-10-25）：交付账本查询/裁决/PR 发布。
+  // 发布命令（delivery.publish）挂在 board 模块——与看板同 feature 门控。
+  ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/deliveries', name: 'deliveries', component: () => import('../views/DeliveriesView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_CLUSTER !== 'false' ? [{ path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') }] : []),
   // L7c (2026-10-13)：凭据 Vault 管理页（后端 vault handler 挂 security

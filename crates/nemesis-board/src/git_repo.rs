@@ -221,6 +221,176 @@ pub fn head_commit_hex(root: &Path) -> Result<Option<String>, String> {
 }
 
 // ---------------------------------------------------------------------------
+// P1 外循环：远端克隆（任务专属副本物化，2026-10-25）
+// ---------------------------------------------------------------------------
+
+/// 克隆远端仓库到 `dest`，返回克隆完成时的 HEAD commit hex（= 钉住的
+/// base SHA：副本起点即此刻远端默认分支，派发基线/交付 patch 都以它为
+/// 锚）。已存在 `.git` 的 `dest` = 幂等复用（返回现有 HEAD，**不 fetch
+/// 不重置**——副本一旦物化，后续合并/交付历史不能被外部重写打断）。
+///
+/// 凭据：`None` = 匿名（本地路径 / file:// / 公共仓库）；`Some((user,
+/// pass))` = basic auth（Gitea PAT 形态：user=令牌属主、pass=token）。
+/// 本地 config 钉 `core.autocrlf=false`（契约同 [`ensure_repo`]——基线
+/// tree 字节精确对账依赖行尾稳定）。
+///
+/// 诚实边界：本 crate 的 git2 为 `default-features = false`（无 TLS 后端
+/// ）——`https://` 远端会得到 libgit2 的「transport not supported」类
+/// 错误原样透传；http:// 与本地路径可用。
+pub fn clone_repo(url: &str, dest: &Path, cred: Option<(&str, &str)>) -> Result<String, String> {
+    if dest.join(".git").exists() {
+        return head_commit_hex(dest)?.ok_or_else(|| {
+            format!(
+                "项目仓库 {} 已有 .git 但无 HEAD（空仓库？）",
+                dest.display()
+            )
+        });
+    }
+    let mut callbacks = git2::RemoteCallbacks::new();
+    if let Some((user, pass)) = cred {
+        callbacks.credentials(move |_url, _user_from_url, _allowed| {
+            git2::Cred::userpass_plaintext(user, pass)
+        });
+    }
+    let mut fo = git2::FetchOptions::new();
+    fo.remote_callbacks(callbacks);
+    fo.download_tags(git2::AutotagOption::None);
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fo);
+    builder
+        .clone(url, dest)
+        .map_err(|e| format!("clone {url} → {} 失败: {e}", dest.display()))?;
+    // 钉 autocrlf（克隆后的 local config；机器全局 true 会经 add/checkout
+    // 改写行尾——字节精确契约同 ensure_repo 注记）。
+    {
+        let repo = Repository::open(dest)
+            .map_err(|e| format!("打开克隆产物 {} 失败: {e}", dest.display()))?;
+        let mut cfg = repo.config().map_err(|e| e.to_string())?;
+        cfg.set_bool("core.autocrlf", false)
+            .map_err(|e| format!("钉 core.autocrlf=false 失败: {e}"))?;
+    }
+    head_commit_hex(dest)?.ok_or_else(|| format!("克隆完成但 {} 无 HEAD", dest.display()))
+}
+
+/// 远端推送（P3 PR 发布）：把本地分支推到 `remote` 的 `remote_ref`。
+/// 凭据语义同 [`clone_repo`]。push 前本地分支必须存在（缺 = Err）。
+/// force = false（快进失败 = Err——交付分支被外部移动必须人裁，不覆盖）。
+pub fn push_branch(
+    root: &Path,
+    local_branch: &str,
+    remote: &str,
+    remote_ref: &str,
+    cred: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
+    let spec = format!("{local_branch}:{remote_ref}");
+    let mut callbacks = git2::RemoteCallbacks::new();
+    if let Some((user, pass)) = cred {
+        callbacks.credentials(move |_url, _user_from_url, _allowed| {
+            git2::Cred::userpass_plaintext(user, pass)
+        });
+    }
+    let mut po = git2::PushOptions::new();
+    po.remote_callbacks(callbacks);
+    let mut remote_obj = repo
+        .find_remote(remote)
+        .map_err(|e| format!("找不到远端 `{remote}`: {e}"))?;
+    remote_obj
+        .push(&[spec.as_str()], Some(&mut po))
+        .map_err(|e| format!("推送 {spec} → {remote} 失败: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// P3 外循环（2026-10-25）：交付分支发布原语（副本仓内重建交付的本地半边）
+// ---------------------------------------------------------------------------
+
+/// 发布链本地半边：从 HEAD 建新分支 + 应用 patch + commit，返回新 commit
+/// hex。工作区**保持停在原分支原 commit**（commit 后 hard reset 回 HEAD
+/// ——交付内容已安全落在发布分支上，副本工作区不留脏态）。
+///
+/// 失败语义（全部确定失败，仓库零残留）：
+/// - 工作区有未提交/未跟踪改动 = Err（发布不混入无关改动）；
+/// - 目标分支已存在 = Err（发布幂等在交付 payload 的 pr_number 判断，git
+///   层不静默复用旧分支）；
+/// - patch 应用后零变更 = Err（空交付不产空 PR）；
+/// - apply/commit 中途失败 = 回滚新建分支后 Err。
+pub fn apply_patch_new_branch(
+    root: &Path,
+    branch: &str,
+    patch: &[u8],
+    commit_msg: &str,
+) -> Result<String, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
+    let dirty = repo
+        .statuses(None)
+        .map_err(|e| format!("读取工作区状态失败: {e}"))?
+        .iter()
+        .any(|e| !e.status().is_ignored());
+    if dirty {
+        return Err(format!(
+            "副本工作区有未提交/未跟踪改动（{}）——发布要求干净工作区，请先处理",
+            root.display()
+        ));
+    }
+    let head = repo
+        .head()
+        .map_err(|e| format!("仓库无 HEAD: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("HEAD 解析 commit 失败: {e}"))?;
+    if repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+        return Err(format!(
+            "分支 {branch} 已存在——上次发布的 git 半边可能未清理，请人工核查"
+        ));
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let apply_and_commit = || -> Result<String, String> {
+        let diff = git2::Diff::from_buffer(patch)
+            .map_err(|e| format!("patch 解析失败: {e}（交付 patch 已损坏？）"))?;
+        repo.apply(&diff, git2::ApplyLocation::WorkDir, None)
+            .map_err(|e| format!("patch 应用失败: {e}（副本基线与交付基线漂移？）"))?;
+        let mut index = repo.index().map_err(|e| format!("读 index 失败: {e}"))?;
+        index
+            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+            .map_err(|e| format!("暂存变更失败: {e}"))?;
+        index.write().map_err(|e| format!("写 index 失败: {e}"))?;
+        let tree_id = index
+            .write_tree()
+            .map_err(|e| format!("写 tree 失败: {e}"))?;
+        if tree_id == head.tree_id() {
+            return Err("patch 应用后零变更（空交付）——不产空 PR".to_string());
+        }
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|e| format!("读 tree 失败: {e}"))?;
+        let sig = git2::Signature::now(AUTHOR_NAME, AUTHOR_EMAIL)
+            .map_err(|e| format!("构造签名失败: {e}"))?;
+        Ok(repo
+            .commit(Some(&branch_ref), &sig, &sig, commit_msg, &tree, &[&head])
+            .map_err(|e| format!("commit 失败: {e}"))?
+            .to_string())
+    };
+    // 先建分支（commit 写 ref 需要 ref 已存在），失败回滚分支保持零残留。
+    repo.branch(branch, &head, false)
+        .map_err(|e| format!("建分支 {branch} 失败: {e}"))?;
+    match apply_and_commit() {
+        Ok(commit_hex) => {
+            // 工作区回到原分支状态（交付已 commit 到发布分支，不落脏态）。
+            let _ = repo.reset(head.as_object(), ResetType::Hard, None);
+            Ok(commit_hex)
+        }
+        Err(e) => {
+            if let Ok(mut b) = repo.find_branch(branch, git2::BranchType::Local) {
+                let _ = b.delete();
+            }
+            let _ = repo.reset(head.as_object(), ResetType::Hard, None);
+            Err(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // E2：HEAD 树导出（基线快照；只含跟踪树）
 // ---------------------------------------------------------------------------
 

@@ -1648,9 +1648,14 @@ impl ConnectorInvokeTool {
                             // 诚实报错回流」。卡语义保留给本地交互执行（web/IM
                             // 通道）。两判据：`cluster` = worker LLM 任务执行
                             // （cluster_agent build_context）；`cluster-connector`
-                            // = 远程执行面 RPC handler（gateway/runtime.rs 构造）。
+                            // = 远程执行面 RPC handler（gateway/runtime.rs 构造）；
+                            // `external-source` = P1 外循环轮询（external_source
+                            // 构造，无人值守——vault 缺凭据同诚实报错）。
                             // 与 channel_approval M5-3 的 cluster 判定同族。
-                            if matches!(context.channel.as_str(), "cluster" | "cluster-connector") {
+                            if matches!(
+                                context.channel.as_str(),
+                                "cluster" | "cluster-connector" | "external-source"
+                            ) {
                                 return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
                             }
                             // B4 凭据索要卡：发卡阻塞等用户提交（broker 落

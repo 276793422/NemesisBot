@@ -45,6 +45,8 @@ const ITEM_FEATURE: Record<string, string> = {
   sandbox: 'SANDBOX',
   vm: 'VM',
   board: 'BOARD',
+  // 交付审核页与看板同一 feature 闸（发布命令 delivery.publish 挂 board 模块）。
+  deliveries: 'BOARD',
   terminal: 'TERMINAL',
   // 紫微系统（2026-10-22）：三方程序受控接管（VITE_FEATURE_ZIWEI 门控）。
   ziwei: 'ZIWEI',
@@ -97,6 +99,8 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'tasks', label: '任务', route: '/tasks', icon: 'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
       // W2 P1 (2026-08-31)：托管 Agent 看板（board feature 门控，VITE_FEATURE_BOARD）。
       { id: 'board', label: '看板', route: '/board', icon: 'M4 4h4v10H4zM10 4h4v16h-4zM16 4h4v7h-4z' },
+      // 交付审核（P4 人审闭环）：交付账本裁决 + PR 发布。
+      { id: 'deliveries', label: '交付审核', route: '/deliveries', icon: 'M12 2l4 4-4 4V7H8v10H6V7H2V3h4V2h6zm5 7h5v13H9v-5h2v3h7V11h-1V9z' },
       { id: 'cluster', label: '集群', route: '/cluster', icon: 'M6 3v18 M18 3v18 M3 6h18 M3 18h18 M3 12h18' },
       { id: 'security', label: '安全', route: '/security', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
       // L7c：凭据 Vault（VITE_FEATURE_SECURITY 门控，与安全页同闸）。
