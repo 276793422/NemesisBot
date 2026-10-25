@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useToast } from '../composables/useToast'
 import { useUsageChanged } from '../composables/useUsageChanged'
 import { authedFetch } from '../lib/authFetch'
+import { toLocalInputValue } from '../utils/datetime'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -737,11 +738,12 @@ function setPreset(p: Exclude<RangePreset, 'custom'>) {
 function openCustomRange() {
   showCustomRange.value = !showCustomRange.value
   if (showCustomRange.value) {
-    // Default: last 7 days
+    // Default: last 7 days（本地墙钟——toISOString 产出 UTC 墙钟被
+    // datetime-local 按本地解析，默认窗口会整体平移时区差）
     const now = new Date()
     const weekAgo = new Date(now.getTime() - 7 * 86400000)
-    customEnd.value = now.toISOString().slice(0, 16)
-    customStart.value = weekAgo.toISOString().slice(0, 16)
+    customEnd.value = toLocalInputValue(now)
+    customStart.value = toLocalInputValue(weekAgo)
   }
 }
 
@@ -756,8 +758,8 @@ function applyCustomRange() {
 function initDefaultDates() {
   const now = new Date()
   const weekAgo = new Date(now.getTime() - 7 * 86400000)
-  customEnd.value = now.toISOString().slice(0, 16)
-  customStart.value = weekAgo.toISOString().slice(0, 16)
+  customEnd.value = toLocalInputValue(now)
+  customStart.value = toLocalInputValue(weekAgo)
 }
 
 onMounted(() => {

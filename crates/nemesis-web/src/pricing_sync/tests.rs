@@ -219,6 +219,42 @@ async fn malformed_payload_keeps_old_table() {
         store.lookup("test-model-a").unwrap().input_cost_per_million,
         1.0
     );
+    // BUG-20261025-62 回归锁（旧形态必红：解析失败不刷 meta，source_url
+    // 仍指上次成功的 /table）：解析失败同样要留下尝试痕迹。
+    let meta = store.meta();
+    assert!(
+        meta.source_url
+            .as_deref()
+            .unwrap_or("")
+            .ends_with("/broken"),
+        "parse failure must record source_url, got {:?}",
+        meta.source_url
+    );
+    assert!(
+        meta.fetched_at.is_some(),
+        "parse failure must bump fetched_at"
+    );
+}
+
+// BUG-20261025-62 回归锁（旧形态必红：网络级失败零留痕，meta 全 None）：
+// 连接拒绝（send Err 路径）也要 record_failed_fetch——受限网络下最常见的
+// 失败形态（连接被重置/超时）此前完全不留尝试痕迹，「上次尝试时间」恒旧。
+#[tokio::test]
+async fn network_failure_records_failed_fetch() {
+    let store = tmp_store("net-fail");
+    // 127.0.0.1:1 端口拒绝（无需起服务器，离线稳定）。
+    let err = fetch_and_replace(&store, Some("http://127.0.0.1:1/prices")).await;
+    assert!(err.is_err(), "connection refused must error");
+    let meta = store.meta();
+    assert!(
+        meta.source_url.as_deref() == Some("http://127.0.0.1:1/prices"),
+        "network failure must record source_url, got {:?}",
+        meta.source_url
+    );
+    assert!(
+        meta.fetched_at.is_some(),
+        "network failure must bump fetched_at"
+    );
 }
 
 // ---------------------------------------------------------------------------

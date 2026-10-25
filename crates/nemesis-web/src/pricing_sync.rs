@@ -86,10 +86,18 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
     }
     let stored_etag = meta.etag.clone();
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("价目表下载失败（保留旧表）: {e}"))?;
+    let resp = match req.send().await {
+        Ok(r) => r,
+        // BUG-20261025-62：网络/读取/解析失败同样要刷 meta（fetched_at/
+        // source_url）——模块契约「失败（网络/解析/空表）→ record_failed_fetch」
+        // 此前三条 Err 路径漏走，只有 HTTP 状态失败留痕；受限网络下最常见的
+        // 连接失败与代理劫持 200 垃圾页（解析失败）恰恰完全不留尝试痕迹，
+        // 「上次尝试时间」恒显示旧值误导排障。写失败忽略（meta 是增值面）。
+        Err(e) => {
+            let _ = store.record_failed_fetch(url);
+            return Err(format!("价目表下载失败（保留旧表）: {e}"));
+        }
+    };
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(PricingSyncResult {
@@ -114,13 +122,22 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
     // 不走 resp.text()（按响应头 charset 解码，被干扰的响应头会让完好的
     // 字节也解码失败——真机实证的 "error decoding response body" 根因）；
     // LiteLLM 表是 UTF-8 JSON，直取字节。
-    let raw_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("价目表读取失败（保留旧表）: {e}"))?;
+    let raw_bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = store.record_failed_fetch(url);
+            return Err(format!("价目表读取失败（保留旧表）: {e}"));
+        }
+    };
     let raw = String::from_utf8_lossy(&raw_bytes);
 
-    let entries = parse_litellm_json(&raw)?;
+    let entries = match parse_litellm_json(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = store.record_failed_fetch(url);
+            return Err(e);
+        }
+    };
     let entry_count = entries.len();
 
     store
