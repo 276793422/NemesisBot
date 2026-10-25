@@ -51,32 +51,38 @@ fn bindings_path(workspace: &str) -> PathBuf {
 
 fn load_bindings(workspace: &str) -> BTreeMap<String, SessionBinding> {
     match std::fs::read_to_string(bindings_path(workspace)) {
-        Ok(s) => {
-            serde_json::from_str::<BindingFile>(&s)
-                .unwrap_or_default()
-                .bindings
-        }
+        Ok(s) => match serde_json::from_str::<BindingFile>(&s) {
+            Ok(f) => f.bindings,
+            Err(e) => {
+                // BUG-20261025-40：解析失败不能静默返空——空表会被下次写整体
+                // 覆盖，全部绑定丢失后 get-or-create 重新发芽复制会话（本文件
+                // 头部记载的 55 秒 5 空会话事故的复发放大器）。保留返空恢复
+                // 语义，但必须留痕。
+                tracing::warn!(
+                    error = %e,
+                    "[session_bindings] session_bindings.json 解析失败，按空注册表继续（下次保存会覆盖盘上残留）"
+                );
+                BTreeMap::new()
+            }
+        },
         Err(_) => BTreeMap::new(),
     }
 }
 
-/// tmp + rename 原子落盘（torn write 会砸掉全部绑定 → 空会话复制机器复发）。
+/// 原子落盘（torn write 会砸掉全部绑定 → 空会话复制机器复发）。
+/// BUG-20261025-40：换 REL-002 唯一权威 helper——手搓 tmp+rename 无
+/// sync_all，断电可落零长度目标，叠加 load 静默返空即整表清零链。
 fn save_bindings(
     workspace: &str,
     bindings: &BTreeMap<String, SessionBinding>,
 ) -> Result<(), String> {
     let path = bindings_path(workspace);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建 data 目录失败: {e}"))?;
-    }
     let body = serde_json::to_string_pretty(&BindingFile {
         bindings: bindings.clone(),
     })
     .map_err(|e| format!("序列化绑定失败: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(|e| format!("写绑定失败: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("替换绑定文件失败: {e}"))?;
-    Ok(())
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o600)
+        .map_err(|e| format!("写绑定失败: {e}"))
 }
 
 /// binding_key 规范化：trim + 非空 + 长度上限。key 只进 JSON map（不进
@@ -224,7 +230,15 @@ pub fn remove_session(workspace: &str, session_id: &str) -> usize {
     bindings.retain(|_, b| b.session_id != sid);
     let removed = before - bindings.len();
     if removed > 0 {
-        let _ = save_bindings(workspace, &bindings);
+        // 持久化失败不能全静默（BUG-20261025-40：BUG-20261025-38 同族镜像）：
+        // 内存已摘、盘上仍在，重启后绑定回归——后果有界（live_bindings 按
+        // 存活过滤），但零痕迹不该是默认。
+        if let Err(e) = save_bindings(workspace, &bindings) {
+            tracing::warn!(
+                error = %e,
+                "[session_bindings] 摘除 {removed} 条绑定后持久化失败（重启后绑定回归）"
+            );
+        }
     }
     removed
 }

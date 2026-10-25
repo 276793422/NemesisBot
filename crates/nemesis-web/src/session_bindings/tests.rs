@@ -180,3 +180,65 @@ fn empty_or_overlong_key_is_rejected() {
     assert!(get_or_create_session(&ws, &"x".repeat(201), "t", false).is_err());
     assert!(set_binding(&ws, "", "abc").is_err());
 }
+
+// ===== BUG-20261025-40 回归锁：损坏注册表装载 loud + 恢复语义 =====
+
+/// 日志捕获 sink（BUG-20261025-38/39 同形态）。DefaultGuard 必须由测试体
+/// 持有——关在 setup 内会随 setup 返回卸载 thread-local subscriber，
+/// 之后的 emit 全部丢失（R113 实录教训）。
+#[derive(Clone)]
+struct WarnSink40(std::sync::Arc<std::sync::Mutex<String>>);
+
+impl std::io::Write for WarnSink40 {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// BUG-20261025-40：session_bindings.json 损坏时装载必须 loud 留痕（静默
+/// 返空会被下次保存整体覆盖，get-or-create 重新发芽复制会话 = 本文件头部
+/// 记载的 55 秒 5 空会话事故放大器），且恢复语义保持。
+#[test]
+fn test_corrupted_registry_load_warns_and_recovers() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("workspace").to_string_lossy().to_string();
+    // meta 写入经 chat_log 进程单例——同既有用例 isolate() 重定向 home
+    // （workspace = <tmp>/workspace 同派生规则），见文件头隔离注释。
+    let _home = isolate(dir.path());
+    std::fs::create_dir_all(dir.path().join("workspace/data")).unwrap();
+    std::fs::write(
+        dir.path().join("workspace/data/session_bindings.json"),
+        "{torn",
+    )
+    .unwrap();
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer({
+                let buf = buf.clone();
+                move || WarnSink40(buf.clone())
+            })
+            .finish(),
+    );
+    assert!(super::live_bindings(&ws).is_empty());
+    // 恢复语义：get-or-create 在空表上照常建会话写绑定（需会话 meta 工件，
+    // get_or_create_session 内部自写）。
+    let out = super::get_or_create_session(&ws, "wf_x", "标题", false).unwrap();
+    assert!(out.created);
+    assert_eq!(super::live_bindings(&ws).get("wf_x"), Some(&out.session_id));
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("解析失败"),
+        "必须 loud 警告解析失败，实际日志：{log}"
+    );
+    assert!(
+        log.contains("按空注册表继续"),
+        "警告必须说明按空注册表继续（覆盖风险），实际日志：{log}"
+    );
+    drop(guard);
+}

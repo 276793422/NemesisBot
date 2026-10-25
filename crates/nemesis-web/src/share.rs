@@ -53,29 +53,34 @@ static SHARE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn load_shares(workspace: &str) -> Vec<ShareEntry> {
     match std::fs::read_to_string(shares_path(workspace)) {
-        Ok(s) => {
-            serde_json::from_str::<ShareFile>(&s)
-                .unwrap_or_default()
-                .shares
-        }
+        Ok(s) => match serde_json::from_str::<ShareFile>(&s) {
+            Ok(f) => f.shares,
+            Err(e) => {
+                // BUG-20261025-40：注册表解析失败不能静默返空——空表会被下次
+                // 写整体覆盖（全部分享链接无声死亡，404 还谎称「已撤销」）。
+                // 保留返空恢复语义（注册表可自然重建），但必须留痕。
+                tracing::warn!(
+                    error = %e,
+                    "[share] session_shares.json 解析失败，按空注册表继续（下次保存会覆盖盘上残留）"
+                );
+                Vec::new()
+            }
+        },
         Err(_) => Vec::new(),
     }
 }
 
-/// tmp + rename 原子落盘（torn write 会砸掉全部分享记录）。
+/// 原子落盘（torn write 会砸掉全部分享记录）。BUG-20261025-40：换 REL-002
+/// 唯一权威 helper——手搓 tmp+rename 无 sync_all，断电可落零长度目标，叠加
+/// load 静默返空即整表清零链；token 即凭据 → 0o600。
 fn save_shares(workspace: &str, shares: &[ShareEntry]) -> Result<(), String> {
     let path = shares_path(workspace);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建 data 目录失败: {e}"))?;
-    }
     let body = serde_json::to_string_pretty(&ShareFile {
         shares: shares.to_vec(),
     })
     .map_err(|e| format!("序列化分享失败: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(|e| format!("写分享失败: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("替换分享文件失败: {e}"))?;
-    Ok(())
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o600)
+        .map_err(|e| format!("写分享失败: {e}"))
 }
 
 /// 创建（或复用）分享。同一会话已存在未撤销的分享时直接复用（幂等，

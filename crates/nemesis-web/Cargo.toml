@@ -189,5 +189,9 @@ nemesis-memory = { workspace = true, features = ["test-fixture"] }
 # 仅测试用；feature 与 nemesis-board 声明合并（bundled 加法统一，单次编译）。
 rusqlite = "0.34"
 
+# BUG-20261025-40 回归锁：session 注册表（share/bindings）损坏装载 loud
+# 警告断言用（fmt subscriber + 缓冲 writer 捕获 warn 日志）。
+tracing-subscriber = { workspace = true }
+
 [lints]
 workspace = true

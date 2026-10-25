@@ -351,3 +351,60 @@ fn test_concurrent_create_and_revoke_no_loss() {
         );
     }
 }
+
+// ===== BUG-20261025-40 回归锁：损坏注册表装载 loud + 恢复语义 =====
+
+/// 日志捕获 sink（BUG-20261025-38/39 同形态）。DefaultGuard 必须由测试体
+/// 持有——关在 setup 内会随 setup 返回卸载 thread-local subscriber，
+/// 之后的 emit 全部丢失（R113 实录教训）。
+#[derive(Clone)]
+struct WarnSink40(std::sync::Arc<std::sync::Mutex<String>>);
+
+impl std::io::Write for WarnSink40 {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// BUG-20261025-40：session_shares.json 损坏（如断电零长度/半截 JSON）时，
+/// 装载必须 loud 留痕（静默返空会被下次保存整体覆盖 = 全部分享链接无声
+/// 死亡），且恢复语义保持：按空注册表继续后 create/resolve 照常工作。
+#[test]
+fn test_corrupted_registry_load_warns_and_recovers() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    std::fs::create_dir_all(dir.path().join("data")).unwrap();
+    std::fs::write(dir.path().join("data/session_shares.json"), "{torn").unwrap();
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer({
+                let buf = buf.clone();
+                move || WarnSink40(buf.clone())
+            })
+            .finish(),
+    );
+    // 损坏装载：返回空 + loud。
+    assert!(super::list_shares(&ws).is_empty());
+    // 恢复语义：create/resolve 照常工作（写路径会用新表覆盖盘上残留）。
+    let entry = super::create_share(&ws, "sess_a").unwrap();
+    assert_eq!(
+        super::resolve_share(&ws, &entry.token).map(|s| s.session_id),
+        Some("sess_a".to_string())
+    );
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("解析失败"),
+        "必须 loud 警告解析失败，实际日志：{log}"
+    );
+    assert!(
+        log.contains("按空注册表继续"),
+        "警告必须说明按空注册表继续（覆盖风险），实际日志：{log}"
+    );
+    drop(guard);
+}
