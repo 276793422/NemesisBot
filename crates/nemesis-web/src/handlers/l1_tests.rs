@@ -222,7 +222,10 @@ fn registry_anchor_commands_present() {
         assert!(w.contains(&"draft_discard"));
     }
     if cfg!(feature = "voice") {
-        assert_eq!(cmds_of(&reg, "voice").len(), 39);
+        // 本地模型框架（2026-10-25）：model_catalog + set_model 两命令入列。
+        assert_eq!(cmds_of(&reg, "voice").len(), 41);
+        assert!(cmds_of(&reg, "voice").contains(&"model_catalog"));
+        assert!(cmds_of(&reg, "voice").contains(&"set_model"));
     }
     if cfg!(feature = "cluster") {
         assert!(cmds_of(&reg, "cluster").contains(&"node.update_identity"));
