@@ -124,14 +124,19 @@ append_to(9, [0]) 返回 [0, 9]。",
         statement: "files.py 的 config_path 用字符串拼接构造子路径（\"config/\" + name），在 Windows 上依赖正斜杠被容忍，\
 且 name 以分隔符开头时产生错误路径。请改用 os.path.join 构造，使其与平台原生路径语义一致。\
 验收（冻结）：config_path(\"a.toml\") == os.path.join(\"config\", \"a.toml\")；\
-config_path(\"sub\\\\b.toml\")（Windows）或 config_path(\"sub/b.toml\")（POSIX）== os.path.join(\"config\", 对应相对路径)。\
+config_path(\"sub\\\\b.toml\")（Windows）或 config_path(\"sub/b.toml\")（POSIX）== os.path.join(\"config\", 对应相对路径)；\
+config_path 对以分隔符开头的 name（\"/x.toml\" 或 \"\\\\x.toml\"）返回值恒等于 os.path.join(\"config\", 该 name)（os.path.join 绝对段重置语义）。\
 不改变函数名与签名。",
         seed: &[(
             "files.py",
             "\"\"\"配置文件路径工具。\"\"\"\n\n\ndef config_path(name):\n    \"\"\"返回 name 对应的 config 子路径。\"\"\"\n    return \"config/\" + name\n",
         )],
         checkers: &[CheckStep::ExecPython {
-            code: "import os\nfrom files import config_path\nsep = \"\\\\\" if os.name == \"nt\" else \"/\"\nassert config_path(\"a.toml\") == os.path.join(\"config\", \"a.toml\")\nassert config_path(\"sub\" + sep + \"b.toml\") == os.path.join(\"config\", \"sub\" + sep + \"b.toml\")\n",
+            // 尾带「分隔符开头」断言（§statement 冻结验收原话）：os.path.join 对绝对
+            // 段重置语义在 POSIX/Windows 一致，拼接臂在两个平台都判败——只测嵌入
+            // 分隔符的话 POSIX 上 seed 恰好等于 join 结果，防误报在 Linux 失守
+            //（2026-10-25 ET Linux 全量实证）。
+            code: "import os\nfrom files import config_path\nsep = \"\\\\\" if os.name == \"nt\" else \"/\"\nassert config_path(\"a.toml\") == os.path.join(\"config\", \"a.toml\")\nassert config_path(\"sub\" + sep + \"b.toml\") == os.path.join(\"config\", \"sub\" + sep + \"b.toml\")\nassert config_path(sep + \"x.toml\") == os.path.join(\"config\", sep + \"x.toml\")\n",
         }],
     },
     // ------------------------------------------------------------------

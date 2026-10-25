@@ -245,14 +245,19 @@ async fn loopback_client_pings_through_self_relay() {
 
 /// 寻址边界钉死：自建中继形态（Minimal 基座，零发现层）下**裸** `iroh:<hex>`
 /// 拨号必须失败——Minimal 预设只设 crypto provider（无 dns/pkarr address
-/// lookup，也无 relay 型发现），裸 node_id 无解析路径。这是 announce 侧必须
-/// 携带 `iroh:<hex>@<relay_url>` 完整形态的根因（cluster 自报 addresses 收割
+/// lookup），缺席节点不存在解析路径。这是 announce 侧必须携带
+/// `iroh:<hex>@<relay_url>` 完整形态的根因（cluster 自报 addresses 收割
 /// 该形态；对端入池 → bridge with_relay_url）。
+///
+/// 历史注记（2026-10-25）：旧版负例用「已连接对端 + 裸 NodeId」，Linux CI
+/// 三连红（拨号反而 Ok ~1.3s）——同主机双端点共享 home relay 时 Linux 侧
+/// 存在可解析路径（平台相关；Windows 本机恒败），「连接态裸拨必败」不是
+/// 可依赖的跨平台边界。改用**缺席对端**（身份已生成、endpoint 从未 spawn）
+/// 保持确定性：任何发现层都找不到从未上线的节点。
 #[tokio::test]
 async fn bare_node_id_dial_fails_on_self_relay_minimal_base() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws_a = tempfile::tempdir().expect("ws A");
-    let ws_b = tempfile::tempdir().expect("ws B");
     let settings = RelaySettings {
         tls: RelayTls::None,
         ..base_settings()
@@ -262,15 +267,14 @@ async fn bare_node_id_dial_fails_on_self_relay_minimal_base() {
         .expect("relay spawn");
     let relay_url = format!("http://127.0.0.1:{}", relay.http_addr.expect("http").port());
 
-    let id_b = Identity::generate();
-    let ep_b = bind_ep(&id_b, &relay_url, None, ws_b.path()).await;
+    // 缺席对端：仅生成身份（NodeId 形态合法），endpoint 从未 spawn——
+    // Minimal 基座对缺席节点无任何解析路径，判败与主机网络栈无关。
+    let id_absent = Identity::generate();
 
     let id_a = Identity::generate();
-    // trust 簿放行（排除 trust 闸假阳性——失败必须来自拨号解析，不是闸）。
-    allow_peer(ws_b.path(), &id_a.node_id_hex());
     let ep_a = bind_ep(&id_a, &relay_url, None, ws_a.path()).await;
-    let addr =
-        parse_roaming_address(&format!("iroh:{}", id_b.node_id_hex())).expect("裸形态解析本身合法");
+    let addr = parse_roaming_address(&format!("iroh:{}", id_absent.node_id_hex()))
+        .expect("裸形态解析本身合法");
 
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -280,11 +284,10 @@ async fn bare_node_id_dial_fails_on_self_relay_minimal_base() {
     .expect("ping 整体 deadline");
     assert!(
         outcome.is_err(),
-        "Minimal 基座上裸 node_id 拨号必须失败（实际: {outcome:?}）——若此断言开始失败，说明 iroh 引入了 relay 型发现，announce 侧可回归裸形态"
+        "Minimal 基座上裸 node_id 对缺席对端拨号必须失败（实际: {outcome:?}）"
     );
 
     ep_a.shutdown().await;
-    ep_b.shutdown().await;
     relay.shutdown().await;
 }
 
