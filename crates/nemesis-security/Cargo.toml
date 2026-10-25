@@ -53,6 +53,9 @@ walkdir = "2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3"
+# BUG-20261025-38 回归锁：TrustStore revoke 持久化失败 loud 留痕断言用
+# （fmt subscriber + 缓冲 writer 捕获 error 日志）。
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

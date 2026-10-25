@@ -158,3 +158,97 @@ fn trust_store_refreshes_from_disk_for_running_reader() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261025-38：revoke 持久化失败必须 loud 留痕
+//
+// 同文件 add_key/remove_key 的文档化不变量：「信任库持久化失败不能静默吞
+// 掉：内存态信任与盘上真相分叉……loud 留痕」。revoke 双函数此前 `let _ =
+// self.save()` 静默吞——重启后吊销失效=已撤密钥复信（安全语义反向恶化，
+// 与 remove 同级）。回归锁：save 失败场景（store 路径父位置放普通文件 →
+// create_dir_all 必败，跨平台确定性）断言 ERROR 日志带「吊销未落盘」。
+// ---------------------------------------------------------------------------
+
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+struct LogSink38(Arc<Mutex<String>>);
+
+impl std::io::Write for LogSink38 {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap()
+            .push_str(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn revoke_loud_setup(
+    dir: &std::path::Path,
+) -> (
+    TrustStore,
+    Arc<Mutex<String>>,
+    // subscriber 守卫必须返回给测试体持有：thread-local set_default 的
+    // 生命周期 = guard 存活期，setup 内 `let _guard` 会在返回时卸载，
+    // 后续 revoke 的 emit 一个都收不到（首版 harness 实测踩中）。
+    tracing::subscriber::DefaultGuard,
+) {
+    // 阻断落盘：把 store 的父目录位置放普通文件。
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let store_path = blocker.join("skill_trust.json");
+
+    let buf = Arc::new(Mutex::new(String::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .with_writer({
+            let buf = buf.clone();
+            move || LogSink38(buf.clone())
+        })
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let store = TrustStore::new(Some(&store_path));
+    store.add_key(VALID_PUBKEY_B64, "loud-revoke-38", TrustLevel::Verified);
+    (store, buf, guard)
+}
+
+#[test]
+fn test_revoke_key_save_failure_loud_log() {
+    let dir = temp_dir("revoke-loud");
+    let (store, buf, _guard) = revoke_loud_setup(&dir);
+
+    assert!(store.revoke_key("loud-revoke-38").is_ok());
+    let log = buf.lock().unwrap().clone();
+    assert!(
+        log.contains("信任库持久化失败") && log.contains("的吊销未落盘"),
+        "revoke save 失败必须 loud 留痕，实得日志：{log}"
+    );
+    // add_key 兄弟不变量基线（同场景 loud，钉住口径不回退）。
+    assert!(log.contains("仅存内存"), "add_key loud 基线缺失：{log}");
+    // 内存态语义不变：吊销在内存生效（盘上分叉由 CLI 盘上真相回读兜底，
+    // 层契约只加留痕不翻返回值——与 add/remove 同形态）。
+    assert_eq!(store.trust_level(VALID_PUBKEY_B64), TrustLevel::Revoked);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_revoke_key_by_public_key_save_failure_loud_log() {
+    let dir = temp_dir("revoke-pk-loud");
+    let (store, buf, _guard) = revoke_loud_setup(&dir);
+
+    assert!(store.revoke_key_by_public_key(VALID_PUBKEY_B64).is_ok());
+    let log = buf.lock().unwrap().clone();
+    assert!(
+        log.contains("信任库持久化失败") && log.contains("的吊销未落盘"),
+        "revoke_by_public_key save 失败必须 loud 留痕，实得日志：{log}"
+    );
+    assert_eq!(store.trust_level(VALID_PUBKEY_B64), TrustLevel::Revoked);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

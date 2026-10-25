@@ -225,7 +225,15 @@ impl TrustStore {
         {
             entry.level = TrustLevel::Revoked;
             drop(keys);
-            let _ = self.save();
+            // 信任库持久化失败不能静默吞掉（BUG-20261025-38：此前 `let _`
+            // 吞掉，与 add/remove 的 loud 不变量不一致）——重启后吊销失效=
+            // 已撤密钥复信，安全语义反向恶化。
+            if let Err(e) = self.save() {
+                tracing::error!(
+                    error = %e,
+                    "[TrustStore] 信任库持久化失败：{b64} 的吊销未落盘（重启后吊销失效）"
+                );
+            }
             return Ok(());
         }
         Err(format!("key not found: {}", name))
@@ -237,7 +245,14 @@ impl TrustStore {
         if let Some(entry) = keys.get_mut(public_key) {
             entry.level = TrustLevel::Revoked;
             drop(keys);
-            let _ = self.save();
+            // 同 revoke_key：吊销持久化失败 loud 留痕（重启后吊销失效=
+            // 已撤密钥复信），对齐 add/remove 的文档化不变量。
+            if let Err(e) = self.save() {
+                tracing::error!(
+                    error = %e,
+                    "[TrustStore] 信任库持久化失败：{public_key} 的吊销未落盘（重启后吊销失效）"
+                );
+            }
             return Ok(());
         }
         Err("key not found".to_string())
