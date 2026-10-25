@@ -1016,6 +1016,14 @@ impl CheckpointStore {
             };
             if let Ok(cp) = serde_json::from_slice::<Checkpoint>(&bytes) {
                 guard.done.push(cp);
+            } else {
+                // BUG-20261025-43：损坏镜像不再静默吞——诚实留痕（崩溃撕裂/
+                // 外部损坏的第一个可见信号），与 auth.json / 分享注册表同族
+                // 口径；该 turn 的回退条目/封印指纹丢失由此可查。
+                warn!(
+                    file = %path.display(),
+                    "[checkpoint] turn 镜像解析失败，跳过（该 turn 的回退条目丢失）"
+                );
             }
         }
         guard.done.sort_by_key(|c| c.turn);
@@ -1832,7 +1840,21 @@ impl CheckpointStore {
             return;
         }
         let path = dir.join(format!("turn-{}.json", cp.turn));
-        let _ = std::fs::write(path, bytes);
+        // BUG-20261025-43：改原子写。此前裸 std::fs::write 直写目标——崩溃/
+        // 断电落在写中 → 半截 JSON，且 turn-N.json 每 turn 被 snapshot/seal
+        // 多次覆写，撕裂毁掉的是先前已落盘的好镜像。重启后 load 解析失败
+        // 静默跳过 → rewind 选择器丢条目、tree 基线/封印指纹消失（冲突预检
+        // 对该 turn 致盲）、redo 陈旧性守卫基线漂移。同 crate 的
+        // loop_continuation R14 同族先例；write_file_atomic 的临时名
+        // `.tmp-*` 无 .json 扩展名，load/truncate 的 turn-*.json 扫描天然
+        // 无视崩溃残留。
+        if let Err(e) = nemesis_utils::write_file_atomic(&path.to_string_lossy(), &bytes, 0o600) {
+            warn!(
+                turn = cp.turn,
+                error = %e,
+                "[checkpoint] turn 镜像落盘失败（重启后该 turn 的回退条目/封印指纹将丢失）"
+            );
+        }
     }
 
     /// Resolve `p` against the workspace root, rejecting `..` traversal
@@ -1860,6 +1882,11 @@ impl CheckpointStore {
 
 #[cfg(test)]
 mod tests;
+
+// BUG-20261025-43（BUG-HUNT R120）：persist 原子写 + load 损坏镜像 loud 留痕
+// 回归锁（R14 同族先例形态）。
+#[cfg(test)]
+mod r43_tests;
 
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
