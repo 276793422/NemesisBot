@@ -1048,3 +1048,33 @@ fn s12b_load_chat_sessions_skips_non_json_and_corrupt_files() {
     // 坏文件没有把垃圾塞进任何键
     assert_eq!(mgr.get_history("corrupt").len(), 0);
 }
+
+// BUG-20261025-44（BUG-HUNT R121）：损坏会话 json 静默跳过 → loud 留痕回归锁。
+// 跳过语义不变（坏档不进索引、好档照常载入）；warn 本身无法在进程内断言
+// （无 tracing 捕获夹具，BUG-43 同族诚实边界），本锁钉「混档目录载入不炸、
+// 好坏分拣正确、原子写残留被扩展名过滤无视」这一可观察行为。
+#[test]
+fn load_chat_sessions_corrupt_file_skipped_with_valid_ones_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = dir.path().join("sessions");
+    std::fs::create_dir_all(&storage).unwrap();
+
+    // 好档（含消息与 summary，验证字段保真载入）。
+    let good = r#"{
+        "key": "web:good",
+        "messages": [{"role": "user", "content": "hi"}],
+        "summary": "s",
+        "created": "2026-10-25T00:00:00Z",
+        "updated": "2026-10-25T00:00:00Z"
+    }"#;
+    std::fs::write(storage.join("web_good.json"), good).unwrap();
+    // 坏档（写中崩溃撕裂形态）。
+    std::fs::write(storage.join("torn.json"), r#"{"key": "web:torn", "mess"#).unwrap();
+    // 原子写残留（.json.tmp 扩展名）必须被扩展名过滤无视。
+    std::fs::write(storage.join("torn.json.tmp"), "garbage").unwrap();
+
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &storage.to_string_lossy());
+    let loaded = mgr.chat_sessions.lock();
+    assert!(loaded.contains_key("web:good"), "好档必须载入");
+    assert!(!loaded.contains_key("web:torn"), "坏档不得进索引");
+}

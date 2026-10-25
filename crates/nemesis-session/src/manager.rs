@@ -366,10 +366,28 @@ impl SessionMgr {
             if !path.extension().map(|e| e == "json").unwrap_or(false) {
                 continue;
             }
-            if let Ok(data) = fs::read_to_string(&path)
-                && let Ok(session) = serde_json::from_str::<ChatSession>(&data)
-            {
-                sessions.insert(session.key.clone(), session);
+            // BUG-20261025-44：坏档不再静默吞。写侧早已 tempfile+fsync+rename
+            // 原子，读侧遇到的损坏只剩外部篡改/历史残留/磁盘问题——正是需要
+            // 第一个可见信号的场景（与 auth.json / 分享注册表 / checkpoint
+            // 镜像同族口径）。跳过语义不变：不炸、不进索引。
+            let data = match fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("[session] Failed to read {}: {}", path.display(), e);
+                    continue;
+                }
+            };
+            match serde_json::from_str::<ChatSession>(&data) {
+                Ok(session) => {
+                    sessions.insert(session.key.clone(), session);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[session] Corrupt session file skipped {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
             }
         }
 

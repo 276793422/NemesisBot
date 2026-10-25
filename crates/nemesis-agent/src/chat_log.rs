@@ -1216,8 +1216,14 @@ pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
         let Ok(data) = fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(meta) = serde_json::from_str::<SessionMeta>(&data) else {
-            continue;
+        // BUG-20261025-44：损坏 meta 留痕（静默跳过 = 暂停中的会话永不唤醒
+        // 且无迹可查）；跳过语义不变。同族口径见 read_meta_full。
+        let meta = match serde_json::from_str::<SessionMeta>(&data) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("[chat_log] Corrupt meta file {}: {}", path.display(), e);
+                continue;
+            }
         };
         if let Some(until) = meta.snoozed_until {
             out.push((stem.to_string(), until, meta.snooze_note));
@@ -1305,8 +1311,15 @@ pub fn allow_all_sessions() -> Vec<(String, String)> {
         let Ok(data) = fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(meta) = serde_json::from_str::<SessionMeta>(&data) else {
-            continue;
+        // BUG-20261025-44：损坏 meta 留痕（静默跳过 = 放行状态 hydrate 静默
+        // 失效且无迹可查——fail-safe 但不可观测）；跳过语义不变。同族口径
+        // 见 read_meta_full。
+        let meta = match serde_json::from_str::<SessionMeta>(&data) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("[chat_log] Corrupt meta file {}: {}", path.display(), e);
+                continue;
+            }
         };
         if meta.allow_all
             && let Some(key) = meta.session_key
@@ -1323,7 +1336,18 @@ pub fn allow_all_sessions() -> Vec<(String, String)> {
 fn read_meta_full(session_key: &str) -> Option<SessionMeta> {
     let path = meta_path(session_key);
     let data = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&data).ok()
+    match serde_json::from_str::<SessionMeta>(&data) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            // BUG-20261025-44：损坏 meta 不再静默当 None——upsert 路径会以
+            // 空基线重写、静默抹掉 title/血缘/项目归属/allow_all 全部字段，
+            // 损坏必须留痕（与 auth.json / 分享注册表 / checkpoint 镜像同族
+            // 口径；上方 upsert_meta_result 注释声称的 "warn-and-continue
+            // posture" 由此才真正成立）。跳过语义不变。
+            tracing::warn!("[chat_log] Corrupt meta file {}: {}", path.display(), e);
+            None
+        }
+    }
 }
 
 /// E4: read the full sidecar meta (title + fork lineage). `None` when the
@@ -1643,3 +1667,9 @@ mod allow_all_tests;
 // 高频写入断言行数精确 + 逐行完整可解析（jsonl 撕行回归锁）。
 #[cfg(test)]
 mod r100_concurrent_append_tests;
+
+// BUG-20261025-44（BUG-HUNT R121，会话持久化面读侧损坏静默吞 → loud 留痕）：
+// read_meta_full / snoozed_sessions / allow_all_sessions 三读取点跳过语义
+// 回归锁（warn 不可进程内断言，BUG-43 同族诚实边界）。
+#[cfg(test)]
+mod r44_tests;
