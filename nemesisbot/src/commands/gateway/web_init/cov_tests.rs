@@ -473,3 +473,39 @@ async fn w5_init_web_bridge_hub_rpc_hub_assembly_with_enabled_cluster() {
     let w = init_web(&ctx, &cluster).await.expect("hub 装配形态不炸");
     assert!(w.bridge_client_launch.is_none(), "client 关 → launch None");
 }
+
+/// BUG-20261025-52 回归锁：出站桥**先订阅再 spawn**——wiring 返回后立即
+/// 发布的消息（桥任务首 poll 之前）不得丢失。旧形态（任务体内订阅）下发布
+/// 时桥尚未订阅（receiver_count=0 → 发布侧 no-receiver 丢弃），首收在 5s
+/// 超时内确定性红（不挂死）。
+///
+/// 终止路径：桥转发完停在 broadcast recv 上（任务持 Arc<MessageBus>，广播
+/// Closed 臂测试里不可达，与生产一致）→ drop mpsc receiver + 再发布一条
+/// 唤醒桥 → send 失败 break（生产停机同路径的 send-err）。
+#[test]
+fn test_cm_bridge_delivers_message_published_right_after_wiring() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let handle = super::spawn_bus_outbound_bridge(bus.clone(), tx);
+        // 订阅已在 spawn 前同步完成 → 此消息必进桥的 broadcast 缓冲。
+        bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+            "telegram", "chat-1", "hi",
+        ));
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("5s 内未收到 wiring 后立即发布的消息——先订阅再 spawn 失效")
+            .expect("消息不得为 None");
+        assert_eq!(forwarded.chat_id, "chat-1");
+        drop(rx); // 断 mpsc（生产停机形态）
+        // 桥此刻停在 broadcast recv 上：再发布一条唤醒它 → send 失败 → break。
+        bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+            "telegram", "chat-2", "bye",
+        ));
+        handle.await.unwrap(); // 桥已退出，不挂
+    });
+}

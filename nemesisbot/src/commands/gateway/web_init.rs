@@ -979,31 +979,11 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         // Bridge: bus outbound broadcast → ChannelManager mpsc.
         // Mirrors Go's manager.go: dispatchOutbound reading from bus.OutboundChannel().
         // Without this, non-web channel outbound is silently dropped.
-        let bus_for_cm = bus.clone();
-        let cm_outbound_tx = channel_manager.outbound_sender();
-        let _cm_bridge_handle = tokio::spawn(async move {
-            let mut rx = bus_for_cm.subscribe_outbound();
-            loop {
-                match rx.recv().await {
-                    Ok(msg) => {
-                        if cm_outbound_tx.send(msg).await.is_err() {
-                            break; // ChannelManager dispatch loop stopped
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        // P2-1：接收侧真实丢失计入 bus 指标。
-                        bus_for_cm.record_outbound_lagged(n);
-                        tracing::warn!(
-                            "[Gateway] ChannelManager outbound bridge lagged {} messages",
-                            n
-                        );
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        break;
-                    }
-                }
-            }
-        });
+        // BUG-20261025-52：先订阅再 spawn——旧形态在任务体内订阅，spawn 到
+        // 首 poll 之间发布的消息不在桥的 broadcast 缓冲里（发布侧接收者计数
+        // >0 时连 warn 都没有），startup 窗口的 IM 回复静默丢失。
+        let _cm_bridge_handle =
+            spawn_bus_outbound_bridge(bus.clone(), channel_manager.outbound_sender());
         info!("[Gateway] Bus outbound → ChannelManager bridge connected");
 
         // Start the outbound dispatch loop (reads from internal mpsc, dispatches to channels).
@@ -1043,6 +1023,39 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         web_display_host,
         web_port,
         bridge_client_launch,
+    })
+}
+
+/// bus 出站广播 → ChannelManager mpsc 桥（BUG-20261025-52：**先订阅再
+/// spawn**——订阅在调用线程同步完成，此刻起发布的消息必进 broadcast 缓冲，
+/// 主循环任务稍后从缓冲取，无 spawn→首 poll 窗口丢失。旧形态在任务体内
+/// 订阅，与 `channel_approval::spawn_watcher` 已删除的 racy 入口同类漂移）。
+fn spawn_bus_outbound_bridge(
+    bus: std::sync::Arc<nemesis_bus::MessageBus>,
+    cm_outbound_tx: tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
+) -> tokio::task::JoinHandle<()> {
+    let mut rx = bus.subscribe_outbound();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    if cm_outbound_tx.send(msg).await.is_err() {
+                        break; // ChannelManager dispatch loop stopped
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // P2-1：接收侧真实丢失计入 bus 指标。
+                    bus.record_outbound_lagged(n);
+                    tracing::warn!(
+                        "[Gateway] ChannelManager outbound bridge lagged {} messages",
+                        n
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
     })
 }
 
