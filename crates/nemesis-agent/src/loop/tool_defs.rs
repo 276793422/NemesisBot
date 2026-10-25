@@ -245,13 +245,15 @@ impl AgentLoop {
                 // 无档位声明的工具走原白名单路径，行为不变。
                 match tools_guard.get(name.as_str()).and_then(|t| t.min_tier()) {
                     Some(min) => active_tier_rank(*self.tier.read()) >= plugin_min_tier_rank(min),
-                    // W7：lazy on 时 tier 白名单对 mcp_call 放行（meta 工具是
-                    // mini/normal 档触达 MCP 长尾的唯一通道；内层真实工具名
-                    // 在 dispatch 重走瀑布时仍受内层校验）。
+                    // W7：lazy on 时 tier 白名单对 meta 两件套放行（mcp_call
+                    // 调用 + mcp_list 查询，BUG-20261025-32 补查询面——
+                    // mcp_call 的描述与错误臂都指路 mcp_list，缺它两步流程
+                    // 第一步无工具可用；内层真实工具名在 dispatch 重走瀑布
+                    // 时仍受内层校验）。
                     None => {
                         allowed.is_empty()
                             || allowed.contains(&name.as_str())
-                            || (mcp_lazy && name.as_str() == "mcp_call")
+                            || (mcp_lazy && matches!(name.as_str(), "mcp_call" | "mcp_list"))
                     }
                 }
             })
@@ -270,9 +272,13 @@ impl AgentLoop {
             .filter(|name| policy_allow.is_empty() || policy_allow.iter().any(|a| a == *name))
             .filter(|name| {
                 // mcp_call 供给钉死在 lazy 旗标（off = 不出现，任何档位）；
-                // 其余 mcp_* 在 lazy on 时让位给 meta 工具。
+                // mcp_list（两步流程的查询面，BUG-20261025-32）豁免长尾隐藏
+                // 但不受 lazy 旗标钉死（off = 照常走前置各闸原路径，行为零
+                // 变化）；其余 mcp_* 在 lazy on 时让位给 meta 两件套。
                 if name.as_str() == "mcp_call" {
                     mcp_lazy
+                } else if name.as_str() == "mcp_list" {
+                    true
                 } else {
                     !(mcp_lazy && name.starts_with("mcp_"))
                 }
