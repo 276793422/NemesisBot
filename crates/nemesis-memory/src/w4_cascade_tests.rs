@@ -306,3 +306,137 @@ async fn tool_forget_unknown_id_honest_not_found_without_cascade_note() {
         previews[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261025-34 回归锁：向量镜像参与下的分诊与谱系可见性
+// ---------------------------------------------------------------------------
+
+/// 带（假 embed）向量镜像的 manager——镜像写入总开关显式打开（生产形态）。
+fn vector_mem_manager(storage_path: &std::path::Path) -> MemoryManager {
+    let dir = tempdir().expect("tempdir");
+    let mgr = MemoryManager::new(&Config::new(dir.path()));
+    let embed: crate::vector::EmbeddingFunc = Box::new(|_: &str| Ok(vec![0.1_f32; 8]));
+    let vs_config = crate::vector::StoreConfig {
+        storage_path: storage_path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+    // init_*_with_embed 只装 store 不置 flag（镜像写入总开关）；
+    // 生产形态由 init_vector_store_from_config 置位，测试显式对齐。
+    mgr.set_vector_enabled(true);
+    mgr
+}
+
+#[tokio::test]
+async fn tool_delete_episodic_id_routes_to_episodic_delete_not_cascade() {
+    // BUG-20261025-34①：append_episode 会把 episodic 记录以同 id 写入向量
+    // 镜像，get() 的向量 fallback 看得见它——此前分类只判 is_some()，
+    // episodic 目标被误送 forget_with_cascade：级联只删向量镜像，episodic
+    // 本体永不清除却报告「已删除」。修复后必须按 typ 分流进 episodic 专删。
+    let dir = tempdir().expect("tempdir");
+    let mgr = Arc::new(vector_mem_manager(&dir.path().join("vs.jsonl")));
+
+    let episode = crate::episodic::Episode::new(
+        "sess-bug34".to_string(),
+        "user".to_string(),
+        "episodic 记录：修复登录 bug 的会话片段".to_string(),
+    );
+    let episode_id = mgr.append_episode(episode).await.unwrap();
+
+    // 前置（自验）：get 走向量 fallback 能看见 = 旧分类的误判供给面在场；
+    // 前置不成立时此处响亮失败，杜绝空转通过。
+    assert!(
+        mgr.get(&episode_id).await.unwrap().is_some(),
+        "precondition: episodic mirror must be visible via get() fallback"
+    );
+
+    let gate = Arc::new(MockGate::approved());
+    let exec = MemoryToolExecutor::new(mgr.clone());
+    exec.set_approval_gate(gate.clone());
+    let res = exec
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_by_id", "id": episode_id}),
+        )
+        .await;
+    assert!(
+        res.content.contains("deleted successfully"),
+        "{:?}",
+        res.content
+    );
+
+    // 核心断言：episodic 本体必须真删（修复前 forget_with_cascade 只删
+    // 向量镜像，episodic 记录残留 = 此处 get_session 非空）。
+    let episodes = mgr.get_session("sess-bug34").await.unwrap();
+    assert!(
+        episodes.is_empty(),
+        "episodic record must be physically deleted, got {} episode(s)",
+        episodes.len()
+    );
+    // 向量镜像同样清掉（get fallback 不得再召回）。
+    assert!(mgr.get(&episode_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn cascade_finds_merge_derived_surviving_only_in_vector_mirror() {
+    // BUG-20261025-34②：生产 keyword store 是 per-run 内存态，重启后历史
+    // merge-derived 条目只活在向量镜像里。list_derived_of 此前只扫 keyword
+    // store → 级联静默 no-op（源删了、派生成无主孤儿）。修复后扫描面 =
+    // 合并视图（list_all_entries），与 run_sweep 口径对齐。
+    let dir1 = tempdir().expect("tempdir1");
+    let shared_vs = dir1.path().join("shared_vs.jsonl");
+
+    // 运行 1：源 A + 活派生 B（merged_from=A），keyword+向量双写并持久化。
+    let mgr1 = vector_mem_manager(&shared_vs);
+    let id_a = mgr1
+        .store_entry(entry("源条目 A：用户偏好深色主题"))
+        .await
+        .unwrap();
+    let mut b = entry("派生条目 B：合并自 A 的 UI 偏好");
+    b.metadata
+        .insert(META_DREAM_MERGED_FROM.to_string(), id_a.clone());
+    let id_b = mgr1.store_entry(b).await.unwrap();
+    drop(mgr1); // 「运行 1 结束」：keyword 内存态随实例消失，仅剩持久层
+
+    // 运行 2（重启模拟）：全新 manager，keyword 空；new_from_embed 自动
+    // load_persisted_sync 回载向量持久层。
+    let mgr2 = vector_mem_manager(&shared_vs);
+
+    // 前置（自验）：重启后 get 走向量 fallback 能看见源条目。
+    assert!(
+        mgr2.get(&id_a).await.unwrap().is_some(),
+        "precondition: vector fallback must surface source entry after restart"
+    );
+
+    // 核心断言 1：派生反查必须覆盖向量层（修复前只扫 keyword = 空）。
+    let derived = mgr2.list_derived_of(&id_a).await.unwrap();
+    assert_eq!(
+        derived.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+        vec![id_b.clone()],
+        "merge-derived entry visible only in vector mirror must be found"
+    );
+
+    // 核心断言 2：级联传导在重启后真实生效——源删、派生归档。
+    let report = mgr2.forget_with_cascade(&id_a).await.unwrap();
+    assert!(report.source_deleted, "向量侧删除也算源已删: {:?}", report);
+    assert_eq!(
+        report
+            .archived_derived
+            .iter()
+            .map(|(i, _)| i.clone())
+            .collect::<Vec<_>>(),
+        vec![id_b.clone()],
+        "{:?}",
+        report
+    );
+    assert!(mgr2.get(&id_a).await.unwrap().is_none());
+    let archived = mgr2.get(&id_b).await.unwrap().expect("派生归档后仍可查");
+    assert_eq!(
+        archived
+            .metadata
+            .get(META_DREAM_ARCHIVED)
+            .map(String::as_str),
+        Some("true"),
+        "派生必须打归档戳（归档非删除）"
+    );
+}

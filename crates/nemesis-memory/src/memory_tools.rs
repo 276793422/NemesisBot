@@ -493,9 +493,18 @@ impl MemoryToolExecutor {
         // 所在）走「forget + 级联归档派生」路径；否则维持原 episodic
         // delete_by_id。preview 必须在批准前列出将连带归档的派生条目。
         let forget_id = args["id"].as_str().unwrap_or("").to_string();
+        // BUG-20261025-34：`get()` 命中 ≠ 通用记忆条目——`append_episode`
+        // 会把 episodic 记录以同 id 写入向量镜像，`get()` 的向量侧 fallback
+        // 能看见它；此前分类只判 `is_some()`，episodic 目标被误送进
+        // forget_with_cascade：级联只删向量镜像，episodic 本体（SQLite/文件）
+        // 永不清除，却向用户报告「已删除」。episodic 必须走 episodic 专删
+        // 通路（delete_by_id 分支的另一半），分类处按 typ 分流。
         let general_target = action == "delete_by_id"
             && !forget_id.is_empty()
-            && self.manager.get(&forget_id).await.unwrap_or(None).is_some();
+            && match self.manager.get(&forget_id).await.unwrap_or(None) {
+                Some(e) => e.typ != crate::types::MemoryType::Episodic,
+                None => false,
+            };
         let derived_preview: Vec<(String, String)> = if general_target {
             self.manager
                 .list_derived_of(&forget_id)

@@ -38,11 +38,6 @@ pub const META_LAST_RECALL: &str = "last_recall";
 /// 最近一次召回的幂等标记（`session_key \u{1} turn_marker`）。
 pub const META_RECALL_TURN: &str = "last_recall_turn";
 
-/// W4（2026-10-25 加固）：派生条目反查的扫描上限——`store.list` 无
-/// 「全量」形态，按一个远超正常记忆库规模的界值一次取齐（记忆库条目数
-/// 达到这个量级时 dreaming 本身早该跑过了）。
-const DERIVED_SCAN_LIMIT: usize = 10_000;
-
 /// W4：forget 谱系传导报告（`forget_with_cascade` 返回值）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ForgetCascade {
@@ -785,7 +780,12 @@ impl MemoryManager {
         if !self.is_enabled() {
             return Ok(Vec::new());
         }
-        let all = self.store.list(None, DERIVED_SCAN_LIMIT, 0).await?;
+        // BUG-20261025-34：扫描面必须是合并视图（keyword + 向量权威副本）
+        // ——生产 keyword store 是 per-run 内存态，重启后历史 merge-derived
+        // 条目只活在向量镜像里；只扫 keyword 会让 forget_with_cascade 的
+        // 谱系传导在重启后静默变 no-op（源删了、派生全成无主孤儿）。与
+        // run_sweep 的可见性口径（list_all_entries）对齐。
+        let all = self.list_all_entries().await?;
         Ok(all
             .into_iter()
             .filter(|e| {
