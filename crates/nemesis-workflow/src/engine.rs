@@ -1651,13 +1651,40 @@ impl WorkflowEngine {
             return Err(EngineError::InvalidState("engine is closed".to_string()));
         }
 
-        // Load the execution snapshot we will mutate.
-        let mut execution = {
-            let execs = self.executions.read().await;
-            execs
+        // Load the execution snapshot and arm the cancellation token under a
+        // single write lock (BUG-20261025-42a). The old snapshot was a plain
+        // read with the token inserted later, outside any lock: a
+        // cancel_execution landing in between found no token to fire, flipped
+        // the recorded state to Cancelled, and this function then ran the
+        // whole workflow anyway — every node side effect executed and the
+        // user's cancel was overwritten by a terminal state. Holding the
+        // write lock makes {state check + token insert} atomic against
+        // cancel_execution's {state flip + token fire}, so exactly one
+        // ordering wins: cancel first → we see the non-Running state here
+        // and bail out without running; insert first → cancel finds and
+        // fires the token → the scheduler bails out.
+        let (mut execution, cancel_token) = {
+            let execs = self.executions.write().await;
+            let exec = execs
                 .get(execution_id)
                 .cloned()
-                .ok_or_else(|| EngineError::ExecutionNotFound(execution_id.to_string()))?
+                .ok_or_else(|| EngineError::ExecutionNotFound(execution_id.to_string()))?;
+            if exec.state != ExecutionState::Running {
+                // Already terminal / cancelled before we got here (e.g. the
+                // cancel landed between create_execution and this call):
+                // never re-run the workflow nor overwrite the recorded
+                // outcome — return the record as-is.
+                return Ok(exec);
+            }
+            if self.cancel_tokens.contains_key(execution_id) {
+                return Err(EngineError::InvalidState(format!(
+                    "execution {execution_id} is already in flight"
+                )));
+            }
+            let token = CancellationToken::new();
+            self.cancel_tokens
+                .insert(execution_id.to_string(), token.clone());
+            (exec, token)
         };
 
         let workflow = self
@@ -1727,12 +1754,6 @@ impl WorkflowEngine {
         // Stamp the execution with the workflow's structural hash so the
         // resume path can detect config drift (1b-A1 step 5).
         execution.workflow_hash = Some(workflow.hash());
-
-        // Create cancellation token for this execution. Stored in cancel_tokens
-        // so cancel_execution(id) can trigger it; removed on completion.
-        let cancel_token = CancellationToken::new();
-        self.cancel_tokens
-            .insert(execution.id.clone(), cancel_token.clone());
 
         // Execute the workflow using the scheduler. When a checkpoint store
         // is wired, install a per-level hook so an interrupted execution can
@@ -2261,14 +2282,6 @@ impl WorkflowEngine {
     /// the state change. Only executions in `Running` or `Waiting` state can be
     /// cancelled. Returns the updated execution.
     pub async fn cancel_execution(&self, id: &str) -> Result<Execution, EngineError> {
-        // Trigger the cancellation token first so in-flight tasks exit promptly.
-        if let Some(entry) = self.cancel_tokens.get(id) {
-            entry.cancel();
-            drop(entry);
-        } else {
-            // No active token: execution may already be finished. Validate state below.
-        }
-
         let mut execs = self.executions.write().await;
         let execution = execs
             .get_mut(id)
@@ -2285,10 +2298,53 @@ impl WorkflowEngine {
         execution.state = ExecutionState::Cancelled;
         execution.ended_at = Some(Local::now());
 
+        // Fire the cancellation token while still holding the state lock
+        // (BUG-20261025-42a): the run/resume side inserts its token under
+        // the same lock, so there is no window where we flip the state but
+        // miss a token that appears right after — either the scheduler sees
+        // the fired token, or we observed the pre-run state and the run side
+        // bails out on its own state check.
+        if let Some(entry) = self.cancel_tokens.get(id) {
+            entry.cancel();
+        }
+
         let updated = execution.clone();
         drop(execs); // Release lock before persistence I/O
 
         self.persist_execution(&updated).await;
+
+        // BUG-20261025-42b: flip the latest checkpoint to terminal so a
+        // cancelled execution is not resurrected by
+        // restore_incomplete_executions on the next process restart (that
+        // path only skips `terminal || all_completed` checkpoints). Cancelling
+        // a Waiting execution returns without any terminal checkpoint of its
+        // own, leaving the most recent checkpoint at the non-terminal Waiting
+        // snapshot — startup restore would then bring the cancelled execution
+        // back as Waiting / resumable. run_async covers the mid-run cancel
+        // itself (terminal checkpoint in its final-state match), so this is
+        // the missing Waiting-cancel arm. Best-effort with loud warn on
+        // failure; never masks the cancel result.
+        let wf_ctx = {
+            let ctx = WorkflowContext::new(updated.input.clone());
+            for (k, v) in &updated.variables {
+                ctx.set_var(k, v.clone());
+            }
+            for (nid, nr) in &updated.node_results {
+                ctx.set_node_result(nid, nr.clone());
+            }
+            ctx
+        };
+        if let Err(e) = self
+            .save_checkpoint(id, &updated.workflow_name, &wf_ctx, None, None, true)
+            .await
+        {
+            warn!(
+                target: "nemesis_workflow::engine",
+                execution_id = %id,
+                error = %e,
+                "failed to save terminal checkpoint on cancel (stale checkpoint may resurrect this execution on restart)"
+            );
+        }
 
         Ok(updated)
     }
@@ -2395,19 +2451,35 @@ impl WorkflowEngine {
                 );
             }
 
-            // Mark as Running while schedule_resume executes.
+            // Mark as Running while schedule_resume executes. Arm the fresh
+            // cancellation token under the same lock (BUG-20261025-42a): a
+            // cancel_execution landing after the lock release must find the
+            // token to fire — the old outside-the-lock insert let cancel slip
+            // into the gap, flip the state to Cancelled, and the resume then
+            // ran the downstream nodes to completion, overwriting the cancel.
             execution.state = ExecutionState::Running;
             execution.ended_at = None;
+            let cancel_token = CancellationToken::new();
+            self.cancel_tokens
+                .insert(id.to_string(), cancel_token.clone());
             let snap = execution.clone();
-            (snap, waiting_id)
+            (snap, waiting_id, cancel_token)
         };
 
-        let (mut execution, _waiting_node_id) = execution_snapshot;
+        let (mut execution, _waiting_node_id, cancel_token) = execution_snapshot;
 
-        // Load the workflow definition (needed for schedule_resume).
-        let workflow = self
-            .get_workflow(&execution.workflow_name)
-            .ok_or_else(|| EngineError::WorkflowNotFound(execution.workflow_name.clone()))?;
+        // Load the workflow definition (needed for schedule_resume). The
+        // token was already armed inside the critical section — a failed
+        // lookup must not leave it orphaned.
+        let workflow = match self.get_workflow(&execution.workflow_name) {
+            Some(w) => w,
+            None => {
+                self.cancel_tokens.remove(id);
+                return Err(EngineError::WorkflowNotFound(
+                    execution.workflow_name.clone(),
+                ));
+            }
+        };
 
         // Optional config-drift warning.
         if let Some(ref stored_hash) = execution.workflow_hash {
@@ -2440,11 +2512,6 @@ impl WorkflowEngine {
             .filter(|(_, r)| r.state == ExecutionState::Completed)
             .map(|(id, _)| id.clone())
             .collect();
-
-        // Install / refresh cancellation token.
-        let cancel_token = CancellationToken::new();
-        self.cancel_tokens
-            .insert(execution.id.clone(), cancel_token.clone());
 
         let schedule_result = scheduler::schedule_resume(
             &workflow.nodes,

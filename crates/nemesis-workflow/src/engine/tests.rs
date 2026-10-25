@@ -4657,3 +4657,164 @@ async fn test_executions_tracking_cap_evicts_oldest_terminal() {
         "逐出只发生在终态集合内（幸存终态 + 活跃新条目 = 上限）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261025-42 回归锁：取消语义状态机（run 前取消被尊重 + 取消 Waiting
+// 落终态 checkpoint 防重启复活）
+// ---------------------------------------------------------------------------
+
+/// 计数执行器：记录 execute 调用次数（Arc 共享给断言），节点恒 Completed。
+struct W42CountingExecutor {
+    runs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl crate::nodes::NodeExecutor for W42CountingExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: Local::now(),
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+/// BUG-20261025-42a：create 与 run 之间落下的 cancel 必须被尊重——
+/// run_async 不得重跑工作流、不得把 Cancelled 覆盖成终态、不得执行任何
+/// 节点副作用。旧实现快照走读锁且 token 在锁外插入：cancel 先到（无
+/// token 可点、状态翻 Cancelled）→ run_async 照跑全图，计数执行器证明
+/// 副作用全发生，最终记录被覆盖成 Completed。
+#[tokio::test]
+async fn test_cancel_before_run_is_honored_side_effects_never_execute() {
+    let engine = WorkflowEngine::new();
+    let runs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    engine.register_node_executor(
+        "w42_count",
+        Arc::new(W42CountingExecutor { runs: runs.clone() }),
+    );
+    engine
+        .register_workflow(make_workflow(
+            "w42_wf",
+            vec![make_node("n1", "w42_count", vec![])],
+        ))
+        .unwrap();
+
+    let execution = engine
+        .create_execution("w42_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    // cancel 落在 create 之后、run_async 之前（旧代码的静默窗口）。
+    let cancelled = engine.cancel_execution(&execution.id).await.unwrap();
+    assert_eq!(cancelled.state, ExecutionState::Cancelled);
+
+    let out = engine.run_async(&execution.id).await.unwrap();
+    assert_eq!(
+        out.state,
+        ExecutionState::Cancelled,
+        "cancel 后 run_async 不得把记录覆盖成终态"
+    );
+    assert_eq!(
+        runs.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "cancel 后 run_async 不得执行任何节点副作用"
+    );
+    // 守卫拒绝路径不落 token，map 应保持干净（幂等清理无残留）。
+    assert!(
+        engine.cancel_tokens.get(&execution.id).is_none(),
+        "token 不得残留"
+    );
+}
+
+/// BUG-20261025-42b：取消 Waiting 执行必须留下终态 checkpoint——旧实现
+/// cancel 只翻状态不落盘 checkpoint，最近一份 checkpoint 停留在非终态的
+/// Waiting 快照上，进程重启后 restore_incomplete_executions（只跳过
+/// terminal || all_completed）会把已取消的执行复活成 Waiting（可 resume）。
+#[tokio::test]
+async fn test_cancel_waiting_saves_terminal_checkpoint_not_resurrected() {
+    let engine = Arc::new(WorkflowEngine::new());
+    let store: Arc<dyn CheckpointStore> = Arc::new(InMemoryCheckpointStore::new());
+    engine.set_checkpoint_store(store.clone());
+    engine
+        .register_workflow(make_workflow(
+            "w42_wait_wf",
+            vec![make_node("review", "human_review", vec![])],
+        ))
+        .unwrap();
+
+    let execution = engine
+        .create_execution("w42_wait_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    let handle = {
+        let engine = engine.clone();
+        let id = execution.id.clone();
+        tokio::spawn(async move { engine.run_async(&id).await })
+    };
+
+    // 等 run_async 落定到 Waiting（human_review 挂起）。
+    let mut state = None;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let snap = store.latest(&execution.id).await.unwrap();
+        if let Some(cp) = snap
+            && cp.waiting_node.is_some()
+        {
+            state = Some(());
+            break;
+        }
+    }
+    assert!(
+        state.is_some(),
+        "执行必须先到达 Waiting（checkpoint 带 waiting_node）"
+    );
+
+    // 取消挂起中的执行（旧代码：只翻状态，checkpoint 留在非终态 Waiting）。
+    let cancelled = engine.cancel_execution(&execution.id).await.unwrap();
+    assert_eq!(cancelled.state, ExecutionState::Cancelled);
+    let _ = handle.await.unwrap();
+
+    // 最近一份 checkpoint 必须已翻成终态。
+    let latest = store
+        .latest(&execution.id)
+        .await
+        .unwrap()
+        .expect("checkpoint 必须存在");
+    assert!(
+        latest.terminal,
+        "取消后最近 checkpoint 必须是终态（waiting_node={:?}）",
+        latest.waiting_node
+    );
+    assert!(
+        latest.waiting_node.is_none(),
+        "终态 checkpoint 不得再带 waiting_node"
+    );
+
+    // 重启模拟：全新引擎注册同一工作流（同 hash）+ 同一 store → restore
+    // 必须跳过（0 复活、无执行入库）。旧代码在此返回 1 并把已取消执行
+    // 复活成 Waiting。
+    let fresh = WorkflowEngine::new();
+    fresh.set_checkpoint_store(store.clone());
+    fresh
+        .register_workflow(make_workflow(
+            "w42_wait_wf",
+            vec![make_node("review", "human_review", vec![])],
+        ))
+        .unwrap();
+    let restored = fresh.restore_incomplete_executions().await.unwrap();
+    assert_eq!(restored, 0, "已取消执行不得被重启恢复复活");
+    assert!(
+        fresh.list_executions(None).await.is_empty(),
+        "复活路径必须零入库"
+    );
+}
