@@ -1350,39 +1350,11 @@ fn test_web_host_resolution_custom() {
 // -------------------------------------------------------------------------
 // Heartbeat interval calculation tests
 // -------------------------------------------------------------------------
-
-#[test]
-fn test_heartbeat_interval_zero() {
-    let interval: i64 = 0;
-    let secs = if interval > 0 {
-        (interval * 60) as u64
-    } else {
-        300
-    };
-    assert_eq!(secs, 300);
-}
-
-#[test]
-fn test_heartbeat_interval_positive() {
-    let interval: i64 = 5;
-    let secs = if interval > 0 {
-        (interval * 60) as u64
-    } else {
-        300
-    };
-    assert_eq!(secs, 300);
-}
-
-#[test]
-fn test_heartbeat_interval_thirty() {
-    let interval: i64 = 30;
-    let secs = if interval > 0 {
-        (interval * 60) as u64
-    } else {
-        300
-    };
-    assert_eq!(secs, 1800);
-}
+// （2026-10-26 BUG-64 拆除：此处原有三则测试把 gateway 本地手搓的
+// `interval>0 ? ×60 : 300` 映射公式原样内联再断言其输出——测的是公式
+// 副本而非任何生产代码，且钉死的 0→300s 正是 BUG-64 定性的错误语义。
+// 间隔契约的回归锁现居 nemesis-heartbeat
+// tests.rs::test_config_new_clamps_interval，生产唯一入口 = 构造器。）
 
 // -------------------------------------------------------------------------
 // Security enabled check logic

@@ -112,20 +112,18 @@ pub(crate) async fn init_services(
     );
 
     // Step 12: Create HeartbeatService
-    let heartbeat_interval_secs = if cfg.heartbeat.interval > 0 {
-        (cfg.heartbeat.interval * 60) as u64
-    } else {
-        300
-    };
     #[cfg(feature = "heartbeat")]
     let heartbeat_service = {
-        let heartbeat_config = nemesis_heartbeat::service::HeartbeatConfig {
-            interval: std::time::Duration::from_secs(heartbeat_interval_secs),
-            enabled: cfg.heartbeat.enabled,
-            workspace: Some(common::workspace_path(&home).to_string_lossy().to_string()),
-            min_interval_minutes: 5,
-            default_interval_minutes: 30,
-        };
+        // BUG-20261025-64：间隔解析此前本地手搓（0→300s、1–4 分钟直通），
+        // 绕过 `HeartbeatConfig::new` 的契约口径（0→缺省 30min、<5min 钳
+        // 5min 下限）——同一语义三处分裂（本处字面量 / crate 契约 /
+        // config serde 缺省 30）。收编构造器单一真相源；负值按 0 处理
+        // （= 缺省 30 分钟，与 serde 缺省一致）。
+        let heartbeat_config = nemesis_heartbeat::service::HeartbeatConfig::new(
+            cfg.heartbeat.interval.max(0) as u64,
+            cfg.heartbeat.enabled,
+            common::workspace_path(&home).to_string_lossy().to_string(),
+        );
         Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
             heartbeat_config,
         ))
@@ -241,6 +239,16 @@ pub(crate) async fn init_services(
             heartbeat_service.set_skip_file(skip_file.to_string_lossy().to_string());
         }
 
+        // BUG-20261025-65：HealthServer::record_beat 此前生产零调用（/ready
+        // 的 beat_count 恒 0，doc 声称「called by heartbeat service」但两服
+        // 务无任何连接）。经 HeartbeatService 的 on_beat 回调在计数自增同点
+        // 接线；health feature 关时诚实不装配。
+        #[cfg(feature = "health")]
+        heartbeat_service.set_on_beat({
+            let health_for_beat = health_server.clone();
+            Arc::new(move || health_for_beat.record_beat())
+        });
+
         info!("[Gateway] Heartbeat service wired (bus + handler + skip_file)");
     }
 
@@ -286,8 +294,6 @@ pub(crate) async fn init_services(
         security_enabled: cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true),
         config_path: config_path.clone(),
         workspace: home.join("workspace"),
-        heartbeat_interval_secs,
-        heartbeat_enabled: cfg.heartbeat.enabled,
         gateway_host: cfg.gateway.host.clone(),
         gateway_port: cfg.gateway.port as u16,
         llm_logging_enabled: cfg

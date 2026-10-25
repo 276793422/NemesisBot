@@ -338,6 +338,74 @@ fn test_config_new_disabled() {
     assert_eq!(config.workspace, Some("/tmp/ws".to_string()));
 }
 
+// BUG-20261025-64 回归锁（旧形态必红：gateway services.rs 本地手搓映射为
+// 0→300s、<5 分钟直通无钳制）：间隔解析收编 `HeartbeatConfig::new` 单一
+// 真相源后，契约口径在此钉死——0=缺省 30 分钟、<5 分钟钳到 5 分钟下限
+// （每次 tick 是一整轮 agent LLM 调用，下限防配置写小把 LLM 打穿）。
+#[test]
+fn test_config_new_clamps_interval() {
+    // 0 → 缺省 30 分钟（非 300s）。
+    assert_eq!(
+        HeartbeatConfig::new(0, true, "/tmp".to_string()).interval,
+        Duration::from_secs(30 * 60)
+    );
+    // 1–4 分钟 → 钳到 5 分钟下限（非直通）。
+    assert_eq!(
+        HeartbeatConfig::new(1, true, "/tmp".to_string()).interval,
+        Duration::from_secs(5 * 60)
+    );
+    assert_eq!(
+        HeartbeatConfig::new(3, true, "/tmp".to_string()).interval,
+        Duration::from_secs(5 * 60)
+    );
+    // ≥5 分钟原样。
+    assert_eq!(
+        HeartbeatConfig::new(7, true, "/tmp".to_string()).interval,
+        Duration::from_secs(7 * 60)
+    );
+}
+
+// BUG-20261025-65 回归锁：on_beat 回调在有效 tick（通过 skip 检查、内部
+// beat 计数自增处）触发；旧形态该回调面不存在，/ready beat_count 恒 0。
+#[tokio::test]
+async fn test_on_beat_callback_fires_on_tick() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+    std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Test task").unwrap();
+
+    let on_beat_hits = Arc::new(AtomicU64::new(0));
+    let hits_clone = on_beat_hits.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+    svc.set_handler(Box::new(|_p, _c, _ch| None));
+    svc.set_on_beat(Arc::new(move || {
+        hits_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    svc.start().await.unwrap();
+    // 首拍 1s 后触发（同 test_start_stop 的时序窗）。
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    svc.stop();
+    // 排空：abort 只在 await 点生效，可能在飞的同步 tick 体（自增计数→
+    // 回调，两步同步相连）先跑完再断言，避免读侧撕裂。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let hits = on_beat_hits.load(Ordering::SeqCst);
+    assert!(hits >= 1, "on_beat must fire on the first tick");
+    // 回调与内部计数同点：两者严格相等。
+    assert_eq!(
+        hits,
+        svc.beat_count(),
+        "on_beat fires must match internal beat count"
+    );
+}
+
 #[test]
 fn test_heartbeat_result_fields() {
     let result = HeartbeatResult {

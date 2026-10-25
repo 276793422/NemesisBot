@@ -94,6 +94,7 @@ fn test_s1_tick_skip_file_blocks_execution() {
             &skip_file,
             &last_beat,
             &beat_count,
+            &None,
         );
     });
 
@@ -126,6 +127,7 @@ fn test_s1_tick_empty_prompt_returns_early() {
             &skip_file,
             &last_beat,
             &beat_count,
+            &None,
         );
     });
 
@@ -152,6 +154,7 @@ fn test_s1_tick_comments_only_prompt_returns_early() {
             &skip_file,
             &last_beat,
             &beat_count,
+            &None,
         );
     });
 
@@ -177,6 +180,7 @@ fn test_s1_tick_handler_not_configured() {
             &skip_file,
             &last_beat,
             &beat_count,
+            &None,
         );
     });
 
@@ -219,6 +223,7 @@ fn test_s1_tick_async_result_publishes_nothing() {
             &skip_file,
             &last_beat,
             &beat_count,
+            &None,
         );
     });
 
@@ -255,6 +260,7 @@ fn test_s1_tick_falls_back_to_for_llm_message() {
         &skip_file,
         &last_beat,
         &beat_count,
+        &None,
     );
 
     let sent_lock = sent.lock();
@@ -298,6 +304,7 @@ fn test_s1_tick_both_messages_empty_sends_nothing() {
         &skip_file,
         &last_beat,
         &beat_count,
+        &None,
     );
 
     assert!(sent.lock().is_empty(), "empty response must not publish");

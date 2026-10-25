@@ -2,7 +2,7 @@
 //! init_cluster(disabled) → init_web → init_agent → init_post_agent →
 //! init_services），点亮姊妹 full_assembly 冒烟未触的分支：
 //! - devices.enabled=true 的设备服务装配/启动臂；
-//! - heartbeat.interval>0 的 interval 换算臂（×60）；
+//! - heartbeat.interval>0 的构造臂（BUG-64 收编后走 HeartbeatConfig::new，<5min 被钳到下限）；
 //! - board autopilot 启动同步 n>0 信息臂（store 先种规则）；
 //! - real_port 回读 + gateway state 落盘断言。
 //!
@@ -53,7 +53,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
     cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
     cfg["gateway"]["port"] = serde_json::json!(0);
     cfg["devices"]["enabled"] = serde_json::json!(true);
-    cfg["heartbeat"]["interval"] = serde_json::json!(1); // >0 → ×60 换算臂
+    cfg["heartbeat"]["interval"] = serde_json::json!(1); // >0 → 构造器钳制臂（1 分钟被钳到 5 分钟下限）
     // F-B10（2026-09-25）：interval>0 的换算在构造期完成，enabled=false
     // 保证 start() 直通不排 tick——插桩跑（本测 >60s）下真 tick 会驱动
     // process_heartbeat 对死端点 LLM 重试，runtime 关停与退避 sleep 竞态

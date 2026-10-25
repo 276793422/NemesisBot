@@ -130,6 +130,10 @@ pub struct HeartbeatService {
     skip_file: Arc<Mutex<Option<String>>>,
     message_bus: Mutex<Option<Arc<dyn MessageBus>>>,
     state_manager: Mutex<Option<Arc<dyn StateManager>>>,
+    /// 每次有效 tick（通过 skip 检查、beat 计数自增处）触发的回调。
+    /// BUG-20261025-65：供 gateway 接线 `HealthServer::record_beat`——
+    /// 此前该回调面不存在，`/ready` 的 beat_count 恒 0（生产零调用）。
+    on_beat: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl HeartbeatService {
@@ -152,6 +156,7 @@ impl HeartbeatService {
             skip_file: Arc::new(Mutex::new(None)),
             message_bus: Mutex::new(None),
             state_manager: Mutex::new(None),
+            on_beat: Mutex::new(None),
         }
     }
 
@@ -173,6 +178,14 @@ impl HeartbeatService {
     /// Set the skip file path (BOOTSTRAP.md). If the file exists, heartbeat is skipped.
     pub fn set_skip_file(&self, path: String) {
         *self.skip_file.lock() = Some(path);
+    }
+
+    /// Set a callback fired at the same point the internal beat counter is
+    /// incremented (after skip checks and prompt build, before the handler
+    /// runs). Ticks that are skipped (BOOTSTRAP.md) or lack a prompt do NOT
+    /// fire it——与 [`Self::beat_count`] 的计数口径完全一致。
+    pub fn set_on_beat(&self, on_beat: Arc<dyn Fn() + Send + Sync>) {
+        *self.on_beat.lock() = Some(on_beat);
     }
 
     /// Check if heartbeat should be skipped (bootstrap mode).
@@ -212,6 +225,7 @@ impl HeartbeatService {
         let workspace = self.config.workspace.clone();
         let message_bus = self.message_bus.lock().clone();
         let state_manager = self.state_manager.lock().clone();
+        let on_beat = self.on_beat.lock().clone();
 
         let handle = {
             // 本轮启停周期的停机令牌：stop() cancel → 任务在 select 点立即
@@ -237,6 +251,7 @@ impl HeartbeatService {
                         &skip_file,
                         &last_beat,
                         &beat_count,
+                        &on_beat,
                     );
                 }
 
@@ -287,6 +302,7 @@ impl HeartbeatService {
                         &skip_file,
                         &last_beat,
                         &beat_count,
+                        &on_beat,
                     );
                 }
             })
@@ -656,6 +672,7 @@ fn execute_heartbeat_tick(
     skip_file: &Arc<Mutex<Option<String>>>,
     last_beat: &Arc<Mutex<chrono::DateTime<Local>>>,
     beat_count: &Arc<AtomicU64>,
+    on_beat: &Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
     // Step 1: Check skip file.
     let skip = {
@@ -702,6 +719,11 @@ fn execute_heartbeat_tick(
     let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
     *last_beat.lock() = Local::now();
     tracing::debug!("[Heartbeat] Heartbeat tick #{}", count);
+    // BUG-20261025-65：与内部计数同点触发外部回调（gateway 接线
+    // HealthServer::record_beat）；无回调时零开销 no-op。
+    if let Some(on_beat) = on_beat {
+        on_beat();
+    }
 
     // Step 4: Call handler.
     let result = match handler {

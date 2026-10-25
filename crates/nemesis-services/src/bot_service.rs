@@ -263,10 +263,6 @@ pub struct BotServiceConfig {
     pub workspace: PathBuf,
     /// Configured model list (loaded from config file).
     pub model_list: Vec<ModelEntry>,
-    /// Heartbeat interval in seconds.
-    pub heartbeat_interval_secs: u64,
-    /// Whether heartbeat is enabled.
-    pub heartbeat_enabled: bool,
     /// Gateway host for health server.
     pub gateway_host: String,
     /// Gateway port for health server.
@@ -298,8 +294,6 @@ impl Default for BotServiceConfig {
             config_path: get_config_path(),
             workspace: PathBuf::new(),
             model_list: Vec::new(),
-            heartbeat_interval_secs: 300,
-            heartbeat_enabled: true,
             gateway_host: "127.0.0.1".to_string(),
             gateway_port: 8080,
             llm_logging_enabled: false,
