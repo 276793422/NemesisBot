@@ -25,6 +25,27 @@ pub(crate) struct RewindUndoEntry {
     /// undo 完成后（`truncate_from` 之后的索引里）剩的最新 tree——redo 的
     /// 陈旧性守卫基线（期间任何新 checkpoint turn 都会改变它）。
     post_tree: Option<String>,
+    /// BUG-20261025-54：保留行集的内容身份指纹（sha256）。行数守卫只查
+    /// 数量——clear 后重填到与 kept_count 相同的行数会绕过它，把旧行
+    /// verbatim 回填进无关对话；指纹维度补上「行数未变但内容已变」的
+    /// 陈旧性判定。
+    kept_rows_hash: String,
+}
+
+/// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json::to_string` 后
+/// `'\n'` 连接进 sha256（与 `truncate_chat_log_rows` 落盘侧同序列化形态，
+/// 同 key 排序/转义，逐字节可比）。空行集 = 空 blob 的 sha256（恒定值，
+/// kept_count=0 的 redo 语义不变）。
+fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for r in rows {
+        if let Ok(line) = serde_json::to_string(r) {
+            h.update(line.as_bytes());
+            h.update(b"\n");
+        }
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl AgentLoop {
@@ -459,6 +480,7 @@ impl AgentLoop {
         // 4) 压 undo 栈（截断成功后才压——失败路径不留脏条目）。
         let redoable = !removed.is_empty();
         if redoable {
+            let kept_rows_hash = kept_rows_fingerprint(&rows[..cut]);
             let mut stacks = self.rewind_undo_stacks.lock();
             let stack = stacks.entry(session_key.to_string()).or_default();
             stack.push_back(RewindUndoEntry {
@@ -467,6 +489,7 @@ impl AgentLoop {
                 restore_turn,
                 forward_tree,
                 post_tree,
+                kept_rows_hash,
             });
             while stack.len() > REWIND_UNDO_STACK_CAP {
                 stack.pop_front();
@@ -492,8 +515,9 @@ impl AgentLoop {
     }
 
     /// E3 redo：弹本会话 undo 栈顶，反向恢复——被截断的行 VERBATIM 回填
-    /// jsonl，文件恢复到 undo 时刻的影子 tree。行数/tree 基线双重陈旧性
-    /// 守卫：undo 之后该会话有任何新消息、或任何地方有新 checkpoint turn
+    /// jsonl，文件恢复到 undo 时刻的影子 tree。行数/行身份/tree 基线三重
+    /// 陈旧性守卫：undo 之后该会话有任何新消息（含 clear 后同数重填——
+    /// 行数守卫的盲区，BUG-20261025-54）、或任何地方有新 checkpoint turn
     /// （工作区变过），诚实拒绝（弹出的条目作废）。
     ///
     /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
@@ -521,6 +545,12 @@ impl AgentLoop {
                 entry.kept_count,
                 rows.len()
             ));
+        }
+        // 守卫 1b（BUG-20261025-54）：行身份指纹——行数相同但内容已变
+        // （clear 后重填到 kept_count 行等）也判陈旧。旧守卫只查行数，
+        // 同数重填会放行并把 removed_rows verbatim 回填进无关对话。
+        if kept_rows_fingerprint(&rows) != entry.kept_rows_hash {
+            return Err("回退后会话内容已变化，redo 已失效（行数未变但内容不同）".to_string());
         }
         // 守卫 2：工作区 tree 基线未变（undo 后没有新 checkpoint turn）。
         // 基线两侧同口径：post 在 undo 侧 scoped 截断后采集（R71），其他

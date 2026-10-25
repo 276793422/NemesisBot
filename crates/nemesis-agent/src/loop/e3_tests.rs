@@ -10,7 +10,7 @@
 //! - 边界：空会话 / 越界 index / 末尾消息（no-op 回执，redoable=false）。
 
 use super::*;
-use crate::chat_log::{append_chat_log, delete_chat_log, read_chat_log};
+use crate::chat_log::{append_chat_log, clear_chat_log, delete_chat_log, read_chat_log};
 
 // —— 空 provider：编排测试不走 dispatch/LLM ——
 
@@ -242,6 +242,34 @@ async fn e3_redo_rejects_after_new_activity() {
     // 行数没被 redo 动过（截断态保持）。
     let (_, total, _, _) = read_chat_log(&key, 100, None);
     assert_eq!(total, 3);
+
+    delete_chat_log(&key);
+}
+
+/// BUG-20261025-54 回归锁：行数守卫的盲区——clear 后**重填到与 kept_count
+/// 相同的行数**（内容/时间戳全不同），旧形态只查行数放行，把 removed_rows
+/// verbatim 回填进无关对话（陈旧行带着旧 checkpoint_turn 标记污染新对话）。
+/// 修复后行身份指纹不符，诚实拒绝且会话保持重填态。
+#[tokio::test]
+async fn e3_redo_rejects_refilled_same_count_session() {
+    let (al, key, _dir) = stage_two_turns("redo-refill").await;
+
+    al.rewind_to_message(&key, 0, false).await.unwrap();
+
+    // clear + 同数重填：恰好 2 行（= kept_count），内容与被保留的 turn 1
+    // 行完全不同。
+    clear_chat_log(&key);
+    e3_append(&key, "user", "fresh q", None);
+    e3_append(&key, "assistant", "fresh a", None);
+
+    let err = al.redo_rewind(&key).await.unwrap_err();
+    assert!(err.contains("失效"), "{err}");
+
+    // 会话未被 redo 污染（仍是重填的 2 行，无陈旧行回填）。
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2);
+    assert_eq!(rows[0]["content"], "fresh q");
+    assert_eq!(rows[1]["content"], "fresh a");
 
     delete_chat_log(&key);
 }
