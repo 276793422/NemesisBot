@@ -1083,42 +1083,61 @@ fn w4a_get_short_path_escapes_spaces() {
 }
 
 #[test]
-fn w4a_guard_workspace_path_scan_absolute_outside_paths_are_not_blocked() {
-    // Documents ACTUAL behavior of the workspace path-scan loop: absolute
-    // paths outside cwd are extracted and canonicalized, but strip_prefix
-    // against cwd FAILS for them, so the loop moves on and the guard
-    // returns Ok. (The ".."-relative check below is the only blocker.)
+fn w4a_guard_workspace_path_scan_absolute_outside_paths_are_blocked() {
+    // BUG-20261025-55 回归锁（旧名 ..._are_not_blocked 钉的是恒 no-op 的
+    // 伪守卫：strip_prefix 只有路径在 cwd 之内才 Ok，真正在外的路径走
+    // Err 分支直接放行）。修复后无歧义绝对路径在工作区外 = 拦。
     let tool = make_restricted_tool();
     let tmp = tempfile::TempDir::new().unwrap();
-    // Existing absolute path outside the workspace: canonicalize succeeds,
-    // strip_prefix fails -> allowed by this loop.
+    // Windows 盘符形态（既有路径）：canonicalize 成功，starts_with 失败 → 拦。
+    #[cfg(windows)]
     assert!(
         tool.guard_command("type C:\\Windows\\win.ini", tmp.path())
-            .is_ok()
+            .is_err()
     );
-    // Nonexistent absolute path: canonicalize falls back to the raw path,
-    // strip_prefix still fails -> allowed.
+    // Windows 盘符形态（不存在路径）：canonicalize 回落原样，仍在外 → 拦。
+    #[cfg(windows)]
     assert!(
         tool.guard_command("type C:\\w4a_no_such\\file.txt", tmp.path())
+            .is_err()
+    );
+    // Unix 顶级绝对路径：is_absolute → 拦（Windows 上 rooted 无盘符与
+    // 旗标不可区分，走跳过分支——见误杀守卫测试）。
+    #[cfg(unix)]
+    assert!(
+        tool.guard_command("cat /w4a/unix/style.txt", tmp.path())
+            .is_err()
+    );
+}
+
+#[test]
+fn w4a_guard_skips_flag_ambiguous_paths_and_url_tails() {
+    // 误杀守卫：rooted 无盘符形态（/x）在 Windows 与命令旗标不可区分
+    // （robocopy /mir、msiexec /i）——刻意不核（cwd 边界 + 8 层管线兜底）；
+    // URL scheme 尾巴（https: 的 s://…）按「匹配起点前是字母数字」跳过。
+    // restrict 模式下这些必须放行，否则常规命令被路径扫描误杀。
+    let tool = make_restricted_tool();
+    let tmp = tempfile::TempDir::new().unwrap();
+    #[cfg(windows)]
+    assert!(tool.guard_command("robocopy a b /mir", tmp.path()).is_ok());
+    #[cfg(windows)]
+    assert!(
+        tool.guard_command("msiexec /i w4a_x.msi", tmp.path())
             .is_ok()
     );
-    // Unix-style path is NOT is_absolute() on Windows -> join arm
+    // URL（两平台）：盘符形态命中 https: 的 s:// 尾巴 → 前导字母数字 → 跳过。
     assert!(
-        tool.guard_command("type /w4a/unix/style.txt", tmp.path())
+        tool.guard_command("curl.exe https://example.com/a", tmp.path())
             .is_ok()
     );
 }
 
 #[test]
-fn w4a_guard_blocks_dotted_filename_under_nonexistent_cwd() {
-    // The "path outside working dir" branch fires when cwd cannot be
-    // canonicalized (nonexistent dir) AND the extracted absolute path,
-    // whose canonicalize also fails, textually sits under cwd with a
-    // component starting with ".." (here "..leak.txt" — note it contains
-    // neither "../" nor "..\" so it survives the earlier traversal check).
-    // 平台各自的"不存在 cwd + 点开头组件"形态（2026-09-01：原只写 C:\ 形态，
-    // Linux 上 `\` 不拆分、`C:\...` 非 is_absolute → 走 join 臂，块检查永不
-    // 触发 → 假红）。
+fn w4a_guard_dotted_filename_inside_cwd_not_blocked() {
+    // 旧「dotted 组件必拦」是死分支时代的产物：`..leak.txt` 是以点开头
+    // 的**文件名**（不含 ../ ..\，非穿越），文本上位于 cwd 之内——修复
+    // 后按 starts_with 判定在内 → 放行。真正的穿越形态（..\ / ../）
+    // 由前置 traversal 检查拦。
     let tool = make_restricted_tool();
     let (cwd, cmd) = if cfg!(windows) {
         (
@@ -1131,9 +1150,30 @@ fn w4a_guard_blocks_dotted_filename_under_nonexistent_cwd() {
             "cat /w4a_no_such_dir/..leak.txt",
         )
     };
+    assert!(
+        tool.guard_command(cmd, cwd).is_ok(),
+        "dotted filename inside cwd must not be blocked"
+    );
+}
+
+// ===========================================================================
+// BUG-20261025-55 回归锁：guard_command 工作区路径扫描恒 no-op——strip_prefix
+// 只有路径在 cwd 之内才 Ok（方向性倒置），restrict=true 下区外绝对路径畅通。
+// 修复后按 starts_with 拦截；旧形态 is_ok 必红。
+// ===========================================================================
+
+#[test]
+fn bug55_guard_blocks_absolute_path_outside_workspace() {
+    let tool = make_restricted_tool();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cmd = if cfg!(windows) {
+        "type C:\\Windows\\win.ini"
+    } else {
+        "cat /etc/hosts"
+    };
     let err = tool
-        .guard_command(cmd, cwd)
-        .expect_err("dotted component under raw cwd must be blocked");
+        .guard_command(cmd, tmp.path())
+        .expect_err("outside-workspace absolute path must be blocked");
     assert!(err.contains("path outside working dir"), "got: {err}");
 }
 

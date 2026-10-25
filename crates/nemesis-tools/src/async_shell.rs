@@ -3,6 +3,7 @@
 use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
+use nemesis_path::paths::canonicalize_for_compare;
 use regex::Regex;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -232,7 +233,28 @@ impl Tool for AsyncExecTool {
 
         // Resolve working directory
         let cwd = match args["working_dir"].as_str() {
-            Some(d) if !d.is_empty() => PathBuf::from(d),
+            Some(d) if !d.is_empty() => {
+                let p = PathBuf::from(d);
+                // BUG-20261025-55：restrict 侧此前完全不看 args working_dir
+                // ——任意绝对路径即可把工作目录钉到工作区外（cwd 边界失效）。
+                // 对齐 ExecTool/ShellTool 同款双侧归一化检查。
+                if self.restrict {
+                    let target = if p.is_absolute() {
+                        p.clone()
+                    } else {
+                        self.working_dir.join(&p)
+                    };
+                    let resolved = canonicalize_for_compare(&target);
+                    let ws = canonicalize_for_compare(&self.working_dir);
+                    if !resolved.starts_with(&ws) {
+                        return ToolResult::error(&format!(
+                            "Access denied: working_dir '{}' is outside workspace",
+                            d
+                        ));
+                    }
+                }
+                p
+            }
             _ => self.working_dir.clone(),
         };
 

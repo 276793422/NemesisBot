@@ -341,31 +341,40 @@ impl ShellTool {
                 return Err("command blocked by safety guard (path traversal detected)".to_string());
             }
 
-            // Extract paths from the command and validate they are within workspace
+            // Extract paths from the command and validate they are within workspace.
+            //
+            // BUG-20261025-55：旧形态 `strip_prefix` 只有路径在 cwd 之内才
+            // Ok——成功分支里的 `..` 判断永假（死代码），真正在外的路径走
+            // Err 分支直接放行，整个扫描恒 no-op（伪守卫，注释却声称校验
+            // 工作区）。改为只核**无歧义绝对路径**：
+            // - Windows 盘符形态（X:\ / X:/）与 Unix 顶级 / 形态（按
+            //   `Path::is_absolute` 自然分平台）必然是路径；
+            // - rooted 无盘符形态（/x）在 Windows 与命令旗标不可区分
+            //   （robocopy /mir、msiexec /i），刻意不核——宁漏检（cwd 边界 +
+            //   8 层管线兜底）不误杀常规命令；相对路径由 cwd 边界覆盖
+            //   （execute 已把 args cwd 钉在工作区内）；
+            // - URL scheme 尾巴（https: 的 s://…）按「匹配起点前是字母
+            //   数字」跳过，否则 restrict 模式下所有带 URL 的命令误杀。
+            // 盲点（既有，非本次引入）：UNC（\\srv\share）、环境变量间接
+            // （%windir%）、无分隔符盘根（cd C:）不在此扫描面。
             let path_pattern = Regex::new(r#"[A-Za-z]:[\\/][^\s"'<>]+|/[^\s"'<>]+"#).unwrap();
-            let cwd_abs = std::path::Path::new(cwd)
-                .canonicalize()
-                .unwrap_or_else(|_| cwd.to_path_buf());
+            let base = canonicalize_for_compare(std::path::Path::new(cwd));
 
-            for raw in path_pattern.find_iter(cmd) {
-                let raw_str = raw.as_str();
-                let p = std::path::Path::new(raw_str);
-                let abs_path = if p.is_absolute() {
-                    p.to_path_buf()
-                } else {
-                    cwd_abs.join(p)
-                };
-
-                // Try to canonicalize; if it fails, use the joined path as-is
-                let abs_canonical = abs_path.canonicalize().unwrap_or(abs_path);
-
-                // Check if the absolute path starts with the workspace
-                if let Ok(rel) = abs_canonical.strip_prefix(&cwd_abs) {
-                    let rel_str = rel.to_string_lossy();
-                    if rel_str.starts_with("..") {
-                        return Err("command blocked by safety guard (path outside working dir)"
-                            .to_string());
-                    }
+            for m in path_pattern.find_iter(cmd) {
+                let preceded_by_alnum = m.start() > 0
+                    && cmd[..m.start()].ends_with(|c: char| c.is_ascii_alphanumeric());
+                if preceded_by_alnum {
+                    continue; // URL scheme 尾巴（https: → s://…），不是路径
+                }
+                let p = std::path::Path::new(m.as_str());
+                if !p.is_absolute() {
+                    continue; // rooted 无盘符/相对形态：旗标歧义，不核（见上）
+                }
+                let abs_canonical = canonicalize_for_compare(p);
+                if !abs_canonical.starts_with(&base) {
+                    return Err(
+                        "command blocked by safety guard (path outside working dir)".to_string()
+                    );
                 }
             }
         }

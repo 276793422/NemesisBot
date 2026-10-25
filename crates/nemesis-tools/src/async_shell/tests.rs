@@ -312,3 +312,27 @@ fn s2_async_guard_command_restrict_no_traversal_passes() {
     // Empty command still rejected.
     assert!(tool.guard_command("   ").is_err());
 }
+
+// ===========================================================================
+// BUG-20261025-55 回归锁：restrict 模式此前完全不看 args working_dir——任意
+// 绝对路径即可把工作目录钉到工作区外（cwd 边界失效，spawn 照常执行）。
+// 修复后诚实拒绝；旧形态会 spawn 并返回 started 成功文案 → 必红。
+// ===========================================================================
+
+#[tokio::test]
+async fn bug55_async_exec_restrict_rejects_outside_working_dir() {
+    let ws = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    let tool = AsyncExecTool::new(&ws.path().to_string_lossy(), true);
+    let args = serde_json::json!({
+        "command": "echo w4a_bug55_probe",
+        "working_dir": outside.path().to_string_lossy(),
+    });
+    let result = tool.execute(&args).await;
+    assert!(result.is_error, "outside working_dir must be rejected");
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "got: {}",
+        result.for_llm
+    );
+}
