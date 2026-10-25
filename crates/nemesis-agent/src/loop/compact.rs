@@ -773,6 +773,7 @@ impl AgentLoop {
                     session_key: Some(clear_key.clone()),
                     source_node: None,
                     task_id: None,
+                    sync_via: None,
                 },
             };
             let _ = tx.send(outbound).await;

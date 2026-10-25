@@ -1427,6 +1427,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         source_node: None,
                         // 项 C：中途回执不解除通知义务（义务针对任务结果本身）。
                         task_id: None,
+                        sync_via: None,
                     },
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
@@ -1526,6 +1527,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 // 项 C（2026-10-22）：最终回复携带任务 id，通道投递结果据此
                 // 记账到 deliveries（notify_state 三段：pending→accepted→confirmed）。
                 task_id: Some(task_id.to_string()),
+                sync_via: None,
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {

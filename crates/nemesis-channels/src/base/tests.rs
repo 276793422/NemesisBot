@@ -1147,3 +1147,120 @@ async fn s2_sync_to_targets_logs_field_arms_with_subscriber() {
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].content, "subscriber field coverage");
 }
+
+// ===========================================================================
+// BUG-20261025-57: sync 镜像回环防护（sync_via 标记 + sync_outbound 守卫）
+// ===========================================================================
+
+#[tokio::test]
+async fn bug57_sync_to_targets_marks_mirror_messages() {
+    let ch = BaseChannel::new("source");
+    let target1 = Arc::new(MockChannel::new("target1"));
+    ch.add_sync_target("target1", Arc::clone(&target1) as Arc<dyn Channel>)
+        .unwrap();
+
+    ch.sync_to_targets("marked mirror").await;
+
+    let msgs = target1.sent_messages();
+    assert_eq!(msgs.len(), 1);
+    // 镜像消息带发起方盖章——接收通道的 send() 据此不再二次扩散。
+    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("source"));
+}
+
+#[tokio::test]
+async fn bug57_sync_outbound_skips_marked_message() {
+    let ch = BaseChannel::new("chan-a");
+    let target = Arc::new(MockChannel::new("target"));
+    ch.add_sync_target("target", Arc::clone(&target) as Arc<dyn Channel>)
+        .unwrap();
+
+    // 带 sync_via 标记的消息（来自别的通道的镜像）→ 守卫直接返回。
+    let mut marked = OutboundMessage::new("target", "c1", "from mirror");
+    marked.meta.sync_via = Some("chan-b".to_string());
+    ch.sync_outbound(&marked).await;
+    assert!(
+        target.sent_messages().is_empty(),
+        "marked message must not re-propagate through sync targets"
+    );
+
+    // 无标记消息照常镜像（守卫不误伤正常出站同步）。
+    ch.sync_outbound(&OutboundMessage::new("chan-a", "c1", "fresh outbound"))
+        .await;
+    let msgs = target.sent_messages();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].content, "fresh outbound");
+    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("chan-a"));
+}
+
+/// 会再同步的 mock——复刻真实镜像通道形态（mattermost/mqtt/nostr/websocket/
+/// wechat/wecom 六通道 send()：记录 + sync 扩散），用于真实回环复现。
+struct SyncingMockChannel {
+    name: String,
+    base: BaseChannel,
+    sent: parking_lot::RwLock<Vec<OutboundMessage>>,
+}
+
+impl SyncingMockChannel {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            base: BaseChannel::new(name),
+            sent: parking_lot::RwLock::new(Vec::new()),
+        }
+    }
+
+    fn sent_messages(&self) -> Vec<OutboundMessage> {
+        self.sent.read().clone()
+    }
+}
+
+#[async_trait]
+impl Channel for SyncingMockChannel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn send(&self, msg: OutboundMessage) -> Result<()> {
+        self.sent.write().push(msg.clone());
+        // 与六镜像通道同形：send 末尾出站同步镜像（守卫在场时标记消息止步）。
+        self.base.sync_outbound(&msg).await;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn bug57_mutual_sync_config_does_not_ping_pong() {
+    // 互配 sync_to（A→B 且 B→A）：旧形态 send 互镜无限乒乓，每轮一次
+    // 真实投递；驱动带 2s 超时——守卫缺失时此处超时红（而非挂死进程）。
+    let a = Arc::new(SyncingMockChannel::new("chan-a"));
+    let b = Arc::new(SyncingMockChannel::new("chan-b"));
+    a.base
+        .add_sync_target("chan-b", Arc::clone(&b) as Arc<dyn Channel>)
+        .unwrap();
+    b.base
+        .add_sync_target("chan-a", Arc::clone(&a) as Arc<dyn Channel>)
+        .unwrap();
+
+    let drive = a.send(OutboundMessage::new("chan-a", "c1", "loop probe"));
+    tokio::time::timeout(std::time::Duration::from_secs(2), drive)
+        .await
+        .expect("mutual sync must terminate (loop guard missing?)")
+        .unwrap();
+
+    // 各收一次即止：A 自己投递 + 镜像到 B；B 的再镜像被守卫拦截。
+    assert_eq!(a.sent_messages().len(), 1);
+    assert_eq!(b.sent_messages().len(), 1);
+    // B 收到的是 A 盖章的镜像。
+    assert_eq!(
+        b.sent_messages()[0].meta.sync_via.as_deref(),
+        Some("chan-a")
+    );
+}

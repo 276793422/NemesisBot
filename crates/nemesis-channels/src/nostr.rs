@@ -727,8 +727,9 @@ impl Channel for NostrChannel {
         let frame = build_event_frame(&event);
         self.publish_frame(&frame)?;
         self.base.record_sent();
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
-        self.base.sync_to_targets(&msg.content).await;
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        self.base.sync_outbound(&msg).await;
         debug!(recipient = %msg.chat_id, event_id = %event.id, "[NostrChannel] DM 已发布");
         Ok(())
     }

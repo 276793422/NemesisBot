@@ -496,6 +496,7 @@ async fn test_ws_inbound_flow_publishes_inbound_message() {
         allow_from: vec![],
         listen_channels: vec![],
         bus_sender: ch.bus_sender.clone(),
+        running: ch.running.clone(),
     };
 
     // 服务端：收鉴权帧 → 回 OK → 推 posted 事件 → 关连接
@@ -583,6 +584,7 @@ async fn test_ws_session_auth_fail_requests_reconnect() {
         allow_from: vec![],
         listen_channels: vec![],
         bus_sender: tx,
+        running: Arc::new(parking_lot::RwLock::new(true)),
     };
 
     // 服务端：收鉴权帧 → 回 FAIL → 关闭

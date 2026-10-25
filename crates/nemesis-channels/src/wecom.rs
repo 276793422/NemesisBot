@@ -327,8 +327,9 @@ impl Channel for WeComChannel {
         debug!(chat_id = %msg.chat_id, "[WeComChannel] sending message via webhook");
         self.base.record_sent();
         self.send_webhook(&webhook, &msg).await?;
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
-        self.base.sync_to_targets(&msg.content).await;
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        self.base.sync_outbound(&msg).await;
         Ok(())
     }
 

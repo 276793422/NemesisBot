@@ -692,8 +692,9 @@ impl Channel for MattermostChannel {
         // 出站格式映射：bot 内部 markdown → Mattermost markdown
         let content = Self::to_mattermost_markdown(&msg.content);
         self.post_message(channel_id, &content, root_id).await?;
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
-        self.base.sync_to_targets(&msg.content).await;
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        self.base.sync_outbound(&msg).await;
         Ok(())
     }
 

@@ -147,6 +147,13 @@ pub struct OutboundMeta {
     /// None = 无关联，出站帧不带该键，与历史行为逐字节一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// 通道 sync 镜像回环标记（BUG-20261025-57）：本消息由某通道的
+    /// `sync_to` 镜像产出，值 = 镜像发起通道名。接收通道的 `send()` 见到
+    /// 该标记不再二次 sync 扩散——互配 `sync_to` 的两通道（send 均镜像）
+    /// 会无限乒乓，每轮都是一次真实外部投递的消息风暴。None = 非镜像
+    /// 消息，出站帧不带该键，与历史行为逐字节一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_via: Option<String>,
 }
 
 /// Outbound message from the agent engine to a channel.

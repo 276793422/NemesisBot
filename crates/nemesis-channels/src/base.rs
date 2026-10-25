@@ -284,6 +284,11 @@ impl BaseChannel {
     /// Skips any target whose name matches this channel's name (double-check).
     /// For the `"web"` target, uses `"web:broadcast"` as the chat ID.
     /// Each send has a 3-second timeout to avoid blocking.
+    ///
+    /// 构造的镜像消息统一盖 `meta.sync_via` 章（BUG-20261025-57，单一盖章
+    /// 点）：接收通道 `send()` 里的出站镜像（`sync_outbound`）见到该标记
+    /// 不再二次扩散——互配 `sync_to` 的两通道会无限乒乓，每轮都是一次
+    /// 真实外部投递的消息风暴。
     pub async fn sync_to_targets(&self, content: &str) {
         // Collect targets into a Vec within a block scope so the RwLockReadGuard
         // is dropped before any .await. parking_lot::RwLockReadGuard is !Send,
@@ -313,7 +318,8 @@ impl BaseChannel {
                 chat_id = "web:broadcast".to_string();
             }
 
-            let msg = OutboundMessage::new(&target_name, &chat_id, content);
+            let mut msg = OutboundMessage::new(&target_name, &chat_id, content);
+            msg.meta.sync_via = Some(self.name.clone());
 
             debug!(
                 channel = %self.name,
@@ -343,6 +349,27 @@ impl BaseChannel {
                 }
             }
         }
+    }
+
+    /// Outbound sync mirror for the `send()` path (BUG-20261025-57).
+    ///
+    /// Mirrors a message this channel just delivered to its sync targets —
+    /// but **not** if the message itself arrived via a sync mirror
+    /// (`meta.sync_via` set): channels that mutually configure each other as
+    /// sync targets would ping-pong every mirror forever, each hop being a
+    /// real external delivery (message storm). Inbound-origin fan-outs
+    /// (external/websocket read loops) are the mirror chain's origin and call
+    /// `sync_to_targets` directly.
+    pub async fn sync_outbound(&self, msg: &OutboundMessage) {
+        if msg.meta.sync_via.is_some() {
+            debug!(
+                channel = %self.name,
+                sync_via = msg.meta.sync_via.as_deref().unwrap_or_default(),
+                "[Channel] sync mirror message not re-propagated (loop guard)"
+            );
+            return;
+        }
+        self.sync_to_targets(&msg.content).await;
     }
 
     /// Handles an inbound message after checking the allow-list.

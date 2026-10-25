@@ -294,10 +294,80 @@ impl PricingStore {
 /// 原子写（BUG-20261025-51 起委托唯一临时名权威 helper——旧固定 `.json.tmp`
 /// 并发互踩 + 先删后 rename 的崩溃窗口一并根除；helper 内部同目录临时文件
 /// 保证同分区 rename）。
+///
+/// BUG-20261025-58 复查追补：本模块不受 `usage-store` 门控（自定义价目层
+/// 恒编译），而 `nemesis-utils` 只是 `usage-store` 的 optional dep（B10
+/// 拍板：关账本时 rusqlite/nemesis-utils/守卫模块一并退出依赖图）——
+/// a188d09a 引入的无门引用让 `cargo check -p nemesis-data
+/// --no-default-features` 等 IoT 裁剪形态编译破裂（E0433 nemesis_utils，
+/// 全 workspace 构建因 feature 归一恒真被掩盖）。补门控：有 utils 走权威
+/// helper；无 utils 走下方同语义 fallback（非第二权威——有 utils 的构建
+/// 恒走 utils 版）。
+#[cfg(feature = "usage-store")]
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(value).map_err(|e| format!("serialize: {e}"))?;
     nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), raw.as_bytes(), 0o644)
         .map_err(|e| format!("atomic write {}: {e}", path.display()))
+}
+
+/// 无 `nemesis-utils` 形态（usage-store 关，IoT 裁剪）的同语义原子写：
+/// 同目录 pid+序数+纳秒临时名 create_new → 写+flush+sync → rename 覆盖
+/// → 失败清理临时文件——镜像权威 helper
+/// （`nemesis_utils::file::write_file_atomic`）的语义，仅在 utils 缺席的
+/// 构建参与编译。
+#[cfg(not(feature = "usage-store"))]
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    use std::fs;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let raw = serde_json::to_string_pretty(value).map_err(|e| format!("serialize: {e}"))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("atomic write {}: mkdir: {e}", path.display()))?;
+
+    // 同权威 helper 的唯一性方案：时间戳不唯一（Windows 粗粒度刷新），
+    // 叠加进程级单调序数；跨进程由 pid 承担（低频配置写场景）。
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp_path = parent.join(format!(
+        ".tmp-{}-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let mut created = false;
+    let result = (|| -> Result<(), String> {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o644);
+        }
+        let mut tmp = opts
+            .open(&tmp_path)
+            .map_err(|e| format!("atomic write {}: create temp: {e}", path.display()))?;
+        created = true;
+        tmp.write_all(raw.as_bytes())
+            .map_err(|e| format!("atomic write {}: write temp: {e}", path.display()))?;
+        tmp.flush()
+            .map_err(|e| format!("atomic write {}: flush: {e}", path.display()))?;
+        tmp.sync_all()
+            .map_err(|e| format!("atomic write {}: sync: {e}", path.display()))?;
+        drop(tmp);
+        fs::rename(&tmp_path, path)
+            .map_err(|e| format!("atomic write {}: rename: {e}", path.display()))?;
+        Ok(())
+    })();
+
+    if result.is_err() && created {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result
 }
 
 #[cfg(test)]

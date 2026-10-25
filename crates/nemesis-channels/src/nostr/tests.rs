@@ -476,15 +476,16 @@ fn test_processor_allowlist_and_dedup() {
         bus_sender: bus,
     };
 
-    // 陌生发件人 → 丢弃。
+    // 陌生发件人 → 丢弃。（时间戳用新鲜值：18309126 起 process_relay_event
+    // 有 600s 新鲜度闸，固定旧时间戳会被闸先拦，测不到白名单语义。）
+    let now = chrono::Utc::now().timestamp();
     let from_stranger =
-        build_dm_event(&stranger, bot.x_only_public_key(), "stranger", 1700000010).unwrap();
+        build_dm_event(&stranger, bot.x_only_public_key(), "stranger", now - 30).unwrap();
     processor.process_relay_event(&from_stranger);
     assert!(rx.try_recv().is_err(), "白名单外发件人不得进总线");
 
     // 白名单内发件人 → 解密进总线。
-    let from_peer =
-        build_dm_event(&peer, bot.x_only_public_key(), "hello peer", 1700000011).unwrap();
+    let from_peer = build_dm_event(&peer, bot.x_only_public_key(), "hello peer", now - 30).unwrap();
     processor.process_relay_event(&from_peer);
     let inbound = rx.try_recv().expect("白名单内发件人应进总线");
     assert_eq!(inbound.channel, "nostr");
@@ -497,9 +498,13 @@ fn test_processor_allowlist_and_dedup() {
     processor.process_relay_event(&from_peer);
     assert!(rx.try_recv().is_err(), "重复事件不得重复投递");
 
+    // 白名单内但超新鲜度窗口（600s）→ 新鲜度闸丢弃，不进总线。
+    let stale = build_dm_event(&peer, bot.x_only_public_key(), "stale", now - 3600).unwrap();
+    processor.process_relay_event(&stale);
+    assert!(rx.try_recv().is_err(), "超新鲜度窗口的事件不得进总线");
+
     // 非 kind-4 → 忽略。
-    let mut other_kind =
-        build_dm_event(&peer, bot.x_only_public_key(), "meta", 1700000012).unwrap();
+    let mut other_kind = build_dm_event(&peer, bot.x_only_public_key(), "meta", now - 30).unwrap();
     other_kind.kind = 1;
     // kind 改了 id/sig 不再匹配 → 校验失败丢弃（行为一致：不进总线）。
     processor.process_relay_event(&other_kind);
@@ -520,8 +525,15 @@ fn test_processor_rejects_unsigned_event() {
         bus_sender: bus,
     };
 
-    // 签名无效的加密事件 → 诚实丢弃（不进总线）。
-    let mut event = build_dm_event(&peer, bot.x_only_public_key(), "unsigned", 1700000020).unwrap();
+    // 签名无效的加密事件 → 诚实丢弃（不进总线）。（新鲜时间戳：绕过
+    // 新鲜度闸，让本测试钉的是签名臂而非新鲜度臂。）
+    let mut event = build_dm_event(
+        &peer,
+        bot.x_only_public_key(),
+        "unsigned",
+        chrono::Utc::now().timestamp() - 30,
+    )
+    .unwrap();
     event.sig = "00".repeat(64);
     processor.process_relay_event(&event);
     assert!(rx.try_recv().is_err(), "签名校验失败的事件不得进总线");

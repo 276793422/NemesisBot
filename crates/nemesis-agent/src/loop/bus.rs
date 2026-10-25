@@ -481,6 +481,7 @@ impl AgentLoop {
                     session_key: (!msg.session_key.is_empty()).then(|| msg.session_key.clone()),
                     source_node: None,
                     task_id: None,
+                    sync_via: None,
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -515,6 +516,7 @@ impl AgentLoop {
                 session_key: (!session_key.is_empty()).then(|| session_key.to_string()),
                 source_node: None,
                 task_id: None,
+                sync_via: None,
             },
         };
         if let Err(e) = tx.send(outbound).await {
