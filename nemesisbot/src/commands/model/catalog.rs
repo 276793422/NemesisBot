@@ -200,7 +200,7 @@ pub fn load_cache(home_dir: &Path) -> Result<Option<Catalog>, String> {
     Ok(Some(c))
 }
 
-/// Persist the catalog to disk (atomic-ish: write temp then rename).
+/// Persist the catalog to disk（唯一临时名原子写——BUG-20261025-51）。
 /// 成功后 best-effort 清掉 home 根的 legacy 缓存（读路径有 rename 迁移，
 /// 但存量部署若只跑 catalog-update 则旧文件会永久滞留成孤儿）。
 pub fn save_cache(home_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), String> {
@@ -213,10 +213,10 @@ pub fn save_cache(home_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), Str
         fetched_at: chrono::Local::now().to_rfc3339(),
         entries,
     };
-    let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(&cat).map_err(|e| format!("serialize: {e}"))?;
-    std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩）。
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
+        .map_err(|e| format!("atomic write: {e}"))?;
     let _ = std::fs::remove_file(nemesis_path::legacy_models_catalog_cache_path(home_dir));
     Ok(())
 }

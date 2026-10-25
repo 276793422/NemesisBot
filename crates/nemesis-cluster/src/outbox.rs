@@ -293,9 +293,14 @@ pub fn replay_dead_letter_entry(outbox_root: &Path, task_id: &str) -> Result<Out
 fn write_entry_json(dir: &Path, entry: &OutboxEntry) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("建目录失败: {e}"))?;
     let json = serde_json::to_string_pretty(entry).map_err(|e| e.to_string())?;
-    let tmp = dir.join(".entry.json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("写 entry 失败: {e}"))?;
-    std::fs::rename(&tmp, dir.join("entry.json")).map_err(|e| format!("entry 落盘失败: {e}"))
+    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.entry.json.tmp`
+    // 同目录并发写互踩——两个任务同时落 entry 即撞名）。
+    nemesis_utils::file::write_file_atomic(
+        &dir.join("entry.json").to_string_lossy(),
+        json.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("entry 落盘失败: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -756,13 +761,17 @@ impl TransferOutbox {
         self.write_entry_at(&self.entry_dir(&entry.task_id), entry)
     }
 
-    /// entry.json 原子写（tmp + rename；读侧以在场为完整标记）。
+    /// entry.json 原子写（读侧以在场为完整标记；BUG-20261025-51 起委托
+    /// 唯一临时名权威 helper——固定 `.entry.json.tmp` 并发互踩）。
     fn write_entry_at(&self, dir: &Path, entry: &OutboxEntry) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("建目录失败: {e}"))?;
         let json = serde_json::to_string_pretty(entry).map_err(|e| e.to_string())?;
-        let tmp = dir.join(".entry.json.tmp");
-        std::fs::write(&tmp, json).map_err(|e| format!("写 entry 失败: {e}"))?;
-        std::fs::rename(&tmp, dir.join("entry.json")).map_err(|e| format!("entry 落盘失败: {e}"))
+        nemesis_utils::file::write_file_atomic(
+            &dir.join("entry.json").to_string_lossy(),
+            json.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("entry 落盘失败: {e}"))
     }
 
     /// 定位 `cluster_logs/{source_node}/…_{task_id}` 执行记录目录（多轮

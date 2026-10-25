@@ -314,20 +314,15 @@ impl TaskResultStore {
             let path = dir.join(format!("{}.json", safe_task_file_name(&result.task_id)));
             match serde_json::to_string_pretty(result) {
                 Ok(json) => {
-                    // Atomic write: write to temp file, then rename.
-                    let tmp_path = path.with_extension("json.tmp");
-                    if let Err(e) = std::fs::write(&tmp_path, &json) {
+                    // BUG-20261025-51：委托唯一临时名权威 helper——固定
+                    // `{task}.json.tmp` 同任务并发回调互踩可产损坏文件。
+                    if let Err(e) = nemesis_utils::file::write_file_atomic(
+                        &path.to_string_lossy(),
+                        json.as_bytes(),
+                        0o644,
+                    ) {
                         tracing::warn!(
-                            "[TaskResultStore] failed to write result temp file {:?}: {}",
-                            tmp_path,
-                            e
-                        );
-                        return;
-                    }
-                    if let Err(e) = std::fs::rename(&tmp_path, &path) {
-                        tracing::warn!(
-                            "[TaskResultStore] failed to rename result file {:?} -> {:?}: {}",
-                            tmp_path,
+                            "[TaskResultStore] failed to write result file {:?}: {}",
                             path,
                             e
                         );
@@ -574,24 +569,29 @@ impl AsyncTaskResultStore {
             let path = dir.join(format!("{}.json", safe_task_file_name(&result.task_id)));
             match serde_json::to_string_pretty(result) {
                 Ok(json) => {
-                    let tmp_path = path.with_extension("json.tmp");
-                    match fs::write(&tmp_path, &json).await {
-                        Ok(()) => {
-                            if let Err(e) = fs::rename(&tmp_path, &path).await {
-                                tracing::warn!(
-                                    "[TaskResultStore] failed to rename async result file {:?} -> {:?}: {}",
-                                    tmp_path,
-                                    path,
-                                    e
-                                );
-                            }
-                        }
+                    // BUG-20261025-51：委托唯一临时名权威 helper（spawn_blocking
+                    // 包裹——同步 fsync 不占 runtime worker，对齐同文件 LOW-5 删除臂）。
+                    let target = path.clone();
+                    let joined = tokio::task::spawn_blocking(move || {
+                        nemesis_utils::file::write_file_atomic(
+                            &target.to_string_lossy(),
+                            json.as_bytes(),
+                            0o644,
+                        )
+                    })
+                    .await;
+                    match joined {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => tracing::warn!(
+                            "[TaskResultStore] failed to write async result file {:?}: {}",
+                            path,
+                            e
+                        ),
                         Err(e) => {
                             tracing::warn!(
-                                "[TaskResultStore] failed to write async result temp file {:?}: {}",
-                                tmp_path,
+                                "[TaskResultStore] async result write join failed: {}",
                                 e
-                            );
+                            )
                         }
                     }
                 }

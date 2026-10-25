@@ -247,9 +247,9 @@ pub fn ts_dir_name() -> String {
 }
 
 fn atomic_write_bytes(path: &Path, data: &[u8]) -> Result<(), StoreError> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)?;
+    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.tmp` 并发互踩）。
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), data, 0o644)
+        .map_err(|e| StoreError::Io(std::io::Error::other(e)))?;
     Ok(())
 }
 

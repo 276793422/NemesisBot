@@ -111,8 +111,10 @@ fn downloaded_layer_loads_and_lookups() {
 /// `write_json_atomic(...)?` 提前返回——磁盘旧文件完好，内存层却被清空，
 /// pricing 查表静默丢失全部自定义覆盖直到进程重启（remove 的 no-op 分支
 /// 注释「没删东西也要把 take 走的还回去」证明还回义务已知，唯独漏了写盘
-/// 失败路径）。阻断写盘的手法：tmp 路径（with_extension 替换末段 →
-/// `pricing_custom.json.tmp`）预置为目录，`fs::write` 必失败。
+/// 失败路径）。阻断写盘的手法（BUG-20261025-51 后写路径委托唯一临时名
+/// 权威 helper，固定 `.tmp` 路径预置注入失效）：目标文件
+/// `pricing_custom.json` 本体预置为目录，helper 的 rename 落盘必失败
+///（目录不可被文件 rename 替换）。
 #[test]
 fn custom_write_failure_keeps_memory_layer() {
     let dir = temp_dir("custom_wr_fail");
@@ -123,8 +125,9 @@ fn custom_write_failure_keeps_memory_layer() {
         .expect("基线 upsert 应成功");
     assert_eq!(store.list_custom().len(), 1);
 
-    // 阻断写盘：tmp 路径变成目录 → fs::write 必失败。
-    std::fs::create_dir(dir.join("pricing_custom.json.tmp")).expect("block tmp path");
+    // 阻断写盘：目标文件本体换成目录 → rename 必失败。
+    std::fs::remove_file(dir.join("pricing_custom.json")).expect("remove baseline file");
+    std::fs::create_dir(dir.join("pricing_custom.json")).expect("block target path");
 
     let err = store
         .upsert_custom(entry("new-one", &[]))

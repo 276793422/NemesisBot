@@ -1022,16 +1022,15 @@ impl BotService {
         let config_str = serde_json::to_string_pretty(config_json)
             .map_err(nemesis_types::error::NemesisError::Serialization)?;
 
-        // Write to disk atomically: write to temp file, then rename
-        let temp_path = self.config.config_path.with_extension("json.tmp");
-        std::fs::write(&temp_path, &config_str).map_err(nemesis_types::error::NemesisError::Io)?;
-
-        // Atomic rename
-        std::fs::rename(&temp_path, &self.config.config_path).map_err(|e| {
-            // Clean up temp file on rename failure
-            let _ = std::fs::remove_file(&temp_path);
-            nemesis_types::error::NemesisError::Io(e)
-        })?;
+        // BUG-20261025-51：落盘走 REL-002 权威 helper（唯一临时名）——旧手搓
+        // 固定 `json.tmp` 同名互踩（dashboard 保存 × CLI 写模型等并发/跨进程），
+        // 正是 REL-002 文档点名「不在各模块重复自制 tmp+rename」的路径。
+        nemesis_utils::file::write_file_atomic(
+            &self.config.config_path.to_string_lossy(),
+            config_str.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| nemesis_types::error::NemesisError::Io(std::io::Error::other(e)))?;
 
         info!("[BotService] Configuration saved successfully");
 

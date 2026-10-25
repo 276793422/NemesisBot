@@ -107,11 +107,9 @@ impl LearnedManifest {
         }
         let data = serde_json::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize learned manifest: {}", e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, data).map_err(|e| format!("failed to write manifest tmp: {}", e))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| format!("failed to commit learned manifest: {}", e))?;
-        Ok(())
+        // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩）。
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o644)
+            .map_err(|e| format!("failed to commit learned manifest: {}", e))
     }
 
     /// 记录/覆盖一条（created_at_ms 保留已有条目原值——patch/重装不刷新创建时间）。

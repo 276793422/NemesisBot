@@ -959,10 +959,9 @@ fn save_dedup(inbox_root: &Path, dedup: &HashMap<String, DedupEntry>) {
     let Ok(json) = serde_json::to_string_pretty(dedup) else {
         return;
     };
-    let tmp = inbox_root.join(".dedup.json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.dedup.json.tmp`
+    // 并发互踩；失败静默容忍语义保留）。
+    let _ = nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o644);
 }
 
 fn load_dedup(inbox_root: &Path) -> HashMap<String, DedupEntry> {

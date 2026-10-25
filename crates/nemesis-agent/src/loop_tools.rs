@@ -3106,13 +3106,13 @@ impl Tool for TodoWriteTool {
         let dir = nemesis_path::resolve_sessions_dir_in_workspace(&self.workspace);
         let path = dir.join(format!("todo_{safe_key}.json"));
 
-        // 原子写：tmp + rename（rename 两平台都替换已存在目标）。
+        // 原子写：BUG-20261025-51 起委托唯一临时名权威 helper（旧固定
+        // `todo_{key}.json.tmp` 同键并行工具调用互踩可产损坏 todo 文件）。
         let body = serde_json::to_string_pretty(&todos)
             .map_err(|e| format!("serialize todos failed: {e}"))?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("create sessions dir failed: {e}"))?;
-        let tmp = dir.join(format!("todo_{safe_key}.json.tmp"));
-        std::fs::write(&tmp, body).map_err(|e| format!("write todo tmp failed: {e}"))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("rename todo file failed: {e}"))?;
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
+            .map_err(|e| format!("write todo file failed: {e}"))?;
 
         // 回执统计（事件广播前先取 counts，todos 随后 move 进事件）。
         let total = todos.len();

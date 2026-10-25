@@ -102,13 +102,10 @@ pub fn save_ledger(workspace: &Path, ledger: &BrokerLedger) -> Result<(), String
         std::fs::create_dir_all(parent).map_err(|e| format!("创建账本目录失败: {e}"))?;
     }
     let text = serde_json::to_string_pretty(ledger).map_err(|e| format!("序列化账本失败: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("写账本临时文件失败: {e}"))?;
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("替换账本失败（remove）: {e}"))?;
-    }
-    std::fs::rename(&tmp, &path).map_err(|e| format!("账本落位失败（rename）: {e}"))?;
-    Ok(())
+    // BUG-20261025-51：委托唯一临时名权威 helper——旧固定 `.json.tmp` 并发
+    // 互踩 + 先 remove 后 rename 的崩溃窗口（两步间断电 = 账本消失）一并根除。
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), text.as_bytes(), 0o644)
+        .map_err(|e| format!("账本落盘失败: {e}"))
 }
 
 impl BrokerLedger {

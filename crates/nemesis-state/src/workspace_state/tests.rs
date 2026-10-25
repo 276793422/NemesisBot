@@ -528,7 +528,11 @@ fn test_atomic_save_handles_rename_failure() {
     // Saving should fail gracefully
     let result = mgr.set_last_channel("web:test");
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("rename temp file"));
+    // BUG-20261025-51 后写盘委托权威 helper，错误文本为 "atomic write …: rename: …"
+    assert!(
+        result.unwrap_err().contains("rename"),
+        "错误应来自 rename 失败臂"
+    );
 
     // Temporary file should be cleaned up
     assert!(!state_dir.join("state.json.tmp").exists());

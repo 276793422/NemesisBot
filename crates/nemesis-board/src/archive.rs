@@ -242,16 +242,16 @@ pub fn read_manifest(root: &Path) -> Option<ProjectManifest> {
     serde_json::from_str(&raw).ok()
 }
 
-/// 写 project.json（先临时文件再 rename，防半行 JSON）。
+/// 写 project.json（唯一临时名原子写——防半行 JSON + 并发互踩，BUG-20261025-51）。
 pub fn write_manifest(root: &Path, manifest: &ProjectManifest) -> Result<(), String> {
-    let tmp = root.join("project.json.tmp");
-    std::fs::write(
-        &tmp,
-        serde_json::to_string_pretty(manifest).map_err(|e| format!("manifest 序列化失败: {e}"))?,
+    let raw =
+        serde_json::to_string_pretty(manifest).map_err(|e| format!("manifest 序列化失败: {e}"))?;
+    nemesis_utils::file::write_file_atomic(
+        &root.join("project.json").to_string_lossy(),
+        raw.as_bytes(),
+        0o644,
     )
-    .map_err(|e| format!("写 project.json 失败: {e}"))?;
-    std::fs::rename(&tmp, root.join("project.json"))
-        .map_err(|e| format!("project.json rename 失败: {e}"))
+    .map_err(|e| format!("project.json 落盘失败: {e}"))
 }
 
 /// timeline 事件（追加写 jsonl；每行一个 JSON 对象）。

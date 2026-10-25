@@ -6,6 +6,8 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+# BUG-20261025-51：config 落盘走唯一临时名原子写权威 helper（nemesis_utils::file）。
+nemesis-utils = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

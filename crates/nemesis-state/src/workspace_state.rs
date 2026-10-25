@@ -7,7 +7,6 @@ use chrono::{DateTime, Local};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -134,30 +133,19 @@ impl WorkspaceStateManager {
         self.state.read().clone()
     }
 
-    /// Write state to a temp file, then atomically rename to the target.
+    /// Atomically persist state（BUG-20261025-51：委托唯一临时名权威 helper
+    /// ——旧手搓固定 `json.tmp` 并发互踩；fsync/失败清理语义由 helper 承担）。
     fn save_atomic(&self) -> Result<(), String> {
         let state = self.state.read();
         let data =
             serde_json::to_string_pretty(&*state).map_err(|e| format!("marshal state: {}", e))?;
-
-        let temp_file = self.state_file.with_extension("json.tmp");
-
-        // Write to temp file
-        let mut f = fs::File::create(&temp_file)
-            .map_err(|e| format!("create temp file {:?}: {}", temp_file, e))?;
-        f.write_all(data.as_bytes())
-            .map_err(|e| format!("write temp file: {}", e))?;
-        f.sync_all().map_err(|e| format!("sync temp file: {}", e))?;
-        drop(f);
-
-        // Atomic rename from temp to target
-        if let Err(e) = fs::rename(&temp_file, &self.state_file) {
-            // Cleanup temp file if rename fails
-            let _ = fs::remove_file(&temp_file);
-            return Err(format!("rename temp file: {}", e));
-        }
-
-        Ok(())
+        drop(state);
+        nemesis_utils::file::write_file_atomic(
+            &self.state_file.to_string_lossy(),
+            data.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("atomic write state file: {e}"))
     }
 
     /// Load state from disk.

@@ -360,22 +360,25 @@ async fn todowrite_reports_sessions_dir_creation_failure() {
 }
 
 #[tokio::test]
-async fn todowrite_reports_tmp_write_failure_when_tmp_is_dir() {
+async fn todowrite_overwrites_corrupt_existing_file() {
+    // BUG-20261025-51 后临时名为唯一形态（.tmp-{pid}-{seq}-{nanos}），固定
+    // `.tmp` 路径预置注入失效，「tmp 写失败臂」externally 不可注入，归
+    // helper 自身测试。改钉同主题不变量：旧缺陷可产出的撕裂损坏残留档
+    // 不阻断重写——原子写整体替换后文件恢复完整 JSON。
     let tmp = tempfile::tempdir().unwrap();
     let sessions = tmp.path().join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
-    // tmp 文件路径被目录占用 → write 失败。
-    std::fs::create_dir_all(sessions.join("todo_covw6b.json.tmp")).unwrap();
+    // 模拟旧固定临时名互踩产出的撕裂档：非法 UTF-8 + 截断 JSON。
+    std::fs::write(sessions.join("todo_covw6b.json"), b"\xde\xad{torn").unwrap();
     let tool = todo_tool(tmp.path());
-    let err = tool
-        .execute(
-            &todo_args(),
-            &RequestContext::new("web", "c", "u", "covw6b"),
-        )
-        .await
-        .err()
-        .unwrap();
-    assert!(err.contains("write todo tmp failed"), "got: {err}");
+    tool.execute(
+        &todo_args(),
+        &RequestContext::new("web", "c", "u", "covw6b"),
+    )
+    .await
+    .expect("损坏残留档不得阻断重写");
+    let raw = std::fs::read_to_string(sessions.join("todo_covw6b.json")).unwrap();
+    serde_json::from_str::<serde_json::Value>(&raw).expect("重写后必须是完整 JSON");
 }
 
 #[tokio::test]
@@ -392,7 +395,8 @@ async fn todowrite_reports_rename_failure_when_target_is_dir() {
         .await
         .err()
         .unwrap();
-    assert!(err.contains("rename todo file failed"), "got: {err}");
+    // BUG-20261025-51 后错误文本来自权威 helper："atomic write …: rename: …"
+    assert!(err.contains("rename"), "got: {err}");
 }
 
 // ---------------------------------------------------------------------------

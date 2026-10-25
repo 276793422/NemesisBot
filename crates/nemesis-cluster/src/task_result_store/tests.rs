@@ -888,15 +888,19 @@ fn test_w3b_write_to_disk_rename_failure_when_dest_is_directory() {
 }
 
 #[test]
-fn test_w3b_write_to_disk_tmp_failure_when_tmp_is_directory() {
+fn test_w3b_write_to_disk_temp_failure_when_cache_dir_unusable() {
+    // BUG-20261025-51 后临时名为唯一形态（.tmp-{pid}-{seq}-{nanos}），
+    // 固定 `.tmp` 路径预置注入失效；temp 写失败面改由「cache_dir 本体是
+    // 文件」触发（helper create_dir_all 失败 → Err → warn）。不变量不变：
+    // 写盘失败 → 内存条目仍在、目标文件未产生。
     let dir = tempfile::tempdir().unwrap();
-    let store = TaskResultStore::with_disk_persistence(10, dir.path());
-    std::fs::create_dir_all(dir.path().join("blocked2.json.tmp")).unwrap();
+    let cache = dir.path().join("cache");
+    std::fs::write(&cache, b"not a dir").unwrap();
+    let store = TaskResultStore::with_disk_persistence(10, &cache);
 
-    // tmp write fails → warn, memory entry still present
     store.store_success("blocked2", "a", serde_json::json!(1));
     assert!(store.get("blocked2").is_some());
-    assert!(!dir.path().join("blocked2.json").exists());
+    assert!(cache.is_file(), "cache 本体未被写穿");
 }
 
 #[test]
@@ -932,15 +936,18 @@ async fn test_w3b_async_write_and_delete_failures() {
     assert!(store.cleanup_delivered_async("a1").await);
     assert!(store.get_async("a1").is_none());
 
-    // 2. tmp path is a directory → async tmp write fails (warn)
+    // 2. cache_dir unusable (a file) → async temp write fails (warn);
+    //    memory entry kept, no target file produced（注入手法同上，唯一临时名
+    //    后固定 `.tmp` 路径预置不可行）。
     let dir2 = tempfile::tempdir().unwrap();
-    let store2 = AsyncTaskResultStore::with_disk_persistence(10, dir2.path());
-    std::fs::create_dir_all(dir2.path().join("a2.json.tmp")).unwrap();
+    let cache2 = dir2.path().join("cache");
+    std::fs::write(&cache2, b"not a dir").unwrap();
+    let store2 = AsyncTaskResultStore::with_disk_persistence(10, &cache2);
     store2
         .store_success_async("a2", "act", serde_json::json!("y"))
         .await;
     assert!(store2.get_async("a2").is_some());
-    assert!(!dir2.path().join("a2.json").exists());
+    assert!(cache2.is_file(), "cache 本体未被写穿");
 }
 
 #[tokio::test]

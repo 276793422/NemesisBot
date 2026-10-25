@@ -291,14 +291,13 @@ impl PricingStore {
     }
 }
 
-/// tmp + rename 原子写（同目录 tmp 文件保证同分区 rename）。
+/// 原子写（BUG-20261025-51 起委托唯一临时名权威 helper——旧固定 `.json.tmp`
+/// 并发互踩 + 先删后 rename 的崩溃窗口一并根除；helper 内部同目录临时文件
+/// 保证同分区 rename）。
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let tmp = path.with_extension("json.tmp");
     let raw = serde_json::to_string_pretty(value).map_err(|e| format!("serialize: {e}"))?;
-    std::fs::write(&tmp, raw).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    // Windows 上 rename 目标已存在会失败——先删（存在性容忍）。
-    let _ = std::fs::remove_file(path);
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), raw.as_bytes(), 0o644)
+        .map_err(|e| format!("atomic write {}: {e}", path.display()))
 }
 
 #[cfg(test)]

@@ -1650,10 +1650,10 @@ impl WorkerWakeState {
         let Ok(json) = serde_json::to_string(snapshot) else {
             return;
         };
-        let tmp = path.with_extension("json.tmp");
-        if let Err(e) = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")))
-            .and_then(|_| std::fs::write(&tmp, json))
-            .and_then(|_| std::fs::rename(&tmp, path))
+        // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩；
+        // mkdir 由 helper 内部承担）。
+        if let Err(e) =
+            nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o644)
         {
             tracing::warn!(
                 "[BoardBus] wake state persist failed: {} (continuing in-memory)",

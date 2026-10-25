@@ -1078,3 +1078,52 @@ fn load_chat_sessions_corrupt_file_skipped_with_valid_ones_loaded() {
     assert!(loaded.contains_key("web:good"), "好档必须载入");
     assert!(!loaded.contains_key("web:torn"), "坏档不得进索引");
 }
+
+/// BUG-20261025-51 回归锁：同键并发写不产损坏文件、成功后零临时残留。
+/// 旧固定 `{key}.json.tmp` 实现下，多线程 add_message 的 File::create 截断
+/// 互踩可把混合字节 rename 落盘（概率性损坏——本测试为并发烟测 + 零残留
+/// 不变量；确定性保障在 nemesis_utils::write_file_atomic 自身测试 + 本次
+/// 委托消除全部手搓 tmp+rename 路径）。
+#[test]
+fn test_concurrent_same_key_saves_produce_valid_file_and_no_tmp_residue() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions");
+    let mgr = std::sync::Arc::new(SessionMgr::with_storage(
+        Duration::from_secs(3600),
+        &path.to_string_lossy(),
+    ));
+
+    const THREADS: usize = 8;
+    const MSGS: usize = 25;
+    let mut handles = Vec::new();
+    for t in 0..THREADS {
+        let mgr = mgr.clone();
+        handles.push(std::thread::spawn(move || {
+            for i in 0..MSGS {
+                mgr.add_message(
+                    "telegram:123",
+                    "user",
+                    &format!("t{t}-m{i}-{}", "x".repeat(512)),
+                );
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // 最终文件可整体解析（损坏 JSON = 混合字节落盘的证据）。
+    let file = path.join("telegram_123.json");
+    let raw = std::fs::read_to_string(&file).unwrap();
+    let session: ChatSession = serde_json::from_str(&raw).unwrap();
+    assert_eq!(session.key, "telegram:123");
+    assert!(session.messages.len() >= MSGS);
+
+    // 成功路径零残留：目录里只有目标 .json（唯一临时名也不允许残留）。
+    let residue: Vec<_> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n.to_string_lossy() != "telegram_123.json")
+        .collect();
+    assert!(residue.is_empty(), "residue: {residue:?}");
+}

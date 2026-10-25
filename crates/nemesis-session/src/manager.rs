@@ -6,7 +6,6 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -331,20 +330,15 @@ impl SessionMgr {
         let data =
             serde_json::to_string_pretty(&snapshot).map_err(|e| format!("serialize: {}", e))?;
 
-        // Write to a temporary file first.
-        let temp_path = session_path.with_extension("json.tmp");
-        {
-            let mut file =
-                std::fs::File::create(&temp_path).map_err(|e| format!("create temp: {}", e))?;
-            file.write_all(data.as_bytes())
-                .map_err(|e| format!("write temp: {}", e))?;
-            file.sync_all().map_err(|e| format!("fsync temp: {}", e))?;
-        }
-
-        // Atomic rename (on Windows this replaces the destination).
-        std::fs::rename(&temp_path, &session_path).map_err(|e| format!("rename: {}", e))?;
-
-        Ok(())
+        // BUG-20261025-51：落盘委托 REL-002 权威 helper（唯一临时名
+        // `.tmp-{pid}-{seq}-{nanos}`）。旧手搓固定 `{key}.json.tmp` 在同键
+        // 并发写（loop 线程 × web rewind/compact）时 File::create 截断互踩，
+        // 混合字节 rename 落盘 = 损坏 JSON，下次启动 warn 跳过即历史丢失。
+        nemesis_utils::file::write_file_atomic(
+            &session_path.to_string_lossy(),
+            data.as_bytes(),
+            0o644,
+        )
     }
 
     /// Load all chat sessions from disk.
