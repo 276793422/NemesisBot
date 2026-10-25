@@ -45,9 +45,7 @@ fn test_verify_signature_valid() {
     let ch = LineChannel::new(config, test_bus()).unwrap();
 
     let body = b"hello world";
-    let mut mac = HmacSha256::new_from_slice(b"test_secret").unwrap();
-    mac.update(body);
-    let sig = hex::encode(mac.finalize().into_bytes());
+    let sig = make_signature_b64(body, "test_secret");
 
     assert!(ch.verify_signature(body, &sig));
 }
@@ -62,6 +60,8 @@ fn test_verify_signature_invalid() {
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
 
+    // "invalid_hex" 含非 base64 字母表字符（解码失败必拒）；
+    // "deadbeef" 是合法 base64 但解码仅 4 字节（长度不符必拒）。
     assert!(!ch.verify_signature(b"hello", "invalid_hex"));
     assert!(!ch.verify_signature(b"hello", "deadbeef"));
 }
@@ -160,16 +160,14 @@ fn test_verify_signature_wrong_body() {
 
     // Generate a valid signature for "correct_body"
     let body = b"correct_body";
-    let mut mac = HmacSha256::new_from_slice(b"test_secret").unwrap();
-    mac.update(body);
-    let sig = hex::encode(mac.finalize().into_bytes());
+    let sig = make_signature_b64(body, "test_secret");
 
     // But verify with a different body
     assert!(!ch.verify_signature(b"wrong_body", &sig));
 }
 
 #[test]
-fn test_verify_signature_short_hex() {
+fn test_verify_signature_short_signature() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
@@ -177,7 +175,7 @@ fn test_verify_signature_short_hex() {
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
-    // Hex that's too short (less than 32 bytes when decoded)
+    // 合法 base64 但解码后 3 字节，短于 32 字节摘要
     assert!(!ch.verify_signature(b"hello", "abcd"));
 }
 
@@ -330,9 +328,7 @@ fn test_verify_signature_with_unicode_body() {
     let ch = LineChannel::new(config, test_bus()).unwrap();
 
     let body = "hello world";
-    let mut mac = HmacSha256::new_from_slice(b"test_secret").unwrap();
-    mac.update(body.as_bytes());
-    let sig = hex::encode(mac.finalize().into_bytes());
+    let sig = make_signature_b64(body.as_bytes(), "test_secret");
 
     assert!(ch.verify_signature(body.as_bytes(), &sig));
 }
@@ -436,15 +432,13 @@ fn test_verify_signature_with_empty_body() {
     let ch = LineChannel::new(config, test_bus()).unwrap();
 
     let body = b"";
-    let mut mac = HmacSha256::new_from_slice(b"test_secret").unwrap();
-    mac.update(body);
-    let sig = hex::encode(mac.finalize().into_bytes());
+    let sig = make_signature_b64(body, "test_secret");
 
     assert!(ch.verify_signature(body, &sig));
 }
 
 #[test]
-fn test_verify_signature_non_hex_chars() {
+fn test_verify_signature_wrong_length_64_char_input() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
@@ -452,7 +446,7 @@ fn test_verify_signature_non_hex_chars() {
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
-    // Contains non-hex characters
+    // 64 个合法 base64 字符解码出 48 字节 ≠ 32 字节摘要，长度不符必拒
     assert!(!ch.verify_signature(
         b"hello",
         "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
@@ -468,7 +462,7 @@ fn test_verify_signature_wrong_length() {
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
-    // Too short hex string
+    // 合法 base64 但解码仅 4 字节，短于 32 字节摘要
     assert!(!ch.verify_signature(b"hello", "deadbeef"));
 }
 
@@ -718,7 +712,7 @@ fn test_verify_signature_length_mismatch() {
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
-    // Only 4 bytes (8 hex chars) vs expected 32 bytes (64 hex chars)
+    // 合法 base64 但解码后 6 字节 ≠ 32 字节摘要
     assert!(!ch.verify_signature(b"test", "aabbccdd"));
 }
 
@@ -893,9 +887,7 @@ fn test_verify_signature_same_body_different_secret() {
     let ch2 = LineChannel::new(config2, test_bus()).unwrap();
 
     let body = b"test body";
-    let mut mac = HmacSha256::new_from_slice(b"secret1").unwrap();
-    mac.update(body);
-    let sig = hex::encode(mac.finalize().into_bytes());
+    let sig = make_signature_b64(body, "secret1");
 
     assert!(ch1.verify_signature(body, &sig));
     assert!(!ch2.verify_signature(body, &sig));
@@ -950,8 +942,12 @@ async fn test_line_full_lifecycle_with_real_webhook() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = r#"{"events":[{"type":"message","replyToken":"rt1","source":{"type":"user","user_id":"U123"},"message":{"type":"text","text":"Hello"},"timestamp":1}]}"#;
+    // 真实 LINE webhook 每个请求都带签名（缺签名头会被 fail-closed 拒掉）；
+    // 本测试建模的是合法投递全链路，必须带正确签名。
+    let sig = make_signature_b64(body.as_bytes(), "my_secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
         body.len(),
         body
     );
@@ -1106,8 +1102,11 @@ async fn test_line_full_lifecycle_invalid_json_body() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = "not valid json";
+    // 签名正确 + body 非法 JSON → 验签过、解析失败 → 400（证明验签闸先于解析）
+    let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
         body.len(),
         body
     );
@@ -1134,8 +1133,10 @@ async fn test_line_full_lifecycle_group_chat_id() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = r#"{"events":[{"type":"message","replyToken":"rt1","source":{"type":"group","user_id":"U1","group_id":"G123"},"message":{"type":"text","text":"group msg"},"timestamp":1}]}"#;
+    let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
         body.len(),
         body
     );
@@ -1171,8 +1172,10 @@ async fn test_line_full_lifecycle_room_chat_id() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = r#"{"events":[{"type":"message","replyToken":"rt1","source":{"type":"room","user_id":"U1","room_id":"R456"},"message":{"type":"text","text":"room msg"},"timestamp":1}]}"#;
+    let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
         body.len(),
         body
     );
@@ -1207,8 +1210,10 @@ async fn test_line_full_lifecycle_skips_non_message_events() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = r#"{"events":[{"type":"follow","replyToken":"rt1","source":{"type":"user","user_id":"U1"},"timestamp":1}]}"#;
+    let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
         body.len(),
         body
     );
@@ -1237,10 +1242,55 @@ async fn test_line_full_lifecycle_no_body_separator() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Send raw bytes without the CRLF+CRLF separator. Should fail parsing JSON.
+    // Send raw bytes without the CRLF+CRLF separator. 该请求不带签名头——
+    // 签名闸（fail-closed）先于任何 body 解析，直接 401；带合法签名的
+    // 无分隔符请求在真实流量中不存在（LINE 恒带分隔符+签名），坏 body
+    // → 400 路径由 invalid_json_body / w4c_malformed_body_400 覆盖。
     let raw = b"GET / HTTP/1.0\nno crlfcrlf here";
     let response = send_raw_http(port, raw).await;
-    assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+
+    ch.stop().await.unwrap();
+}
+
+/// 旧形态必红锁（BUG-20261025-75）：缺 X-Line-Signature 头的请求必须 401 且
+/// 绝不入总线。旧形态 fail-open 会返回 200 并把伪造事件发布到 bus（本测试
+/// 断言 401 + 总线为空，双断言任一在旧形态下都红）。
+#[tokio::test]
+async fn test_line_full_lifecycle_missing_signature_rejected() {
+    let port = find_free_port();
+    let config = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_port: port,
+        allow_from: Vec::new(),
+    };
+    let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
+    let ch = LineChannel::new(config, bus_tx).unwrap();
+    ch.start().await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let body = r#"{"events":[{"type":"message","replyToken":"rt-forge","source":{"type":"user","user_id":"U-attacker"},"message":{"type":"text","text":"forged"},"timestamp":1}]}"#;
+    let request = format!(
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+
+    let response = send_raw_http(port, request.as_bytes()).await;
+    assert!(
+        response.starts_with("HTTP/1.1 401 Unauthorized"),
+        "unsigned request must be rejected, got: {response}"
+    );
+
+    // 旧形态下 200 响应先回、publish 随后落地——给足时间让（不该发生的）
+    // publish 落地，再断言总线为空，保证锁的确定性。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        bus_rx.try_recv().is_err(),
+        "unsigned request must never publish to the bus"
+    );
 
     ch.stop().await.unwrap();
 }
