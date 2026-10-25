@@ -809,156 +809,27 @@ impl AgentLoop {
                     Some(ov) => nemesis_security::types::danger_level_of_slug(&ov.op_type),
                     None => security.tool_danger_level(&tool_call.name),
                 };
-                let should_review = match op_override.as_ref() {
-                    Some(_) => security.guardian_should_review_with_danger(
+                // P5 guardian（LLM safety judge）语义二审——决策表单一真相源
+                // 在 guardian_gate 模块（BUG-20261025-37：LSP rename 合成写
+                // 闸同源消费；此前审查决策表只活在本内联块，语义与原块一致，
+                // ⛔ 文案原样迁移）。
+                let approval_ctx = nemesis_security::auditor::ApprovalContext {
+                    channel: context.channel.clone(),
+                    chat_id: context.chat_id.clone(),
+                    session_key: context.session_key.clone(),
+                    ..Default::default()
+                };
+                if let crate::guardian_gate::GuardianGate::Blocked(text) =
+                    crate::guardian_gate::guardian_gate(
+                        security,
                         &tool_call.name,
                         &tool_call.arguments,
                         &guardian_danger,
-                    ),
-                    None => security.guardian_should_review(&tool_call.name, &tool_call.arguments),
-                };
-                if should_review && let Some(judge) = security.judge() {
-                    let req = nemesis_security::guardian::JudgeRequest {
-                        action: tool_call.name.clone(),
-                        risk_level: guardian_danger.clone(),
-                        command: tool_call.arguments.clone(),
-                    };
-                    match judge.judge(&req).await {
-                        Ok(v) => {
-                            // verdict 全量落审计（放行也记）——事后可回答
-                            // 「LLM 为什么放行/拦下了这条命令」。
-                            let guardian_mode = security.guardian_mode();
-                            security.auditor().log_guardian_verdict(
-                                &tool_call.name,
-                                &guardian_mode,
-                                &v,
-                            );
-                            if v.is_allow() {
-                                info!(
-                                    "[AgentLoop] Guardian allowed {} (rec={}, rules_match={})",
-                                    tool_call.name, v.recommendation, v.matches_rules
-                                );
-                            } else {
-                                // 只升格（2026-09-16 拍板）：LLM ask/deny 不
-                                // 无声硬拦——转人工审批卡（误报留人工通道）；
-                                // 无审批管理器/用户拒绝/超时 = fail-closed 拒绝。
-                                let approval_ctx = nemesis_security::auditor::ApprovalContext {
-                                    channel: context.channel.clone(),
-                                    chat_id: context.chat_id.clone(),
-                                    session_key: context.session_key.clone(),
-                                    ..Default::default()
-                                };
-                                match security.auditor().request_guardian_verdict_approval(
-                                    &tool_call.name,
-                                    &v.risk_level,
-                                    &guardian_mode,
-                                    &v,
-                                    Some(&approval_ctx),
-                                ) {
-                                    Ok(av) if av.approved => {
-                                        info!(
-                                            "[AgentLoop] Guardian flagged {} (rec={}) but user approved",
-                                            tool_call.name, v.recommendation
-                                        );
-                                    }
-                                    Ok(av) => {
-                                        let note = av
-                                            .note
-                                            .as_deref()
-                                            .map(str::trim)
-                                            .filter(|n| !n.is_empty())
-                                            .map(|n| format!(": {}", n))
-                                            .unwrap_or_default();
-                                        return format!(
-                                            "⛔ GUARDIAN FLAGGED — USER REJECTED [layer:guardian|policy:guardian_mode={}] The safety judge flagged this operation ({}: {}) and the user declined to approve. Do NOT retry. Inform the user.{}",
-                                            guardian_mode, v.recommendation, v.rationale, note
-                                        );
-                                    }
-                                    Err(e) => {
-                                        return format!(
-                                            "⛔ GUARDIAN FLAGGED [layer:guardian|policy:guardian_mode={}] The safety judge flagged this operation ({}: {}) and no approval channel is available ({}). Fail-closed: operation denied. Do NOT retry. Inform the user.",
-                                            guardian_mode, v.recommendation, v.rationale, e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Err(guardian_err) => {
-                            match security.guardian_failure_policy().as_str() {
-                                "allow" => {
-                                    warn!(
-                                        "[AgentLoop] Guardian failed on critical tool {} (guardian_failure_policy=allow, proceeding): {}",
-                                        tool_call.name, guardian_err
-                                    );
-                                }
-                                "ask" => {
-                                    let approval_ctx = nemesis_security::auditor::ApprovalContext {
-                                        channel: context.channel.clone(),
-                                        chat_id: context.chat_id.clone(),
-                                        session_key: context.session_key.clone(),
-                                        ..Default::default()
-                                    };
-                                    match security.auditor().request_guardian_failure_approval(
-                                        &tool_call.name,
-                                        &format!(
-                                            "Guardian (LLM safety judge) failed: {}",
-                                            guardian_err
-                                        ),
-                                        Some(&approval_ctx),
-                                    ) {
-                                        Ok(v) if v.approved => {
-                                            info!(
-                                                "[AgentLoop] Guardian failed on critical tool {}: user approved",
-                                                tool_call.name
-                                            );
-                                        }
-                                        Ok(v) => {
-                                            let note = v
-                                                .note
-                                                .as_deref()
-                                                .map(str::trim)
-                                                .filter(|n| !n.is_empty())
-                                                .map(|n| format!(": {}", n))
-                                                .unwrap_or_default();
-                                            return format!(
-                                                "⛔ GUARDIAN UNAVAILABLE — USER REJECTED [layer:guardian|policy:guardian_failure_policy=ask] Safety judge failed ({}) and the user declined to approve. Do NOT retry. Inform the user.{}",
-                                                guardian_err, note
-                                            );
-                                        }
-                                        Err(e) => {
-                                            // fail-closed：无审批管理器/未运行/调用失败 = 拒绝
-                                            return format!(
-                                                "⛔ GUARDIAN UNAVAILABLE [layer:guardian|policy:guardian_failure_policy=ask] Safety judge failed ({}) and no approval channel is available ({}). Fail-closed: operation denied. Do NOT retry. Inform the user.",
-                                                guardian_err, e
-                                            );
-                                        }
-                                    }
-                                }
-                                "deny" => {
-                                    return format!(
-                                        "⛔ GUARDIAN UNAVAILABLE — DENIED BY POLICY [layer:guardian|policy:guardian_failure_policy=deny] Safety judge failed ({}). Fail-closed: operation denied by policy. Do NOT retry. Inform the user.",
-                                        guardian_err
-                                    );
-                                }
-                                // 未知值：fail-closed 优先于 fail-open（复核
-                                // 2026-09-16：此前未知值落 `_` 臂静默放行——
-                                // 用户显式选择 deny 得到与未配置相同的裸奔
-                                // 行为，D2 最严档完全失效）。
-                                other if !other.is_empty() => {
-                                    warn!(
-                                        "[AgentLoop] Unknown guardian_failure_policy {:?} (critical tool {}), treating as deny (fail-closed): {}",
-                                        other, tool_call.name, guardian_err
-                                    );
-                                    return format!(
-                                        "⛔ GUARDIAN UNAVAILABLE — DENIED BY POLICY [layer:guardian|policy:guardian_failure_policy={}] Safety judge failed ({}). Fail-closed: operation denied. Do NOT retry. Inform the user.",
-                                        other, guardian_err
-                                    );
-                                }
-                                // 未配置（空串）：旧行为——Err 落空放行
-                                _ => {}
-                            }
-                        }
-                    }
+                        &approval_ctx,
+                    )
+                    .await
+                {
+                    return text;
                 }
             }
         }

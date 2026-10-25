@@ -312,10 +312,10 @@ fn c7_two_files() -> (tempfile::TempDir, Vec<nemesis_lsp::AppliedFileEdit>) {
 
 /// 无闸（插件未注入）：直接落盘——gate 缺席≠gate 通过，与无闸普通写工具
 /// 同语义；返回值如实列出已写文件。
-#[test]
-fn c7_gate_and_write_none_plugin_writes_all() {
+#[tokio::test]
+async fn c7_gate_and_write_none_plugin_writes_all() {
     let (_dir, files) = c7_two_files();
-    let written = gate_and_write(&files, None, "web").unwrap();
+    let written = gate_and_write(&files, None, &test_ctx()).await.unwrap();
     assert_eq!(written.len(), 2);
     assert_eq!(std::fs::read_to_string(&files[0].path).unwrap(), "new a\n");
     assert_eq!(std::fs::read_to_string(&files[1].path).unwrap(), "new b\n");
@@ -331,7 +331,9 @@ async fn c7_gate_and_write_allow_all_plugin_writes_all() {
     let audit_dir = tempfile::tempdir().unwrap();
     let plugin = allow_all_plugin(&audit_dir.path().join("audit.log"));
     let (_dir, files) = c7_two_files();
-    let written = gate_and_write(&files, Some(&plugin), "web").unwrap();
+    let written = gate_and_write(&files, Some(&plugin), &test_ctx())
+        .await
+        .unwrap();
     assert_eq!(written.len(), 2);
     assert_eq!(std::fs::read_to_string(&files[0].path).unwrap(), "new a\n");
     assert_eq!(std::fs::read_to_string(&files[1].path).unwrap(), "new b\n");
@@ -367,7 +369,9 @@ async fn c7_gate_and_write_deny_blocks_everything() {
         })
     };
     let (_dir, files) = c7_two_files();
-    let err = gate_and_write(&files, Some(&plugin), "web").unwrap_err();
+    let err = gate_and_write(&files, Some(&plugin), &test_ctx())
+        .await
+        .unwrap_err();
     assert!(err.contains("SECURITY BLOCKED"), "{err}");
     assert!(err.contains("no files were modified"), "{err}");
     assert_eq!(std::fs::read_to_string(&files[0].path).unwrap(), "old a\n");

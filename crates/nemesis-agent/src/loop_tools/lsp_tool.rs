@@ -25,7 +25,10 @@ pub struct LspTool {
     manager: Arc<LspManager>,
     /// C7：rename 落盘闸宿主（SecurityPlugin）。rename 的每文件新全文以
     /// 合成 `write_file` 调用走完整 8 层管线（注入/凭据/DLP/scanner 见真
-    /// 内容，auditor 审批/guardian 按既有语义继承）。None（feature 裁剪 /
+    /// 内容），auditor 审批在 `execute()` 内同步生效；guardian 语义二审
+    /// 经 `guardian_gate` 与 dispatch 同源（BUG-20261025-37：此前文档
+    /// 声称继承但实现缺失，high 模式下同内容直写会被送审、rename 直落）。
+    /// None（feature 裁剪 /
     /// 插件未注入）时 rename 直接落盘——与 executor 分离前普通写工具的
     /// 无闸形态一致，语义诚实（gate 缺席≠gate 通过）。
     #[cfg(feature = "security")]
@@ -209,8 +212,9 @@ impl LspTool {
     ///
     /// 1. 服务器算 WorkspaceEdit，逐文件读盘应用成新全文（manager::rename，
     ///    不写盘）；
-    /// 2. **两阶段安全闸**：全部文件先各自过 8 层管线（合成 `write_file`
-    ///    调用，内容可见），全部放行才进入写阶段——半改名状态是破碎代码，
+    /// 2. **两阶段安全闸**：全部文件先各自过 8 层管线 + guardian 语义二审
+    ///    （合成 `write_file` 调用，内容可见；guardian 走 guardian_gate 与
+    ///    dispatch 同源），全部放行才进入写阶段——半改名状态是破碎代码，
     ///    宁可全有全无；
     /// 3. 逐文件写盘 → `notify_change` 回同步服务器文档 → 主文件等诊断
     ///    （编辑后闭环，复用 C2 的推送缓存：同一会话的 drain 顺带把其余
@@ -242,7 +246,7 @@ impl LspTool {
         let security = self.security.as_deref();
         #[cfg(not(feature = "security"))]
         let security = self.security.as_ref();
-        let written = gate_and_write(&outcome.files, security, &context.channel)?;
+        let written = gate_and_write(&outcome.files, security, context).await?;
 
         // Phase 3: resync server docs and harvest diagnostics. notify_change
         // is best-effort (diagnostics closure is an optimization, not a
@@ -301,26 +305,34 @@ impl LspTool {
 }
 
 /// C7 两阶段落盘：先全部过安全闸（合成 `write_file` ToolInvocation 走完整
-/// 8 层管线——注入/凭据/DLP/scanner 看到的是真实新全文），全部放行才逐文
-/// 件写盘。任一文件被拦 → 一个字节都不落盘（半改名=破碎代码）。无闸形态
-/// （feature 裁剪/插件未注入）直接写——gate 缺席≠gate 通过，语义与无闸的
-/// 普通写工具一致。
+/// 8 层管线——注入/凭据/DLP/scanner 看到的是真实新全文；guardian 语义二审
+/// 经 `guardian_gate` 与 dispatch 同源，BUG-20261025-37），全部放行才逐文
+/// 件写盘。任一文件被拦（规则层或 guardian）→ 一个字节都不落盘（半改名=
+/// 破碎代码）。无闸形态（feature 裁剪/插件未注入）直接写——gate 缺席≠gate
+/// 通过，语义与无闸的普通写工具一致。
 ///
 /// 返回实际落盘的路径列表；写盘中途失败时已落盘者如实上报（调用方把失败
 /// 传给模型，由它决定补救——闸已全过，失败只可能是 IO 层）。
 #[cfg(feature = "security")]
-fn gate_and_write(
+async fn gate_and_write(
     files: &[AppliedFileEdit],
     security: Option<&nemesis_security::pipeline::SecurityPlugin>,
-    source: &str,
+    context: &RequestContext,
 ) -> Result<Vec<String>, String> {
     if let Some(security) = security {
+        let approval_ctx = nemesis_security::auditor::ApprovalContext {
+            channel: context.channel.clone(),
+            chat_id: context.chat_id.clone(),
+            session_key: context.session_key.clone(),
+            ..Default::default()
+        };
         for f in files {
+            let args = serde_json::json!({"path": f.path, "content": f.new_text});
             let invocation = nemesis_security::types::ToolInvocation {
                 tool_name: "write_file".to_string(),
-                args: serde_json::json!({"path": f.path, "content": f.new_text}),
+                args: args.clone(),
                 user: String::new(),
-                source: source.to_string(),
+                source: context.channel.clone(),
                 metadata: std::collections::HashMap::new(),
             };
             let (allowed, deny) = security.execute(&invocation);
@@ -336,6 +348,22 @@ fn gate_and_write(
                     f.path, info.layer, info.policy, info.summary
                 ));
             }
+            // BUG-20261025-37：guardian 与 dispatch 同源（单一真相源
+            // guardian_gate）。合成 write_file 无 op 投影，危级走静态表——
+            // 与 dispatch 无 override 路径完全同口径。
+            let danger = security.tool_danger_level("write_file");
+            if let crate::guardian_gate::GuardianGate::Blocked(text) =
+                crate::guardian_gate::guardian_gate(
+                    security,
+                    "write_file",
+                    &args.to_string(),
+                    &danger,
+                    &approval_ctx,
+                )
+                .await
+            {
+                return Err(format!("{text} — no files were modified."));
+            }
         }
     }
     let mut written = Vec::with_capacity(files.len());
@@ -349,10 +377,10 @@ fn gate_and_write(
 
 /// 非 security 形态：无闸直写（签名对齐让调用方 cfg-free）。
 #[cfg(not(feature = "security"))]
-fn gate_and_write(
+async fn gate_and_write(
     files: &[AppliedFileEdit],
     _security: Option<&()>,
-    _source: &str,
+    _context: &RequestContext,
 ) -> Result<Vec<String>, String> {
     let mut written = Vec::with_capacity(files.len());
     for f in files {

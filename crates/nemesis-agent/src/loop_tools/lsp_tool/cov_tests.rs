@@ -127,8 +127,8 @@ fn registration_plan_truth_table() {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "security")]
-#[test]
-fn gate_and_write_without_security_writes_all_files() {
+#[tokio::test]
+async fn gate_and_write_without_security_writes_all_files() {
     let dir = tempfile::tempdir().unwrap();
     let a = dir.path().join("a.rs");
     let b = dir.path().join("b.rs");
@@ -145,7 +145,9 @@ fn gate_and_write_without_security_writes_all_files() {
         },
     ];
 
-    let written = gate_and_write(&files, None, "web").expect("ungated write succeeds");
+    let written = gate_and_write(&files, None, &cov_ctx())
+        .await
+        .expect("ungated write succeeds");
     assert_eq!(
         written,
         vec![
@@ -167,10 +169,195 @@ fn gate_and_write_without_security_writes_all_files() {
         new_text: "x".to_string(),
         edit_count: 1,
     }];
-    let err = gate_and_write(&bad, None, "web").expect_err("unwritable target must fail");
+    let err = gate_and_write(&bad, None, &cov_ctx())
+        .await
+        .expect_err("unwritable target must fail");
     assert!(
         err.contains("write") && err.contains("failed"),
         "got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261025-37 回归锁：guardian 语义二审接入合成写闸（与 dispatch
+// 同源 guardian_gate）。此前 guardian 只活在 dispatch 内联块，rename
+// 合成闸只跑 8 层规则管线——guardian_mode=high 下同内容直写会被送审、
+// rename 直落，文档声称「guardian 按既有语义继承」不实。
+// ---------------------------------------------------------------------------
+
+/// 恒 deny 的 mock judge（recommendation="deny"）。
+struct DenyJudge;
+
+#[async_trait::async_trait]
+impl nemesis_security::guardian::LlmJudge for DenyJudge {
+    async fn judge(
+        &self,
+        _req: &nemesis_security::guardian::JudgeRequest,
+    ) -> Result<nemesis_security::guardian::JudgeVerdict, String> {
+        Ok(nemesis_security::guardian::JudgeVerdict {
+            intent: "writes destructive content".to_string(),
+            matches_rules: true,
+            risk_level: "high".to_string(),
+            recommendation: "deny".to_string(),
+            rationale: "content matches destructive patterns".to_string(),
+        })
+    }
+}
+
+/// 恒 allow 的 mock judge。
+struct AllowJudge;
+
+#[async_trait::async_trait]
+impl nemesis_security::guardian::LlmJudge for AllowJudge {
+    async fn judge(
+        &self,
+        _req: &nemesis_security::guardian::JudgeRequest,
+    ) -> Result<nemesis_security::guardian::JudgeVerdict, String> {
+        Ok(nemesis_security::guardian::JudgeVerdict {
+            intent: "benign rename write".to_string(),
+            matches_rules: false,
+            risk_level: "low".to_string(),
+            recommendation: "allow".to_string(),
+            rationale: "no destructive pattern".to_string(),
+        })
+    }
+}
+
+/// 计数 judge：guardian 关闭时绝不应被调用（调用即测试失败）。
+struct NeverJudge(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl nemesis_security::guardian::LlmJudge for NeverJudge {
+    async fn judge(
+        &self,
+        _req: &nemesis_security::guardian::JudgeRequest,
+    ) -> Result<nemesis_security::guardian::JudgeVerdict, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(nemesis_security::guardian::JudgeVerdict {
+            intent: String::new(),
+            matches_rules: false,
+            risk_level: "low".to_string(),
+            recommendation: "allow".to_string(),
+            rationale: String::new(),
+        })
+    }
+}
+
+/// guardian_mode=high + judge 判 deny + 无审批通道 → fail-closed 拦停，
+/// **一个字节都不落盘**（两阶段：guardian 属 gate 阶段，先于全部写盘）。
+/// 内容带破坏词（`rm`）确保 destructive_shaped 预筛命中、真正进 LLM。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    plugin.set_guardian_mode("high");
+    plugin.set_judge(std::sync::Arc::new(DenyJudge));
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.rs");
+    std::fs::write(&target, "old\n").unwrap();
+    let files = vec![AppliedFileEdit {
+        path: target.to_string_lossy().into_owned(),
+        // args JSON 全文会被词表扫（无 command 字段）——" rm " 命中词边界。
+        new_text: "let x = command(\"rm -rf /\");\n".to_string(),
+        edit_count: 1,
+    }];
+
+    let err = gate_and_write(&files, Some(&plugin), &cov_ctx())
+        .await
+        .expect_err("guardian flag + no approval channel must fail closed");
+    assert!(
+        err.contains("GUARDIAN FLAGGED") && err.contains("no files were modified"),
+        "got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old\n",
+        "blocked rename write must leave the file untouched"
+    );
+}
+
+/// guardian_mode=high + judge 判 allow → 正常落盘（审查通过路径不误伤）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn gate_and_write_guardian_high_allow_writes_files() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    plugin.set_guardian_mode("high");
+    plugin.set_judge(std::sync::Arc::new(AllowJudge));
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.rs");
+    let files = vec![AppliedFileEdit {
+        path: target.to_string_lossy().into_owned(),
+        new_text: "fn renamed() {}\n".to_string(),
+        edit_count: 1,
+    }];
+
+    let written = gate_and_write(&files, Some(&plugin), &cov_ctx())
+        .await
+        .expect("guardian allow must proceed to disk");
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "fn renamed() {}\n"
+    );
+}
+
+/// guardian_mode 未配置（默认关）→ judge 一次都不被调用、直接落盘
+/// （钉死默认行为不变：guardian 接入不给默认配置添 LLM 成本/误拦）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn gate_and_write_guardian_default_off_never_calls_judge() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    let judge = std::sync::Arc::new(NeverJudge(std::sync::atomic::AtomicUsize::new(0)));
+    plugin.set_judge(judge.clone());
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.rs");
+    let files = vec![AppliedFileEdit {
+        path: target.to_string_lossy().into_owned(),
+        new_text: "fn a() {}\n".to_string(),
+        edit_count: 1,
+    }];
+
+    let written = gate_and_write(&files, Some(&plugin), &cov_ctx())
+        .await
+        .expect("guardian off must write without review");
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        judge.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "guardian default-off must never consult the judge"
     );
 }
 

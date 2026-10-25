@@ -51,6 +51,11 @@ pub mod executor_pipe;
 pub mod executor_transport;
 pub mod formatter;
 pub mod fs_watcher;
+/// BUG-20261025-37：guardian（LLM 安全法官）语义二审决策表单一真相源——
+/// dispatch 内联块与 LSP rename 合成写闸同源消费（此前只活在 dispatch，
+/// 合成闸缺席且文档声称继承）。
+#[cfg(feature = "security")]
+pub mod guardian_gate;
 pub mod history;
 // U20 会话全文检索（FTS5）——随 history-search feature（rusqlite）进出。
 #[cfg(feature = "history-search")]
