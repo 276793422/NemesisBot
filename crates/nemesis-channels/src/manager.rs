@@ -17,12 +17,10 @@ use nemesis_types::error::{NemesisError, Result};
 use crate::base::Channel;
 use nemesis_types::channel::InboundMessage;
 
-/// Internal channel names that should not be dispatched externally.
-/// Messages targeting these channels are silently consumed by the
-/// agent loop or other subsystems and must not be forwarded to
-/// external channel adapters.
-/// Matches Go's constants.INTERNAL_CHANNELS: ["cli", "system", "subagent"].
-const INTERNAL_CHANNELS: &[&str] = &["cli", "system", "subagent"];
+// 内部通道清单（原 const 已删，BUG-20261025-46 收编）：cli/system/subagent
+// 这类内部通道的消息由 agent loop 等子系统静默消费，绝不转发给外部通道
+// 适配器。单一真相源在 `nemesis_types::INTERNAL_CHANNELS`，本模块的
+// `is_internal_channel` 直接委托它。
 
 /// Manager-level metrics.
 #[derive(Debug, Default)]
@@ -1072,9 +1070,11 @@ impl Default for ChannelManager {
 }
 
 /// Checks whether a channel name is an internal channel that should not be
-/// dispatched to external channel adapters.
+/// dispatched to external channel adapters. 委托仓内单一真相源
+/// `nemesis_types::is_internal_channel`（BUG-20261025-46 收编，本文件原为
+/// 手抄常量副本）。
 fn is_internal_channel(channel: &str) -> bool {
-    INTERNAL_CHANNELS.contains(&channel)
+    nemesis_types::is_internal_channel(channel)
 }
 
 // ---------------------------------------------------------------------------

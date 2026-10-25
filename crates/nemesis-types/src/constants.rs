@@ -61,6 +61,13 @@ pub const CLUSTER_DIR: &str = "cluster";
 pub const SKILLS_DIR: &str = "Skills";
 
 /// Internal channels that should not be exposed to external users.
+///
+/// **单一真相源**（BUG-20261025-46 收编）：仓内所有「内部通道」判断
+/// （nemesis-agent loop/session、nemesis-channels manager、nemesis-devices、
+/// nemesis-state）一律委托本定义，禁止再手抄集合。注意 nemesis-heartbeat
+/// 的 `HEARTBEAT_RESULT_EXCLUDED_CHANNELS` 是**刻意不同**的集合（心跳结果
+/// 不投递的基础设施通道，rpc/cluster 是合法出站目标、cli 是用户面），不属
+/// 本真相源管辖，勿「统一」。
 pub const INTERNAL_CHANNELS: &[&str] = &["cli", "system", "subagent"];
 
 /// K3（devtool-upgrade 阶段 4）：内置 slash 命令名——单一真相源。AgentLoop

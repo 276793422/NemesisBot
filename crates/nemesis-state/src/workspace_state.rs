@@ -183,13 +183,12 @@ impl WorkspaceStateManager {
     }
 }
 
-/// Internal channels that should not be exposed or recorded as last active.
-const INTERNAL_CHANNELS: &[&str] = &["cli", "system", "subagent"];
-
 /// Check if a channel name is an internal channel.
 /// Mirrors Go `constants.IsInternalChannel`.
+/// 委托仓内单一真相源 `nemesis_types::is_internal_channel`
+/// （BUG-20261025-46 收编，本文件原为手抄常量副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
-    INTERNAL_CHANNELS.contains(&channel)
+    nemesis_types::is_internal_channel(channel)
 }
 
 #[cfg(test)]

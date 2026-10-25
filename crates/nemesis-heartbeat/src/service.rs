@@ -104,8 +104,12 @@ impl HeartbeatConfig {
     }
 }
 
-/// Internal channel types that should not receive heartbeat messages.
-const INTERNAL_CHANNELS: &[&str] = &["system", "rpc", "cluster", "internal"];
+/// 心跳结果**不投递**的通道集合（BUG-20261025-46 更名自 INTERNAL_CHANNELS
+/// 以绝误统一）：与 `nemesis_types::INTERNAL_CHANNELS`（cli/system/subagent
+/// = 非用户面基础设施通道）是**刻意不同**的语义——rpc/cluster 是合法出站
+/// 目标（不能进全局内部集合），cli 是用户面（心跳结果可以回 CLI），故本
+/// 集合只排除心跳这类定时产物不该去的基础设施通道。
+const HEARTBEAT_RESULT_EXCLUDED_CHANNELS: &[&str] = &["system", "rpc", "cluster", "internal"];
 
 /// Heartbeat service.
 pub struct HeartbeatService {
@@ -503,7 +507,7 @@ Add your heartbeat tasks below this line:
         let user_id = parts[1].to_string();
 
         // Skip internal channels
-        if INTERNAL_CHANNELS.contains(&platform.as_str()) {
+        if HEARTBEAT_RESULT_EXCLUDED_CHANNELS.contains(&platform.as_str()) {
             self.log_info(&format!("Skipping internal channel: {}", platform));
             return (String::new(), String::new());
         }
@@ -856,7 +860,7 @@ fn parse_last_channel_static(last_channel: &str) -> (String, String) {
     let user_id = parts[1].to_string();
 
     // Skip internal channels.
-    if INTERNAL_CHANNELS.contains(&platform.as_str()) {
+    if HEARTBEAT_RESULT_EXCLUDED_CHANNELS.contains(&platform.as_str()) {
         return (String::new(), String::new());
     }
 

@@ -3929,6 +3929,7 @@ name = "nemesis-devices"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "nemesis-types",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4026,6 +4027,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "nemesis-path",
+ "nemesis-types",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4386,6 +4388,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "nemesis-path",
+ "nemesis-types",
  "parking_lot",
  "serde",
  "serde_json",

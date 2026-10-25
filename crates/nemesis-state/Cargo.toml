@@ -7,6 +7,8 @@ edition.workspace = true
 [dependencies]
 # workspace state 目录唯一真相源在 nemesis-path。
 nemesis-path = { workspace = true }
+# 内部通道判断单一真相源在 nemesis-types。
+nemesis-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

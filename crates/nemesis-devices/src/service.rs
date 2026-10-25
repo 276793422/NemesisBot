@@ -78,9 +78,6 @@ impl Default for DeviceServiceConfig {
     }
 }
 
-/// Internal channels that should not receive device notifications.
-const INTERNAL_CHANNELS: &[&str] = &["cli", "system", "subagent"];
-
 /// Parse a last channel string in the format "platform:userID".
 /// Returns (platform, user_id) or empty strings if invalid.
 /// Mirrors Go `parseLastChannel`.
@@ -98,8 +95,10 @@ pub fn parse_last_channel(last_channel: &str) -> (String, String) {
 
 /// Check if a channel name is internal (should not receive device notifications).
 /// Mirrors Go `constants.IsInternalChannel`.
+/// 委托仓内单一真相源 `nemesis_types::is_internal_channel`
+/// （BUG-20261025-46 收编，本文件原为手抄常量副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
-    INTERNAL_CHANNELS.contains(&channel)
+    nemesis_types::is_internal_channel(channel)
 }
 
 /// Device service manages connected devices with USB monitoring and event notifications.

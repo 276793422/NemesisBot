@@ -1302,3 +1302,22 @@ async fn test_concurrent_start_requests() {
 
     svc.stop();
 }
+
+// BUG-20261025-46 回归锁：心跳排除集合与 nemesis-types 的内部通道集合是
+// 刻意不同的两个语义（防止未来被「统一」到单一真相源）。
+#[test]
+fn r46_heartbeat_excluded_channels_intentionally_differs_from_internal_channels() {
+    // 集合本体不同。
+    assert_ne!(
+        HEARTBEAT_RESULT_EXCLUDED_CHANNELS,
+        nemesis_types::INTERNAL_CHANNELS
+    );
+    // cli 是用户面通道：权威内部集合含 cli，心跳结果允许回 CLI。
+    assert!(nemesis_types::INTERNAL_CHANNELS.contains(&"cli"));
+    assert!(!HEARTBEAT_RESULT_EXCLUDED_CHANNELS.contains(&"cli"));
+    // rpc/cluster 是合法出站目标：心跳排除它们，但不属于权威内部集合。
+    for ch in ["rpc", "cluster", "internal"] {
+        assert!(HEARTBEAT_RESULT_EXCLUDED_CHANNELS.contains(&ch));
+        assert!(!nemesis_types::is_internal_channel(ch));
+    }
+}

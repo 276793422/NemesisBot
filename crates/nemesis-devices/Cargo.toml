@@ -5,6 +5,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+# 内部通道判断单一真相源在 nemesis-types。
+nemesis-types = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

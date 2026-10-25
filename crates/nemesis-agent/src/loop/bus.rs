@@ -6,8 +6,11 @@ use super::prelude::*;
 use super::*;
 
 /// Check if a channel is internal (not user-facing).
+///
+/// 委托仓内单一真相源 `nemesis_types::is_internal_channel`
+/// （BUG-20261025-46 收编，本文件原为手抄 `matches!` 副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
-    matches!(channel, "cli" | "system" | "subagent")
+    nemesis_types::is_internal_channel(channel)
 }
 
 // ---------------------------------------------------------------------------
