@@ -535,11 +535,26 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        let content: ResourceContent = resp
-            .result
-            .and_then(|r| r.get("contents").and_then(|c| c.get(0)).cloned())
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
+        // BUG-20261025-31（缺陷 19 同类漏配）：结果此前静默
+        // unwrap_or_default()——contents 缺失/空数组/条目非对象一律变成
+        // uri 空 + text None 的空成功，调用方无从分辨「读到了空」与「响应
+        // 形状非法」。对齐 tools/call / prompts/get：形状非法响亮报错
+        // （result 键整体缺失保留同族 None→Default 约定）。
+        let result = match resp.result {
+            Some(v) => v,
+            None => return Ok(ResourceContent::default()),
+        };
+        let entry = result
+            .get("contents")
+            .and_then(|c| c.get(0))
+            .ok_or_else(|| {
+                ClientError::ResponseParse(
+                    "resources/read result: contents missing or empty".to_string(),
+                )
+            })?;
+        let content: ResourceContent = serde_json::from_value(entry.clone()).map_err(|e| {
+            ClientError::ResponseParse(format!("resources/read contents[0] parse failed: {e}"))
+        })?;
 
         Ok(content)
     }

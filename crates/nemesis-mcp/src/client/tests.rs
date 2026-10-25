@@ -1451,3 +1451,84 @@ async fn r15_call_tool_well_formed_result_still_ok() {
     assert_eq!(result.content.len(), 1);
     assert_eq!(result.content[0].text.as_deref(), Some("hello"));
 }
+
+// --- BUG-20261025-31（R105）：resources/read 结果静默吞成空成功（缺陷 19
+// 同类漏配——r15 响亮化只接了 list/call/get 三处，read_resource 漏配）-------
+
+async fn bug31_init_client(mock: crate::transport::MockTransport) -> McpClient {
+    let mut mock = mock;
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+    client
+}
+
+#[tokio::test]
+async fn bug31_read_resource_missing_contents_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    // 结果缺 contents 键（协议违例）——旧实现静默成 uri 空 + text None 的
+    // 空成功，调用方无从分辨「读到了空」与「响应形状非法」。
+    mock.add_success("resources/read", serde_json::json!({}));
+
+    let mut client = bug31_init_client(mock).await;
+    let err = client.read_resource("file:///test.txt").await.unwrap_err();
+    assert!(err.to_string().contains("resources/read"), "{err}");
+}
+
+#[tokio::test]
+async fn bug31_read_resource_empty_contents_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    // contents 空数组：点名读一个 URI 却拿回零条目 = 坏答案不是空成功。
+    mock.add_success("resources/read", serde_json::json!({ "contents": [] }));
+
+    let mut client = bug31_init_client(mock).await;
+    let err = client.read_resource("file:///test.txt").await.unwrap_err();
+    assert!(err.to_string().contains("resources/read"), "{err}");
+}
+
+#[tokio::test]
+async fn bug31_read_resource_non_object_entry_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    // contents[0] 是字符串非对象（协议违例）——旧实现 unwrap_or_default
+    // 静默吞掉解析失败。
+    mock.add_success(
+        "resources/read",
+        serde_json::json!({ "contents": ["not-an-object"] }),
+    );
+
+    let mut client = bug31_init_client(mock).await;
+    let err = client.read_resource("file:///test.txt").await.unwrap_err();
+    assert!(
+        err.to_string().contains("contents[0] parse failed"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn bug31_read_resource_well_formed_still_ok() {
+    // 放行面回归：合法 contents[0] 照常成功——响亮化不误伤。
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "resources/read",
+        serde_json::json!({
+            "contents": [{
+                "uri": "file:///ok.txt",
+                "mimeType": "text/plain",
+                "text": "still works"
+            }]
+        }),
+    );
+
+    let mut client = bug31_init_client(mock).await;
+    let content = client.read_resource("file:///ok.txt").await.unwrap();
+    assert_eq!(content.uri, "file:///ok.txt");
+    assert_eq!(content.text.as_deref(), Some("still works"));
+}
