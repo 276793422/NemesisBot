@@ -3697,6 +3697,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
+ "nemesis-utils",
  "rand 0.8.6",
  "reqwest",
  "serde",
@@ -3706,6 +3707,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wiremock",
 ]

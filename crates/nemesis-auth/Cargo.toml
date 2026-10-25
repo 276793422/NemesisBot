@@ -5,6 +5,7 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+nemesis-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -21,6 +22,9 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "io-util", "net"] }
 tempfile = "3"
 wiremock = "0.6"
+# BUG-20261025-39 回归锁：凭据存储损坏加载 loud 警告断言用
+# （fmt subscriber + 缓冲 writer 捕获 warn 日志）。
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

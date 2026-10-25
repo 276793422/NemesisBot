@@ -70,7 +70,8 @@ fn test_new_with_corrupted_json() {
     let path = dir.path().join("auth.json");
     std::fs::write(&path, "{invalid json!!!}").unwrap();
     let path_str = path.to_string_lossy().to_string();
-    // Load should fail silently (error is discarded in new())
+    // Load 失败时构造继续但 loud 警告（BUG-20261025-39：不再静默丢弃错误），
+    // 见 test_corrupted_store_load_warns_loudly；此处钉行为面=按空存储继续。
     let store = AuthStore::new(&path_str);
     assert!(store.list_providers().is_empty());
 }
@@ -335,8 +336,9 @@ fn test_persistence_file_format_is_json() {
     assert!(parsed.get("prov").is_some());
 }
 
-/// 路径含 NUL 字节时 fs::create_dir_all(父目录) 确定性失败 → persist 的
-/// create-dir 错误臂。load 阶段 exists() 对 NUL 路径返回 false，
+/// 路径含 NUL 字节时 create_dir_all(父目录) 确定性失败 → persist 经
+/// write_file_atomic 的 mkdir 错误臂（错误前缀 "atomic write"，外层包
+/// "write:"）。load 阶段 exists() 对 NUL 路径返回 false，
 /// 所以 AuthStore::new 仍能成功构造。
 #[test]
 fn test_save_fails_when_parent_directory_cannot_be_created() {
@@ -350,15 +352,91 @@ fn test_save_fails_when_parent_directory_cannot_be_created() {
     let store = AuthStore::new(&path);
     let result = store.save("prov", test_cred());
     let err = result.unwrap_err();
-    assert!(err.contains("create dir"), "{err}");
+    assert!(err.contains("atomic write"), "{err}");
+    assert!(err.contains("mkdir"), "{err}");
 }
 
-/// 空路径的 `Path::parent()` 返回 None → persist 跳过 mkdir（if-let 的
-/// None 臂，line 76），随后 fs::write("") 确定性失败。
+/// 空路径的 `Path::parent()` 返回 None → write_file_atomic 回落 "." 父目录
+/// （mkdir 成功、临时文件建在 cwd），rename 到空路径确定性失败。
+/// 错误链：外层 "write:" + "atomic write ...: rename: ..."。
 #[test]
 fn test_save_empty_path_skips_parent_creation_then_write_fails() {
     let store = AuthStore::new("");
     let result = store.save("prov", test_cred());
     let err = result.unwrap_err();
     assert!(err.starts_with("write"), "{err}");
+    assert!(err.contains("atomic write"), "{err}");
+    assert!(err.contains("rename"), "{err}");
+}
+
+// ===== BUG-20261025-39 回归锁：auth.json 落盘原子写 + 0o600 + 损坏加载 loud =====
+
+use std::sync::{Arc, Mutex};
+
+/// BUG-20261025-39：auth.json 存 OAuth bearer token，落盘必须 0o600
+/// （unix；Windows ACL 为诚实边界，测试编译期排除）。
+#[cfg(unix)]
+#[test]
+fn test_saved_file_permissions_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json").to_string_lossy().to_string();
+    let store = AuthStore::new(&path);
+    store.save("test", test_cred()).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "auth.json 权限必须 0o600，实际 {:o}",
+        mode & 0o777
+    );
+}
+
+/// 日志捕获 sink（同 BUG-20261025-38 harness 形态）。DefaultGuard 必须由
+/// 测试体持有——关在 setup 内会随 setup 返回卸载 thread-local subscriber，
+/// 之后的 emit 全部丢失（R113 实录教训）。
+fn warn_capture_setup() -> (Arc<Mutex<String>>, tracing::subscriber::DefaultGuard) {
+    let buf = Arc::new(Mutex::new(String::new()));
+    let sink = LogSink39(buf.clone());
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || sink.clone())
+            .finish(),
+    );
+    (buf, guard)
+}
+
+#[derive(Clone)]
+struct LogSink39(Arc<Mutex<String>>);
+impl std::io::Write for LogSink39 {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// BUG-20261025-39：构造期加载失败必须 loud 警告（此前 `let _ = store.load()`
+/// 静默——盘上文件损坏时用户只看到空 store，下次 save 覆盖即全量 token 丢失）。
+#[test]
+fn test_corrupted_store_load_warns_loudly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json");
+    std::fs::write(&path, "{torn json from a crashed write}").unwrap();
+    let path_str = path.to_string_lossy().to_string();
+    let (buf, _guard) = warn_capture_setup();
+    let store = AuthStore::new(&path_str);
+    assert!(store.list_providers().is_empty());
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("凭据存储加载失败"),
+        "必须 loud 警告加载失败，实际日志：{log}"
+    );
+    assert!(
+        log.contains("按空存储继续"),
+        "警告必须说明按空存储继续（覆盖风险），实际日志：{log}"
+    );
 }
