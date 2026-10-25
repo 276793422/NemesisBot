@@ -246,8 +246,12 @@ impl nemesis_security::guardian::LlmJudge for NeverJudge {
 /// guardian_mode=high + judge 判 deny + 无审批通道 → fail-closed 拦停，
 /// **一个字节都不落盘**（两阶段：guardian 属 gate 阶段，先于全部写盘）。
 /// 内容带破坏词（`rm`）确保 destructive_shaped 预筛命中、真正进 LLM。
+///
+/// `flavor = "multi_thread"`：gate_and_write 带 plugin 时走 security.execute()
+/// 八层管线，Layer 7 scanner 用 `block_in_place`（多线程 runtime 专属，current-thread
+/// 上 panic）——与 nemesis-security 自家 pipeline 测试的运行时形态同款。
 #[cfg(feature = "security")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
@@ -288,8 +292,9 @@ async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
 }
 
 /// guardian_mode=high + judge 判 allow → 正常落盘（审查通过路径不误伤）。
+/// multi_thread flavor 理由同上（Layer 7 block_in_place）。
 #[cfg(feature = "security")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_and_write_guardian_high_allow_writes_files() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
@@ -325,8 +330,9 @@ async fn gate_and_write_guardian_high_allow_writes_files() {
 
 /// guardian_mode 未配置（默认关）→ judge 一次都不被调用、直接落盘
 /// （钉死默认行为不变：guardian 接入不给默认配置添 LLM 成本/误拦）。
+/// multi_thread flavor 理由同上（Layer 7 block_in_place）。
 #[cfg(feature = "security")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_and_write_guardian_default_off_never_calls_judge() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
     let plugin = SecurityPlugin::new(SecurityPluginConfig {

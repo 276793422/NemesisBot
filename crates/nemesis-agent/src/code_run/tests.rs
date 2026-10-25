@@ -476,6 +476,22 @@ fn config_reload_toggles_code_run_registration() {
     let cfg_path = dir.path().join("config.json");
     std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": true}}}"#).unwrap();
 
+    // Windows 的 last-write 时间来自系统 tick（粒度可达 15.6ms），两次紧邻
+    // write 可能得到相同 mtime → check_config_reload 判「未变化」早退、
+    // 开关切换丢失（Linux 纳秒精度从不撞，CI Windows shard 实锤过）。测试
+    // 不赌墙钟：每次写入后显式 set_times 把 mtime 推到确定性递增的未来值。
+    let write_cfg = |body: &str, ahead_ms: u64| {
+        std::fs::write(&cfg_path, body).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cfg_path)
+            .unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(
+            std::time::SystemTime::now() + std::time::Duration::from_millis(ahead_ms),
+        ))
+        .unwrap();
+    };
+
     let al = Arc::new(AgentLoop::new(Box::new(NoopProvider), test_config()));
     let tool = Arc::new(CodeRunTool::new(300, 64));
     tool.set_loop(Arc::downgrade(&al));
@@ -491,7 +507,7 @@ fn config_reload_toggles_code_run_registration() {
     al.check_config_reload();
 
     // 关 → 下一轮 check 移除（注册表成员资格切换，实例不重建）。
-    std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": false}}}"#).unwrap();
+    write_cfg(r#"{"agents": {"codemode": {"enabled": false}}}"#, 10_000);
     al.check_config_reload();
     assert!(!has_code_run(), "enabled=false 后 code_run 必须移除");
 
@@ -500,7 +516,7 @@ fn config_reload_toggles_code_run_registration() {
     assert!(!has_code_run());
 
     // 开 → 恢复。
-    std::fs::write(&cfg_path, r#"{"agents": {"codemode": {"enabled": true}}}"#).unwrap();
+    write_cfg(r#"{"agents": {"codemode": {"enabled": true}}}"#, 20_000);
     al.check_config_reload();
     assert!(has_code_run(), "enabled=true 后 code_run 必须恢复");
 
