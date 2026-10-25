@@ -588,11 +588,11 @@ fn test_w1b_execute_job_does_not_advance_next_run() {
 }
 
 // ---------------------------------------------------------------------------
-// toggle_job disable asymmetry (pin current semantics)
+// toggle_job disable = clear next_run（BUG-20261025-30 反转旧钉死语义）
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_w1b_toggle_disable_keeps_stale_next_run_but_status_ignores() {
+fn test_w1b_toggle_disable_clears_next_run() {
     let (_dir, path) = tmp_store_path("cron.json");
     let svc = CronService::new(&path);
     let job = svc
@@ -600,21 +600,22 @@ fn test_w1b_toggle_disable_keeps_stale_next_run_but_status_ignores() {
         .unwrap();
     let next_before = job.state.next_run_at_ms.unwrap();
 
-    // toggle_job (unlike enable_job) does NOT clear next_run on disable —
-    // the stale value is harmless (fire loop + status filter on `enabled`),
-    // pin it so an accidental behavior change shows up in review.
+    // BUG-20261025-30：旧实现 toggle_job 停用不清 next_run（当时评估为
+    // 「无害：fire loop + status 都按 enabled 过滤」并钉死）；实际 tasks.rs
+    // 的作业 JSON 直接透传 next_run_at_ms，禁用作业带 stale 值 = UI 幻影
+    // 「下次触发」。现与 enable_job / patch_job 对齐（W1b 不变量：disabled
+    // 作业不排程），停用即清除。
     let now_disabled = svc.toggle_job(&job.id).unwrap();
     assert!(!now_disabled);
     let disabled = svc.get_job(&job.id).unwrap();
     assert_eq!(
-        disabled.state.next_run_at_ms,
-        Some(next_before),
-        "toggle_job disable leaves next_run stale (current semantics)"
+        disabled.state.next_run_at_ms, None,
+        "toggle_job disable must clear next_run (W1b alignment)"
     );
-    // status() must still ignore the stale value for a disabled job.
+    // status() keeps ignoring disabled jobs either way.
     assert_eq!(svc.status()["nextWakeAtMS"], serde_json::json!(null));
 
-    // Re-toggle recomputes fresh.
+    // Re-toggle recomputes fresh (gate passes: schedule can fire).
     svc.toggle_job(&job.id).unwrap();
     let re_enabled = svc.get_job(&job.id).unwrap();
     let fresh = re_enabled.state.next_run_at_ms.unwrap();

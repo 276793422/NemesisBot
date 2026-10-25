@@ -685,6 +685,19 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG-20261025-30：死排程闸延伸到更新路径（BUG-20261024-11 的闸只设
+        // 在创建漏斗 add_job_ext）——给启用中的作业换入算不出任何下一次触发
+        // 的调度 = 以「已排程」假象成为永不触发的静默僵尸，loud 拒绝。校验
+        // 在任何变更应用前，Err = 无副作用。
+        if let Some(s) = &schedule
+            && job.enabled
+            && compute_next_run(s, now_ms).is_none()
+        {
+            return Err(format!(
+                "新调度永远不会有下一次触发，拒绝将启用中任务更新为死排程: {job_id} \
+                 （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
+            ));
+        }
         // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
         let before = job.clone();
         if let Some(n) = name {
@@ -735,6 +748,24 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG-20261025-30：死排程闸延伸到 patch 路径——按 patch 后的最终
+        // (schedule, enabled) 组合判定：enabled 且算不出任何下一次触发 =
+        // 永不触发的静默僵尸，loud 拒绝。校验在任何变更应用前，Err = 无副
+        // 作用（与上方保留前缀检查同位）。禁用终态放行（W1b：不排程不触发，
+        // 与 add_job_ext 对 disabled 死排程放行同语义；board 自动驾驶同步
+        // 另有 BUG-20261025-18 挂载防线前置，dreaming 更新失败走 warn 保留
+        // 旧有效排程）。
+        let final_schedule = patch
+            .schedule
+            .clone()
+            .unwrap_or_else(|| job.schedule.clone());
+        let final_enabled = patch.enabled.unwrap_or(job.enabled);
+        if final_enabled && compute_next_run(&final_schedule, now_ms).is_none() {
+            return Err(format!(
+                "patch 后的调度永远不会有下一次触发，拒绝死排程更新: {job_id} \
+                 （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
+            ));
+        }
         // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
         let before = job.clone();
         if let Some(n) = &patch.name {
@@ -801,10 +832,26 @@ impl CronService {
         // toggle is NOT idempotent — without rollback, a caller retrying after
         // a save failure would flip the job back.
         let before = job.clone();
-        job.enabled = !job.enabled;
-        if job.enabled {
-            job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
+        // BUG-20261025-30：死排程闸延伸到 toggle 翻正方向（同 enable_job）
+        // ——休眠死排程翻正 = 永不触发的静默僵尸，loud 拒绝。校验在任何变
+        // 更应用前，Err = 无副作用（toggle 非幂等，拒绝后保持原状态）。
+        let enabling = !job.enabled;
+        let next = if enabling {
+            compute_next_run(&job.schedule, now_ms)
+        } else {
+            None
+        };
+        if enabling && next.is_none() {
+            return Err(format!(
+                "调度永远不会有下一次触发，拒绝启用死排程任务: {job_id} \
+                 （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
+            ));
         }
+        job.enabled = enabling;
+        // 翻正 = 闸已保证 Some；停用 = W1b 不变量（对齐 enable_job /
+        // patch_job）：disabled 作业不排程——残留旧 next_run 会让禁用作业
+        // 带上幻影「下次触发」。
+        job.state.next_run_at_ms = next;
         let new_state = job.enabled;
         info!("[Cron] Job toggled: id={}, enabled={}", job_id, new_state);
         job.updated_at_ms = now_ms;
@@ -833,14 +880,24 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG-20261025-30：死排程闸延伸到启用路径——休眠的死排程作业（如
+        // 过期 at）启用 = 以「已启用」假象成为永不触发的静默僵尸，loud 拒
+        // 绝。校验在任何变更应用前，Err = 无副作用。禁用方向不设闸。
+        let next = if enabled {
+            compute_next_run(&job.schedule, now_ms)
+        } else {
+            None
+        };
+        if enabled && next.is_none() {
+            return Err(format!(
+                "调度永远不会有下一次触发，拒绝启用死排程任务: {job_id} \
+                 （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
+            ));
+        }
         // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
         let before = job.clone();
         job.enabled = enabled;
-        if enabled {
-            job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
-        } else {
-            job.state.next_run_at_ms = None;
-        }
+        job.state.next_run_at_ms = next;
         job.updated_at_ms = now_ms;
         let updated = job.clone();
         drop(store);

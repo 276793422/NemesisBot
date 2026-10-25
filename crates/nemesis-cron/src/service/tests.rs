@@ -3415,3 +3415,192 @@ fn w3_pause_handle_shares_store_and_avoids_outer_lock() {
     assert_eq!(after.state.last_status.as_deref(), Some("error"));
     assert_eq!(after.state.last_error.as_deref(), Some("paused by test"));
 }
+// ===========================================================================
+// BUG-20261025-30：死排程闸覆盖缺口（更新/patch/启用路径）+ toggle 停用
+// 幻影 next_run。BUG-20261024-11 的闸只设在创建漏斗 add_job_ext，四条
+// 用户面变更路径（update_job / patch_job / enable_job(true) / toggle 翻正）
+// 全部绕过——enabled + 算不出任何下一次触发 = 静默僵尸。补闸 = 同一不变量
+// 覆盖全部用户面路径（内部旁路 add_job_internal 维持豁免，board 同步有
+// BUG-20261025-18 挂载防线前置）。A 面：toggle 停用残留旧 next_run，
+// 对齐 enable_job / patch_job 的 W1b 不变量（disabled 作业不排程）。
+// ===========================================================================
+
+/// 永不触发的 cron：2 月没有 30 日（BUG-20261024-11 同款盲区样本）。
+fn dead_cron_schedule() -> CronSchedule {
+    CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some("0 0 30 2 *".to_string()),
+        tz: None,
+    }
+}
+
+/// 已过期的一次性 at。
+fn dead_at_schedule(now_ms: i64) -> CronSchedule {
+    CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(now_ms - 60_000),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    }
+}
+
+fn alive_every_schedule() -> CronSchedule {
+    CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60_000),
+        expr: None,
+        tz: None,
+    }
+}
+
+#[test]
+fn update_job_rejects_dead_schedule_swap_on_enabled_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job("alive", alive_every_schedule(), "m", false, None, None)
+        .unwrap();
+    // 换入永不触发的调度 = 死排程，loud 拒绝（旧代码静默接受成僵尸）。
+    let err = svc
+        .update_job(&job.id, None, Some(dead_cron_schedule()))
+        .unwrap_err();
+    assert!(err.contains("死排程"), "错误信息要点名死排程: {err}");
+    // 无副作用：原调度与启用态原样保留。
+    let after = svc.get_job(&job.id).unwrap();
+    assert_eq!(
+        after.schedule.every_ms,
+        Some(60_000),
+        "拒绝后原调度必须保留"
+    );
+    assert!(after.enabled);
+}
+
+#[test]
+fn patch_job_rejects_dead_schedule_by_final_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job("alive", alive_every_schedule(), "m", false, None, None)
+        .unwrap();
+    // ① 启用中的作业 patch 换入死 cron（enabled 缺省保持 true）= 拒绝。
+    let err = svc
+        .patch_job(
+            &job.id,
+            &CronJobPatch {
+                schedule: Some(dead_cron_schedule()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(err.contains("死排程"), "错误信息要点名死排程: {err}");
+    let after = svc.get_job(&job.id).unwrap();
+    assert_eq!(
+        after.schedule.every_ms,
+        Some(60_000),
+        "拒绝后原调度必须保留"
+    );
+    assert!(after.enabled);
+    assert!(after.state.next_run_at_ms.is_some(), "拒绝后原排程必须保留");
+    // ② 禁用作业 patch 成死排程 = 休眠死排程，放行（W1b：不排程不触发，
+    //    与 add_job_ext 对 disabled 死排程放行同语义）。
+    svc.enable_job(&job.id, false).unwrap();
+    svc.patch_job(
+        &job.id,
+        &CronJobPatch {
+            schedule: Some(dead_cron_schedule()),
+            enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let after2 = svc.get_job(&job.id).unwrap();
+    assert!(!after2.enabled);
+    assert_eq!(after2.state.next_run_at_ms, None, "禁用作业不排程");
+}
+
+#[test]
+fn enable_job_rejects_enabling_dead_schedule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    // 内部旁路（豁免闸）造休眠死排程：过期 at + disabled。
+    let job = svc
+        .add_job_internal(
+            "dormant",
+            dead_at_schedule(Local::now().timestamp_millis()),
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    // 启用死排程 = 僵尸，loud 拒绝（旧代码静默接受成 enabled+无排程僵尸）。
+    let err = svc.enable_job(&job.id, true).unwrap_err();
+    assert!(err.contains("死排程"), "错误信息要点名死排程: {err}");
+    let after = svc.get_job(&job.id).unwrap();
+    assert!(!after.enabled, "拒绝后必须保持禁用");
+    assert_eq!(after.state.next_run_at_ms, None);
+    // 禁用方向不受闸影响。
+    svc.enable_job(&job.id, false).unwrap();
+}
+
+#[test]
+fn toggle_job_rejects_enabling_dead_schedule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job_internal(
+            "dormant",
+            dead_at_schedule(Local::now().timestamp_millis()),
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    let err = svc.toggle_job(&job.id).unwrap_err();
+    assert!(err.contains("死排程"), "错误信息要点名死排程: {err}");
+    let after = svc.get_job(&job.id).unwrap();
+    assert!(!after.enabled, "拒绝后必须保持禁用");
+    assert_eq!(after.state.next_run_at_ms, None);
+}
+
+#[test]
+fn toggle_job_disable_clears_next_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job("alive", alive_every_schedule(), "m", false, None, None)
+        .unwrap();
+    assert!(job.state.next_run_at_ms.is_some());
+    // A 面（W1b 对齐）：停用不得残留幻影「下次触发」。
+    let new_state = svc.toggle_job(&job.id).unwrap();
+    assert!(!new_state);
+    let after = svc.get_job(&job.id).unwrap();
+    assert_eq!(
+        after.state.next_run_at_ms, None,
+        "停用后残留旧 next_run = 幻影「下次触发」（W1b 不变量）"
+    );
+    // 再翻正恢复排程。
+    let back = svc.toggle_job(&job.id).unwrap();
+    assert!(back);
+    let after2 = svc.get_job(&job.id).unwrap();
+    assert!(
+        after2.state.next_run_at_ms.is_some(),
+        "重新启用必须重算排程"
+    );
+}
