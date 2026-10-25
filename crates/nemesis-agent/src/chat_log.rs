@@ -307,7 +307,15 @@ fn write_chat_entry(
     if steer {
         entry["steer"] = serde_json::Value::Bool(true);
     }
-    if let Err(e) = writeln!(file, "{}", entry) {
+    // R100（BUG-20261025-25）：整行（含换行）先序列化成 String 再**单次**
+    // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的
+    // 逐片段写（append 模式每片段独立定位 EOF），同会话并发写（spawned
+    // 续行 final vs 主循环下一条 user 行）可把别人的行插进本行 JSON 片段
+    // 中间 → 行撕裂。单次 write 的追加定位是原子的（POSIX O_APPEND /
+    // Windows FILE_APPEND_DATA），行间只可能整体排序、不可能半行插入。
+    let mut line = entry.to_string();
+    line.push('\n');
+    if let Err(e) = file.write_all(line.as_bytes()) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
         return;
     }
@@ -494,14 +502,23 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     let mut written = 0usize;
     let mut written_rows: Vec<&Value> = Vec::new();
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
+        // R100（BUG-20261025-25）：整批先拼成一个缓冲再**单次** write_all
+        // （同 write_chat_entry 的行原子性理由；批写还把 fork 复制从每行
+        // 两次系统调用收敛成一次）。序列化失败的行跳过；write_all 失败 =
+        // 整批未落盘（记账按 0 处理，不许多记）。
+        let mut buf = String::new();
         for v in rows {
             let Ok(line) = serde_json::to_string(v) else {
                 continue;
             };
-            if writeln!(f, "{}", line).is_ok() {
-                written += 1;
-                written_rows.push(v);
-            }
+            buf.push_str(&line);
+            buf.push('\n');
+            written += 1;
+            written_rows.push(v);
+        }
+        if buf.is_empty() || f.write_all(buf.as_bytes()).is_err() {
+            written = 0;
+            written_rows.clear();
         }
     }
     // T6（扩展计划 D5）：fork 记账（落新会话账本，sha-only——复制的行在
@@ -1475,8 +1492,12 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
         "detail": detail,
         "timestamp": Local::now().to_rfc3339(),
     });
+    // R100（BUG-20261025-25）：与 write_chat_entry 同一行原子性理由——
+    // 整行含换行单次 write_all，boundary 侧车并发写不撕行。
     if let Ok(line) = serde_json::to_string(&entry) {
-        let _ = writeln!(file, "{}", line);
+        let mut buf = line;
+        buf.push('\n');
+        let _ = file.write_all(buf.as_bytes());
     }
 }
 
@@ -1619,3 +1640,8 @@ mod allow_all_tests;
 
 // cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
 // tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与
+
+// R100（2026-10-25 会话持久化面审计）：并发追加的行原子性——多线程同会话
+// 高频写入断言行数精确 + 逐行完整可解析（jsonl 撕行回归锁）。
+#[cfg(test)]
+mod r100_concurrent_append_tests;
