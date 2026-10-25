@@ -160,6 +160,42 @@ pub struct CronService {
     pending_arm: Arc<Mutex<bool>>,
 }
 
+/// W3（2026-10-25 加固）：job 暂停句柄——供
+/// `on_job` handler 在触发期 pause 自身 job（父会话已删除 → 诚实停车）。
+///
+/// 为什么绕开 `Arc<Mutex<CronService>>`：handler 可能在调用方已持有外层
+/// 互斥时执行（web `tasks.cron.run` 即时运行的 `svc.lock().execute_job()`），
+/// handler 内再锁外层 = 自死锁；本句柄只携带 store + 存储路径克隆，直接走
+/// store 互斥（触发循环调 handler 在「outside lock」段，store 锁空闲）。
+#[derive(Clone)]
+pub struct JobPauseHandle {
+    store: Arc<Mutex<CronStoreData>>,
+    store_path: String,
+}
+
+impl JobPauseHandle {
+    /// 置 `enabled=false` 并落盘（幂等；不删 job——用户可在任务管理手动
+    /// 重新启用，恢复后若父会话仍未重建，下次触发会再次诚实暂停）。
+    /// 返回是否发生了状态变化（job 不存在或已停用 = false）。
+    pub fn pause_job(&self, job_id: &str) -> bool {
+        let mut s = self.store.lock();
+        let Some(job) = s.jobs.iter_mut().find(|j| j.id == job_id) else {
+            return false;
+        };
+        if !job.enabled {
+            return false;
+        }
+        job.enabled = false;
+        job.updated_at_ms = Local::now().timestamp_millis();
+        let _ = save_store_to_path(&self.store_path, &s);
+        info!(
+            "[Cron] Job paused via pause handle: id={} (disabled; manual re-enable allowed)",
+            job_id
+        );
+        true
+    }
+}
+
 impl CronService {
     /// Create a new cron service. Starts DISARMED (see [`Self::arm`]).
     pub fn new(store_path: &str) -> Self {
@@ -830,6 +866,15 @@ impl CronService {
         handler: impl Fn(&CronJob) -> Result<String, String> + Send + Sync + 'static,
     ) {
         *self.on_job.lock() = Some(Box::new(handler));
+    }
+
+    /// W3（2026-10-25 加固）：取 job 暂停句柄（见 [`JobPauseHandle`]）。
+    /// 在 `set_on_job` 前调用，闭包捕获句柄，触发期可安全 pause 自身 job。
+    pub fn job_pause_handle(&self) -> JobPauseHandle {
+        JobPauseHandle {
+            store: Arc::clone(&self.store),
+            store_path: self.store_path.clone(),
+        }
     }
 
     /// Execute a job immediately by ID. Unlike the scheduled fire loop this

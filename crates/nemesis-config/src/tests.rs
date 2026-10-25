@@ -675,6 +675,7 @@ fn test_full_config_roundtrip() {
             subagent: SubagentConfig::default(),
             fs_watcher: FsWatcherConfig::default(),
             hidden_tools: Vec::new(),
+            mcp_lazy_supply: false,
             roles: crate::RolesConfig::default(),
             small_model: None,
             guardian_model: None,
@@ -2089,6 +2090,73 @@ fn test_session_token_budget_default_pin_and_roundtrip() {
             .and_then(|n| n.as_u64()),
         Some(0),
         "config.default.json 的 session_token_budget 必须 pin 在 0（关）"
+    );
+}
+
+/// W6（2026-10-25 加固）：shutdown_drain_secs 默认 pin。
+/// 30 = 默认 drain 预算；**0 = 跳过 drain**；typed round-trip 保值
+/// （AgentDefaults 无 flatten extra，typed 字段是防 save_config 抹键的
+/// 唯一防线）；内嵌 config.default.json 不写此键（缺席 = serde 默认 30，
+/// onboard 出来的新工作空间即得 drain 行为）。
+#[test]
+fn test_shutdown_drain_secs_default_pin_and_roundtrip() {
+    // ① typed 默认 = 30。
+    assert_eq!(
+        AgentDefaults::default().shutdown_drain_secs,
+        30,
+        "默认 30s drain 预算"
+    );
+    // ② serde round-trip：自定义值保值（0 与非零两臂）。
+    for v in [0u64, 120] {
+        let json = format!(r#"{{"shutdown_drain_secs": {v}}}"#);
+        let parsed: AgentDefaults = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.shutdown_drain_secs, v);
+        let roundtrip: AgentDefaults =
+            serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+        assert_eq!(roundtrip.shutdown_drain_secs, v);
+    }
+    // ③ 键缺失 = serde default 30，不是报错。
+    let bare: AgentDefaults = serde_json::from_str("{}").unwrap();
+    assert_eq!(bare.shutdown_drain_secs, 30);
+    // ④ 内嵌默认模板不写此键——解析后仍得 30（serde default 接管）。
+    let default_json = include_str!("../../../nemesisbot/config/config.default.json");
+    let v: serde_json::Value = serde_json::from_str(default_json).unwrap();
+    assert!(
+        v.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get("shutdown_drain_secs"))
+            .is_none(),
+        "config.default.json 不应 pin shutdown_drain_secs（缺席 = 默认 30）"
+    );
+    let defaults: AgentDefaults = serde_json::from_value(v["agents"]["defaults"].clone()).unwrap();
+    assert_eq!(defaults.shutdown_drain_secs, 30);
+}
+
+/// W7（2026-10-25 加固）：mcp_lazy_supply typed round-trip 保值
+/// （AgentsConfig typed 字段是防 save_config 抹键的唯一防线）；默认 false
+///（行为零变化面）；内嵌 config.default.json 不写此键（缺席 = serde 默认
+/// false）。
+#[test]
+fn test_mcp_lazy_supply_default_and_roundtrip() {
+    // ① typed 默认 = false。
+    assert!(!crate::AgentsConfig::default().mcp_lazy_supply);
+    // ② round-trip：true 保值。
+    let parsed: crate::AgentsConfig = serde_json::from_str(r#"{"mcp_lazy_supply": true}"#).unwrap();
+    assert!(parsed.mcp_lazy_supply);
+    let roundtrip: crate::AgentsConfig =
+        serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+    assert!(roundtrip.mcp_lazy_supply);
+    // ③ 键缺失 = false。
+    let bare: crate::AgentsConfig = serde_json::from_str("{}").unwrap();
+    assert!(!bare.mcp_lazy_supply);
+    // ④ 内嵌默认模板不 pin（缺席 = 默认关）。
+    let default_json = include_str!("../../../nemesisbot/config/config.default.json");
+    let v: serde_json::Value = serde_json::from_str(default_json).unwrap();
+    assert!(
+        v.get("agents")
+            .and_then(|a| a.get("mcp_lazy_supply"))
+            .is_none(),
+        "config.default.json 不应 pin mcp_lazy_supply（缺席 = 默认 false）"
     );
 }
 

@@ -270,6 +270,36 @@ pub fn is_dream_settled(entry: &Entry) -> bool {
             .unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// 近期召回硬保护（W5，2026-10-25 加固）
+// ---------------------------------------------------------------------------
+
+/// 保护窗（天）：`last_recall` 距今 ≤ 此窗的条目受 expire 硬保护。
+pub const RECALL_PROTECT_WINDOW_DAYS: f64 = 7.0;
+/// 保护阈值：累计召回 ≥ 此次数的条目受 expire 硬保护（与窗口任一命中即保护）。
+pub const RECALL_PROTECT_MIN_RECALLS: u64 = 3;
+
+/// 近期召回硬保护：最近被召回（≤ [`RECALL_PROTECT_WINDOW_DAYS`] 天，含时钟
+/// 偏移导致的未来时间戳——保护方向宁严勿松）或累计召回 ≥
+/// [`RECALL_PROTECT_MIN_RECALLS`] 次的条目，**排除出 expire**（merge/promote
+/// 仍可参与——保护的是「消失」，不是「演化」）。纯函数；执行闸在
+/// [`apply_decision`] 的 Expire 臂。
+pub fn is_recency_protected(entry: &Entry, now: DateTime<Local>) -> bool {
+    let recently_recalled = entry
+        .metadata
+        .get(crate::manager::META_LAST_RECALL)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| {
+            // 秒精度（硬保护闸的窗口边界要钉死到秒；num_hours 会把 7d+1s
+            // 截断回 7.0 天，边界外一秒仍误判受保护）。
+            (now.naive_local() - t.with_timezone(&Local).naive_local()).num_seconds() as f64
+                / 86_400.0
+                <= RECALL_PROTECT_WINDOW_DAYS
+        })
+        .unwrap_or(false);
+    recently_recalled || recall_count_of(entry) >= RECALL_PROTECT_MIN_RECALLS
+}
+
 /// 由全量条目选出 topK 候选（P31 ②纯函数）。排除已处理/已归档条目；按
 /// 分数降序（同分按创建时间升序——老条目优先），截取 top_k。
 pub fn select_candidates(
@@ -569,6 +599,12 @@ pub async fn apply_decision(
         }
         DreamAction::Expire => {
             let mut e = sources.into_iter().next().expect("expire 恰 1 条源");
+            if is_recency_protected(&e, now) {
+                return Err(format!(
+                    "近期召回保护：条目 `{}` 最近 {} 天内被召回或累计召回 ≥ {} 次，expire 拒绝（merge/promote 不受影响）",
+                    e.id, RECALL_PROTECT_WINDOW_DAYS, RECALL_PROTECT_MIN_RECALLS
+                ));
+            }
             e.metadata
                 .insert(META_DREAM_ARCHIVED.to_string(), "true".to_string());
             mark_processed(manager, e, now).await?;

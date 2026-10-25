@@ -224,6 +224,11 @@ impl AgentLoop {
         // MCP 热加载的新工具自动落闸（旧「注册面 ∖ allow 折算」只吃注册期
         // 快照，动态新发现漏折——已被本闸取代）。空 = 无白名单语义。
         let policy_allow = self.tool_policy_allow();
+        // W7（2026-10-25 加固）：MCP 惰性供给——lazy on 时 `mcp_*` 长尾
+        // 不全量随轮上行，只留 meta 工具 `mcp_call`（模型两步走：mcp_list
+        // 查 schema → mcp_call 调用；无中途注入，cache 字节稳定）。lazy off
+        // = 过滤器恒真，行为零变化。
+        let mcp_lazy = self.current_mcp_lazy_supply();
         // F1 (devtool-upgrade 阶段 4): Plan 模式第四过滤层——只读白名单
         // ∩（MCP 前缀工具与 spawn 豁免：MCP 语义未知不猜；spawn 保留供给、
         // 分发闸兜底）。与 tier 过滤正交（Mini+Plan 取交集，验收项）。
@@ -240,7 +245,14 @@ impl AgentLoop {
                 // 无档位声明的工具走原白名单路径，行为不变。
                 match tools_guard.get(name.as_str()).and_then(|t| t.min_tier()) {
                     Some(min) => active_tier_rank(*self.tier.read()) >= plugin_min_tier_rank(min),
-                    None => allowed.is_empty() || allowed.contains(&name.as_str()),
+                    // W7：lazy on 时 tier 白名单对 mcp_call 放行（meta 工具是
+                    // mini/normal 档触达 MCP 长尾的唯一通道；内层真实工具名
+                    // 在 dispatch 重走瀑布时仍受内层校验）。
+                    None => {
+                        allowed.is_empty()
+                            || allowed.contains(&name.as_str())
+                            || (mcp_lazy && name.as_str() == "mcp_call")
+                    }
                 }
             })
             .filter(|name| !tool_name_matches_hidden(&hidden, name))
@@ -256,6 +268,15 @@ impl AgentLoop {
             // connector_invoke 接管路由——治理闸唯一入口）。
             .filter(|name| !tool_name_matches_hidden(&exclusive_hidden, name))
             .filter(|name| policy_allow.is_empty() || policy_allow.iter().any(|a| a == *name))
+            .filter(|name| {
+                // mcp_call 供给钉死在 lazy 旗标（off = 不出现，任何档位）；
+                // 其余 mcp_* 在 lazy on 时让位给 meta 工具。
+                if name.as_str() == "mcp_call" {
+                    mcp_lazy
+                } else {
+                    !(mcp_lazy && name.starts_with("mcp_"))
+                }
+            })
             .filter(|name| {
                 !plan_mode
                     || Self::PLAN_MODE_TOOLS.contains(&name.as_str())
@@ -386,6 +407,24 @@ impl AgentLoop {
             }
         }
         merged
+    }
+
+    /// W7：MCP 惰性供给 fresh-read（`agents.mcp_lazy_supply`，缺省 false）。
+    /// current_hidden_tools 同款模式——无 config_path / 缺键 / 坏 JSON →
+    /// false（行为零变化面）。运行时改键下一轮生效。
+    pub(crate) fn current_mcp_lazy_supply(&self) -> bool {
+        match self.config_path.read().clone() {
+            Some(p) => std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("agents")
+                        .and_then(|a| a.get("mcp_lazy_supply"))
+                        .and_then(|b| b.as_bool())
+                })
+                .unwrap_or(false),
+            None => false,
+        }
     }
 
     /// 角色隐藏 fresh-read（2026-09-28 角色目录与分档供给；`current_hidden_tools`

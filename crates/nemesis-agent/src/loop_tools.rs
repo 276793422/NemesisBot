@@ -7822,25 +7822,117 @@ impl McpListTool {
 #[async_trait]
 impl Tool for McpListTool {
     fn description(&self) -> String {
-        "List all currently registered MCP tools and their descriptions. \
-         Use this to see what MCP tools are available in the current session."
+        "List all currently registered MCP tools and their descriptions, or with \"name\"          given, show one tool's full parameter schema. Use this to see what MCP tools are          available in the current session (and how to call them via mcp_call)."
             .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type": "object", "properties": {}})
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Optional tool name: when given, print that tool's full parameter schema instead of the whole list."
+                }
+            }
+        })
     }
 
-    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let tools = self.mcp_tools.read();
         if tools.is_empty() {
             return Ok("No MCP tools are currently registered.".to_string());
         }
-        let mut lines = vec![format!("## Registered MCP Tools ({})\n", tools.len())];
+        // W7：按名查询单工具完整 schema（惰性供给的 schema 查询面）。无名 =
+        // 全量列表（输出格式与历史版本逐字节一致，保 prompt cache 兼容）。
+        let want: Option<String> = serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| {
+                v.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            });
+        if let Some(name) = want {
+            return match tools.iter().find(|e| e.name == name) {
+                Some(entry) => Ok(format!(
+                    "## MCP Tool `{}`
+
+- **description**: {}
+- **read_only_hint**: {}
+- **destructive_hint**: {}
+- **parameters**: {}
+
+Call it with `mcp_call` {{\"tool\": \"{}\", \"args\": {{...}}}}.",
+                    entry.name,
+                    entry.description,
+                    entry
+                        .read_only_hint
+                        .map(|b| b.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    entry
+                        .destructive_hint
+                        .map(|b| b.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    serde_json::to_string_pretty(&entry.parameters).unwrap_or_default(),
+                    entry.name
+                )),
+                None => Ok(format!(
+                    "No MCP tool named `{name}` is registered. Call without arguments to list all registered MCP tools."
+                )),
+            };
+        }
+        let mut lines = vec![format!(
+            "## Registered MCP Tools ({})
+",
+            tools.len()
+        )];
         for entry in tools.iter() {
             lines.push(format!("- **{}**: {}", entry.name, entry.description));
         }
-        Ok(lines.join("\n"))
+        Ok(lines.join(
+            "
+",
+        ))
+    }
+}
+
+/// W7（2026-10-25 加固）：MCP 惰性供给 meta 工具。`mcp_*` 长尾工具
+/// schema 不随轮上行时，模型经本工具两步调用：`mcp_list`（可按名查
+/// schema）→ `mcp_call {tool, args}`。
+///
+/// **执行走 dispatch 拦截，不走本 execute**：tool_dispatch 在闸门瀑布入口
+/// 解包 {tool, args} 后以真实工具名重走全流程（estop/hidden/tier/安全 8 层
+/// /审计 target=真实名）——等价于直连调用。本 execute 只在绕过 loop 分发
+/// 的直调场景触达（诚实报错的安全网，正常流程死代码）。
+pub struct McpCallTool;
+
+#[async_trait]
+impl Tool for McpCallTool {
+    fn description(&self) -> String {
+        "Call a registered MCP tool by name (lazy-supply meta tool). Two-step usage:          first `mcp_list` (optionally with {\"name\": ...} for a tool's full schema),          then mcp_call with {\"tool\": \"<mcp tool name>\", \"args\": {<tool arguments>}}."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Registered MCP tool name (see mcp_list). Must be an mcp_* tool."
+                },
+                "args": {
+                    "type": "object",
+                    "description": "Arguments object forwarded verbatim to the target MCP tool (validated by the MCP server's own schema)."
+                }
+            },
+            "required": ["tool"]
+        })
+    }
+
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Err("mcp_call is dispatched by the agent loop (unwrapped to the real tool name before execution); direct invocation is not supported. Use the normal tool-call path.".to_string())
     }
 }
 
@@ -8509,6 +8601,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(Vec::new())));
         tools.insert("mcp_list".to_string(), Box::new(McpListTool::new(snapshot)));
     }
+    // W7：惰性供给 meta 工具（供给闸在 build_tool_defs，dispatch 拦截解包；
+    // lazy off 时供给面不出现——注册恒在，行为零变化由双闸保证）。
+    tools.insert("mcp_call".to_string(), Box::new(McpCallTool));
 
     // Workflow tools — lets the agent trigger registered workflows, and
     // (对话生成) save AI-generated definitions as drafts / query capabilities.

@@ -1726,6 +1726,15 @@ pub struct AgentsConfig {
     /// edits take effect from the next turn (fresh-read, no restart).
     #[serde(default)]
     pub hidden_tools: Vec<String>,
+    /// W7（2026-10-25 加固）：
+    /// MCP 工具惰性供给。开 = `mcp_*` 长尾工具
+    /// schema 不全量随轮上行（tool_defs 只见 meta 工具 `mcp_call`），模型
+    /// 两步走：`mcp_list`（可按名查完整 schema）→ `mcp_call {tool, args}`。
+    /// 调用链路与直连等价（dispatch 解包真实工具名后重走全瀑布：安全 8 层
+    /// / 审计 target=真实名 / tier 内层校验）。默认 **false**（行为变更
+    /// 保守）；运行时改键下一轮生效（fresh-read）。
+    #[serde(default)]
+    pub mcp_lazy_supply: bool,
     /// 角色目录分档供给配套（2026-09-28 角色目录与分档供给）：`hidden`
     /// = 从 spawn schema 与 dispatch 双闸隐藏的角色 slug（镜像
     /// hidden_tools 的 F8 双闸模型；通配语义不开放——角色目录是静态
@@ -2247,6 +2256,13 @@ pub struct AgentDefaults {
     /// 2026-09-03 同类回归；AgentDefaults 无 flatten extra）。
     #[serde(default)]
     pub session_token_budget: u64,
+    /// W6（2026-10-25 加固）：优雅
+    /// 停机 drain 预算（秒）。正常停机序列：关入口（新消息诚实拒收）→
+    /// 有界等在途 turn 归零 → 再 teardown；超时明示在途数后强制收尾。
+    /// **0 = 跳过 drain**（立即 teardown）。默认 30。estop 语义不变
+    /// （drain 只走正常停机路径）。
+    #[serde(default = "default_shutdown_drain_secs")]
+    pub shutdown_drain_secs: u64,
     /// 输出撞顶翻倍阶梯的封顶值（§6.2 无人值守硬化；默认 262144 = 256K）。
     /// LLM 响应 `finish_reason=length` 且正文为空（思考烧穿形态）时翻倍重发
     ///（`max(当前×2, 32768)` 起步地板），直到有正文或触及本封顶。触及封顶
@@ -2283,6 +2299,7 @@ impl Default for AgentDefaults {
             rate_limit_retries: default_rate_limit_retries(),
             compact_keep_recent_tokens: default_compact_keep_recent_tokens(),
             session_token_budget: 0,
+            shutdown_drain_secs: default_shutdown_drain_secs(),
             max_output_ceiling: default_max_output_ceiling(),
         }
     }
@@ -4956,6 +4973,7 @@ pub fn default_config() -> Config {
             subagent: SubagentConfig::default(),
             fs_watcher: FsWatcherConfig::default(),
             hidden_tools: Vec::new(),
+            mcp_lazy_supply: false,
             roles: RolesConfig::default(),
             small_model: None,
             guardian_model: None,
@@ -5466,6 +5484,11 @@ fn default_snapshot_role() -> String {
 }
 fn default_queue_size() -> i64 {
     8
+}
+
+/// W6：优雅停机 drain 预算缺省 30s（0=跳过；见 [`AgentDefaults::shutdown_drain_secs`]）。
+fn default_shutdown_drain_secs() -> u64 {
+    30
 }
 
 /// D-4（2026-09-23 多会话并行清账）：单 loop 并发 turn 上限缺省 8。泵统一

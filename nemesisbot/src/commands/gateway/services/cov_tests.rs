@@ -479,6 +479,18 @@ mod wave6 {
 
         // ④ message 任务：session_key + to + max_rounds 齐备 → 路由 miss 回落
         //    `to`（conv_router 无绑定 tab）+ max_rounds 元数据注入臂。
+        //    W3（2026-10-25）：session_key 指向的父会话必须真实在场，否则
+        //    触发被判停——先造 sessions/{safe}.json 充当在场会话。
+        let w6_sess_json = guard_env
+            .home
+            .join("workspace")
+            .join("sessions")
+            .join(format!(
+                "{}.json",
+                nemesis_utils::sanitize::sanitize_path_segment("agent:w6-sess")
+            ));
+        std::fs::create_dir_all(w6_sess_json.parent().unwrap()).unwrap();
+        std::fs::write(&w6_sess_json, "{}").unwrap();
         let msg_job2 = {
             let svc = cron.lock().unwrap();
             svc.add_job_ext(
@@ -518,6 +530,162 @@ mod wave6 {
         }
         // 无 web server 启动（未走 init_services）→ 无需 shutdown 等待；
         // estop 保持释放态（ctx 随测试结束销毁）。
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W3（2026-10-25 加固）：ctx.rs 触发闭包的父会话
+// 存在性闸——
+// - 父会话已删除（磁盘双臂全 miss）→ execute 后 job 自动停用（enabled=
+//   false）+ last_status=error（原因在 last_error）——「僵尸复活」根除；
+// - 父会话在场（sessions/{safe}.json）→ 正常触发（executed、保持启用）；
+// - 不带 session_key 的 job 不受闸影响（路由派生键，无僵尸面）。
+// 复用 wave6 的 assemble 廉价路径（集群关、无 init_services 全链）。
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn w3_cron_pauses_job_when_parent_session_deleted() {
+    // 环境块照抄 wave6（全局锁 + 临时 home + NEMESISBOT_HOME）。
+    let guard_env = {
+        let g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+        SvcEnv {
+            _guard: g,
+            _tmp: tmp,
+            home,
+        }
+    };
+
+    // 配置：网络面归零 + 心跳关 + 死端点模型（wave6 同款）。
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+    cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["channels"]["web"]["port"] = serde_json::json!(0);
+    cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["gateway"]["port"] = serde_json::json!(0);
+    cfg["heartbeat"]["enabled"] = serde_json::json!(false);
+    cfg["agents"]["defaults"]["llm"] = serde_json::json!("mini-model");
+    cfg["agents"]["defaults"]["workspace"] = serde_json::json!(
+        guard_env
+            .home
+            .join("workspace")
+            .to_string_lossy()
+            .to_string()
+    );
+    cfg["model_list"] = serde_json::json!([{
+        "model_name": "mini-model",
+        "model": "openai/gpt-fake",
+        "api_key": "k",
+        "api_base": "http://127.0.0.1:9",
+        "model_tier": "mini"
+    }]);
+    std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
+
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
+        .await
+        .expect("assemble ok")
+        .expect("非 relay 必返 Some");
+    let cron = ctx.cron_service.clone();
+    let schedule = || nemesis_cron::CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some("0 9 * * *".to_string()),
+        tz: None,
+    };
+
+    // ① 父会话不存在 → 触发判停（enabled=false + error + 原因可读）。
+    let gone_key = "agent:main:session:w3-gone";
+    let job_gone = cron
+        .lock()
+        .unwrap()
+        .add_job_ext(
+            "w3-gone",
+            schedule(),
+            "w3 续跑（会话已删）",
+            true,
+            Some("web"),
+            Some("w3-gone"),
+            Some(gone_key),
+            None,
+            true,
+        )
+        .expect("登记 gone job");
+    cron.lock()
+        .unwrap()
+        .execute_job(&job_gone.id)
+        .expect("execute_job 恒 Ok（handler Err 落 state）");
+    {
+        let svc = cron.lock().unwrap();
+        let j = svc.get_job(&job_gone.id).expect("job 在");
+        assert!(!j.enabled, "父会话已删 → 自动停用");
+        assert_eq!(j.state.last_status.as_deref(), Some("error"));
+        let err = j.state.last_error.clone().unwrap_or_default();
+        assert!(err.contains("已自动暂停"), "原因可读: {err}");
+        assert!(err.contains(gone_key), "原因点名会话: {err}");
+    }
+
+    // ①' 停用态持久化：换新服务实例同路径重载（ctx store 路径下同文件）。
+    //     （ctx 的 store 路径在 home 内；直接重查 ctx 服务即可——pause 时
+    //     已 save_store_to_path，这里验证 get 回读 enabled=false 即可。）
+
+    // ② 父会话在场（sessions/{safe}.json）→ 正常触发、保持启用。
+    let live_key = "agent:main:session:w3-live";
+    let live_json = guard_env
+        .home
+        .join("workspace")
+        .join("sessions")
+        .join(format!(
+            "{}.json",
+            nemesis_utils::sanitize::sanitize_path_segment(live_key)
+        ));
+    std::fs::create_dir_all(live_json.parent().unwrap()).unwrap();
+    std::fs::write(&live_json, "{}").unwrap();
+    let job_live = cron
+        .lock()
+        .unwrap()
+        .add_job_ext(
+            "w3-live",
+            schedule(),
+            "w3 续跑（会话在场）",
+            true,
+            Some("web"),
+            Some("w3-live"),
+            Some(live_key),
+            None,
+            true,
+        )
+        .expect("登记 live job");
+    cron.lock()
+        .unwrap()
+        .execute_job(&job_live.id)
+        .expect("live execute Ok");
+    {
+        let svc = cron.lock().unwrap();
+        let j = svc.get_job(&job_live.id).expect("job 在");
+        assert!(j.enabled, "会话在场 → 不判停");
+        assert_eq!(j.state.last_status.as_deref(), Some("executed"));
+    }
+
+    // ③ 不带 session_key 的 job 不受闸影响。
+    let job_plain = cron
+        .lock()
+        .unwrap()
+        .add_job("w3-plain", schedule(), "w3 无会话消息", true, None, None)
+        .expect("登记 plain job");
+    cron.lock()
+        .unwrap()
+        .execute_job(&job_plain.id)
+        .expect("plain execute Ok");
+    {
+        let svc = cron.lock().unwrap();
+        let j = svc.get_job(&job_plain.id).expect("job 在");
+        assert!(j.enabled);
+        assert_eq!(j.state.last_status.as_deref(), Some("executed"));
     }
 }
 

@@ -24,6 +24,14 @@ mod dreaming_tests;
 #[cfg(test)]
 mod contract_tests;
 
+// W4（2026-10-25 加固）：memory_forget 谱系传导（merge 派生连带归档）测试。
+#[cfg(test)]
+mod w4_cascade_tests;
+
+// W5（2026-10-25 加固）：dreaming 近期召回硬保护（expire 排除）测试。
+#[cfg(test)]
+mod w5_recency_protect_tests;
+
 #[cfg(any(test, feature = "test-fixture"))]
 #[doc(hidden)]
 pub mod __test_fixture {

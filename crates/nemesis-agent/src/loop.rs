@@ -509,6 +509,14 @@ pub struct AgentLoop {
     /// across sessions in this MVP — adequate for single-session deployments;
     /// multi-session isolation is a documented follow-up.
     turn_counter: std::sync::atomic::AtomicUsize,
+    /// W6（2026-10-25 加固）：在途
+    /// turn 计数（turn 任务体开始 +1 / 结束 -1，含 spawn 与 inline
+    /// continuation 两臂）——优雅停机 drain 的有界等待 gauge。与 checkpoint
+    /// 用 [`Self::turn_counter`]（单调计数，非在途 gauge）语义正交。
+    in_flight_turns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// W6：停机 drain 闸——置位后泵拒绝新 turn（外部通道诚实回执，内部
+    /// 通道静默丢），在途 turn 照常收尾。estop（冻结 agent 活动）与之正交。
+    draining: std::sync::atomic::AtomicBool,
     /// D3（devtool-upgrade 阶段 5）：本 turn 声明式文件工具的变更流水，按
     /// session_key 分桶。dispatch 瀑布（`preview_all` 处）顺带收集（独立于
     /// checkpoint 是否挂载）；`run_agent_loop_internal` 在 assistant 最终
@@ -870,6 +878,8 @@ impl AgentLoop {
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            draining: std::sync::atomic::AtomicBool::new(false),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
@@ -1302,6 +1312,14 @@ mod tool_dispatch_cov_tests;
 // finish_message sent_in_round 跳过 / 续行无管理器存活）。
 #[cfg(test)]
 mod bus_cov_tests;
+// W6（2026-10-25 加固）：优雅停机 drain 测试（在途 gauge / drain 闸 /
+// 有界等待）。
+#[cfg(test)]
+mod w6_drain_tests;
+// W7（2026-10-25 加固）：MCP 惰性供给测试（供给闸 / dispatch 解包 /
+// mcp_list schema 查询面）。
+#[cfg(test)]
+mod w7_lazy_supply_tests;
 // tools_trait.rs 覆盖率补充（enable_mcp_reload 两臂 / check_mcp_reload
 // 热重载 / record_tool_validation_stats 落账）。
 #[cfg(test)]

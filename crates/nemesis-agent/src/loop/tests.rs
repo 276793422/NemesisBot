@@ -1329,10 +1329,15 @@ fn keep_tokens_config_file(budget: i64, suffix: &str) -> std::path::PathBuf {
         std::process::id(),
         suffix
     ));
+    // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩
+    // （与这些测试 instance.set_context_window(100) 的阈值语义一致）。
     std::fs::write(
         &path,
-        serde_json::json!({"agents": {"defaults": {"compact_keep_recent_tokens": budget}}})
-            .to_string(),
+        serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": budget}},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
     )
     .unwrap();
     path
@@ -9901,6 +9906,28 @@ fn rewrite_exec_cwd_injects_default_and_rewrites_relative() {
 // （user+assistant 各一行）。前端成对重复 BUG 修复时钉死：后端不存在
 // 「同一轮走两条路径各落一次」的组合（收尾单一出口 run_agent_loop_internal，
 // inline/spawned 两臂互斥；/build 与续行各只补一行且不与正常收尾叠加）。
+/// W2（2026-10-25）：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
+/// 注记，污染「恰好 +2 行」类精确断言。夹具给 test-model 钉已知窗口
+/// （config.json 唯一真相源 fresh-read）→ 自动压缩路径惰性，断言继续只
+/// 管 turn 持久化本身；W2 注记行为由 w1_w2_note_tests 专测。
+fn pin_known_window_config(al: &AgentLoop) {
+    let cfg_path = std::env::temp_dir().join(format!(
+        "nemesis_test_known_window_{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [
+                {"model": "test-model", "model_name": "test-model", "context_window": 128000}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    al.set_config_path(cfg_path);
+}
+
 #[tokio::test]
 async fn one_turn_appends_exactly_user_and_assistant_rows() {
     let _lock = CHAT_LOG_INTEGRATION_LOCK.lock().unwrap();
@@ -9952,6 +9979,7 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
         8,
         0,
     );
+    pin_known_window_config(&agent_loop);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),

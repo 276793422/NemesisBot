@@ -292,6 +292,52 @@ impl AgentLoop {
                 .to_string();
         }
 
+        // W7（2026-10-25 加固）：mcp_call meta 工具 dispatch 拦截——
+        // 解包 {tool, args} 后以真实工具名重走全瀑布（estop/hidden/tier/
+        // 安全 8 层/审批，审计 target=真实名）——调用链路与直连等价。
+        // 位置在 estop 之后（estop 拒绝一切分发，meta 工具不豁免）、路径
+        // 重写之前（外层 args 是 {tool,args} 信封，路径改写无意义）。双闸
+        // 镜像 F8：供给闸（build_tool_defs）fresh-read，dispatch 端同样
+        // fresh-read——陈旧 prompt cache 带出的 mcp_call 在 lazy off 时拒绝。
+        // 内层名必须 mcp_ 前缀且 != mcp_call（防递归；meta 工具不是通用
+        // 调度旁路）。
+        if tool_call.name == "mcp_call" {
+            if !self.current_mcp_lazy_supply() {
+                warn!("[AgentLoop] mcp_call refused (agents.mcp_lazy_supply=false).");
+                return "Error: mcp_call 仅在 agents.mcp_lazy_supply=true 时可用（当前 MCP 工具已在工具列表中直连，无需 meta 调用）。Inform the user.".to_string();
+            }
+            let parsed: serde_json::Value =
+                serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::Value::Null);
+            let inner_name = parsed
+                .get("tool")
+                .and_then(|t| t.as_str())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if inner_name.is_empty() {
+                return "Error: mcp_call 缺少必填字段 `tool`（注册 MCP 工具名，见 mcp_list）。Inform the user; do NOT retry without it.".to_string();
+            }
+            if inner_name == "mcp_call" || !inner_name.starts_with("mcp_") {
+                return format!(
+                    "Error: mcp_call 的 `tool` 必须是已注册的 mcp_* 工具名（得到 `{inner_name}`）。用 mcp_list 查看可用工具。Inform the user."
+                );
+            }
+            let inner_known = self.tools.read().contains_key(inner_name.as_str());
+            if !inner_known {
+                return format!(
+                    "Error: mcp_call 目标工具 `{inner_name}` 不在已发现集合中。用 mcp_list（可带 {{\"name\": ...}} 查 schema）确认工具名后重试。Inform the user."
+                );
+            }
+            let inner_args = parsed.get("args").cloned().unwrap_or(serde_json::json!({}));
+            let inner_call = ToolCallInfo {
+                id: tool_call.id.clone(),
+                name: inner_name,
+                arguments: serde_json::to_string(&inner_args).unwrap_or_default(),
+            };
+            // Box::pin：async fn 递归的尺寸不定点（内层名已保证 != mcp_call，
+            // 实际递归深度恒 1，装箱只是给编译器的有限尺寸凭据）。
+            return Box::pin(self.handle_tool_call_at_depth(&inner_call, context, depth)).await;
+        }
+
         // F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准重写。位置在
         // 所有闸门之前——下游（Plan 闸/安全管线/审计链）看到的都是重写后的
         // 真实落点路径。

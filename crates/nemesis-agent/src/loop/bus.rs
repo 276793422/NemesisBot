@@ -17,6 +17,32 @@ pub fn is_internal_channel(channel: &str) -> bool {
 /// Busy message returned when session is busy.
 pub const BUSY_MESSAGE: &str =
     "\u{23f3} AI is processing a previous request, please try again later";
+
+/// W6 优雅停机 drain：draining 置位后对外部通道新消息的诚实回执。
+pub const DRAINING_RECEIPT: &str =
+    "\u{23f4} 正在停机：新消息已停止受理（在途任务正常收尾），请稍后重试";
+
+/// W6：在途 turn gauge 守卫——构造即 +1，Drop 即 -1（panic/abort 展开
+/// 路径也减账，gauge 不会单调漂移）。spawn 臂与 inline continuation 臂
+/// 共用（[`AgentLoop::spawn_turn_task`] / pump_dispatch Continuation 分支）。
+pub(crate) struct InFlightTurnGuard {
+    gauge: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl InFlightTurnGuard {
+    pub(crate) fn acquire(gauge: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        gauge.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self {
+            gauge: std::sync::Arc::clone(gauge),
+        }
+    }
+}
+
+impl Drop for InFlightTurnGuard {
+    fn drop(&mut self) {
+        self.gauge.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 /// Parse the config string. Unknown values fall back to Reject (fail-safe
 /// to legacy behavior) with a warn at the call site.
 pub fn parse_concurrent_mode(s: &str) -> ConcurrentMode {
@@ -179,6 +205,8 @@ impl AgentLoop {
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            draining: std::sync::atomic::AtomicBool::new(false),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
@@ -515,17 +543,58 @@ impl AgentLoop {
     /// D-4：并发上限信号量在**任务体内**获取（泵只 spawn 不等待）——超限
     /// 任务排队等许可，gate 的回执与出站路径照常即时；turn abort 时许可随
     /// future 释放。
+    /// W6：当前在途 turn 数（优雅停机 drain 的 gauge 读数）。
+    pub fn in_flight_turns(&self) -> usize {
+        self.in_flight_turns
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// W6：进入停机 drain——置位后泵拒绝新 turn（外部通道诚实回执，
+    /// 内部通道静默丢），在途 turn 照常收尾。幂等（重复置位无害）。
+    pub fn begin_shutdown_drain(&self) {
+        self.draining
+            .store(true, std::sync::atomic::Ordering::Release);
+        info!(
+            "[AgentLoop] 停机 drain 开始：入口已关闭，在途 turn = {}",
+            self.in_flight_turns()
+        );
+    }
+
+    /// W6：是否处于 drain 态。
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// W6：有界等在途 turn 归零（100ms 轮询）。返回 true=已归零 /
+    /// false=超时（调用方明示在途数后走强制 teardown）。
+    pub async fn wait_turns_drained(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if self.in_flight_turns() == 0 {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     pub(crate) fn spawn_turn_task<F>(&self, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         let permits = self.turn_permits.clone();
+        let gauge = Arc::clone(&self.in_flight_turns);
         let handle = tokio::spawn(async move {
             // acquire_owned 把许可与 Arc 绑定，async 块结束时（含 abort 展开丢弃）释放。
             let _permit = match permits {
                 Some(p) => Some(p.acquire_owned().await),
                 None => None,
             };
+            // W6：任务体全程持 in-flight gauge（guard Drop 保证 panic/abort
+            // 展开路径也减账）。许可等待段不计——那不是在执行 turn。
+            let _gauge = InFlightTurnGuard::acquire(&gauge);
             fut.await;
         });
         let mut handles = self.turn_task_handles.lock();
@@ -589,6 +658,22 @@ impl AgentLoop {
     /// **Continuation 保持与泵串行**（内联 await），其余臂 spawn tracked
     /// task——跨会话并发、同会话保序不变量原样保留。
     async fn pump_dispatch(self: &Arc<Self>, msg: &mut nemesis_types::channel::InboundMessage) {
+        // W6 优雅停机 drain：关入口闸——draining 置位后拒绝新 turn（在途
+        // 照常收尾；与 estop「冻结 agent 活动」正交）。内部通道静默丢
+        // （日志留痕，防系统通道被回执刷屏）；外部通道发诚实回执。零处理
+        // 早退（rewrite/gate 都不进）。
+        if self.draining.load(Ordering::Acquire) {
+            if is_internal_channel(&msg.channel) {
+                info!(
+                    "[AgentLoop] drain 中丢弃内部消息: channel={} session={}",
+                    msg.channel, msg.session_key
+                );
+            } else {
+                self.finish_message(msg, DRAINING_RECEIPT.to_string(), None, false)
+                    .await;
+            }
+            return;
+        }
         // slash 四段解析链（自定义命令 > 内置模板 > 技能回落）在
         // 生产泵路径的唯一接线点：改写必须在 gate 分类前完成，
         // 消息以最终形态参与 gate 判定（内置短路名 /compact 等
@@ -603,6 +688,8 @@ impl AgentLoop {
                     "[AgentLoop] Handling cluster continuation for task {} (permits={})",
                     task_id, self.max_continuation_permits
                 );
+                // W6：inline continuation 也是在途 turn——gauge 与 spawn 臂同源。
+                let _gauge = InFlightTurnGuard::acquire(&self.in_flight_turns);
                 self.dispatch_continuation(task_id, msg).await;
             }
             GateOutcome::Immediate {

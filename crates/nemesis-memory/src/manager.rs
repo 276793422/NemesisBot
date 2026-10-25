@@ -38,6 +38,30 @@ pub const META_LAST_RECALL: &str = "last_recall";
 /// 最近一次召回的幂等标记（`session_key \u{1} turn_marker`）。
 pub const META_RECALL_TURN: &str = "last_recall_turn";
 
+/// W4（2026-10-25 加固）：派生条目反查的扫描上限——`store.list` 无
+/// 「全量」形态，按一个远超正常记忆库规模的界值一次取齐（记忆库条目数
+/// 达到这个量级时 dreaming 本身早该跑过了）。
+const DERIVED_SCAN_LIMIT: usize = 10_000;
+
+/// W4：forget 谱系传导报告（`forget_with_cascade` 返回值）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ForgetCascade {
+    /// 源条目（keyword store / 向量镜像）是否发生了删除。
+    pub source_deleted: bool,
+    /// 连带归档的派生条目 `(id, 正文摘要)`——归档非删除，可查证。
+    pub archived_derived: Vec<(String, String)>,
+}
+
+/// W4：正文摘要（preview/报告用，按字符截断——不用字节，避免切开 UTF-8）。
+fn truncate_content(s: &str) -> String {
+    if s.chars().count() <= 80 {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(80).collect();
+        format!("{cut}…")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -749,6 +773,63 @@ impl MemoryManager {
     /// Delete a memory entry by ID (alias matching Go `Manager.Delete`).
     pub async fn delete(&self, id: &str) -> Result<bool, String> {
         self.forget(id).await
+    }
+
+    // -- W4（2026-10-25 加固）：forget 谱系传导 --
+
+    /// 反查 `id` 的 merge 派生条目（dreaming 谱系消费）：keyword store 扫
+    /// `META_DREAM_MERGED_FROM`（逗号分隔源 id 列表）包含目标 id、且尚未
+    /// 归档（`META_DREAM_ARCHIVED != "true"`）的条目。forget 前**只读**
+    /// 调用（审批 preview 组装），无副作用。
+    pub async fn list_derived_of(&self, id: &str) -> Result<Vec<Entry>, String> {
+        if !self.is_enabled() {
+            return Ok(Vec::new());
+        }
+        let all = self.store.list(None, DERIVED_SCAN_LIMIT, 0).await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| {
+                let merged_from = e
+                    .metadata
+                    .get(crate::dreaming::META_DREAM_MERGED_FROM)
+                    .map(|v| v.split(',').any(|s| s.trim() == id))
+                    .unwrap_or(false);
+                let not_archived = e
+                    .metadata
+                    .get(crate::dreaming::META_DREAM_ARCHIVED)
+                    .map(|v| v != "true")
+                    .unwrap_or(true);
+                merged_from && not_archived
+            })
+            .collect())
+    }
+
+    /// forget 源条目 + **级联归档**其 merge 派生条目。归档（archive）非删除
+    /// ——对齐 dreaming expire 的 `META_DREAM_ARCHIVED` 盖章哲学（条目可查
+    /// 证、可追溯）。graph 三元组层 v1 不级联（诚实边界：谱系只记录在
+    /// keyword store 的 merge 产物上，图层无 merge 概念）。
+    ///
+    /// 返回传导报告：源条目是否删除 + 连带归档的派生条目（id + 正文摘要）。
+    pub async fn forget_with_cascade(&self, id: &str) -> Result<ForgetCascade, String> {
+        // 先反查（forget 之前——删完就查不到了）。
+        let derived = self.list_derived_of(id).await?;
+        let source_deleted = self.forget(id).await?;
+        let mut archived_derived = Vec::with_capacity(derived.len());
+        for mut e in derived {
+            let derived_id = e.id.clone();
+            let summary = truncate_content(&e.content);
+            e.metadata.insert(
+                crate::dreaming::META_DREAM_ARCHIVED.to_string(),
+                "true".to_string(),
+            );
+            e.updated_at = chrono::Local::now();
+            self.update_entry(e).await?;
+            archived_derived.push((derived_id, summary));
+        }
+        Ok(ForgetCascade {
+            source_deleted,
+            archived_derived,
+        })
     }
 
     /// List general memory entries with optional type filter and pagination.

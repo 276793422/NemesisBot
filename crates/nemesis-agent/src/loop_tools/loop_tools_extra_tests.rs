@@ -611,8 +611,17 @@ fn test_mcp_list_tool_description_and_params() {
     assert!(d.contains("MCP tools"));
     let p = t.parameters();
     assert_eq!(p["type"], "object");
-    // empty properties object
-    assert!(p["properties"].as_object().unwrap().is_empty());
+    // 唯一可选属性 name（W7：按名查单个工具的完整 schema）。
+    let props = p["properties"].as_object().unwrap();
+    assert_eq!(props.len(), 1, "仅 name 一个属性: {props:?}");
+    assert!(props.contains_key("name"));
+    assert_eq!(props["name"]["type"], "string");
+    assert!(
+        !p["required"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    );
 }
 
 // ===========================================================================

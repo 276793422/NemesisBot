@@ -488,6 +488,26 @@ impl MemoryToolExecutor {
             return MemoryToolResult::err("action is required");
         }
 
+        // W4（2026-10-25 加固）：delete_by_id 目标
+        // 分诊（批准前只读）——general 条目（keyword/向量存储，dreaming 谱系
+        // 所在）走「forget + 级联归档派生」路径；否则维持原 episodic
+        // delete_by_id。preview 必须在批准前列出将连带归档的派生条目。
+        let forget_id = args["id"].as_str().unwrap_or("").to_string();
+        let general_target = action == "delete_by_id"
+            && !forget_id.is_empty()
+            && self.manager.get(&forget_id).await.unwrap_or(None).is_some();
+        let derived_preview: Vec<(String, String)> = if general_target {
+            self.manager
+                .list_derived_of(&forget_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| (e.id.clone(), e.content))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // Approval gate — never bypassed by YOLO/auto (enforced by the gate impl).
         let mut forget_preview = format!("forget memory (action={}", action);
         if let Some(s) = args["session_key"].as_str() {
@@ -495,6 +515,24 @@ impl MemoryToolExecutor {
         }
         if let Some(i) = args["id"].as_str() {
             forget_preview.push_str(&format!(", id={}", i));
+        }
+        if general_target {
+            forget_preview.push_str("; 目标为一般记忆条目");
+            if derived_preview.is_empty() {
+                forget_preview.push_str("; 无 merge 派生条目需连带处理");
+            } else {
+                forget_preview.push_str(&format!(
+                    "; 将连带归档 {} 条 merge 派生条目:",
+                    derived_preview.len()
+                ));
+                for (id, content) in &derived_preview {
+                    forget_preview.push_str(&format!(
+                        "\n  - [{}] {}",
+                        id,
+                        truncate_text(content, 60)
+                    ));
+                }
+            }
         }
         forget_preview.push(')');
         if !self.check_forget_approved(&forget_preview).await {
@@ -559,6 +597,37 @@ impl MemoryToolExecutor {
                     return MemoryToolResult::err(
                         "id is required for delete_by_id action. Use memory_search to find the ID first.",
                     );
+                }
+
+                // W4：general 条目 → forget + 级联归档 merge 派生条目（归档
+                // 非删除；graph 层不级联——诚实边界见 manager 注释）。
+                if general_target {
+                    return match self.manager.forget_with_cascade(&id).await {
+                        Ok(report) => {
+                            if !report.source_deleted && report.archived_derived.is_empty() {
+                                MemoryToolResult::ok(format!(
+                                    "No memory entry found with ID '{}'. It may have already been deleted.",
+                                    id
+                                ))
+                            } else {
+                                let mut msg = format!("Memory entry '{}' deleted successfully", id);
+                                if !report.archived_derived.is_empty() {
+                                    msg.push_str(&format!(
+                                        "; {} 条 merge 派生条目已连带归档（归档非删除）: {}",
+                                        report.archived_derived.len(),
+                                        report
+                                            .archived_derived
+                                            .iter()
+                                            .map(|(i, _)| i.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    ));
+                                }
+                                MemoryToolResult::ok(msg)
+                            }
+                        }
+                        Err(e) => MemoryToolResult::err(format!("failed to delete by ID: {}", e)),
+                    };
                 }
 
                 match self.manager.delete_by_id(&id).await {

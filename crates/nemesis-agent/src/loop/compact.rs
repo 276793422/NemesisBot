@@ -37,6 +37,18 @@ pub(crate) struct CompactState {
     /// 压缩点钳制一次性告知（2026-10-20）：用户 `compact_context_tokens`
     /// 超过真实窗口被钳时 warn 一次（per-session one-shot，防每轮刷屏）。
     clamped_noticed: bool,
+    /// W1（2026-10-25 加固）：最近一次自动压缩注记的限频记账
+    /// `(档位 tag, 墙钟 ms)`。同会话同档位 [`COMPACT_NOTE_RATELIMIT_MS`]
+    /// 内不重复注记；不同档位互不挤占（soft 预警与 summarize 触发是两个
+    /// 事实）。
+    last_auto_note: Option<(&'static str, i64)>,
+    /// W1：上一轮处于 stuck 暂停、本轮信号回落解除了暂停——下一次自动
+    /// 压缩注记按 [`CompactReason::StuckResume`] 档发（用户能看到「恢复」
+    /// 而非以为一切照旧）。
+    resumed_from_pause: bool,
+    /// W2：未知窗口停用注记的一次性闸（per-session
+    /// 发过不再发；限频之外的第二道防刷屏）。
+    suppressed_noticed: bool,
 }
 
 /// ⑩ Summarize tier: at this fraction, trigger summarization. 2026-10-20
@@ -134,6 +146,14 @@ pub struct CompactTrigger {
     /// `"catalog"` / `"instance"`（实例窗口兜底 × 75%）/ `"fallback-128k"`
     /// （CLI 展示等无实例场景 × 75%；后两者 = 窗口来源 × 75%）。
     pub source: &'static str,
+    /// W2（2026-10-25 加固）：**窗口**来源（config/catalog/instance/
+    /// fallback-128k）。与 `source` 分离：用户压缩点（source="user"）下窗口
+    /// 另有来源；注记与 Dashboard 展示用窗口来源，不用触发点来源。
+    pub window_source: &'static str,
+    /// W2：true = 窗口未知（config+catalog 双 miss 且未设用户压缩点）——
+    /// 自动压缩停用（不猜着压）；手动 /compact 与 context_length_exceeded
+    /// 应急链不经过此判定，不受影响。
+    pub auto_suppressed: bool,
     /// Some(原值) = 用户压缩点超过真实窗口被钳到 window。想突破目录值先设
     /// `context_window`（L1 是用户显式意志）。
     pub clamped_from: Option<usize>,
@@ -155,29 +175,154 @@ pub fn resolve_compact_trigger(
 ) -> CompactTrigger {
     let (window_opt, window_source) = resolve_context_window_tiered(cfg, alias, pricing);
     let (window, fallback_source) = window_opt.map_or(fallback, |w| (w, window_source));
+    // W2：窗口来源独立记录——window_opt=Some 时是三级链来源（config/catalog），
+    // None 时是调用方兜底标签（agent 运行期 "instance" / CLI 展示
+    // "fallback-128k"）。
+    let resolved_window_source: &'static str = if window_opt.is_some() {
+        window_source
+    } else {
+        fallback.1
+    };
     let user = cfg
         .and_then(|c| nemesis_types::capability::resolve_compact_context_tokens(c, alias))
         .filter(|t| *t > 0)
         .map(|t| t as usize);
+    // W2：未知窗口（三级链双 miss）且未设用户压缩点 = 不猜着压。用户显式
+    // 设了压缩点 = 显式意志，尊重（哪怕窗口仍是兜底值——钳制告知照常）。
+    let auto_suppressed = window_opt.is_none() && user.is_none();
     match user {
         Some(t) if t > window => CompactTrigger {
             window,
             trigger: window,
             source: "user",
+            window_source: resolved_window_source,
+            auto_suppressed: false,
             clamped_from: Some(t),
         },
         Some(t) => CompactTrigger {
             window,
             trigger: t,
             source: "user",
+            window_source: resolved_window_source,
+            auto_suppressed: false,
             clamped_from: None,
         },
         None => CompactTrigger {
             window,
             trigger: window * COMPACT_SUMMARIZE_RATIO / 100,
             source: fallback_source,
+            window_source: resolved_window_source,
+            auto_suppressed,
             clamped_from: None,
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W1（2026-10-25 加固）：压缩原因档位 + 会话注记
+// ---------------------------------------------------------------------------
+
+/// 压缩事件档位：自动压缩向会话落系统注记时说明原因，用户不再只见
+/// 「Memory threshold reached」而不知为何（对齐诚实注记 `[...]` 族）。
+/// 手动 /compact 的回执走 `compact_session` 返回值（行为不变），`Manual`
+/// 仅用于方言 PreCompact/PostCompact hook 标签（原 "manual" 字面量的
+/// 枚举化，输出不变）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactReason {
+    /// soft 档首次越过（接近压缩点的预警；soft 本身不压缩，只提示）。
+    AutoSoft,
+    /// summarize 档触发（自动压缩真正发生）。
+    AutoSummarize,
+    /// stuck/no_progress 熔断暂停解除后的首次自动压缩。
+    StuckResume,
+    /// 手动 /compact（compact_session；回执走返回值，不落注记）。
+    Manual,
+}
+
+impl CompactReason {
+    /// 方言 PreCompact/PostCompact hook 的 kind 标签（"auto"/"manual" 二值
+    /// 不变——hook 消费方零影响）。
+    pub(crate) fn hook_kind(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            _ => "auto",
+        }
+    }
+
+    /// 会话注记的档位名。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::AutoSoft => "压缩预警",
+            Self::AutoSummarize => "自动压缩",
+            Self::StuckResume => "自动压缩·恢复",
+            Self::Manual => "手动压缩",
+        }
+    }
+
+    /// 限频记账键（同会话同档位共享限频窗）。
+    pub(crate) fn note_tag(self) -> &'static str {
+        match self {
+            Self::AutoSoft => "soft",
+            Self::AutoSummarize => "summarize",
+            Self::StuckResume => "stuck-resume",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+/// W1：同会话同档位注记限频窗（10 分钟；防长会话在阈值附近反复震荡刷屏）。
+const COMPACT_NOTE_RATELIMIT_MS: i64 = 10 * 60 * 1000;
+
+/// W1：注记限频判定（纯函数）。`last` = (上次档位 tag, 上次墙钟 ms)；不同
+/// 档位随时可发，同档位限频窗内静默。
+pub(crate) fn compaction_note_allowed(
+    last: Option<(&'static str, i64)>,
+    reason_tag: &str,
+    now_ms: i64,
+) -> bool {
+    match last {
+        Some((tag, ts)) => {
+            tag != reason_tag || now_ms.saturating_sub(ts) >= COMPACT_NOTE_RATELIMIT_MS
+        }
+        None => true,
+    }
+}
+
+/// W1：注记文本（纯函数；含档位/信号/阈值/窗口来源四要素）。
+pub(crate) fn compaction_note_text(
+    reason: CompactReason,
+    signal: usize,
+    threshold: usize,
+    window_source: &str,
+) -> String {
+    let tail = match reason {
+        CompactReason::AutoSoft => "接近压缩点，到点将自动把较早历史折叠为摘要",
+        CompactReason::AutoSummarize => "正在把较早历史折叠为摘要，最近一段逐字保留",
+        CompactReason::StuckResume => "此前摘要无进展暂停已解除，重新尝试折叠较早历史为摘要",
+        CompactReason::Manual => "手动触发",
+    };
+    format!(
+        "[{}] 压力信号 {} / {}（窗口来源 {}）——{}。",
+        reason.label(),
+        signal,
+        threshold,
+        window_source,
+        tail
+    )
+}
+
+/// W2：未知窗口停用自动压缩的一次性会话注记。
+/// （计划原拟引导「运行 model probe」——probe 只写 tier/vision 不写窗口，
+/// 按真实修复路径改为引导配置 `context_window`。）
+pub(crate) const COMPACT_SUPPRESSED_NOTE: &str = "[压缩已停用] 当前模型上下文窗口未知（按 128k 保守估计显示），自动压缩已停用（避免猜错窗口过早失忆）——为模型配置 context_window（Dashboard 模型管理或 config.json，或改用价目表可命中的标准模型名）后自动恢复；手动 /compact 不受影响。";
+
+/// W1：自动压缩注记的档位仲裁（resumed 标志位 → 档位；纯函数便于钉死
+/// 「恢复档一次性消费」由调用方负责清除的契约）。
+pub(crate) fn resolve_auto_note_reason(resumed_from_pause: bool) -> CompactReason {
+    if resumed_from_pause {
+        CompactReason::StuckResume
+    } else {
+        CompactReason::AutoSummarize
     }
 }
 
@@ -364,6 +509,35 @@ impl AgentLoop {
         let trig = self.current_compact_trigger(instance.context_window());
         let context_window = trig.window;
 
+        // W2：未知窗口不猜着压——一次性注记后跳过整条
+        // 自动压缩路径（soft 预警 / summarize / stuck 记账全部不跑）。
+        // `force_compression`（context_length_exceeded 应急链）与手动
+        // /compact 不经过此函数，不受影响。窗口补配（config/context_window
+        // 或价目表命中）后 auto_suppressed 翻回 false，行为自动恢复。
+        if trig.auto_suppressed {
+            let fire = {
+                let mut states = self.compact_state.lock();
+                if states.len() > SESSION_STATE_MAX_ENTRIES {
+                    states.clear();
+                }
+                let st = states.entry(session_key.to_string()).or_default();
+                if st.suppressed_noticed {
+                    false
+                } else {
+                    st.suppressed_noticed = true;
+                    true
+                }
+            };
+            if fire {
+                warn!(
+                    "[AgentLoop] context window unknown for {} (source: {}); auto-summarization suppressed — set context_window (config/model_list) or use a catalog-known model name to re-enable; manual /compact unaffected",
+                    session_key, trig.window_source
+                );
+                crate::chat_log::append_chat_log(session_key, "system", COMPACT_SUPPRESSED_NOTE);
+            }
+            return;
+        }
+
         // C indexes the full history (system prompt at index 0); the verbatim
         // tail build_messages sends is history[C..]. Clamp to history length
         // for safety against a stale cache index.
@@ -453,6 +627,9 @@ impl AgentLoop {
         // would tick the counter without ever attempting a summarize and pause
         // summarization before it gets the chance.
         let mut paused_stuck = false;
+        // W1：soft 预警注记待发旗（emit 内部要再取 compact_state 锁——
+        // parking_lot 不可重入，必须在下方锁作用域外发）。
+        let mut soft_note_fired = false;
         {
             let mut states = self.compact_state.lock();
             if states.len() > SESSION_STATE_MAX_ENTRIES {
@@ -474,6 +651,7 @@ impl AgentLoop {
 
             if signal >= soft && !st.soft_noticed {
                 st.soft_noticed = true;
+                soft_note_fired = true;
                 info!(
                     "[AgentLoop] context pressure at ~{}% of compaction point ({} / {}, source: {}); summarization will trigger at {}",
                     signal * 100 / trig.trigger.max(1),
@@ -503,6 +681,11 @@ impl AgentLoop {
                 }
             } else if signal < threshold {
                 // Breathing room — clear the stuck latch (both axes).
+                // W1：解除的是真实的暂停闩（而非计数残留）时记恢复旗——
+                // 下一次自动压缩注记按 StuckResume 档发。
+                if st.stuck {
+                    st.resumed_from_pause = true;
+                }
                 st.consecutive_failures = 0;
                 st.stuck = false;
                 st.no_progress = 0;
@@ -512,6 +695,15 @@ impl AgentLoop {
             if st.stuck {
                 paused_stuck = true;
             }
+        }
+        if soft_note_fired {
+            self.emit_compaction_note(
+                session_key,
+                CompactReason::AutoSoft,
+                signal,
+                soft,
+                trig.window_source,
+            );
         }
         if paused_stuck {
             return;
@@ -532,6 +724,25 @@ impl AgentLoop {
             }
             map.insert(summarize_key.clone(), true);
         }
+
+        // W1：summarize 档注记（拿到 summarizing 槽后才发——抢槽失败的并发
+        // 调用不重复注记）。StuckResume 档一次性消费恢复旗；摘要若随后失败
+        // 或被无进展守卫弃用，注记文本是「正在折叠」（触发事实成立），
+        // 失败细节有 warn 日志。
+        let note_reason = {
+            let mut states = self.compact_state.lock();
+            let st = states.entry(session_key.to_string()).or_default();
+            let resumed = st.resumed_from_pause;
+            st.resumed_from_pause = false;
+            resolve_auto_note_reason(resumed)
+        };
+        self.emit_compaction_note(
+            session_key,
+            note_reason,
+            signal,
+            threshold,
+            trig.window_source,
+        );
 
         // New boundary already computed above (P5 token budget, or the
         // legacy K_TARGET count fallback): cover everything except the
@@ -571,7 +782,9 @@ impl AgentLoop {
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
-            bridge.run_compact_hooks("auto", "pre").await;
+            bridge
+                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "pre")
+                .await;
         }
 
         // 循环策略槽（WASM 样板工程批 1）：摘要执行开放（盘点 #18）。
@@ -674,7 +887,9 @@ impl AgentLoop {
         // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发）。
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
-            bridge.run_compact_hooks("auto", "post").await;
+            bridge
+                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "post")
+                .await;
         }
 
         {
@@ -698,6 +913,44 @@ impl AgentLoop {
             .entry(session_key.to_string())
             .or_default()
             .last_provider_prompt_tokens = Some(total_input);
+    }
+
+    /// W1（2026-10-25 加固）：自动压缩事件 → 会话系统注记。落盘走
+    /// chat_log（append 即持久、不触发 LLM 轮，role="system"——snooze 恢复
+    /// 行同款通道）；限频：同会话同档位 [`COMPACT_NOTE_RATELIMIT_MS`] 内
+    /// 不重复。锁内判定+记账、锁外落盘——本方法不得在已持 compact_state
+    /// 锁的调用栈里调（parking_lot 不可重入）。
+    pub(crate) fn emit_compaction_note(
+        &self,
+        session_key: &str,
+        reason: CompactReason,
+        signal: usize,
+        threshold: usize,
+        window_source: &str,
+    ) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default();
+        let allowed = {
+            let mut states = self.compact_state.lock();
+            if states.len() > SESSION_STATE_MAX_ENTRIES {
+                states.clear();
+            }
+            let st = states.entry(session_key.to_string()).or_default();
+            let ok = compaction_note_allowed(st.last_auto_note, reason.note_tag(), now_ms);
+            if ok {
+                st.last_auto_note = Some((reason.note_tag(), now_ms));
+            }
+            ok
+        };
+        if allowed {
+            crate::chat_log::append_chat_log(
+                session_key,
+                "system",
+                &compaction_note_text(reason, signal, threshold, window_source),
+            );
+        }
     }
 
     /// P5（能力扩展 WS2）：`agents.defaults.compact_keep_recent_tokens`
@@ -844,7 +1097,9 @@ impl AgentLoop {
         // 方言 PreCompact（观察型）：手动压缩尝试开始。
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
-            bridge.run_compact_hooks("manual", "pre").await;
+            bridge
+                .run_compact_hooks(CompactReason::Manual.hook_kind(), "pre")
+                .await;
         }
 
         // N2：手动 /compact 是 `agents.small_model` 的唯一消费点——摘要用小
@@ -854,7 +1109,9 @@ impl AgentLoop {
         // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发），与 auto 路径对称。
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
-            bridge.run_compact_hooks("manual", "post").await;
+            bridge
+                .run_compact_hooks(CompactReason::Manual.hook_kind(), "post")
+                .await;
         }
 
         let Some(cache) = instance
@@ -938,6 +1195,10 @@ impl AgentLoop {
             "pct": pct,
             "trigger": trig.trigger,
             "trigger_source": trig.source,
+            // W2（2026-10-25 加固）：窗口来源与自动压缩停用旗——前端对
+            // fallback 形态标红为可选尾随项，后端先行可交付。
+            "window_source": trig.window_source,
+            "auto_suppressed": trig.auto_suppressed,
             "pct_trigger": pct_trigger,
             "history_len": history.len(),
             "covers_up_to": covers,
@@ -1729,3 +1990,10 @@ mod ws2_compact_tests;
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod compact_signal_tests;
+
+// ---------------------------------------------------------------------------
+// W1+W2（2026-10-25 加固）：压缩原因注记（档位/限频/落盘）+ 未知窗口
+// 停用自动压缩（auto_suppressed/window_source）测试。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod w1_w2_note_tests;

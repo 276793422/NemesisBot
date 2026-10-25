@@ -200,7 +200,12 @@ fn p5_fresh_read_config_default_and_override() {
     // 改盘即生效（无缓存/无重启）。
     std::fs::write(
         &cfg_path,
-        serde_json::json!({"agents": {"defaults": {"compact_keep_recent_tokens": 0}}}).to_string(),
+        // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩。
+        serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": 0}},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
     )
     .unwrap();
     assert_eq!(agent_loop.current_compact_keep_recent_tokens(), 0);
@@ -214,7 +219,12 @@ async fn p5_zero_budget_falls_back_to_count_semantics() {
         std::env::temp_dir().join(format!("nemesis_test_ws2_zero_{}.json", std::process::id()));
     std::fs::write(
         &cfg_path,
-        serde_json::json!({"agents": {"defaults": {"compact_keep_recent_tokens": 0}}}).to_string(),
+        // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩。
+        serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": 0}},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
     )
     .unwrap();
 
@@ -264,7 +274,12 @@ async fn p5_maybe_update_summary_token_budget_tail() {
     ));
     std::fs::write(
         &cfg_path,
-        serde_json::json!({"agents": {"defaults": {"compact_keep_recent_tokens": 60}}}).to_string(),
+        // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩。
+        serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": 60}},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
     )
     .unwrap();
 

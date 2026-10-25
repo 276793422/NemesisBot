@@ -723,7 +723,7 @@ impl GatewayCtx {
                         );
                         warn!("[Gateway][ziwei] {line}");
                         bus_for_zw.publish_outbound(nemesis_types::channel::OutboundMessage::new(
-                            "web", "ziwei", &line,
+                            "web", "web:broadcast", &line,
                         ));
                     },
                 ));
@@ -844,6 +844,12 @@ impl GatewayCtx {
             let home_for_dream = home.clone();
             #[cfg(feature = "memory")]
             let estop_for_dream = estop.clone();
+            // W3（2026-10-25 加固）：触发期暂停句柄 + home（父会话存在性
+            // 检查）。句柄必须在 set_on_job 前取出（本语句的外层互斥守卫到
+            // 语句结束才释放）；handler 执行期可能处于 web「立即运行」的
+            // `svc.lock().execute_job()` 外层锁内——句柄绕开外层互斥防自死锁。
+            let pause_handle_for_cron = cron_service.lock().unwrap().job_pause_handle();
+            let home_for_cron = home.clone();
             cron_service
                 .lock()
                 .unwrap()
@@ -927,6 +933,42 @@ impl GatewayCtx {
                         // also live-pushes; otherwise chat_id falls back to `to`
                         // (delivery may fail-soft, but history is still saved).
                         let session_key = job.payload.session_key.clone().unwrap_or_default();
+                        // W3（2026-10-25 加固）：指向
+                        // 会话的 job 触发期只读检查父会话是否仍在——已删除则自动
+                        // pause（enabled=false，不删 job 可手动恢复）并放行 Err，
+                        // 不发布 InboundMessage（否则消息会经 SessionStore::
+                        // get_or_create 的空会话兜底静默重建会话——「僵尸复活」）。
+                        // 存在性 = 磁盘双臂任一（见 cron_parent_session_exists）。
+                        if !session_key.is_empty()
+                            && !cron_parent_session_exists(&home_for_cron, &session_key)
+                        {
+                            let paused = pause_handle_for_cron.pause_job(&job.id);
+                            let msg = format!(
+                                "[定时任务] 已自动暂停：\"{}\"——目标会话 {session_key} 已删除，\
+                                 继续触发会静默重建空会话（{}）。重建会话后可在任务管理中重新启用；\
+                                 不再需要请直接删除本任务。",
+                                job.name,
+                                if paused {
+                                    "已置为停用"
+                                } else {
+                                    "任务不存在或已是停用态"
+                                },
+                            );
+                            warn!("[Cron] {msg}");
+                            // 系统通知（Dashboard 可见；对齐紫微报警的 bus 出站先例）。
+                            // chat_id 必须 "web:broadcast"（web 通道只认
+                            // web:<session-id>/web:broadcast 两种形态——此前裸
+                            // "cron" 在 WebChannel::send 的格式闸被丢弃，通知
+                            // 从未真正到达 Dashboard，2026-10-25 真实场景 C 抓出）。
+                            bus_for_cron.publish_outbound(
+                                nemesis_types::channel::OutboundMessage::new(
+                                    "web", "web:broadcast", &msg,
+                                ),
+                            );
+                            // Err（非 Ok）：触发循环把 last_status=error + 原因落
+                            // run history、账本 settle failed——「本次未投递」属实。
+                            return Err(msg);
+                        }
                         let chat_id = if !session_key.is_empty() {
                             router_for_cron
                                 .target(&session_key)
@@ -1420,7 +1462,36 @@ async fn ziwei_llm_suggest(prompt: String) -> Result<String, String> {
     Ok(resp.content)
 }
 
+/// W3（2026-10-25 加固）：cron 父会话只读存在性
+/// 检查（纯磁盘，不物化会话）。任一臂在场即存在：
+/// - 臂1 `workspace/sessions/{safe}.json`——LLM 上下文存储（turn 边界落盘）；
+/// - 臂2 `workspace/session_logs/{safe}.jsonl`——用户可见 chat 历史（消息级
+///   追加），与 `chat_log` 写入方同源的 `resolve_session_logs_dir_in_workspace`。
+///
+/// 与 `SessionStore::get_or_create` 自愈链的磁盘臂同序；内存臂刻意不查——
+/// 本处没有 store 句柄，且陈旧实例的内存映射会把已删会话误判为存在（假
+/// 阳性恰好复活僵尸）。`delete_session` 双文件同删 → 双臂全 miss = 已删；
+/// `clear_session` 清空后同样判停（上下文已清空，续跑无意义）。文件名消毒
+/// 与两处写入方同源（`sanitize_path_segment`）。
+pub(crate) fn cron_parent_session_exists(home: &std::path::Path, session_key: &str) -> bool {
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(session_key);
+    if crate::common::sessions_dir(home)
+        .join(format!("{safe}.json"))
+        .exists()
+    {
+        return true;
+    }
+    nemesis_path::resolve_session_logs_dir_in_workspace(&home.join("workspace"))
+        .join(format!("{safe}.jsonl"))
+        .exists()
+}
+
 /// T5（扩展计划 D2b）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +
 /// 装配前后槽语义）。security feature 门内——与被测函数同门。
 #[cfg(all(test, feature = "security"))]
 mod dlp_gate_tests;
+
+/// W3（2026-10-25 加固）：cron 父会话存在性检查单测（纯函数三臂 +
+/// 消毒对齐）。独立测试文件（仓库纪律：生产文件只留声明行）。
+#[cfg(test)]
+mod w3_session_gate_tests;

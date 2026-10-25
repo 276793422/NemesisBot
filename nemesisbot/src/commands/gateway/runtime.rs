@@ -1372,6 +1372,33 @@ pub(crate) async fn run_runtime(
     // Step 24: Graceful shutdown
     println!();
     println!("Shutting down...");
+
+    // W6（2026-10-25 加固）：优雅
+    // 停机 drain——先关入口（draining 闸：外部通道新消息诚实回执，内部
+    // 通道静默丢），再有界等在途 turn 归零，然后才 teardown。超时明示
+    // 在途数后照常强制收尾（下方 agent_adapter.stop() 会 abort 余量）。
+    // `agents.shutdown_drain_secs` 默认 30，0 = 跳过。estop 语义不变
+    // （estop 冻结 agent 活动，与正常停机 drain 正交）；`run`/`acp` 无
+    // run_runtime，不受影响。
+    let drain_secs = cfg.agents.defaults.shutdown_drain_secs;
+    if drain_secs > 0 {
+        agent_loop.begin_shutdown_drain();
+        let drained = agent_loop
+            .wait_turns_drained(std::time::Duration::from_secs(drain_secs))
+            .await;
+        if drained {
+            info!("[Gateway] 停机 drain 完成：在途 turn 已归零");
+        } else {
+            warn!(
+                "[Gateway] 停机 drain 超时（{}s）：仍有 {} 个在途 turn，强制进入 teardown",
+                drain_secs,
+                agent_loop.in_flight_turns()
+            );
+        }
+    } else {
+        info!("[Gateway] shutdown_drain_secs=0：跳过停机 drain");
+    }
+
     svc_mgr.shutdown();
 
     // F-L2: graceful Forge shutdown — flush buffered aggregation + stop the

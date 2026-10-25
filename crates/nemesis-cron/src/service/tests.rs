@@ -2984,6 +2984,21 @@ fn every_60s() -> CronSchedule {
     }
 }
 
+// ---------------------------------------------------------------------------
+// W3（2026-10-25 加固）：JobPauseHandle——触发期
+// pause 自身 job（父会话已删除 → 诚实停车，不删 job 可手动恢复）。
+// ---------------------------------------------------------------------------
+
+fn every_minute_schedule() -> CronSchedule {
+    CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60000),
+        expr: None,
+        tz: None,
+    }
+}
+
 #[test]
 fn reserved_prefix_hit_unit() {
     assert_eq!(reserved_prefix_hit("board-ap:5"), Some("board-ap:"));
@@ -3302,4 +3317,101 @@ fn cron_expr_can_fire_combines_syntax_and_semantics() {
     // 合法且可触发 = true（含闰年 2/29——存在年份解）。
     assert!(cron_expr_can_fire("*/1 * * * *", now));
     assert!(cron_expr_can_fire("0 0 29 2 *", now));
+}
+
+// ---------------------------------------------------------------------------
+// W3（2026-10-25 加固）：JobPauseHandle——触发期
+// pause 自身 job（父会话已删除 → 诚实停车，不删 job 可手动恢复）。
+// ---------------------------------------------------------------------------
+/// pause 置 enabled=false 且落盘（新开服务实例从同一路径重载 = 仍停用）；
+/// patch_job 重新启用（恢复路径）后可再 pause。
+#[test]
+fn w3_pause_handle_disables_persists_and_resume_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job_ext(
+            "w3-pause",
+            every_minute_schedule(),
+            "hello",
+            false,
+            None,
+            None,
+            Some("agent:main:session:gone"),
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(job.enabled);
+
+    let handle = svc.job_pause_handle();
+    assert!(handle.pause_job(&job.id), "首次 pause 生效");
+    assert!(
+        !handle.pause_job(&job.id),
+        "重复 pause 幂等（无变化=false）"
+    );
+    assert!(!handle.pause_job("no-such-job"), "未知 id 诚实 false");
+
+    // 落盘证明：全新实例（同路径重载）看到停用态。
+    let svc2 = CronService::new(&path);
+    let reloaded = svc2.get_job(&job.id).unwrap();
+    assert!(!reloaded.enabled, "停用态已持久化");
+
+    // 恢复路径：patch_job 重新启用（句柄同源的 svc 实例）→ handle 可再
+    // pause（诚实再停）。
+    let patch = CronJobPatch {
+        enabled: Some(true),
+        ..Default::default()
+    };
+    svc.patch_job(&job.id, &patch).unwrap();
+    assert!(svc.get_job(&job.id).unwrap().enabled);
+    assert!(handle.pause_job(&job.id), "重新启用后再 pause 生效");
+    assert!(!svc.get_job(&job.id).unwrap().enabled);
+}
+
+/// handle 与服务主存储共享（句柄 pause 后服务的 list/patch 视角同步）；
+/// handler 场景模拟：闭包捕获句柄，触发期内 pause 自身不与 on_job 槽锁
+/// 冲突（句柄不碰外层 CronService 互斥——web「立即运行」自死锁的根）。
+#[test]
+fn w3_pause_handle_shares_store_and_avoids_outer_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job_ext(
+            "w3-shared",
+            every_minute_schedule(),
+            "hello",
+            false,
+            None,
+            None,
+            Some("agent:main:session:x"),
+            None,
+            true,
+        )
+        .unwrap();
+
+    // set_on_job 前取句柄，闭包内 pause 自身（模拟 gateway 触发路径）。
+    let handle = svc.job_pause_handle();
+    svc.set_on_job(move |j: &CronJob| {
+        if handle.pause_job(&j.id) {
+            Err("paused by test".to_string())
+        } else {
+            Ok("noop".to_string())
+        }
+    });
+
+    // execute_job 在持有外层 &svc（非 Mutex）下驱动 handler——句柄若走
+    // 外层互斥即死锁/毒化；这里能正常返回即证绕开。execute_job 恒 Ok——
+    // handler Err 只落 job state（last_status=error），不向上传播。
+    let res = svc.execute_job(&job.id);
+    assert!(
+        res.is_ok(),
+        "execute_job 恒 Ok（handler Err 落 state 不传播）"
+    );
+    let after = svc.get_job(&job.id).unwrap();
+    assert!(!after.enabled, "handler 内 pause 已生效");
+    assert_eq!(after.state.last_status.as_deref(), Some("error"));
+    assert_eq!(after.state.last_error.as_deref(), Some("paused by test"));
 }

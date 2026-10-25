@@ -101,10 +101,16 @@ fn keep_tokens_config(tag: &str, keep: usize) -> std::path::PathBuf {
         "nemesis_test_compact_signal_{tag}_{}.json",
         std::process::id()
     ));
+    // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩
+    // （本文件测的是信号/预算机制，不是窗口解析；与 instance
+    // set_context_window(100) 的阈值语义一致）。
     std::fs::write(
         &path,
-        serde_json::json!({"agents": {"defaults": {"compact_keep_recent_tokens": keep}}})
-            .to_string(),
+        serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": keep}},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
     )
     .unwrap();
     path
@@ -112,6 +118,8 @@ fn keep_tokens_config(tag: &str, keep: usize) -> std::path::PathBuf {
 
 /// 2026-10-20 压缩点一等公民化：keep + per-model `compact_context_tokens`
 /// 二合一配置（active_model = config.model = "test-model"，条目按别名命中）。
+/// W2：条目同时带 context_window=100（窗口已知；compact>0 时停用闸本就不
+/// 触发，带上是为钳制臂与旧语义逐位一致）。
 fn compact_point_config(tag: &str, keep: usize, compact: i64) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
         "nemesis_test_compact_point_{tag}_{}.json",
@@ -121,7 +129,7 @@ fn compact_point_config(tag: &str, keep: usize, compact: i64) -> std::path::Path
         &path,
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": keep}},
-            "model_list": [{"model_name": "test-model", "compact_context_tokens": compact}]
+            "model_list": [{"model_name": "test-model", "context_window": 100, "compact_context_tokens": compact}]
         })
         .to_string(),
     )

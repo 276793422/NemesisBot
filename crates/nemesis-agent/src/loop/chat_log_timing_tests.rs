@@ -74,6 +74,29 @@ fn timing_session_key(name: &str) -> String {
     )
 }
 
+/// W2（2026-10-25）：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
+/// 注记，破坏本文件「完整轮恰好 +2 行」类精确断言。夹具统一给 test-model
+/// 钉已知窗口（config.json 唯一真相源 fresh-read）→ 自动压缩路径惰性
+/// （信号远低于阈值），本文件继续只测 turn 持久化时序本身；W2 注记行为
+/// 由 w1_w2_note_tests 专测。
+fn pin_known_window(al: &AgentLoop) {
+    let cfg_path = std::env::temp_dir().join(format!(
+        "nemesis_test_known_window_{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [
+                {"model": "test-model", "model_name": "test-model", "context_window": 128000}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    al.set_config_path(cfg_path);
+}
+
 fn timing_log_path(session_key: &str) -> std::path::PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     nemesis_path::default_path_manager()
@@ -127,6 +150,7 @@ async fn user_row_lands_while_llm_turn_in_progress() {
         8,
         0,
     );
+    pin_known_window(&agent_loop);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
@@ -189,6 +213,7 @@ async fn system_message_turn_appends_user_then_assistant_rows() {
         8,
         0,
     );
+    pin_known_window(&agent_loop);
 
     // system 消息格式：channel="system"、chat_id="origin_channel:origin_chat_id"。
     let msg = nemesis_types::channel::InboundMessage {
