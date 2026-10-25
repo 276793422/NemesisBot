@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use super::executor::{ChildProcess, DefaultPlatformExecutor, PlatformExecutor, ProcessStatus};
-use super::handshake::PipeMessage;
+use super::handshake::{ACK_TIMEOUT, PipeMessage};
 use crate::websocket::protocol::Message;
 use crate::websocket::server::WebSocketServer;
 
@@ -266,11 +266,13 @@ impl ProcessManager {
         let handshake_msg = PipeMessage::handshake();
         child.send_message(&handshake_msg)?;
 
-        // Wait for ACK. read_message is a blocking one-shot read whose match
-        // arms all return, so the old `while elapsed < ACK_TIMEOUT` shell never
-        // iterated (clippy::never_loop) and its "ACK timeout" fall-through was
-        // unreachable — flattened to straight-line code, behavior unchanged.
-        match child.read_message::<PipeMessage>() {
+        // Wait for ACK with a bounded wait (BUG-20261025-70: the old
+        // `while elapsed < ACK_TIMEOUT` shell never iterated — clippy
+        // never_loop flatten left an unbounded blocking read while holding
+        // the manager-wide state lock; a hung child = permanent deadlock).
+        // On timeout read_message_timeout kills the child so the pipe
+        // closes and the helper thread unblocks.
+        match child.read_message_timeout::<PipeMessage>(ACK_TIMEOUT) {
             Ok(ack) => {
                 if ack.is_ack() {
                     child.status = ProcessStatus::Handshaking;
@@ -307,10 +309,10 @@ impl ProcessManager {
         let ws_key_msg = PipeMessage::ws_key(key, port, &format!("/child/{}", key));
         child.send_message(&ws_key_msg)?;
 
-        // Wait for ACK. Same never_loop flatten as perform_handshake above:
-        // blocking one-shot read, all arms return — the "WS key timeout"
-        // fall-through was unreachable dead code.
-        match child.read_message::<PipeMessage>() {
+        // Wait for ACK (bounded — see perform_handshake; the old "WS key
+        // timeout" fall-through was never_loop dead code, the read itself
+        // was unbounded).
+        match child.read_message_timeout::<PipeMessage>(ACK_TIMEOUT) {
             Ok(ack) => {
                 if ack.is_ack() {
                     Ok(())
@@ -334,10 +336,10 @@ impl ProcessManager {
         let window_data_msg = PipeMessage::window_data(data);
         child.send_message(&window_data_msg)?;
 
-        // Wait for ACK. Same never_loop flatten as perform_handshake above:
-        // blocking one-shot read, all arms return — the "window data timeout"
-        // fall-through was unreachable dead code.
-        match child.read_message::<PipeMessage>() {
+        // Wait for ACK (bounded — see perform_handshake; the old "window
+        // data timeout" fall-through was never_loop dead code, the read
+        // itself was unbounded).
+        match child.read_message_timeout::<PipeMessage>(ACK_TIMEOUT) {
             Ok(ack) => {
                 if ack.is_ack() {
                     Ok(())
@@ -548,9 +550,16 @@ impl ProcessManager {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // Collect dead child IDs
+                        // Sample the real process state first (BUG-20261025-71):
+                        // the `exited` flag is only set by try_wait/terminate
+                        // paths — without polling, a child that crashed on its
+                        // own never flips the flag and `is_process_alive`
+                        // reports it alive forever, making this sweep dead code.
                         let dead_ids: Vec<String> = {
-                            let s = state.lock();
+                            let mut s = state.lock();
+                            for child in s.children.values_mut() {
+                                let _ = child.try_wait();
+                            }
                             s.children
                                 .iter()
                                 .filter(|(_, child)| !executor.is_process_alive(child))
@@ -633,8 +642,15 @@ impl ProcessManager {
 
     /// Clean up stale (dead) children synchronously.
     pub fn cleanup_stale(&self) {
+        // Sample the real process state first (BUG-20261025-71 — same
+        // try_wait-first discipline as the monitor loop: without it a
+        // self-exited child keeps a stale `exited == false` flag and is
+        // never swept).
         let dead_ids: Vec<String> = {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
+            for child in state.children.values_mut() {
+                let _ = child.try_wait();
+            }
             state
                 .children
                 .iter()

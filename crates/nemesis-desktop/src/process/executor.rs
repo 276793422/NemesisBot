@@ -90,26 +90,58 @@ impl ChildProcess {
         }
     }
 
-    /// Read a JSON message from the child's stdout pipe.
+    /// Read a JSON message from the child's stdout pipe (blocking, no bound).
     pub fn read_message<T: serde::de::DeserializeOwned>(&mut self) -> Result<T, String> {
-        if let Some(ref mut stdout) = self.stdout_pipe {
-            let mut line = String::new();
-            let mut byte = [0u8; 1];
-            loop {
-                match stdout.read(&mut byte) {
-                    Ok(0) => return Err("stdout pipe closed".to_string()),
-                    Ok(_) => {
-                        if byte[0] == b'\n' {
-                            break;
-                        }
-                        line.push(byte[0] as char);
-                    }
-                    Err(e) => return Err(format!("read: {}", e)),
+        match self.stdout_pipe.as_mut() {
+            Some(pipe) => read_json_line(pipe),
+            None => Err("stdout pipe not available".to_string()),
+        }
+    }
+
+    /// Read a JSON message from the child's stdout pipe with a bounded wait.
+    ///
+    /// std anonymous pipes have no read timeout; the blocking read runs on a
+    /// helper thread and the parent enforces `timeout` on the channel. On
+    /// timeout the child is killed and this side reports an error without
+    /// reclaiming the pipe (a handle-inheriting grandchild may keep it open;
+    /// the pipe handle travels with the helper thread until the last writer
+    /// dies, and later reads here honestly report "not available"). Without
+    /// this bound a hung child (DLL load stuck, window init wedged) blocks
+    /// the caller forever — historically while holding the manager-wide
+    /// state lock.
+    pub fn read_message_timeout<T: serde::de::DeserializeOwned + Send + 'static>(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<T, String> {
+        let mut pipe = self.stdout_pipe.take().ok_or("stdout pipe not available")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = read_json_line::<T>(&mut pipe);
+            let _ = tx.send(result);
+            pipe // handed back to the caller via join
+        });
+        match rx.recv_timeout(timeout) {
+            Ok(result) => {
+                // Helper finished its read — reclaim the pipe (join returns
+                // immediately: the thread only sends after its read returns).
+                if let Ok(p) = worker.join() {
+                    self.stdout_pipe = Some(p);
                 }
+                result
             }
-            serde_json::from_str(&line).map_err(|e| format!("deserialize: {}", e))
-        } else {
-            Err("stdout pipe not available".to_string())
+            Err(_) => {
+                // Timeout: kill the child so the pipe closes and the helper
+                // unblocks. Do NOT join here: if a handle-inheriting
+                // grandchild outlives the direct child and keeps the write
+                // end open, the helper stays blocked in read() until the
+                // last writer dies — the pipe handle travels with it and
+                // this side honestly reports "not available" from now on.
+                if let Some(ref mut c) = self.child {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+                Err(format!("ack not received within {timeout:?}"))
+            }
         }
     }
 
@@ -186,6 +218,36 @@ impl ChildProcess {
     pub fn stderr(&self) -> Option<&ChildStderr> {
         self.stderr_pipe.as_ref()
     }
+}
+
+/// Read one newline-terminated JSON line from the child's stdout.
+///
+/// Bytes are collected raw and converted with `String::from_utf8` —
+/// multi-byte UTF-8 must survive intact (per-byte `as char` casts would
+/// silently corrupt non-ASCII payload text into mojibake while still
+/// parsing as valid JSON).
+fn read_json_line<T: serde::de::DeserializeOwned>(stdout: &mut ChildStdout) -> Result<T, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stdout.read(&mut byte) {
+            Ok(0) => return Err("stdout pipe closed".to_string()),
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                buf.push(byte[0]);
+            }
+            Err(e) => return Err(format!("read: {}", e)),
+        }
+    }
+    parse_json_line(&buf)
+}
+
+/// Parse one collected JSON line: raw bytes → UTF-8 string → T.
+fn parse_json_line<T: serde::de::DeserializeOwned>(buf: &[u8]) -> Result<T, String> {
+    let line = String::from_utf8(buf.to_vec()).map_err(|e| format!("utf8: {}", e))?;
+    serde_json::from_str(&line).map_err(|e| format!("deserialize: {}", e))
 }
 
 /// Configuration for the executor.

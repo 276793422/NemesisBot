@@ -1597,3 +1597,83 @@ mod scripted_spawn_tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+// ============================================================
+// BUG-20261025-71（死子检测死代码）回归锁：
+// `exited` 旗标只被 try_wait/terminate/wait 路径置位——自行崩溃退出的
+// 子进程旗标恒 false，修复前 monitor_loop / cleanup_stale 的
+// is_process_alive 过滤永远判「活」，清扫是死代码。
+// 修复 = 清扫前先对每个 child 采样 try_wait()。
+// ============================================================
+
+/// Spawn a real child that exits on its own immediately (no try_wait call —
+/// sampling the exit state is exactly the production code under test).
+fn spawn_self_exiting_child() -> ChildProcess {
+    let executor = DefaultPlatformExecutor::with_defaults();
+    let exe = if cfg!(windows) { "cmd" } else { "sh" };
+    let args: Vec<String> = if cfg!(windows) {
+        vec!["/C".to_string(), "exit 0".to_string()]
+    } else {
+        vec!["-c".to_string(), "exit 0".to_string()]
+    };
+    executor
+        .spawn_child(exe, &args)
+        .expect("spawn exit-0 child")
+}
+
+#[test]
+fn test_cleanup_stale_sweeps_self_exited_child() {
+    let mgr = ProcessManager::new();
+    let child = spawn_self_exiting_child();
+    {
+        let mut state = mgr.state.lock();
+        state.children.insert(child.id.clone(), child);
+    }
+    assert_eq!(mgr.active_count(), 1);
+
+    // Child exits within milliseconds; wait comfortably past that without
+    // touching try_wait ourselves (the sweep must do the sampling).
+    std::thread::sleep(Duration::from_secs(2));
+
+    mgr.cleanup_stale();
+    // 旧形态：旗标恒 false → 永远判活 → 子进程滞留（本断言红）。
+    assert_eq!(
+        mgr.active_count(),
+        0,
+        "cleanup_stale must sample try_wait and sweep the self-exited child"
+    );
+}
+
+#[tokio::test]
+async fn test_monitor_loop_sweeps_self_exited_child() {
+    let mgr = ProcessManager::new();
+    let child = spawn_self_exiting_child();
+    {
+        let mut state = mgr.state.lock();
+        state.children.insert(child.id.clone(), child);
+    }
+    assert_eq!(mgr.active_count(), 1);
+    std::thread::sleep(Duration::from_secs(2));
+
+    // start() spawns the monitor loop whose first tick fires immediately;
+    // the sweep must sample try_wait, see the dead child, and remove it.
+    // Yield with tokio::time::sleep — #[tokio::test] 默认 current_thread
+    // runtime，std::thread::sleep 会饿死 monitor 任务（调度让路是前提）。
+    mgr.start().await.unwrap();
+
+    let mut swept = false;
+    for _ in 0..50 {
+        if mgr.active_count() == 0 {
+            swept = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // 旧形态：旗标恒 false → monitor 永远判活 → 清扫死代码（本断言红）。
+    assert!(
+        swept,
+        "monitor loop must sweep the self-exited child on its first tick"
+    );
+
+    mgr.stop().unwrap();
+}

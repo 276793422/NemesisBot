@@ -563,3 +563,113 @@ fn test_kill_with_real_process() {
         assert!(!child.is_alive());
     }
 }
+
+// ============================================================
+// BUG-20261025-70（ACK 读无超时）+ BUG-20261025-72（UTF-8 逐字节破坏）
+// 回归锁
+// ============================================================
+
+#[test]
+fn test_parse_json_line_roundtrips_multibyte_utf8() {
+    // BUG-20261025-72：旧实现逐字节 `byte[0] as char`，多字节 UTF-8 被
+    // 逐字节映射成 Latin-1 mojibake——JSON 结构不变、反序列化照常成功、
+    // 字符串内容静默损坏。修复后走 String::from_utf8，必须逐字符还原。
+    // （还原旧实现 = 本测试编译失败/断言红，双重必红。）
+    let payload = serde_json::json!({"status": "中文✓", "path": "C:\\桌面\\测试.md"});
+    let line = serde_json::to_string(&payload).unwrap();
+    let parsed: serde_json::Value =
+        parse_json_line(line.as_bytes()).expect("utf8 json line must parse");
+    assert_eq!(parsed["status"], "中文✓");
+    assert_eq!(parsed["path"], "C:\\桌面\\测试.md");
+}
+
+#[test]
+fn test_parse_json_line_rejects_invalid_utf8() {
+    // 非 UTF-8 字节必须诚实报错（旧形态产出 mojibake 继续解析 = 静默损坏）。
+    let result: Result<serde_json::Value, String> = parse_json_line(&[b'"', 0xFF, 0xFE, b'"']);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("utf8"));
+}
+
+/// 静默子进程（活着但不写 stdout）：more/cat 在 stdin 空闲时阻塞且 stdout
+/// 零输出——有界读必须在 ACK_TIMEOUT 内诚实失败而不是无限阻塞。
+#[test]
+fn test_read_message_timeout_bounds_silent_child() {
+    let executor = DefaultPlatformExecutor::with_defaults();
+    let exe = if cfg!(windows) { "cmd" } else { "cat" };
+    let args: Vec<String> = if cfg!(windows) {
+        vec!["/C".to_string(), "more".to_string()]
+    } else {
+        vec![]
+    };
+    let mut child = executor
+        .spawn_child(exe, &args)
+        .expect("spawn silent child");
+
+    let start = std::time::Instant::now();
+    let result: Result<serde_json::Value, String> =
+        child.read_message_timeout(crate::process::handshake::ACK_TIMEOUT);
+    let elapsed = start.elapsed();
+
+    let err = result.expect_err("silent child must hit the ack timeout, not block forever");
+    assert!(
+        err.contains("ack not received"),
+        "expected timeout error, got: {}",
+        err
+    );
+    // 下界证明确实等到了超时（而不是立刻 EOF/其他错误假绿）；
+    // 上界证明有界（旧形态此调用永不返回）。CI 慢机留足余量。
+    assert!(
+        elapsed >= std::time::Duration::from_secs(4),
+        "timeout fired too early: {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "bounded wait exceeded: {:?}",
+        elapsed
+    );
+
+    // 超时杀子后：管道已随 helper 线程走（孙进程继承句柄时可能仍开着），
+    // 本侧后续读诚实报 not available（不是 panic / 二次无限阻塞）。
+    let again: Result<serde_json::Value, String> = child.read_message();
+    assert!(again.is_err());
+    assert!(
+        again.unwrap_err().contains("stdout pipe not available"),
+        "after timeout the read side must report the pipe gone"
+    );
+    let _ = executor.cleanup(&mut child);
+}
+
+/// 正常路径：有界读取回数据且管道被回收——回收后第二次收发继续工作。
+/// 载荷用纯 ASCII（more/cat 在任何代码页下逐字节恒等，不引入编码变量）。
+#[test]
+fn test_read_message_timeout_returns_data_and_reclaims_pipe() {
+    let executor = DefaultPlatformExecutor::with_defaults();
+    let exe = if cfg!(windows) { "cmd" } else { "cat" };
+    let args: Vec<String> = if cfg!(windows) {
+        vec!["/C".to_string(), "more".to_string()]
+    } else {
+        vec!["-u".to_string()]
+    };
+    let mut child = executor.spawn_child(exe, &args).expect("spawn echo child");
+
+    child
+        .send_message(&serde_json::json!({"n": 1}))
+        .expect("send #1");
+    let v: serde_json::Value = child
+        .read_message_timeout(crate::process::handshake::ACK_TIMEOUT)
+        .expect("read #1 within timeout");
+    assert_eq!(v["n"], 1);
+
+    // 管道已归还 self：第二次收发继续工作（旧形态丢管道/无界读下无法保证）。
+    child
+        .send_message(&serde_json::json!({"n": 2}))
+        .expect("send #2");
+    let v2: serde_json::Value = child
+        .read_message_timeout(crate::process::handshake::ACK_TIMEOUT)
+        .expect("read #2 within timeout");
+    assert_eq!(v2["n"], 2);
+
+    let _ = executor.cleanup(&mut child);
+}
