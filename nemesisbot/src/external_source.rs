@@ -98,6 +98,7 @@ pub struct ExternalSourceRuntime {
     estop: Arc<nemesis_agent::estop::EstopState>,
     /// 自动派发的集群句柄（周期轮询与 WSAPI 手动 sync 共用——手动路径
     /// 缺它会让 auto_dispatch 导入静默不派发）。非 cluster 形态 = `()`。
+    #[cfg_attr(not(feature = "cluster"), allow(dead_code))] // 裁剪形态占位，读取点随 cfg 消失
     cluster: ClusterOwned,
     statuses: parking_lot::Mutex<Vec<SourceStatus>>,
     writeback_tx: tokio::sync::mpsc::UnboundedSender<WriteBack>,

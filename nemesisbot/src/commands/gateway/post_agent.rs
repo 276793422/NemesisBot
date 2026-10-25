@@ -962,8 +962,10 @@ pub(crate) async fn init_post_agent(
     // EST-01/02（2026-09-16 横扫加固）：同一 estop 实例注入看板派发族闸
     // （dispatch_issue_core 单一入口）——急停冻结全部自动/手动派发，而非
     // 只有 agent loop。board 关 = handlers::board 随 nemesis-board 退出编译
-    // （desktop 形态 board 关 cluster 开：闸必须含 board，E0433 实录）。
-    #[cfg(feature = "board")]
+    // （desktop 形态 board 关 cluster 开：闸必须含 board，E0433 实录）；
+    // web 侧 BOARD_ESTOP 族整体 cluster 门控（消费点 dispatch 族同门），
+    // 调用点闸必须含 cluster（cluster 关裁剪形态 E0425 实录）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
     {
         if nemesis_web::handlers::board::install_board_estop(shared_resources.estop.clone()) {
             info!("[Gateway] E-stop gate installed for board dispatch family");
