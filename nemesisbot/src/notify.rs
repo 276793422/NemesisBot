@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use nemesis_channels::manager::ChannelManager;
 use nemesis_taskstore::TaskDb;
+use nemesis_taskstore::deliveries::DeliveryRecord;
 use nemesis_taskstore::deliveries::{notify_backoff_secs, notify_dead_lettered};
 use nemesis_types::channel::OutboundMessage;
 
@@ -98,6 +99,34 @@ pub(crate) fn notify_accounting(
     }
 }
 
+/// 出箱前可投递性裁决（BUG-20261025-48）：sweep 此前只看箱内
+/// next_retry_at，不复查交付状态——已拒绝的交付（reject 只清 deliveries 侧
+/// 到期、不清箱）到期后仍会被重投，拒绝语义被投递回泼。重投前先查交付：
+/// 义务已终（notify_state != pending）或交付已拒绝 = 清箱停车；查询瞬时
+/// 失败 = 本 tick 跳过不清债（下 tick 重试，宁迟不丢）。
+pub(crate) enum SweepAction {
+    /// 交付在账且义务仍 pending、未拒绝 → 正常重投。
+    Dispatch,
+    /// 义务已终/交付已拒/交付行不在 → 清箱停车（不再重投）。
+    DropRow,
+    /// 查询瞬时失败 → 本 tick 跳过，箱行保留。
+    SkipTick,
+}
+
+pub(crate) fn sweep_deliverability(rec: &Result<Option<DeliveryRecord>, String>) -> SweepAction {
+    match rec {
+        Err(_) => SweepAction::SkipTick,
+        Ok(None) => SweepAction::DropRow,
+        Ok(Some(d)) => {
+            if d.status == "rejected" || d.notify_state != "pending" {
+                SweepAction::DropRow
+            } else {
+                SweepAction::Dispatch
+            }
+        }
+    }
+}
+
 /// 一轮到期重投。行数上限 16/tick（15s tick → 稳态 ≥1 条/秒的投递能力，
 /// 死信/退避封顶后远超实际需求）。复用 `dispatch_outbound`——投递结果经
 /// 钩子自动记账（成功清箱、失败 UPSERT 累计），sweeper 自身不重复计数。
@@ -111,6 +140,30 @@ pub(crate) async fn sweep_once(db: &Arc<TaskDb>, mgr: &Arc<ChannelManager>) {
         }
     };
     for row in due {
+        // 可投递性前置闸（BUG-20261025-48）：先于死信闸——义务已终/已拒绝
+        // 的交付直接清箱，不进死信记账（那是 pending 义务的终态，不是
+        // 拒绝交付的归宿）。
+        let action = sweep_deliverability(&db.delivery_by_key(&row.delivery_key));
+        match action {
+            SweepAction::SkipTick => {
+                tracing::debug!(
+                    delivery = %row.delivery_key,
+                    "[Notify] deliverability lookup failed, keep row for next tick"
+                );
+                continue;
+            }
+            SweepAction::DropRow => {
+                tracing::debug!(
+                    delivery = %row.delivery_key,
+                    "[Notify] delivery no longer pending-notify (terminal/rejected), drop retry row"
+                );
+                if let Err(e) = db.notify_remove(&row.id) {
+                    tracing::warn!("[Notify] stale retry row remove failed: {e}");
+                }
+                continue;
+            }
+            SweepAction::Dispatch => {}
+        }
         // 死信闸（先于投递）：age 7 天 / attempts 1000 → dead 停车。
         let age_secs = chrono::DateTime::parse_from_rfc3339(&row.created_at)
             .map(|t| chrono::Local::now().signed_duration_since(t).num_seconds())
@@ -178,3 +231,6 @@ pub(crate) fn spawn_sweeper(mgr: Arc<ChannelManager>) {
     });
     tracing::info!("[Notify] delivery notify sweeper started (15s tick)");
 }
+
+#[cfg(test)]
+mod tests;

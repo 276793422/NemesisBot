@@ -217,6 +217,16 @@ impl TaskDb {
                     params![idempotency_key, now_rfc3339()],
                 )
                 .map_err(|e| format!("tasks.db confirm delivery failed: {e}"))?;
+            // BUG-20261025-48：义务走完终点必须同步清重试债——sweep 调度以
+            // notify_outbox.next_retry_at 为准（deliveries.notify_next_retry_at
+            // 只是镜像），只置 NULL 不清箱会让已确认的交付仍被重投一次。
+            if n > 0 {
+                conn.execute(
+                    "DELETE FROM notify_outbox WHERE delivery_key = ?1",
+                    params![idempotency_key],
+                )
+                .map_err(|e| format!("tasks.db clear notify outbox failed: {e}"))?;
+            }
             Ok(n > 0)
         })
     }
@@ -334,7 +344,9 @@ impl TaskDb {
     /// 拒绝交付（P4 交付门）：任何非 rejected 状态 → rejected（终态），
     /// 带 `reason` 留痕。幂等：已 rejected 再拒 = `Ok(false)`。
     /// 拒绝已 confirmed 的交付合法（人工复核推翻自动验收的入口）。
-    /// 拒绝同时终止通知义务（清重试到期；死信/箱内行由调用方 sweep 清）。
+    /// 拒绝同时终止通知义务（清重试到期）并清空重试箱（BUG-20261025-48：
+    /// sweep 只看箱内 next_retry_at，箱内残留行会让已拒绝的交付内容仍被
+    /// 重投——拒绝语义必须拦住下游投递，不能只改账面状态）。
     pub fn reject_delivery(&self, idempotency_key: &str, reason: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
@@ -345,6 +357,13 @@ impl TaskDb {
                     params![idempotency_key, now_rfc3339(), reason],
                 )
                 .map_err(|e| format!("tasks.db reject delivery failed: {e}"))?;
+            if n > 0 {
+                conn.execute(
+                    "DELETE FROM notify_outbox WHERE delivery_key = ?1",
+                    params![idempotency_key],
+                )
+                .map_err(|e| format!("tasks.db clear notify outbox failed: {e}"))?;
+            }
             Ok(n > 0)
         })
     }
@@ -373,10 +392,13 @@ impl TaskDb {
     }
 
     /// 浅合并交付 payload（G4，2026-10-18 批六：评审 anchor_summary 注记）。
-    /// read-modify-write 单事务（同库连接内 BEGIN IMMEDIATE 语义——读与写
-    /// 之间不被并发写插队）；`patch` 的顶层键逐一覆盖、其余键保留（不做
-    /// 深合并——payload 顶层是扁平摘要字段）。返回合并后的完整 payload。
-    /// 幂等键不存在 = `Err`（注记必须落在真实交付上，不凭空造行）。
+    /// read-modify-write 单事务（BUG-20261025-48：连接默认行为已在
+    /// `TaskDb::open` 钉 `TransactionBehavior::Immediate`——unchecked_transaction
+    /// 继承之，BEGIN 时即拿写锁，读与写之间不被其他连接的写插队；DEFERRED
+    /// 下读后快照被推进会让 UPDATE 直接 BUSY，承诺不成立）。`patch` 的顶层
+    /// 键逐一覆盖、其余键保留（不做深合并——payload 顶层是扁平摘要字段）。
+    /// 返回合并后的完整 payload。幂等键不存在 = `Err`（注记必须落在真实
+    /// 交付上，不凭空造行）。
     pub fn merge_delivery_payload(
         &self,
         idempotency_key: &str,

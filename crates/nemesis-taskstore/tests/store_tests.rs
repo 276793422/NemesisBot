@@ -1426,3 +1426,127 @@ fn ledger_global_install_and_wrappers() {
         "已收口不进 sweep"
     );
 }
+
+// --- BUG-20261025-48 回归锁：义务终态必须清重试箱 ---------------------
+// reject/confirm 终止通知义务时，只置 deliveries.notify_next_retry_at=NULL
+// 不清 notify_outbox 行——sweep 调度以箱内 next_retry_at 为准，残留行会让
+// 已拒绝/已确认的交付仍被重投（拒绝语义被投递回泼）。
+
+#[test]
+fn r48_reject_and_confirm_clear_retry_outbox() {
+    let (_dir, path) = temp_db("deliveries_r48_clear_outbox");
+    let db = TaskDb::open(&path).expect("open");
+
+    // 形态一：recorded(pending) → 失败入箱 → reject → 箱必须空。
+    assert!(
+        db.record_delivery(
+            "result",
+            Some("run-1"),
+            "run-1:a",
+            &serde_json::json!({}),
+            true
+        )
+        .unwrap()
+    );
+    db.notify_enqueue_failure("run-1:a", "{\"x\":1}", "send failed")
+        .expect("enqueue");
+    assert_eq!(
+        db.notify_due("9999-01-01T00:00:00+08:00", 16)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(db.reject_delivery("run-1:a", "人工否决").expect("reject"));
+    assert!(
+        db.notify_due("9999-01-01T00:00:00+08:00", 16)
+            .unwrap()
+            .is_empty(),
+        "rejected delivery must not keep retry debt"
+    );
+    let rec = db.delivery_by_key("run-1:a").unwrap().expect("rec");
+    assert_eq!(rec.status, "rejected");
+
+    // 幂等再拒（n=0）不炸清箱语句。
+    assert!(!db.reject_delivery("run-1:a", "二次").expect("re-reject"));
+
+    // 形态二：recorded(pending) → 失败入箱 → confirm → 箱必须空。
+    assert!(
+        db.record_delivery(
+            "result",
+            Some("run-2"),
+            "run-2:b",
+            &serde_json::json!({}),
+            true
+        )
+        .unwrap()
+    );
+    db.notify_enqueue_failure("run-2:b", "{\"x\":2}", "send failed")
+        .expect("enqueue");
+    assert_eq!(
+        db.notify_due("9999-01-01T00:00:00+08:00", 16)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(db.confirm_delivery("run-2:b").expect("confirm"));
+    assert!(
+        db.notify_due("9999-01-01T00:00:00+08:00", 16)
+            .unwrap()
+            .is_empty(),
+        "confirmed delivery must not keep retry debt"
+    );
+}
+
+// --- BUG-20261025-48 回归锁：merge RMW 事务钉 IMMEDIATE ----------------
+// unchecked_transaction 继承连接默认事务行为。DEFERRED 下 BEGIN 不拿锁，
+// 错误 surfaced 在 UPDATE（"merge delivery failed"）；IMMEDIATE 下 BEGIN
+// 即拿写锁，被并发写手挡住时错误 surfaced 在 begin（"merge delivery
+// begin failed"）。用手持写锁的第二连接做判别器。
+// 注：busy_timeout 5s 是 open() 固化预算，本用例墙钟 ~5s。
+
+#[test]
+fn r48_merge_rmw_uses_immediate_transaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("r48_merge_imm.db");
+    let db = TaskDb::open(&path).expect("open");
+    assert!(
+        db.record_delivery(
+            "result",
+            Some("run-1"),
+            "run-1:k",
+            &serde_json::json!({}),
+            false
+        )
+        .unwrap()
+    );
+
+    // 第二连接手持未提交写事务（占住写锁）。
+    let blocker = rusqlite::Connection::open(&path).expect("blocker open");
+    blocker
+        .busy_timeout(std::time::Duration::from_millis(5000))
+        .unwrap();
+    blocker.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+    blocker
+        .execute_batch("BEGIN IMMEDIATE;")
+        .expect("blocker begin");
+    blocker
+        .execute(
+            "INSERT INTO runs (id, kind, status, created_at) VALUES ('blk', 'x', 'pending', 't')",
+            [],
+        )
+        .expect("blocker insert");
+
+    let err = db
+        .merge_delivery_payload("run-1:k", &serde_json::json!({"note": "x"}))
+        .expect_err("write lock held, merge must fail");
+    assert!(
+        err.contains("merge delivery begin failed"),
+        "IMMEDIATE 语义下失败必须 surfaced 在 BEGIN（got: {err}）"
+    );
+
+    drop(blocker); // 未提交 = 回滚，释放写锁
+    let merged = db
+        .merge_delivery_payload("run-1:k", &serde_json::json!({"note": "x"}))
+        .expect("merge after lock release");
+    assert_eq!(merged["note"], "x");
+}

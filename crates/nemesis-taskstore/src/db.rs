@@ -195,7 +195,14 @@ impl TaskDb {
                         converge under concurrent open"
                 .to_string());
         }
-        let conn = Self::migrate(conn)?;
+        let mut conn = Self::migrate(conn)?;
+        // BUG-20261025-48：连接默认事务行为钉 IMMEDIATE。unchecked_transaction
+        // （merge_delivery_payload 的 RMW）继承此默认——DEFERRED 在 WAL 多连接
+        // 下「读后快照被并发写推进 → UPDATE 升级写锁 BUSY」，docstring 承诺的
+        // 「读与写之间不被插队」不成立；IMMEDIATE 在 BEGIN 时就拿写锁，RMW
+        // 才真正串行化（与 migrate 的显式 Immediate 同纪律，本库单写者权威
+        // 的安全默认）。
+        conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
         Ok(Arc::new(TaskDb {
             conn: Mutex::new(conn),
         }))
