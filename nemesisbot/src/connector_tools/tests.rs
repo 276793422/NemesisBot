@@ -895,6 +895,7 @@ fn test_workspace_template_gitea_manifest_is_valid_and_scoped() {
             "issue_close",
             "pr_list",
             "pr_get",
+            "create_pull",
         ]
     );
     // issue_close = high + 强授权卡（验收表行）
@@ -902,6 +903,11 @@ fn test_workspace_template_gitea_manifest_is_valid_and_scoped() {
     assert!(close.confirm_required);
     assert_eq!(close.risk, RiskLevel::High);
     assert_eq!(close.class, OpClass::Write);
+    // create_pull = high + 强授权卡（P3 发布面；验收表行随模板扩面同步）
+    let create_pull = c.ops.iter().find(|o| o.id == "create_pull").unwrap();
+    assert!(create_pull.confirm_required);
+    assert_eq!(create_pull.risk, RiskLevel::High);
+    assert_eq!(create_pull.class, OpClass::Write);
     // 凭据形态：Authorization 头 + token 前缀（Gitea PAT 认证头惯用形态）
     let pat = c.credentials.get("pat").expect("pat slot");
     assert!(pat.required);

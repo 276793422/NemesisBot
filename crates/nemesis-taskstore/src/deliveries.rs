@@ -349,6 +349,29 @@ impl TaskDb {
         })
     }
 
+    /// 发布交付（P3 外循环，2026-10-25：PR 发布）：recorded/delivered/
+    /// confirmed → published（终态——已推远端并开出 PR；published 蕴含
+    /// 验收+发布两段语义，confirm 的 `WHERE IN ('recorded','delivered')`
+    /// 收窄天然不会把 published 翻回去）。**branch 行常态是 recorded**——
+    /// 无出站通知义务（notify=none）不走通道投递，永不进 delivered；发布
+    /// 闸必须认 recorded。幂等：已 published = `Ok(false)`。PR 号等留痕
+    /// 走 [`Self::merge_delivery_payload`]（调用方，payload 与状态分写
+    /// ——状态机单列单一职责）。rejected 不在射程（拒绝的交付不发布）。
+    pub fn mark_delivery_published(&self, idempotency_key: &str) -> Result<bool, String> {
+        self.with_conn(|conn| {
+            let n = conn
+                .execute(
+                    "UPDATE deliveries SET status = 'published', confirmed_at = \
+                     COALESCE(confirmed_at, ?2) \
+                     WHERE idempotency_key = ?1 \
+                     AND status IN ('recorded', 'delivered', 'confirmed')",
+                    params![idempotency_key, now_rfc3339()],
+                )
+                .map_err(|e| format!("tasks.db mark delivery published failed: {e}"))?;
+            Ok(n > 0)
+        })
+    }
+
     /// 浅合并交付 payload（G4，2026-10-18 批六：评审 anchor_summary 注记）。
     /// read-modify-write 单事务（同库连接内 BEGIN IMMEDIATE 语义——读与写
     /// 之间不被并发写插队）；`patch` 的顶层键逐一覆盖、其余键保留（不做

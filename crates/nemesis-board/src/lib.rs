@@ -17,6 +17,7 @@ pub mod archive_writer;
 pub mod asset_token;
 pub mod assignment;
 pub mod backup;
+pub mod check_plan;
 pub mod db;
 pub mod dossier;
 pub mod fail_streak;
@@ -64,6 +65,9 @@ pub use asset_token::{
     sha256_bytes, sha256_file, sign_asset_token, verify_asset_token,
 };
 pub use assignment::{Actor, AssignmentType};
+pub use check_plan::{
+    CheckPlanStatus, derive_check_plan, reconcile_check_plan, render_check_plan_reconciliation,
+};
 pub use fail_streak::{
     FAIL_STREAK_THRESHOLD, FailStreakLedger, StreakOutcome, UNSURE_SIGNATURE, failure_signature,
     unsure_gate_trips,

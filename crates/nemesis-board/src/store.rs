@@ -29,6 +29,11 @@ pub struct BoardStore {
     /// 所有 dispatch 函数已持有 store，资产段渲染零参数蔓延）。None =
     /// 本节点未配资产签发——派发 prompt 不带「## 任务资产」段。
     asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
+    /// P1 外循环（状态回写）：转移后观察者槽。None = 无观察者（单测/CLI
+    /// 零波及）。
+    transition_observer: std::sync::OnceLock<
+        std::sync::Arc<dyn Fn(&crate::models::Issue, &str, &str) + Send + Sync>,
+    >,
 }
 
 /// 送达失败标记（F2，2026-10-13）——评论即账本的单一真相源：RPC 送达
@@ -102,6 +107,7 @@ impl BoardStore {
         Ok(Self {
             conn: Mutex::new(conn),
             asset_signing: std::sync::OnceLock::new(),
+            transition_observer: std::sync::OnceLock::new(),
         })
     }
 
@@ -113,6 +119,18 @@ impl BoardStore {
     /// dispatch 签发上下文（未注入 → None，派发 prompt 不带资产段）。
     pub fn asset_signing(&self) -> Option<crate::asset_token::AssetSignContext> {
         self.asset_signing.get().cloned()
+    }
+
+    /// P1 外循环（状态回写，2026-10-25）：转移后观察者槽（gateway 装配
+    /// set 一次，asset_signing 同款 OnceLock 语义；重复 set 忽略）。
+    /// 签名 = `(转移后 issue 快照, from_status, to_status)`。触发点在事务
+    /// 提交**之后**——观察者故障绝不影响账面；实现方自律不阻塞不 panic
+    /// （外部回写走通道异步消费，本回调只做入队）。
+    pub fn set_transition_observer(
+        &self,
+        f: std::sync::Arc<dyn Fn(&crate::models::Issue, &str, &str) + Send + Sync>,
+    ) {
+        let _ = self.transition_observer.set(f);
     }
 
     fn now() -> i64 {
@@ -755,7 +773,14 @@ impl BoardStore {
         }
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
-        self.get_issue(id)
+        let issue = self.get_issue(id)?;
+        // P1 外循环（状态回写）：转移已落账，观察者在账面安全后触发。
+        // 观察者自带自律（不阻塞不 panic）；store 侧不包裹——触发点是
+        // 纯通知位，故障向上炸 = 实现方违约应修实现方。
+        if let Some(cb) = self.transition_observer.get() {
+            cb(&issue, old.status.as_str(), to.as_str());
+        }
+        Ok(issue)
     }
 
     /// reopen（发现④ 2026-09-15）：`cancelled → backlog`，取消单回到待办，

@@ -415,6 +415,89 @@ fn delivery_confirm_after_reject_is_noop() {
     );
 }
 
+// --- P3 外循环（2026-10-25）：published 终态 ---
+
+#[test]
+fn delivery_publish_semantics() {
+    let (_dir, path) = temp_db("deliveries_publish");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({"branch": "nemesis/task-1", "repo_base_sha": "abc"});
+
+    // branch 行常态 recorded（notify=none，无通道投递义务）。
+    assert!(
+        db.record_delivery("branch", Some("run-9"), "run-9:branch", &payload, false)
+            .expect("record")
+    );
+
+    // recorded → published：branch 行不走通道投递，直接发布合法。
+    assert!(db.mark_delivery_published("run-9:branch").expect("publish"));
+    let rec = db
+        .delivery_by_key("run-9:branch")
+        .expect("read")
+        .expect("present");
+    assert_eq!(rec.status, "published");
+    assert!(
+        rec.confirmed_at.is_some(),
+        "published 落 confirmed_at（发布时刻语义）"
+    );
+
+    // 幂等：已 published 再发 = Ok(false)（终态不在 WHERE 射程）。
+    assert!(
+        !db.mark_delivery_published("run-9:branch")
+            .expect("re-publish")
+    );
+
+    // published 终态不可被 confirm 翻转（confirm WHERE 不含 published）。
+    assert!(
+        !db.confirm_delivery("run-9:branch").expect("confirm"),
+        "确认不得翻转 published 终态"
+    );
+    assert_eq!(
+        db.delivery_by_key("run-9:branch")
+            .expect("read")
+            .expect("present")
+            .status,
+        "published"
+    );
+
+    // rejected 不在发布射程：拒绝的交付不发布。
+    assert!(
+        db.record_delivery("branch", Some("run-a"), "run-a:branch", &payload, false)
+            .expect("record")
+    );
+    assert!(
+        db.reject_delivery("run-a:branch", "评审 FAIL")
+            .expect("reject")
+    );
+    assert!(
+        !db.mark_delivery_published("run-a:branch")
+            .expect("publish-rejected"),
+        "rejected 终态不得发布"
+    );
+    assert_eq!(
+        db.delivery_by_key("run-a:branch")
+            .expect("read")
+            .expect("present")
+            .status,
+        "rejected"
+    );
+
+    // confirmed → published 合法（人工确认后再发布）；delivered → 同理走
+    // WHERE 射程（此路径由 confirm 先到先得，不重复造行验证）。
+    assert!(
+        db.record_delivery("branch", Some("run-b"), "run-b:branch", &payload, false)
+            .expect("record")
+    );
+    assert!(db.confirm_delivery("run-b:branch").expect("confirm"));
+    assert!(
+        db.mark_delivery_published("run-b:branch")
+            .expect("publish-confirmed")
+    );
+
+    // 幽灵键 = Ok(false)（条件更新零命中）。
+    assert!(!db.mark_delivery_published("ghost").expect("ghost"));
+}
+
 /// G4（2026-10-18 批六）：payload 浅合并——patch 顶层键逐一覆盖、既有键
 /// 保留；返回合并后全文；幂等键不存在 = Err（注记必须落在真实交付上）。
 #[test]

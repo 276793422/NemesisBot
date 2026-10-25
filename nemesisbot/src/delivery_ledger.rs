@@ -104,6 +104,10 @@ impl DeliveryLedgerBridge {
             commit: str_field(&rec.payload, "commit"),
             head_tree: str_field(&rec.payload, "tree"),
             base_tree: str_field(&rec.payload, "base_tree"),
+            // P3 发布留痕：发布落账后 payload 注入的 PR 号/链接/时间。
+            pr_number: num_field(&rec.payload, "pr_number"),
+            pr_url: str_field(&rec.payload, "pr_url"),
+            published_at: str_field(&rec.payload, "published_at"),
         }
     }
 }

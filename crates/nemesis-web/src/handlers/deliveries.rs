@@ -28,8 +28,9 @@ pub struct DeliveryInfo {
     /// `branch` / `review` / `dossier`（交付种类）。
     pub kind: String,
     pub idempotency_key: String,
-    /// `recorded` / `delivered` / `confirmed` / `rejected`（项 C 2026-10-22
-    /// 起：记账即 recorded，通道接受才 delivered）。
+    /// `recorded` / `delivered` / `confirmed` / `rejected` / `published`
+    /// （项 C 2026-10-22 起：记账即 recorded，通道接受才 delivered；
+    /// published = P3 外循环已推远端并开出 PR——终态，PR 号在 payload）。
     pub status: String,
     pub created_at: String,
     pub delivered_at: Option<String>,
@@ -61,6 +62,13 @@ pub struct DeliveryInfo {
     /// 执行前 base tree（diff 的锚点侧；与 head_tree 一起构成可复验的
     /// 变更区间标识）。
     pub base_tree: Option<String>,
+    // -- P3 发布留痕（payload 键；未发布 = null）--
+    /// PR 号（`pr_number`）。
+    pub pr_number: Option<i64>,
+    /// PR 链接（`pr_url`）。
+    pub pr_url: Option<String>,
+    /// 发布时间（`published_at`，RFC3339 本地时区）。
+    pub published_at: Option<String>,
 }
 
 /// nemesisbot 侧交付账本能力的抽象（实现在 nemesisbot，真相源 tasks.db
@@ -113,6 +121,40 @@ pub(crate) fn set_deliveries_bridge_for_test(bridge: Option<Arc<dyn DeliveriesBr
 /// 会 flake；同 AGENTS_BRIDGE 家族纪律）。只在 tests 里 acquire。
 #[cfg(test)]
 pub(crate) static DELIVERIES_BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+// ---------------------------------------------------------------------------
+// P3 外循环（PR 发布）bridge——异步能力面（与查询/裁决 bridge 分槽）
+// ---------------------------------------------------------------------------
+
+/// 交付发布桥（P3 外循环，2026-10-25）：board 模块 `delivery.publish` 命令
+/// 消费。发布是异步重活（connector invoke 走 agent loop dispatch 瀑布 +
+/// git push + 状态机落账），实现落 nemesisbot 侧（本 crate 不能反向依赖
+/// ——同 [`DeliveriesBridge`] 依赖反转模式）。请求/响应按 JSON 值透传：
+/// 参数解析权在实现侧（task_id/connector/owner/repo/base/copy_path/title/
+/// body），返回 `{status, pr_number, pr_url, commit, branch, detail}`。
+#[async_trait::async_trait]
+pub trait DeliveryPublishBridge: Send + Sync {
+    async fn publish(&self, args: &serde_json::Value) -> Result<serde_json::Value, String>;
+}
+
+static DELIVERY_PUBLISH_BRIDGE: std::sync::RwLock<Option<Arc<dyn DeliveryPublishBridge>>> =
+    std::sync::RwLock::new(None);
+
+/// gateway 装配期安装发布桥（nemesisbot 侧实现；agent 重启重装同槽覆盖）。
+pub fn install_delivery_publish_bridge(bridge: Arc<dyn DeliveryPublishBridge>) {
+    *DELIVERY_PUBLISH_BRIDGE
+        .write()
+        .expect("delivery publish bridge lock") = Some(bridge);
+}
+
+/// 取当前发布桥（clone Arc 出来，不持锁返回）。缺席 = 发布面未装配
+/// （headless / 独立 web 测试），调用方诚实报错。
+pub fn delivery_publish_bridge() -> Option<Arc<dyn DeliveryPublishBridge>> {
+    DELIVERY_PUBLISH_BRIDGE
+        .read()
+        .expect("delivery publish bridge lock")
+        .clone()
+}
 
 // ---------------------------------------------------------------------------
 // WSAPI handler

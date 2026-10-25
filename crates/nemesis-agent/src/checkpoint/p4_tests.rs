@@ -357,3 +357,60 @@ fn capture_files_truncates_at_max_with_honest_flag() {
     assert!(cap.files_truncated, "超限必须带截断注记位");
     assert_eq!(cap.files_changed, FILES_MAX + 30, "计数不受清单截断影响");
 }
+
+// 回归锁（2026-10-25，P3 发布链实证）：capture patch 必须能被
+// `Diff::from_buffer` 回读并 apply 到基线副本——print 回调对 context/add/
+// del 三类漏补 origin 前缀字节时，patch 是不可解析的残文（"invalid patch
+// hunk"），发布链在 git 半边第一跳就断。此测试把「patch 字节 = 合法
+// unified diff」钉死，print 配方回归此处必红。
+#[test]
+fn capture_patch_roundtrips_through_diff_from_buffer_and_apply() {
+    let (_d, root) = p4_git_root();
+    std::fs::write(root.join("a.txt"), "v1\n").unwrap();
+
+    let store = CheckpointStore::new(None, root.clone());
+    store.begin(1, "任务开始");
+    let base = store.current_tree_hex().expect("git 形态有实时 tree");
+
+    std::fs::write(root.join("a.txt"), "v2\nmore\n").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src").join("new.rs"), "fn main() {}\n").unwrap();
+
+    let cap = store
+        .capture_delivery_branch(Some(&base), "run-rt")
+        .expect("capture");
+
+    // 基线副本：与 base 内容一致（a.txt=v1，无 src/）。autocrlf 钉 false
+    // （生产副本由 clone_repo 同款钉死；全局 gitconfig 的 autocrlf=true 会
+    // 在 apply 落盘时 smudge 出 CRLF，破坏字节精确断言）。
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().join("copy");
+    std::fs::create_dir_all(&scratch_root).unwrap();
+    let repo = git2::Repository::init(&scratch_root).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
+    std::fs::write(scratch_root.join("a.txt"), "v1\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("a.txt")).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("t", "t@t").unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "base", &tree, &[])
+        .unwrap();
+
+    // patch 必须可解析、可应用、产物字节与交付状态一致。
+    let diff =
+        git2::Diff::from_buffer(cap.patch.as_bytes()).expect("patch 必须是合法 unified diff");
+    repo.apply(&diff, git2::ApplyLocation::WorkDir, None)
+        .expect("patch 必须可应用到基线副本");
+    assert_eq!(
+        std::fs::read_to_string(scratch_root.join("a.txt")).unwrap(),
+        "v2\nmore\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch_root.join("src").join("new.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+}

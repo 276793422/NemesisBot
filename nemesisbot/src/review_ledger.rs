@@ -233,5 +233,64 @@ pub(crate) fn dossier_delivery(
     }
 }
 
+/// coding_delivery 整包行（P2 外循环，2026-10-25）：评审定案后把整包证据
+/// 索引 + 终态结论入 deliveries 表（kind="coding_delivery"）。patch 全文
+/// 不重复入库（branch 行/盘上留底已有）——整包行带**证据索引**（branch_key
+/// /patch_path/commit/tree/base_tree/repo_base_sha/checks_count）+ 终态
+/// 结论（verdict/gap/reasons/anchor_summary），deliveries 单表一处可查完整
+/// 交付链。幂等键 = `{task_id}:coding_delivery`：复评重放幂等跳过（同一
+/// 交付只出一行整包账）。无 task_db / 无派发任务 / 交付记录缺席（人工转
+/// 入/旧流程单）= 诚实跳过；任何失败只 warn 不炸评审主链路。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn coding_delivery_record(
+    task_db: Option<&Arc<nemesis_taskstore::TaskDb>>,
+    task_id: Option<&str>,
+    issue_id: i64,
+    issue_number: &str,
+    verdict: &str,
+    gap: &str,
+    reasons: &[String],
+    delivery: Option<&serde_json::Value>,
+    anchor_summary: serde_json::Value,
+) {
+    let (Some(db), Some(task_id)) = (task_db, task_id) else {
+        return; // 无账本 / 无派发 = 无可入账的锚（与评审行同语义）
+    };
+    let obj = delivery.and_then(|d| d.as_object());
+    let pick_str = |k: &str| {
+        obj.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let payload = serde_json::json!({
+        "scope": "issue",
+        "issue_id": issue_id,
+        "issue_number": issue_number,
+        "task_id": task_id,
+        "verdict": verdict,
+        "gap": gap,
+        "reasons": reasons,
+        "branch_key": format!("{task_id}:branch"),
+        "patch_path": pick_str("patch_path"),
+        "commit": pick_str("commit"),
+        "tree": pick_str("tree"),
+        "base_tree": pick_str("base_tree"),
+        "repo_base_sha": pick_str("repo_base_sha"),
+        "checks_count": obj
+            .and_then(|o| o.get("checks"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len()),
+        "anchor_summary": anchor_summary,
+    });
+    let key = format!("{task_id}:coding_delivery");
+    if let Err(e) = db.record_delivery("coding_delivery", Some(task_id), &key, &payload, false) {
+        tracing::warn!(
+            issue_id = issue_id,
+            task_id = task_id,
+            "[ReviewLedger] coding_delivery 整包入账失败: {e}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests;

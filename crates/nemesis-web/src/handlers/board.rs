@@ -557,6 +557,34 @@ pub fn install_board_estop(estop: Arc<nemesis_agent::estop::EstopState>) -> bool
     BOARD_ESTOP.set(estop).is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// P1 外循环（外部来源绑定）：轮询循环状态槽。external_source 模块在
+// gateway 装配时注册；未注册（单测/未配置 board.external_sources）=
+// 命令诚实报告「未装配」。同 BASELINE_PUSHER 理由：闭包面 + OnceLock，
+// 不给 AppState 加字段。
+// ---------------------------------------------------------------------------
+
+/// 外部来源 WSAPI 面：list 返回各来源轮询状态快照，sync_now 触发立即轮询
+/// 一轮（成功返回本轮导入摘要）。sync_now 是 boxed future——轮询要 await
+/// agent loop（WSAPI async 上下文直接驱动，不做 block_on）。
+pub struct ExternalSourceSurface {
+    pub list: Box<dyn Fn() -> serde_json::Value + Send + Sync>,
+    pub sync_now: Box<
+        dyn Fn() -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+            > + Send
+            + Sync,
+    >,
+}
+
+static EXTERNAL_SOURCE_SURFACE: std::sync::OnceLock<Arc<ExternalSourceSurface>> =
+    std::sync::OnceLock::new();
+
+/// 装配外部来源状态槽（gateway 启动期调用一次；重复装配保留首份）。
+pub fn install_external_source_surface(surface: Arc<ExternalSourceSurface>) -> bool {
+    EXTERNAL_SOURCE_SURFACE.set(surface).is_ok()
+}
+
 /// estop 是否生效中（未装配 = false，等价旧无闸行为）。
 #[cfg(feature = "cluster")]
 fn board_estop_engaged() -> bool {
@@ -5325,6 +5353,93 @@ fn auto_dispatch_after_assign(
 }
 
 // ---------------------------------------------------------------------------
+// P1 外循环（2026-10-25）：外部来源导入的自动派发
+// ---------------------------------------------------------------------------
+
+/// 外部来源导入单的派发（`board.external_sources[].auto_dispatch=true`；
+/// nemesisbot external_source 轮询循环消费）。目标解析阶梯 = 显式 `target`
+/// （源配置钉住，不在线诚实停车不换人）→ 匹配器硬条件 → 兜底松弛
+/// （board.dispatch_fallback）→ None = ⏸ 系统评论停车（sweep/停车场/announce
+/// 既有触发器接管恢复）。派发失败不回滚导入：warn + ⛔ 评论留痕（与
+/// auto_dispatch_with_config 同语义）。返回是否实际派发。
+///
+/// pub 供 nemesisbot 跨 crate 复用（install_baseline_pusher 同先例）——
+/// 派发单一入口仍是 [`dispatch_issue_core`]，本 helper 只包目标解析。
+#[cfg(feature = "cluster")]
+pub fn dispatch_issue_for_external_source(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    issue: &nemesis_board::Issue,
+    explicit_target: Option<&str>,
+    actor: &Actor,
+) -> bool {
+    let Some(cluster) = cluster else {
+        tracing::warn!(
+            "[Board] external-source: 集群未启用，issue #{} 留 backlog 等手动处理",
+            issue.number
+        );
+        return false;
+    };
+    let pinned = explicit_target
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string());
+    let target = pinned.or_else(|| {
+        pick_target_by_matcher(store, cluster, issue).or_else(|| {
+            pick_fallback_target(live_board_config().as_ref(), store, cluster, issue)
+                .map(|(t, _)| t)
+        })
+    });
+    let Some(target) = target else {
+        let msg = "⏸ 外部来源导入暂缓派发：无匹配节点（职能/能力/兜底均未命中），等待节点上线由 sweep 承接";
+        tracing::info!("[Board] external-source issue #{}: {msg}", issue.number);
+        let _ = store.add_comment(nemesis_board::models::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::system("board"),
+            content: msg.to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        });
+        return false;
+    };
+    match dispatch_issue_core(store, Some(cluster), issue.id, &target, actor, None) {
+        Ok(_) => {
+            tracing::info!(
+                "[Board] external-source auto-dispatch: issue #{} → {target}",
+                issue.number
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[Board] external-source auto-dispatch failed for issue #{}: {e}",
+                issue.number
+            );
+            let _ = store.add_comment(nemesis_board::models::NewComment {
+                issue_id: issue.id,
+                author: nemesis_board::Actor::system("board"),
+                content: format!("⛔ 外部来源导入自动派发失败：{e}"),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
+            false
+        }
+    }
+}
+
+/// 非 cluster 编译形态：诚实零操作 + warn（与 auto_dispatch_after_assign
+/// 非 cluster 臂同款纪律）。
+#[cfg(not(feature = "cluster"))]
+pub fn dispatch_issue_for_external_source(
+    _store: &Arc<BoardStore>,
+    _issue: &nemesis_board::Issue,
+    _explicit_target: Option<&str>,
+    _actor: &Actor,
+) -> bool {
+    false
+}
+
+// ---------------------------------------------------------------------------
 // autopilot（W2 P4 定时派活）：模板建单 + 可选派发 + cron 触发簿记
 // ---------------------------------------------------------------------------
 
@@ -5861,6 +5976,9 @@ impl ModuleHandler for BoardHandler {
             "config.get",
             "config.set",
             "dossier.export",
+            "board.external_sources",
+            "board.external_sync",
+            "delivery.publish",
         ]
     }
 
@@ -7239,6 +7357,33 @@ impl ModuleHandler for BoardHandler {
                     "notes": outcome.notes,
                 })))
             }
+            // --- P1 外循环（外部来源绑定）---
+            "board.external_sources" => {
+                match EXTERNAL_SOURCE_SURFACE.get() {
+                    Some(surface) => Ok(Some((surface.list)())),
+                    // 未装配 = 未配置来源或极简装配；诚实报告而非 500。
+                    None => Ok(Some(serde_json::json!({
+                        "installed": false,
+                        "sources": [],
+                    }))),
+                }
+            }
+            "board.external_sync" => {
+                let surface = EXTERNAL_SOURCE_SURFACE
+                    .get()
+                    .ok_or("外部来源轮询未装配（未配置 board.external_sources）")?;
+                let result = (surface.sync_now)().await?;
+                Ok(Some(result))
+            }
+            // --- P3 外循环（交付发布，2026-10-25）---
+            "delivery.publish" => {
+                let data = data.ok_or("missing data")?;
+                let bridge = crate::handlers::deliveries::delivery_publish_bridge().ok_or(
+                    "发布桥未装配（delivery publish bridge 未接线——headless/测试形态不可发布）",
+                )?;
+                let outcome = bridge.publish(&data).await?;
+                Ok(Some(outcome))
+            }
             _ => Err(format!("unknown command: board.{}", cmd)),
         }
     }
@@ -7306,6 +7451,12 @@ fn board_config_set(
             // PASS 前置校验交付记录在场，缺失 = FAIL「缺交付证据」。
             "review.require_delivery_evidence" => {
                 board.review.require_delivery_evidence = need_bool(value)?;
+            }
+            // P2 必检计划闸（SKIP≠PASS，2026-10-25）：开启后任务文本反引号
+            // 命令 = 必检计划，评审收口对账 delivery.checks——计划内没跑或
+            // 失败 = PASS 降级 FAIL。
+            "review.require_check_plan" => {
+                board.review.require_check_plan = need_bool(value)?;
             }
             // M7（2026-10-10）：exec 锚点开关 + 超时（默认关=诚实 skipped 注记，
             // 不进结果组；开=锚点命令在项目根执行，exit 0=过）。
@@ -7539,6 +7690,7 @@ fn board_config_set(
                  plan.auto_confirm / plan.model / review.max_turns / \
                  review.max_unsure_streak / review.selfcheck / \
                  review.require_delivery_evidence / \
+                 review.require_check_plan / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
                  review.auto_close_project / review.checkers / review.required_checks / \
                  review.professions.<slug>.* / \

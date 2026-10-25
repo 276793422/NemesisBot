@@ -773,6 +773,19 @@ pub(crate) async fn init_post_agent(
                 // 项 C（2026-10-22）：通知账本 db 同点注入（sweeper 每 tick
                 // 惰性读槽；钩子记账复用同一 Arc<TaskDb>）。
                 crate::notify::install_notify_db(std::sync::Arc::clone(&deliveries_db));
+                // P3 外循环（PR 发布，2026-10-25）：发布桥同点接线（交付
+                // 账本查询面同款依赖反转；缺 board/security/connectors 任一
+                // feature = 发布面不装配，WSAPI delivery.publish 诚实报
+                // 「桥未装配」）。external_source::spawn 同款三 feature 闸。
+                #[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
+                crate::publish::install(
+                    std::sync::Arc::clone(&deliveries_db),
+                    board_store
+                        .clone()
+                        .expect("board feature 已启用，board_store 必在"),
+                    std::sync::Arc::clone(&agent_loop),
+                    home.join("workspace"),
+                );
                 // 节点宣告带 agent 清单（P2）：provider 闭包每次现读实体
                 // 注册表（UDP announce / TCP 探针回退 / get_info 三路同源），
                 // 运行期建删 agent 无需回写或重启。cluster 关 = 不装（roster
@@ -949,8 +962,10 @@ pub(crate) async fn init_post_agent(
     // EST-01/02（2026-09-16 横扫加固）：同一 estop 实例注入看板派发族闸
     // （dispatch_issue_core 单一入口）——急停冻结全部自动/手动派发，而非
     // 只有 agent loop。board 关 = handlers::board 随 nemesis-board 退出编译
-    // （desktop 形态 board 关 cluster 开：闸必须含 board，E0433 实录）。
-    #[cfg(feature = "board")]
+    // （desktop 形态 board 关 cluster 开：闸必须含 board，E0433 实录）；
+    // web 侧 BOARD_ESTOP 族整体 cluster 门控（消费点 dispatch 族同门），
+    // 调用点闸必须含 cluster（cluster 关裁剪形态 E0425 实录）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
     {
         if nemesis_web::handlers::board::install_board_estop(shared_resources.estop.clone()) {
             info!("[Gateway] E-stop gate installed for board dispatch family");
@@ -963,6 +978,30 @@ pub(crate) async fn init_post_agent(
     #[cfg(feature = "board")]
     if nemesis_web::handlers::board::install_handoff_workspace(home.join("workspace")) {
         info!("[Gateway] Board handoff workspace root installed");
+    }
+
+    // P1 外循环（外部来源绑定，2026-10-25）：Gitea issue 轮询导入 + 状态
+    // 回写 + 任务副本物化。config `board.external_sources` 空 = spawn 内部
+    // 短路（零开销，worker 节点天然不装）。派发面用 cluster_arc_ref（refs
+    // take 后仍存活的通用引用，board_discussion_cluster 同款纪律）；无
+    // cluster 编译/未启用集群 = 导入照常，自动派发诚实停车（⏸ 评论）。
+    // 三 feature 同闸：board（store 面）+ security（vault 凭据）+
+    // connectors（connector_invoke 通路）。
+    #[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
+    {
+        crate::external_source::spawn(
+            agent_loop.clone(),
+            board_store
+                .clone()
+                .expect("board feature 已启用，board_store 必在"),
+            home.join("workspace"),
+            home.clone(),
+            shared_resources.estop.clone(),
+            #[cfg(feature = "cluster")]
+            cluster_arc_ref.clone(),
+            #[cfg(not(feature = "cluster"))]
+            (),
+        );
     }
 
     // C5: inject the shared LSP manager (same Arc the LspTool registered

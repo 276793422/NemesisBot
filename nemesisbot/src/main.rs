@@ -141,6 +141,12 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// P1 外循环（外部来源绑定，2026-10-25）：Gitea issue 轮询导入 + 状态回写
+/// + 任务副本物化。门控 = board（store/WSAPI 面）+ security（vault 凭据）+
+/// connectors（connector_invoke 执行通路）三者与消费点同闸；config
+/// `board.external_sources` 空 = 装配入口直接短路（零开销）。
+#[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
+mod external_source;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
@@ -176,6 +182,11 @@ mod profile_service;
 /// allow 随接线移除。
 #[allow(dead_code)]
 mod projects;
+/// P3 外循环（PR 发布 + unknown 对账，2026-10-25）：交付分支推远端 + PR
+/// 创建 + 三分支状态机。门控与消费点同闸（board+security+connectors，
+/// 同 external_source）——发布需要 connector 通路、vault 凭据、board 副本。
+#[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
+mod publish;
 /// F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker——question
 /// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
 mod question_broker;
