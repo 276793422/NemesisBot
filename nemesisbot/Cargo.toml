@@ -246,6 +246,9 @@ nemesis-utils = { workspace = true }
 # Z1 session fork: chat_log copy goes through the process-global path manager;
 # the CLI verifies it agrees with the resolved home (refuses to half-fork).
 nemesis-path = { workspace = true }
+# BUG-20261025-50：路由 config 接线——生产 resolver 构造（bindings/agents.list/
+# session.dm_scope 映射）走 nemesis-routing 权威实现，不再依赖 new_bus 硬编码默认。
+nemesis-routing = { workspace = true }
 # Swarm M3（§5.4/D-5）：board_asset 工具的 HTTP 拉取走共享连接池。
 nemesis-http-pool = { workspace = true }
 # 签名验证接入（P0）：启动自验走 lib 直接验签（不走 DLL）。

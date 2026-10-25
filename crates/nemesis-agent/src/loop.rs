@@ -468,6 +468,10 @@ pub struct AgentLoop {
     /// Mirrors Go's al.registry (RouteResolver). When set, process_inbound_message
     /// uses the full 7-level priority cascade instead of the default-agent fallback.
     route_resolver: Option<RouteResolver>,
+    /// Identity links（canonical_name -> 平台 ID 列表）——每次组装 RouteInput
+    /// 随身携带（BUG-20261025-50 接线：config `session.identity_links` 此前
+    /// 只声名未读取，route_message 恒传空表，跨平台身份归并永不生效）。
+    identity_links: HashMap<String, Vec<String>>,
     /// Optional observer event callback (mirrors Go's observerMgr).
     /// Called at conversation_start, conversation_end, llm_request, llm_response, tool_call.
     observer_callback: Option<Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>>,
@@ -853,6 +857,7 @@ impl AgentLoop {
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
             route_resolver: None,
+            identity_links: HashMap::new(),
             observer_callback: None,
             continuation_manager: None,
             cluster: None,

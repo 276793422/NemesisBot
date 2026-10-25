@@ -3758,6 +3758,62 @@ fn test_set_route_resolver() {
     assert!(agent_loop.route_resolver.is_some());
 }
 
+/// BUG-20261025-50 接线端到端：route_message 的 RouteInput 不再恒传空身份
+/// 链——dm_scope 粒度与 identity_links 归并在真实路由路径生效；缺省形态
+/// （Main scope + 空链）与旧硬编码行为逐字节同键。
+#[test]
+fn test_route_message_dm_scope_and_identity_links_wiring() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![])),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let msg = || nemesis_types::channel::InboundMessage {
+        channel: "telegram".to_string(),
+        sender_id: "123".to_string(),
+        chat_id: "123".to_string(),
+        content: "hello".to_string(),
+        media: vec![],
+        session_key: String::new(),
+        correlation_id: String::new(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("peer_kind".to_string(), "direct".to_string());
+            m
+        },
+        voice_playback: None,
+    };
+
+    // 缺省（new_bus 默认 resolver：Main scope；identity_links 空）= 旧行为。
+    let (agent_id, session_key) = agent_loop.route_message(&msg());
+    assert_eq!(agent_id, "main");
+    assert_eq!(session_key, "agent:main:main");
+
+    // per-channel-peer + 身份链归并：telegram:123 → alice（大小写归一）。
+    let config = nemesis_routing::RouteConfig {
+        bindings: Vec::new(),
+        agents: vec![nemesis_routing::AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
+        dm_scope: "per-channel-peer".to_string(),
+    };
+    agent_loop.set_route_resolver(nemesis_routing::RouteResolver::new(config));
+    let mut links = std::collections::HashMap::new();
+    links.insert(
+        "alice".to_string(),
+        vec!["telegram:123".to_string(), "discord:999".to_string()],
+    );
+    agent_loop.set_identity_links(links);
+    let (agent_id, session_key) = agent_loop.route_message(&msg());
+    assert_eq!(agent_id, "main");
+    assert_eq!(session_key, "agent:main:telegram:direct:alice");
+}
+
 #[test]
 fn test_set_cluster_and_get() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());

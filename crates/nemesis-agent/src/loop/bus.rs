@@ -183,6 +183,7 @@ impl AgentLoop {
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
             route_resolver: Some(RouteResolver::new(default_route_config)),
+            identity_links: HashMap::new(),
             observer_callback: None,
             continuation_manager: None,
             cluster: None,

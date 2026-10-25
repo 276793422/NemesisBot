@@ -38,6 +38,11 @@ mod reloader_tests;
 #[cfg(test)]
 mod projects_factory_tests;
 
+// BUG-20261025-50 路由 config 接线测试（无 feature 门——纯映射逻辑默认
+// 构建必跑；模块名含 route_resolver 对齐过滤词）。
+#[cfg(test)]
+mod route_resolver_tests;
+
 // ---------------------------------------------------------------------------
 // SharedResources — infrastructure that survives Agent restart
 // ---------------------------------------------------------------------------
@@ -394,6 +399,46 @@ pub(crate) fn register_request_logger_observer(
     true
 }
 
+/// BUG-20261025-50：路由 config 接线——把 `bindings` / `agents.list` /
+/// `session.dm_scope` 映射成生产 [`nemesis_routing::RouteResolver`]。
+///
+/// 此前四个 config 键只声名未读取（typed round-trip 假活），生产 resolver
+/// 一直是 `new_bus` 的硬编码默认（单 main agent、Main scope、空身份链）。
+/// 映射语义：config `BindingMatch.guild_id/team_id` 空串 = 无约束（→
+/// Option None，可落 account 级匹配）；`peer` 原样透传（空串字段的取舍
+/// 由 nemesis-routing 自身的语义裁决）；`agents.list` 非空时 `pick_agent`
+/// 按其校验/回退默认，空列表 = 保留绑定原始 agent id（与旧行为同形）。
+/// 全部键缺省 → resolver 行为与旧硬编码字节一致（零回归）。
+fn build_route_resolver(cfg: &nemesis_config::Config) -> nemesis_routing::RouteResolver {
+    let bindings = cfg
+        .bindings
+        .iter()
+        .map(|b| nemesis_routing::AgentBinding {
+            agent_id: b.agent_id.clone(),
+            match_channel: b.r#match.channel.clone(),
+            match_account_id: b.r#match.account_id.clone(),
+            match_peer_kind: b.r#match.peer.as_ref().map(|p| p.kind.clone()),
+            match_peer_id: b.r#match.peer.as_ref().map(|p| p.id.clone()),
+            match_guild_id: (!b.r#match.guild_id.is_empty()).then(|| b.r#match.guild_id.clone()),
+            match_team_id: (!b.r#match.team_id.is_empty()).then(|| b.r#match.team_id.clone()),
+        })
+        .collect();
+    let agents = cfg
+        .agents
+        .list
+        .iter()
+        .map(|a| nemesis_routing::AgentDef {
+            id: a.id.clone(),
+            is_default: a.default,
+        })
+        .collect();
+    nemesis_routing::RouteResolver::new(nemesis_routing::RouteConfig {
+        bindings,
+        agents,
+        dm_scope: cfg.session.dm_scope.clone(),
+    })
+}
+
 /// T2b（扩展计划 D4）：fallback 链装配（启动路径）——active 模型条目的
 /// per-model extra 键 `fallback_to: ["alias-b", ...]`（BTreeMap flatten
 /// 透传，无需 typed 字段）。本函数只做 config → [`FallbackLevel`] 解析；
@@ -743,6 +788,12 @@ pub fn build_agent_loop(
         queue_size,
         max_continuation_permits,
     );
+    // BUG-20261025-50：路由 config 接线——bindings / agents.list /
+    // session.dm_scope 构造生产 resolver（此前四键只声名未读取，恒用
+    // new_bus 硬编码默认）；identity_links 注入 route_message 的 RouteInput。
+    // 全部键缺省 = 与硬编码默认同形，零回归。
+    agent_loop.set_route_resolver(build_route_resolver(&cfg));
+    agent_loop.set_identity_links(cfg.session.identity_links.clone());
     // D-4（2026-09-23 多会话并行清账）：loop 级并发 turn 上限（安全阀，
     // 默认 8；0 = 不设限）。泵统一 gate+spawn 后跨会话天然并发，此值防
     // 极端场景无界并发。
@@ -3324,6 +3375,10 @@ pub fn build_agent_loop_from_spec(
         queue_size,
         max_continuation_permits,
     );
+    // BUG-20261025-50：项目 loop 与主 loop 同源路由 config（web 会话键预置
+    // agent: 前缀走 honor 分支不受影响；缺省 = 硬编码默认同形零回归）。
+    agent_loop.set_route_resolver(build_route_resolver(&cfg));
+    agent_loop.set_identity_links(cfg.session.identity_links.clone());
     // D-4（2026-09-23 多会话并行清账）：项目 loop 同主 loop——并发 turn
     // 上限安全阀（同会话仍串行）。
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);

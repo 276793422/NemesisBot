@@ -239,6 +239,13 @@ impl AgentLoop {
         info!("[AgentLoop] Route resolver configured");
     }
 
+    /// Set identity links（canonical_name -> 平台 ID 列表）。BUG-20261025-50
+    /// 接线：config `session.identity_links` 的运行时注入口——route_message
+    /// 组装 RouteInput 时随身携带，跨平台 DM 身份归并才真正生效。
+    pub fn set_identity_links(&mut self, links: HashMap<String, Vec<String>>) {
+        self.identity_links = links;
+    }
+
     /// Set the cluster reference.
     ///
     /// Accepts an `Arc<dyn Any + Send + Sync>` to avoid a compile-time dependency

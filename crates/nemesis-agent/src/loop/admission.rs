@@ -511,7 +511,9 @@ impl AgentLoop {
                 parent_peer_id,
                 guild_id: msg.metadata.get("guild_id").cloned(),
                 team_id: msg.metadata.get("team_id").cloned(),
-                identity_links: std::collections::HashMap::new(),
+                // BUG-20261025-50 接线：identity_links 来自 set_identity_links
+                // （config session.identity_links），不再恒传空表。
+                identity_links: self.identity_links.clone(),
             };
             let route = resolver.resolve(&route_input);
 

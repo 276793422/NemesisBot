@@ -4714,6 +4714,7 @@ dependencies = [
  "nemesis-plugins-wasm",
  "nemesis-prompts",
  "nemesis-providers",
+ "nemesis-routing",
  "nemesis-sandbox",
  "nemesis-security",
  "nemesis-services",
