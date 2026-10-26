@@ -30,6 +30,18 @@ fn test_status() {
     assert_eq!(status["beat_count"], serde_json::json!(0));
 }
 
+// BUG-20261025-80 回归锁：Default 的 interval 必须与 new(0,..) 契约口径
+// （缺省 30 分钟）等值。旧 Default 是 30 秒——同文件三处「缺省间隔」
+// 语义（new 契约 / serde 缺省 / default_interval_minutes 字段）之外的
+// 第四处分裂，任何 ..Default::default() 采纳者拿到 60× 频率的 LLM 锤。
+#[test]
+fn test_default_interval_matches_new_zero_contract() {
+    let default_cfg = HeartbeatConfig::default();
+    let contract_cfg = HeartbeatConfig::new(0, true, "ws".to_string());
+    assert_eq!(default_cfg.interval, contract_cfg.interval);
+    assert_eq!(default_cfg.interval, Duration::from_secs(30 * 60));
+}
+
 #[tokio::test]
 async fn test_start_stop() {
     let tmp = tempfile::tempdir().unwrap();
@@ -325,7 +337,9 @@ fn test_send_response_internal_channel() {
 fn test_config_default_values() {
     let config = HeartbeatConfig::default();
     assert!(config.enabled);
-    assert_eq!(config.interval, Duration::from_secs(30));
+    // BUG-20261025-80：缺省间隔与 new(0) 契约同口径（30 分钟），旧 30 秒
+    // 是分裂第四处。专锁见 test_default_interval_matches_new_zero_contract。
+    assert_eq!(config.interval, Duration::from_secs(30 * 60));
     assert!(config.workspace.is_none());
     assert_eq!(config.min_interval_minutes, 5);
     assert_eq!(config.default_interval_minutes, 30);

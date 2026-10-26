@@ -74,7 +74,12 @@ pub struct HeartbeatConfig {
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(30),
+            // 与 new(0,..) 契约（0→缺省 30 分钟）、serde config 层缺省 30、
+            // 下方 default_interval_minutes 字段同一口径。旧值 30 秒是
+            // BUG-20261025-64「同一语义多处分裂」收编时漏网的第四处
+            // （当时收了 gateway 字面量/crate 契约/serde 缺省三处）——
+            // 任何 ..Default::default() 采纳者会拿到 60× 频率的 LLM 锤。
+            interval: Duration::from_secs(30 * 60),
             enabled: true,
             workspace: None,
             min_interval_minutes: 5,
