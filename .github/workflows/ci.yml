@@ -341,10 +341,18 @@ jobs:
     # job 只建一次 exe、artifact 下发：彩票 4→1；本 job needs 之，job 龄从
     # bin 完成起算，测试段远离 ~45min 失联窗。bin 步从本 job 移除，exe 由
     # download-artifact 钉位 target/debug/nemesisbot.exe（live 批 spawn 路径）。
+    #
+    # 4→6 片（2026-10-26 深夜）：单点化后首 run 四片三死一残，死亡时刻全部
+    # 落在自家 job 龄 48-55min（libs/nextest 各有，日志全 404=runner 冻结），
+    # 且全天铁律=成功者全部 <40min 完赛、死亡者全部 45-55min——冻结跟墙钟
+    # 年龄走不跟步骤走。暖路径分片总时长 ~41min 贴线（setup 4 + libs 3 +
+    # frontend 2 + nextest 编译 ~10 + 执行 ~22），必须压回线下。6 片把执行段
+    # 22→~15min，暖路径 ~34min，留 ~10min 余量。编译段（按测试二进制整体
+    # 编）不随片数收缩，是新的下界。六片并集=全集。
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
@@ -520,12 +528,17 @@ jobs:
         # hash:N/4（2026-10-26 3→4 片）：shard2 三连死（51/53/52min，全卡 bin
         # 构建步、前置常速=抽签劣化复发），套件增长令三片总墙钟重回窗内；
         # 四片单片测试 ~22min、典型总墙钟 ~28min。四片并集=全集。
+        # hash:N/6（2026-10-26 深夜 4→6 片）：单点化后首 run 四片三死一残，死亡
+        # 时刻全在自家 job 龄 48-55min（libs/nextest 各有，日志 404=runner 冻结），
+        # 铁律=成功 <40min / 死亡 45-55min（冻结跟墙钟年龄走不跟步骤走）。
+        # 暖路径 41min 贴线必须压回：执行段 22→~15min、暖路径 ~34min。
+        # 编译段按测试二进制整体编、不随片数收缩，是新的下界。六片并集=全集。
         # --failure-output final（2026-10-18）：失败详情只进收尾 recap——默认
         # immediate 在中段流打 panic 现场，wrapper 只留 stderr 尾 100 行=现场
         # 结构性丢失（sup_env 两连红实录：失败在 7959/9139 位，panic 文本永不
         # 入日志）。final 把详情挪进 Summary 前的 recap（必然落在尾窗）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/4"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/6"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
