@@ -826,6 +826,34 @@ fn test_session_store_truncate_to_zero() {
     assert!(data.messages.is_empty());
 }
 
+/// BUG-20261025-79 锁：truncate_history 从头部丢弃 → summary_covers_up_to
+/// 同步前移（与 trim_to_limit 同一不变量）。covers 是 1-based（0=仅盖住
+/// system prompt），消费端 clamp(1, len)：陈旧大值在截短历史上会 clamp 到
+/// len → 整段历史被误判已摘要而丢弃；归零（saturating）= 历史全文发送 +
+/// 摘要作浮动上下文，是截断后的诚实形态。
+#[test]
+fn test_truncate_history_adjusts_summary_covers_up_to() {
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("tk");
+
+    // 场景 1：covers(6) > 丢弃数(2)，keep 8 → covers 前移到 4。
+    store.set_history("tk", stored_msgs(10));
+    store.set_summary("tk", "s");
+    store.set_summary_covers_up_to("tk", Some(6));
+    store.truncate_history("tk", 8);
+    let data = store.get_or_create("tk");
+    assert_eq!(data.messages.len(), 8);
+    assert_eq!(data.summary_covers_up_to, Some(4));
+
+    // 场景 2：covers(6) ≤ 丢弃数(7)，keep 3 → covers 归零（saturating）。
+    store.set_history("tk", stored_msgs(10));
+    store.set_summary_covers_up_to("tk", Some(6));
+    store.truncate_history("tk", 3);
+    let data = store.get_or_create("tk");
+    assert_eq!(data.messages.len(), 3);
+    assert_eq!(data.summary_covers_up_to, Some(0));
+}
+
 #[test]
 fn test_session_manager_get_or_create_default() {
     let mgr = SessionManager::with_default_timeout();
@@ -2061,7 +2089,11 @@ fn test_sanitize_session_id_charset() {
 }
 
 /// save(): rename failure (destination path is a DIRECTORY on Windows) ->
-/// Err("rename error ...") and the temp file is cleaned up.
+/// Err（底层 rename 失败，文案经 write_file_atomic 冒泡）and the temp file is
+/// cleaned up. BUG-20261025-78 后落盘走 nemesis_utils::file::write_file_atomic，
+/// 错误形状为 `save session <path>: atomic write <path>: rename: ...`；断言
+/// `contains("rename")`（新旧实现都含，兼容两形态）。残留检查不依赖 tmp 命名：
+/// 失败后目录里除目标 DIRECTORY 外应无任何常规文件（helper 内部自清理）。
 #[test]
 fn test_save_rename_failure_returns_error_and_cleans_temp() {
     let dir = tempfile::tempdir().unwrap();
@@ -2069,14 +2101,17 @@ fn test_save_rename_failure_returns_error_and_cleans_temp() {
     store.get_or_create("rn:key");
     std::fs::create_dir_all(dir.path().join("rn_key.json")).unwrap();
     let err = store.save("rn:key").unwrap_err();
-    assert!(err.contains("rename error"), "unexpected error: {err}");
-    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+    assert!(err.contains("rename"), "unexpected error: {err}");
+    let leftover_files: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".tmp"))
         .collect();
-    assert!(leftovers.is_empty(), "temp removed: {leftovers:?}");
+    assert!(
+        leftover_files.is_empty(),
+        "temp removed: {leftover_files:?}"
+    );
 }
 
 /// load_from_disk: non-`.json` entries skipped; a `.json`-named DIRECTORY

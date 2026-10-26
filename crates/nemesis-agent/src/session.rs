@@ -702,8 +702,14 @@ impl SessionStore {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key)
             && session.messages.len() > keep_last
         {
-            let start = session.messages.len() - keep_last;
-            session.messages = session.messages.split_off(start);
+            let dropped = session.messages.len() - keep_last;
+            session.messages = session.messages.split_off(dropped);
+            // 从头部丢弃 → 摘要覆盖索引同步前移（与 trim_to_limit 同一不变量）；
+            // 否则 covers 残留旧值指向新历史起点之外，build_messages 会把
+            // 从未被摘要的消息当成已覆盖丢弃。
+            if let Some(c) = session.summary_covers_up_to {
+                session.summary_covers_up_to = Some(c.saturating_sub(dropped));
+            }
             session.updated = Local::now();
         }
     }
@@ -734,22 +740,17 @@ impl SessionStore {
 
         let session_path = storage_dir.join(format!("{}.json", filename));
 
-        // Atomic write: write to temp file, then rename. The counter suffix
-        // prevents same-key concurrent saves (main loop + summarize task) from
-        // trampling each other's temp file — the root cause of the save race.
-        static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp_name = format!("session-{}-{}-{}.tmp", filename, std::process::id(), n);
-        let tmp_path = storage_dir.join(&tmp_name);
-
-        std::fs::write(&tmp_path, &data).map_err(|e| format!("write temp error: {}", e))?;
-
-        std::fs::rename(&tmp_path, &session_path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            format!("rename error: {}", e)
-        })?;
-
-        Ok(())
+        // 落盘委托 REL-002 权威 helper（唯一 tmp + fsync + 失败清理），与
+        // nemesis-session::save_chat_session 同源（BUG-51 同族迁移）。旧手搓
+        // 版无 fsync：rename 落盘后进程崩溃可能留下空/半截 JSON；且错误文案、
+        // tmp 命名与权威 helper 双源分裂。helper 内部唯一 tmp 同样防同键并发
+        // save（主循环 + summarize 任务）互相踩 tmp。
+        nemesis_utils::file::write_file_atomic(
+            &session_path.to_string_lossy(),
+            data.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("save session {}: {}", session_path.display(), e))
     }
 
     /// Load all sessions from disk.
