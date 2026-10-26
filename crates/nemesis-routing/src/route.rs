@@ -198,7 +198,13 @@ impl RouteResolver {
             if bk.is_empty() || bid.is_empty() {
                 continue;
             }
-            if bk == peer_kind.to_lowercase() && bid == peer_id {
+            // BUG-20261025-89：peer_id 比较与 kind/channel/account 同一大小写
+            // 纪律（CI）——渠道上报的 peer_id 大小写与配置漂移（IRC 昵称
+            // RFC 1459 大小写不敏感、Mastodon/Bluesky 句柄等）时，精确比较
+            // 让绑定静默脱靶落到 default agent；且会话键构建本就把 peer_id
+            // lowercase（同 peer 不同大小写共享同一会话），CS 绑定区分在
+            // 下游不可执行。
+            if bk == peer_kind.to_lowercase() && bid.to_lowercase() == peer_id.to_lowercase() {
                 return Some(*b);
             }
         }

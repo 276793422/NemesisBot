@@ -1285,3 +1285,68 @@ fn s12b_channel_wildcard_match_continues_past_specific_accounts() {
     let route = resolver.resolve(&s12b_input("web", "unknown-account"));
     assert_eq!(route.agent_id, "wildcard");
 }
+
+// BUG-20261025-89 红证：peer 绑定的 peer_id 比较必须大小写不敏感。
+// 旧实现 kind 走 CI（`bk == peer_kind.to_lowercase()`）而 id 走精确比较
+// （`bid == peer_id`）——渠道上报的 peer_id 大小写与配置漂移（IRC 昵称
+// RFC 1459 大小写不敏感、Mastodon/Bluesky 句柄、用户手打大小写）时绑定
+// 静默脱靶落到 default agent。且会话键构建本就把 peer_id lowercase——
+// 同一 peer 不同大小写共享同一会话，CS 绑定区分在下游不可执行。
+#[test]
+fn test_peer_match_peer_id_case_insensitive() {
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "peer-agent".to_string(),
+            match_channel: "web".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: Some("direct".to_string()),
+            match_peer_id: Some("Alice".to_string()), // 配置侧混合大小写
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![AgentDef {
+            id: "peer-agent".to_string(),
+            is_default: true,
+        }],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "web".to_string(),
+        account_id: "default".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("alice".to_string()), // 渠道侧小写（如 IRC昵称/句柄漂移）
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(route.agent_id, "peer-agent", "peer_id 大小写漂移不得脱靶");
+    assert_eq!(route.matched_by, "binding.peer");
+
+    // 反向同证：配置小写、渠道大写
+    let resolver2 = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "peer-agent".to_string(),
+            match_channel: "web".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: Some("direct".to_string()),
+            match_peer_id: Some("bob".to_string()),
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![AgentDef {
+            id: "peer-agent".to_string(),
+            is_default: true,
+        }],
+        dm_scope: "main".to_string(),
+    });
+    let input2 = RouteInput {
+        peer_id: Some("BOB".to_string()),
+        ..input
+    };
+    let route2 = resolver2.resolve(&input2);
+    assert_eq!(route2.agent_id, "peer-agent");
+    assert_eq!(route2.matched_by, "binding.peer");
+}
