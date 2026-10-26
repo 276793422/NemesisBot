@@ -1500,7 +1500,7 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
     let wb = TestWorkspace::new().expect("temp workspace B");
     let home_b = wb.home();
     let mock_b = MockAiServer::start(Vec::new()).expect("empty mock B");
-    let cfg_b = live_gateway_config(
+    let mut cfg_b = live_gateway_config(
         &home_b.join("workspace"),
         &mock_b.base_url(),
         "r10-err-b-model",
@@ -1510,6 +1510,12 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
         true,
         false,
     );
+    // B 的降级必须快：500 被归类 Overloaded 进限流重试环（默认 10 档共 885s），
+    // 会把「B 端 LLM 失败 → 错误回调」拖出 A 的 150s 续行窗（2026-10-26 CI
+    // 实录：B 卡 retry 6/10 in 90s，A wait_until(150) 超时 panic）。重试 0 =
+    // 首败即硬失败 → handle_task_error 错误回调秒级到达，续行链确定性走通；
+    // 测试意图（降级触发续行）不变，只压掉阶梯延迟。
+    cfg_b["agents"]["defaults"]["rate_limit_retries"] = json!(0);
     install_home_config(&home_b, &cfg_b);
     install_peers_toml(&home_b, "R10ERRB", "R10ERRA", udp_a);
     install_cluster_app_config(&home_b, udp_b, rpc_b, &cluster_token);
