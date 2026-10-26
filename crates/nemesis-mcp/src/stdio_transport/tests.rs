@@ -978,3 +978,40 @@ time.sleep(30)
     );
     t.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn bug87_notification_send_no_response_no_wait() {
+    // BUG-20261025-87：通知（id=None）按 JSON-RPC 语义无响应可等——send
+    // 写入即返回，不进读循环空转满 deadline。旧实现：notifications/initialized
+    // 每次连接固定烧满 1s 才 Err(timeout)（被 send_notification 吞掉），
+    // 启动全量挂载逐 server 串行放大成 N×1s 纯延迟。判别式取 Ok/Err
+    // （旧=Err(timeout) 且耗时≈deadline；新=即时 Ok），不取墙钟
+    // （慢机墙钟阈值易碎；Err→Ok 本身即确定性红灯）。
+    let script = r#"
+import time
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let notification = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: None,
+        method: "notifications/initialized".to_string(),
+        params: None,
+    };
+    let result = t.send(&notification, 1_000).await;
+    assert!(
+        result.is_ok(),
+        "通知无响应可等，写入即 Ok；got Err（=烧满 deadline 的旧行为）: {:?}",
+        result.err()
+    );
+    assert!(
+        result.as_ref().unwrap().error.is_none(),
+        "占位响应不得携带 error"
+    );
+    t.close().await.unwrap();
+}

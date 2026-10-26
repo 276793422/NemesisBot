@@ -341,6 +341,23 @@ impl Transport for StdioTransport {
                 .map_err(|e| TransportError::send_failed(format!("failed to flush stdin: {e}")))?;
         }
 
+        // 通知（id=None）按 JSON-RPC 语义无响应可等——写入即返回，不进读
+        // 循环空转满 deadline（BUG-20261025-87：notifications/initialized
+        // 旧实现每次连接固定烧满 timeout（client 侧 1s）才 Err(timeout)，
+        // 错误虽被 send_notification 吞掉，纯延迟照常落地——启动全量挂载
+        // 逐 server 串行放大成 N×1s，mcp_discover 每次探测同付 1s）。
+        // 返回合成占位响应：id=None 的唯一生产调用方是
+        // client::send_notification（fire-and-forget 丢弃结果），占位值
+        // 无其他消费者。
+        if request.id.is_none() {
+            return Ok(TransportResponse {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::Value::Null,
+                result: Some(serde_json::json!({})),
+                error: None,
+            });
+        }
+
         // Read response from stdout with timeout.
         let stdout = self
             .stdout
