@@ -232,6 +232,33 @@ fn node_def_timeout_duration() {
     assert_eq!(node_no_timeout.timeout_duration(), None);
 }
 
+/// BUG-20261025-86：节点 timeout 为零时长（"0"/"0s"/"0m"/"0h"）= 不限
+/// （None），不是 Some(Duration::ZERO)。全仓配置约定 0=关/不限
+/// （llm_timeout_secs、board 预算、format_on_save timeout_secs 同族）；
+/// Some(0) 透传给 tokio timeout 会在节点首个 await 点即 Elapsed——带
+/// 0 超时的节点必死。parse_duration 本身保持 0→0s 的纯解析语义
+/// （parse_duration_zero_values 钉住不动），语义决策在消费缝。
+#[test]
+fn node_def_zero_timeout_means_unlimited() {
+    for zero in ["0", "0s", "0m", "0h"] {
+        let node = NodeDef {
+            id: "z".to_string(),
+            node_type: "llm".to_string(),
+            config: HashMap::new(),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: Some(zero.to_string()),
+            is_terminal: false,
+        };
+        assert_eq!(
+            node.timeout_duration(),
+            None,
+            "timeout {:?} must mean unlimited (None), not instant death",
+            zero
+        );
+    }
+}
+
 #[test]
 fn workflow_variables_are_strings() {
     let wf = Workflow {

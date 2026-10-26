@@ -1479,6 +1479,60 @@ async fn w4a_schedule_node_timeout_fails_node() {
     );
 }
 
+/// BUG-20261025-86：`timeout: "0"` = 不限，节点正常跑完；不是
+/// `timeout(Duration::ZERO)` 在首个 await 点即 Elapsed（"timed out after
+/// 0s" → 退避重试烧完 → 工作流 Failed）。旧实现下本测试毫秒级 FAILED
+/// （schedule 返回 Err），修复后 ~300ms 绿。项目全局约定 0=关/不限
+/// （llm_timeout_secs、board 预算同族），带 0 超时的节点不该必死。
+#[tokio::test]
+async fn bug86_zero_timeout_means_unlimited_not_instant_death() {
+    struct Sleep300MsExecutor;
+    #[async_trait]
+    impl NodeExecutor for Sleep300MsExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({ "done": true }),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    registry.register("sleep300ms", Arc::new(Sleep300MsExecutor));
+
+    let mut node = make_typed_node("a", "sleep300ms", vec![]);
+    node.timeout = Some("0".to_string()); // 零时长 = 不限，非即死
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let outcome = schedule(
+        &[node],
+        &[],
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        outcome.expect("zero timeout must not kill the node (BUG-20261025-86)"),
+        ScheduleOutcome::Completed
+    );
+    let result = wf_ctx
+        .get_node_result("a")
+        .expect("node a must have run to completion");
+    assert_eq!(result.state, ExecutionState::Completed);
+}
+
 /// A panicking node executor surfaces as a JoinError schedule failure
 /// (scheduler.rs ~427-431).
 #[tokio::test]

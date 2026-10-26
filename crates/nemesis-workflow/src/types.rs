@@ -202,8 +202,17 @@ pub struct NodeDef {
 impl NodeDef {
     /// Parse the timeout string into a Duration, if set.
     /// Returns None if timeout is not set or cannot be parsed.
+    ///
+    /// 零时长（`"0"`/`"0s"`/`"0m"`/`"0h"`）= 不限（None），不是 Some(0)。
+    /// 全仓配置约定 0=关/不限（llm_timeout_secs、board 预算、
+    /// format_on_save timeout_secs 同族）；Some(0) 透传给 tokio timeout
+    /// 会在节点 future 首个 await 点即 Elapsed——带 0 超时的节点必死
+    /// （"timed out after 0ns"，退避重试烧完 retry_count 后工作流
+    /// Failed）。parse_duration 本身保持 0→0s 的纯解析语义（零时长
+    /// 的语义决策收在本消费缝，调度器是唯一消费点）。
     pub fn timeout_duration(&self) -> Option<Duration> {
-        self.timeout.as_ref().and_then(|s| parse_duration(s))
+        let dur = self.timeout.as_ref().and_then(|s| parse_duration(s))?;
+        if dur.is_zero() { None } else { Some(dur) }
     }
 }
 
