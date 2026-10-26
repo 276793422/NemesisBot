@@ -270,13 +270,17 @@ pub fn is_path_within_dir(path: &Path, base_dir: &Path) -> bool {
             let path_str = normalize_path_str(&path_abs);
             let base_str = normalize_path_str(&base_abs);
 
-            if path_str.starts_with(&base_str) {
-                // Make sure it's not a partial match (e.g. /tmp/base-other matching /tmp/base)
-                let rest = &path_str[base_str.len()..];
-                rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')
-            } else {
-                false
-            }
+            // BUG-20261025-82：normalize_path_str 已给 base 补尾分隔符——前缀
+            // 匹配天然排除 `/tmp/base-other` 部分名碰撞，嵌套路径（rest =
+            // "sub/f.txt/" 形态）也必须判内。旧 rest 判定（空或以分隔符开头）
+            // 在尾分隔符归一后对一切嵌套形态恒 false，回退分支退化为「仅精确
+            // 相等返回 true」。`..` 词法逃逸（`base/../evil` 的前缀仍命中）
+            // 必须显式拒绝：canonicalize 失败场景无从实解，按 fail-closed
+            // 处理——与同文件 [`is_unsafe_rel_path`] 的词法闸同一哲学。
+            path_str.starts_with(&base_str)
+                && !path_abs
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
         }
     }
 }

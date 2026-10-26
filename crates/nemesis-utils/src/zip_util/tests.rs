@@ -765,6 +765,31 @@ fn test_is_path_within_dir_nonexistent_same_path_uses_string_compare() {
     assert!(is_path_within_dir(&p, &p));
 }
 
+/// BUG-20261025-82 回归锁：回退分支（两路径都不存在 → 纯字符串比较）对
+/// **嵌套**不存在的路径必须判内。旧 rest 判定（空或以分隔符开头）在
+/// normalize_path_str 尾分隔符归一后对嵌套形态（rest = "sub/file.txt/"）
+/// 恒 false——回退分支退化为「仅精确相等返回 true」。
+#[test]
+fn test_is_path_within_dir_fallback_nested_nonexistent_true() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("no_such_base");
+    let nested = base.join("sub").join("file.txt");
+    assert!(!base.exists());
+    assert!(is_path_within_dir(&nested, &base));
+}
+
+/// 词法 `..` 逃逸必须拒绝：`base/../evil` 的字符串前缀仍命中 base，但
+/// canonicalize 失败场景无从实解——fail-closed（旧 rest 判定歪打正着挡住，
+/// 修复后由显式 ParentDir 词法闸承接，钉住不回退）。
+#[test]
+fn test_is_path_within_dir_fallback_dotdot_escape_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("no_such_base");
+    let escape = base.join("..").join("evil.txt");
+    assert!(!base.exists());
+    assert!(!is_path_within_dir(&escape, &base));
+}
+
 // ---------------------------------------------------------------------------
 // S1 coverage batch (2026-08-26): `if let Some(parent)` None arms.
 // Root-drive targets ("c:\") have parent() == None, exercising the closing
