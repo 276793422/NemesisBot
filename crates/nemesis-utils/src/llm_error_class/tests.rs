@@ -74,6 +74,18 @@ fn overloaded_wording_follows_rate_limit_convention() {
 }
 
 #[test]
+fn status_504_maps_to_timeout() {
+    // BUG-20261025-83：504（Gateway Timeout）此前缺席——同族 408 已归
+    // Timeout，loop transient 词表也有 "504"。不含 "timeout" 字样的裸
+    // 状态码形态是红证锚（修复前 extract → 504 → None → 文案分支也无
+    // 命中 → None 不可重试）。
+    assert_eq!(
+        classify_llm_error("status 504"),
+        Some(LlmErrorClass::Timeout)
+    );
+}
+
+#[test]
 fn image_errors_are_format_class() {
     assert_eq!(
         classify_llm_error("image dimensions exceed max 8000px"),

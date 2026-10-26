@@ -55,7 +55,9 @@ impl FailoverError {
             // error" 前缀——与 Timeout 同属瞬态故障，fallback 链与路由
             // 必须照常轮转（此前伪装 Timeout 时 is_retriable 恒 true，
             // 诚实化若不补这条，主端点连不上就不再故障转移 = 回归）。
-            // 其余 Unknown（HTTP 4xx/500 等应用层错误）维持不可重试。
+            // 其余 Unknown（400/404 等应用层错误）维持不可重试——500 过载
+            // 族自 BUG-20261025-83 起由 `from_status` 直接归 Overloaded，
+            // 不再落 Unknown。
             FailoverError::Unknown { message, .. } => message.starts_with("connect error"),
             _ => false,
         }
@@ -92,6 +94,12 @@ impl FailoverError {
     ///
     /// `retry_after`：调用方从响应头解析的 `Retry-After` 秒数（见
     /// [`retry_after_from_headers`]）；None = 响应未携带（退避走公式）。
+    ///
+    /// 状态码→类别映射**委托 `llm_error_class::class_by_status` 单一真相源**
+    /// （BUG-20261025-83：此前自带只认 502/503 的私有表，408/500/521-524/529
+    /// 落非 retriable Unknown——`is_retriable` 是 fallback 链与 router 的
+    /// 轮转判据，主级间歇 500 类故障时永不轮转；文本分类路径与 loop 词表
+    /// 同判可重试，三面口径分裂）。504 亦由真相源补齐归 Timeout。
     pub fn from_status(
         provider: &str,
         model: &str,
@@ -99,21 +107,26 @@ impl FailoverError {
         body: &str,
         retry_after: Option<u64>,
     ) -> Self {
-        match status {
-            401 | 403 => FailoverError::Auth {
+        use nemesis_utils::llm_error_class::{LlmErrorClass, class_by_status};
+        match class_by_status(status) {
+            Some(LlmErrorClass::Auth) => FailoverError::Auth {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 status,
             },
-            429 => FailoverError::RateLimit {
+            Some(LlmErrorClass::RateLimit) => FailoverError::RateLimit {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 retry_after,
             },
-            402 => FailoverError::Billing {
+            Some(LlmErrorClass::Billing) => FailoverError::Billing {
                 provider: provider.to_string(),
             },
-            503 | 502 => FailoverError::Overloaded {
+            Some(LlmErrorClass::Timeout) => FailoverError::Timeout {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            },
+            Some(LlmErrorClass::Overloaded) => FailoverError::Overloaded {
                 provider: provider.to_string(),
                 // 真实上游状态码随错误携带（2026-10-13）：此前只带 provider，
                 // 502（中转转发失败）与 503 分不清，归因盲点。Display 的
@@ -121,7 +134,11 @@ impl FailoverError {
                 // 还原——展平文本回灌分类器时不丢状态码。
                 status,
             },
-            _ => FailoverError::Unknown {
+            // 400（真相源归 Format）与未收录状态码：保持 Unknown 原文案
+            // 形态——两类均不可重试（无行为差异），"status N: {body}" 是
+            // loop 侧 is_context_error 词表的消费面，不做无行为收益的
+            // 变体迁移。
+            Some(LlmErrorClass::Format) | None => FailoverError::Unknown {
                 provider: provider.to_string(),
                 message: format!(
                     "status {}: {}",

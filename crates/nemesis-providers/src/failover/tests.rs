@@ -29,8 +29,49 @@ fn test_from_status() {
     let err = FailoverError::from_status("openai", "gpt-4", 503, "overloaded", None);
     assert!(matches!(err, FailoverError::Overloaded { .. }));
 
+    // BUG-20261025-83：500 必须归 Overloaded（可重试可轮转）——与
+    // llm_error_class::class_by_status 同口径（单一真相源委托）。
     let err = FailoverError::from_status("openai", "gpt-4", 500, "internal error", None);
-    assert!(matches!(err, FailoverError::Unknown { .. }));
+    assert!(matches!(err, FailoverError::Overloaded { .. }));
+}
+
+/// BUG-20261025-83 对齐锁：`from_status` 的状态码→类别映射必须与
+/// `llm_error_class::class_by_status` 一致。此前本表只认 502/503，
+/// 408/500/521-524/529 落 Unknown 非 retriable——fallback 链/router 的
+/// 轮转判据是 `is_retriable`，主级间歇 500 类故障时永不轮转（loop 侧
+/// 2026-09-24 补 "status 500" transient 词表时明确「同口径」意图，
+/// 结构化路径漏对齐；文本分类路径同 crate 内测试早已钉 500 → Overloaded）。
+#[test]
+fn test_from_status_aligns_with_class_by_status() {
+    // 可重试族：Timeout（408 / 504 Gateway Timeout）。
+    for status in [408u16, 504] {
+        let err = FailoverError::from_status("p", "m", status, "t", None);
+        assert!(
+            matches!(err, FailoverError::Timeout { .. }),
+            "status {status} should map to Timeout, got {err:?}"
+        );
+        assert!(err.is_retriable(), "status {status} must be retriable");
+    }
+    // 可重试族：Overloaded（500/502/503/521-524/529），状态码随错误携带。
+    for status in [500u16, 502, 503, 521, 522, 523, 524, 529] {
+        let err = FailoverError::from_status("p", "m", status, "boom", None);
+        assert!(
+            matches!(err, FailoverError::Overloaded { status: s, .. } if s == status),
+            "status {status} should map to Overloaded, got {err:?}"
+        );
+        assert!(err.is_retriable(), "status {status} must be retriable");
+    }
+    // 不可重试族保持原形态：400/404 → Unknown（400 在 class_by_status 归
+    // Format，两类均不可重试；"status N: {body}" message 形态是 loop 侧
+    // is_context_error 词表的消费面，不做无行为收益的变体迁移）。
+    for status in [400u16, 404] {
+        let err = FailoverError::from_status("p", "m", status, "nope", None);
+        assert!(matches!(err, FailoverError::Unknown { .. }), "{err:?}");
+        assert!(
+            !err.is_retriable(),
+            "status {status} must stay non-retriable"
+        );
+    }
 }
 
 // ============================================================

@@ -50,11 +50,17 @@ pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
 }
 
 /// Classify by HTTP status code.
-fn class_by_status(status: u16) -> Option<LlmErrorClass> {
+///
+/// 状态码→类别映射的**单一真相源**：providers 侧 `FailoverError::from_status`
+/// 委托本表（BUG-20261025-83——此前 from_status 自带只认 502/503 的私有表，
+/// 408/500/521-524/529 落非 retriable Unknown，与文本分类路径、loop 词表
+/// 三面口径分裂，fallback 轮转在主级间歇 500 类故障时失效）。
+pub fn class_by_status(status: u16) -> Option<LlmErrorClass> {
     match status {
         401 | 403 => Some(LlmErrorClass::Auth),
         402 => Some(LlmErrorClass::Billing),
-        408 => Some(LlmErrorClass::Timeout),
+        // 504（Gateway Timeout）与 408 同族；loop transient 词表亦收录 "504"。
+        408 | 504 => Some(LlmErrorClass::Timeout),
         429 => Some(LlmErrorClass::RateLimit),
         400 => Some(LlmErrorClass::Format),
         500 | 502 | 503 | 521 | 522 | 523 | 524 | 529 => Some(LlmErrorClass::Overloaded),

@@ -516,7 +516,10 @@ async fn test_chat_error_503_overloaded() {
 }
 
 #[tokio::test]
-async fn test_chat_error_500_unknown() {
+async fn test_chat_error_500_overloaded() {
+    // BUG-20261025-83：500 必须归 Overloaded（可重试可轮转）——此前落
+    // Unknown 时 fallback 链在主级间歇 500 时永不轮转（文本分类路径与
+    // loop 词表同口径判 500 可重试，结构化路径漏对齐）。
     let server = MockServer::start().await;
     let provider = HttpProvider::new(basic_config(server.uri()));
 
@@ -529,7 +532,7 @@ async fn test_chat_error_500_unknown() {
     let result = provider
         .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
         .await;
-    assert!(matches!(result, Err(FailoverError::Unknown { .. })));
+    assert!(matches!(result, Err(FailoverError::Overloaded { .. })));
 }
 
 #[tokio::test]
