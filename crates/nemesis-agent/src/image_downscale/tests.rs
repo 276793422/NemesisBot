@@ -14,6 +14,9 @@ fn tiny_limits() -> Limits {
         entry_bytes: 2048,
         entry_dimension: 100,
         out_bytes: 200 * 1024,
+        // 输入字节阀：远大于既有 tiny 用例的实体文件（噪声 JPEG ≤几十 KB），
+        // 专测用例另注入 32KB 收紧值。
+        max_input_bytes: 1024 * 1024,
     }
 }
 
@@ -96,6 +99,7 @@ fn disabled_when_uploads_none_is_caller_side() {
         entry_bytes: u64::MAX,
         entry_dimension: u32::MAX,
         out_bytes: 1,
+        max_input_bytes: u64::MAX,
     };
     let v = downscale_gate_with(&src, &dir.0, &limits).unwrap();
     assert!(matches!(v, GateVerdict::Keep));
@@ -365,6 +369,7 @@ fn downscale_small_image_takes_clone_branch() {
         entry_bytes: 10 * 1024 * 1024,
         entry_dimension: 8000,
         out_bytes: 200 * 1024,
+        max_input_bytes: u64::MAX,
     };
     let v = downscale_gate_with(&src, &dir.0, &limits).unwrap();
     assert!(
@@ -386,7 +391,44 @@ fn downscale_reports_honest_err_when_ladder_exhausted() {
         entry_bytes: 1,
         entry_dimension: 8000,
         out_bytes: 1,
+        max_input_bytes: u64::MAX,
     };
     let err = downscale_gate_with(&src, &dir.0, &limits).unwrap_err();
     assert!(err.contains("仍超过"), "{err}");
+}
+
+// BUG-20261025-81 回归锁：输入文件字节超过 Limits.max_input_bytes → 诚实
+// Err 且不进入解码读入（旧形态对合法图片头 + 巨量垃圾尾部的文件会
+// `fs::read` 整包进内存——URL 侧 S1 修的是同族问题，本地路径漏网）。
+#[test]
+fn test_input_bytes_cap_honest_reject() {
+    let dir = TempDir::new("input_bytes_cap");
+    // 合法 PNG magic 开头（可过任何 magic 闸）+ 64KB 垃圾尾部。
+    let mut bytes = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    bytes.extend(std::iter::repeat_n(0u8, 64 * 1024));
+    let src = write_file(&dir, "junk.png", &bytes);
+    // entry_bytes=2048 让降采样入口条件成立（size > entry）；字节阀 32KB
+    // < 文件 64KB+8 → 必须在头部读取/整包读入之前诚实拒绝。
+    let limits = Limits {
+        entry_bytes: 2048,
+        entry_dimension: 8000,
+        out_bytes: 200 * 1024,
+        max_input_bytes: 32 * 1024,
+    };
+    let err = downscale_gate_with(&src, &dir.0, &limits).unwrap_err();
+    assert!(err.contains("降采样输入上限"), "{err}");
+}
+
+// BUG-20261025-81 对照臂：文件字节在阀内 → 闸照常走后续链路（阀不误伤）。
+#[test]
+fn test_input_bytes_cap_not_triggered_under_limit() {
+    let dir = TempDir::new("input_bytes_ok");
+    let src = write_file(&dir, "small.jpg", &encode_jpeg(&noise_rgb(32, 24), 85));
+    let mut limits = tiny_limits();
+    limits.max_input_bytes = 4 * 1024 * 1024;
+    let v = downscale_gate_with(&src, &dir.0, &limits).unwrap();
+    assert!(
+        matches!(v, GateVerdict::Replaced { .. } | GateVerdict::Keep),
+        "{v:?}"
+    );
 }

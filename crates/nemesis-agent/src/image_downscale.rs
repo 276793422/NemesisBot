@@ -10,6 +10,9 @@
 //! 诚实边界（doc 钉死）：
 //! - 输入维度安全阀 [`MAX_INPUT_DIMENSION`]（12000px）：解码内存 ≈ w·h·4，
 //!   超阀诚实拒绝而非尝试（拒绝时保持原图直附语义失败前的原拒绝注记）。
+//! - 输入**文件字节**硬上限（BUG-20261025-81，`Limits.max_input_bytes`，
+//!   缺省派生自维度阀理论解码内存 576MB）：入口条件就是 size>entry_bytes，
+//!   超大文件拒绝整包读入内存（URL 侧 S1 同族先例）。
 //! - **GIF / 动画 WebP 不降采样**（重编码丢动画帧 = 静默语义变更），诚实拒绝。
 //!   动画 WebP 判据见 [`webp_is_animated`]。
 //! - 解码失败（合法 magic 但坏 body）诚实拒绝。
@@ -59,6 +62,10 @@ pub(crate) struct Limits {
     pub entry_dimension: u32,
     /// 产物字节上限（超过则尝试下一级阶梯）。
     pub out_bytes: usize,
+    /// 输入文件字节硬上限（BUG-20261025-81）：入口条件就是 size>entry_bytes，
+    /// 旧形态对超大文件（合法图片头 + 巨量垃圾尾部）`fs::read` 整包读入无
+    /// 上界——URL 侧 S1 已修同族问题，本地文件路径漏网。
+    pub max_input_bytes: u64,
 }
 
 #[cfg(feature = "image-process")]
@@ -66,6 +73,10 @@ pub(crate) const DEFAULT_LIMITS: Limits = Limits {
     entry_bytes: ENTRY_BYTES,
     entry_dimension: MAX_DIMENSION,
     out_bytes: 8 * 1024 * 1024,
+    // 派生自维度安全阀的理论解码内存（12000²×4 ≈ 576MB）：白名单四格式
+    // （PNG/JPEG/GIF/WebP 均压缩形态）在 ≤12000px 下合法文件不会超出此
+    // 量级，超出 = 拒绝而非读入。不另发明数值。
+    max_input_bytes: (MAX_INPUT_DIMENSION as u64) * (MAX_INPUT_DIMENSION as u64) * 4,
 };
 
 /// 降采样闸判定结果。
@@ -125,6 +136,17 @@ pub(crate) fn downscale_gate_with(
     let size = std::fs::metadata(src)
         .map_err(|e| format!("无法读取图片元数据 ({}): {}", src.display(), e))?
         .len();
+
+    // BUG-20261025-81：输入文件字节硬上限——降采样入口条件本身就是
+    // size>entry_bytes，超大文件（合法图片头 + 巨量垃圾）会在下方
+    // `fs::read` 整包进内存。与维度安全阀同一哲学：超阀诚实拒绝而非尝试。
+    if size > limits.max_input_bytes {
+        return Err(format!(
+            "图片文件 {} 字节超过降采样输入上限 {}MB，无法自动降采样",
+            size,
+            limits.max_input_bytes / (1024 * 1024)
+        ));
+    }
 
     // 头部读尺寸（不全解码）：ImageReader::open 是文件句柄读，无整包 slurp。
     let (w, h) = image::ImageReader::open(src)
