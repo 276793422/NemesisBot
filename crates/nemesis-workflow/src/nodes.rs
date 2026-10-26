@@ -1787,7 +1787,7 @@ impl NodeExecutor for HTTPNodeExecutor {
         }
 
         // Execute request
-        let resp = req_builder
+        let mut resp = req_builder
             .send()
             .await
             .map_err(|e| format!("HTTP request failed: {}", e))?;
@@ -1802,11 +1802,28 @@ impl NodeExecutor for HTTPNodeExecutor {
             }
         }
 
-        // Read response body (limit to 1MB)
-        let body_bytes = resp
-            .bytes()
+        // Read response body with a real 1MB cap（BUG-20261025-88：此前
+        // 注释声称 "limit to 1MB" 但 `resp.bytes()` 实际无上限全量缓冲——
+        // URL 支持 {{var}} 从不可信输入解析，指向大端点 = 内存耗尽面，
+        // 且整包 ×2 拷贝（bytes→String）进 output 落 checkpoint/日志）。
+        // 分块累计到上限即停（chunked 无 Content-Length 也被盖住）；
+        // 截断不是失败——output 带 truncated 诚实标记供下游分支。
+        const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+        let mut body_bytes: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map_err(|e| format!("failed to read response body: {}", e))?;
+            .map_err(|e| format!("failed to read response body: {}", e))?
+        {
+            if body_bytes.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                let take = MAX_RESPONSE_BODY_BYTES - body_bytes.len();
+                body_bytes.extend_from_slice(&chunk[..take]);
+                truncated = true;
+                break;
+            }
+            body_bytes.extend_from_slice(&chunk);
+        }
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
         // 诚实失败契约（2026-09-23 计划 A2）：≥400 是应用层失败，默认节点
@@ -1837,6 +1854,7 @@ impl NodeExecutor for HTTPNodeExecutor {
                 "status_code": status_code,
                 "headers": serde_json::Value::Object(resp_headers),
                 "body": body_str,
+                "truncated": truncated,
             }),
             error,
             state,

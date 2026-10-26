@@ -5499,3 +5499,60 @@ async fn b_data_flow_values_are_not_reinterpreted_as_credentials() {
     // SAFETY: 同上。
     unsafe { std::env::remove_var(TRAP) };
 }
+
+#[tokio::test]
+async fn bug88_http_node_response_body_capped_at_1mb() {
+    // BUG-20261025-88：http 节点注释声称响应体限 1MB，旧实现
+    // `resp.bytes()` 实际全量缓冲（URL 支持 {{var}} 从不可信输入解析，
+    // 指向大端点 = 内存耗尽面，且整包进 output 落 checkpoint/日志）。
+    // 服务器发 2MB；断言：读取停在 1MB + truncated 诚实标记。
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let total = 2 * 1024 * 1024usize;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            total
+        );
+        let _ = stream.write_all(head.as_bytes());
+        // 分块写 2MB（客户端 1MB 即断开，写端 EPIPE 被忽略是预期）
+        let chunk = vec![b'a'; 64 * 1024];
+        for _ in 0..(total / chunk.len()) {
+            if stream.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+        let _ = stream.flush();
+    });
+
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://127.0.0.1:{}/big", port)),
+    );
+    let node = make_node("n1", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(
+        result.output["truncated"].as_bool(),
+        Some(true),
+        "超限必须带 truncated 诚实标记"
+    );
+    let body = result.output["body"].as_str().unwrap();
+    assert_eq!(
+        body.chars().count(),
+        1024 * 1024,
+        "响应体读取必须停在 1MB 上限，实际 {} 字节",
+        body.chars().count()
+    );
+}
