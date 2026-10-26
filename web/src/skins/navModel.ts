@@ -48,6 +48,9 @@ const ITEM_FEATURE: Record<string, string> = {
   // 交付审核页与看板同一 feature 闸（发布命令 delivery.publish 挂 board 模块）。
   deliveries: 'BOARD',
   terminal: 'TERMINAL',
+  // 更新页（selfupdate feature / VITE_FEATURE_SELFUPDATE 门控）：版本对照 +
+  // 手动更新完整面；侧栏自更新长条保留快速入口（同 feature）。
+  update: 'SELFUPDATE',
   // 紫微系统（2026-10-22）：三方程序受控接管（VITE_FEATURE_ZIWEI 门控）。
   ziwei: 'ZIWEI',
 }
@@ -131,6 +134,10 @@ export const NAV_GROUPS: NavGroupModel[] = [
   {
     title: '其他',
     items: [
+      // 更新（selfupdate feature 门控）：当前运行版本 vs 云端最新对照 +
+      // 手动更新操作面——更新成功重启后长条消失，此处闭环「现在跑的就是
+      // 新版本」的确认。
+      { id: 'update', label: '更新', route: '/update', icon: 'M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15' },
       { id: 'about', label: '关于', route: '/about', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM12 8v4M12 16h.01' },
       { id: 'license', label: 'License', route: '/license', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8' },
     ],

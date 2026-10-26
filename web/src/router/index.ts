@@ -72,6 +72,9 @@ const routes: RouteRecordRaw[] = [
   // 代理设置（2026-09-17）：per-model 代理总览 + 环境变量 + lane 支持。
   { path: '/proxy-settings', name: 'proxy-settings', component: () => import('../views/ProxySettingsView.vue') },
   // Other
+  // 更新页（selfupdate feature / VITE_FEATURE_SELFUPDATE 门控）：版本对照 +
+  // 手动更新操作面。侧栏自更新长条（同 feature 门控）保留快速入口。
+  ...(import.meta.env.VITE_FEATURE_SELFUPDATE !== 'false' ? [{ path: '/update', name: 'update', component: () => import('../views/UpdateView.vue') }] : []),
   { path: '/about', name: 'about', component: () => import('../views/AboutView.vue') },
   { path: '/license', name: 'license', component: () => import('../views/LicenseView.vue') },
 ]

@@ -44,14 +44,23 @@
 //!   天然原子覆盖运行中二进制，同一 dance 在 Linux 单步即可（代码同一份，
 //!   Windows 臂多一步让位）。journal 先于任何 rename 落盘，启动期
 //!   [`recover_on_boot`] 按相位收口。
+//! - **staging 抽屉 `back/`**（2026-10-27 用户拍板）：五件套（`.old-{pid}` /
+//!   `.new-{pid}` / `.failed` / `plugins.{old,new}-{pid}/`）全部住进 exe 同级
+//!   `back/` 目录，安装根目录不再出现散件（收尾清扫失败也不裸露）；
+//!   `updates/`（下载缓存）与 `back/`（舞步与回滚源活区）物理隔离——updates/
+//!   的任何整清（坏包/取消/过期作废/收口删包）都碰不到回滚源。同卷子目录
+//!   rename 与根目录别名 rename 同操作类；journal 记绝对路径，boot 收口按
+//!   记录路径消费、不依赖布局（旧布局 journal 照旧路径收口，跨版本安全）；
+//!   根目录旧前缀残留由清扫的**过渡兼容层**收掉。成功收口 = 整删 `back/`；
+//!   失败零删除（回滚源原样保留）。
 //! - **plugins 整包替换**（2026-10-22 用户拍板：主包自带 plugins/ 子树，
 //!   整包同版本分发——接口错配根因消失，不需单独打包）：解包产物里
-//!   plugins/ 平面文件先落 `plugins.new-{pid}/` staging；舞步 = 既有同名
-//!   让位 `plugins.old-{pid}/` → 新文件逐个 rename 进 `plugins/`（Windows
-//!   运行中 DLL 可 rename 不可覆盖，与 exe 同语义；目录不整迁——映射中的
-//!   DLL 会让整目录 rename 失败）。**只同名覆盖不删既有**——用户自装插件
-//!   不受伤。回滚与 exe **同进同退**（journal 记 staging 目录，boot 收口
-//!   连带回滚），杜绝「旧 exe + 新插件」错配。
+//!   plugins/ 平面文件先落 `back/plugins.new-{pid}/` staging；舞步 = 既有
+//!   同名让位 `back/plugins.old-{pid}/` → 新文件逐个 rename 进 `plugins/`
+//!   （Windows 运行中 DLL 可 rename 不可覆盖，与 exe 同语义；目录不整迁
+//!   ——映射中的 DLL 会让整目录 rename 失败）。**只同名覆盖不删既有**——
+//!   用户自装插件不受伤。回滚与 exe **同进同退**（journal 记 staging 目录，
+//!   boot 收口连带回滚），杜绝「旧 exe + 新插件」错配。
 //! - 两段式持久态（`<exe_dir>/updates/`，自更新私有）：`pending.zip` /
 //!   `pending.tar.gz`（`.part` 中转改名）+ `pending.json` 元数据（**后写**
 //!   ——见 meta 必有包）。每次读取做 sha256 复验，坏包**整个清空重来**
@@ -1026,7 +1035,9 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
     }
     #[cfg(windows)]
     if target.exists() {
-        let failed = target.with_extension("failed");
+        // 让位诊断现场与回滚源同目录（old 的扩展位换 failed——旧布局 journal
+        // old 在根目录则落根目录、新布局 back/ 抽屉则落 back/，跨版本透明）。
+        let failed = old.with_extension("failed");
         let _ = std::fs::remove_file(&failed);
         std::fs::rename(target, &failed).map_err(|e| {
             format!(
@@ -1080,9 +1091,10 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
 /// 常量防串判——boot 调用方对两者分别分臂，双 noop 才算 rollback_noop）。
 const ROLLBACK_PLUGINS_NOOP_PREFIX: &str = "rollback_plugins_noop";
 
-/// plugins 整包替换 staging 三路径：现有目录 / 既有文件让位目录 / 新文件
-/// staging 目录（PID 后缀去固定化，与 exe staging 同语义）。**只识别带
-/// `plugins.` 前缀的目录，不匹配裸 `plugins`**——真实插件目录永不被清扫。
+/// plugins 整包替换 staging 三路径：现有目录（安装根，真实目录不动）/
+/// 既有文件让位目录 / 新文件 staging 目录（后两者住 `back/` 抽屉；PID
+/// 后缀去固定化，与 exe staging 同语义）。**只识别带 `plugins.` 前缀的
+/// 目录，不匹配裸 `plugins`**——真实插件目录永不被清扫。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn plugins_staging_paths(exe: &Path) -> (PathBuf, PathBuf, PathBuf) {
@@ -1090,8 +1102,8 @@ fn plugins_staging_paths(exe: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let pid = std::process::id();
     (
         dir.join("plugins"),
-        dir.join(format!("plugins.old-{pid}")),
-        dir.join(format!("plugins.new-{pid}")),
+        dir.join("back").join(format!("plugins.old-{pid}")),
+        dir.join("back").join(format!("plugins.new-{pid}")),
     )
 }
 
@@ -1371,16 +1383,34 @@ fn rollback_update(journal: &UpdateJournal, exe: &Path) -> Result<(String, bool)
 // apply 互斥原语（R2：单飞 + 跨进程锁 + staging 名去固定化）
 // ---------------------------------------------------------------------------
 
-/// staging 临时名（PID 后缀去固定化）：`.old-{pid}` / `.new-{pid}`。双进程
-/// 并发 apply 不再互踩同一文件名（boot 收口只认 journal.old_path 记录的
-/// 全路径，无固定名依赖）。
+/// staging 抽屉（2026-10-27 用户拍板）：`<exe_dir>/back/`——apply 舞步五件套
+/// （`.old-{pid}` / `.new-{pid}` / `.failed` / `plugins.{old,new}-{pid}/`）的
+/// 专属目录。安装根目录不再出现散件（收尾清扫失败也不裸露）；`updates/`
+/// （下载缓存）与 `back/`（舞步与回滚源活区）物理隔离——updates/ 的任何
+/// 整清都碰不到回滚源。exe 同级 = 同卷子目录，Windows 运行中 PE rename
+/// 语义照旧；不放安装目录外面（Program Files 场景创建不了同级目录且污染
+/// 公共位置）。
+#[cfg(feature = "selfupdate")]
+fn back_dir(exe: &Path) -> PathBuf {
+    exe.parent().unwrap_or_else(|| Path::new(".")).join("back")
+}
+
+/// staging 临时名（PID 后缀去固定化）：`back/<stem>.old-{pid}` /
+/// `back/<stem>.new-{pid}`。双进程并发 apply 不再互踩同一文件名（boot 收口
+/// 只认 journal.old_path 记录的全路径，无固定名依赖）。stem 取法与旧
+/// `with_extension` 形态逐字节一致（`nemesisbot.exe` → `nemesisbot.old-{pid}`）。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn staging_paths(exe: &Path) -> (PathBuf, PathBuf) {
     let pid = std::process::id();
+    let stem = exe
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("nemesisbot");
+    let dir = back_dir(exe);
     (
-        exe.with_extension(format!("old-{pid}")),
-        exe.with_extension(format!("new-{pid}")),
+        dir.join(format!("{stem}.old-{pid}")),
+        dir.join(format!("{stem}.new-{pid}")),
     )
 }
 
@@ -1410,15 +1440,20 @@ fn acquire_install_lock(exe_dir: &Path) -> Result<std::fs::File, String> {
     }
 }
 
-/// 陈旧 staging 残留清扫（R2 补口）：staging 名去固定化（PID 后缀）后，旧
-/// 固定名方案「下次 apply 的 pre-clean 隐式清掉上一份 `.old`」的隐式回收
-/// 随之失效——不补显式清扫，每次成功更新都会永久残留一份完整旧 exe。
-/// 语义：持安装目录锁期间同目录不可能有并发 apply，任何非本进程的
-/// `.old-{pid}`/`.new-{pid}` 都是死进程/崩溃遗留，尽力删除（仍被在跑旧
-/// 进程镜像锁住的 PE 删除失败属预期，留给下次 apply 再清，best-effort）。
-/// `.failed` 是计划钦定的诊断现场，不清。**plugins 侧同批清扫**：
-/// `plugins.old-{pid}`/`plugins.new-{pid}` 整目录韧性删除（2026-10-22 扩面
-/// ——裸 `plugins` 真实插件目录永不在清扫面）。返回删除数（审计观测用）。
+/// 陈旧 staging 残留清扫（R2 补口 + 2026-10-27 back/ 抽屉迁位）：
+///
+/// **新布局**：`back/` 抽屉整目录韧性删除——持安装目录锁窗口内不可能有
+/// 并发 apply，journal 闸（apply 1b 先于本清扫）保证在场 journal 已被 boot
+/// 收口处理，`back/` 内不存在活回滚源；抽屉内全部内容（含历史 `.failed`
+/// 诊断现场——诊断已被 boot 收口 detail 记录过）随整删一起走。AV/索引器
+/// 瞬时句柄删不掉 = 整目录保留留给下次（best-effort）。
+///
+/// **旧布局过渡兼容**（迁位前的安装根目录残留，老用户升级后也收干净）：
+/// 根目录 `.old-{pid}`/`.new-{pid}` 死进程遗留逐文件删（仍被在跑旧进程
+/// 镜像锁住的 PE 删除失败属预期）；根目录 `.failed` 是旧布局钦定的诊断
+/// 现场，过渡清扫不清。**plugins 侧同批清扫**：根目录 `plugins.old-{pid}`/
+/// `plugins.new-{pid}` 整目录韧性删除（裸 `plugins` 真实插件目录永不在
+/// 清扫面）。返回删除数（审计观测用）。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn sweep_stale_staging(exe: &Path) -> usize {
@@ -1428,12 +1463,18 @@ fn sweep_stale_staging(exe: &Path) -> usize {
     let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) else {
         return 0;
     };
+    let mut removed = 0;
+    // 新布局：back/ 抽屉整删（存在才删；不存在 = 0）。
+    let back = back_dir(exe);
+    if back.is_dir() && crate::handlers::release_fetch::remove_dir_all_resilient(&back) {
+        removed += 1;
+    }
     let old_prefix = format!("{stem}.old-");
     let new_prefix = format!("{stem}.new-");
     let plugins_old_prefix = "plugins.old-";
     let plugins_new_prefix = "plugins.new-";
-    let mut removed = 0;
-    // 删除与遍历顺序无关（集合操作），无需排序。
+    let failed_name = format!("{stem}.failed");
+    // 过渡兼容：删除与遍历顺序无关（集合操作），无需排序。
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name();
@@ -1446,6 +1487,9 @@ fn sweep_stale_staging(exe: &Path) -> usize {
                     removed += 1;
                 }
                 continue;
+            }
+            if name == failed_name {
+                continue; // 旧布局 .failed 诊断现场，过渡清扫不清
             }
             // plugins staging 目录（前缀匹配，后缀须还有 PID 段——裸 `plugins`
             // 与真实插件目录不沾边）。
@@ -1463,11 +1507,11 @@ fn sweep_stale_staging(exe: &Path) -> usize {
     removed
 }
 
-/// 启动收口成功后的 staging 残留清扫（用户可见面：更新成功重启后旧 exe 与
-/// plugins staging 目录不该等下次 apply 才消失）。安全论证：走到这里 =
+/// 启动收口成功后的 staging 残留清扫（用户可见面：更新成功重启后 `back/`
+/// 抽屉与旧布局根目录残留不该等下次 apply 才消失）。安全论证：走到这里 =
 /// 本进程就是刚更新成功的新进程，且旧进程已退场（recover_on_boot_in ① 的
-/// wait-for-exit 通过才会到收口）——自己上一轮留下的 `.old-{旧pid}` /
-/// `plugins.{old,new}-{pid}` 镜像锁已随旧进程消失，此刻删除是安全的。
+/// wait-for-exit 通过才会到收口）——自己上一轮留下的 `back/`（`.old-{旧pid}`
+/// / `plugins.{old,new}-{pid}`）镜像锁已随旧进程消失，此刻整删是安全的。
 /// 回滚分支绝不调用（rollback 消耗 `.old`，扫了就丢回滚源）。仍取安装
 /// 目录锁：锁被占 = 同目录并发 apply 在飞，跳过（boot 抢扫反而可能删掉
 /// 在飞 staging；它的 apply 起步 sweep 会清）。best-effort：AV/索引器瞬时
@@ -2129,6 +2173,15 @@ impl SelfUpdateManager {
         //    exe_path 已在 1e 取）──
         let (old_path, new_path) = staging_paths(&exe_path);
         let (plugins_dir, plugins_backup, plugins_new) = plugins_staging_paths(&exe_path);
+        // back/ 抽屉创建（先于任何落盘与改名；失败 = 现场零扰动的诚实报错，
+        // 后续 journal/rename 都不会发生）。
+        let staging_back = back_dir(&exe_path);
+        std::fs::create_dir_all(&staging_back).map_err(|e| {
+            format!(
+                "staging 抽屉创建失败（{}）：{e}（更新中止，未动任何既有文件）",
+                staging_back.display()
+            )
+        })?;
         // 残留清场（同名 PID 复用的罕见遗留会让 rename 撞已存在目标；PID 后缀
         // 名下通常本来就不存在）。
         let _ = std::fs::remove_file(&old_path);

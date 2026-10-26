@@ -225,41 +225,62 @@ fn boot_recovery_restarting_commit_hit_success() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// 更新成功收口 = staging 残留就地清扫（用户不该手删旧 exe / plugins
-/// staging）。安全前提：本进程是新进程且旧进程已退场；回滚分支不扫。
+/// 更新成功收口 = staging 残留就地清扫（用户不该手删 back/ 抽屉内的旧
+/// exe / plugins staging）。安全前提：本进程是新进程且旧进程已退场；回滚
+/// 分支不扫。新布局五件套全部住 `back/`，成功 = 整目录消失；旧布局根目录
+/// 残留由过渡兼容层收掉；真实插件目录与无关文件永不在清扫面。
 #[cfg(feature = "selfupdate")]
 #[test]
 fn boot_recovery_success_sweeps_staging_residue() {
     let ws = tmp_dir("boot-sweep");
     let full = "0123456789abcdef0123456789abcdef01234567";
     save_journal(&ws, &journal("restarting", full, "nowhere.old")).unwrap();
-    // staging 残留：exe .old 文件 + plugins .old/.new 目录（PID 后缀形态）
+    // staging 残留（新布局）：back/ 抽屉 = exe .old 文件 + plugins .old/.new
+    // 目录（PID 后缀形态，与生产 staging_paths/plugins_staging_paths 同构）。
     let exe = ws.join("current.exe");
     std::fs::write(&exe, b"new-image").unwrap();
-    let old_exe = ws.join("current.old-424242");
+    let back = ws.join("back");
+    std::fs::create_dir_all(&back).unwrap();
+    let old_exe = back.join("current.old-424242");
     std::fs::write(&old_exe, b"old-image").unwrap();
-    let plugins_old = ws.join("plugins.old-424242");
+    let plugins_old = back.join("plugins.old-424242");
     std::fs::create_dir_all(plugins_old.join("some-plugin")).unwrap();
     std::fs::write(plugins_old.join("some-plugin").join("f.txt"), b"x").unwrap();
-    let plugins_new = ws.join("plugins.new-424242");
+    let plugins_new = back.join("plugins.new-424242");
     std::fs::create_dir_all(&plugins_new).unwrap();
-    // 非清扫面：真实插件目录与无关文件必须存活
+    // 旧布局过渡面：根目录历史残留（老用户升级后的现场）也该被收掉
+    let legacy_old = ws.join(format!("current.old-{}", std::process::id() + 1));
+    std::fs::write(&legacy_old, b"legacy").unwrap();
+    // 非清扫面：真实插件目录、updates/ 下载区、无关文件必须存活
     let real_plugins = ws.join("plugins");
     std::fs::create_dir_all(&real_plugins).unwrap();
     std::fs::write(real_plugins.join("keep.txt"), b"k").unwrap();
+    std::fs::create_dir_all(ws.join("updates")).unwrap();
+    std::fs::write(ws.join("updates").join("pending.json"), b"{}").unwrap();
     std::fs::write(ws.join("unrelated.txt"), b"u").unwrap();
 
     let r = recover_on_boot_in(&ws, "0123456", &exe);
     assert_eq!(r.action, "update_success");
-    assert!(!old_exe.exists(), "旧 exe 残留应随收口清扫");
-    assert!(!plugins_old.exists(), "plugins.old 残留应随收口清扫");
-    assert!(!plugins_new.exists(), "plugins.new 残留应随收口清扫");
+    assert!(!old_exe.exists(), "back/ 内旧 exe 残留应随收口清扫");
+    assert!(!plugins_old.exists(), "back/plugins.old 残留应随收口清扫");
+    assert!(!plugins_new.exists(), "back/plugins.new 残留应随收口清扫");
+    assert!(
+        !back.exists(),
+        "成功收口 = back/ 抽屉整目录消失（成功才删）"
+    );
+    assert!(!legacy_old.exists(), "旧布局根目录残留由过渡清扫收掉");
     assert!(real_plugins.exists(), "真实 plugins 目录永不在清扫面");
+    assert!(
+        ws.join("updates").join("pending.json").exists(),
+        "updates/ 下载区不在 staging 清扫面（物理隔离）"
+    );
     assert!(ws.join("unrelated.txt").exists(), "无关文件不动");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// 回滚分支绝不清扫（rollback 消耗 `.old`——扫了就丢回滚源）。
+/// 回滚分支绝不清扫（rollback 消耗 `.old`——扫了就丢回滚源）。back/ 抽屉
+/// 与旧布局根目录残留都原样保留（失败零删除——失败现场等 boot 重试或下次
+/// apply 起步清扫）。
 #[cfg(feature = "selfupdate")]
 #[test]
 fn boot_recovery_rollback_does_not_sweep_residue() {
@@ -270,6 +291,9 @@ fn boot_recovery_rollback_does_not_sweep_residue() {
     std::fs::write(&exe, b"broken-new").unwrap();
     let other_old = ws.join("current.old-999");
     std::fs::write(&other_old, b"other").unwrap();
+    let back = ws.join("back");
+    std::fs::create_dir_all(&back).unwrap();
+    std::fs::write(back.join("current.old-777"), b"drawer").unwrap();
     save_journal(
         &ws,
         &journal(
@@ -283,6 +307,10 @@ fn boot_recovery_rollback_does_not_sweep_residue() {
     let r = recover_on_boot_in(&ws, "0123456", &exe);
     assert_eq!(r.action, "rolled_back");
     assert!(other_old.exists(), "回滚路径不清扫其他 staging 残留");
+    assert!(
+        back.join("current.old-777").exists(),
+        "回滚路径不清扫 back/ 抽屉（失败零删除）"
+    );
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -752,39 +780,57 @@ fn remove_loaded_file_removes_and_ignores_missing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// R2 复查补口：staging 名去固定化（PID 后缀）移除了旧固定名方案的隐式
-/// 回收，apply 持锁窗口的显式清扫必须删掉历史 `.old-{pid}`/`.new-{pid}`
-/// 残留；`.failed` 是钦定诊断现场，不清。
+/// R2 复查补口 + back/ 抽屉迁位（2026-10-27）：新布局 = `back/` 抽屉整目录
+/// 韧性删（staging_paths 本体生成的五件套全在抽屉内，随整删一起走——含
+/// 历史 `.failed` 诊断，已被 boot 收口 detail 记录过）；旧布局过渡兼容 =
+/// 根目录历史 `.old-{pid}`/`.new-{pid}` 逐文件删、根目录 `.failed` 诊断现场
+/// 不清。updates/ 下载区与真实插件目录永不在清扫面。
 #[cfg(feature = "selfupdate")]
 #[test]
 fn sweep_stale_staging_removes_pid_suffixed_leaves_failed() {
     let ws = tmp_dir("sweep-staging");
     let exe = ws.join("nemesisbot.exe");
     std::fs::write(&exe, b"running").unwrap();
-    // 文件名与生产同源：staging_paths 本体生成（with_extension 是**替换**
-    // 扩展位——`nemesisbot.exe` → `nemesisbot.old-{pid}`，不是 exe.old-）。
+    // 新布局：staging_paths 本体生成（名字在 back/ 抽屉内，带 PID 后缀）。
     let (old_path, new_path) = staging_paths(&exe);
-    let stale = [
-        ws.join(format!(
-            "nemesisbot.old-{}",
-            std::process::id() + 1 // 模拟他进程 PID 残留（避开本进程真名）
-        )),
-        old_path,
-        new_path,
-    ];
+    let back = ws.join("back");
+    std::fs::create_dir_all(&back).unwrap();
+    let back_failed = back.join("nemesisbot.failed");
+    let stale = [old_path, new_path, back_failed];
     for f in &stale {
         std::fs::write(f, b"stale").unwrap();
     }
-    let failed = exe.with_extension("failed");
-    std::fs::write(&failed, b"diagnostic").unwrap();
+    // 旧布局过渡面：根目录他进程 PID 残留 + 根目录 .failed 诊断现场。
+    let legacy_old = ws.join(format!(
+        "nemesisbot.old-{}",
+        std::process::id() + 1 // 模拟他进程 PID 残留（避开本进程真名）
+    ));
+    std::fs::write(&legacy_old, b"stale").unwrap();
+    let root_failed = exe.with_extension("failed");
+    std::fs::write(&root_failed, b"diagnostic").unwrap();
+    // 非清扫面：updates/ 下载区。
+    std::fs::create_dir_all(ws.join("updates")).unwrap();
+    std::fs::write(ws.join("updates").join("pending.json"), b"{}").unwrap();
 
     let removed = sweep_stale_staging(&exe);
-    assert_eq!(removed, 3, "三个历史 staging 残留全部清掉");
-    for f in &stale {
-        assert!(!f.exists(), "{} 应已删除", f.display());
-    }
-    assert!(failed.exists(), ".failed 诊断现场不得清扫");
+    assert_eq!(
+        removed, 2,
+        "back/ 抽屉整删(1) + 根目录旧前缀(1) + 根目录 plugins(0)"
+    );
+    assert!(
+        !back.exists(),
+        "back/ 抽屉整目录消失（含 .failed 历史——诊断已被收口记录）"
+    );
+    assert!(!legacy_old.exists(), "旧布局根目录残留由过渡清扫收掉");
+    assert!(
+        root_failed.exists(),
+        "旧布局根目录 .failed 诊断现场过渡清扫不清"
+    );
     assert!(exe.exists(), "本体不得清扫");
+    assert!(
+        ws.join("updates").join("pending.json").exists(),
+        "updates/ 下载区不在 staging 清扫面（物理隔离）"
+    );
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -865,8 +911,8 @@ fn boot_recovery_staging_rollback_failure_keeps_journal() {
 }
 
 /// Windows 舞步正例（boot restarting 相位，目标被占用态由测试文件模拟）：
-/// 回滚成功 = target 内容为 .old、.old 消失、被替换的 exe 留 .failed 诊断现场、
-/// journal 清除。
+/// 回滚成功 = target 内容为 .old、.old 消失、被替换的 exe 留 .failed 诊断
+/// 现场（与回滚源同目录——随 old 路径推导，journal 布局透明）、journal 清除。
 #[test]
 fn boot_recovery_rollback_windows_dance_leaves_failed_diagnostics() {
     let ws = tmp_dir("boot-dance");
@@ -891,34 +937,43 @@ fn boot_recovery_rollback_windows_dance_leaves_failed_diagnostics() {
     assert!(load_journal(&ws).is_none());
     #[cfg(windows)]
     {
-        let failed = target_exe.with_extension("failed");
+        let failed = old.with_extension("failed");
         assert!(
             failed.exists() && std::fs::read(&failed).unwrap() == b"broken-new",
-            "被替换的 exe 留 .failed 诊断现场"
+            "被替换的 exe 留 .failed 诊断现场（old 同目录）"
         );
     }
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// staging 名 PID 后缀去固定化：两名字都带 pid、互不相同、扩展位形态正确。
+/// staging 名 PID 后缀去固定化：两名字都带 pid、互不相同、住 back/ 抽屉
+/// （exe 同级 back 目录——2026-10-27 迁位；stem 形态与旧 with_extension 一致）。
 #[cfg(feature = "selfupdate")]
 #[test]
 fn staging_paths_are_pid_suffixed_and_distinct() {
     let exe = std::path::Path::new("C:\\install\\nemesisbot.exe");
     let (old, new) = staging_paths(exe);
     let pid = std::process::id();
+    let expected_dir = exe.parent().unwrap().join("back");
     let old_name = old.file_name().unwrap().to_string_lossy();
     let new_name = new.file_name().unwrap().to_string_lossy();
-    assert!(
-        old_name.contains(&format!("old-{pid}")),
-        "old 名带 PID: {old_name}"
+    assert_eq!(
+        old_name,
+        format!("nemesisbot.old-{pid}"),
+        "old 名形态（stem + PID）"
     );
-    assert!(
-        new_name.contains(&format!("new-{pid}")),
-        "new 名带 PID: {new_name}"
+    assert_eq!(
+        new_name,
+        format!("nemesisbot.new-{pid}"),
+        "new 名形态（stem + PID）"
     );
     assert_ne!(old, new);
-    assert_eq!(old.parent(), exe.parent(), "staging 名与 exe 同目录");
+    assert_eq!(
+        old.parent(),
+        Some(expected_dir.as_path()),
+        "staging 名住 back/ 抽屉（exe 同级）"
+    );
+    assert_eq!(new.parent(), old.parent());
 }
 
 /// 安装目录跨进程锁：第一次获取成功；持锁期间第二次获取诚实拒绝；释放后
