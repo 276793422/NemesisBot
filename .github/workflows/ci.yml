@@ -286,9 +286,15 @@ jobs:
           rm -rf ../crates/nemesis-web/static/assets
           npm run build
 
+      # MaxMinutes 30（2026-10-26 晚 45→30）：健康半冷 bin 构建 ~15min，45 上限
+      # 在劣化 VM 上永远轮不到执行——首批 run 实录 bin job 僵尸 59min（看门狗
+      # sleep 循环被爬死，45min 熔断与 ~50min runner 回收双双迟到，已编产物
+      # 随 VM 蒸发，下一轮继续半冷）。收 30 = 楔死时 VM 尚有余力执行软着陆
+      # 树杀 + 存缓存（cache-on-failure），下一轮吃暖缓存快路径。30 仍给
+      # 半冷构建 ~2 倍裕量，不误杀合法慢跑。
       - name: Build nemesisbot bin (watchdog)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag binjob -MaxMinutes 45 -BuildCommand "cargo build -p nemesisbot"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag binjob -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
 
       - name: Upload nemesisbot.exe artifact
         uses: actions/upload-artifact@v4
