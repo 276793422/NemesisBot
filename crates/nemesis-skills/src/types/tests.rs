@@ -794,6 +794,38 @@ fn test_validate_skill_identifier_whitespace_only() {
 }
 
 #[test]
+fn test_validate_skill_identifier_rejects_windows_reserved_names() {
+    // BUG-HUNT R163 / BUG-20261025-90：保留设备名是合法 GitHub repo 名，
+    // 作目录名在 Windows 上创建失败（诡异 IO 错误）。基名比对（首个 '.'
+    // 前）、不分区大小写；非保留前缀（constant/config）不受影响。
+    for name in [
+        "con", "CON", "aux", "nul", "prn", "com1", "lpt9", "con.txt", "Aux.md",
+    ] {
+        assert!(
+            validate_skill_identifier(name).is_err(),
+            "'{}' must be rejected as Windows reserved",
+            name
+        );
+    }
+    for ok in ["constant", "config", "consumer", "com0", "controller-1"] {
+        assert!(
+            validate_skill_identifier(ok).is_ok(),
+            "'{}' must remain valid",
+            ok
+        );
+    }
+}
+
+#[test]
+fn test_validate_skill_identifier_rejects_trailing_dot_and_space() {
+    // BUG-HUNT R163 / BUG-20261025-90：尾点/尾空白被 Win32 落盘时静默截断，
+    // 记账名与磁盘目录名永久漂移。
+    assert!(validate_skill_identifier("foo.").is_err());
+    assert!(validate_skill_identifier("foo ").is_err());
+    assert!(validate_skill_identifier("skill.v1.2").is_ok());
+}
+
+#[test]
 fn test_validate_skill_identifier_with_double_dot() {
     assert!(validate_skill_identifier("skill..name").is_err()); // ".." anywhere is blocked
 }

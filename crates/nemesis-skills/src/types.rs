@@ -493,8 +493,32 @@ pub fn validate_skill_identifier(slug: &str) -> std::result::Result<(), String> 
     if trimmed.len() > 64 {
         return Err("skill identifier too long (max 64 characters)".to_string());
     }
+    // Windows host-name hygiene (BUG-20261025-90): reserved device names as a
+    // directory name fail to create on Windows with cryptic IO errors; a
+    // trailing dot/space is silently stripped by Win32 on save ("foo." ->
+    // dir "foo") while the lockfile keeps the original name -> permanent
+    // drift and uninstall cannot find the directory by name. Checked on the
+    // RAW input: callers join the untrimmed slug into paths, so validating
+    // the trimmed form would let "foo " through and drift anyway.
+    let base = trimmed.split('.').next().unwrap_or("").to_ascii_lowercase();
+    if WINDOWS_RESERVED_NAMES.contains(&base.as_str()) {
+        return Err(format!("'{}' is a Windows reserved device name", trimmed));
+    }
+    if slug.ends_with('.') || slug.ends_with(' ') {
+        return Err(
+            "identifier must not end with '.' or ' ' (Windows strips them silently)".to_string(),
+        );
+    }
     Ok(())
 }
+
+/// Windows reserved device names (classic MS list of 22; base-name compare
+/// before the first '.', case-insensitive -- "con.txt" also hits in Win32
+/// path semantics).
+const WINDOWS_RESERVED_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
 
 /// Case-insensitive substring match.
 pub fn contains_ci(haystack: &str, needle: &str) -> bool {

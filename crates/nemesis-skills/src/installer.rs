@@ -421,6 +421,18 @@ impl SkillInstaller {
     pub async fn plan_github_install(&self, repo_ref: &str) -> Result<InstallPlan> {
         let (repo, requested_ref) = Self::parse_github_ref(repo_ref)?;
         let slug = repo.split('/').next_back().unwrap_or("skill").to_string();
+        // BUG-20261025-90：GitHub 臂与 registry 臂（install）/uninstall 共用
+        // 同一 slug 验证器（R35 单一真相源）。parse_github_ref 只拒 `..`/空白
+        // /分隔符——Windows 保留设备名（con/aux/nul…）与尾点名是合法 GitHub
+        // repo 名，直通 skills/ 路径拼装会产出保留名目录（IO 失败形态诡异）
+        // 或被 Windows 截尾（"foo." 目录落盘成 "foo"，lockfile 记账 "foo."
+        // 永久漂移 + uninstall 找不到）。校验必须在任何网络语句之前。
+        validate_skill_identifier(&slug).map_err(|e| {
+            NemesisError::Validation(format!(
+                "path traversal denied: invalid skill slug '{}': {}",
+                slug, e
+            ))
+        })?;
         let skill_dir = self.workspace.join("skills").join(&slug);
         if skill_dir.exists() {
             return Err(NemesisError::Validation(format!(
@@ -895,7 +907,17 @@ impl SkillInstaller {
             Ok(meta) => meta.published_at,
             Err(_) => None,
         };
-        let (reg_age_days, reg_age_decision) = self.check_age(published_at, &mut age_warnings)?;
+        // BUG-20261025-91：age 拒绝臂与其余拒绝臂同纪律——先清 staging 再上抛
+        // （漏斗不变量：审批未过的内容不得残留；裸 `?` 会让被拒内容残留到
+        // 24h 清扫）。plan_github_install 同场景本就有清理，此处对齐。
+        let (reg_age_days, reg_age_decision) = match self.check_age(published_at, &mut age_warnings)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                return Err(e);
+            }
+        };
 
         // P13：审批门（缺省 AlwaysAllowGate = install_approval 关闭语义）。
         // 逐文件 sha256（staging 不存在的 registry 实现按空清单处理——历史契约：
@@ -965,10 +987,23 @@ impl SkillInstaller {
             return Err(e);
         }
 
-        // R2：落位临界区——exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下
+        // R2：落位临界区——exists 复检→rename→记账在 INSTALL_COMMIT_LOCK 下
         // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段，
         // parking_lot 停等安全；异步审批在锁外。
         let _commit_guard = INSTALL_COMMIT_LOCK.lock();
+
+        // BUG-20261025-92：函数开头的 exists 检查在下载 + 审批等待之前（可能
+        // 相距 300s+），不在本临界区内——等待窗口内另一安装落位时，rename 撞
+        // 现存目录只给裸 IO 错误（Windows）/静默替换空目录（Unix）。与
+        // commit_install 的「二次防御」同款：锁内诚实报 already exists，
+        // 先到者内容不动。
+        if skill_dir.exists() {
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            return Err(NemesisError::Validation(format!(
+                "skill '{}' already exists",
+                slug
+            )));
+        }
 
         // 落位 + P14 lockfile 记账（skills/ 父目录可能尚不存在；
         // staging 不存在 = registry 没写任何文件——建空目录落位，保持历史行为）。

@@ -1474,3 +1474,265 @@ async fn r2_staging_tamper_after_approval_aborts() {
         "tampered content must never land in skills/"
     );
 }
+
+// ============================================================
+// BUG-HUNT R163：安装漏斗三条纪律缺口的红证测试
+// ============================================================
+
+/// BUG-20261025-90：plan_github_install 的 slug 必须过 validate_skill_identifier
+/// （R35 单一真相源漏接 GitHub 臂）——Windows 保留名（con/aux/nul…）与尾点
+/// repo 名是 GitHub 合法名，直通 skills/ 路径拼装会在 Windows 上产出保留名
+/// 目录/尾点截断漂移。校验在任何网络语句之前。
+#[tokio::test]
+async fn test_plan_github_install_rejects_windows_reserved_slug() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+
+    // "con" 是合法 GitHub repo 名（纯字母），parse_github_ref 放行；
+    // 漏斗必须在触网前以 Validation 拒绝。错误消息与 install() 同形。
+    let result = installer.plan_github_install("owner/con").await;
+    let err = match result {
+        Ok(plan) => panic!(
+            "reserved-name slug must be rejected, got plan for '{}'",
+            plan.slug
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("invalid skill slug"),
+        "expected slug validation error before any network attempt, got: {}",
+        err
+    );
+
+    // 尾点形态同证：Windows 会把 "foo." 目录截成 "foo"，lockfile 记账
+    // 与磁盘目录名永久漂移。
+    let result = installer.plan_github_install("owner/foo.").await;
+    match result {
+        Ok(plan) => panic!(
+            "trailing-dot slug must be rejected, got plan for '{}'",
+            plan.slug
+        ),
+        Err(e) => assert!(
+            e.to_string().contains("invalid skill slug"),
+            "expected slug validation error, got: {}",
+            e
+        ),
+    }
+}
+
+/// BUG-20261025-91：registry 路径 age-policy block 拒绝时必须清 staging
+/// （漏斗纪律「拒绝时先清 staging 再上抛」——同函数其余拒绝臂全清，
+/// 唯 age 臂裸 `?` 泄漏，被拒内容残留盘上直到 24h 清扫）。
+#[tokio::test]
+async fn test_install_age_block_cleans_staging() {
+    use crate::registry::{RegistryManager, SkillRegistry};
+    use crate::types::{BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult};
+
+    /// 本地测试 registry：落一个文件进 staging + 上报「刚发布」元数据，
+    /// 使 min_age block 策略必然命中。
+    struct FreshSkillRegistry;
+
+    #[async_trait::async_trait]
+    impl SkillRegistry for FreshSkillRegistry {
+        fn name(&self) -> &str {
+            "fresh"
+        }
+        async fn search(
+            &self,
+            _q: &str,
+            _l: usize,
+        ) -> nemesis_types::error::Result<Vec<SkillSearchResult>> {
+            Ok(Vec::new())
+        }
+        async fn get_skill_meta(&self, slug: &str) -> nemesis_types::error::Result<SkillMeta> {
+            Ok(SkillMeta {
+                slug: slug.to_string(),
+                display_name: slug.to_string(),
+                summary: "fresh".to_string(),
+                latest_version: "1.0".to_string(),
+                is_malware_blocked: false,
+                is_suspicious: false,
+                registry_name: "fresh".to_string(),
+                author: String::new(),
+                downloads: 0,
+                published_at: Some(chrono::Utc::now().timestamp()),
+            })
+        }
+        async fn download_and_install(
+            &self,
+            _slug: &str,
+            version: &str,
+            target_dir: &str,
+        ) -> nemesis_types::error::Result<InstallResult> {
+            std::fs::create_dir_all(target_dir).unwrap();
+            std::fs::write(
+                std::path::Path::new(target_dir).join("SKILL.md"),
+                "# harmless\n",
+            )
+            .unwrap();
+            Ok(InstallResult {
+                version: version.to_string(),
+                is_malware_blocked: false,
+                is_suspicious: false,
+                summary: "fresh skill".to_string(),
+            })
+        }
+        async fn browse(
+            &self,
+            _sort: &BrowseSort,
+            _limit: usize,
+            _cursor: &str,
+        ) -> nemesis_types::error::Result<BrowseResult> {
+            Ok(BrowseResult {
+                items: Vec::new(),
+                next_cursor: None,
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let manager = RegistryManager::new_empty();
+    manager.add_registry(Arc::new(FreshSkillRegistry));
+    installer.set_registry_manager(manager);
+    installer.set_age_policy(30, "block");
+
+    let result = installer.install("fresh", "newborn-skill", "1.0").await;
+    assert!(result.is_err(), "age block must reject");
+    assert!(
+        result.unwrap_err().to_string().contains("age policy"),
+        "rejection must come from the age gate"
+    );
+
+    // 泄漏断言：staging 根下不得残留本事务目录（拒绝即清）。
+    let staging_root = dir.path().join(".skill-staging");
+    let leaked = if staging_root.exists() {
+        std::fs::read_dir(&staging_root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("newborn-skill"))
+            .count()
+    } else {
+        0
+    };
+    assert_eq!(leaked, 0, "blocked install must not leave staging residue");
+}
+
+/// BUG-20261025-92：registry 路径落位临界区必须复检目标目录存在性
+/// ——注释声称「exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下原子」，
+/// 实际检查在下载 + 审批等待之前；并发同名安装在等待窗口内落位时，
+/// 第二次 install 应诚实报 already exists，而不是裸 rename IO 错误
+/// （Windows）/静默替换空目录（Unix）。
+#[tokio::test]
+async fn test_install_duplicate_target_detected_at_commit() {
+    use crate::install_gate::{InstallDecision, InstallGate, InstallPlan};
+    use crate::registry::{RegistryManager, SkillRegistry};
+    use crate::types::{BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult};
+
+    struct PlainRegistry;
+
+    #[async_trait::async_trait]
+    impl SkillRegistry for PlainRegistry {
+        fn name(&self) -> &str {
+            "plain"
+        }
+        async fn search(
+            &self,
+            _q: &str,
+            _l: usize,
+        ) -> nemesis_types::error::Result<Vec<SkillSearchResult>> {
+            Ok(Vec::new())
+        }
+        async fn get_skill_meta(&self, slug: &str) -> nemesis_types::error::Result<SkillMeta> {
+            Ok(SkillMeta {
+                slug: slug.to_string(),
+                display_name: slug.to_string(),
+                summary: "plain".to_string(),
+                latest_version: "1.0".to_string(),
+                is_malware_blocked: false,
+                is_suspicious: false,
+                registry_name: "plain".to_string(),
+                author: String::new(),
+                downloads: 0,
+                published_at: None,
+            })
+        }
+        async fn download_and_install(
+            &self,
+            _slug: &str,
+            version: &str,
+            target_dir: &str,
+        ) -> nemesis_types::error::Result<InstallResult> {
+            std::fs::create_dir_all(target_dir).unwrap();
+            std::fs::write(
+                std::path::Path::new(target_dir).join("SKILL.md"),
+                "# plain\n",
+            )
+            .unwrap();
+            Ok(InstallResult {
+                version: version.to_string(),
+                is_malware_blocked: false,
+                is_suspicious: false,
+                summary: "plain".to_string(),
+            })
+        }
+        async fn browse(
+            &self,
+            _sort: &BrowseSort,
+            _limit: usize,
+            _cursor: &str,
+        ) -> nemesis_types::error::Result<BrowseResult> {
+            Ok(BrowseResult {
+                items: Vec::new(),
+                next_cursor: None,
+            })
+        }
+    }
+
+    /// 审批等待窗口内「并发安装完成」的确定性模拟：decide() 时目标目录
+    /// 已被另一安装落位（带内容），随后放行本计划。
+    struct RacingGate {
+        workspace: std::path::PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl InstallGate for RacingGate {
+        async fn decide(&self, plan: &InstallPlan) -> InstallDecision {
+            let target = self.workspace.join("skills").join(&plan.slug);
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("SKILL.md"), "# installed by the other winner\n").unwrap();
+            InstallDecision::Approve
+        }
+        fn name(&self) -> &str {
+            "racing-test-gate"
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let manager = RegistryManager::new_empty();
+    manager.add_registry(Arc::new(PlainRegistry));
+    installer.set_registry_manager(manager);
+    installer.set_install_gate(Arc::new(RacingGate {
+        workspace: dir.path().to_path_buf(),
+    }));
+
+    let result = installer.install("plain", "dup-skill", "1.0").await;
+    let err = match result {
+        Ok(out) => panic!(
+            "duplicate target must be rejected, got version '{}'",
+            out.version
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("already exists"),
+        "commit-time duplicate must surface the honest Validation error, got: {}",
+        err
+    );
+    // 先到者的内容不得被覆盖（rename 失败也不许换写）。
+    let winner =
+        std::fs::read_to_string(dir.path().join("skills").join("dup-skill").join("SKILL.md"))
+            .unwrap();
+    assert_eq!(winner, "# installed by the other winner\n");
+}
