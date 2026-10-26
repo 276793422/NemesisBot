@@ -177,7 +177,21 @@ impl SessionManager {
         );
 
         // Try send queue first (thread-safe)
-        if let Some(queue) = self.send_queues.get(session_id) {
+        // BUG-20261025-84：先 clone Arc 归还 DashMap 分片读守卫，再进入
+        // 背压 await。旧写法 Ref 守卫跨越 `queue.send().await`——hi 通道
+        // 满（慢客户端）时该 await 可等待任意久（「满则背压等待，绝不
+        // 丢」），同分片的全部写操作（remove_session / set_send_queue /
+        // evict_inactive 的 remove）停摆到慢客户端消费为止；而
+        // `evict_inactive` 跑在单线程 cleanup runtime 上，撞同分片 =
+        // GC 线程整体冻结（全部会话逐出停摆）。同库纪律先例：
+        // chat_event_log「广播前放锁：publish 内部可能再取全局资源，
+        // 不持锁跨调用」。broadcast_droppable 走同步 try_send 非阻塞，
+        // 守卫只持有微秒级，不需同改。
+        let queue = self
+            .send_queues
+            .get(session_id)
+            .map(|q| Arc::clone(q.value()));
+        if let Some(queue) = queue {
             self.touch_session(session_id);
             return queue.send(message.to_vec()).await;
         }

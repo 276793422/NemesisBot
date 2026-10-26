@@ -526,3 +526,59 @@ fn test_set_send_queue_replaces_existing() {
 
     assert!(mgr.send_queues.contains_key(&session.id));
 }
+
+/// BUG-20261025-84：broadcast 不得跨背压 await 持有 send_queues 分片读守卫。
+/// hi 通道满（慢客户端）时 `SendQueue::send` 可等待任意久（「满则背压等
+/// 待，绝不丢」）；旧实现 DashMap Ref 守卫跨越该 await——同分片的全部写
+/// 操作停摆到慢客户端消费为止（本测试用同 session 的 remove_session 做
+/// 探针：同键必同分片）；`evict_inactive` 跑在单线程 cleanup runtime 上，
+/// 撞同分片逐出 = GC 线程整体冻结（全部会话逐出停摆）。修复 = 先 clone
+/// Arc 归还守卫再 await。两个坑位（首版设计实测挂死 40 分钟的教训）：
+/// ① 必须 multi_thread flavor——探针的 parking_lot park 是同步阻塞，
+/// current-thread runtime 连定时器线程都没有，测试直接挂死；
+/// ② 探针必须跑在**真 OS 线程**（std::thread + spawn_blocking(join)），
+/// 不能放 async 块——tokio 无法抢占进行中的 poll，探针 future 卡在
+/// poll 内部时 timeout 只能在 poll 间隙生效，永远轮不到 deadline 分支，
+/// 新旧实现一起挂死。真线程上 join 永不返回 → 外层 timeout 正常触发。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broadcast_releases_shard_guard_during_backpressure() {
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+    // 无写者测试队列（cap=1）：填满后 send() 永久背压，无人消费。
+    let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(1);
+    mgr.set_send_queue(&session.id, Arc::new(queue));
+
+    // 填满 hi 唯一槽。
+    mgr.broadcast(&session.id, b"fill")
+        .await
+        .expect("fill send");
+
+    // 背压挂起：该 broadcast 在 send().await 上永久等待（旧代码此刻已持
+    // 分片读守卫；修复代码在 await 前已归还）。
+    let mgr_bg = Arc::clone(&mgr);
+    let sid_bg = session.id.clone();
+    let blocked = tokio::spawn(async move {
+        let _ = mgr_bg.broadcast(&sid_bg, b"backpressured").await;
+    });
+
+    // 给挂起任务时间走到 await 点。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 探针：同 session 的 remove_session 需要同分片写锁。探针跑真 OS
+    // 线程（见头部注释坑位②）：守卫被挂起任务持有时 join 永不返回 →
+    // 外层 timeout 触发（红证判据）；修复后立即完成。
+    let mgr_rm = Arc::clone(&mgr);
+    let sid_rm = session.id.clone();
+    let probe = std::thread::spawn(move || {
+        mgr_rm.remove_session(&sid_rm);
+    });
+    let joined = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        tokio::task::spawn_blocking(move || probe.join().expect("probe thread panicked")),
+    )
+    .await
+    .expect("remove_session blocked by broadcast's shard guard (BUG-20261025-84)");
+    joined.expect("spawn_blocking join task failed");
+
+    blocked.abort();
+}
