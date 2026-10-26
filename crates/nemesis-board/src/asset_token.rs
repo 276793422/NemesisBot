@@ -201,10 +201,24 @@ fn hex_decode_32(hex: &str) -> Result<Vec<u8>, String> {
 ///
 /// 损坏处理是**诚实 loud**：读到的内容不是合法 64 hex → Err，绝不静默
 /// 重置（重置=作废所有已签发 token + 已登记引用，用户必须知道）。
+/// 读 IO 错误同纪律（BUG-20261025-85）：只有 `NotFound` 是首次运行走生成
+/// ——独占锁/权限拒绝等**读失败 ≠ 不存在**，落进生成分支要么静默轮换
+/// （读拒写允许的 ACL 形态，已签发 token 全作废且无告警），要么报错在
+/// write 阶段误导排障方向（常见锁形态，红证实证报 `write … os error 32`
+/// 而真因是 read 撞独占锁）。
 pub fn load_or_create_secret(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        return hex_decode_32(&existing)
-            .map_err(|e| format!("asset secret file {} corrupt: {e}", path.display()));
+    match std::fs::read_to_string(path) {
+        Ok(existing) => {
+            return hex_decode_32(&existing)
+                .map_err(|e| format!("asset secret file {} corrupt: {e}", path.display()));
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "read asset secret file {} failed: {e}（读失败 ≠ 不存在，拒绝静默轮换——重置会作废全部已签发 token + 已登记引用）",
+                path.display()
+            ));
+        }
+        Err(_) => {} // NotFound = 首次运行，走下方生成
     }
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|e| format!("generate asset secret: {e}"))?;

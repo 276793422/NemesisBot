@@ -198,3 +198,39 @@ fn secret_load_create_and_corruption_semantics() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-20261025-85：读密钥文件的**非 NotFound IO 错误**（独占锁/权限拒绝）
+/// 不得落进「首次生成」分支静默轮换——模块不变量「绝不静默重置」此前只
+/// 对 hex 损坏成立是缺口；读失败 ≠ 不存在，轮换会作废全部已签发 token +
+/// 已登记引用且用户无从得知。红证判据：错误必须 loud 在 **read 阶段**
+/// （旧实现落进生成、再撞写入失败 → 报 **write** 阶段，排障方向被误导）。
+/// Windows 形态测试（share_mode(0) 独占锁是 Windows 文件分享语义）。
+#[cfg(windows)]
+#[test]
+fn secret_read_io_error_loud_not_rotate() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-board-secret-lock-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("asset_secret.key");
+    std::fs::write(&path, "aa".repeat(32)).unwrap(); // 合法 64 hex
+
+    // 独占锁（share_mode(0)）：后续任何读/写打开都分享冲突。
+    let _lock = std::fs::OpenOptions::new()
+        .write(true)
+        .share_mode(0)
+        .open(&path)
+        .expect("acquire exclusive lock");
+
+    let err = load_or_create_secret(&path).expect_err("locked file must error loudly");
+    assert!(
+        err.contains("read asset secret file"),
+        "error must fail loud at READ stage (not fall through to generate+write): {err}"
+    );
+    drop(_lock);
+    let _ = std::fs::remove_dir_all(&dir);
+}
