@@ -230,8 +230,77 @@ jobs:
           bash scripts/test-ratio.sh --quiet
           cat target/test-ratio.txt
 
+  # windows-bin（2026-10-26）：bin 构建单点化。当天实录：bin 链接步 6 死 4 过
+  # （40327245340 shard2 三连死；40336546888 三片卡 44min+；40345195179 两片卡
+  # 37min+），健康机 3-7min 即过——同 commit 同缓存，方差全在 VM 抽签。每片
+  # 各自 build -p nemesisbot = 每 run 抽 4 张同一张死亡彩票。改为独立 job 只建
+  # 一次 exe、artifact 下发四片：彩票 4→1；且分片 job 龄从 bin 完成起算
+  # （等 bin 不算分片 runner 龄），测试段远离 ~45min 失联窗。分片仍保留 libs
+  # 步（测试目标编译要 lib 产物）；exe 钉位 target/debug/nemesisbot.exe。
+  windows-bin:
+    name: Build nemesisbot.exe (Windows, 单点)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      # 与 rust-test 同 shared-key（win-x64-r10）：bin job 建成即存（失败轮也存，
+      # cache-on-failure），后续 run 大概率缓存命中走快路径
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: win-x64-r10
+          workspaces: |
+            .
+            plugins/wasm/translate
+            plugins/wasm/activity-log
+            plugins/wasm/textstat
+            plugins/wasm/policy-sample
+
+      - name: Exclude target dir from Defender scan
+        shell: powershell
+        run: Set-MpPreference -ExclusionPath "${{ github.workspace }}\target"
+
+      - name: Setup Node.js (Vue 前端构建)
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Vue frontend (include_dir! 前置)
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      - name: Build nemesisbot bin (watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag binjob -MaxMinutes 45 -BuildCommand "cargo build -p nemesisbot"
+
+      - name: Upload nemesisbot.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nemesisbot-windows-exe
+          path: target/debug/nemesisbot.exe
+          if-no-files-found: error
+          retention-days: 3
+
   rust-test:
     name: Rust full workspace tests (Windows, shard ${{ matrix.shard }})
+    needs: windows-bin
     # 2026-10-08 pin windows-2022：win25（windows-latest 当前指向）20261004 镜像
     # （10-07 发布滚动铺开）落地后本 job 编译期 runner 六连死失联（挂点恒定
     # 51-55min，与并发/调试信息/增量全部缓解措施无关，看门狗也未能软着陆）——
@@ -259,6 +328,13 @@ jobs:
     # 37-39min 已贴窗沿）。套件自 10-10 起又长大（nextest 实测 29.6min/片），
     # 三片制典型总墙钟从 ~20-22min 涨回窗内。四片把单片测试再减
     # （~22min），典型总墙钟 ~28min，重新留出 ~18min 余量。四片并集=全集。
+    #
+    # bin 单点化（2026-10-26 晚）：四片制首两 run 仍见 bin 链接步 5 死（健康
+    # 机 3-7min 即过，同 commit 同缓存=纯 VM 抽签）——每片各自 build
+    # -p nemesisbot 等于每 run 抽 4 张同一张死亡彩票。改为独立 windows-bin
+    # job 只建一次 exe、artifact 下发：彩票 4→1；本 job needs 之，job 龄从
+    # bin 完成起算，测试段远离 ~45min 失联窗。bin 步从本 job 移除，exe 由
+    # download-artifact 钉位 target/debug/nemesisbot.exe（live 批 spawn 路径）。
     strategy:
       fail-fast: false
       matrix:
@@ -381,7 +457,8 @@ jobs:
       # 固定端口 8080/49000/18790，原 live_gate() 互斥闸只在单进程内生效）钉进
       # max-threads=1 组保串行。两个行为差异（本地验证实证，勿回退）：
       #   a. nextest 只构建测试二进制、不构建常规 bin 目标——live 批夹具要 spawn
-      #      target/debug/nemesisbot.exe，前一步必须先 cargo build -p nemesisbot；
+      #      target/debug/nemesisbot.exe，exe 由 windows-bin job 构建经 artifact
+      #      下发（2026-10-26 bin 单点化，本 job 不再自建）；
       #   b. nextest ≥0.9.1xx 默认 fail-fast（一处红取消剩余），与本 job 全量
       #      体检语义相反——必须显式 --no-fail-fast。
       # nextest 不跑 doctests（本仓库无实质 doctest 断言，无覆盖损失）。
@@ -391,9 +468,25 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild1 -MaxMinutes 60 -BuildCommand "cargo build --workspace --exclude nemesisbot"
 
-      - name: Build nemesisbot bin (live 批 spawn 依赖, watchdog)
+      # bin 单点化（2026-10-26）：exe 由 windows-bin job 构建经 artifact 下发，
+      # 本 job 不再自建（死亡彩票 4→1）。先清缓存恢复出的旧 exe 再落位，避免
+      # 旧 commit 的 exe 残留（缓存键只含 Cargo.lock 哈希，不含源码哈希）。
+      - name: Clear stale exe (缓存旧 exe 让位本 run artifact)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
+        run: if (Test-Path "target/debug/nemesisbot.exe") { Remove-Item -Force "target/debug/nemesisbot.exe" }
+
+      - name: Download prebuilt nemesisbot.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: nemesisbot-windows-exe
+          path: target/debug
+
+      - name: Verify downloaded exe
+        shell: powershell
+        run: |
+          $p = "target/debug/nemesisbot.exe"
+          if (-not (Test-Path $p)) { Write-Error "nemesisbot.exe missing after artifact download"; exit 1 }
+          Get-Item $p | Format-Table Name, Length -AutoSize
 
       # 测试执行前压力快照（brief 模式，见 rust-check 环境指纹注释）：构建刚跑完，
       # 此时余内存/commit/CPU 负载是 nextest 的真实起点——慢机/冻结归因的第二采样点
