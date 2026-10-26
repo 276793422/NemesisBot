@@ -114,7 +114,16 @@ while (-not $p.HasExited) {
     $idleMin = [math]::Round($elMin - $lastProgressMin, 1)
     $el = [int]$elMin
     $rustcN = @(Get-Process -Name rustc -ErrorAction SilentlyContinue).Count
-    "[$Tag] t=${el}min idle=${idleMin}min free_ram=$($mem.FreeRamMb)MB free_commit=$($mem.FreeCommitMb)/$($mem.CommitLimitMb)MB free_disk=${freeDiskMb}MB rustc=$rustcN"
+    # 2026-10-26 心跳增强：每拍附 cargo 当前活动行（out/err 尾行 + 字节计数）——
+    # 步骤卡住时不再只看 idle 数字猜，直接看到卡在哪个 crate/链接段；
+    # 心跳流本身停止 = VM 冻结信号（与 runner 失联签名互相印证）。
+    $lastErr = Get-Content $err -Tail 3 | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1
+    $lastOut = Get-Content $out -Tail 3 | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1
+    if ($lastErr -and $lastErr.Length -gt 200) { $lastErr = $lastErr.Substring(0, 200) + '…' }
+    if ($lastOut -and $lastOut.Length -gt 200) { $lastOut = $lastOut.Substring(0, 200) + '…' }
+    "[$Tag] t=${el}min idle=${idleMin}min free_ram=$($mem.FreeRamMb)MB free_commit=$($mem.FreeCommitMb)/$($mem.CommitLimitMb)MB free_disk=${freeDiskMb}MB rustc=$rustcN bytes=$bytes"
+    if ($lastErr) { "[$Tag] err-now: $lastErr" }
+    if ($lastOut) { "[$Tag] out-now: $lastOut" }
     # 预警（每次运行至多一次）：commit 余量逼近地板时先留进程归因现场
     if (-not $warned -and $mem.FreeCommitMb -lt $WarnCommitMb) {
         $warned = $true
