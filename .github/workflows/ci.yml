@@ -253,10 +253,16 @@ jobs:
     # 与步骤无关；shard2 同构建 25min 全绿）。三片把单片测试量再减半，
     # 典型总墙钟 ~20-22min，深滑出失联窗；构建步的 VM 抽签劣化无法结构性
     # 消除（rerun-failed-jobs 仍是对策，官方口径同）。三片并集=全集不变。
+    #
+    # 3→4 片（2026-10-26）：shard2 三连死（死亡时刻 51/53/52min，全卡在 bin
+    # 构建步、前置步骤全程常速=VM 抽签劣化复发；健康机 shard1/3 总墙钟
+    # 37-39min 已贴窗沿）。套件自 10-10 起又长大（nextest 实测 29.6min/片），
+    # 三片制典型总墙钟从 ~20-22min 涨回窗内。四片把单片测试再减
+    # （~22min），典型总墙钟 ~28min，重新留出 ~18min 余量。四片并集=全集。
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
@@ -412,12 +418,15 @@ jobs:
         # hash:N/3（2026-10-10 深夜 2→3 片）：对半拆后单片仍偶发失联（shard1
         # 两连死，死在构建步=VM 抽签劣化与步骤无关），三片把单片测试再减半，
         # 典型总墙钟 ~20-22min 深滑出失联窗。三片并集=全集。
+        # hash:N/4（2026-10-26 3→4 片）：shard2 三连死（51/53/52min，全卡 bin
+        # 构建步、前置常速=抽签劣化复发），套件增长令三片总墙钟重回窗内；
+        # 四片单片测试 ~22min、典型总墙钟 ~28min。四片并集=全集。
         # --failure-output final（2026-10-18）：失败详情只进收尾 recap——默认
         # immediate 在中段流打 panic 现场，wrapper 只留 stderr 尾 100 行=现场
         # 结构性丢失（sup_env 两连红实录：失败在 7959/9139 位，panic 文本永不
         # 入日志）。final 把详情挪进 Summary 前的 recap（必然落在尾窗）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/3"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/4"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
