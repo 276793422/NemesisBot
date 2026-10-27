@@ -179,6 +179,30 @@ fn test_list_providers_empty() {
     assert!(store.list_providers().is_empty());
 }
 
+// ===========================================================================
+// BUG-20261028-104d 红证：list_providers 消费 HashMap 迭代序——auth status
+// 输出顺序逐次漂移。用户可见清单必须确定性（排序）。
+// ===========================================================================
+#[test]
+fn test_list_providers_is_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json").to_string_lossy().to_string();
+    let store = AuthStore::new(&path);
+    // 8 个乱序插入：HashMap 迭代序巧合有序的概率 ≈ 1/8!，红证在此概率下必现
+    for name in [
+        "zeta", "alpha", "mid", "beta", "omega", "kappa", "iota", "delta",
+    ] {
+        store.save(name, test_cred()).unwrap();
+    }
+    let providers = store.list_providers();
+    let mut sorted = providers.clone();
+    sorted.sort();
+    assert_eq!(
+        providers, sorted,
+        "list_providers 必须返回排序后的确定性清单"
+    );
+}
+
 #[test]
 fn test_list_providers_after_partial_remove() {
     let dir = tempfile::tempdir().unwrap();

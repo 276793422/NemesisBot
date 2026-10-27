@@ -50,9 +50,12 @@ impl AuthStore {
         self.persist()
     }
 
-    /// List all providers.
+    /// List all providers (sorted — user-visible listings must be
+    /// deterministic, not HashMap iteration order).
     pub fn list_providers(&self) -> Vec<String> {
-        self.creds.read().unwrap().keys().cloned().collect()
+        let mut providers: Vec<String> = self.creds.read().unwrap().keys().cloned().collect();
+        providers.sort();
+        providers
     }
 
     /// Delete all credentials by removing the store file.

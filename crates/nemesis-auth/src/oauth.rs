@@ -9,6 +9,24 @@ use base64::Engine;
 use chrono::Local;
 use rand::Rng;
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// 默认请求超时（秒）；`request_timeout_secs == 0` 视作缺省。
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// 带 bounded 超时的共享 HTTP client（BUG-20261028-104a：reqwest 默认
+/// client 零超时，挂死端点会让 `auth login` 无限卡住）。
+fn http_client(cfg: &OAuthProviderConfig) -> reqwest::Client {
+    let secs = if cfg.request_timeout_secs == 0 {
+        DEFAULT_REQUEST_TIMEOUT_SECS
+    } else {
+        cfg.request_timeout_secs
+    };
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(secs))
+        .build()
+        .unwrap_or_default()
+}
 
 /// OAuth provider configuration.
 #[derive(Debug, Clone)]
@@ -18,6 +36,11 @@ pub struct OAuthProviderConfig {
     pub scopes: String,
     pub originator: String,
     pub port: u16,
+    /// 单个 HTTP 请求的墙钟超时（秒）。reqwest 默认 client 零超时——端点
+    /// 接受连接但不响应时 `auth login` 会无限挂死（15 分钟 device-flow
+    /// deadline 只罩轮询循环，罩不住首个请求与 token 交换）。
+    /// 0 视作缺省（30s），不允许 0=不限（那会重新打开挂死面）。
+    pub request_timeout_secs: u64,
 }
 
 impl OAuthProviderConfig {
@@ -29,6 +52,7 @@ impl OAuthProviderConfig {
             scopes: "openid profile email offline_access".to_string(),
             originator: "nemesisbot".to_string(),
             port: 1455,
+            request_timeout_secs: 30,
         }
     }
 
@@ -83,7 +107,7 @@ impl OAuthProviderConfig {
     /// Requests a device code, displays it for the user, and polls
     /// until the user authorizes the request.
     pub async fn login_device_code(&self) -> Result<AuthCredential, String> {
-        let client = reqwest::Client::new();
+        let client = http_client(self);
 
         // Request device code
         let resp = client
@@ -152,7 +176,7 @@ impl OAuthProviderConfig {
             return Err("no refresh token available".to_string());
         }
 
-        let client = reqwest::Client::new();
+        let client = http_client(self);
         let params = [
             ("client_id", self.client_id.as_str()),
             ("grant_type", "refresh_token"),
@@ -302,7 +326,7 @@ impl OAuthProviderConfig {
         code_verifier: &str,
         redirect_uri: &str,
     ) -> Result<AuthCredential, String> {
-        let client = reqwest::Client::new();
+        let client = http_client(self);
         let params = [
             ("grant_type", "authorization_code".to_string()),
             ("code", code.to_string()),
@@ -415,7 +439,7 @@ pub async fn poll_device_code(
     device_auth_id: &str,
     user_code: &str,
 ) -> Result<Option<AuthCredential>, String> {
-    let client = reqwest::Client::new();
+    let client = http_client(cfg);
     cfg.poll_device_code_impl(&client, device_auth_id, user_code)
         .await
 }
@@ -546,6 +570,7 @@ struct DeviceTokenResponse {
 }
 
 /// Parsed device code response with flexible interval parsing.
+#[derive(Debug)]
 struct ParsedDeviceCode {
     device_auth_id: String,
     user_code: String,
@@ -568,6 +593,12 @@ fn parse_device_code_response(body: &str) -> Result<ParsedDeviceCode, String> {
 
     let device_auth_id = raw["device_auth_id"].as_str().unwrap_or("").to_string();
     let user_code = raw["user_code"].as_str().unwrap_or("").to_string();
+    if device_auth_id.is_empty() || user_code.is_empty() {
+        return Err(
+            "device code response missing device_auth_id/user_code (malformed response)"
+                .to_string(),
+        );
+    }
     let interval = parse_flexible_int(&raw["interval"]);
 
     Ok(ParsedDeviceCode {

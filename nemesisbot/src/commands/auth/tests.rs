@@ -924,3 +924,20 @@ mod w5b2 {
             .expect("Status 全明细必须成功");
     }
 }
+
+// ===========================================================================
+// BUG-20261028-104c 红证：Expires 打的是 DateTime<Local> 本地墙钟却硬标
+// "UTC"——UTC+8 用户看到比真实过期时刻晚 8 小时的错误信息。
+// 不变量：显示值必须是该时刻的 UTC 墙钟（锚定绝对时刻断言，时区无关）。
+// ===========================================================================
+#[test]
+fn expiry_display_is_utc_wall_clock_not_local() {
+    use super::format_expiry_utc;
+    use chrono::TimeZone as _;
+    // 绝对时刻 2026-01-01T00:00:00Z，任何时区下显示都必须是 00:00
+    let t: chrono::DateTime<chrono::Local> = chrono::Utc
+        .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+        .unwrap()
+        .into();
+    assert_eq!(format_expiry_utc(t), "2026-01-01 00:00 UTC");
+}

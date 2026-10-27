@@ -322,6 +322,7 @@ fn test_oauth_provider_config_custom() {
         scopes: "read write".to_string(),
         originator: "myapp".to_string(),
         port: 8080,
+        request_timeout_secs: 30,
     };
     assert_eq!(cfg.issuer, "https://auth.example.com");
     assert_eq!(cfg.client_id, "my_client");
@@ -348,6 +349,7 @@ fn test_build_authorize_url_with_empty_originator() {
         scopes: "openid".to_string(),
         originator: "".to_string(),
         port: 8080,
+        request_timeout_secs: 30,
     };
     let pkce = crate::pkce::generate_pkce();
     let url = build_authorize_url(&cfg, &pkce, "state", "http://localhost:8080/callback");
@@ -365,6 +367,7 @@ fn test_build_authorize_url_with_originator() {
         scopes: "openid".to_string(),
         originator: "testapp".to_string(),
         port: 8080,
+        request_timeout_secs: 30,
     };
     let pkce = crate::pkce::generate_pkce();
     let url = build_authorize_url(&cfg, &pkce, "state", "http://localhost:8080/callback");
@@ -567,12 +570,13 @@ fn test_parse_device_code_response_invalid_json() {
 
 #[test]
 fn test_parse_device_code_response_missing_fields() {
-    // Missing fields -> defaults to empty strings / 0
-    let body = r#"{"other":"data"}"#;
-    let parsed = parse_device_code_response(body).unwrap();
-    assert_eq!(parsed.device_auth_id, "");
-    assert_eq!(parsed.user_code, "");
-    assert_eq!(parsed.interval, 0);
+    // BUG-20261028-104b：缺 device_auth_id/user_code 必须 fail-fast 报
+    // 结构错误——旧行为（静默空串）会让用户看到空验证码干等 15 分钟超时。
+    let err = parse_device_code_response(r#"{"other":"data"}"#).unwrap_err();
+    assert!(
+        err.contains("device_auth_id") || err.contains("user_code"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1090,6 +1094,7 @@ fn test_build_authorize_url_all_params_present() {
         scopes: "openid profile".to_string(),
         originator: "myapp".to_string(),
         port: 8080,
+        request_timeout_secs: 30,
     };
     let pkce = crate::pkce::generate_pkce();
     let url = build_authorize_url(&cfg, &pkce, "test_state", "http://localhost:8080/cb");
@@ -1414,6 +1419,7 @@ fn test_build_authorize_url_full_params() {
         scopes: "openid email".to_string(),
         originator: "testapp".to_string(),
         port: 9999,
+        request_timeout_secs: 30,
     };
     let pkce = crate::pkce::generate_pkce();
     let url = build_authorize_url(&cfg, &pkce, "test_state", "http://localhost:9999/callback");
@@ -1576,6 +1582,7 @@ fn test_build_authorize_url_with_custom_issuer() {
         scopes: "openid profile".to_string(),
         originator: "myapp".to_string(),
         port: 8080,
+        request_timeout_secs: 30,
     };
     let pkce = crate::pkce::generate_pkce();
     let url = build_authorize_url(&cfg, &pkce, "state123", "http://localhost:8080/cb");
@@ -1640,6 +1647,7 @@ fn cfg_for(server: &MockServer) -> OAuthProviderConfig {
         scopes: "openid".to_string(),
         originator: "".to_string(),
         port: 1455,
+        request_timeout_secs: 30,
     }
 }
 
@@ -2059,6 +2067,7 @@ async fn login_browser_bind_failure_returns_err_before_opening_browser() {
         scopes: "openid".to_string(),
         originator: "test".to_string(),
         port: taken_port,
+        request_timeout_secs: 30,
     };
 
     let err = cfg.login_browser().await.unwrap_err();
@@ -2080,6 +2089,7 @@ async fn standalone_login_browser_delegates_and_fails_on_busy_port() {
         scopes: "openid".to_string(),
         originator: "test".to_string(),
         port: taken_port,
+        request_timeout_secs: 30,
     };
 
     let err = login_browser(&cfg).await.unwrap_err();
@@ -2335,5 +2345,43 @@ fn browser_command_keeps_ampersand_url_as_single_argument() {
         args,
         [url],
         "完整 URL 必须是唯一参数（& 不得被 shell 拆开）"
+    );
+}
+
+// ===========================================================================
+// BUG-20261028-104a 红证：reqwest::Client::new() 默认零超时——端点接受连接
+// 但永不响应（挂死代理/防火墙黑洞）时 login_device_code 无限挂死：15 分钟
+// deadline 只罩轮询循环，罩不住首个 usercode 请求与 token 交换。
+// 不变量：任何 OAuth HTTP 请求必须在请求超时内返回（成功或 Err）。
+// ===========================================================================
+#[tokio::test]
+async fn login_device_code_hung_endpoint_must_not_hang_forever() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // 接受连接后握住 socket 不读不写：客户端请求将永远等不到响应
+    let holder = tokio::spawn(async move {
+        if let Ok((sock, _)) = listener.accept().await {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            drop(sock);
+        }
+    });
+
+    let cfg = OAuthProviderConfig {
+        issuer: format!("http://{}", addr),
+        client_id: "test-client".to_string(),
+        scopes: "openid".to_string(),
+        originator: "test".to_string(),
+        port: 1455,
+        request_timeout_secs: 1,
+    };
+
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(5), login_device_code(&cfg)).await;
+    holder.abort();
+    let inner = result.expect("login_device_code 挂死超过 5s——HTTP 请求零超时实锤");
+    let err = inner.unwrap_err();
+    assert!(
+        err.contains("requesting device code"),
+        "超时必须冒泡为 usercode 请求失败，实际: {err}"
     );
 }
