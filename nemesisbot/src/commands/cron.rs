@@ -198,21 +198,34 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
             Ok(false) => println!("Job {} not found.", id),
             Err(e) => return Err(anyhow::anyhow!("删除任务落盘失败（任务保留）: {e}")),
         },
-        CronAction::Enable { id } => toggle(&svc, &id, true),
-        CronAction::Disable { id } => toggle(&svc, &id, false),
+        CronAction::Enable { id } => toggle(&svc, &id, true)?,
+        CronAction::Disable { id } => toggle(&svc, &id, false)?,
     }
     Ok(())
 }
 
-fn toggle(svc: &CronService, id: &str, enabled: bool) {
-    match svc.enable_job(id, enabled) {
-        Ok(_) => println!(
-            "Job {} {}",
-            id,
-            if enabled { "enabled" } else { "disabled" }
-        ),
-        Err(_) => println!("Job {} not found.", id),
+/// 启停一个任务（BUG-20261028-102：不再吞错）。
+///
+/// 此前把 `enable_job` 的**所有** Err 一律打印成 "Job not found."：
+/// ①死排程闸的 loud 拒绝（BUG-20261025-30——「调度永远不会有下一次触发」，
+/// 启用只会得到永不触发的静默僵尸）被伪装成任务不存在；②收尾落盘失败
+/// 同样被吞（服务层已回滚内存、盘上状态未变，但用户看到的是成功语义的
+/// not found）。现对齐 Remove 臂三态语义与 web 面 `cron_toggle`（透传
+/// Err）：任务不存在 = 打印级 Ok；其余 Err 上抛。
+fn toggle(svc: &CronService, id: &str, enabled: bool) -> Result<()> {
+    if svc.get_job(id).is_none() {
+        println!("Job {} not found.", id);
+        return Ok(());
     }
+    svc.enable_job(id, enabled)
+        .map(|_| {
+            println!(
+                "Job {} {}",
+                id,
+                if enabled { "enabled" } else { "disabled" }
+            );
+        })
+        .map_err(anyhow::Error::msg)
 }
 
 /// 人类可读的调度描述（与 gateway 侧语义同源：every/at/cron 三态）。

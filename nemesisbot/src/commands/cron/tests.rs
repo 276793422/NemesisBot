@@ -182,6 +182,62 @@ fn enable_disable_dispatch_updates_envelope() {
 }
 
 // -----------------------------------------------------------------------
+// BUG-20261028-102：toggle 吞错——此前 enable_job 的**所有** Err（死排程
+// 闸 loud 拒绝 / 收尾落盘失败）都被 CLI 打印成 "Job not found."。现对齐
+// Remove 臂三态语义：not found = 打印级 Ok；其余 Err 必须冒泡。
+// -----------------------------------------------------------------------
+
+/// 死排程闸（BUG-20261025-30）的 loud 拒绝必须以 Err 冒泡到 CLI 顶层，
+/// 不能被伪装成「任务不存在」。死表达式：2 月无 30 日，任何年份都不触发。
+#[test]
+fn enable_dead_schedule_gate_error_surfaces() {
+    with_env_home(|home| {
+        write_store(
+            &home,
+            r#"{"version":1,"jobs":[{"id":"dead","name":"n","enabled":false,"schedule":{"kind":"cron","at_ms":null,"every_ms":null,"expr":"0 0 30 2 *","tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
+        );
+        let r = run(CronAction::Enable { id: "dead".into() }, false);
+        let err = r.expect_err("死排程闸 loud 拒绝必须 Err 冒泡（此前被 toggle 吞成 not found）");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("下一次触发") || msg.contains("死排程"),
+            "错误信息应是死排程闸原文而非 not found: {msg}"
+        );
+        // 闸在任何变更应用前触发：盘上 enabled 仍为 false（无副作用）。
+        assert!(!read_store(&home).jobs[0].enabled);
+    });
+}
+
+/// Enable 的收尾落盘失败必须 Err 冒泡（任务保留），不能被吞成
+/// "Job not found."。形态对照 remove_write_failure_denied_by_readonly_store_
+/// surfaces_error（同款 deny_write + POSIX 父目录只读构造）。
+#[test]
+fn enable_write_failure_denied_by_readonly_store_surfaces_error() {
+    with_env_home(|home| {
+        write_store(
+            &home,
+            r#"{"version":1,"jobs":[{"id":"abc","name":"n","enabled":false,"schedule":{"kind":"every","at_ms":null,"every_ms":60000,"expr":null,"tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
+        );
+        let store = store_of(&home);
+        deny_write(&store);
+        // POSIX：rename 型保存只看目录写权限，需父目录一并只读
+        //（Drop 恢复，逆序 drop 先于 TempDir 清理）。
+        #[cfg(unix)]
+        let _dir_deny = DenyDirWrite::new(store.parent().unwrap());
+
+        let r = run(CronAction::Enable { id: "abc".into() }, false);
+
+        allow_write(&store); // 先还原再断言，保证 TempDir 能清理
+        assert!(
+            r.is_err(),
+            "readonly store → 收尾写入被拒 → Err（此前被吞成 not found）"
+        );
+        // 服务层 BUG #16 回滚：盘上 enabled 保持 false（禁用态未被顶掉）。
+        assert!(!read_store(&home).jobs[0].enabled);
+    });
+}
+
+// -----------------------------------------------------------------------
 // R7（coverage-95 goal）：Add/Remove 的 store-已存在读臂 + 写失败臂。
 // - Add 在 store 已存在时必须读旧内容做合并（此前只测过空新建）；
 // - {home}/workspace 是普通文件时保存失败 → ? 上抛 Err；
