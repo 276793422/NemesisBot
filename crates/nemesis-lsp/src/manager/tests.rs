@@ -172,16 +172,56 @@ pub fn caller() -> u32 {
 }
 ";
 
-fn fixture_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+/// fixture 仓库根（2026-10-28 迁址）：**不用 %TEMP%，也不用 target/**。
+/// ① CI Windows runner 实证存在未知外部清扫者会删 %TEMP% 下的 fixture
+/// 目录（三起一现象：four_ops is_file 假 / canonicalize 设立期失败 /
+/// idle_sessions 中途 metadata code 3 目录整个消失——诊断插桩 2026-10-27
+/// 实录，查询路径与父目录全路径 NotFound）。② 本机实测 fixture 放
+/// `target/` 下时 rust-analyzer 对在盘文件回 "file not found"（canonicalize
+/// 成功、文件存在）——RA 的 VFS 默认排除路径中含 target 组件的目录。
+/// ③ 不能放仓库树内：RA 会从 fixture 向上摸到真实 workspace（数百 crate
+/// 全量分析）。故落 `%USERPROFILE%\.lsp-fixture\<pid>-<nanos>`：home 下、
+/// 仓库外、无短名组件、无人清扫、RA 不排除。lsp 实弹测试因重试窗持有
+/// fixture 30-90s，是全仓唯一长持 fixture 的用例族。pid+纳秒唯一不互踩
+/// （nextest 每 test 一进程 & cargo test 同进程并发都安全）；进程硬崩
+/// 残留一个孤儿目录，量级可接受（Drop 自清正常路径零残留）。
+struct FixtureRepo {
+    path: PathBuf,
+}
+
+impl FixtureRepo {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for FixtureRepo {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn fixture_repo() -> FixtureRepo {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let root = home.join(".lsp-fixture").join(format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
-        dir.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         "[package]\nname = \"lsp_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), FIXTURE_LIB_RS).unwrap();
-    dir
+    std::fs::write(root.join("src/lib.rs"), FIXTURE_LIB_RS).unwrap();
+    FixtureRepo { path: root }
 }
 
 /// Windows 上 TEMP 可能是 8.3 短名形式（如 `RUNNER~1`）：rust-analyzer
