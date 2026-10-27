@@ -329,15 +329,59 @@ function keySourceBadge(m: Model) {
 }
 // 存在明文 key → 顶部显示「迁移明文 key」引导卡。
 const inlineKeyModels = computed(() => models.value.filter(m => m.key_source?.kind === 'inline'))
-const copiedImport = ref(false)
-async function copyImportCmd() {
+// 明文 key 一步迁移（2026-10-27）：页面内一键迁 credentials.yaml / 加密
+// vault——免 CLI 免重启。保值迁移（Key 原值搬入存储，config.json 只留
+// 引用），运行中模型行为不变；vault 的 argon2 锁定形态先弹口令行。
+const migrating = ref(false)
+const showVaultPw = ref(false)
+const vaultPwInput = ref('')
+
+async function migrateInlineKeys(target: 'yaml' | 'vault', passphrase?: string) {
+  if (migrating.value) return
+  migrating.value = true
   try {
-    await navigator.clipboard.writeText('nemesisbot credentials import')
-    copiedImport.value = true
-    setTimeout(() => { copiedImport.value = false }, 2000)
-  } catch {
-    toast.error('复制失败，请手动选择命令复制')
+    const payload: Record<string, unknown> = { target }
+    if (passphrase) payload.passphrase = passphrase
+    const r = await request('models', 'migrate_keys', payload)
+    const n = r?.migrated?.length ?? 0
+    if (n > 0) {
+      toast.success(`已迁移 ${n} 个模型的 Key（config.json 只留引用，模型行为不变）`)
+    } else {
+      toast.success('没有需要迁移的明文 Key')
+    }
+    dismissVaultPw()
+    await loadModels()
+  } catch (e: any) {
+    toast.error('迁移失败: ' + e)
+  } finally {
+    migrating.value = false
   }
+}
+
+/** vault 目标：argon2 锁定时先要口令（DPAPI / 已带 env 口令直接执行）。 */
+async function migrateToVault() {
+  if (migrating.value) return
+  try {
+    const st = await request('vault', 'status')
+    if (st?.exists && st?.mode === 'argon2id' && !st?.unlocked) {
+      showVaultPw.value = true
+      return
+    }
+  } catch {
+    // status 拉不到（如未注册）就直接试——vault 臂会诚实报错。
+  }
+  await migrateInlineKeys('vault')
+}
+
+async function confirmVaultPw() {
+  const pw = vaultPwInput.value
+  if (!pw || migrating.value) return
+  await migrateInlineKeys('vault', pw)
+}
+
+function dismissVaultPw() {
+  showVaultPw.value = false
+  vaultPwInput.value = ''
 }
 
 async function loadCatalogInfo() {
@@ -597,15 +641,23 @@ onMounted(() => {
         <span class="ks-badge ks-yaml">yaml 引用</span>
         <span class="ks-badge ks-inline">⚠ 明文</span>
         <span class="ks-badge ks-none">无 key</span>
-        <span class="key-source-hint-note">推荐 env / yaml —— config.json 不落明文；明文 key 可用 CLI 一键迁移</span>
+        <span class="key-source-hint-note">推荐 env / yaml —— config.json 不落明文；明文 key 可在下方一键迁移</span>
       </div>
       <div v-if="inlineKeyModels.length > 0" class="card key-import-card">
         <div class="key-import-body">
           <span class="key-import-title">⚠ 检测到 {{ inlineKeyModels.length }} 个模型使用明文 Key（写在 config.json）</span>
-          <span class="key-import-note">在服务器上运行以下命令，可将其迁移到 credentials.yaml（权限 0600，config.json 只留引用）：</span>
-          <code class="key-import-cmd">nemesisbot credentials import</code>
+          <span class="key-import-note">一键迁移（免命令行、免重启）：Key 原值搬入存储，config.json 只留引用——运行中的模型行为不变。</span>
         </div>
-        <button class="btn btn-sm" @click="copyImportCmd">{{ copiedImport ? '✓ 已复制' : '复制命令' }}</button>
+        <div class="key-import-actions">
+          <button class="btn btn-sm btn-primary" :disabled="migrating" @click="migrateInlineKeys('yaml')">{{ migrating ? '迁移中…' : '迁移到 credentials.yaml' }}</button>
+          <button class="btn btn-sm" :disabled="migrating" @click="migrateToVault">迁移到加密 vault</button>
+        </div>
+      </div>
+      <div v-if="showVaultPw" class="card key-import-card vault-pw-card">
+        <span class="key-import-note">vault 为 argon2 口令模式且当前锁定——输入口令解锁并迁移（口令只用于本次请求，不落盘不落日志）：</span>
+        <input class="form-input vault-pw-input" type="password" v-model="vaultPwInput" placeholder="vault 口令" @keyup.enter="confirmVaultPw" />
+        <button class="btn btn-sm btn-primary" :disabled="migrating || !vaultPwInput" @click="confirmVaultPw">解锁并迁移</button>
+        <button class="btn btn-sm" :disabled="migrating" @click="dismissVaultPw">取消</button>
       </div>
       <!-- Add form -->
       <div v-if="showAdd" class="card" style="margin-bottom: var(--space-4);">
@@ -1134,13 +1186,10 @@ onMounted(() => {
 
 .key-import-note { color: var(--text-secondary); font-size: var(--text-xs); }
 
-.key-import-cmd {
-  font-family: monospace;
-  background: var(--bg-tertiary);
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  width: fit-content;
-}
+.key-import-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
+
+.vault-pw-card { align-items: center; }
+.vault-pw-input { max-width: 220px; }
 
 /* ── 五项增强批（2026-10-27）：圆点状态灯 + 视图切换 + 列表模式 ── */
 .test-dot {

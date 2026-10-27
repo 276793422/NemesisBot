@@ -510,3 +510,136 @@ describe('ModelsView 复制 / 改名（五项增强批②③）', () => {
     w.unmount()
   })
 })
+
+describe('ModelsView 明文 Key 一步迁移（2026-10-27）', () => {
+  /** 顶栏迁移卡按钮按文本定位（横幅不在 .model-card 内）。 */
+  function bannerBtn(w: ReturnType<typeof mount>, label: string) {
+    return w.findAll('.key-import-card button').find((b) => b.text().includes(label))!
+  }
+  /** 既有 mockBackend + migrate_keys / vault.status 通路。 */
+  function migrateMock(opts: {
+    inlineFirst?: boolean
+    migrateResult?: Record<string, unknown> | Error
+    vaultStatus?: Record<string, unknown> | null
+  }) {
+    let listCount = 0
+    const migrateCalls: any[] = []
+    let statusCalls = 0
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') {
+        listCount++
+        const rows =
+          opts.inlineFirst !== false && listCount === 1
+            ? [modelRow({ model_name: 'a', key_source: { kind: 'inline' } })]
+            : [modelRow({ model_name: 'a', key_source: { kind: 'vault' } })]
+        return { models: rows }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'vault' && cmd === 'status') {
+        statusCalls++
+        if (opts.vaultStatus === null) throw new Error('vault 未装配')
+        return opts.vaultStatus ?? { exists: false, mode: 'dpapi', unlocked: true }
+      }
+      if (module === 'models' && cmd === 'migrate_keys') {
+        migrateCalls.push(data)
+        const r = opts.migrateResult ?? {
+          target: 'yaml',
+          migrated: [{ name: 'a', alias: 'a' }],
+          reused: 0,
+          conflicts: [],
+        }
+        if (r instanceof Error) throw r
+        return r
+      }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    return { listCount: () => listCount, migrateCalls, statusCalls: () => statusCalls }
+  }
+
+  it('明文 Key 模型在场时渲染迁移卡（两按钮）；无明文时不渲染', async () => {
+    const m = migrateMock({})
+    const w = mount(ModelsView)
+    await flushPromises()
+    const card = w.find('.key-import-card')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('1 个模型使用明文 Key')
+    expect(bannerBtn(w, 'credentials.yaml').text()).toContain('迁移到 credentials.yaml')
+    expect(bannerBtn(w, '迁移到加密 vault').exists()).toBe(true)
+    w.unmount()
+
+    requestMock.mockReset()
+    migrateMock({ inlineFirst: false })
+    const w2 = mount(ModelsView)
+    await flushPromises()
+    expect(w2.find('.key-import-card').exists()).toBe(false)
+    expect(m.statusCalls()).toBe(0)
+    w2.unmount()
+  })
+
+  it('点「迁移到 credentials.yaml」发 {target:yaml}；成功后重拉列表、banner 消失', async () => {
+    const m = migrateMock({})
+    const w = mount(ModelsView)
+    await flushPromises()
+    expect(w.find('.key-import-card').exists()).toBe(true)
+    await bannerBtn(w, 'credentials.yaml').trigger('click')
+    await flushPromises()
+    expect(m.migrateCalls).toEqual([{ target: 'yaml' }])
+    expect(m.listCount(), '成功后 loadModels 重拉列表').toBe(2)
+    expect(w.find('.key-import-card').exists(), '迁移完成 banner 消失').toBe(false)
+    w.unmount()
+  })
+
+  it('vault 为 argon2 锁定时先弹口令行，确认后带 passphrase 发迁移', async () => {
+    const m = migrateMock({ vaultStatus: { exists: true, mode: 'argon2id', unlocked: false } })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, '迁移到加密 vault').trigger('click')
+    await flushPromises()
+    expect(m.statusCalls()).toBe(1)
+    expect(m.migrateCalls, '锁定态不直接发迁移').toEqual([])
+    const pw = w.find('.vault-pw-input')
+    expect(pw.exists()).toBe(true)
+    await pw.setValue('op-w')
+    await bannerBtn(w, '解锁并迁移').trigger('click')
+    await flushPromises()
+    expect(m.migrateCalls).toEqual([{ target: 'vault', passphrase: 'op-w' }])
+    expect(w.find('.vault-pw-input').exists(), '完成后口令行收起').toBe(false)
+    w.unmount()
+  })
+
+  it('vault 已解锁（DPAPI 等）直接迁移，不带 passphrase、不弹口令行', async () => {
+    const m = migrateMock({ vaultStatus: { exists: true, mode: 'dpapi', unlocked: true } })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, '迁移到加密 vault').trigger('click')
+    await flushPromises()
+    expect(m.migrateCalls).toEqual([{ target: 'vault' }])
+    expect(w.find('.vault-pw-input').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('迁移失败诚实报错：banner 留守、不重拉列表', async () => {
+    const m = migrateMock({ migrateResult: new Error('解锁失败') })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, 'credentials.yaml').trigger('click')
+    await flushPromises()
+    expect(m.listCount(), '失败不重拉').toBe(1)
+    expect(w.find('.key-import-card').exists(), 'banner 留守').toBe(true)
+    w.unmount()
+  })
+
+  it('口令行「取消」收起且不发迁移', async () => {
+    const m = migrateMock({ vaultStatus: { exists: true, mode: 'argon2id', unlocked: false } })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, '迁移到加密 vault').trigger('click')
+    await flushPromises()
+    await bannerBtn(w, '取消').trigger('click')
+    await flushPromises()
+    expect(w.find('.vault-pw-input').exists()).toBe(false)
+    expect(m.migrateCalls).toEqual([])
+    w.unmount()
+  })
+})

@@ -56,7 +56,7 @@ fn seed_config(home: &Path, model_entries: &str) -> std::path::PathBuf {
     p
 }
 
-/// 明文 key → vault:<alias>，值入 vault，配置回写（typed round-trip）。
+/// 明文 key → vault:<alias>，值入 vault，配置回写（raw round-trip）。
 #[test]
 fn migrate_inline_plaintext_key() {
     let _g = MIGRATE_LOCK.lock();
@@ -448,80 +448,6 @@ mod run_arms {
         block_on(super::super::run(VaultAction::Migrate, false)).unwrap();
         let cfg_text2 = std::fs::read_to_string(th.home.join("config.json")).unwrap();
         assert_eq!(cfg_text, cfg_text2, "幂等：二次迁移不得改配置");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// cov 补测（2026-09-25）：`vault_alias_for` 别名冲突裁决四臂。
-// （此前只有间接路径——Migrate 全链路——该裁决函数本体无直测。）
-// ---------------------------------------------------------------------------
-mod alias_arbiter {
-    use super::super::{MigrateReport, VaultMode, VaultStore};
-
-    /// tempdir + 独立已解锁 vault store（落 tempdir，无 env 操作，不持全局锁）。
-    fn arb_store() -> (tempfile::TempDir, VaultStore) {
-        let tmp = tempfile::tempdir().unwrap();
-        let vp = tmp.path().join("vault.enc");
-        let mode = VaultStore::default_mode();
-        let pw = if mode == VaultMode::Argon2id {
-            Some("arb-test-pw")
-        } else {
-            None
-        };
-        let mut store = VaultStore::create(&vp, mode, pw).unwrap();
-        if mode == VaultMode::Argon2id {
-            store.unlock("arb-test-pw").unwrap();
-        }
-        (tmp, store)
-    }
-
-    #[test]
-    fn free_base_alias_is_returned_as_is() {
-        let (_tmp, store) = arb_store();
-        let mut report = MigrateReport::default();
-        let alias = super::super::vault_alias_for(&store, "openai", "sk-lit-1", &mut report);
-        assert_eq!(alias, "openai");
-        assert_eq!(report.reused, 0);
-        assert!(report.conflicts.is_empty(), "空闲别名不得记冲突");
-    }
-
-    #[test]
-    fn same_literal_under_taken_alias_is_reused() {
-        let (_tmp, mut store) = arb_store();
-        store.set("openai", "sk-lit-1", "model", "").unwrap();
-        let mut report = MigrateReport::default();
-        let alias = super::super::vault_alias_for(&store, "openai", "sk-lit-1", &mut report);
-        assert_eq!(alias, "openai", "同值复用现别名");
-        assert_eq!(report.reused, 1);
-        assert!(report.conflicts.is_empty());
-    }
-
-    #[test]
-    fn different_literal_gets_numbered_suffix() {
-        let (_tmp, mut store) = arb_store();
-        store.set("openai", "sk-other", "model", "").unwrap();
-        let mut report = MigrateReport::default();
-        let alias = super::super::vault_alias_for(&store, "openai", "sk-lit-2", &mut report);
-        assert_eq!(alias, "openai__2", "异值走 __2 后缀");
-        assert_eq!(report.reused, 0);
-        assert_eq!(
-            report.conflicts,
-            vec![("openai".to_string(), "openai__2".to_string())]
-        );
-    }
-
-    #[test]
-    fn suffix_chain_reuses_matching_value_and_skips_taken() {
-        let (_tmp, mut store) = arb_store();
-        store.set("openai", "v-base", "model", "").unwrap();
-        store.set("openai__2", "v-two", "model", "").unwrap();
-        store.set("openai__3", "v-target", "model", "").unwrap();
-        let mut report = MigrateReport::default();
-        // 目标字面量与 __3 相同：__2 被异值占位跳过，__3 同值复用。
-        let alias = super::super::vault_alias_for(&store, "openai", "v-target", &mut report);
-        assert_eq!(alias, "openai__3");
-        assert_eq!(report.reused, 1, "命中同值后缀记复用");
-        assert!(report.conflicts.is_empty(), "复用不记冲突");
     }
 }
 

@@ -5,7 +5,7 @@ use crate::handlers::{mask_sensitive, require_home};
 use crate::llm_bridge::ForgeProviderBridge;
 use crate::llm_bridge::ProviderAdapter;
 use crate::ws_router::{ModuleHandler, RequestContext};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub struct ModelsHandler {
@@ -39,6 +39,7 @@ impl ModuleHandler for ModelsHandler {
             "delete",
             "set_default",
             "test",
+            "migrate_keys",
             "update_field",
             "catalog_info",
             "catalog_update",
@@ -85,6 +86,13 @@ impl ModuleHandler for ModelsHandler {
                 let name = crate::handlers::get_str(&data, "name")?;
                 self.test(home, &name, &data).await
             }
+            // 明文 key 一步迁移（2026-10-27）：页面内一键迁 credentials.yaml /
+            // vault——免 CLI 免重启（保值迁移 + key 引用每操作零缓存解析 ⇒
+            // 运行中 provider 行为逐字节不变，无需热切）。
+            "migrate_keys" => {
+                let data = data.ok_or("missing data")?;
+                Self::migrate_keys(home, ctx, &data)
+            }
             // P3-2 (2026-08-24 UI entry gap): model attribute editor.
             "update_field" => {
                 let data = data.ok_or("missing data")?;
@@ -104,6 +112,194 @@ impl ModuleHandler for ModelsHandler {
 
 fn config_path(home: &str) -> PathBuf {
     super::config::config_path(home)
+}
+
+// ---------------------------------------------------------------------------
+// 明文 key 一步迁移（2026-10-27）：models.migrate_keys
+// ---------------------------------------------------------------------------
+//
+// 模型页 banner 检测到 inline 明文 key 时的一键迁移入口，取代「复制 CLI
+// 命令 + 重启」的旧指引。保值迁移（明文 sk-x → yaml:/vault: 引用，运行时
+// 解析回同一个 sk-x）+ key 引用每操作零缓存解析（provider_resolver
+// resolve_api_key_value 无缓存）⇒ 迁移后运行中 provider 行为逐字节不变，
+// 无需热切无需重启——config 写盘路径（write_raw_config）自带全局 store
+// reload。
+//
+// 语义与 CLI（`nemesisbot credentials import` / `nemesisbot vault migrate`）
+// 共用同一核心（nemesis-config / nemesis-security 里的 raw Value 函数，
+// 2026-10-27 下沉）：同值别名复用、异值 `__N` 后缀绝不覆盖、`vault:` 引用
+// 绝不被降级搬迁、`yaml:` 断引用 fail loud。
+impl ModelsHandler {
+    /// `models.migrate_keys {target: "yaml"|"vault", passphrase?}`。
+    fn migrate_keys(
+        home: &str,
+        // ctx 只被 vault 臂消费（vault_path 走 workspace 拓扑）；security
+        // 裁掉后留名避免 unused 警告。
+        #[cfg_attr(not(feature = "security"), allow(unused_variables))] ctx: &RequestContext,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let target = data
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        match target {
+            "yaml" => Self::migrate_keys_to_yaml(home),
+            #[cfg(feature = "security")]
+            "vault" => Self::migrate_keys_to_vault(home, ctx, data),
+            #[cfg(not(feature = "security"))]
+            "vault" => {
+                Err("vault 迁移需要 security feature（当前构建未编译 vault 子系统）".to_string())
+            }
+            other => Err(format!(
+                "models.migrate_keys: target 必须是 \"yaml\" 或 \"vault\"（got \"{other}\"）"
+            )),
+        }
+    }
+
+    /// target=yaml：明文 → `yaml:<alias>`（credentials.yaml，0600）。
+    fn migrate_keys_to_yaml(home: &str) -> Result<Option<serde_json::Value>, String> {
+        let cred_path = nemesis_config::credentials::credentials_path_for_home(Path::new(home));
+        let report = super::config::update_raw_config(home, |cfg| {
+            let mut creds = if cred_path.exists() {
+                nemesis_config::credentials::load_credentials_file(&cred_path)
+                    .map_err(|e| e.to_string())?
+            } else {
+                nemesis_config::credentials::CredentialsFile::default()
+            };
+            let report = nemesis_config::credentials::migrate_inline_keys_to_yaml(cfg, &mut creds);
+            // 持盘顺序：凭据侧先落盘（闭包内），config 由事务口在闭包 Ok
+            // 后原子写——任何一步 Err = config 不落盘（明文原地，重跑幂等）。
+            if nemesis_config::credentials::creds_file_dirty(&report) {
+                nemesis_config::credentials::save_credentials_file(&cred_path, &creds)
+                    .map_err(|e| format!("credentials.yaml 写入失败: {e}"))?;
+            }
+            Ok(report)
+        })?;
+        tracing::info!(
+            "[Web/WSAPI] models.migrate_keys target=yaml migrated={} reused={} skipped_ref={} skipped_empty={}",
+            report.migrated.len(),
+            report.reused,
+            report.skipped_reference,
+            report.skipped_empty
+        );
+        Ok(Some(serde_json::json!({
+            "target": "yaml",
+            "migrated": report
+                .migrated
+                .iter()
+                .map(|(n, a)| serde_json::json!({ "name": n, "alias": a }))
+                .collect::<Vec<_>>(),
+            "reused": report.reused,
+            "conflicts": report
+                .conflicts
+                .iter()
+                .map(|(w, u)| serde_json::json!({ "wanted": w, "used": u }))
+                .collect::<Vec<_>>(),
+            "skipped_reference": report.skipped_reference,
+            "skipped_empty": report.skipped_empty,
+        })))
+    }
+
+    /// target=vault：明文与 `yaml:` 引用一并升格 `vault:<alias>`（顺手清掉
+    /// 被升格的 yaml 别名——明文彻底离盘）；DPAPI 免口令，argon2 锁定需
+    /// passphrase（显式传参 > 进程 env，与 vault.unlock 同源；口令不落日志
+    /// 不落盘不进响应）。
+    #[cfg(feature = "security")]
+    fn migrate_keys_to_vault(
+        home: &str,
+        ctx: &RequestContext,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let env_pw = std::env::var("NEMESISBOT_VAULT_PASSPHRASE")
+            .ok()
+            .filter(|p| !p.is_empty());
+        let pw = data
+            .get("passphrase")
+            .and_then(|v| v.as_str())
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .or(env_pw);
+        let vault_path = super::vault::vault_path(ctx)?;
+        let cred_path = nemesis_config::credentials::credentials_path_for_home(Path::new(home));
+
+        // vault RMW 串行锁：罩 open→改→save 全序列（VAULT_IO_LOCK 注）——
+        // 与并发 vault.set/remove 互斥。config 写锁由 update_raw_config 在
+        // 闭包入口再取；全仓仅本路径同取两锁且恒此序，无反向序死锁面。
+        let _io = super::vault::VAULT_IO_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut store = if vault_path.exists() {
+            let mut s = super::vault::open_store(&vault_path)?;
+            // 写路径必须真解锁——set 需要 DEK；锁死 = 诚实报错带指引。
+            super::vault::try_unlock(&mut s, pw.as_deref())?;
+            s
+        } else {
+            super::vault::create_fresh(&vault_path, pw.as_deref())?
+        };
+        let mode = store.mode().to_string();
+
+        let report = super::config::update_raw_config(home, |cfg| {
+            let mut creds = if cred_path.exists() {
+                Some(
+                    nemesis_config::credentials::load_credentials_file(&cred_path)
+                        .map_err(|e| e.to_string())?,
+                )
+            } else {
+                None
+            };
+            let report = nemesis_security::vault::migrate_model_keys_to_vault(
+                cfg,
+                &mut store,
+                creds.as_mut(),
+            )
+            .map_err(|e| format!("vault 写入失败: {e}"))?;
+            if report.config_changed() {
+                // 顺序不变量：vault 落盘先于 config 回写（事务口在闭包 Ok
+                // 后才写 config）——vault 落盘失败 = Err = config 不动，
+                // 明文原地零损失，重跑幂等收敛。
+                store.save().map_err(|e| {
+                    format!("vault 落盘失败（明文 key 未离盘，修复后重跑即可）: {e}")
+                })?;
+            }
+            if report.creds_changed {
+                nemesis_config::credentials::save_credentials_file(
+                    &cred_path,
+                    creds.as_ref().expect("creds_changed 蕴含 creds 在场"),
+                )
+                .map_err(|e| format!("credentials.yaml 写入失败: {e}"))?;
+            }
+            Ok(report)
+        })?;
+        tracing::info!(
+            "[Web/WSAPI] models.migrate_keys target=vault mode={mode} migrated={} broken={} yaml_removed={}",
+            report.migrated.len(),
+            report.yaml_broken.len(),
+            report.yaml_aliases_removed.len()
+        );
+        Ok(Some(serde_json::json!({
+            "target": "vault",
+            "mode": mode,
+            "migrated": report
+                .migrated
+                .iter()
+                .map(|(n, a, _k)| serde_json::json!({ "name": n, "alias": a }))
+                .collect::<Vec<_>>(),
+            "reused": report.reused,
+            "conflicts": report
+                .conflicts
+                .iter()
+                .map(|(w, u)| serde_json::json!({ "wanted": w, "used": u }))
+                .collect::<Vec<_>>(),
+            "yaml_broken": report
+                .yaml_broken
+                .iter()
+                .map(|(n, a)| serde_json::json!({ "name": n, "alias": a }))
+                .collect::<Vec<_>>(),
+            "yaml_aliases_removed": report.yaml_aliases_removed,
+            "skipped_env": report.skipped_env,
+            "already_vault": report.already_vault,
+        })))
+    }
 }
 
 /// 健康建议阈值（纯函数，单测直测）：数据层只出事实（计数），建议在此
@@ -1558,3 +1754,8 @@ mod agt_tests;
 // 不触网臂）。
 #[cfg(test)]
 mod copy_rename_tests;
+
+// 明文 key 一步迁移（2026-10-27）：models.migrate_keys（yaml/vault 双臂
+// 端到端 + 原子性 + 断引用 + 幂等 + feature 裁剪形态诚实报错）。
+#[cfg(test)]
+mod migrate_keys_tests;
