@@ -447,6 +447,23 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
                     format!("connector `{}`: 凭据槽位 `{slot}` 的 prefix {e}", meta.id)
                 })?;
             }
+            // BUG-20261028-100：into 目标名与静态头名同闸——静态头/prefix
+            // 加载期 loud 拒，into 名却不验会让坏清单活到运行期才被 reqwest
+            // 拒（报错离根因远）。装得进去 ≠ 校验得住。
+            match &into {
+                CredentialInto::Header(n) => validate_header_name(n).map_err(|e| {
+                    format!(
+                        "connector `{}`: 凭据槽位 `{slot}` 的 into 头名 {e}",
+                        meta.id
+                    )
+                })?,
+                CredentialInto::Query(n) => validate_query_name(n).map_err(|e| {
+                    format!(
+                        "connector `{}`: 凭据槽位 `{slot}` 的 into query 名 {e}",
+                        meta.id
+                    )
+                })?,
+            }
             credentials.insert(
                 slot.clone(),
                 CredentialBinding {
@@ -852,6 +869,24 @@ fn validate_header_name(name: &str) -> Result<(), String> {
 fn validate_header_value(value: &str) -> Result<(), String> {
     if value.contains('\r') || value.contains('\n') {
         return Err("含换行（头注入防线：值必须是单行）".into());
+    }
+    Ok(())
+}
+
+/// query 参数名校验：URL 结构字符（`&`/`=`/`#`/`?`）与空白/控制字符/
+/// 非 ASCII 拒。运行期 reqwest 会 percent-encode 兜底，但清单层与头名
+/// 同哲学——拼错的名字 loud 拒，不装作支持（BUG-20261028-100）。
+fn validate_query_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("名字不能为空".into());
+    }
+    if name.chars().any(|c| {
+        c.is_whitespace()
+            || c.is_control()
+            || matches!(c, '&' | '=' | '#' | '?')
+            || (c as u32) > 0x7e
+    }) {
+        return Err("名字含非法字符（空白/URL 结构字符 & = # ?/控制字符/非 ASCII）".into());
     }
     Ok(())
 }

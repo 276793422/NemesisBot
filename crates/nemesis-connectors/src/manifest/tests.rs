@@ -411,6 +411,80 @@ http = { method = "GET", path = "/rss" }
     assert!(err.contains("prefix 只支持 header"), "got: {err}");
 }
 
+// ---- BUG-20261028-100：凭据 into 目标名加载期校验（防线对称缺口）----
+
+fn cred_into_manifest(into_toml_value: &str) -> String {
+    format!(
+        r#"
+[connector]
+id = "monitor"
+name = "监控"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "https://m.example.com"
+
+[connector.credentials]
+key = {{ into = "{into_toml_value}" }}
+
+[[op]]
+id = "fetch"
+risk = "low"
+class = "network"
+http = {{ method = "GET", path = "/rss" }}
+"#
+    )
+}
+
+#[test]
+fn rejects_credential_into_bad_header_name() {
+    // 静态头名/头值、prefix 加载期都 loud 拒；into 头名此前不验——坏名
+    // 活到运行期才被 reqwest 拒（报错离根因远，违背「装得进去 ≠ 校验得住」）。
+    for bad in [
+        r"header:X-API Key",                // 空白
+        r"header:Authorization\rX-Evil: 1", // CR + 冒号 = 头注入形态（TOML 转义）
+        r"header:X:Y",                      // 冒号（split_once 拆 scheme 后残余）
+        "header:Ｘ",                        // 非 ASCII
+        "header:   ",                       // 纯空白
+    ] {
+        let err = parse_connector_manifest(&cred_into_manifest(bad))
+            .expect_err(&format!("into `{bad}` 必须拒绝"));
+        assert!(err.contains("into"), "into `{bad}`: {err}");
+    }
+    // 合法名照常通过
+    let c = parse_connector_manifest(&cred_into_manifest("header:X-Api-Key_2"))
+        .expect("legal header into");
+    assert!(matches!(
+        c.credentials.get("key").unwrap().into,
+        CredentialInto::Header(ref h) if h == "X-Api-Key_2"
+    ));
+}
+
+#[test]
+fn rejects_credential_into_bad_query_name() {
+    // query 名会被 reqwest percent-encode 兜底，但 URL 结构字符/空白/
+    // 非 ASCII 在清单层就该 loud 拒（与头名同哲学：拼错不装作支持）。
+    for bad in [
+        "query:a&b=1",     // & 与 = = URL 结构字符
+        "query:call back", // 空白
+        "query:#frag",     // fragment 定界
+        "query:a?b",       // query 定界
+        "query:Ｘ",        // 非 ASCII
+    ] {
+        let err = parse_connector_manifest(&cred_into_manifest(bad))
+            .expect_err(&format!("into `{bad}` 必须拒绝"));
+        assert!(err.contains("into"), "into `{bad}`: {err}");
+    }
+    // 合法名照常通过
+    let c = parse_connector_manifest(&cred_into_manifest("query:api_key.v2"))
+        .expect("legal query into");
+    assert!(matches!(
+        c.credentials.get("key").unwrap().into,
+        CredentialInto::Query(ref q) if q == "api_key.v2"
+    ));
+}
+
 #[test]
 fn http_base_unknown_field_still_loud() {
     // deny_unknown_fields 纪律不因 headers 扩展而破
