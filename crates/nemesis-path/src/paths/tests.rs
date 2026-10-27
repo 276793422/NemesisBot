@@ -2827,3 +2827,23 @@ fn test_workspace_ignored_root_self_name_not_matched() {
     let rel = PathBuf::from("src").join("main.rs");
     assert!(!is_workspace_ignored(&rel));
 }
+
+#[test]
+fn test_workspace_ignored_images_runtime_dir() {
+    // BUG-20261028-105 红证：images 是运行时属主子树（M4 generate_image
+    // 每次落 <workspace>/images/*.png），与 logs/uploads/memory/data 同族。
+    // 表漏 images → fs_watcher 把 agent 刚生成的图当「外部修改」注入
+    // <external_changes> 上下文段（污染）；@补全把二进制 PNG 当项目文件列出。
+    let top = PathBuf::from("images").join("gen-1.png");
+    assert!(
+        is_workspace_ignored(&top),
+        "images/ 运行时属主子树必须整棵忽略: {}",
+        top.display()
+    );
+    let deep = PathBuf::from("sub").join("images").join("a.png");
+    assert!(is_workspace_ignored(&deep), "深层 images 组件必须命中");
+    // 大小写不敏感契约同表内其他项。
+    assert!(is_workspace_ignored(&PathBuf::from("Images").join("b.PNG")));
+    // 普通文件名只做组件匹配不吃前缀：imagesque.png 是普通文件不误伤。
+    assert!(!is_workspace_ignored(&PathBuf::from("imagesque.png")));
+}

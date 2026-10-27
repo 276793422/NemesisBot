@@ -896,8 +896,11 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 
 /// 目录/组件名忽略：workspace 相对路径任一组件命中即整棵子树忽略。
 /// 覆盖 VCS/构建产物与运行时属主子树（会话流水、影子 git、rpc_cache、
-/// 看板 db、catalog 派生数据、热重载配置、sandboxie runtime）。
-/// M9（2026-10-27 整改批次五）补全常见构建/虚拟环境产物目录。
+/// 看板 db、catalog 派生数据、热重载配置、sandboxie runtime、图像生成
+/// 产物）。M9（2026-10-27 整改批次五）补全常见构建/虚拟环境产物目录。
+/// BUG-20261028-105 补 `images`（M4 generate_image 落点，2026-09-29 上线
+/// 时漏更——watch 把 agent 刚生成的图当外部修改注入上下文 + @补全把
+/// 二进制 PNG 当项目文件列出）。
 pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -912,6 +915,7 @@ pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[
     "__pycache__",
     "logs",
     "uploads",
+    "images",
     "memory",
     "cluster",
     "board",
