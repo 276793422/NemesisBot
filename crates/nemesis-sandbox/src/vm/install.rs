@@ -918,7 +918,7 @@ pub async fn passwordless_sudo_available() -> bool {
 /// packages 条目按 pm 取包清单（空 = None——矩阵没给该 pm 的清单，诚实指路
 /// 补全配置；单一真相源 = config.vm_qemu.json 条目字段）。
 #[cfg(target_os = "linux")]
-fn packages_for_pm<'a>(entry: &'a QemuPlatformEntry, pm: LinuxPm) -> Option<&'a str> {
+fn packages_for_pm(entry: &QemuPlatformEntry, pm: LinuxPm) -> Option<&str> {
     let raw = match pm {
         LinuxPm::Apt => entry.apt.as_str(),
         LinuxPm::Dnf => entry.dnf.as_str(),
