@@ -157,6 +157,27 @@ fn fixture_repo() -> tempfile::TempDir {
     dir
 }
 
+/// Windows 上 TEMP 可能是 8.3 短名形式（如 `RUNNER~1`）：rust-analyzer
+/// 会把 workspace root 规范化为长名，查询路径若停留在短名形式，在其 VFS
+/// 中找不到对应文件（"file does not exist"）。canonicalize 拿真实长名
+/// （带 `\\?\` verbatim 前缀），盘符路径剥掉前缀还原常规形态（UNC 形态
+/// 保留）；canonicalize 失败时原样返回（调用方照常走既有错误路径）。
+fn long_path(p: &Path) -> PathBuf {
+    match std::fs::canonicalize(p) {
+        Ok(canon) => {
+            let s = canon.as_os_str().to_string_lossy();
+            if let Some(rest) = s.strip_prefix(r#"\\?\"#) {
+                let bytes = rest.as_bytes();
+                if bytes.len() >= 2 && bytes[1] == b':' {
+                    return PathBuf::from(rest.to_string());
+                }
+            }
+            canon
+        }
+        Err(_) => p.to_path_buf(),
+    }
+}
+
 /// rust-analyzer answers definition queries with null until indexing
 /// finishes — retry with backoff instead of treating the cold-start null
 /// as "no definition".
@@ -219,7 +240,7 @@ async fn rust_analyzer_four_ops_on_real_repo() {
     }
     let _live = live_lock().await;
     let dir = fixture_repo();
-    let lib = dir.path().join("src/lib.rs");
+    let lib = long_path(&dir.path().join("src/lib.rs"));
 
     let mgr = LspManager::new(
         Some(Duration::from_secs(60)),
@@ -284,7 +305,7 @@ async fn idle_sessions_are_reaped_and_respawn() {
     }
     let _live = live_lock().await;
     let dir = fixture_repo();
-    let lib = dir.path().join("src/lib.rs");
+    let lib = long_path(&dir.path().join("src/lib.rs"));
     let mgr = LspManager::new(Some(Duration::from_secs(60)), Some(Duration::from_secs(10)));
 
     let hover = query_until_fast(&mgr, LspOp::Hover, &lib, 0, 8).await;
