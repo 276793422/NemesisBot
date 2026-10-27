@@ -205,9 +205,48 @@ fn long_path(p: &Path) -> PathBuf {
     }
 }
 
+/// Err 臂现场采样（2026-10-28 CI shard6 之谜：「file does not exist」在
+/// canonicalize 刚成功之后持续 30s+，armchair 排查全部排除——真红时把原始
+/// OS 错误码与父目录现场打出来一次定位）。仅 existence 类错误打印，正常
+/// 重试不刷屏。
+fn dump_existence_diag(path: &Path) {
+    match std::fs::metadata(path) {
+        Ok(md) => eprintln!(
+            "[lsp-diag] metadata NOW ok (is_file={}, 瞬态): {}",
+            md.is_file(),
+            path.display()
+        ),
+        Err(e) => {
+            eprintln!(
+                "[lsp-diag] metadata err = {e:?}; temp_dir = {}",
+                std::env::temp_dir().display()
+            );
+            if let Some(parent) = path.parent() {
+                match std::fs::read_dir(parent) {
+                    Ok(entries) => {
+                        let names: Vec<String> = entries
+                            .take(12)
+                            .filter_map(|d| {
+                                d.ok().map(|d| d.file_name().to_string_lossy().into_owned())
+                            })
+                            .collect();
+                        eprintln!(
+                            "[lsp-diag] parent = {} (前 {} 项): {names:?}",
+                            parent.display(),
+                            names.len()
+                        );
+                    }
+                    Err(e) => eprintln!("[lsp-diag] parent read_dir err = {e:?}"),
+                }
+            }
+        }
+    }
+}
+
 /// rust-analyzer answers definition queries with null until indexing
-/// finishes — retry with backoff instead of treating the cold-start null
-/// as "no definition".
+/// finishes — retry until a deadline instead of treating the cold-start
+/// null as "no definition". 90s deadline：本机首跑实录冷启动 >30s 才答出
+/// 首个 definition（2026-10-28），CI 2 核 runner 只会更慢。
 async fn query_until(
     mgr: &LspManager,
     op: LspOp,
@@ -216,8 +255,11 @@ async fn query_until(
     character: u32,
     want_nonempty: bool,
 ) -> String {
-    let mut last = String::new();
-    for _ in 0..30 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let mut last;
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
         match mgr.query(op, path, line, character).await {
             Ok(res) => {
                 let empty = res.starts_with("no ") || res.starts_with("(no ");
@@ -226,11 +268,19 @@ async fn query_until(
                 }
                 last = res;
             }
-            Err(e) => last = format!("ERR: {e}"),
+            Err(e) => {
+                if e.starts_with("file does not exist") {
+                    eprintln!("[lsp-diag] attempt {attempt}: {e}");
+                    dump_existence_diag(path);
+                }
+                last = format!("ERR: {e}");
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return last;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    last
 }
 
 /// Serialize the two live rust-analyzer tests: each spawns a real server
@@ -267,7 +317,13 @@ async fn rust_analyzer_four_ops_on_real_repo() {
     }
     let _live = live_lock().await;
     let dir = fixture_repo();
-    let lib = long_path(&dir.path().join("src/lib.rs"));
+    let raw_lib = dir.path().join("src/lib.rs");
+    let lib = long_path(&raw_lib);
+    eprintln!(
+        "[four_ops] raw={} canon={}",
+        raw_lib.display(),
+        lib.display()
+    );
 
     let mgr = LspManager::new(
         Some(Duration::from_secs(60)),
@@ -332,7 +388,13 @@ async fn idle_sessions_are_reaped_and_respawn() {
     }
     let _live = live_lock().await;
     let dir = fixture_repo();
-    let lib = long_path(&dir.path().join("src/lib.rs"));
+    let raw_lib = dir.path().join("src/lib.rs");
+    let lib = long_path(&raw_lib);
+    eprintln!(
+        "[idle_sessions] raw={} canon={}",
+        raw_lib.display(),
+        lib.display()
+    );
     let mgr = LspManager::new(Some(Duration::from_secs(60)), Some(Duration::from_secs(10)));
 
     let hover = query_until_fast(&mgr, LspOp::Hover, &lib, 0, 8).await;
@@ -388,8 +450,9 @@ async fn query_until_fast(
     line: u32,
     character: u32,
 ) -> String {
-    let mut last = String::new();
-    for _ in 0..60 {
+    let mut last;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
         match mgr.query(op, path, line, character).await {
             Ok(res) => {
                 let empty = res.starts_with("no ") || res.starts_with("(no ");
@@ -398,11 +461,19 @@ async fn query_until_fast(
                 }
                 last = res;
             }
-            Err(e) => last = format!("ERR: {e}"),
+            Err(e) => {
+                if e.starts_with("file does not exist") {
+                    eprintln!("[lsp-diag] fast attempt: {e}");
+                    dump_existence_diag(path);
+                }
+                last = format!("ERR: {e}");
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return last;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    last
 }
 
 /// Per-language availability errors are clear, not panics — the
