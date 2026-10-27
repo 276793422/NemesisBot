@@ -47,6 +47,33 @@ fn transport_error_detection() {
     ));
 }
 
+/// BUG-20261027-93: timeout / frame-desync errors leave the session
+/// untrustworthy (possible half-consumed BufReader bytes or a still-wedged
+/// server) — each must be classified as session poisoning so the session
+/// gets evicted, while well-formed LSP errors and transport-death strings
+/// must NOT match (death has its own respawn-once arm).
+#[test]
+fn session_poisoning_detection() {
+    assert!(is_session_poisoning(
+        "LSP request textDocument/hover timed out after 1s"
+    ));
+    assert!(is_session_poisoning(
+        "message without Content-Length header"
+    ));
+    assert!(is_session_poisoning(
+        "bad JSON body: expected value at line 1"
+    ));
+    assert!(is_session_poisoning(
+        "Content-Length 99999999 exceeds cap 67108864"
+    ));
+    // Well-formed LSP error: session stays.
+    assert!(!is_session_poisoning(
+        "server error on textDocument/definition: {code:-32601}"
+    ));
+    // Transport death: handled by the respawn-once arm, not this one.
+    assert!(!is_session_poisoning("server closed the stream"));
+}
+
 #[test]
 fn find_root_walks_to_marker_then_falls_back() {
     let tmp = tempfile::tempdir().unwrap();
@@ -474,6 +501,14 @@ def answer_hover(mid):
         # reaps the cmd shim, not python) exits on its own and lets the
         # test process terminate.
         time.sleep(20)
+    if MODE == "hang-once":
+        # Only the FIRST process hangs on hover; every later process (the
+        # fresh session after eviction) answers normally. The marker is
+        # created by the first process at hover time — before any respawn
+        # can exist, since respawning requires this hover to time out first.
+        if not os.path.exists(here("hung_once.marker")):
+            open(here("hung_once.marker"), "w").write("1")
+            time.sleep(20)
     if MODE == "null-error":
         # S1: the error field is present but JSON-null — must NOT be treated
         # as an error; the client falls through to the result.
@@ -746,6 +781,36 @@ async fn fake_server_unresponsive_times_out() {
         .await
         .unwrap_err();
     assert!(err.contains("timed out"), "{err}");
+    let _ = mgr.shutdown_all().await;
+}
+
+/// BUG-20261027-93 red→green: a query that TIMES OUT (wedged server) must
+/// evict + tree-kill the session so the NEXT query recovers on a fresh
+/// server — not stay cached on a session that is (a) likely still wedged
+/// and (b) possibly holding half-consumed bytes in its BufReader (frame
+/// desync poisons every later request). Before the fix the second query
+/// re-enters the same wedged session and times out again; after the fix it
+/// lands on the respawned healthy session and succeeds.
+#[tokio::test]
+async fn fake_server_timeout_evicts_session_next_query_recovers() {
+    let (dir, _path) = plant_fake_gopls("hang-once");
+    let mgr = LspManager::new(Some(Duration::from_secs(1)), None);
+    // Query 1: wedged first session → honest timeout error surfaces.
+    let err = mgr
+        .query(LspOp::Hover, &dir.path().join("main.go"), 0, 0)
+        .await
+        .unwrap_err();
+    assert!(err.contains("timed out"), "{err}");
+    assert!(
+        dir.path().join("hung_once.marker").exists(),
+        "first session must actually have hung (proves the wedged path ran)"
+    );
+    // Query 2: must land on a FRESH session and succeed.
+    let hover = mgr
+        .query(LspOp::Hover, &dir.path().join("main.go"), 0, 0)
+        .await
+        .unwrap();
+    assert!(hover.contains("fake_hover_value"), "{hover}");
     let _ = mgr.shutdown_all().await;
 }
 

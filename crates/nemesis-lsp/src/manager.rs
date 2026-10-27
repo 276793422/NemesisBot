@@ -430,6 +430,26 @@ impl LspManager {
                     .request(op.method(), params, self.request_timeout)
                     .await
             }
+            // Timeout / frame-desync: the session is untrustworthy but NOT
+            // provably dead — the timeout future may have been dropped
+            // mid-read leaving half-consumed bytes in the BufReader (frame
+            // desync poisons every later request on this session), and a
+            // server that just ate the full timeout is likely still wedged.
+            // Evict + tree-kill so the NEXT query starts fresh, but surface
+            // the error instead of retrying in-call: a cold respawn here
+            // would double this query's worst-case wall clock.
+            Err(e) if is_session_poisoning(&e) => {
+                tracing::warn!(
+                    "[LSP] {} session for {} unusable ({e}); evicting so the next query respawns",
+                    lang.label(),
+                    root.display()
+                );
+                self.sessions.lock().await.remove(&(lang, root.clone()));
+                if let Ok(mut inner) = session.inner.try_lock() {
+                    kill_tree(&mut inner.child).await;
+                }
+                Err(e)
+            }
             Err(e) => Err(e),
         }
     }
@@ -695,9 +715,19 @@ async fn spawn_session(
         "capabilities": {},
         "workspaceFolders": [{"uri": root_uri, "name": root.display().to_string()}],
     });
-    let _caps = session
+    if let Err(e) = session
         .request("initialize", init_params, Duration::from_secs(60))
-        .await?;
+        .await
+    {
+        // Handshake failed: tree-kill explicitly. kill_on_drop only reaps
+        // the direct child (the shim); a shim-wrapped server would leak as
+        // an orphan holding our pipes — same discipline as close_session
+        // and the recovery path.
+        if let Ok(mut inner) = session.inner.try_lock() {
+            kill_tree(&mut inner.child).await;
+        }
+        return Err(e);
+    }
     let _ = session.request_no_wait("initialized", json!({})).await;
     Ok(session)
 }
@@ -840,6 +870,22 @@ fn is_transport_error(e: &str) -> bool {
         || e.contains("stdin failed")
         || e.contains("read header")
         || e.contains("read body")
+}
+
+/// Whether an error leaves the session cached but untrustworthy (BUG-
+/// 20261027-93): a timed-out request's future may have been dropped
+/// mid-read leaving half-consumed bytes in the BufReader (every later
+/// request on this session then reads desynced frames), a `without
+/// Content-Length`/`exceeds cap` reader consumed an unknown amount of the
+/// stream, and `bad JSON body` means the server's framing can't be
+/// trusted either. Unlike transport death these don't respawn in-call
+/// (retrying into a cold server doubles the wall clock) — the session is
+/// evicted so the NEXT query starts fresh.
+fn is_session_poisoning(e: &str) -> bool {
+    e.contains("timed out")
+        || e.contains("without Content-Length")
+        || e.contains("bad JSON body")
+        || e.contains("exceeds cap")
 }
 
 /// Find the project root for a file: walk up until a directory containing
