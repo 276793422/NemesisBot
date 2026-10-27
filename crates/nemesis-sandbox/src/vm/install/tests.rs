@@ -148,24 +148,9 @@ fn sha256_empty_file_known_vector() {
 }
 
 // ---------------------------------------------------------------------------
-// 钉值常量自洽（hex128、与默认 URL 同代）
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pinned_constants_are_wellformed() {
-    assert_eq!(QEMU_WINDOWS_SHA512.len(), 128);
-    assert!(QEMU_WINDOWS_SHA512.bytes().all(|b| b.is_ascii_hexdigit()));
-    assert!(QEMU_WINDOWS_URL.starts_with("https://qemu.weilnetz.de/w64/"));
-    assert!(QEMU_WINDOWS_URL.ends_with(".exe"));
-}
-
-// ---------------------------------------------------------------------------
 // verify_installer：钉值不符的诊断分支（sidecar 可达性不影响错误定性）
 // ---------------------------------------------------------------------------
 
-// 被测 fn 随 install_qemu_windows 链走 cfg windows——测试同门裁剪（Linux
-// 编译期消失，否则 E0425）。
-#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn verify_installer_empty_file_fails_with_pin() {
     // 空文件 vs 钉值 → 必败；sidecar 分支内含网络调用（失败容忍），只断言
@@ -181,15 +166,16 @@ async fn verify_installer_empty_file_fails_with_pin() {
 }
 
 // ---------------------------------------------------------------------------
-// QemuInstallOptions 默认值（钉 URL + 钉 SHA + 12 路）
+// QemuInstallDirs 默认值（相对布局 + 12 路并行——CLI/WSAPI 拼装同源消费）
 // ---------------------------------------------------------------------------
 
 #[test]
-fn options_default_pins_official_source() {
-    let o = QemuInstallOptions::default();
-    assert_eq!(o.url, QEMU_WINDOWS_URL);
-    assert_eq!(o.expected_sha512.as_deref(), Some(QEMU_WINDOWS_SHA512));
-    assert_eq!(o.parallel, DEFAULT_PARALLEL);
+fn dirs_default_pins_parallel_and_relative_layout() {
+    let d = QemuInstallDirs::default();
+    assert_eq!(d.install_dir, PathBuf::from("qemu"));
+    assert_eq!(d.work_dir, PathBuf::from("install-work"));
+    assert_eq!(d.seven_zip_dir, PathBuf::from("runtime"));
+    assert_eq!(d.parallel, DEFAULT_PARALLEL);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,40 +237,40 @@ fn cpu_vendor_parse_and_kvm_module_map() {
 }
 
 #[test]
-fn linux_pm_packages_and_commands_pinned() {
+fn pm_install_command_shapes_pinned() {
     use LinuxPm as P;
-    assert_eq!(
-        qemu_packages_for_pm(P::Apt),
-        Some("qemu-system-x86 qemu-utils")
-    );
-    assert_eq!(qemu_packages_for_pm(P::Dnf), Some("qemu-kvm qemu-img"));
-    assert_eq!(qemu_packages_for_pm(P::Unknown), None);
-    let apt = pm_install_qemu_command(P::Apt).unwrap();
+    let apt = pm_install_command(P::Apt, "qemu-system-x86 qemu-utils").unwrap();
     assert!(
-        apt.contains("DEBIAN_FRONTEND=noninteractive")
-            && apt.contains("apt-get install -y qemu-system-x86 qemu-utils"),
+        // env 中转形式（终端必行；`sudo VAR=val` 前缀被默认 sudoers env_reset 拒）。
+        apt.contains("sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y")
+            && apt.contains("qemu-system-x86 qemu-utils"),
         "{apt}"
     );
-    let dnf = pm_install_qemu_command(P::Dnf).unwrap();
+    let dnf = pm_install_command(P::Dnf, "qemu-kvm qemu-img").unwrap();
     assert!(dnf.contains("dnf install -y qemu-kvm qemu-img"), "{dnf}");
-    assert_eq!(pm_install_qemu_command(P::Unknown), None);
+    assert_eq!(pm_install_command(P::Unknown, "x"), None);
     assert_eq!(modprobe_kvm_command("kvm_intel"), "sudo modprobe kvm_intel");
     assert_eq!(usermod_kvm_command("zoo"), "sudo usermod -aG kvm zoo");
 }
 
-/// 二进制名单单一真相源：与平台形态一致（Windows 带 .exe），双名非空且不同。
+/// 二进制名单单一真相源（矩阵化）：宿主条目 binaries 前两项 = (system, img)，
+/// 与平台形态一致（Windows 带 .exe）。
 #[test]
-fn required_binaries_names_match_platform() {
-    let (sys, img) = qemu_required_binaries();
-    assert!(!sys.is_empty() && !img.is_empty());
+fn required_binaries_names_match_host_matrix_entry() {
+    use crate::vm::qemu_config;
+    let m = qemu_config::embedded_matrix();
+    let key = qemu_config::host_key();
+    let e = qemu_config::host_entry(m).unwrap_or_else(|| panic!("宿主键 {key} 必须命中默认矩阵"));
+    let (sys, img) = qemu_config::required_binaries_for(e).expect("binaries 对");
     assert_ne!(sys, img);
     if cfg!(target_os = "windows") {
-        assert!(sys.ends_with(".exe") && img.ends_with(".exe"));
-        assert_eq!(sys, "qemu-system-x86_64.exe");
-        assert_eq!(img, "qemu-img.exe");
+        // windows 键（任一 arch）带 .exe 后缀。
+        assert!(
+            sys.ends_with(".exe") && img.ends_with(".exe"),
+            "{sys} / {img}"
+        );
     } else {
-        assert_eq!(sys, "qemu-system-x86_64");
-        assert_eq!(img, "qemu-img");
+        assert!(!sys.ends_with(".exe"), "{sys}");
     }
 }
 

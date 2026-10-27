@@ -16,8 +16,10 @@ use crate::common;
 
 #[derive(Subcommand, Debug)]
 pub enum VmCommand {
-    /// 安装 QEMU 环境（Windows=官方包下载+SHA-512 校验+7z 直解落位；
-    /// Linux=包管理器半自动链，无免密 sudo 时给出精确命令）。幂等（已装早退）。
+    /// 安装 QEMU 环境（按平台矩阵配置分派：archive=下载+SHA-512 校验+7z 直解
+    /// 落位；packages=包管理器半自动链，无免密 sudo 时给出精确命令）。幂等
+    /// （已装早退）。矩阵模板内嵌，`<workspace>/config/config.vm_qemu.json`
+    /// 用户可改（缺则释放，有则直接用）。
     Install,
     /// 硬件加速引导（Windows=WHPX DISM 一键，UAC 提权由用户确认；
     /// Linux=打印 kmod / kvm 组引导命令，不替用户跑 sudo）。
@@ -118,44 +120,31 @@ fn status(home: &std::path::Path, workspace: &std::path::Path) -> Result<()> {
 }
 
 async fn install(workspace: &std::path::Path) -> Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        use nemesis_sandbox::vm::install::{QemuInstallOptions, install_qemu_windows};
-        let runtime = workspace.join("tools").join("vm").join("runtime");
-        let opts = QemuInstallOptions {
-            install_dir: runtime.join("qemu"),
-            work_dir: runtime.join("install-work"),
-            // 复用 sandbox 的 7z 缓存（同一份 7z 服务两条安装链，零重复下载）。
-            seven_zip_dir: workspace.join("tools").join("sandboxie").join("runtime"),
-            ..Default::default()
-        };
-        println!(
-            "[vm] Windows 安装链：{} → SHA-512 双锚校验 → 7z 直解 → 落位",
-            opts.url
-        );
-        let report = install_qemu_windows(&opts).await?;
-        print_report(&report);
+    use nemesis_sandbox::vm::install::{QemuInstallDirs, install_qemu_for_host_workspace};
+    let runtime = workspace.join("tools").join("vm").join("runtime");
+    // 矩阵真相源目录 = <workspace>/config/（缺则释放内嵌模板，有则直接用）。
+    let ws_config = workspace.join("config");
+    let dirs = QemuInstallDirs {
+        install_dir: runtime.join("qemu"),
+        work_dir: runtime.join("install-work"),
+        // 复用 sandbox 的 7z 缓存（同一份 7z 服务两条安装链，零重复下载）。
+        seven_zip_dir: workspace.join("tools").join("sandboxie").join("runtime"),
+        ..Default::default()
+    };
+    let (report, meta) = install_qemu_for_host_workspace(&ws_config, &dirs).await?;
+    println!(
+        "[vm] 平台 {}：kind={}，矩阵来源 {:?}",
+        meta.platform_key,
+        meta.kind.as_str(),
+        meta.source
+    );
+    if !meta.note.is_empty() {
+        println!("[vm] note: {}", meta.note);
     }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = workspace; // Linux 链经包管理器装系统路径，不落 workspace
-        use nemesis_sandbox::vm::install::install_qemu_linux;
-        println!("[vm] Linux 安装链：包管理器探测 → 免密 sudo 自动装 / 诚实半自动");
-        let report = install_qemu_linux().await?;
-        print_report(&report);
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        let _ = workspace;
-        bail!(
-            "当前平台（{}）无自动安装链（仅 Windows / Linux）",
-            std::env::consts::OS
-        );
-    }
+    print_report(&report);
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn print_report(report: &nemesis_sandbox::vm::install::QemuInstallReport) {
     if report.already_installed {
         println!("[vm] QEMU 已就绪（幂等早退，未重装）");

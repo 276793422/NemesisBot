@@ -129,7 +129,6 @@ pub fn probe_whpx() -> AccelProbe {
 // B2：环境自举状态机（安装卡三步的渲染态——每态带可执行下一步）
 // ---------------------------------------------------------------------------
 
-use super::guest_arch::GuestArch;
 use super::install::{CpuVendor, DismFeatureState};
 
 /// QEMU 二进制在场状态（安装卡第 1 步）。
@@ -142,70 +141,88 @@ pub enum QemuPresence {
     /// 就绪（qemu-system + qemu-img 都在场；可执行性仍由
     /// [`qemu_version_ok`] 实跑裁决——在场 ≠ 可用）。
     Ready {
-        /// "install-dir"（自举链落位）| "path"（用户/包管理器自装）。
+        /// "install-dir"（自举链落位）| "msys2"（MSYS2 CLANGARM64 包落位）
+        /// | "path"（用户/包管理器自装）。
         source: &'static str,
     },
 }
 
-/// PATH / 常规目录里找一个可执行文件（对齐 crate 的 backend which 惯例：
-/// 显式常见路径优先，PATH 扫描兜底；找到 = 绝对路径）。
-fn find_on_path(name: &str) -> Option<PathBuf> {
+/// PATH / 常规目录里找一个可执行文件的**所在目录**（对齐 crate 的 backend
+/// which 惯例：显式常见路径优先，PATH 扫描兜底；找到 = 目录——安装装后
+/// 探针与在场分类同源消费）。
+pub fn find_binary_dir_on_path(name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     for candidate in ["/usr/bin", "/bin", "/usr/local/bin"] {
         let p = Path::new(candidate).join(name);
         if p.is_file() {
-            return Some(p);
+            return p.parent().map(Path::to_path_buf);
         }
     }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
             let p = dir.join(name);
             if p.is_file() {
-                return Some(p);
+                return Some(dir);
             }
         }
     }
     None
 }
 
-/// QEMU 在场分类（安装卡第 1 步渲染态；`install_dir` = 自举链落位目录，
-/// 优先于 PATH——对齐 [`super::assembly::resolve_qemu_binary`] 顺序）。
-pub fn classify_qemu_presence(arch: GuestArch, install_dir: Option<&Path>) -> QemuPresence {
-    let (sys_name, img_name) = super::install::qemu_required_binaries();
-    // 本函数按 x86_64 语义取名单（aarch64 接口在位不产出）；arch 参数只
-    // 用于 Future 兼容——当前形态下二进制名不随 arch 变。
-    let _ = arch;
+/// QEMU 在场分类（安装卡第 1 步渲染态；二进制名单与探针目录全部出自矩阵
+/// 条目 [`super::qemu_config::QemuPlatformEntry`]——安装与探针同源消费，
+/// 不再硬编码）。探测顺序：
+/// 1) `install_dir`（自举链落位目录，优先——对齐
+///    [`super::assembly::resolve_qemu_binary`] 顺序）；
+/// 2) pacman 条目（`pacman` 字段非空）→ MSYS2 CLANGARM64 落位目录
+///    （`<msys2>/clangarm64/bin`，source=`"msys2"`）；
+/// 3) PATH（用户/包管理器自装，source=`"path"`）。
+pub fn classify_qemu_presence(
+    entry: &super::qemu_config::QemuPlatformEntry,
+    install_dir: Option<&Path>,
+) -> QemuPresence {
+    // binaries 空（kind=none 登记形态）= 无可断言，诚实 Absent。
+    let Some(sys_name) = entry.binaries.first() else {
+        return QemuPresence::Absent;
+    };
+    // 单目录齐套检查：[0] 在场 + 其余成员齐 = Ready；缺 = Partial（目录不
+    // 命中 = None 交给下一探针位）。
+    let check_dir = |dir: &Path, source: &'static str| -> Option<QemuPresence> {
+        if !dir.join(sys_name).exists() {
+            return None;
+        }
+        let missing: Vec<String> = entry
+            .binaries
+            .iter()
+            .skip(1)
+            .filter(|n| !dir.join(n).exists())
+            .cloned()
+            .collect();
+        Some(if missing.is_empty() {
+            QemuPresence::Ready { source }
+        } else {
+            QemuPresence::Partial { missing }
+        })
+    };
 
     // 1) 自举链落位目录优先。
-    if let Some(dir) = install_dir {
-        let sys = dir.join(sys_name);
-        if sys.exists() {
-            let mut missing = Vec::new();
-            if !dir.join(img_name).exists() {
-                missing.push(img_name.to_string());
-            }
-            return if missing.is_empty() {
-                QemuPresence::Ready {
-                    source: "install-dir",
-                }
-            } else {
-                QemuPresence::Partial { missing }
-            };
-        }
+    if let Some(p) = install_dir.and_then(|dir| check_dir(dir, "install-dir")) {
+        return p;
     }
 
-    // 2) PATH 命中（用户/包管理器自装）——qemu-img 缺席同诚实 Partial。
-    if let Some(sys) = find_on_path(sys_name) {
-        let img = sys
-            .parent()
-            .map(|d| d.join(img_name))
-            .unwrap_or_else(|| PathBuf::from(img_name));
-        if img.exists() {
-            return QemuPresence::Ready { source: "path" };
-        }
-        return QemuPresence::Partial {
-            missing: vec![img_name.to_string()],
-        };
+    // 2) pacman 条目：MSYS2 CLANGARM64 落位目录（windows 臂；MSYS2 缺席 =
+    //    诚实跳过不伪装）。
+    #[cfg(target_os = "windows")]
+    if !entry.pacman.trim().is_empty()
+        && let Some(p) = super::install::locate_msys2_root()
+            .and_then(|msys2| check_dir(&msys2.join("clangarm64").join("bin"), "msys2"))
+    {
+        return p;
+    }
+
+    // 3) PATH 命中（用户/包管理器自装）——img 缺席同诚实 Partial。
+    if let Some(p) = find_binary_dir_on_path(sys_name).and_then(|dir| check_dir(&dir, "path")) {
+        return p;
     }
     QemuPresence::Absent
 }

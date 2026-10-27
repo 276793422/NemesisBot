@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "platforms": {
+    "windows-x86_64": {
+      "kind": "archive",
+      "produced": true,
+      "url": "https://qemu.weilnetz.de/w64/2026/qemu-w64-setup-20260811.exe",
+      "sha512": "5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037fdfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543",
+      "layout": "nsis-7z",
+      "binaries": ["qemu-system-x86_64.exe", "qemu-img.exe"],
+      "note": "weilnetz 官方 w64 安装器（自带全部运行库 DLL，7z 免安装直解）；sha512 是本仓显式信任锚（钉值），置空则回落 URL 同目录 SHA512SUMS sidecar 查表"
+    },
+    "windows-aarch64": {
+      "kind": "packages",
+      "produced": true,
+      "pacman": "mingw-w64-clang-aarch64-qemu",
+      "binaries": ["qemu-system-aarch64.exe", "qemu-img.exe"],
+      "note": "MSYS2 CLANGARM64 仓库原生 ARM64 构建（11.1.2-1 在册）；需 MSYS2 环境（默认 C:\\msys64，可用环境变量 NEMESISBOT_MSYS2_ROOT 指定，CLANGARM64 子系统），装后探针扫 <msys2>\\clangarm64\\bin；本程序不自动安装 MSYS2 本体；不走 archive 直解的原因：mingw 单包拆分依赖大量运行库 DLL（glib/pixman/gnutls），pacman 负责解依赖"
+    },
+    "linux-x86_64": {
+      "kind": "packages",
+      "produced": true,
+      "apt": "qemu-system-x86 qemu-utils",
+      "dnf": "qemu-kvm qemu-img",
+      "binaries": ["qemu-system-x86_64", "qemu-img"],
+      "note": "Debian/Ubuntu apt 与 Fedora dnf 双源；KVM 加速可用性由探针实机裁决，安装面不受影响"
+    },
+    "linux-aarch64": {
+      "kind": "packages",
+      "produced": true,
+      "apt": "qemu-system-arm qemu-utils",
+      "dnf": "qemu-kvm qemu-img",
+      "binaries": ["qemu-system-aarch64", "qemu-img"],
+      "note": "Debian/Ubuntu 的 qemu-system-arm 包内含 qemu-system-aarch64 二进制（上游 QEMU 构建系统 arm 族固定输出 arm+aarch64 双二进制）；Fedora 的 qemu-kvm 在 aarch64 上拉入同族包；实施机以 dpkg -L 复核"
+    },
+    "android-aarch64": {
+      "kind": "packages",
+      "produced": true,
+      "apt": "qemu-common qemu-system-aarch64-headless qemu-utils",
+      "binaries": ["qemu-system-aarch64", "qemu-img"],
+      "note": "Termux 仓库（pkg/apt 前端同源；headless 独立分包为 Termux 特有布局）；安装走 Termux prefix 无 sudo（TERMUX_VERSION 在场校验）；加速可用性由探针实机裁决"
+    }
+  }
+}
