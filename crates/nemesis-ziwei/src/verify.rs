@@ -474,18 +474,22 @@ pub fn recover_confirm(
                 {
                     continue;
                 }
-                let Some(found) = verdict
-                    .per_anchor
-                    .iter()
-                    .find(|r| r.function == f.semantic && r.hit)
-                else {
+                // 按锚自身下标取重扫结果（per_anchor[].index = 输入锚集下标）。
+                // 只按 function 过滤会同函数多 byte_pattern 锚时永远拿到第一
+                // 个命中锚的 RVA——第二个锚的 pattern 被错写成第一个锚命中
+                // 位置的载荷（BUG-20261028-98①）。
+                let Some(found) = verdict.per_anchor.iter().find(|r| r.index == ai && r.hit) else {
                     continue;
                 };
                 let Some(rva) = found.found_rva else { continue };
+                // 载荷字节数与 rev::parse_pattern 同源：去空白后 hex 字符数/2
+                // （空格 "AA BB" 与连续 "AABB" 双形态统一；split_whitespace
+                // 计数对连续形态恒 1，重生 pattern 被截断成单字节
+                // ——BUG-20261028-98②）。
                 let old_len = a
                     .pattern
                     .as_deref()
-                    .map(|p| p.split_whitespace().count())
+                    .map(|p| p.split_whitespace().collect::<String>().len() / 2)
                     .unwrap_or(0);
                 if old_len == 0 {
                     continue;
