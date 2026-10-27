@@ -358,10 +358,20 @@ jobs:
     # 也进不了 45min 失联窗=结构性永不收敛，重试无解。8 片把切片时间量再降
     # ~25%：过重桶 ~34min 进窗，健康桶 ~12-16min；hash 不平衡依旧存在但绝对
     # 值压回窗内。八片并集=全集。
+    #
+    # 8→10 片（2026-10-27 深夜）：8 片制下 shard5 六连败（死亡时刻 49/51/51/
+    # 52/58/54min，日志全 404=runner 失联族），同 run 七个兄弟片 25-28min 全绿
+    # ——6/6 vs 0/7 排除抽签，是 8 片重摇 hash 骰子把时长堆积又画给了单个桶
+    # （与 shard6 同病：hash 按测试名指纹分桶不按时长，重摇只重画堆积不消除
+    # 堆积）。且编译段 ~19min（setup 4 + libs 3 + frontend 2 + 测试二进制整体
+    # 编 ~10）是地板不随片数收缩，2× 重桶健康机 ~41min 已贴窗沿，慢机 1.3×
+    # 即出窗。10 片把公平份额压到 ~10min，最坏桶 ~19+20=~39min 进窗并留
+    # 重试余量；nextest 无 timed 分区（只有 hash/count/slice，时长感知分配需
+    # 外部 JUnit 装箱机器），片数递增仍是当前唯一零机械手段。十片并集=全集。
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
@@ -551,7 +561,7 @@ jobs:
         # 结构性丢失（sup_env 两连红实录：失败在 7959/9139 位，panic 文本永不
         # 入日志）。final 把详情挪进 Summary 前的 recap（必然落在尾窗）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/8"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/10"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
