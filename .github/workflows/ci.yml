@@ -349,10 +349,19 @@ jobs:
     # frontend 2 + nextest 编译 ~10 + 执行 ~22），必须压回线下。6 片把执行段
     # 22→~15min，暖路径 ~34min，留 ~10min 余量。编译段（按测试二进制整体
     # 编）不随片数收缩，是新的下界。六片并集=全集。
+    #
+    # 6→8 片（2026-10-27 凌晨）：6 片制下 shard6 十轮尝试无一完赛（其余五片
+    # 全绿）。attempt10 实证拆穿「纯 VM 抽签」：libs 健康常速 2.5min 完成，
+    # nextest 从头跑到自家 job 龄熔断窗仍未完赛（>43min），同 run 兄弟片
+    # nextest 全程 25-28min——hash 分片按测试名指纹分桶不按时长，shard6 桶
+    # 恰含最重的集成/UAT 测试集，切片 ≈ 全套件 25-30%（非公平 1/6），健康机
+    # 也进不了 45min 失联窗=结构性永不收敛，重试无解。8 片把切片时间量再降
+    # ~25%：过重桶 ~34min 进窗，健康桶 ~12-16min；hash 不平衡依旧存在但绝对
+    # 值压回窗内。八片并集=全集。
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
@@ -533,12 +542,16 @@ jobs:
         # 铁律=成功 <40min / 死亡 45-55min（冻结跟墙钟年龄走不跟步骤走）。
         # 暖路径 41min 贴线必须压回：执行段 22→~15min、暖路径 ~34min。
         # 编译段按测试二进制整体编、不随片数收缩，是新的下界。六片并集=全集。
+        # hash:N/8（2026-10-27 凌晨 6→8 片）：shard6 十轮尝试无一完赛，attempt10
+        # 证明结构性根因——libs 健康 2.5min、nextest >43min 未完赛（兄弟片
+        # 25-28min）：hash 按测试名分桶不按时长，shard6 桶切片 ≈ 全套件 25-30%，
+        # 健康机也进不了 45min 窗，重试无解。8 片把切片绝对值压回窗内。
         # --failure-output final（2026-10-18）：失败详情只进收尾 recap——默认
         # immediate 在中段流打 panic 现场，wrapper 只留 stderr 尾 100 行=现场
         # 结构性丢失（sup_env 两连红实录：失败在 7959/9139 位，panic 文本永不
         # 入日志）。final 把详情挪进 Summary 前的 recap（必然落在尾窗）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/6"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/8"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
