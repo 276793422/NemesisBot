@@ -478,7 +478,9 @@ fn list_attaches_extras_and_catalog_match() {
 /// RequestContext for set_default (agent_loop None → no runtime swap; only
 /// the file effect is asserted). Same dual-decl pattern as
 /// handlers/logs/history_tests.rs make_ctx.
-fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
+// pub(super)：copy_rename_tests（2026-10-27 批）复用同一 AppState 形态，
+// 免复制 60 行构造体。
+pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
     use crate::session::SessionManager;

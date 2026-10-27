@@ -34,6 +34,8 @@ impl ModuleHandler for ModelsHandler {
         &[
             "list",
             "add",
+            "copy",
+            "rename",
             "delete",
             "set_default",
             "test",
@@ -60,6 +62,14 @@ impl ModuleHandler for ModelsHandler {
                 let data = data.ok_or("missing data")?;
                 self.add(home, &data)
             }
+            "copy" => {
+                let data = data.ok_or("missing data")?;
+                self.copy_model(home, &data)
+            }
+            "rename" => {
+                let data = data.ok_or("missing data")?;
+                self.rename(home, &data, ctx)
+            }
             "delete" => {
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
@@ -73,7 +83,7 @@ impl ModuleHandler for ModelsHandler {
             "test" => {
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
-                self.test(home, &name)
+                self.test(home, &name, &data).await
             }
             // P3-2 (2026-08-24 UI entry gap): model attribute editor.
             "update_field" => {
@@ -168,6 +178,14 @@ impl ModelsHandler {
             .first()
             .map(|m| m.model_name.clone())
             .unwrap_or_default();
+        // 引用归属判定（ref_owner，resolver 同序）：复制体共享模型串时默认
+        // 徽标只落归属那一行，不再双标（2026-10-27 隐患修复）。
+        let pairs: Vec<(String, String)> = config
+            .model_list
+            .iter()
+            .map(|m| (m.model_name.clone(), m.model.clone()))
+            .collect();
+        let default_owner = ref_owner(&pairs, &default_llm);
         // P3-2: tier/size/real_name/context_window live as RAW-JSON extra keys
         // the typed ModelConfig deliberately doesn't model (typed round-trip
         // would drop them) — read them from the file for the attribute editor.
@@ -180,14 +198,11 @@ impl ModelsHandler {
             .model_list
             .iter()
             .map(|m| {
-                let alias = m.model.split('/').next_back().unwrap_or("");
                 let is_default = if default_llm.is_empty() {
                     // 回退：老配置没显式默认时，沿用 list[0] 位置默认，保持旧行为。
                     m.model_name == first_name
                 } else {
-                    m.model_name == default_llm
-                        || m.model == default_llm
-                        || (!alias.is_empty() && alias == default_llm)
+                    default_owner.as_deref() == Some(m.model_name.as_str())
                 };
                 let raw = raw_by_name
                     .as_ref()
@@ -242,15 +257,19 @@ impl ModelsHandler {
     fn proxy_overview(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let config = super::config::load_config(home)?;
         let default_llm = config.agents.defaults.llm.clone();
+        // 归属判定与 list() 同源（ref_owner，resolver 同序；2026-10-27 隐患修复）。
+        let pairs: Vec<(String, String)> = config
+            .model_list
+            .iter()
+            .map(|m| (m.model_name.clone(), m.model.clone()))
+            .collect();
+        let default_owner = ref_owner(&pairs, &default_llm);
         let models: Vec<_> = config
             .model_list
             .iter()
             .map(|m| {
-                let alias = m.model.split('/').next_back().unwrap_or("");
                 let is_default = !default_llm.is_empty()
-                    && (m.model_name == default_llm
-                        || m.model == default_llm
-                        || (!alias.is_empty() && alias == default_llm));
+                    && default_owner.as_deref() == Some(m.model_name.as_str());
                 serde_json::json!({
                     "model_name": m.model_name,
                     "model": m.model,
@@ -388,6 +407,216 @@ impl ModelsHandler {
         })
     }
 
+    /// 模型配置复制（2026-10-27 五项增强 ②）：同族模型不必重新填写——
+    /// 深拷贝整条目（含 api_key / proxy / 全部 raw extras）改 `model_name`
+    /// 追加到列表尾。
+    ///
+    /// **可选 `new_model`**（2026-10-27 漏项补救）：复制时直接换实际调用的
+    /// LLM ID（`model` 字段）——「复制 → 换模型」一步到位，不用复制完再
+    /// 改一次名。协议/流式随体复制不跟动（同供应商场景正确）。
+    ///
+    /// **必须服务端做**：`models.list` 对 api_key 脱敏（F2），前端拿不到
+    /// 原文 key——前端拼装复制体会把 key 丢掉。raw RMW 保留兄弟条目的
+    /// 未类型化 extras（同 add/delete 的理由）。新条目不自动设默认
+    /// （复制 ≠ 想切换；要切换用户点「设为默认」）。
+    fn copy_model(
+        &self,
+        home: &str,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let name = crate::handlers::get_str(data, "name")?;
+        let new_name = crate::handlers::get_str(data, "new_name")?;
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("new_name must not be empty".to_string());
+        }
+        // 可选：复制体直接换 LLM ID（缺省/Null = 随体复制原 model 串）。
+        let new_model = match data.get("new_model") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => {
+                let s = v
+                    .as_str()
+                    .ok_or("new_model must be a string")?
+                    .trim()
+                    .to_string();
+                if s.is_empty() {
+                    return Err("new_model must not be empty".to_string());
+                }
+                Some(s)
+            }
+        };
+        super::config::update_raw_config(home, |cfg| {
+            let list = cfg
+                .get_mut("model_list")
+                .and_then(|v| v.as_array_mut())
+                .ok_or("config.json has no model_list")?;
+            let idx = list
+                .iter()
+                .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str()))
+                .ok_or_else(|| format!("model '{}' not found", name))?;
+            if list
+                .iter()
+                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(new_name))
+            {
+                return Err(format!("model '{}' already exists", new_name));
+            }
+            let mut entry = list[idx].clone();
+            entry["model_name"] = serde_json::Value::String(new_name.to_string());
+            if let Some(nm) = &new_model {
+                entry["model"] = serde_json::Value::String(nm.clone());
+            }
+            list.push(entry);
+            Ok(Some(
+                serde_json::json!({ "copied": true, "name": name, "new_name": new_name }),
+            ))
+        })
+    }
+
+    /// 模型改名（2026-10-27 五项增强 ③）：改条目 `model_name` +
+    /// 同趟同步全部指向旧名的引用（agents.defaults.llm / agents.small_model /
+    /// tools.image_gen.model；`gateway.default_model` 键不存在——默认模型
+    /// 唯一存储就是 agents.defaults.llm，启动 get_effective_llm 只读它）。
+    ///
+    /// **可选 `new_model`**（2026-10-27 漏项补救：用户原话「改名（含模型名）」
+    /// 指的是实际调用的 LLM ID——复制/改名只动 model_name 别名的话换不了
+    /// 模型，全产品面 update_field / CLI 也无改 `model` 串的入口）：同趟
+    /// RMW 一并改 `model` 字段。协议/流式是独立字段不跟动（同供应商场景
+    /// 正确；跨协议在属性编辑器改）。
+    ///
+    /// 引用匹配走 `ref_owner`（resolver 同序归属判定）：精确 model_name
+    /// 命中压倒模型串/别名软匹配——复制体共享模型串时认领不了指向原始
+    /// 条目名的引用（2026-10-27 偷默认指针/假热切实障的闸门）。改到
+    /// **当前默认模型** =
+    /// 允许 + 热切（2026-10-27 用户拍板方案 B：「保证用户能用，改错了是
+    /// 用户的问题，严格执行用户想法」）：defaults.llm 已在 RMW 里同步成
+    /// 新名，闭包后走 apply_runtime_swap（set_default 同一 chokepoint，
+    /// 从 config 重解析——`model` 串一并生效），项目 loop 经 bridge 同步。
+    fn rename(
+        &self,
+        home: &str,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let name = crate::handlers::get_str(data, "name")?;
+        let new_name = crate::handlers::get_str(data, "new_name")?;
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("new_name must not be empty".to_string());
+        }
+        // 可选：换实际调用的 LLM ID（缺省/Null = 不动 model 字段；显式空串
+        // loud 拒——模型串为空没有意义）。
+        let new_model = match data.get("new_model") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => {
+                let s = v
+                    .as_str()
+                    .ok_or("new_model must be a string")?
+                    .trim()
+                    .to_string();
+                if s.is_empty() {
+                    return Err("new_model must not be empty".to_string());
+                }
+                Some(s)
+            }
+        };
+        let final_cfg = super::config::update_raw_config(home, |cfg| {
+            // 第一趟（只读）：存在性、重名、引用归属普查。model_name 的可变
+            // 写借用与 pointer_mut（引用同步）借不到一起——两趟分离（锁在
+            // update_raw_config，两趟间无并发）。
+            let list_ro = cfg
+                .get("model_list")
+                .and_then(|v| v.as_array())
+                .ok_or("config.json has no model_list")?;
+            if !list_ro
+                .iter()
+                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str()))
+            {
+                return Err(format!("model '{}' not found", name));
+            }
+            // 重名检查排除自身（只换 model 不改显示名时 new_name == name，
+            // 命中的是自己条目，不算冲突）。
+            if new_name != name
+                && list_ro
+                    .iter()
+                    .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(new_name))
+            {
+                return Err(format!("model '{}' already exists", new_name));
+            }
+            // 引用归属普查（ref_owner，resolver 同序）：每处引用独立判「指向
+            // 的是不是被改名条目」——精确 model_name 命中压倒模型串/别名软
+            // 匹配，复制体共享模型串时认领不了指向原始条目名的引用（否则
+            // defaults.llm 会被偷给复制体 + 凭空热切，2026-10-27 实障）。
+            let pairs: Vec<(String, String)> = list_ro
+                .iter()
+                .map(|m| {
+                    (
+                        m.get("model_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        m.get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    )
+                })
+                .collect();
+            let is_owner = |v: &str| ref_owner(&pairs, v).as_deref() == Some(name.as_str());
+            let old_llm = cfg
+                .pointer("/agents/defaults/llm")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let was_default = is_owner(&old_llm);
+
+            // 第二趟（写）：三处引用同步（键缺席 = 本来就没指向，跳过不造键）
+            // + model_name 改名。
+            for path in [
+                "/agents/defaults/llm",
+                "/agents/small_model",
+                "/tools/image_gen/model",
+            ] {
+                if let Some(v) = cfg.pointer_mut(path)
+                    && v.as_str().is_some_and(&is_owner)
+                {
+                    *v = serde_json::Value::String(new_name.to_string());
+                }
+            }
+            let list = cfg
+                .get_mut("model_list")
+                .and_then(|v| v.as_array_mut())
+                .ok_or("config.json has no model_list")?;
+            let entry = list
+                .iter_mut()
+                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str()))
+                .ok_or_else(|| format!("model '{}' not found", name))?;
+            entry["model_name"] = serde_json::Value::String(new_name.to_string());
+            // 可选换 LLM ID：同趟落盘（热切从 config 重解析，一并生效）。
+            if let Some(nm) = &new_model {
+                entry["model"] = serde_json::Value::String(nm.clone());
+            }
+            Ok((was_default, cfg.clone()))
+        })?;
+
+        // 方案 B 热切（was_default 由闭包带出）：改名的是当前默认模型 →
+        // set_default 同一 chokepoint（展示三字段 + 统一默认槽 + 主 loop +
+        // Forge），项目 loop 经 bridge 同步。
+        let (was_default, final_cfg) = final_cfg;
+        if was_default {
+            Self::apply_runtime_swap(&final_cfg, new_name, ctx)?;
+            if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+                bridge.reload_provider_all();
+            }
+        }
+
+        Ok(Some(serde_json::json!({
+            "renamed": true,
+            "name": name,
+            "new_name": new_name,
+            "model_changed": new_model.is_some(),
+        })))
+    }
+
     fn delete(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
         // Raw RMW via the transaction entry: a typed round-trip would drop the
         // tier/size/real_name/context_window extras the surviving entries carry.
@@ -395,8 +624,10 @@ impl ModelsHandler {
         super::config::update_raw_config(home, |cfg| {
             // 守卫：禁止删除当前默认模型。否则 agents.defaults.llm 变成悬空引用，
             // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
-            // default_llm 可能是 model_name、vendor/model 串或别名（CLI 设的是别名），
-            // 故把目标模型的所有标识都拿来比对。同时兜住 list[0] 这个 dashboard 位置默认。
+            // 归属判定与 list() 同源（ref_owner，resolver 同序）：defaults.llm
+            // 为空沿用 list[0] 位置兜底；复制体共享模型串时精确名命中压倒软
+            // 匹配——删的不是运行时默认就放行（2026-10-27 隐患修复，此前
+            // first_name 位置臂无条件生效，默认在别处时第一条也删不掉）。
             let default_llm = cfg
                 .get("agents")
                 .and_then(|a| a.get("defaults"))
@@ -414,16 +645,31 @@ impl ModelsHandler {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            if let Some(m) = list
+            let pairs: Vec<(String, String)> = list
                 .iter()
-                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+                .map(|m| {
+                    (
+                        m.get("model_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        m.get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    )
+                })
+                .collect();
+            let default_owner = ref_owner(&pairs, &default_llm);
+            if list
+                .iter()
+                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
             {
-                let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                let alias = model.split('/').next_back().unwrap_or("");
-                let is_default = name == default_llm
-                    || name == first_name
-                    || model == default_llm
-                    || (!alias.is_empty() && alias == default_llm);
+                let is_default = if default_llm.is_empty() {
+                    name == first_name
+                } else {
+                    default_owner.as_deref() == Some(name)
+                };
                 if is_default {
                     return Err(format!(
                         "cannot delete default model '{}'. Switch the default to another model first.",
@@ -706,13 +952,145 @@ impl ModelsHandler {
         })
     }
 
-    fn test(&self, _home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        // Stub — actual model testing requires provider integration
-        Ok(Some(serde_json::json!({
-            "name": name,
-            "status": "not_implemented",
-            "message": "Model test requires provider integration"
-        })))
+    /// 模型连通性测试（2026-10-27 五项增强 ①：stub → 真实现）。
+    ///
+    /// 与真实使用**同源**：`canonical_swap_params`（= set_default 热切 /
+    /// 启动装配的同一解析链）解析条目 → factory 同源构造 provider → 发一个
+    /// `max_tokens=16` 的 "ping" 最小对话请求。协议 lane（anthropic/openai/
+    /// responses）、流式配置、api_key 引用（env:/yaml:/vault:）全部与
+    /// 生产一致——测过 = 真能用，不做裸 HTTP 简化版。
+    ///
+    /// 返回值形态（前端圆点状态机的唯一输入）：
+    /// `{name, status: ok|fail|unsupported, latency_ms, detail, kind, lane}`
+    /// - `unsupported`：images-openai 图像 lane（不能对话，不红不绿保持灰）；
+    /// - `kind`：fail 时的粗分类（config/auth/billing/rate_limit/timeout/
+    ///   connect/format/overloaded/other），走 nemesis-utils 错误分类器
+    ///   （与 agent loop 同源词表）；
+    /// - 配置类失败（resolve/构造失败，如缺 key）也返回 fail 而非命令错误
+    ///   ——一键测试时逐模型染红点比整体报错有用。
+    ///
+    /// 超时：HTTP lane 默认 30s 硬顶、CLI 型 lane（spawn 成本）60s——
+    /// 不用 provider 默认 600s（测试要快失败）；data.timeout_secs 可覆盖
+    /// （夹取 1..=120，测试与 UI 都用得上）。
+    async fn test(
+        &self,
+        home: &str,
+        name: &str,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        // 条目必须按 model_name 精确存在（防 resolve 推断臂造出假条目测试）。
+        let raw_cfg = super::config::read_raw_config(home)?;
+        let entry_exists = raw_cfg
+            .get("model_list")
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            })
+            .unwrap_or(false);
+        if !entry_exists {
+            return Err(format!("model '{}' not found", name));
+        }
+        let proto = raw_cfg
+            .get("model_list")
+            .and_then(|v| v.as_array())
+            .and_then(|list| {
+                list.iter()
+                    .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            })
+            .and_then(|m| m.get("protocol"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if nemesis_types::capability::is_image_protocol(&proto) {
+            return Ok(Some(serde_json::json!({
+                "name": name,
+                "status": "unsupported",
+                "detail": "图像生成条目不能对话测试（仅供 generate_image 工具消费）",
+                "lane": "images-openai",
+            })));
+        }
+
+        // 与 set_default 热切同源的解析（typed resolve + key 引用解引用）。
+        let fail = |detail: String, kind: &str| {
+            Ok(Some(serde_json::json!({
+                "name": name, "status": "fail", "detail": detail, "kind": kind,
+            })))
+        };
+        let swap = match Self::canonical_swap_params(&raw_cfg, name) {
+            Ok(s) => s,
+            Err(e) => return fail(e, "config"),
+        };
+        let factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: swap.proxy.clone(),
+            llm_ref: swap.llm_ref.clone(),
+            api_key: swap.api_key.clone(),
+            api_base: swap.api_base.clone(),
+            workspace: String::new(),
+            connect_mode: swap.connect_mode.clone(),
+            protocol: swap.protocol.clone(),
+            timeout_secs: swap.timeout_secs,
+            stream_mode: swap.stream_mode.clone(),
+            cache_breakpoints: swap.cache_breakpoints,
+            account_id: String::new(),
+            headers: std::collections::HashMap::new(),
+        };
+        // lane 探测（纯函数，无网络）：CLI 型 lane 超时放宽（spawn 成本）。
+        let (lane, timeout_secs) =
+            match nemesis_providers::factory::resolve_provider_selection(&factory_cfg) {
+                Ok(sel) => {
+                    let cli = matches!(
+                        sel.provider_type,
+                        nemesis_providers::factory::ProviderType::ClaudeCli
+                            | nemesis_providers::factory::ProviderType::CodexCli
+                            | nemesis_providers::factory::ProviderType::GitHubCopilot
+                    );
+                    (lane_label(sel.provider_type), if cli { 60 } else { 30 })
+                }
+                Err(e) => return fail(e, "config"),
+            };
+        let timeout_secs = data
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.clamp(1, 120))
+            .unwrap_or(timeout_secs);
+        let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
+            Ok(p) => p,
+            Err(e) => return fail(e, "config"),
+        };
+
+        // 最小对话 ping：max_tokens=16，费用可忽略。
+        let messages = vec![nemesis_providers::types::Message::text("user", "ping")];
+        let options = nemesis_providers::types::ChatOptions {
+            max_tokens: Some(16),
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            provider.chat(&messages, &[], &swap.model, &options),
+        )
+        .await;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        match result {
+            Err(_) => Ok(Some(serde_json::json!({
+                "name": name, "status": "fail", "kind": "timeout",
+                "detail": format!("测试超时（{}s）——端点无响应", timeout_secs),
+                "latency_ms": latency_ms, "lane": lane,
+            }))),
+            Ok(Ok(_resp)) => Ok(Some(serde_json::json!({
+                "name": name, "status": "ok",
+                "latency_ms": latency_ms, "lane": lane, "detail": "",
+            }))),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                let kind = error_kind(&msg);
+                Ok(Some(serde_json::json!({
+                    "name": name, "status": "fail", "kind": kind,
+                    "detail": msg, "latency_ms": latency_ms, "lane": lane,
+                })))
+            }
+        }
     }
 
     /// P3-2 (2026-08-24 UI entry gap): per-field attribute editor for one
@@ -855,9 +1233,11 @@ impl ModelsHandler {
         // 落盘后的配置快照)。
         let (entry_is_default, entry_model_name, final_cfg) =
             super::config::update_raw_config(home, |cfg| {
-                // 默认判定（改 protocol/proxy 时的热切条件）：与 list/delete 同思路
-                // 的多形态比对（model_name / model 串 / 别名），权威是
-                // agents.defaults.llm（get_effective_llm），不含 list[0] 位置臂。
+                // 默认判定（改 protocol/proxy/stream 时的热切条件）：引用归属
+                // 判定走 ref_owner（resolver 同序），权威是 agents.defaults.llm
+                // （get_effective_llm），不含 list[0] 位置臂。复制体共享模型串时
+                // 精确名命中压倒软匹配——改的不是运行时默认就绝不假热切、不
+                // 造成内存/磁盘默认分叉（2026-10-27 隐患修复）。
                 let default_llm = cfg
                     .pointer("/agents/defaults/llm")
                     .and_then(|v| v.as_str())
@@ -867,6 +1247,24 @@ impl ModelsHandler {
                     .get_mut("model_list")
                     .and_then(|v| v.as_array_mut())
                     .ok_or("config.json has no model_list")?;
+                // 归属普查借用在 mut 循环之前完成（pairs 的不可变借用随
+                // collect 结束，不与下面的 iter_mut 冲突）。
+                let pairs: Vec<(String, String)> = list
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.get("model_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            m.get("model")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        )
+                    })
+                    .collect();
+                let default_owner = ref_owner(&pairs, &default_llm);
                 let mut entry_is_default = false;
                 // 热切用命中条目的 model_name（而非调用方 name）：name 可能是 model
                 // 串命中，无斜杠时 resolve_model_config 会走推断臂拿到不带本条目
@@ -880,11 +1278,7 @@ impl ModelsHandler {
                         .unwrap_or("");
                     let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
                     if model_name == name || model == name {
-                        let alias = model.split('/').next_back().unwrap_or("");
-                        entry_is_default = !default_llm.is_empty()
-                            && (model_name == default_llm
-                                || model == default_llm
-                                || (!alias.is_empty() && alias == default_llm));
+                        entry_is_default = default_owner.as_deref() == Some(model_name);
                         entry_model_name = model_name.to_string();
                         // Null 哨兵 = 清除：移键落盘（写 Null 会留 `"key": null`
                         // 字节垃圾；resolver 对缺席本就按 None 处理）。
@@ -1016,6 +1410,71 @@ impl ModelsHandler {
 
 // --- P3-2 helpers -----------------------------------------------------------
 
+/// ProviderType → 前端展示标签（models.test 的 lane 字段）。
+fn lane_label(t: nemesis_providers::factory::ProviderType) -> &'static str {
+    use nemesis_providers::factory::ProviderType;
+    match t {
+        ProviderType::HttpCompat => "openai-compat",
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Codex => "responses",
+        ProviderType::ClaudeCli => "claude-cli",
+        ProviderType::CodexCli => "codex-cli",
+        ProviderType::GitHubCopilot => "copilot",
+    }
+}
+
+/// 错误文本 → 粗分类 kind（models.test 的 kind 字段）。单一真相源 =
+/// nemesis-utils 错误分类器（与 agent loop / fallback 同源词表）；
+/// Timeout 细分 connect（连接建立失败 = 端点死了，与慢响应不同门）。
+fn error_kind(msg: &str) -> &'static str {
+    use nemesis_utils::llm_error_class::{LlmErrorClass, classify_llm_error, is_connect_error};
+    match classify_llm_error(msg) {
+        Some(LlmErrorClass::Auth) => "auth",
+        Some(LlmErrorClass::Billing) => "billing",
+        Some(LlmErrorClass::RateLimit) => "rate_limit",
+        Some(LlmErrorClass::Timeout) => {
+            if is_connect_error(msg) {
+                "connect"
+            } else {
+                "timeout"
+            }
+        }
+        Some(LlmErrorClass::Format) => "format",
+        Some(LlmErrorClass::Overloaded) => "overloaded",
+        None => "other",
+    }
+}
+
+/// 引用归属判定（2026-10-27 隐患修复）：defaults.llm 等引用值指向哪个
+/// 条目——与 resolve_model_config 的解析顺序同语义（启动 get_effective_llm
+/// 真正走的就是那个顺序，勿在此分叉出第二套判定）：
+/// ① 引用值精确命中某条目 model_name → 唯一指认该条目（复制体共享模型
+///    串时不得越过精确名认领引用——此前「身份集三形态任一命中」的宽匹配
+///    把默认指针偷给复制体、双行同标默认、假热切，实障根因）；
+/// ② 无精确名命中 → 模型串软匹配，取首个命中（resolver 第二段同为首
+///    命中：运行时 resolve 出谁，谁就算数）；
+/// ③ 仍无 → 别名（model 末段）软匹配首命中（CLI 设别名的遗留形态）；
+/// ④ 全不命中 → None（引用是推断臂形态，不属任何条目）。
+fn ref_owner(entries: &[(String, String)], ref_value: &str) -> Option<String> {
+    if ref_value.is_empty() {
+        return None;
+    }
+    if let Some((n, _)) = entries.iter().find(|(n, _)| n == ref_value) {
+        return Some(n.clone());
+    }
+    if let Some((n, _)) = entries.iter().find(|(_, m)| m == ref_value) {
+        return Some(n.clone());
+    }
+    entries
+        .iter()
+        .find(|(_, m)| {
+            m.split('/')
+                .next_back()
+                .is_some_and(|a| !a.is_empty() && a == ref_value)
+        })
+        .map(|(n, _)| n.clone())
+}
+
 /// Read config.json as raw JSON and index `model_list[]` entries by
 /// `model_name`. Returns None when the file is missing/unparseable (callers
 /// treat extras as unset).
@@ -1093,3 +1552,9 @@ mod s10b_tests;
 // 结构性豁免见 agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
+
+// 五项增强批（2026-10-27）：models.copy 深拷贝、models.rename 引用同步+
+// 活跃默认热切、models.test 真实现（假端点 ok/timeout 臂 + images/配置失败
+// 不触网臂）。
+#[cfg(test)]
+mod copy_rename_tests;
