@@ -229,8 +229,9 @@ enum PushOutcome {
     Delivered,
     /// 载荷为空（无执行记录）→ 无档可传，删本地。
     NothingToSend,
-    /// 超 D4 护栏 → 标记 over_limit，不删不传。
-    Overlimit,
+    /// 超 D4 护栏 → 携带实测载荷与护栏值；调用方先落盘 over_limit 再通知
+    /// master（顺序倒转：master 出卡出现时本地状态必已就位）。
+    Overlimit { total_bytes: u64, limit: u64 },
 }
 
 // ---------------------------------------------------------------------------
@@ -638,12 +639,36 @@ impl TransferOutbox {
                         "[Transfer] 执行记录回传完成，本地发件箱清空"
                     );
                 }
-                Ok(PushOutcome::Overlimit) => {
+                Ok(PushOutcome::Overlimit { total_bytes, limit }) => {
                     entry.state = "over_limit".into();
-                    let limit = (self.max_bytes)();
-                    entry.last_error =
-                        Some(format!("载荷 {} 字节超护栏 {limit}", entry.total_bytes));
-                    let _ = self.write_entry_at(&dir, &entry);
+                    entry.last_error = Some(format!("载荷 {total_bytes} 字节超护栏 {limit}"));
+                    // 先落盘后通知（顺序倒转，T-XFER-5 误报根修）：master 出卡
+                    // 出现时 B 本地 over_limit 必已就位；落盘失败不再静默吞错
+                    // （此时盘上停留 pushing，重启 recovery 会重置重推）。
+                    if let Err(e) = self.write_entry_at(&dir, &entry) {
+                        tracing::error!(
+                            task_id = %entry.task_id,
+                            "[Transfer] over_limit 状态落盘失败: {e}"
+                        );
+                    }
+                    // 通知 master 出卡（best effort——master 不在场时本地
+                    // over_limit 标记仍保真）。
+                    let note = TransferOverlimit {
+                        task_id: entry.task_id.clone(),
+                        source_node: self.self_node_id.clone(),
+                        total_bytes,
+                        limit,
+                        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+                    };
+                    let _ = self
+                        .transport
+                        .call(
+                            &entry.source_node,
+                            ACTION_TRANSFER_OVERLIMIT,
+                            serde_json::to_value(&note).unwrap_or_default(),
+                            Duration::from_secs(30),
+                        )
+                        .await;
                     tracing::warn!(
                         task_id = %entry.task_id,
                         "[Transfer] 载荷超护栏：诚实标记 over_limit（不截断不丢弃）"
@@ -703,25 +728,13 @@ impl TransferOutbox {
             PushDirOutcome::Overlimit {
                 total_bytes: total, ..
             } => {
-                // D4 worker 侧护栏：通知 master 出卡（best effort——master
-                // 不在场时本地 over_limit 标记仍保真）。
-                let note = TransferOverlimit {
-                    task_id: entry.task_id.clone(),
-                    source_node: self.self_node_id.clone(),
+                // D4 worker 侧护栏：携带实测值返回，通知 master 的动作上移到
+                // process_once（先落盘 over_limit 后出卡，关闭「卡已出现而
+                // 本地状态未就位」的时序窗）。
+                Ok(PushOutcome::Overlimit {
                     total_bytes: total,
                     limit,
-                    kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
-                };
-                let _ = self
-                    .transport
-                    .call(
-                        &entry.source_node,
-                        ACTION_TRANSFER_OVERLIMIT,
-                        serde_json::to_value(&note).unwrap_or_default(),
-                        Duration::from_secs(30),
-                    )
-                    .await;
-                Ok(PushOutcome::Overlimit)
+                })
             }
         }
     }

@@ -9307,7 +9307,14 @@ async fn main() {
             if !has_notif {
                 return fail("T-XFER-5", "收件箱无 archive_overlimit 通知");
             }
-            let b_state = b_outbox_state(&ws_b, &task_id);
+            // 轮询 ≤30s 等 B 本地 over_limit 落盘（生产端已改为先落盘后通知；
+            // 此处轮询是防御性双保险——单次读曾在写盘时序竞态下读到 pushing 误报）。
+            let st_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            let mut b_state = b_outbox_state(&ws_b, &task_id);
+            while b_state != "over_limit" && tokio::time::Instant::now() < st_deadline {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                b_state = b_outbox_state(&ws_b, &task_id);
+            }
             if b_state != "over_limit" {
                 return fail("T-XFER-5", format!("B 发件箱应暂停留 over_limit，实际 '{b_state}'"));
             }
