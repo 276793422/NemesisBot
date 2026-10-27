@@ -951,8 +951,15 @@ fn boot_recovery_rollback_windows_dance_leaves_failed_diagnostics() {
 #[cfg(feature = "selfupdate")]
 #[test]
 fn staging_paths_are_pid_suffixed_and_distinct() {
-    let exe = std::path::Path::new("C:\\install\\nemesisbot.exe");
-    let (old, new) = staging_paths(exe);
+    // exe 字面量随平台取分隔符：Windows 盘符路径在 Linux 是「一个组件」
+    // （反斜杠不是分隔符），file_stem/parent 语义全变——coverage job 在
+    // Linux 跑 --workspace --lib，字面量必须平台无关才可比。
+    let exe: std::path::PathBuf = if cfg!(windows) {
+        std::path::PathBuf::from("C:\\install\\nemesisbot.exe")
+    } else {
+        std::path::PathBuf::from("/opt/install/nemesisbot.exe")
+    };
+    let (old, new) = staging_paths(&exe);
     let pid = std::process::id();
     let expected_dir = exe.parent().unwrap().join("back");
     let old_name = old.file_name().unwrap().to_string_lossy();
