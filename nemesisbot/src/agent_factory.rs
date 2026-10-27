@@ -1349,14 +1349,27 @@ pub fn build_agent_loop(
     let agent_loop = Arc::new(agent_loop);
     // M6（2026-10-27 整改批次五）：checkpoint gc 装配（config `checkpoint.gc`，
     // 默认关；enabled 才挂钩子——含 undo/redo 栈下界闭包，Weak 指 loop 防环）。
-    // cluster agent 与主 loop 共享影子库，gc 归主 store 独占（不另装配）。
+    // BUG-95（2026-10-27 回头检查发现）：cluster agent 的 checkpoint store 与
+    // 主 store 是独立实例**共享同一影子库目录**——GitBackend 的 repo Mutex 是
+    // 实例级的，本 store gc 的 objects/ 换名窗口锁不住集群写入者；且保留集
+    // 闭包只接主 loop 的 undo/redo 栈，集群栈引用的 tree 会被误清。故
+    // config.cluster.enabled 时（config=单一真相源）**不装配 gc**——宁可放弃
+    // gc 也不引入双写入者竞态。项目 loop（build_agent_loop_from_spec）影子库
+    // 独立（logs/project_checkpoints/<key>/），不受此闸影响；过度保守边：
+    // cluster feature 未编译但 config 残留 enabled=true 时同样被闸（诚实方向：
+    // 宁可少 gc，不可错删）。
     {
         let gc_cfg = cfg
             .checkpoint
             .as_ref()
             .map(|c| c.gc.clone())
             .unwrap_or_default();
-        if gc_cfg.enabled
+        let cluster_shadows_shared = cfg.cluster.as_ref().is_some_and(|c| c.enabled);
+        if gc_cfg.enabled && cluster_shadows_shared {
+            info!(
+                "[AgentFactory] checkpoint gc 保持关闭：集群已启用（主/集群 checkpoint store 共享影子库，双写入者下 gc 存在换名竞态与保留集盲区）"
+            );
+        } else if gc_cfg.enabled
             && let Some(store) = agent_loop.checkpoint_store()
         {
             let loop_weak = Arc::downgrade(&agent_loop);

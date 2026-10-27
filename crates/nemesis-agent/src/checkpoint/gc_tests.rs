@@ -259,6 +259,26 @@ fn gc_disabled_and_unassembled_zero_touch() {
     assert_eq!(before, after);
 }
 
+// BUG-95 配套：gc_armed 自省面（factory 集群闸测试消费）。
+#[test]
+fn gc_armed_reflects_hooks_and_enabled() {
+    let d = tempfile::tempdir().unwrap();
+    let store = CheckpointStore::new(None, d.path().to_path_buf());
+
+    // 未装配 = 未武装。
+    assert!(!store.gc_armed());
+
+    // 装配但 enabled=false（默认形态）= 仍未武装。
+    let (cfg_off, extras) = gc_hooks(false, 1, 0, vec![]);
+    store.set_gc(cfg_off, extras);
+    assert!(!store.gc_armed());
+
+    // 装配且 enabled=true = 武装。
+    let (cfg_on, extras_on) = gc_hooks(true, 1, 0, vec![]);
+    store.set_gc(cfg_on, extras_on);
+    assert!(store.gc_armed());
+}
+
 // ---------------------------------------------------------------------------
 // git 影子形态（checkpoint-git）
 // ---------------------------------------------------------------------------
@@ -448,5 +468,72 @@ mod git_gc {
         );
         // 零破坏：索引/镜像原样。
         assert_eq!(store.list_meta().len(), 4);
+    }
+
+    // BUG-96（2026-10-28 二次复查）：残留 .gc-old 两分支回归。
+    // 常态残留：上轮收尾删除重试耗尽的遗留不阻塞本轮 gc（修复前 rename#1
+    // 目标非空必败 → gc 永久卡死），且本轮顺手清走。
+    #[test]
+    fn gc_git_stale_gc_old_residual_does_not_brick() {
+        let (_d, root, store, trees) = fixture();
+        let shadow = nemesis_path::logs_dir_in_workspace(&root).join("checkpoints.git");
+        let stale = shadow.with_file_name("checkpoints.git.gc-old");
+        let stale_obj = stale.join("objects").join("ab").join("junk");
+        std::fs::create_dir_all(stale_obj.parent().unwrap()).unwrap();
+        std::fs::write(&stale_obj, b"residual from a previous round").unwrap();
+
+        store.set_gc(enabled_cfg(2), no_extras());
+        let report = store.gc_now();
+        assert!(
+            report.skipped.is_none(),
+            "残留 .gc-old 不得阻塞 gc（修复前在此被换名失败卡死）: {:?}",
+            report.skipped
+        );
+        assert!(!stale.exists(), "残留 .gc-old 应被清走");
+        // 本轮清扫本身照常：保留窗 tree 可 restore。
+        assert!(
+            store
+                .read_file_from_tree(&trees[3], "f.txt")
+                .unwrap()
+                .is_some(),
+            "gc 后保留 tree 必须存活"
+        );
+    }
+
+    // 破损态自愈：objects 缺席 + .gc-old 在场（上轮 rename#2 失败且回滚也
+    // 失败）→ 搬回自愈后 gc 照常完成（修复前 odb 打不开，永久报错）。
+    #[test]
+    fn gc_git_broken_state_self_heals_from_gc_old() {
+        let (_d, root, store, trees) = fixture();
+        let shadow = nemesis_path::logs_dir_in_workspace(&root).join("checkpoints.git");
+        // 精确复刻破损态：objects 原样搬进 .gc-old 名下（= 回滚失败现场）。
+        std::fs::rename(
+            shadow.join("objects"),
+            shadow.with_file_name("checkpoints.git.gc-old"),
+        )
+        .unwrap();
+        assert!(!shadow.join("objects").exists());
+
+        store.set_gc(enabled_cfg(2), no_extras());
+        let report = store.gc_now();
+        assert!(
+            report.skipped.is_none(),
+            "破损态应自愈后完成 gc: {:?}",
+            report.skipped
+        );
+        assert!(shadow.join("objects").exists(), "自愈 = objects 回到原位");
+        // gc 真做完了：窗口外 tree 已清（对象缺失 → find_tree Err）、
+        // 保留窗 tree 存活。
+        assert!(
+            store.read_file_from_tree(&trees[0], "f.txt").is_err(),
+            "窗外 tree 对象应已清（对象缺失 → Err）"
+        );
+        assert!(
+            store
+                .read_file_from_tree(&trees[3], "f.txt")
+                .unwrap()
+                .is_some(),
+            "保留窗 tree 必须存活"
+        );
     }
 }

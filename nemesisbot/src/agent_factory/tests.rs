@@ -414,6 +414,56 @@ async fn build_agent_loop_full_chain_from_disk_config() {
 }
 
 // =========================================================================
+// BUG-95（2026-10-27 回头检查）：主/集群 checkpoint store 共享影子库，
+// 双写入者下 gc 有换名竞态 + 保留集盲区 → factory 集群闸（config.cluster.enabled
+// 时不装配 gc）。两测一正一反钉住闸的两臂。
+// =========================================================================
+
+#[tokio::test]
+async fn build_agent_loop_gc_blocked_when_cluster_enabled() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(
+        &home,
+        serde_json::json!({
+            "checkpoint": { "gc": { "enabled": true, "keep_turns": 10, "keep_days": 1 } },
+            "cluster": { "enabled": true }
+        }),
+    );
+
+    let built = build_agent_loop(&make_shared(&home)).expect("cluster-enabled build must succeed");
+    let store = built
+        .checkpoint_store()
+        .expect("main loop must carry a checkpoint store");
+    assert!(
+        !store.gc_armed(),
+        "cluster enabled ⇒ gc 不得装配（共享影子库双写入者竞态）"
+    );
+}
+
+#[tokio::test]
+async fn build_agent_loop_gc_armed_without_cluster() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    // 无 cluster 段（serde default enabled=false）：gc enabled 即装配。
+    write_model_config(
+        &home,
+        serde_json::json!({
+            "checkpoint": { "gc": { "enabled": true, "keep_turns": 10, "keep_days": 1 } }
+        }),
+    );
+
+    let built = build_agent_loop(&make_shared(&home)).expect("standalone build must succeed");
+    let store = built
+        .checkpoint_store()
+        .expect("main loop must carry a checkpoint store");
+    assert!(
+        store.gc_armed(),
+        "无集群（默认形态）⇒ gc 照常装配（BUG-95 闸不得误伤单机形态）"
+    );
+}
+
+// =========================================================================
 // codemode 装配期注册回归（2026-10-25 默认开拍板）：
 // - 默认 config（缺 codemode 键）装配后 code_run 已注册（serde default true）；
 // - 显式 agents.codemode.enabled=false 装配后不注册（装配闸尊重 config）。

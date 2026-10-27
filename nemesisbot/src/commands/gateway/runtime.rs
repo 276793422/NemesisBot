@@ -1146,9 +1146,12 @@ pub(crate) async fn run_runtime(
     // 触发点在 truncate_from_scoped 后）。默认关（checkpoint.gc.enabled），
     // 关 = 不装配线程零触碰。6h 与 uploads/logs 同拍；gc 内部并发互斥 +
     // 失败零破坏。项目 loop 的影子库只吃 truncate 触发（周期拍只挂主
-    // store，诚实边界）。
+    // store，诚实边界）。gc_armed 复核（BUG-95）：factory 集群闸拦下装配
+    // 时（cluster.enabled）这里不起线程——config 两处读同源，但闸语义以
+    // store 实际装配态为准，防僵尸线程空转。
     if cfg.checkpoint.as_ref().is_some_and(|c| c.gc.enabled)
         && let Some(cp_store) = agent_loop.checkpoint_store()
+        && cp_store.gc_armed()
     {
         std::thread::Builder::new()
             .name("checkpoint-gc".to_string())

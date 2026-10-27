@@ -157,15 +157,23 @@ pub(crate) fn compute_retention(
 
 impl CheckpointStore {
     /// M6：装配 gc（config 开关 + undo/redo 栈下界闭包）。未装配 = gc 全
-    /// 路径零触碰。主 loop / 项目 loop 各自装配；cluster agent 与主 loop
-    /// **共享同一影子库**，gc 归主 store 独占装配（双 store 同库重建竞态
-    /// 避免——重建换名窗口对共享句柄无害，但两 store 同时重建会互踩）。
+    /// 路径零触碰。主 loop / 项目 loop 各自装配。**集群闸（BUG-95）**：
+    /// cluster agent 的 checkpoint store 与主 store 是独立实例**共享同一影
+    /// 子库目录**——GitBackend 的 repo Mutex 是实例级的，本 store 换名窗口
+    /// 锁不住集群写入者（旧注释「对共享句柄无害」失实，回头检查已纠）；
+    /// 且保留集闭包只接主 loop 栈，集群栈引用的 tree 会被误清。故主 store
+    /// 的装配点（agent_factory）在 config.cluster.enabled 时**不调用本方法**。
     pub fn set_gc(
         &self,
         cfg: nemesis_config::CheckpointGcConfig,
         extra_trees: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     ) {
         *self.gc_hooks.lock() = Some(GcHooks { cfg, extra_trees });
+    }
+
+    /// gc 是否已装配且启用（诚实自省面：factory 集群闸测试 / 运维面用）。
+    pub fn gc_armed(&self) -> bool {
+        self.gc_hooks.lock().as_ref().is_some_and(|h| h.cfg.enabled)
     }
 
     /// 跑一轮 gc（装配且 enabled 才真正执行）。同步、可重入安全（并发
@@ -352,6 +360,42 @@ impl CheckpointStore {
         let root = self.root.clone();
         let open_flags = git2::RepositoryOpenFlags::NO_SEARCH;
 
+        // BUG-96（2026-10-28 二次复查）：残留 `.gc-old` 处置——上轮收尾删除
+        // 重试耗尽的遗留（Windows AV/索引器瞬时句柄）。不清则本轮换名
+        // rename#1 目标非空必败（Windows 不替换非空目录），而清它的唯一
+        // 路径在换名成功之后——永远执行不到，gc 永久卡死（重启不自愈）。
+        // 两分支：
+        // - objects 在场（常态残留）：预清（best-effort；清不掉 = 继续走，
+        //   rename#1 失败臂诚实报错，下轮再来）。
+        // - objects 缺席（上轮 rename#2 失败且回滚也失败的破损态）：`.gc-old`
+        //   是对象集唯一副本——先搬回自愈（兑现错误信息「下轮自愈」承诺），
+        //   失败诚实报错；**绝不预清**（会销毁唯一对象集）。
+        let objects_old = shadow.with_file_name(format!(
+            "{}.gc-old",
+            shadow
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "checkpoints.git".to_string())
+        ));
+        if objects_old.exists() {
+            if shadow.join("objects").exists() {
+                if let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&objects_old) {
+                    tracing::warn!(
+                        dir = %objects_old.display(),
+                        error = %e,
+                        "[checkpoint gc] 残留 .gc-old 预清失败（继续；rename 失败臂兜底）"
+                    );
+                }
+            } else {
+                let _heal_guard = gb.repo.lock();
+                std::fs::rename(&objects_old, shadow.join("objects"))
+                    .map_err(|e| format!("破损态自愈失败（.gc-old 搬回 objects）: {e}"))?;
+                tracing::warn!(
+                    "[checkpoint gc] 检出上轮回滚失败的破损态，已自愈（.gc-old 搬回 objects）"
+                );
+            }
+        }
+
         // 前置 fail-closed：影子库被手动打包过（pack 文件在场）→ 重建式不
         // 支持，诚实放弃（宁可不清，不赌对象搬运的完整性）。
         let pack_dir = shadow.join("objects").join("pack");
@@ -524,14 +568,7 @@ impl CheckpointStore {
 
         // 原子换名 objects/ 子树：影子库路径不变 → 常驻句柄 / 集群共享
         // store 句柄 / refs / index 全部继续有效（loose 对象按路径按需读，
-        // 无持久句柄钉住）。
-        let objects_old = shadow.with_file_name(format!(
-            "{}.gc-old",
-            shadow
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "checkpoints.git".to_string())
-        ));
+        // 无持久句柄钉住）。objects_old 已在函数头构造（BUG-96 残留处置）。
         // 换名窗口串行本 store 的并发 git 操作。
         let _repo_guard = gb.repo.lock();
         std::fs::rename(shadow.join("objects"), &objects_old)
