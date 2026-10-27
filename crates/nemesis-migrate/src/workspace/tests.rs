@@ -579,27 +579,36 @@ fn test_plan_migration_only_skills_dir() {
 
 #[test]
 fn test_plan_migration_all_migrateable_files() {
-    // Create all 5 migrateable files + verify each is planned as Copy
+    // Create all 6 migrateable files + verify each is planned as Copy
+    // （BUG-20261028-103：清单补 IDENTITY.md——bot 读人格的唯一根是 workspace
+    // 根，IDENTITY.md 是人格三件套之首，漏掉=crate 链迁移不完整。）
     let dir = TempDir::new().unwrap();
     let src = dir.path().join("src");
     let dst = dir.path().join("dst");
     fs::create_dir_all(&src).unwrap();
     fs::create_dir_all(&dst).unwrap();
-    for fname in ["AGENT.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md"] {
+    for fname in [
+        "AGENT.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "USER.md",
+        "TOOLS.md",
+        "HEARTBEAT.md",
+    ] {
         fs::write(src.join(fname), format!("content {}", fname)).unwrap();
     }
 
     let plan =
         WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
             .unwrap();
-    // All 5 files should be planned as Copy (since dst doesn't have them)
+    // All 6 files should be planned as Copy (since dst doesn't have them)
     let copies = plan
         .actions
         .iter()
         .filter(|a| a.action_type == ActionType::Copy)
         .count();
-    assert_eq!(copies, 5);
-    assert_eq!(plan.total_files, 5);
+    assert_eq!(copies, 6);
+    assert_eq!(plan.total_files, 6);
 }
 
 #[test]

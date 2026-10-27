@@ -85,6 +85,21 @@ fn backup_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// persona 三件套源定位（BUG-20261028-103）。
+///
+/// OpenClaw 的真实布局把人格文件写在 **workspace 根**（上游 agent-create.ts
+/// 用 `workspaceRoot.write(DEFAULT_IDENTITY_FILENAME)`）；旧实现读 home 根，
+/// 真实布局下永远读不到，迁移后 bot 仍用 onboard 模板占位人格。现约定：
+/// 源 = workspace 根优先、home 根回落（兼容旧版/手工放置布局）。
+fn resolve_persona_src(openclaw_home: &Path, name: &str) -> Option<PathBuf> {
+    let in_ws = openclaw_home.join("workspace").join(name);
+    if in_ws.exists() {
+        return Some(in_ws);
+    }
+    let at_root = openclaw_home.join(name);
+    at_root.exists().then_some(at_root)
+}
+
 /// Write the converted config to `cfg_path`.
 ///
 /// BUG-20261025-66：既有 config 不再被整体覆盖——先读现有配置，经
@@ -345,9 +360,19 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     let workspace_src = openclaw_home.join("workspace");
     let prompts_src = openclaw_home.join("prompts");
     let skills_src = openclaw_home.join("skills");
-    let identity_src = openclaw_home.join("IDENTITY.md");
-    let soul_src = openclaw_home.join("SOUL.md");
-    let user_src = openclaw_home.join("USER.md");
+    // BUG-20261028-103：persona 三件套源定位（workspace 根优先/home 根回落）；
+    // 落点同样改 workspace 根——bot 读人格的唯一根是 workspace 根
+    // （context.rs load_bootstrap_files → read_workspace_file =
+    // workspace.join(filename)；persona activate 同根），旧落点 nemesis_home
+    // 根是 bot 零消费的死位置。
+    let persona_sources: Vec<(&str, PathBuf)> = [
+        ("Identity", "IDENTITY.md"),
+        ("Soul", "SOUL.md"),
+        ("User", "USER.md"),
+    ]
+    .iter()
+    .filter_map(|(label, name)| resolve_persona_src(&openclaw_home, name).map(|src| (*label, src)))
+    .collect();
 
     let has_config = nemesis_migrate::find_openclaw_config(&openclaw_home).is_ok()
         || openclaw_home.join("config.yaml").exists()
@@ -359,9 +384,7 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
         && (workspace_src.exists()
             || prompts_src.exists()
             || skills_src.exists()
-            || identity_src.exists()
-            || soul_src.exists()
-            || user_src.exists());
+            || !persona_sources.is_empty());
 
     // Step 3: Show migration plan.
     println!("Migration plan:");
@@ -393,17 +416,15 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
             nemesis_home.join("workspace").join("skills").display()
         );
     }
-    for (label, src) in [
-        ("Identity", &identity_src),
-        ("Soul", &soul_src),
-        ("User", &user_src),
-    ] {
-        if src.exists() && !options.config_only {
+    for (label, src) in &persona_sources {
+        if !options.config_only {
             println!(
                 "  [{}] {} -> {}",
                 label,
                 src.display(),
-                nemesis_home.join(src.file_name().unwrap()).display()
+                common::workspace_path(&nemesis_home)
+                    .join(src.file_name().unwrap())
+                    .display()
             );
         }
     }
@@ -523,15 +544,16 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
             println!("  Migrated skills ({} files) -> {}", count, dst.display());
         }
 
-        // Individual files (IDENTITY.md, SOUL.md, USER.md).
-        for src in [&identity_src, &soul_src, &user_src] {
-            if src.exists() {
-                let file_name = src.file_name().unwrap();
-                let dst = nemesis_home.join(file_name);
-                std::fs::copy(src, &dst)?;
-                migrated_files += 1;
-                println!("  Migrated {} -> {}", src.display(), dst.display());
-            }
+        // Individual files (IDENTITY.md, SOUL.md, USER.md)——落 workspace 根
+        // （BUG-20261028-103）。备份后覆盖（对齐 config 臂纪律）：迁移本意
+        // 就是用真实人格替换 onboard 模板占位，无 refresh 闸不是遗漏而是
+        // 刻意——加闸会让重跑迁移永远保留占位模板；旧值由 .bak 兜底。
+        for (_label, src) in &persona_sources {
+            let dst = ws_dst.join(src.file_name().unwrap());
+            backup_file(&dst)?;
+            std::fs::copy(src, &dst)?;
+            migrated_files += 1;
+            println!("  Migrated {} -> {}", src.display(), dst.display());
         }
     }
 

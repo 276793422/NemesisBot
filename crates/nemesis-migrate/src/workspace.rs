@@ -38,7 +38,16 @@ pub struct WorkspaceMigrator {
 }
 
 /// Files that can be migrated.
-const MIGRATEABLE_FILES: &[&str] = &["AGENT.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md"];
+/// （BUG-20261028-103：补 IDENTITY.md——人格三件套之首，bot 读人格的唯一根
+/// 是 workspace 根，crate 链迁移清单漏掉它=迁移不完整。）
+const MIGRATEABLE_FILES: &[&str] = &[
+    "AGENT.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "USER.md",
+    "TOOLS.md",
+    "HEARTBEAT.md",
+];
 
 /// Directories that can be migrated.
 const MIGRATEABLE_DIRS: &[&str] = &["memory", "skills"];

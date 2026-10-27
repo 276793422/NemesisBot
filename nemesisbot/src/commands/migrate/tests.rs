@@ -669,9 +669,11 @@ fn write_full_openclaw_layout(openclaw: &std::path::Path) {
     std::fs::write(openclaw.join("prompts").join("p1.md"), "prompt").unwrap();
     std::fs::create_dir_all(openclaw.join("skills")).unwrap();
     std::fs::write(openclaw.join("skills").join("s1.md"), "skill").unwrap();
-    std::fs::write(openclaw.join("IDENTITY.md"), "identity").unwrap();
-    std::fs::write(openclaw.join("SOUL.md"), "soul").unwrap();
-    std::fs::write(openclaw.join("USER.md"), "user").unwrap();
+    // BUG-20261028-103：真实 OpenClaw 布局把人格三件套写在 workspace 根
+    // （上游 agent-create.ts 用 workspaceRoot.write(DEFAULT_IDENTITY_FILENAME)）。
+    std::fs::write(openclaw.join("workspace").join("IDENTITY.md"), "identity").unwrap();
+    std::fs::write(openclaw.join("workspace").join("SOUL.md"), "soul").unwrap();
+    std::fs::write(openclaw.join("workspace").join("USER.md"), "user").unwrap();
     std::fs::write(
         openclaw.join("config.yaml"),
         "default_model: \"gpt-x\"\nport: 12345\n",
@@ -736,7 +738,7 @@ fn run_without_force_is_cancelled_by_non_interactive_confirm() {
     o.force = false;
     run(o, false).expect("confirm=false → Migration cancelled + Ok");
     assert!(!target.join("config.json").exists(), "取消后不得写 config");
-    assert!(!target.join("IDENTITY.md").exists());
+    assert!(!target.join("workspace").join("IDENTITY.md").exists());
 }
 
 #[test]
@@ -768,18 +770,19 @@ fn run_force_migrates_config_workspace_prompts_skills_and_persona_files() {
         "skill"
     );
 
-    // 人格三件套落 home 根。
+    // 人格三件套落 workspace 根（BUG-20261028-103：bot 消费唯一根是
+    // workspace 根——context.rs load_bootstrap_files / persona activate 都读
+    // 这里；home 根是 bot 零消费的死位置）。
+    let ws = target.join("workspace");
     assert_eq!(
-        std::fs::read_to_string(target.join("IDENTITY.md")).unwrap(),
+        std::fs::read_to_string(ws.join("IDENTITY.md")).unwrap(),
         "identity"
     );
-    assert_eq!(
-        std::fs::read_to_string(target.join("SOUL.md")).unwrap(),
-        "soul"
-    );
-    assert_eq!(
-        std::fs::read_to_string(target.join("USER.md")).unwrap(),
-        "user"
+    assert_eq!(std::fs::read_to_string(ws.join("SOUL.md")).unwrap(), "soul");
+    assert_eq!(std::fs::read_to_string(ws.join("USER.md")).unwrap(), "user");
+    assert!(
+        !target.join("IDENTITY.md").exists(),
+        "人格文件不得落 nemesis_home 根（bot 零消费位）"
     );
 }
 
@@ -837,7 +840,7 @@ fn run_config_only_skips_workspace_and_vice_versa() {
     run(o1, false).expect("config only ok");
     assert!(t1.join("config.json").exists());
     assert!(!t1.join("workspace").join("MEMORY.md").exists());
-    assert!(!t1.join("IDENTITY.md").exists());
+    assert!(!t1.join("workspace").join("IDENTITY.md").exists());
 
     // workspace_only：只迁工作区。
     let t2 = tmp.path().join("nb2");
@@ -846,7 +849,72 @@ fn run_config_only_skips_workspace_and_vice_versa() {
     run(o2, false).expect("workspace only ok");
     assert!(!t2.join("config.json").exists());
     assert!(t2.join("workspace").join("MEMORY.md").exists());
-    assert!(t2.join("IDENTITY.md").exists());
+    assert!(t2.join("workspace").join("IDENTITY.md").exists());
+}
+
+// BUG-20261028-103：persona 源定位与落点契约（workspace 根优先 / home 根
+// 回落 / 备份后覆盖）。
+
+#[test]
+fn run_persona_home_root_layout_falls_back_and_lands_in_workspace() {
+    // 旧版/手工布局：人格只在 openclaw home 根 → 回落命中，仍落 workspace
+    // 根。fixture 无 config：persona 单独就能驱动 migrate_workspace 闸。
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("IDENTITY.md"), "identity").unwrap();
+    let target = tmp.path().join("nb");
+    run(opts(&src, &target), false).expect("home 根回落迁移 Ok");
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("IDENTITY.md")).unwrap(),
+        "identity"
+    );
+    assert!(
+        !target.join("IDENTITY.md").exists(),
+        "落点必须是 workspace 根，不是 home 根"
+    );
+}
+
+#[test]
+fn run_persona_workspace_root_wins_over_home_root() {
+    // 两处都有：workspace 根优先（真实布局优先于旧版回落，两份内容不同时
+    // 必须取 workspace 根那份）。
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(src.join("workspace")).unwrap();
+    std::fs::write(src.join("workspace").join("SOUL.md"), "ws-soul").unwrap();
+    std::fs::write(src.join("SOUL.md"), "root-soul").unwrap();
+    let target = tmp.path().join("nb");
+    run(opts(&src, &target), false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("SOUL.md")).unwrap(),
+        "ws-soul"
+    );
+}
+
+#[test]
+fn run_persona_overwrite_leaves_bak_of_previous_target() {
+    // 目标 workspace 已有人格文件（如 onboard 模板占位）→ 备份后覆盖：
+    // 迁移本意就是用真实人格替换模板占位，但旧值必须 .bak 兜底（对齐
+    // config 臂纪律）。
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(src.join("workspace")).unwrap();
+    std::fs::write(src.join("workspace").join("USER.md"), "real-user").unwrap();
+    let target = tmp.path().join("nb");
+    std::fs::create_dir_all(target.join("workspace")).unwrap();
+    std::fs::write(target.join("workspace").join("USER.md"), "template").unwrap();
+    run(opts(&src, &target), false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("USER.md")).unwrap(),
+        "real-user",
+        "真实人格必须替换模板占位"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("USER.md.bak")).unwrap(),
+        "template",
+        "旧值必须先备份成 .bak"
+    );
 }
 
 #[test]
@@ -972,8 +1040,9 @@ mod wave_a {
         std::fs::write(root.join("prompts").join("p.md"), "p").unwrap();
         std::fs::create_dir_all(root.join("skills").join("s1")).unwrap();
         std::fs::write(root.join("skills").join("s1").join("SKILL.md"), "s").unwrap();
+        // BUG-20261028-103：真实布局人格三件套在 workspace 根。
         for name in ["IDENTITY.md", "SOUL.md", "USER.md"] {
-            std::fs::write(root.join(name), format!("{name} body")).unwrap();
+            std::fs::write(root.join("workspace").join(name), format!("{name} body")).unwrap();
         }
     }
 
@@ -1080,12 +1149,16 @@ mod wave_a {
                 .exists()
         );
         assert_eq!(
-            std::fs::read_to_string(nb.join("IDENTITY.md")).unwrap(),
+            std::fs::read_to_string(nb.join("workspace").join("IDENTITY.md")).unwrap(),
             "IDENTITY.md body",
-            "人格文件落在 nemesis_home 根"
+            "人格文件落在 workspace 根（bot 消费唯一根，BUG-20261028-103）"
         );
-        assert!(nb.join("SOUL.md").exists());
-        assert!(nb.join("USER.md").exists());
+        assert!(nb.join("workspace").join("SOUL.md").exists());
+        assert!(nb.join("workspace").join("USER.md").exists());
+        assert!(
+            !nb.join("IDENTITY.md").exists(),
+            "不得落 nemesis_home 根（bot 零消费位）"
+        );
     }
 
     #[test]
@@ -1199,7 +1272,7 @@ mod wave_c {
         )
         .unwrap();
         std::fs::write(oclaw.join("workspace").join("MEMORY.md"), "mem").unwrap();
-        std::fs::write(oclaw.join("IDENTITY.md"), "identity").unwrap();
+        std::fs::write(oclaw.join("workspace").join("IDENTITY.md"), "identity").unwrap();
 
         let nb = tmp.path().join("nb");
         std::fs::create_dir_all(&nb).unwrap();
@@ -1237,9 +1310,9 @@ mod wave_c {
             "workspace 树经 env 定位被复制"
         );
         assert_eq!(
-            std::fs::read_to_string(nb.join("IDENTITY.md")).unwrap(),
+            std::fs::read_to_string(nb.join("workspace").join("IDENTITY.md")).unwrap(),
             "identity",
-            "人格文件经 env 定位被复制"
+            "人格文件经 env 定位被复制（workspace 根，BUG-20261028-103）"
         );
     }
 }
