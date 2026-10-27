@@ -47,9 +47,27 @@ fn passphrase_for_mode(mode: VaultMode) -> Result<Option<String>> {
         VaultMode::Dpapi => Ok(None),
         VaultMode::Argon2id => match std::env::var("NEMESISBOT_VAULT_PASSPHRASE") {
             Ok(p) if !p.is_empty() => Ok(Some(p)),
-            _ => Ok(Some(rpassword::prompt_password("vault 口令: ")?)),
+            _ => {
+                let pw = rpassword::prompt_password("vault 口令: ")?;
+                Ok(Some(reject_empty_passphrase(pw)?))
+            }
         },
     }
+}
+
+/// prompt 口令非空验收（BUG-20261028-101）：运行时解锁面
+/// （`vault_runtime::open_unlocked`）把空 `NEMESISBOT_VAULT_PASSPHRASE`
+/// 视作未设置——prompt 直接回车创建的空口令 vault 会在 gateway/run 等全部
+/// 运行时消费面永久锁死（只有 CLI 手动 unlock 可开）。仅空白（非空）口令
+/// 放行：运行时 filter 只滤真空串，两侧语义对称。
+fn reject_empty_passphrase(pw: String) -> Result<String> {
+    if pw.is_empty() {
+        anyhow::bail!(
+            "口令不能为空：运行时把空 NEMESISBOT_VAULT_PASSPHRASE 视作未设置，\
+             空口令 vault 将在 gateway/run 等消费面永久锁死"
+        );
+    }
+    Ok(pw)
 }
 
 /// 打开（必要时创建）vault，argon2 模式完成解锁。
@@ -126,7 +144,19 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
             }
         }
         VaultAction::List => {
-            let store = open_or_create(&vault_path)?;
+            // List 永不见值：元数据明文可读、未解锁也能列（vault.rs 设计要点）。
+            // 此前走 open_or_create 强制解锁——忘口令的用户连别名清单都列不出
+            // （BUG-20261028-101）。缺失 vault 保留创建语义
+            // （run_arms::list_on_missing_vault_creates_it_and_reports_empty）。
+            let store = if vault_path.exists() {
+                VaultStore::open(&vault_path)
+                    .with_context(|| format!("打开 vault 失败: {}", vault_path.display()))?
+            } else {
+                let mode = VaultStore::default_mode();
+                let pw = passphrase_for_mode(mode)?;
+                VaultStore::create(&vault_path, mode, pw.as_deref())
+                    .with_context(|| format!("创建 vault 失败: {}", vault_path.display()))?
+            };
             let listings = store.list();
             if listings.is_empty() {
                 println!("vault 为空（{}）。", vault_path.display());

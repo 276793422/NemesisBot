@@ -27,6 +27,28 @@ fn dpapi_needs_no_passphrase() {
     assert_eq!(passphrase_for_mode(VaultMode::Dpapi).unwrap(), None);
 }
 
+/// BUG-20261028-101（缺陷 A）回归锁：prompt 空口令必须拒——运行时解锁面把
+/// 空 NEMESISBOT_VAULT_PASSPHRASE 视作未设置，空口令 vault 会在 gateway/run
+/// 等消费面永久锁死（CLI 手动 unlock 除外）。仅空白（非空）口令放行：
+/// 运行时 filter 只滤真空串，两侧语义对称。prompt 本体不可自动化
+/// （Windows 带控制台时 rpassword 直开 CONIN$ 不吃 stdin 重定向），
+/// 以纯函数形态锁行为。
+#[test]
+fn empty_prompt_passphrase_is_rejected() {
+    let err = reject_empty_passphrase(String::new()).unwrap_err();
+    assert!(err.to_string().contains("口令不能为空"), "实际：{err}");
+    assert_eq!(
+        reject_empty_passphrase("real-pw".into()).unwrap(),
+        "real-pw",
+        "非空口令照常放行"
+    );
+    assert_eq!(
+        reject_empty_passphrase("  ".into()).unwrap(),
+        "  ",
+        "仅空白（非空）口令放行：与运行时 filter 只滤真空串对称"
+    );
+}
+
 /// CLI 侧 vault 路径解析与 nemesis-path 单一拼接点一致。
 #[test]
 fn vault_path_matches_path_helper() {
@@ -422,6 +444,44 @@ mod run_arms {
         .unwrap();
         let store = reopen_store(&th.home);
         assert_eq!(store.get("dup-alias").unwrap(), "old-value", "取消不轮换");
+    }
+
+    /// BUG-20261028-101（缺陷 B）红证：List 永不见值——核心设计要点是
+    /// 「元数据明文可读，未解锁也能列」（nemesis-security vault.rs 模块注释）。
+    /// 此前 List 走 open_or_create 强制解锁：口令不对 → 整个 list 直接失败——
+    /// 忘口令的用户连别名清单都看不到。红证用「env 指向错口令」确定性走
+    /// unlock 失败路径（env 缺失会走 rpassword prompt——Windows 带控制台时
+    /// rpassword 直开 CONIN$ 不吃 stdin 重定向，测试会挂死而非失败）。
+    /// 强制 argon2 造锁定态（Windows DPAPI 默认平台同样覆盖）。
+    #[test]
+    fn list_works_on_locked_vault_without_passphrase() {
+        let th = run_arm_env();
+        let vp = vault_file(&th.home);
+        let mut store = VaultStore::create(&vp, VaultMode::Argon2id, Some("real-pw")).unwrap();
+        store.set("locked-alias", "v-locked", "model", "d").unwrap();
+        store.save().unwrap();
+        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "totally-wrong-pw") };
+        block_on(super::super::run(VaultAction::List, false))
+            .expect("锁定 vault 也必须能列（list 永不见值，解锁不该是列的前置）");
+    }
+
+    /// BUG-20261028-101（缺陷 A）不对称实证（缺陷边界锁，修复前后恒绿）：
+    /// 核心层接受空口令创建（Some("") 只查 None），而运行时解锁面
+    /// （vault_runtime::open_unlocked）把空 NEMESISBOT_VAULT_PASSPHRASE
+    /// 视作未设置——空口令 vault 在 gateway/run 等消费面永久锁死。
+    /// CLI 侧修复（prompt 拒空）见 empty_prompt_passphrase_is_rejected。
+    #[test]
+    fn empty_passphrase_vault_is_runtime_deadlock() {
+        let th = run_arm_env();
+        let vp = vault_file(&th.home);
+        // CLI prompt 空输入曾直达这里：create(Some("")) 成功建 vault。
+        let mut store = VaultStore::create(&vp, VaultMode::Argon2id, Some("")).unwrap();
+        store.set("doomed-alias", "v", "model", "").unwrap();
+        store.save().unwrap();
+        // 用户把空口令写进 env 也无用：运行时把空值视作未设置 → 永远报锁定。
+        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "") };
+        let err = crate::vault_runtime::open_unlocked_at(&vp).unwrap_err();
+        assert!(err.contains("已锁定"), "空口令 vault 运行时永久锁死：{err}");
     }
 
     #[test]
