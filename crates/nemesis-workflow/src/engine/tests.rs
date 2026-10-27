@@ -1,5 +1,6 @@
 use super::*;
 use crate::checkpoint::{CheckpointStore, InMemoryCheckpointStore};
+use crate::types::MAX_RECURSION_DEPTH;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -4816,5 +4817,143 @@ async fn test_cancel_waiting_saves_terminal_checkpoint_not_resurrected() {
     assert!(
         fresh.list_executions(None).await.is_empty(),
         "复活路径必须零入库"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-107 红证：run_async 早退路径孤儿 cancel token
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_run_async_workflow_not_found_does_not_orphan_cancel_token() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "vanish_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution("vanish_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    // workflow 在 create 与 run 之间被移除（UI delete / unregister 竞态；
+    // 两段式 API 明文档支持 create 后任意时刻再 run_async）
+    engine.unregister("vanish_wf");
+
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(result, Err(EngineError::WorkflowNotFound(_))));
+
+    // 修复前：token 留在表里 → 此后任何 run_async 都撞「already in
+    // flight」，即使 workflow 重新注册也救不回，执行记录永久 Running。
+    assert!(
+        !engine.cancel_tokens.contains_key(&execution.id),
+        "WorkflowNotFound 早退必须回收 cancel token（resume 路径同款清理）"
+    );
+}
+
+#[tokio::test]
+async fn test_run_async_recursion_limit_does_not_orphan_cancel_token() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "deep_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution(
+            "deep_wf",
+            HashMap::new(),
+            Some(TriggerSource::AgentTool {
+                tool_call_id: "tc-1".to_string(),
+                recursion_depth: MAX_RECURSION_DEPTH + 1,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(
+        result,
+        Err(EngineError::RecursionLimitExceeded(_))
+    ));
+
+    assert!(
+        !engine.cancel_tokens.contains_key(&execution.id),
+        "RecursionLimitExceeded 早退必须回收 cancel token"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-108 红证：sanitize 文件名碰撞静默覆盖/误删
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_persist_workflow_rejects_filename_collision() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(dir.path().to_path_buf());
+
+    engine
+        .persist_workflow(make_workflow(
+            "a/b",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+
+    // 不同名字、同一 sanitized 文件名（都落 a_b.yaml）
+    let result = engine.persist_workflow(make_workflow(
+        "a:b",
+        vec![make_node("n1", "transform", vec![])],
+    ));
+    assert!(result.is_err(), "文件名碰撞必须 loud 拒绝，不得静默覆盖");
+
+    // 磁盘文件仍是原定义，未被覆盖
+    let data = std::fs::read(dir.path().join("a_b.yaml")).unwrap();
+    let existing: Workflow = serde_yaml::from_slice(&data).unwrap();
+    assert_eq!(existing.name, "a/b", "碰撞拒绝后原定义必须完好");
+
+    // 同名更新（UI update 路径）不受影响
+    let updated = make_workflow(
+        "a/b",
+        vec![
+            make_node("n1", "transform", vec![]),
+            make_node("n2", "transform", vec!["n1"]),
+        ],
+    );
+    engine.persist_workflow(updated).unwrap();
+    let data = std::fs::read(dir.path().join("a_b.yaml")).unwrap();
+    let existing: Workflow = serde_yaml::from_slice(&data).unwrap();
+    assert_eq!(existing.nodes.len(), 2, "同名更新必须照常落盘");
+}
+
+#[tokio::test]
+async fn test_delete_workflow_file_skips_collision_sibling_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(dir.path().to_path_buf());
+
+    // 存量碰撞形态：a_b.yaml 内容属于 "a:b"（旧版本写入的盘上事实）
+    let wf_other = make_workflow("a:b", vec![make_node("n1", "transform", vec![])]);
+    std::fs::write(
+        dir.path().join("a_b.yaml"),
+        serde_yaml::to_string(&wf_other).unwrap(),
+    )
+    .unwrap();
+
+    // 删 "a/b"：文件属于 "a:b"，不得被误删
+    engine.delete_workflow_file("a/b").unwrap();
+    assert!(
+        dir.path().join("a_b.yaml").exists(),
+        "sanitize 同文件名的他人定义不得被误删"
+    );
+
+    // 删属主本人照常删除
+    engine.delete_workflow_file("a:b").unwrap();
+    assert!(
+        !dir.path().join("a_b.yaml").exists(),
+        "属主本人删除必须照常生效"
     );
 }

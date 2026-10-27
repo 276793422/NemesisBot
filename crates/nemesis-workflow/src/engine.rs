@@ -118,6 +118,16 @@ fn sanitize_workflow_filename(name: &str) -> String {
     }
 }
 
+/// 读取 workflow 定义文件并返回其内容里的 workflow 名（BUG-20261028-108
+/// 碰撞守卫辅助）。parse 失败返回 None——坏文件没有可辨认的属主。
+/// serde_yaml 可直接吃 JSON（YAML 1.2 超集），三种扩展名同一解析。
+fn workflow_file_owner(path: &Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    serde_yaml::from_slice::<Workflow>(&data)
+        .ok()
+        .map(|w| w.name)
+}
+
 /// [`scheduler::ProgressHook`] implementation that saves a checkpoint after
 /// every level (1b-A1 step 6). Borrows the engine for the duration of the
 /// scheduler call — constructed locally in `run_async` so it never outlives
@@ -1480,6 +1490,21 @@ impl WorkflowEngine {
             "{}.yaml",
             sanitize_workflow_filename(&workflow.name)
         ));
+        // BUG-20261028-108 碰撞守卫：不同 workflow 名可能 sanitize 出同一
+        // 文件名（如 "a/b" 与 "a:b" 同落 a_b.yaml），直接覆盖 = 静默丢掉
+        // 别人的定义。只放行两类：同名覆盖（UI update 正常路径）与坏文件
+        // （parse 失败，本就加载不出来）。
+        if path.exists()
+            && let Some(existing) = workflow_file_owner(&path)
+            && existing != workflow.name
+        {
+            return Err(EngineError::PersistenceError(format!(
+                "workflow {:?} 的落盘文件名与已有 workflow {:?} 碰撞（{}）——拒绝覆盖，请改名其一",
+                workflow.name,
+                existing,
+                path_dbg(&path)
+            )));
+        }
         // U10 控制面写守卫：定义文件必须落在执行世界的 writable_roots 内
         // （文件名已 sanitize，守卫兜配置错位/未来回归）。
         self.guard_engine_write(&path)?;
@@ -1507,18 +1532,44 @@ impl WorkflowEngine {
         if let Some(dir) = dir {
             let candidate = dir.join(format!("{}.yaml", sanitize_workflow_filename(name)));
             if candidate.exists() {
-                // U10 控制面写守卫（删除同守卫：能删就能写）。
-                self.guard_engine_write(&candidate)?;
-                std::fs::remove_file(&candidate).map_err(|e| {
-                    EngineError::PersistenceError(format!("remove {:?}: {}", candidate, e))
-                })?;
+                // BUG-20261028-108 碰撞守卫：文件可能属于 sanitize 同名的
+                // 另一 workflow（存量盘面事实），只删内容名字匹配（或无属
+                // 主的坏文件）。跳过 yaml 不 early-return——下方 .yml/.json
+                // 变体仍属本名，照常处理。
+                let owner_ok = match workflow_file_owner(&candidate) {
+                    Some(owner) if owner != name => {
+                        warn!(
+                            target: "nemesis_workflow::engine",
+                            file = %path_dbg(&candidate),
+                            owner = %owner,
+                            requested = %name,
+                            "skip delete: sanitize filename collision, file belongs to another workflow"
+                        );
+                        false
+                    }
+                    _ => true,
+                };
+                if owner_ok {
+                    // U10 控制面写守卫（删除同守卫：能删就能写）。
+                    self.guard_engine_write(&candidate)?;
+                    std::fs::remove_file(&candidate).map_err(|e| {
+                        EngineError::PersistenceError(format!("remove {:?}: {}", candidate, e))
+                    })?;
+                }
             }
             // Also try .yml + .json variants — load_workflows_from_dir accepts all three.
             for ext in &["yml", "json"] {
                 let p = dir.join(format!("{}.{}", sanitize_workflow_filename(name), ext));
-                if p.exists() {
-                    let _ = std::fs::remove_file(&p);
+                if !p.exists() {
+                    continue;
                 }
+                // BUG-20261028-108 碰撞守卫（同 yaml 主文件）：属他人则跳过。
+                if let Some(owner) = workflow_file_owner(&p)
+                    && owner != name
+                {
+                    continue;
+                }
+                let _ = std::fs::remove_file(&p);
             }
         }
         Ok(())
@@ -1687,9 +1738,19 @@ impl WorkflowEngine {
             (exec, token)
         };
 
-        let workflow = self
-            .get_workflow(&execution.workflow_name)
-            .ok_or_else(|| EngineError::WorkflowNotFound(execution.workflow_name.clone()))?;
+        let workflow = match self.get_workflow(&execution.workflow_name) {
+            Some(w) => w,
+            None => {
+                // BUG-20261028-107：早退必须回收刚装的 cancel token（resume
+                // 路径同款清理——「a failed lookup must not leave it
+                // orphaned」）。留着 = 此后任何 run_async 都撞「already in
+                // flight」，执行记录永久 Running，workflow 重新注册也救不回。
+                self.cancel_tokens.remove(execution_id);
+                return Err(EngineError::WorkflowNotFound(
+                    execution.workflow_name.clone(),
+                ));
+            }
+        };
 
         // 1c-F2: push a call-stack frame for this execution. The depth comes
         // from the trigger source (AgentTool-triggered runs carry a depth;
@@ -1727,6 +1788,8 @@ impl WorkflowEngine {
             recursion_depth,
         };
         if let Err(reason) = self.call_stack.push(frame) {
+            // BUG-20261028-107：同上，早退前回收 cancel token。
+            self.cancel_tokens.remove(execution_id);
             return Err(EngineError::RecursionLimitExceeded(reason));
         }
 
