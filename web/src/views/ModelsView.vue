@@ -62,8 +62,183 @@ const STREAM_OPTIONS = [
 function isImageModel(m: { protocol?: string | null }): boolean {
   return m.protocol === 'images-openai'
 }
-const testing = ref<string | null>(null)
 const switching = ref<string | null>(null)
+
+// ── 五项增强批（2026-10-27）：①真测试 ②复制 ③改名 ④列表模式 ⑤一键测试+圆点 ──
+
+/** ④ 视图模式（localStorage 持久，纯 UI 偏好）。 */
+type ViewMode = 'card' | 'list'
+const viewMode = ref<ViewMode>(localStorage.getItem('models.viewMode') === 'list' ? 'list' : 'card')
+function setViewMode(v: ViewMode) {
+  viewMode.value = v
+  localStorage.setItem('models.viewMode', v)
+}
+
+/** ⑤ 圆点状态灯（组件内存态，不落盘——重启自然回灰）。
+ * idle 灰 → testing 黄 → ok 绿 / fail 红；unsupported（图像 lane）保持灰 + tooltip。 */
+interface DotState { status: 'idle' | 'testing' | 'ok' | 'fail' | 'unsupported'; detail?: string; kind?: string; latency_ms?: number }
+const dotState = ref<Record<string, DotState>>({})
+function dotOf(name: string): DotState {
+  return dotState.value[name] ?? { status: 'idle' }
+}
+function setDot(name: string, s: DotState) {
+  dotState.value = { ...dotState.value, [name]: s }
+}
+function dotTitle(name: string): string {
+  const d = dotOf(name)
+  if (d.status === 'ok') return `测试通过 · ${d.latency_ms ?? '?'}ms`
+  if (d.status === 'fail') return `测试失败（${d.kind ?? 'other'}）：${d.detail ?? ''}`
+  if (d.status === 'unsupported') return d.detail || '不支持对话测试'
+  return d.status === 'testing' ? '测试中…' : '未测试'
+}
+
+/** ① 单模型测试——消费后端真实响应（ok/fail/unsupported 三态染点）。
+ * quiet = 批量测试时跳过逐模型 toast（只染点，汇总 toast 兜底）。 */
+async function testModel(name: string, quiet = false) {
+  setDot(name, { status: 'testing' })
+  try {
+    const data = await request('models', 'test', { name })
+    if (data?.status === 'ok') {
+      setDot(name, { status: 'ok', latency_ms: data.latency_ms })
+      if (!quiet) toast.success(`${name} 测试通过（${data.latency_ms}ms · ${data.lane}）`)
+    } else if (data?.status === 'unsupported') {
+      setDot(name, { status: 'unsupported', detail: data.detail })
+      if (!quiet) toast.info(data.detail || '该条目不支持对话测试')
+    } else {
+      setDot(name, { status: 'fail', kind: data?.kind, detail: data?.detail })
+      if (!quiet) toast.error(`${name} 测试失败：${data?.detail || '未知错误'}`)
+    }
+  } catch (e: any) {
+    setDot(name, { status: 'fail', kind: 'error', detail: String(e) })
+    if (!quiet) toast.error('测试失败: ' + e)
+  }
+}
+
+/** ⑤ 一键测试全部：并发 3 的 worker 池（已拍板，防中继限流），完成即染点；可中途取消。 */
+const testProgress = ref<{ done: number; total: number } | null>(null)
+const testAllRunning = ref(false)
+let testAllCancel = false
+async function testAll() {
+  if (testAllRunning.value) return
+  testAllRunning.value = true
+  testAllCancel = false
+  const names = models.value.map((m) => m.model_name)
+  testProgress.value = { done: 0, total: names.length }
+  const queue = [...names]
+  const CONCURRENCY = 3
+  const worker = async () => {
+    while (queue.length > 0 && !testAllCancel) {
+      const name = queue.shift()!
+      await testModel(name, true)
+      if (testProgress.value) {
+        testProgress.value = { ...testProgress.value, done: testProgress.value.done + 1 }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, names.length) }, worker))
+  testAllRunning.value = false
+  const okN = names.filter((n) => dotOf(n).status === 'ok').length
+  const failN = names.filter((n) => dotOf(n).status === 'fail').length
+  const skipN = names.length - okN - failN
+  if (testAllCancel) {
+    toast.warn(`批量测试已取消（完成 ${testProgress.value?.done ?? 0}/${names.length}）`)
+  } else {
+    toast.success(`批量测试完成：${okN} 通过 / ${failN} 失败 / ${skipN} 跳过（图像 lane）`)
+  }
+  setTimeout(() => { testProgress.value = null }, 3000)
+}
+function cancelTestAll() {
+  testAllCancel = true
+}
+
+/** ② 复制模型（服务端深拷贝整条目含 key——前端拿到的 key 是脱敏的）。
+ * 模型 ID 可改（2026-10-27 漏项补救）：复制即换 LLM，一步到位。 */
+const copySource = ref<string | null>(null)
+const copyNewName = ref('')
+const copyNewModel = ref('')
+const copyOrigModel = ref('')
+const copyBusy = ref(false)
+function openCopy(m: Model) {
+  copySource.value = m.model_name
+  copyNewName.value = m.model_name + '-copy'
+  copyOrigModel.value = m.model
+  copyNewModel.value = m.model // 预填源模型 ID，直接改成要用的 LLM
+}
+async function submitCopy() {
+  if (!copySource.value) return
+  const nn = copyNewName.value.trim()
+  if (!nn) { toast.warn('请输入新名称'); return }
+  const nm = copyNewModel.value.trim()
+  if (!nm) { toast.warn('请输入模型 ID（实际调用的 LLM）'); return }
+  copyBusy.value = true
+  try {
+    const payload: any = { name: copySource.value, new_name: nn }
+    if (nm !== copyOrigModel.value) payload.new_model = nm
+    await request('models', 'copy', payload)
+    toast.success(nm !== copyOrigModel.value ? `已复制为 ${nn}（指向 ${nm}）` : `已复制为 ${nn}（同供应商加模型的最快路径）`)
+    copySource.value = null
+    await loadModels()
+  } catch (e: any) {
+    toast.error('复制失败: ' + e)
+  }
+  copyBusy.value = false
+}
+
+/** ③ 改名/换模型（后端同步三处引用；若改的是当前默认模型，自动热切换——
+ * 显示名与模型 ID 同一趟 RMW 落盘，热切从 config 重解析一并生效）。 */
+const renameSource = ref<string | null>(null)
+const renameNewName = ref('')
+const renameNewModel = ref('')
+const renameOrigModel = ref('')
+const renameBusy = ref(false)
+function openRename(m: Model) {
+  renameSource.value = m.model_name
+  renameNewName.value = m.model_name
+  renameOrigModel.value = m.model
+  renameNewModel.value = m.model
+}
+async function submitRename() {
+  const oldName = renameSource.value
+  if (!oldName) return
+  const nn = renameNewName.value.trim()
+  if (!nn) { toast.warn('请输入新名称'); return }
+  const nm = renameNewModel.value.trim()
+  if (!nm) { toast.warn('请输入模型 ID（实际调用的 LLM）'); return }
+  const nameChanged = nn !== oldName
+  const modelChanged = nm !== renameOrigModel.value
+  if (!nameChanged && !modelChanged) { toast.info('没有修改'); return }
+  renameBusy.value = true
+  try {
+    const payload: any = { name: oldName, new_name: nn }
+    if (modelChanged) payload.new_model = nm
+    await request('models', 'rename', payload)
+    const parts = [
+      nameChanged ? `${oldName} → ${nn}` : null,
+      modelChanged ? `模型 → ${nm}` : null,
+    ].filter(Boolean)
+    toast.success(`已保存：${parts.join('；')}（引用已同步）`)
+    // 圆点状态跟名迁移（点状态属于模型本身，不属于名字）。
+    if (nameChanged) {
+      const old = dotState.value[oldName]
+      if (old) {
+        const rest = { ...dotState.value }
+        delete rest[oldName]
+        dotState.value = { ...rest, [nn]: old }
+      }
+    }
+    renameSource.value = null
+    await loadModels()
+  } catch (e: any) {
+    toast.error('改名失败: ' + e)
+  }
+  renameBusy.value = false
+}
+
+/** 列表模式的属性入口：切回卡片视图并展开该模型属性编辑器。 */
+function openAttrsFromList(m: Model) {
+  if (!expandedAttrs.value.has(m.model_name)) toggleAttrs(m)
+  setViewMode('card')
+}
 
 // P3-2: attribute editor — which cards are expanded + per-card drafts.
 const expandedAttrs = ref<Set<string>>(new Set())
@@ -154,15 +329,59 @@ function keySourceBadge(m: Model) {
 }
 // 存在明文 key → 顶部显示「迁移明文 key」引导卡。
 const inlineKeyModels = computed(() => models.value.filter(m => m.key_source?.kind === 'inline'))
-const copiedImport = ref(false)
-async function copyImportCmd() {
+// 明文 key 一步迁移（2026-10-27）：页面内一键迁 credentials.yaml / 加密
+// vault——免 CLI 免重启。保值迁移（Key 原值搬入存储，config.json 只留
+// 引用），运行中模型行为不变；vault 的 argon2 锁定形态先弹口令行。
+const migrating = ref(false)
+const showVaultPw = ref(false)
+const vaultPwInput = ref('')
+
+async function migrateInlineKeys(target: 'yaml' | 'vault', passphrase?: string) {
+  if (migrating.value) return
+  migrating.value = true
   try {
-    await navigator.clipboard.writeText('nemesisbot credentials import')
-    copiedImport.value = true
-    setTimeout(() => { copiedImport.value = false }, 2000)
-  } catch {
-    toast.error('复制失败，请手动选择命令复制')
+    const payload: Record<string, unknown> = { target }
+    if (passphrase) payload.passphrase = passphrase
+    const r = await request('models', 'migrate_keys', payload)
+    const n = r?.migrated?.length ?? 0
+    if (n > 0) {
+      toast.success(`已迁移 ${n} 个模型的 Key（config.json 只留引用，模型行为不变）`)
+    } else {
+      toast.success('没有需要迁移的明文 Key')
+    }
+    dismissVaultPw()
+    await loadModels()
+  } catch (e: any) {
+    toast.error('迁移失败: ' + e)
+  } finally {
+    migrating.value = false
   }
+}
+
+/** vault 目标：argon2 锁定时先要口令（DPAPI / 已带 env 口令直接执行）。 */
+async function migrateToVault() {
+  if (migrating.value) return
+  try {
+    const st = await request('vault', 'status')
+    if (st?.exists && st?.mode === 'argon2id' && !st?.unlocked) {
+      showVaultPw.value = true
+      return
+    }
+  } catch {
+    // status 拉不到（如未注册）就直接试——vault 臂会诚实报错。
+  }
+  await migrateInlineKeys('vault')
+}
+
+async function confirmVaultPw() {
+  const pw = vaultPwInput.value
+  if (!pw || migrating.value) return
+  await migrateInlineKeys('vault', pw)
+}
+
+function dismissVaultPw() {
+  showVaultPw.value = false
+  vaultPwInput.value = ''
 }
 
 async function loadCatalogInfo() {
@@ -373,21 +592,6 @@ async function setDefault(name: string) {
   switching.value = null
 }
 
-async function testModel(name: string) {
-  testing.value = name
-  try {
-    const data = await request('models', 'test', { name })
-    if (data?.status === 'not_implemented') {
-      toast.info('模型测试功能尚未实现')
-    } else {
-      toast.success(data?.message || '测试通过')
-    }
-  } catch (e: any) {
-    toast.error('测试失败: ' + e)
-  }
-  testing.value = null
-}
-
 onMounted(() => {
   loadModels()
   loadCatalogInfo()
@@ -415,6 +619,17 @@ onMounted(() => {
           <option value="">全部家族</option>
           <option v-for="g in familyGroups" :key="g.id" :value="g.id">{{ g.label }}（{{ g.items.length }}）</option>
         </select>
+        <!-- 五项增强批④：卡片 | 列表 视图切换（localStorage 持久） -->
+        <div v-if="models.length > 0" class="view-toggle" role="group" aria-label="视图切换">
+          <button :class="{ active: viewMode === 'card' }" @click="setViewMode('card')">卡片</button>
+          <button :class="{ active: viewMode === 'list' }" @click="setViewMode('list')">列表</button>
+        </div>
+        <!-- 五项增强批⑤：一键测试全部（并发 3，完成即染点，可取消） -->
+        <button v-if="models.length > 0 && !testAllRunning" class="btn" @click="testAll" title="测试全部模型（并发 3）">⚡ 一键测试</button>
+        <template v-if="testAllRunning">
+          <span class="test-progress">测试中 {{ testProgress?.done }}/{{ testProgress?.total }}</span>
+          <button class="btn btn-danger" @click="cancelTestAll">取消</button>
+        </template>
         <button class="btn btn-primary" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
       </div>
     </div>
@@ -426,15 +641,23 @@ onMounted(() => {
         <span class="ks-badge ks-yaml">yaml 引用</span>
         <span class="ks-badge ks-inline">⚠ 明文</span>
         <span class="ks-badge ks-none">无 key</span>
-        <span class="key-source-hint-note">推荐 env / yaml —— config.json 不落明文；明文 key 可用 CLI 一键迁移</span>
+        <span class="key-source-hint-note">推荐 env / yaml —— config.json 不落明文；明文 key 可在下方一键迁移</span>
       </div>
       <div v-if="inlineKeyModels.length > 0" class="card key-import-card">
         <div class="key-import-body">
           <span class="key-import-title">⚠ 检测到 {{ inlineKeyModels.length }} 个模型使用明文 Key（写在 config.json）</span>
-          <span class="key-import-note">在服务器上运行以下命令，可将其迁移到 credentials.yaml（权限 0600，config.json 只留引用）：</span>
-          <code class="key-import-cmd">nemesisbot credentials import</code>
+          <span class="key-import-note">一键迁移（免命令行、免重启）：Key 原值搬入存储，config.json 只留引用——运行中的模型行为不变。</span>
         </div>
-        <button class="btn btn-sm" @click="copyImportCmd">{{ copiedImport ? '✓ 已复制' : '复制命令' }}</button>
+        <div class="key-import-actions">
+          <button class="btn btn-sm btn-primary" :disabled="migrating" @click="migrateInlineKeys('yaml')">{{ migrating ? '迁移中…' : '迁移到 credentials.yaml' }}</button>
+          <button class="btn btn-sm" :disabled="migrating" @click="migrateToVault">迁移到加密 vault</button>
+        </div>
+      </div>
+      <div v-if="showVaultPw" class="card key-import-card vault-pw-card">
+        <span class="key-import-note">vault 为 argon2 口令模式且当前锁定——输入口令解锁并迁移（口令只用于本次请求，不落盘不落日志）：</span>
+        <input class="form-input vault-pw-input" type="password" v-model="vaultPwInput" placeholder="vault 口令" @keyup.enter="confirmVaultPw" />
+        <button class="btn btn-sm btn-primary" :disabled="migrating || !vaultPwInput" @click="confirmVaultPw">解锁并迁移</button>
+        <button class="btn btn-sm" :disabled="migrating" @click="dismissVaultPw">取消</button>
       </div>
       <!-- Add form -->
       <div v-if="showAdd" class="card" style="margin-bottom: var(--space-4);">
@@ -492,8 +715,9 @@ onMounted(() => {
         <p>点击上方"添加模型"按钮配置第一个 AI 模型</p>
       </div>
 
-      <!-- Model list（P10：provider 家族分组 + 折叠 + 筛选；模型卡片内容不变） -->
+      <!-- Model list（P10：provider 家族分组 + 折叠 + 筛选；五项增强批④：卡片 | 列表双视图） -->
       <div v-if="!loading && models.length > 0">
+        <template v-if="viewMode === 'card'">
         <template v-if="visibleGroups.length > 0">
           <section v-for="g in visibleGroups" :key="g.id || 'unknown'" class="family-group">
             <button type="button" class="family-header" @click="toggleGroup(g.id)">
@@ -509,7 +733,9 @@ onMounted(() => {
           :class="{ 'model-card--default': m.is_default, 'model-card--switching': switching === m.model_name }"
         >
           <div class="card-header">
-            <h3>{{ m.model_name }}</h3>
+            <h3>
+              <span class="test-dot" :class="'dot--' + dotOf(m.model_name).status" :title="dotTitle(m.model_name)"></span>{{ m.model_name }}
+            </h3>
             <div style="display: flex; gap: var(--space-2); align-items: center;">
               <span v-if="m.is_default" class="badge badge-success">&#10003; 默认</span>
               <span v-if="isImageModel(m)" class="badge badge-warning" title="图像生成条目：仅供 generate_image 工具消费，不能作对话模型/默认模型">🖼 图像</span>
@@ -629,13 +855,15 @@ onMounted(() => {
             </div>
           </div>
           <div class="card-footer">
-            <button class="btn btn-sm btn-ghost" @click="testModel(m.model_name)" :disabled="testing === m.model_name">
-              <span v-if="testing === m.model_name" class="spinner" style="width:14px;height:14px;"></span>
-              {{ testing === m.model_name ? '测试中...' : '测试' }}
+            <button class="btn btn-sm btn-ghost" @click="testModel(m.model_name)" :disabled="dotOf(m.model_name).status === 'testing'">
+              <span v-if="dotOf(m.model_name).status === 'testing'" class="spinner" style="width:14px;height:14px;"></span>
+              {{ dotOf(m.model_name).status === 'testing' ? '测试中...' : '测试' }}
             </button>
             <button class="btn btn-sm btn-ghost" @click="toggleAttrs(m)">
               {{ expandedAttrs.has(m.model_name) ? '收起属性' : '属性' }}
             </button>
+            <button class="btn btn-sm btn-ghost" title="整条配置深拷贝（含 Key），同供应商加模型" @click="openCopy(m)">复制</button>
+            <button class="btn btn-sm btn-ghost" title="改名 / 换模型（引用自动同步；默认模型自动热切）" @click="openRename(m)">改名</button>
             <button
               v-if="!m.is_default"
               class="btn btn-sm btn-primary"
@@ -656,6 +884,104 @@ onMounted(() => {
         <div v-else class="empty-state">
           <h3>该家族暂无模型</h3>
           <p>当前筛选下没有匹配的模型</p>
+        </div>
+        </template>
+        <!-- ④ 列表视图：拍平家族分组的紧凑全景表（一屏可见全部模型） -->
+        <div v-else class="table-wrap list-table">
+          <table>
+            <thead>
+              <tr>
+                <th class="col-dot"></th>
+                <th>显示名称</th>
+                <th>模型全名</th>
+                <th>协议</th>
+                <th>档位</th>
+                <th>流式</th>
+                <th>默认</th>
+                <th>延迟</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in models" :key="m.model_name" :class="{ 'row-default': m.is_default }">
+                <td class="col-dot"><span class="test-dot" :class="'dot--' + dotOf(m.model_name).status" :title="dotTitle(m.model_name)"></span></td>
+                <td class="cell-name">
+                  {{ m.model_name }}
+                  <span v-if="isImageModel(m)" class="badge badge-warning" title="图像生成条目：仅供 generate_image 工具">🖼</span>
+                </td>
+                <td class="cell-mono">{{ m.model }}</td>
+                <td>{{ isImageModel(m) ? '图像' : (m.protocol || '自动') }}</td>
+                <td>{{ m.model_tier || 'auto' }}</td>
+                <td>{{ m.stream === 'yes' ? '流式' : m.stream === 'no' ? '非流式' : 'auto' }}</td>
+                <td><span v-if="m.is_default" class="badge badge-success">&#10003; 默认</span></td>
+                <td>{{ dotOf(m.model_name).status === 'ok' ? dotOf(m.model_name).latency_ms + 'ms' : '--' }}</td>
+                <td class="col-actions">
+                  <button class="btn btn-sm btn-ghost" :disabled="dotOf(m.model_name).status === 'testing'" @click="testModel(m.model_name)">测试</button>
+                  <button class="btn btn-sm btn-ghost" title="切换到卡片视图编辑属性" @click="openAttrsFromList(m)">属性</button>
+                  <button
+                    v-if="!m.is_default"
+                    class="btn btn-sm btn-primary"
+                    :disabled="switching !== null || isImageModel(m)"
+                    :title="isImageModel(m) ? '图像生成条目不能设为默认对话模型（仅供 generate_image 工具）' : ''"
+                    @click="setDefault(m.model_name)"
+                  >设默认</button>
+                  <button class="btn btn-sm btn-ghost" @click="openCopy(m)">复制</button>
+                  <button class="btn btn-sm btn-ghost" @click="openRename(m)">改名</button>
+                  <button class="btn btn-sm btn-danger" @click="deleteModel(m.model_name)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ② 复制模型（服务端深拷贝整条目含 key） -->
+    <div v-if="copySource" class="modal-backdrop" @click.self="copySource = null">
+      <div class="modal" style="max-width: 420px;">
+        <div class="modal-header">
+          <h3>复制模型「{{ copySource }}」</h3>
+          <button class="modal-close" @click="copySource = null">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">新名称 *</label>
+            <input class="form-input" v-model="copyNewName" @keyup.enter="submitCopy" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">模型 ID *（实际调用的 LLM，可改）</label>
+            <input class="form-input" v-model="copyNewModel" placeholder="例如: zhipu/glm-4.7" @keyup.enter="submitCopy" />
+          </div>
+          <p class="modal-note">整条配置深拷贝（含 API Key 与全部属性）；改掉模型 ID 即指向新 LLM。不会自动设为默认。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="copySource = null">取消</button>
+          <button class="btn btn-primary" :disabled="copyBusy" @click="submitCopy">复制</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 改名（三处引用同步；活跃默认自动热切） -->
+    <div v-if="renameSource" class="modal-backdrop" @click.self="renameSource = null">
+      <div class="modal" style="max-width: 420px;">
+        <div class="modal-header">
+          <h3>改名 / 换模型「{{ renameSource }}」</h3>
+          <button class="modal-close" @click="renameSource = null">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">新名称 *（显示名称）</label>
+            <input class="form-input" v-model="renameNewName" @keyup.enter="submitRename" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">模型 ID *（实际调用的 LLM，可改）</label>
+            <input class="form-input" v-model="renameNewModel" placeholder="例如: zhipu/glm-4.8" @keyup.enter="submitRename" />
+          </div>
+          <p class="modal-note">默认模型 / 小模型 / 图像模型引用自动同步；若改的是当前默认模型，运行中立即热切换（新模型 ID 一并生效）。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="renameSource = null">取消</button>
+          <button class="btn btn-primary" :disabled="renameBusy" @click="submitRename">保存</button>
         </div>
       </div>
     </div>
@@ -860,11 +1186,81 @@ onMounted(() => {
 
 .key-import-note { color: var(--text-secondary); font-size: var(--text-xs); }
 
-.key-import-cmd {
-  font-family: monospace;
+.key-import-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
+
+.vault-pw-card { align-items: center; }
+.vault-pw-input { max-width: 220px; }
+
+/* ── 五项增强批（2026-10-27）：圆点状态灯 + 视图切换 + 列表模式 ── */
+.test-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--text-muted);
+  opacity: 0.45;
+  cursor: help;
+  flex-shrink: 0;
+}
+.dot--testing {
+  background: #f59e0b;
+  opacity: 1;
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+.dot--ok {
+  background: var(--color-success, #22c55e);
+  opacity: 1;
+}
+.dot--fail {
+  background: var(--color-error, #ef4444);
+  opacity: 1;
+}
+@keyframes dot-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.55; }
+}
+
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.view-toggle button {
+  border: none;
+  background: var(--surface);
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.view-toggle button.active {
   background: var(--bg-tertiary);
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  width: fit-content;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.test-progress {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.list-table { margin-top: var(--space-2); }
+.list-table .cell-name { font-weight: 600; white-space: nowrap; }
+.list-table .cell-mono { font-family: monospace; font-size: var(--text-xs); }
+.list-table .col-dot { width: 24px; }
+.list-table .col-actions { white-space: nowrap; text-align: right; }
+.list-table .col-actions .btn { margin-left: 4px; }
+.list-table tr.row-default td {
+  background: rgba(34, 197, 94, 0.05);
+}
+
+.modal-note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0;
 }
 </style>

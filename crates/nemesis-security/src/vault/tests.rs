@@ -351,3 +351,184 @@ fn export_rejects_missing_alias_and_locked_store() {
     cleanup(&path);
     cleanup(&dst_path);
 }
+
+// ---------------------------------------------------------------------------
+// 模型 key 迁移核心（2026-10-27 自 nemesisbot/commands/vault.rs 下沉）：
+// migrate_model_keys_to_vault + vault_alias_for 直测（别名裁决四臂随函数
+// 一起搬家——原 nemesisbot 侧 alias_arbiter 直测已由本节承接）。
+// ---------------------------------------------------------------------------
+
+/// tempdir + 独立已解锁 vault store（create 即解锁；argon2 平台带口令）。
+fn migrate_store(tag: &str) -> (PathBuf, VaultStore) {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-vault-migrate-{}-{}",
+        tag,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let vp = dir.join("vault.enc");
+    let mode = VaultStore::default_mode();
+    let pw = if mode == VaultMode::Argon2id {
+        Some("migrate-test-pw")
+    } else {
+        None
+    };
+    let store = VaultStore::create(&vp, mode, pw).unwrap();
+    (dir, store)
+}
+
+#[test]
+fn migrate_inline_yaml_env_vault_and_empty_arms() {
+    let (dir, mut store) = migrate_store("arms");
+    let mut config = serde_json::json!({
+        "model_list": [
+            { "model_name": "gpt-main", "model": "openai/gpt", "api_key": "sk-plain-123" },
+            { "model_name": "claude-main", "model": "anthropic/claude", "api_key": "yaml:sk-claude" },
+            { "model_name": "env-entry", "model": "openai/env", "api_key": "env:MY_KEY" },
+            { "model_name": "vault-entry", "model": "openai/v", "api_key": "vault:existing" },
+            { "model_name": "empty-entry", "model": "openai/e", "api_key": "" }
+        ]
+    });
+    let creds = nemesis_config::credentials::CredentialsFile {
+        keys: [("sk-claude".to_string(), "sk-ant-real".to_string())]
+            .into_iter()
+            .collect(),
+    };
+    let mut creds = Some(creds);
+
+    let report = migrate_model_keys_to_vault(&mut config, &mut store, creds.as_mut()).unwrap();
+
+    assert_eq!(report.migrated.len(), 2, "inline + yaml 各迁移一条");
+    assert_eq!(store.get("gpt-main").unwrap(), "sk-plain-123");
+    assert_eq!(
+        store.get("sk-claude").unwrap(),
+        "sk-ant-real",
+        "yaml 升格别名不变"
+    );
+    assert_eq!(report.skipped_env, 1);
+    assert_eq!(report.already_vault, 1);
+    assert!(report.creds_changed, "yaml 条目被移除");
+    let creds = creds.as_ref().unwrap();
+    assert!(!creds.keys.contains_key("sk-claude"), "明文彻底离盘");
+    // 配置回写形态。
+    let list = config
+        .get_mut("model_list")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
+    assert_eq!(list[0]["api_key"], "vault:gpt-main");
+    assert_eq!(list[1]["api_key"], "vault:sk-claude");
+    assert_eq!(list[2]["api_key"], "env:MY_KEY", "env 引用原样");
+    assert_eq!(list[3]["api_key"], "vault:existing");
+    assert_eq!(list[4]["api_key"], "");
+    assert!(report.config_changed());
+    cleanup(&dir);
+}
+
+#[test]
+fn migrate_yaml_broken_leaves_config_untouched() {
+    let (dir, mut store) = migrate_store("broken");
+    let mut config = serde_json::json!({
+        "model_list": [
+            { "model_name": "b1", "model": "openai/b1", "api_key": "yaml:missing-alias" }
+        ]
+    });
+
+    let report = migrate_model_keys_to_vault(&mut config, &mut store, None).unwrap();
+
+    assert_eq!(report.yaml_broken.len(), 1);
+    assert_eq!(
+        report.yaml_broken[0],
+        ("b1".to_string(), "missing-alias".to_string())
+    );
+    assert!(!report.config_changed(), "断引用不改配置");
+    let list = config
+        .get_mut("model_list")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
+    assert_eq!(list[0]["api_key"], "yaml:missing-alias", "配置原样");
+    cleanup(&dir);
+}
+
+#[test]
+fn migrate_no_model_list_is_default_report() {
+    let (dir, mut store) = migrate_store("nolist");
+    let mut config = serde_json::json!({ "session": {} });
+    let report = migrate_model_keys_to_vault(&mut config, &mut store, None).unwrap();
+    assert!(report.is_noop());
+    assert!(!report.config_changed());
+    cleanup(&dir);
+}
+
+// --- vault_alias_for 裁决四臂（原 nemesisbot alias_arbiter 直测承接） ---
+
+#[test]
+fn arbiter_free_base_alias_is_returned_as_is() {
+    let (dir, store) = migrate_store("arb1");
+    let mut report = VaultMigrateReport::default();
+    let alias = vault_alias_for(&store, "openai", "sk-lit-1", &mut report);
+    assert_eq!(alias, "openai");
+    assert_eq!(report.reused, 0);
+    assert!(report.conflicts.is_empty(), "空闲别名不得记冲突");
+    cleanup(&dir);
+}
+
+#[test]
+fn arbiter_same_literal_under_taken_alias_is_reused() {
+    let (dir, mut store) = migrate_store("arb2");
+    store.set("openai", "sk-lit-1", "model", "").unwrap();
+    let mut report = VaultMigrateReport::default();
+    let alias = vault_alias_for(&store, "openai", "sk-lit-1", &mut report);
+    assert_eq!(alias, "openai", "同值复用现别名");
+    assert_eq!(report.reused, 1);
+    assert!(report.conflicts.is_empty());
+    cleanup(&dir);
+}
+
+#[test]
+fn arbiter_different_literal_gets_numbered_suffix() {
+    let (dir, mut store) = migrate_store("arb3");
+    store.set("openai", "sk-other", "model", "").unwrap();
+    let mut report = VaultMigrateReport::default();
+    let alias = vault_alias_for(&store, "openai", "sk-lit-2", &mut report);
+    assert_eq!(alias, "openai__2", "异值走 __2 后缀");
+    assert_eq!(report.reused, 0);
+    assert_eq!(
+        report.conflicts,
+        vec![("openai".to_string(), "openai__2".to_string())]
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn arbiter_suffix_chain_reuses_matching_value_and_skips_taken() {
+    let (dir, mut store) = migrate_store("arb4");
+    store.set("openai", "v-base", "model", "").unwrap();
+    store.set("openai__2", "v-two", "model", "").unwrap();
+    store.set("openai__3", "v-target", "model", "").unwrap();
+    let mut report = VaultMigrateReport::default();
+    // 目标字面量与 __3 相同：__2 被异值占位跳过，__3 同值复用。
+    let alias = vault_alias_for(&store, "openai", "v-target", &mut report);
+    assert_eq!(alias, "openai__3");
+    assert_eq!(report.reused, 1, "命中同值后缀记复用");
+    assert!(report.conflicts.is_empty(), "复用不记冲突");
+    cleanup(&dir);
+}
+
+// --- 冲突裁决经核心全链（CLI 侧 migrate_conflict_suffix 同款语义回归） ---
+
+#[test]
+fn migrate_conflict_suffix_never_overwrites() {
+    let (dir, mut store) = migrate_store("conflict");
+    store.set("dup", "sk-old-value", "model", "").unwrap();
+    let mut config = serde_json::json!({
+        "model_list": [
+            { "model_name": "dup", "model": "openai/dup", "api_key": "sk-new-value" }
+        ]
+    });
+    let report = migrate_model_keys_to_vault(&mut config, &mut store, None).unwrap();
+    assert_eq!(report.migrated[0].1, "dup__2");
+    assert_eq!(store.get("dup").unwrap(), "sk-old-value", "原值未被覆盖");
+    assert_eq!(store.get("dup__2").unwrap(), "sk-new-value");
+    cleanup(&dir);
+}

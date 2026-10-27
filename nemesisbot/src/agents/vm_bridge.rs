@@ -20,6 +20,7 @@ use nemesis_sandbox::vm::probe::AccelProbe;
 use nemesis_sandbox::vm::probe::probe_kvm;
 #[cfg(target_os = "windows")]
 use nemesis_sandbox::vm::probe::probe_whpx;
+use nemesis_sandbox::vm::qemu_config;
 
 use crate::agents::vm_runtime::{
     GIB, GcDecision, VmSupervisor, VmSupervisorError, WakeKind, disk_usage_bytes, gc_decision,
@@ -1015,14 +1016,32 @@ impl VmBridge for VmSupervisor {
             .vm_config()
             .map(|c| c.arch.clone())
             .unwrap_or_else(|| "x86_64".to_string());
-        let guest = GuestArch::parse(&arch).unwrap_or(GuestArch::X86_64);
 
         // QEMU 在场三态（install-dir 优先，与 resolve_qemu_binary 消费序同源）。
-        let presence = probe::classify_qemu_presence(
-            guest,
-            crate::agents::vm_runtime::qemu_install_dir(workspace).as_deref(),
-        );
-        let qemu = match &presence {
+        // 分类判据走平台矩阵宿主条目：workspace 配置损坏 → 内嵌模板兜底 +
+        // config_error 透出（状态探针不失明）；宿主键缺格 → Absent + note 指路。
+        let ws_matrix_path = workspace.join("config").join(qemu_config::CONFIG_FILE_NAME);
+        let (matrix, config_error) = match qemu_config::resolve_matrix(Some(&ws_matrix_path)) {
+            (Ok(m), _) => (m, None),
+            (Err(e), _) => (qemu_config::embedded_matrix().clone(), Some(e.to_string())),
+        };
+        let (presence, matrix_note) = match qemu_config::host_entry(&matrix).cloned() {
+            Some(e) => (
+                probe::classify_qemu_presence(
+                    &e,
+                    crate::agents::vm_runtime::qemu_install_dir(workspace).as_deref(),
+                ),
+                None,
+            ),
+            None => (
+                probe::QemuPresence::Absent,
+                Some(format!(
+                    "宿主键 {} 不在平台矩阵中（config.vm_qemu.json 需补该平台条目）",
+                    qemu_config::host_key()
+                )),
+            ),
+        };
+        let mut qemu = match &presence {
             probe::QemuPresence::Absent => serde_json::json!({ "state": "absent" }),
             probe::QemuPresence::Partial { missing } => serde_json::json!({
                 "state": "partial",
@@ -1033,6 +1052,12 @@ impl VmBridge for VmSupervisor {
                 "source": source,
             }),
         };
+        if let Some(err) = &config_error {
+            qemu["config_error"] = serde_json::json!(err);
+        }
+        if let Some(note) = &matrix_note {
+            qemu["matrix_note"] = serde_json::json!(note);
+        }
 
         // 加速器引导八态（事实采集 → 纯函数分类 → 每态可执行下一步）。
         let facts = probe::collect_accel_facts();
@@ -1806,44 +1831,37 @@ async fn run_qemu_install(workspace: PathBuf) {
     log_line(&log_path, "任务结束");
 }
 
-/// 平台分派的安装链执行体（日志内联进任务函数，这里只产结果）。
+/// 统一入口的安装链执行体（释放/解析平台矩阵 → 按 host 键分派
+/// archive/packages；日志内联进任务函数，这里只产结果）。
 async fn do_qemu_install(
     workspace: &Path,
     log_path: &Path,
 ) -> anyhow::Result<install::QemuInstallReport> {
-    #[cfg(target_os = "windows")]
-    {
-        let runtime = workspace.join("tools").join("vm").join("runtime");
-        let opts = install::QemuInstallOptions {
-            install_dir: runtime.join("qemu"),
-            work_dir: runtime.join("install-work"),
-            // 复用 sandbox 的 7z 缓存（同一份 7z 服务两条安装链，零重复下载）。
-            seven_zip_dir: workspace.join("tools").join("sandboxie").join("runtime"),
-            ..Default::default()
-        };
-        log_line(
-            log_path,
-            &format!("Windows 链：下载 {} → 校验 → 7z 直解 → 落位", opts.url),
-        );
-        install::install_qemu_windows(&opts).await
+    use nemesis_sandbox::vm::install::{QemuInstallDirs, install_qemu_for_host_workspace};
+    let runtime = workspace.join("tools").join("vm").join("runtime");
+    // 矩阵真相源目录 = <workspace>/config/（缺则释放内嵌模板，有则直接用）。
+    let ws_config = workspace.join("config");
+    let dirs = QemuInstallDirs {
+        install_dir: runtime.join("qemu"),
+        work_dir: runtime.join("install-work"),
+        // 复用 sandbox 的 7z 缓存（同一份 7z 服务两条安装链，零重复下载）。
+        seven_zip_dir: workspace.join("tools").join("sandboxie").join("runtime"),
+        ..Default::default()
+    };
+    let (report, meta) = install_qemu_for_host_workspace(&ws_config, &dirs).await?;
+    log_line(
+        log_path,
+        &format!(
+            "平台 {}：kind={}，矩阵来源 {:?}",
+            meta.platform_key,
+            meta.kind.as_str(),
+            meta.source
+        ),
+    );
+    if !meta.note.is_empty() {
+        log_line(log_path, &format!("note: {}", meta.note));
     }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = workspace; // Linux 链经包管理器装系统路径，不落 workspace
-        log_line(
-            log_path,
-            "Linux 链：包管理器探测 → 免密 sudo 自动装 / 诚实半自动",
-        );
-        install::install_qemu_linux().await
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        let _ = (workspace, log_path);
-        anyhow::bail!(
-            "当前平台（{}）无自动安装链（仅 Windows / Linux）",
-            std::env::consts::OS
-        )
-    }
+    Ok(report)
 }
 
 /// staging 产物 → 正式位 + 存量 overlay 安全 rebase（数据完好次序：

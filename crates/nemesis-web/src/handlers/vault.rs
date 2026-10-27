@@ -40,7 +40,7 @@ pub struct VaultHandler;
 /// vault 当时漏网。只罩进程内并发面；跨进程（CLI ∥ gateway）仍可能竞——
 /// 与 share 面同一诚实边界（单用户操作速率，现实触发面即 Dashboard 双发/
 /// 双标签页）。`list`/`status`/`unlock` 不落盘，不入锁。
-static VAULT_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static VAULT_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[async_trait::async_trait]
 impl ModuleHandler for VaultHandler {
@@ -223,7 +223,7 @@ impl ModuleHandler for VaultHandler {
 
 /// vault 文件路径 = `<workspace>/config/vault.enc`（nemesis-path 单一真相源，
 /// 与 CLI / 网关解析器同一条）。
-fn vault_path(ctx: &RequestContext) -> Result<PathBuf, String> {
+pub(crate) fn vault_path(ctx: &RequestContext) -> Result<PathBuf, String> {
     let ws = ctx
         .workspace
         .as_deref()
@@ -240,7 +240,7 @@ fn str_field(data: &serde_json::Value, key: &str) -> Result<String, String> {
 }
 
 /// 打开已有 vault（不创建）。文件缺失 = 带创建指引的诚实错误。
-fn open_store(path: &Path) -> Result<VaultStore, String> {
+pub(crate) fn open_store(path: &Path) -> Result<VaultStore, String> {
     if !path.exists() {
         return Err(format!(
             "vault 文件不存在（{}）——写入一条即可创建",
@@ -252,7 +252,7 @@ fn open_store(path: &Path) -> Result<VaultStore, String> {
 
 /// 尽量解锁（dpapi 模式 open 即解锁；argon2 模式用给定口令）。失败 = 诚实
 /// 错误（含 env 变量名指引），由调用方决定是否致命。
-fn try_unlock(store: &mut VaultStore, passphrase: Option<&str>) -> Result<(), String> {
+pub(crate) fn try_unlock(store: &mut VaultStore, passphrase: Option<&str>) -> Result<(), String> {
     if store.is_unlocked() {
         return Ok(());
     }
@@ -268,7 +268,7 @@ fn try_unlock(store: &mut VaultStore, passphrase: Option<&str>) -> Result<(), St
 
 /// 新建 vault（指定模式；argon2id 需要口令在场，缺失 = 诚实报错不造一个
 /// 永远解不开的空文件）。
-fn create_fresh(path: &Path, passphrase: Option<&str>) -> Result<VaultStore, String> {
+pub(crate) fn create_fresh(path: &Path, passphrase: Option<&str>) -> Result<VaultStore, String> {
     let mode = VaultStore::default_mode();
     if mode == VaultMode::Argon2id && passphrase.is_none() {
         return Err(format!(

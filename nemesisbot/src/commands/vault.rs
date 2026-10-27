@@ -230,37 +230,33 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-/// P0 B2（2026-09-22 计划 §2.4）：模型 key 迁移核心。
+/// P0 B2（2026-09-22 计划 §2.4）：模型 key 迁移——CLI 壳。
 ///
-/// 三个来源一次处理：
-/// 1. config.json 内联明文 key → vault（别名 = sanitize(model_name)）
-/// 2. `yaml:<alias>` 引用 → 值从 credentials.yaml 搬进 vault（别名不变），
-///    配置回写 `vault:<alias>`，credentials.yaml 对应条目移除（明文彻底
-///    离盘）
-/// 3. `env:` 引用保持原样（非明文落盘）；`vault:` 已迁移跳过
+/// 迁移核心已下沉 `nemesis_security::vault::migrate_model_keys_to_vault`
+/// （raw Value 单一真相源，2026-10-27 与 WSAPI `models.migrate_keys` 共用）；
+/// 本壳只负责定位文件、装配 creds、按顺序不变量落盘：
 ///
-/// 冲突策略与 `credentials::run_import` 一致：已有别名同值 → 复用；异值 →
-/// `__2`/`__3` 后缀，绝不覆盖。config 用 typed round-trip 保存（ModelConfig
-/// extra flatten 保未类型化键，与 credentials 迁移同路线）。
-///
-/// 持久化顺序不变量：**vault 落盘先于 config/yaml 回写**——迁移的本质是
+/// 持久化顺序不变量：**vault 落盘先于 config 回写**——迁移的本质是
 /// 「明文 key 换 `vault:<alias>`」，若先剥离明文再落 vault，「config 回写
 /// 成功 → vault 落盘失败/进程中断」窗口内盘上就是断链态（配置指
 /// `vault:<alias>` 但 vault 文件没有该别名，明文已离盘）。与
 /// credential_broker 的「先落 vault 再送裁决」、chat_secrets 的
-/// persist-then-swap 是同一条纪律。store 被改动 ⇔ `config_changed`（set
-/// 只在迁移分支发生），故以它作落盘闸。
+/// persist-then-swap 是同一条纪律。
 fn migrate_model_keys(
     config_path: &std::path::Path,
     cred_path: &std::path::Path,
     store: &mut VaultStore,
-) -> Result<MigrateReport> {
-    let mut report = MigrateReport::default();
+) -> anyhow::Result<nemesis_security::vault::VaultMigrateReport> {
     if !config_path.exists() {
-        return Ok(report);
+        return Ok(Default::default());
     }
-    let mut config = nemesis_config::load_config(config_path)
+    // Raw JSON round-trip（非 typed）：未类型化 extras（tier/protocol/stream/
+    // …）按字节保真，迁移只动 api_key 一个字段——与 nemesis-web
+    // update_raw_config 同语义。
+    let raw = std::fs::read_to_string(config_path)
         .map_err(|e| anyhow::anyhow!("读取 config.json 失败: {e}"))?;
+    let mut config: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("解析 config.json 失败: {e}"))?;
     let mut creds = if cred_path.exists() {
         Some(nemesis_config::credentials::load_credentials_file(
             cred_path,
@@ -269,130 +265,28 @@ fn migrate_model_keys(
         None
     };
 
-    let mut config_changed = false;
-    let mut creds_changed = false;
-    for mc in config.model_list.iter_mut() {
-        let display_name = if mc.model_name.is_empty() {
-            mc.model.clone()
-        } else {
-            mc.model_name.clone()
-        };
-        if mc.api_key.is_empty() {
-            continue;
-        }
-        if mc.api_key.starts_with("vault:") {
-            report.already_vault += 1;
-            continue;
-        }
-        if mc.api_key.starts_with("env:") {
-            report.skipped_env += 1;
-            continue;
-        }
+    let report =
+        nemesis_security::vault::migrate_model_keys_to_vault(&mut config, store, creds.as_mut())
+            .map_err(|e| anyhow::anyhow!("vault 写入失败: {e}"))?;
 
-        // 取出明文值：yaml 引用查表，字面量直取。
-        let (literal, yaml_alias) = if let Some(alias) = mc.api_key.strip_prefix("yaml:") {
-            match creds.as_ref().and_then(|c| c.keys.get(alias)) {
-                Some(v) => (v.clone(), Some(alias.to_string())),
-                None => {
-                    // 断引用：不动配置，报给用户（fail loud 而非静默丢引用）。
-                    report.yaml_broken.push((display_name, alias.to_string()));
-                    continue;
-                }
-            }
-        } else {
-            (mc.api_key.clone(), None)
-        };
-
-        let base_alias = yaml_alias
-            .clone()
-            .unwrap_or_else(|| nemesis_config::credentials::sanitize_alias(&display_name));
-        let alias = vault_alias_for(store, &base_alias, &literal, &mut report);
-        store
-            .set(&alias, &literal, "model", "")
-            .map_err(|e| anyhow::anyhow!("写入 vault 失败（{alias}）: {e}"))?;
-        mc.api_key = format!("vault:{alias}");
-        config_changed = true;
-        report.migrated.push((display_name, alias, "model".into()));
-
-        if let Some(removed) = yaml_alias
-            && let Some(creds) = creds.as_mut()
-        {
-            creds.keys.remove(&removed);
-            creds_changed = true;
-            report.yaml_aliases_removed.push(removed);
-        }
-    }
-
-    if config_changed {
+    if report.config_changed() {
         // 先落 vault 再回写配置（顺序不变量见函数头注）——vault 落盘失败
         // 时明文 key 还在 config/yaml 原地，重跑迁移即可，零损失。
         store.save().map_err(|e| {
             anyhow::anyhow!("保存 vault 失败（明文 key 未离盘，修复后重跑即可）: {e}")
         })?;
-        nemesis_config::save_config(config_path, &mut config)
+        let out = serde_json::to_string_pretty(&config)
+            .map_err(|e| anyhow::anyhow!("序列化 config.json 失败: {e}"))?;
+        nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), out.as_bytes(), 0o600)
             .map_err(|e| anyhow::anyhow!("写回 config.json 失败: {e}"))?;
     }
-    if creds_changed && let Some(creds) = creds.as_ref() {
-        nemesis_config::credentials::save_credentials_file(cred_path, creds)?;
+    if report.creds_changed {
+        nemesis_config::credentials::save_credentials_file(
+            cred_path,
+            creds.as_ref().expect("creds_changed 蕴含 creds 在场"),
+        )?;
     }
     Ok(report)
-}
-
-/// vault 别名冲突裁决（run_import 同策略）：同值复用；异值 `__N` 后缀。
-fn vault_alias_for(
-    store: &VaultStore,
-    base_alias: &str,
-    literal: &str,
-    report: &mut MigrateReport,
-) -> String {
-    if let Ok(existing) = store.get(base_alias) {
-        if existing == literal {
-            report.reused += 1;
-            return base_alias.to_string();
-        }
-        let mut n = 2;
-        let mut candidate = format!("{base_alias}__{n}");
-        loop {
-            match store.get(&candidate) {
-                Ok(v) if v == literal => {
-                    report.reused += 1;
-                    return candidate;
-                }
-                Ok(_) => {
-                    n += 1;
-                    candidate = format!("{base_alias}__{n}");
-                }
-                Err(_) => {
-                    report
-                        .conflicts
-                        .push((base_alias.to_string(), candidate.clone()));
-                    return candidate;
-                }
-            }
-        }
-    }
-    base_alias.to_string()
-}
-
-/// 迁移报告（CLI 输出与测试断言）。
-#[derive(Debug, Default)]
-struct MigrateReport {
-    /// (模型名, 别名, 来源)——来源 "model"。
-    migrated: Vec<(String, String, String)>,
-    reused: usize,
-    /// (想要的别名, 实际用的别名)——同名异值加后缀。
-    conflicts: Vec<(String, String)>,
-    /// (模型名, 断引别名)。
-    yaml_broken: Vec<(String, String)>,
-    yaml_aliases_removed: Vec<String>,
-    skipped_env: usize,
-    already_vault: usize,
-}
-
-impl MigrateReport {
-    fn is_noop(&self) -> bool {
-        self.migrated.is_empty() && self.yaml_broken.is_empty() && self.reused == 0
-    }
 }
 
 /// y/N 确认（stdin，回显无妨——确认类答案非秘密）。

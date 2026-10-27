@@ -2248,13 +2248,14 @@ async fn test_models_test_stub() {
     write_config(dir.path());
     let ctx = make_ctx(&dir);
     let data = serde_json::json!({ "name": "gpt-4" });
-    let result = handler
-        .handle_cmd("test", Some(data), &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(result["name"], "gpt-4");
-    assert_eq!(result["status"], "not_implemented");
+    // test 已是真实现（2a854bc6）：条目按 model_name 精确存在才测，
+    // 不存在诚实报错（零网络负路径；stub 形态的 not_implemented 已退役）。
+    let result = handler.handle_cmd("test", Some(data), &ctx).await;
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().contains("not found"),
+        "缺条目必须诚实报错"
+    );
 }
 
 // --- Channels: update ---

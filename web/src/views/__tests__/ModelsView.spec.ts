@@ -292,3 +292,354 @@ describe('ModelsView 上下文压缩点（compact_context_tokens UI）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 五项增强批（2026-10-27）：①真测试三态染点 ②复制 ③改名 ④列表模式
+// ⑤一键测试全部（并发 3）。圆点是组件内存态（不落盘）；视图偏好 localStorage。
+function baseMock(testImpl?: (data: any) => any) {
+  requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+    if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+    if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+    if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+    if (module === 'models' && cmd === 'test') return testImpl ? testImpl(data) : { name: 'glm', status: 'ok', latency_ms: 123, lane: 'openai-compat', detail: '' }
+    throw new Error(`unexpected request ${module}.${cmd}`)
+  })
+}
+
+describe('ModelsView 圆点状态灯（五项增强批⑤）', () => {
+  it('初始灰点（idle）→ 测试通过染绿 + tooltip 带延迟', async () => {
+    baseMock()
+    const w = mount(ModelsView)
+    await flushPromises()
+    const dot = w.find('.model-card .test-dot')
+    expect(dot.classes()).toContain('dot--idle')
+    const testBtn = w.findAll('button').find((b) => b.text() === '测试')!
+    await testBtn.trigger('click')
+    await flushPromises()
+    expect(dot.classes()).toContain('dot--ok')
+    expect(dot.attributes('title')).toContain('123ms')
+    w.unmount()
+  })
+
+  it('失败染红 + tooltip 带 kind 与 detail', async () => {
+    baseMock(() => ({ name: 'glm', status: 'fail', kind: 'auth', detail: '401 未授权', lane: 'openai-compat' }))
+    const w = mount(ModelsView)
+    await flushPromises()
+    const dot = w.find('.model-card .test-dot')
+    const testBtn = w.findAll('button').find((b) => b.text() === '测试')!
+    await testBtn.trigger('click')
+    await flushPromises()
+    expect(dot.classes()).toContain('dot--fail')
+    expect(dot.attributes('title')).toContain('auth')
+    expect(dot.attributes('title')).toContain('401')
+    w.unmount()
+  })
+
+  it('图像 lane unsupported 保持灰（dot--unsupported）+ tooltip 诚实说明', async () => {
+    baseMock(() => ({ name: 'glm', status: 'unsupported', detail: '图像生成条目不能对话测试（仅供 generate_image 工具消费）', lane: 'images-openai' }))
+    const w = mount(ModelsView)
+    await flushPromises()
+    const dot = w.find('.model-card .test-dot')
+    const testBtn = w.findAll('button').find((b) => b.text() === '测试')!
+    await testBtn.trigger('click')
+    await flushPromises()
+    expect(dot.classes()).toContain('dot--unsupported')
+    expect(dot.attributes('title')).toContain('generate_image')
+    w.unmount()
+  })
+})
+
+describe('ModelsView 一键测试全部（五项增强批⑤）', () => {
+  it('对全部模型发测试请求，完成后全部染绿', async () => {
+    const tested: string[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') {
+        return {
+          models: [
+            modelRow({ model_name: 'a', model: 'openai/gpt-4o' }),
+            modelRow({ model_name: 'b', model: 'zhipu/glm-4.7' }),
+            modelRow({ model_name: 'c', model: 'deepseek/deepseek-chat' }),
+          ],
+        }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'models' && cmd === 'test') {
+        tested.push(data.name)
+        return { name: data.name, status: 'ok', latency_ms: 10, lane: 'openai-compat', detail: '' }
+      }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    const allBtn = w.findAll('button').find((b) => b.text().includes('一键测试'))!
+    await allBtn.trigger('click')
+    await flushPromises()
+    expect(tested.sort()).toEqual(['a', 'b', 'c'])
+    const dots = w.findAll('.model-card .test-dot')
+    expect(dots).toHaveLength(3)
+    for (const d of dots) expect(d.classes()).toContain('dot--ok')
+    w.unmount()
+  })
+})
+
+describe('ModelsView 视图切换（五项增强批④）', () => {
+  it('默认卡片视图 → 切列表出全景表（含圆点/延迟/操作列）+ localStorage 持久', async () => {
+    localStorage.removeItem('models.viewMode')
+    requestMock.mockImplementation(async (module: string, cmd: string) => {
+      if (module === 'models' && cmd === 'list') {
+        return { models: [modelRow({ model_name: 'a', model: 'openai/gpt-4o' }), modelRow({ model_name: 'b', model: 'zhipu/glm-4.7' })] }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    expect(w.find('.list-table').exists()).toBe(false)
+    expect(w.find('.family-grid').exists()).toBe(true)
+    // 切列表。
+    const listBtn = w.findAll('.view-toggle button').find((b) => b.text() === '列表')!
+    await listBtn.trigger('click')
+    expect(w.find('.list-table').exists()).toBe(true)
+    const rows = w.findAll('.list-table tbody tr')
+    expect(rows).toHaveLength(2)
+    // 圆点在列表里；延迟列初始 --；操作列有 复制/改名。
+    expect(rows[0].find('.test-dot').exists()).toBe(true)
+    expect(rows[0].text()).toContain('--')
+    const ops = rows[0].findAll('button').map((b) => b.text())
+    expect(ops).toContain('复制')
+    expect(ops).toContain('改名')
+    expect(localStorage.getItem('models.viewMode')).toBe('list')
+    // 切回卡片。
+    const cardBtn = w.findAll('.view-toggle button').find((b) => b.text() === '卡片')!
+    await cardBtn.trigger('click')
+    expect(w.find('.family-grid').exists()).toBe(true)
+    w.unmount()
+    localStorage.removeItem('models.viewMode')
+  })
+})
+
+describe('ModelsView 复制 / 改名（五项增强批②③）', () => {
+  async function clickCardBtn(w: ReturnType<typeof mount>, label: string) {
+    const btn = w.findAll('.model-card button').find((b) => b.text() === label)!
+    await btn.trigger('click')
+    await flushPromises()
+  }
+
+  it('复制弹窗预填 -copy 与源模型 ID；只改名时发 models.copy {name,new_name}', async () => {
+    const copyCalls: any[] = []
+    baseMock()
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'copy') {
+        copyCalls.push(data)
+        return { copied: true, name: data.name, new_name: data.new_name }
+      }
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await clickCardBtn(w, '复制')
+    const modal = w.find('.modal-backdrop')
+    expect(modal.exists()).toBe(true)
+    const inputs = modal.findAll('input')
+    expect(inputs).toHaveLength(2)
+    // 名称预填 -copy；模型 ID 预填源条目的 model 串（可直接换）。
+    expect((inputs[0].element as HTMLInputElement).value).toBe('glm-copy')
+    expect((inputs[1].element as HTMLInputElement).value).toBe('zhipu/glm-4.7')
+    await inputs[0].setValue('glm2')
+    await modal.find('.modal-footer .btn-primary').trigger('click')
+    await flushPromises()
+    // 模型 ID 未改 → 不发 new_model（等值不落盘）。
+    expect(copyCalls).toEqual([{ name: 'glm', new_name: 'glm2' }])
+    w.unmount()
+  })
+
+  it('复制弹窗改模型 ID → 发 new_model（复制即换 LLM）', async () => {
+    const copyCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'copy') {
+        copyCalls.push(data)
+        return { copied: true }
+      }
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await clickCardBtn(w, '复制')
+    const modal = w.find('.modal-backdrop')
+    await modal.findAll('input')[1].setValue('zhipu/glm-4.8')
+    await modal.find('.modal-footer .btn-primary').trigger('click')
+    await flushPromises()
+    expect(copyCalls).toEqual([{ name: 'glm', new_name: 'glm-copy', new_model: 'zhipu/glm-4.8' }])
+    w.unmount()
+  })
+
+  it('改名弹窗预填当前名与模型 ID；改名+换模型都发（new_model 随行）', async () => {
+    const renameCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'rename') {
+        renameCalls.push(data)
+        return { renamed: true }
+      }
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await clickCardBtn(w, '改名')
+    const modal = w.find('.modal-backdrop')
+    expect(modal.exists()).toBe(true)
+    const inputs = modal.findAll('input')
+    expect(inputs).toHaveLength(2)
+    expect((inputs[0].element as HTMLInputElement).value).toBe('glm')
+    expect((inputs[1].element as HTMLInputElement).value).toBe('zhipu/glm-4.7')
+    // 只换模型 ID、名称不动（2026-10-27 漏项回归锁：换模型的正门）。
+    await inputs[1].setValue('zhipu/glm-4.8')
+    await modal.find('.modal-footer .btn-primary').trigger('click')
+    await flushPromises()
+    expect(renameCalls).toEqual([{ name: 'glm', new_name: 'glm', new_model: 'zhipu/glm-4.8' }])
+    w.unmount()
+  })
+})
+
+describe('ModelsView 明文 Key 一步迁移（2026-10-27）', () => {
+  /** 顶栏迁移卡按钮按文本定位（横幅不在 .model-card 内）。 */
+  function bannerBtn(w: ReturnType<typeof mount>, label: string) {
+    return w.findAll('.key-import-card button').find((b) => b.text().includes(label))!
+  }
+  /** 既有 mockBackend + migrate_keys / vault.status 通路。 */
+  function migrateMock(opts: {
+    inlineFirst?: boolean
+    migrateResult?: Record<string, unknown> | Error
+    vaultStatus?: Record<string, unknown> | null
+  }) {
+    let listCount = 0
+    const migrateCalls: any[] = []
+    let statusCalls = 0
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') {
+        listCount++
+        const rows =
+          opts.inlineFirst !== false && listCount === 1
+            ? [modelRow({ model_name: 'a', key_source: { kind: 'inline' } })]
+            : [modelRow({ model_name: 'a', key_source: { kind: 'vault' } })]
+        return { models: rows }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'vault' && cmd === 'status') {
+        statusCalls++
+        if (opts.vaultStatus === null) throw new Error('vault 未装配')
+        return opts.vaultStatus ?? { exists: false, mode: 'dpapi', unlocked: true }
+      }
+      if (module === 'models' && cmd === 'migrate_keys') {
+        migrateCalls.push(data)
+        const r = opts.migrateResult ?? {
+          target: 'yaml',
+          migrated: [{ name: 'a', alias: 'a' }],
+          reused: 0,
+          conflicts: [],
+        }
+        if (r instanceof Error) throw r
+        return r
+      }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    return { listCount: () => listCount, migrateCalls, statusCalls: () => statusCalls }
+  }
+
+  it('明文 Key 模型在场时渲染迁移卡（两按钮）；无明文时不渲染', async () => {
+    const m = migrateMock({})
+    const w = mount(ModelsView)
+    await flushPromises()
+    const card = w.find('.key-import-card')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('1 个模型使用明文 Key')
+    expect(bannerBtn(w, 'credentials.yaml').text()).toContain('迁移到 credentials.yaml')
+    expect(bannerBtn(w, '迁移到加密 vault').exists()).toBe(true)
+    w.unmount()
+
+    requestMock.mockReset()
+    migrateMock({ inlineFirst: false })
+    const w2 = mount(ModelsView)
+    await flushPromises()
+    expect(w2.find('.key-import-card').exists()).toBe(false)
+    expect(m.statusCalls()).toBe(0)
+    w2.unmount()
+  })
+
+  it('点「迁移到 credentials.yaml」发 {target:yaml}；成功后重拉列表、banner 消失', async () => {
+    const m = migrateMock({})
+    const w = mount(ModelsView)
+    await flushPromises()
+    expect(w.find('.key-import-card').exists()).toBe(true)
+    await bannerBtn(w, 'credentials.yaml').trigger('click')
+    await flushPromises()
+    expect(m.migrateCalls).toEqual([{ target: 'yaml' }])
+    expect(m.listCount(), '成功后 loadModels 重拉列表').toBe(2)
+    expect(w.find('.key-import-card').exists(), '迁移完成 banner 消失').toBe(false)
+    w.unmount()
+  })
+
+  it('vault 为 argon2 锁定时先弹口令行，确认后带 passphrase 发迁移', async () => {
+    const m = migrateMock({ vaultStatus: { exists: true, mode: 'argon2id', unlocked: false } })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, '迁移到加密 vault').trigger('click')
+    await flushPromises()
+    expect(m.statusCalls()).toBe(1)
+    expect(m.migrateCalls, '锁定态不直接发迁移').toEqual([])
+    const pw = w.find('.vault-pw-input')
+    expect(pw.exists()).toBe(true)
+    await pw.setValue('op-w')
+    await bannerBtn(w, '解锁并迁移').trigger('click')
+    await flushPromises()
+    expect(m.migrateCalls).toEqual([{ target: 'vault', passphrase: 'op-w' }])
+    expect(w.find('.vault-pw-input').exists(), '完成后口令行收起').toBe(false)
+    w.unmount()
+  })
+
+  it('vault 已解锁（DPAPI 等）直接迁移，不带 passphrase、不弹口令行', async () => {
+    const m = migrateMock({ vaultStatus: { exists: true, mode: 'dpapi', unlocked: true } })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, '迁移到加密 vault').trigger('click')
+    await flushPromises()
+    expect(m.migrateCalls).toEqual([{ target: 'vault' }])
+    expect(w.find('.vault-pw-input').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('迁移失败诚实报错：banner 留守、不重拉列表', async () => {
+    const m = migrateMock({ migrateResult: new Error('解锁失败') })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, 'credentials.yaml').trigger('click')
+    await flushPromises()
+    expect(m.listCount(), '失败不重拉').toBe(1)
+    expect(w.find('.key-import-card').exists(), 'banner 留守').toBe(true)
+    w.unmount()
+  })
+
+  it('口令行「取消」收起且不发迁移', async () => {
+    const m = migrateMock({ vaultStatus: { exists: true, mode: 'argon2id', unlocked: false } })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await bannerBtn(w, '迁移到加密 vault').trigger('click')
+    await flushPromises()
+    await bannerBtn(w, '取消').trigger('click')
+    await flushPromises()
+    expect(w.find('.vault-pw-input').exists()).toBe(false)
+    expect(m.migrateCalls).toEqual([])
+    w.unmount()
+  })
+})

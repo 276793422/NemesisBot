@@ -272,51 +272,63 @@ pub(crate) fn resolve_yaml_reference(alias: &str, model_for_error: &str) -> Resu
 // `nemesisbot credentials import` core (library-level, testable)
 // ----------------------------------------------------------------------------
 
-/// Migrate inline plaintext api_keys from config.json's model_list into
-/// credentials.yaml, rewriting them as `yaml:<alias>` references.
+/// Raw-Value migration core shared by the CLI (`run_import`) and the WSAPI
+/// `models.migrate_keys` (target=yaml): rewrite inline plaintext `api_key`s
+/// in a config.json Value into `yaml:<alias>` references, staging alias
+/// entries into `creds`. Purely in-memory — NO file IO here; callers own
+/// persistence and its ordering (credentials file first, config second; the
+/// WSAPI does both inside the `update_raw_config` transaction so any failure
+/// aborts the config write).
 ///
-/// Idempotent: aliases already present in credentials.yaml with the same value
-/// are reused (file untouched); with a DIFFERENT value the new key lands under
-/// an `__N`-suffixed alias (nothing is ever overwritten). Entries already
-/// referencing `env:`/`yaml:` and empty keys are skipped. When nothing needs
-/// migrating, neither file is written (a missing config.json is a no-op, not
-/// an accidental creation).
-pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportReport> {
-    if !config_path.exists() {
-        // Nothing to migrate; do NOT create a config.json as a side effect.
-        return Ok(ImportReport::default());
-    }
-    let mut config = crate::load_config(config_path)?;
-
-    let mut creds = if credentials_path.exists() {
-        load_credentials_file(credentials_path)?
-    } else {
-        CredentialsFile::default()
-    };
-
+/// Semantics identical to the historical typed loop: empty keys and
+/// `env:`/`yaml:`/`vault:` references are skipped (vault refs must NEVER be
+/// demoted into the plaintext yaml store); same-value aliases are reused,
+/// different-value conflicts get an `__N` suffix (nothing overwritten).
+pub fn migrate_inline_keys_to_yaml(
+    config: &mut serde_json::Value,
+    creds: &mut CredentialsFile,
+) -> ImportReport {
     let mut report = ImportReport::default();
-    let mut config_changed = false;
-
-    for mc in config.model_list.iter_mut() {
-        if mc.api_key.is_empty() {
+    let Some(entries) = config.get_mut("model_list").and_then(|v| v.as_array_mut()) else {
+        return report;
+    };
+    for mc in entries.iter_mut() {
+        let Some(obj) = mc.as_object_mut() else {
+            continue;
+        };
+        let api_key = obj
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if api_key.is_empty() {
             report.skipped_empty += 1;
             continue;
         }
         // P0 vault（B2 旁路修复）：vault: 已是加密引用——绝不能被当明文
         // 搬进 credentials.yaml（那会把引用降级成 yaml:）。
-        if mc.api_key.starts_with("env:")
-            || mc.api_key.starts_with("yaml:")
-            || mc.api_key.starts_with(crate::vault_ref::VAULT_PREFIX)
+        if api_key.starts_with("env:")
+            || api_key.starts_with("yaml:")
+            || api_key.starts_with(crate::vault_ref::VAULT_PREFIX)
         {
             report.skipped_reference += 1;
             continue;
         }
-        let base_alias = sanitize_alias(if mc.model_name.is_empty() {
-            mc.model.as_str()
-        } else {
-            mc.model_name.as_str()
-        });
-        let literal = mc.api_key.clone();
+        let display_name = {
+            let name = obj
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if name.is_empty() {
+                obj.get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+            } else {
+                name
+            }
+        }
+        .to_string();
+        let base_alias = sanitize_alias(&display_name);
+        let literal = api_key.to_string();
 
         // Existing alias with same value → reuse. Different value → suffix.
         let alias = if let Some(existing) = creds.keys.get(&base_alias) {
@@ -346,21 +358,79 @@ pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportR
             base_alias
         };
 
-        mc.api_key = format!("yaml:{}", alias);
-        let display_name = if mc.model_name.is_empty() {
-            mc.model.clone()
-        } else {
-            mc.model_name.clone()
-        };
+        obj.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(format!("yaml:{}", alias)),
+        );
         report.migrated.push((display_name, alias));
-        config_changed = true;
     }
+    report
+}
 
-    if !report.is_noop() || config_changed {
+/// `credentials.yaml` 持盘判定：migrated/conflicts 非空才真正往别名账本里
+/// 插过条目（reused 只复用不插入）。config 是否需要回写由 migrated 判定。
+/// CLI（run_import）与 WSAPI（models.migrate_keys target=yaml）共用同一
+/// 判定——单一真相源。
+pub fn creds_file_dirty(report: &ImportReport) -> bool {
+    !report.migrated.is_empty() || !report.conflicts.is_empty()
+}
+
+/// Migrate inline plaintext api_keys from config.json's model_list into
+/// credentials.yaml, rewriting them as `yaml:<alias>` references.
+///
+/// Idempotent: aliases already present in credentials.yaml with the same value
+/// are reused (file untouched); with a DIFFERENT value the new key lands under
+/// an `__N`-suffixed alias (nothing is ever overwritten). Entries already
+/// referencing `env:`/`yaml:` and empty keys are skipped. When nothing needs
+/// migrating, neither file is written (a missing config.json is a no-op, not
+/// an accidental creation).
+pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportReport> {
+    if !config_path.exists() {
+        // Nothing to migrate; do NOT create a config.json as a side effect.
+        return Ok(ImportReport::default());
+    }
+    // Raw JSON round-trip（非 typed）：与 nemesis-web update_raw_config 同
+    // 语义——未类型化 extras（tier/protocol/stream/…）按字节保真，迁移只
+    // 动 api_key 一个字段。
+    let raw = std::fs::read_to_string(config_path).map_err(|e| {
+        ConfigError::Validation(format!(
+            "cannot read config '{}': {}",
+            config_path.display(),
+            e
+        ))
+    })?;
+    let mut config: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        ConfigError::Validation(format!(
+            "config '{}' is not valid JSON: {}",
+            config_path.display(),
+            e
+        ))
+    })?;
+
+    let mut creds = if credentials_path.exists() {
+        load_credentials_file(credentials_path)?
+    } else {
+        CredentialsFile::default()
+    };
+
+    let report = migrate_inline_keys_to_yaml(&mut config, &mut creds);
+
+    // 持盘顺序不变量：先落凭据侧再落配置侧——中途失败时明文 key 还在
+    // config 原地，重跑幂等收敛，零损失。
+    if creds_file_dirty(&report) {
         save_credentials_file(credentials_path, &creds)?;
     }
-    if config_changed {
-        crate::save_config(config_path, &mut config)?;
+    if !report.migrated.is_empty() {
+        let out = serde_json::to_string_pretty(&config)
+            .map_err(|e| ConfigError::Validation(format!("serialize config.json: {e}")))?;
+        nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), out.as_bytes(), 0o600)
+            .map_err(|e| {
+                ConfigError::Validation(format!(
+                    "cannot write config '{}': {}",
+                    config_path.display(),
+                    e
+                ))
+            })?;
     }
     Ok(report)
 }

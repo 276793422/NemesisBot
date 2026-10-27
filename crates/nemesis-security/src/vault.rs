@@ -756,6 +756,180 @@ mod dpapi {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 模型 key 迁移核心（raw Value，CLI `vault migrate` 与 WSAPI
+// `models.migrate_keys` 共用的单一真相源；自 nemesisbot/commands/vault.rs 下沉）
+// ---------------------------------------------------------------------------
+
+/// `migrate_model_keys_to_vault` 的报告（CLI 输出与 WSAPI 投影共用）。
+#[derive(Debug, Default, Clone)]
+pub struct VaultMigrateReport {
+    /// (模型显示名, 别名, domain)——domain 恒 "model"。
+    pub migrated: Vec<(String, String, String)>,
+    /// 同值别名复用次数（vault 内或同名后缀候选）。
+    pub reused: usize,
+    /// (想要的别名, 实际用的别名)——同名异值加 `__N` 后缀。
+    pub conflicts: Vec<(String, String)>,
+    /// (模型显示名, 断引别名)——`yaml:` 引用在 credentials.yaml 查无此条；
+    /// 配置不动，fail loud 报给调用方（不静默丢引用）。
+    pub yaml_broken: Vec<(String, String)>,
+    /// 迁移后从 credentials.yaml 移除的别名（明文彻底离盘）。
+    pub yaml_aliases_removed: Vec<String>,
+    /// `env:` 引用跳过数（非明文落盘，保持原样）。
+    pub skipped_env: usize,
+    /// 已是 `vault:` 引用的条目数（幂等重跑面）。
+    pub already_vault: usize,
+    /// credentials.yaml 有条目被移除（调用方需要回写该文件的信号）。
+    pub creds_changed: bool,
+}
+
+impl VaultMigrateReport {
+    /// config 是否需要回写：任何 migrated 都改写了 `api_key` 字段
+    ///（yaml_broken/already_vault/skipped 臂全部不动配置）。
+    pub fn config_changed(&self) -> bool {
+        !self.migrated.is_empty()
+    }
+
+    /// 无迁移也无断引（完全幂等重跑）。
+    pub fn is_noop(&self) -> bool {
+        self.migrated.is_empty() && self.yaml_broken.is_empty() && self.reused == 0
+    }
+}
+
+/// 模型 key 迁移核心（raw Value，纯内存不落盘）：把 config Value 里
+/// model_list 的明文 `api_key`（含 `yaml:` 引用升格）改写成 `vault:<alias>`，
+/// 秘密经 `store.set` 进 vault 内存态。三个来源一次处理：
+///
+/// 1. 内联明文 key → vault（别名 = sanitize(model_name)）
+/// 2. `yaml:<alias>` 引用 → 值从 `creds` 搬进 vault（别名不变），配置回写
+///    `vault:<alias>`，creds 对应条目移除（明文彻底离盘）
+/// 3. `env:` 保持原样；`vault:` 已迁移跳过；断引用 → `yaml_broken` 且不动配置
+///
+/// 冲突策略与 `credentials::migrate_inline_keys_to_yaml` 一致：已有别名同值
+/// → 复用；异值 → `__N` 后缀，绝不覆盖。`store.set` 失败（非法别名等）=
+/// **Err 中断**——调用方据此放弃落盘（WSAPI 事务闭包 Err = config 不回写；
+/// CLI 壳 = 整体报错），绝不带着半迁移态静默继续。
+///
+/// **纯内存**：本函数不落任何盘——持久化与顺序不变量（**vault 落盘先于
+/// config 回写**：先剥离明文再落 vault 的中间态 = 配置指 `vault:<alias>` 但
+/// vault 没有该别名的断链盘面）由调用方保证。WSAPI 在 update_raw_config
+/// 事务闭包内先 `store.save()` 再让闭包返回 Ok；CLI 壳同序。
+pub fn migrate_model_keys_to_vault(
+    config: &mut serde_json::Value,
+    store: &mut VaultStore,
+    mut creds: Option<&mut nemesis_config::credentials::CredentialsFile>,
+) -> Result<VaultMigrateReport, VaultError> {
+    let mut report = VaultMigrateReport::default();
+    let Some(entries) = config.get_mut("model_list").and_then(|v| v.as_array_mut()) else {
+        return Ok(report);
+    };
+    for mc in entries.iter_mut() {
+        let Some(obj) = mc.as_object_mut() else {
+            continue;
+        };
+        let display_name = {
+            let name = obj
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if name.is_empty() {
+                obj.get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+            } else {
+                name
+            }
+        }
+        .to_string();
+        let api_key = obj
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if api_key.is_empty() {
+            continue;
+        }
+        if api_key.starts_with(nemesis_config::vault_ref::VAULT_PREFIX) {
+            report.already_vault += 1;
+            continue;
+        }
+        if api_key.starts_with("env:") {
+            report.skipped_env += 1;
+            continue;
+        }
+
+        // 取出明文值：yaml 引用查表，字面量直取。
+        let (literal, yaml_alias) = if let Some(alias) = api_key.strip_prefix("yaml:") {
+            match creds.as_ref().and_then(|c| c.keys.get(alias)) {
+                Some(v) => (v.clone(), Some(alias.to_string())),
+                None => {
+                    // 断引用：不动配置，报给调用方（fail loud 而非静默丢引用）。
+                    report.yaml_broken.push((display_name, alias.to_string()));
+                    continue;
+                }
+            }
+        } else {
+            (api_key.clone(), None)
+        };
+
+        let base_alias = yaml_alias
+            .clone()
+            .unwrap_or_else(|| nemesis_config::credentials::sanitize_alias(&display_name));
+        let alias = vault_alias_for(store, &base_alias, &literal, &mut report);
+        store.set(&alias, &literal, "model", "")?;
+        obj.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(format!("vault:{alias}")),
+        );
+        report.migrated.push((display_name, alias, "model".into()));
+
+        if let Some(removed) = yaml_alias
+            && let Some(creds) = creds.as_mut()
+        {
+            creds.keys.remove(&removed);
+            report.creds_changed = true;
+            report.yaml_aliases_removed.push(removed);
+        }
+    }
+    Ok(report)
+}
+
+/// vault 别名冲突裁决（credentials 迁移同策略）：同值复用；异值 `__N` 后缀。
+fn vault_alias_for(
+    store: &VaultStore,
+    base_alias: &str,
+    literal: &str,
+    report: &mut VaultMigrateReport,
+) -> String {
+    if let Ok(existing) = store.get(base_alias) {
+        if existing == literal {
+            report.reused += 1;
+            return base_alias.to_string();
+        }
+        let mut n = 2;
+        let mut candidate = format!("{base_alias}__{n}");
+        loop {
+            match store.get(&candidate) {
+                Ok(v) if v == literal => {
+                    report.reused += 1;
+                    return candidate;
+                }
+                Ok(_) => {
+                    n += 1;
+                    candidate = format!("{base_alias}__{n}");
+                }
+                Err(_) => {
+                    report
+                        .conflicts
+                        .push((base_alias.to_string(), candidate.clone()));
+                    return candidate;
+                }
+            }
+        }
+    }
+    base_alias.to_string()
+}
+
 // 覆盖率补充批次整文件 Windows 形态（DPAPI 生命周期 + OpenOptionsExt 共享
 // 锁句柄），Linux 上编译期消失（2026-09-02 约定；nightly/coverage 均跑不跑）。
 #[cfg(all(test, windows))]

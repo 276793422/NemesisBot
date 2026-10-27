@@ -162,12 +162,30 @@ fn collect_then_classify_no_contradiction() {
 // 宿主 PATH 环境噪声大，仅 install-dir 优先级在此钉死）
 // ---------------------------------------------------------------------------
 
-use crate::vm::guest_arch::GuestArch;
-use crate::vm::install::qemu_required_binaries;
+use crate::vm::qemu_config::QemuPlatformEntry;
+
+/// 手工构造最小矩阵条目（binaries 用真实命名——宿主 PATH 噪声不影响
+/// install-dir 分支的优先级断言）。
+fn entry_with_binaries(sys: &str, img: &str) -> QemuPlatformEntry {
+    QemuPlatformEntry {
+        kind: crate::vm::qemu_config::QemuInstallKind::Archive,
+        produced: true,
+        url: String::new(),
+        sha512: String::new(),
+        layout: String::new(),
+        apt: String::new(),
+        dnf: String::new(),
+        pacman: String::new(),
+        binaries: vec![sys.to_string(), img.to_string()],
+        note: String::new(),
+    }
+}
 
 #[test]
 fn qemu_presence_install_dir_ready_and_partial() {
-    let (sys_name, img_name) = qemu_required_binaries();
+    let entry = entry_with_binaries("qemu-system-x86_64.exe", "qemu-img.exe");
+    let sys_name = entry.binaries[0].clone();
+    let img_name = entry.binaries[1].clone();
     let tmp = std::env::temp_dir().join(format!(
         "nmb-probe-presence-{}-{}",
         std::process::id(),
@@ -178,23 +196,31 @@ fn qemu_presence_install_dir_ready_and_partial() {
     ));
     std::fs::create_dir_all(&tmp).unwrap();
     // 双二进制在场 = Ready{install-dir}（install-dir 优先于任何真实 PATH）。
-    std::fs::write(tmp.join(sys_name), b"mz").unwrap();
-    std::fs::write(tmp.join(img_name), b"mz").unwrap();
+    std::fs::write(tmp.join(&sys_name), b"mz").unwrap();
+    std::fs::write(tmp.join(&img_name), b"mz").unwrap();
     assert_eq!(
-        classify_qemu_presence(GuestArch::X86_64, Some(&tmp)),
+        classify_qemu_presence(&entry, Some(&tmp)),
         QemuPresence::Ready {
             source: "install-dir"
         }
     );
-    // 缺 qemu-img = Partial（半装态诚实列出缺谁）。
-    std::fs::remove_file(tmp.join(img_name)).unwrap();
+    // 缺 img = Partial（半装态诚实列出缺谁）。
+    std::fs::remove_file(tmp.join(&img_name)).unwrap();
     assert_eq!(
-        classify_qemu_presence(GuestArch::X86_64, Some(&tmp)),
+        classify_qemu_presence(&entry, Some(&tmp)),
         QemuPresence::Partial {
-            missing: vec![img_name.to_string()]
+            missing: vec![img_name.clone()]
         }
     );
-    // 目录里没 qemu-system = 落到 PATH 分支（PATH 语义依赖真实宿主，不在此断言）。
-    std::fs::remove_file(tmp.join(sys_name)).unwrap();
+    // 目录里没 system = 落到后续探针位（PATH/msys2 语义依赖真实宿主，不在此断言）。
+    std::fs::remove_file(tmp.join(&sys_name)).unwrap();
     let _ = std::fs::remove_dir(&tmp);
+}
+
+/// binaries 空（kind=none 登记形态）= 无可断言，诚实 Absent（不 panic）。
+#[test]
+fn qemu_presence_empty_binaries_is_absent() {
+    let mut entry = entry_with_binaries("", "");
+    entry.binaries.clear();
+    assert_eq!(classify_qemu_presence(&entry, None), QemuPresence::Absent);
 }
