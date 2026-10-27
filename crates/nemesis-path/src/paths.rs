@@ -897,11 +897,19 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 /// 目录/组件名忽略：workspace 相对路径任一组件命中即整棵子树忽略。
 /// 覆盖 VCS/构建产物与运行时属主子树（会话流水、影子 git、rpc_cache、
 /// 看板 db、catalog 派生数据、热重载配置、sandboxie runtime）。
+/// M9（2026-10-27 整改批次五）补全常见构建/虚拟环境产物目录。
 pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
     "target",
     "dist",
+    "build",
+    "out",
+    "bin",
+    ".next",
+    "venv",
+    ".venv",
+    "__pycache__",
     "logs",
     "uploads",
     "memory",

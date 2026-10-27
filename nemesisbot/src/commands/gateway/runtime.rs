@@ -1142,6 +1142,27 @@ pub(crate) async fn run_runtime(
     let logs_ttl = crate::logs_sweeper::LogsTtl::from_config(cfg.logs.as_ref());
     crate::logs_sweeper::spawn_logs_sweeper(logs_ttl);
 
+    // M6（2026-10-27 整改批次五）：checkpoint gc 周期拍（第二触发点；第一
+    // 触发点在 truncate_from_scoped 后）。默认关（checkpoint.gc.enabled），
+    // 关 = 不装配线程零触碰。6h 与 uploads/logs 同拍；gc 内部并发互斥 +
+    // 失败零破坏。项目 loop 的影子库只吃 truncate 触发（周期拍只挂主
+    // store，诚实边界）。
+    if cfg.checkpoint.as_ref().is_some_and(|c| c.gc.enabled)
+        && let Some(cp_store) = agent_loop.checkpoint_store()
+    {
+        std::thread::Builder::new()
+            .name("checkpoint-gc".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+                let report = cp_store.gc_now();
+                if let Some(reason) = &report.skipped {
+                    tracing::debug!("[checkpoint gc] 周期拍跳过: {reason}");
+                }
+            })
+            .map(|_| info!("[Gateway] checkpoint gc sweeper started (6h interval)"))
+            .unwrap_or_else(|e| warn!("[Gateway] checkpoint gc sweeper 启动失败（仅周期拍缺位，truncate 触发仍在）: {e}"));
+    }
+
     // B11（2026-10-18 snooze）：暂停会话到期唤醒 sweeper（每 10s 扫 meta
     // sidecar；到期摘标记 + 注入恢复 system 行 + 事件广播）。
     nemesis_web::handlers::sessions::spawn_snooze_sweeper();

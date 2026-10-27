@@ -1347,6 +1347,31 @@ pub fn build_agent_loop(
     // G0: Arc 定型后注入 sub-agent spawn 闭包（Weak::downgrade 需要 Arc）。
     // G4: 闭包持有 bus 引用（后台任务完成回灌经 subagent_continuation 发布）。
     let agent_loop = Arc::new(agent_loop);
+    // M6（2026-10-27 整改批次五）：checkpoint gc 装配（config `checkpoint.gc`，
+    // 默认关；enabled 才挂钩子——含 undo/redo 栈下界闭包，Weak 指 loop 防环）。
+    // cluster agent 与主 loop 共享影子库，gc 归主 store 独占（不另装配）。
+    {
+        let gc_cfg = cfg
+            .checkpoint
+            .as_ref()
+            .map(|c| c.gc.clone())
+            .unwrap_or_default();
+        if gc_cfg.enabled
+            && let Some(store) = agent_loop.checkpoint_store()
+        {
+            let loop_weak = Arc::downgrade(&agent_loop);
+            store.set_gc(
+                gc_cfg,
+                Arc::new(move || {
+                    loop_weak
+                        .upgrade()
+                        .map(|l| l.undo_stack_tree_refs())
+                        .unwrap_or_default()
+                }),
+            );
+            info!("[AgentFactory] checkpoint gc enabled (keep_turns/keep_days per config)");
+        }
+    }
     inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus, cc_bridge.clone());
     // W5-3：插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
@@ -3728,6 +3753,33 @@ pub fn build_agent_loop_from_spec(
 
     // Arc 定型后注入子代理 spawn 闭包（Weak 防环，与主 spawn 同理）。
     let agent_loop = Arc::new(agent_loop);
+    // M6（2026-10-27 整改批次五）：checkpoint gc 装配（项目 loop 独立影子
+    // 库 `logs/project_checkpoints/<key>/repo.git`，同默认关；Weak 防环同主
+    // loop 形态）。
+    {
+        let gc_cfg = shared
+            .config_store
+            .handle()
+            .read()
+            .checkpoint
+            .as_ref()
+            .map(|c| c.gc.clone())
+            .unwrap_or_default();
+        if gc_cfg.enabled
+            && let Some(store) = agent_loop.checkpoint_store()
+        {
+            let loop_weak = Arc::downgrade(&agent_loop);
+            store.set_gc(
+                gc_cfg,
+                Arc::new(move || {
+                    loop_weak
+                        .upgrade()
+                        .map(|l| l.undo_stack_tree_refs())
+                        .unwrap_or_default()
+                }),
+            );
+        }
+    }
     inject_project_spawn_fn(&agent_loop, &spawn_slot, project_cc_bridge.clone());
     // 治理补全 P1（2026-10-19）：connector 治理面与主 loop 同源——项目/
     // selfbuilt loop 同装 MCP（enable_mcp_reload），独占接管与 connector

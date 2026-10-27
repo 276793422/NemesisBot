@@ -16,8 +16,10 @@
 //!   声明只用于 picker 展示与落盘纪律）。restore =
 //!   `diff_tree_to_tree(target..current)` 分类 → `checkout_tree` 按路径恢复
 //!   加显式删除多余文件——diff 集是真实工作区差异，天然覆盖 shell 产物。
-//!   v1 不做 gc：影子库对象随 turn JSON 的 truncate 清索引，对象本体留待
-//!   后续 TTL/gc。
+//!   gc（M6，2026-10-27 整改批次五）：默认关（`checkpoint.gc.enabled`），
+//!   开启后重建式清扫影子库自有对象（保留集 = 最近 N turn ∪ N 天 ∪
+//!   undo/redo 栈触达 tree；重建式不碰主仓 `.git/objects`），见
+//!   `checkpoint/gc.rs`。
 //! - **JSON 回落**（D4 约束）：无 `.git`、`.git` 是文件（linked worktree/
 //!   submodule）、或影子库初始化失败 → 原有 git-free JSON 快照（每个 turn
 //!   一个 JSON 文件，`FileSnap` 存全文）原样保留，行为逐字节不变。
@@ -45,6 +47,10 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::r#loop::{FileChange, FileChangeKind};
+
+// M6（2026-10-27 整改批次五）：checkpoint gc（默认关；重建式影子库清扫 +
+// JSON 镜像清扫）。见 checkpoint/gc.rs 模块文档。
+mod gc;
 
 /// One file's pre-edit state at the moment it was first touched in a turn.
 /// `content == None` means the file did not exist then, so a restore deletes it.
@@ -288,6 +294,11 @@ pub struct CheckpointStore {
     root: PathBuf,
     git: Option<GitBackend>,
     inner: Mutex<Inner>,
+    /// M6：gc 钩子（config 开关 + undo/redo 栈下界查询闭包）。None = 未装
+    /// 配（gc 全路径零触碰）；`cfg.enabled=false` 同样零触碰。默认关。
+    gc_hooks: Mutex<Option<crate::checkpoint::gc::GcHooks>>,
+    /// M6：gc 互斥（truncate 触发与周期拍并发时后到者诚实跳过）。
+    gc_running: std::sync::atomic::AtomicBool,
 }
 
 /// R31：scope 判定单一真相源——条目会话归属是否属于「其他会话」。
@@ -353,6 +364,8 @@ impl CheckpointStore {
                 cur: HashMap::new(),
                 seen: HashMap::new(),
             }),
+            gc_hooks: Mutex::new(None),
+            gc_running: std::sync::atomic::AtomicBool::new(false),
         };
         store.load();
         store
@@ -1708,6 +1721,11 @@ impl CheckpointStore {
                 }
             }
         }
+        // M6（2026-10-27 整改批次五）：truncate 后触发 gc。未装配/未启用
+        // （默认态）= gc_now 首行诚实跳过，零触碰；启用时同步执行（git 重
+        // 建典型毫秒级增量拷贝，且 rewind 本身是低频显式维护操作），失败
+        // 零破坏、不影响 rewind 返回值。
+        self.gc_now();
     }
 
     /// E3：当前最新影子 tree（done+cur 按 turn 排序，最后一个带 tree 的）。
@@ -1987,3 +2005,9 @@ mod p20_tests;
 // 测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p4_tests;
+
+// M6（2026-10-27 整改批次五）：checkpoint gc 回归（保留集纯函数 / JSON 形态
+// 清扫 / git 重建式 gc + extras + 交付 refs 存活 + 零触碰；git 臂在文件内
+// 自挂 feature 守卫）。
+#[cfg(test)]
+mod gc_tests;

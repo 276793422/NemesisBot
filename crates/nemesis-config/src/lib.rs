@@ -215,6 +215,45 @@ pub struct Config {
     /// 0 = 该族关闭清扫）。见 [`LogsTtlConfig`]。
     #[serde(default)]
     pub logs: Option<LogsTtlConfig>,
+    /// checkpoint gc（M6；None = 全默认——**enabled=false 总闸关**，删错 =
+    /// 回退网失效宁默认关；keep_turns 200 / keep_days 7）。见
+    /// [`CheckpointConfig`]。
+    #[serde(default)]
+    pub checkpoint: Option<CheckpointConfig>,
+}
+
+/// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；M6 2026-10-27
+/// 整改批次五）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CheckpointConfig {
+    /// gc 参数（见 [`CheckpointGcConfig`]）。
+    pub gc: CheckpointGcConfig,
+}
+
+/// checkpoint gc 参数（M6）。**默认关**：gc 删错 = 回退网失效，宁默认关、
+/// 开关在用户手里（长任务开发建议显式开启）。git 影子形态走**重建式**
+/// gc（新建临时对象集 → 完整性自检 → 原子换名 `objects/` 子树，不碰主仓
+/// `.git/objects`、不区分 loose/pack）；JSON 形态窗口外 turn-N.json 直删。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CheckpointGcConfig {
+    /// 总闸（false 默认：gc 全路径零触碰）。
+    pub enabled: bool,
+    /// 按 turn 序号保留最近 N 个（0 = 关闭该维）。默认 200。
+    pub keep_turns: usize,
+    /// 按时间保留最近 N 天（0 = 关闭该维）。默认 7。
+    pub keep_days: u64,
+}
+
+impl Default for CheckpointGcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keep_turns: 200,
+            keep_days: 7,
+        }
+    }
 }
 
 /// 紫微系统配置（`config.json` 的 `"ziwei"` 段；总控 §9.1）。
@@ -5197,6 +5236,7 @@ pub fn default_config() -> Config {
         ziwei: None,
         health: None,
         logs: None,
+        checkpoint: None,
     }
 }
 

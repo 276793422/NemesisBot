@@ -2780,3 +2780,50 @@ fn test_expand_home_multibyte_after_tilde_no_panic() {
     assert_eq!(expand_home("~x"), PathBuf::from("~x"));
     assert_eq!(expand_home("plain"), PathBuf::from("plain"));
 }
+
+// --- M9（2026-10-27 整改批次五）：忽略表扩充 ---
+
+#[test]
+fn test_workspace_ignored_dirs_extended_entries() {
+    // 新增七目录（构建产物/虚拟环境/框架缓存）任一层组件命中即整棵忽略。
+    for d in [
+        "build",
+        "out",
+        "bin",
+        ".next",
+        "venv",
+        ".venv",
+        "__pycache__",
+    ] {
+        let rel = PathBuf::from("src").join(d).join("x.obj");
+        assert!(
+            is_workspace_ignored(&rel),
+            "深层组件 {d} 必须命中: {}",
+            rel.display()
+        );
+        let top = PathBuf::from(d).join("artifact.o");
+        assert!(is_workspace_ignored(&top), "顶层 {d} 必须命中");
+    }
+    // 大小写不敏感契约不因扩充破坏。
+    assert!(is_workspace_ignored(&PathBuf::from("BUILD").join("x.o")));
+    assert!(is_workspace_ignored(
+        &PathBuf::from("__PYCACHE__").join("m.pyc")
+    ));
+    // 普通源文件不受牵连（名字只是组件匹配，不吃前缀）。
+    assert!(!is_workspace_ignored(&PathBuf::from("src/main.rs")));
+    assert!(!is_workspace_ignored(&PathBuf::from("binlib.rs")));
+    assert!(!is_workspace_ignored(&PathBuf::from("outset").join("x")));
+    assert!(!is_workspace_ignored(&PathBuf::from("venvs").join("x")));
+}
+
+#[test]
+fn test_workspace_ignored_root_self_name_not_matched() {
+    // 根自身同名不误伤：调用方剥掉 workspace 根前缀后才进本函数——
+    // 根的名字（哪怕叫 build/target/bin）不参与匹配。这里钉谓词层的
+    // 对应语义：相对路径第一组件就是被检查对象，空路径不命中。
+    assert!(!is_workspace_ignored(&PathBuf::new()));
+    // 传入仅含根名的相对路径 = 调用方没剥前缀的误用形态——按契约它
+    // 会命中（文档明示调用方必须先剥），这里只钉「剥掉后不误伤」：
+    let rel = PathBuf::from("src").join("main.rs");
+    assert!(!is_workspace_ignored(&rel));
+}

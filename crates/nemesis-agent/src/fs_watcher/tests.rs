@@ -38,6 +38,14 @@ fn test_is_ignored_builtins() {
     assert!(is_ignored(&rel("target/debug/foo.exe"), &[]));
     assert!(is_ignored(&rel("logs/sessions/x.jsonl"), &[]));
     assert!(is_ignored(&rel("sub/deep/uploads/img.png"), &[]));
+    // M9（2026-10-27 整改批次五）：构建产物/虚拟环境目录扩充进共享真相表。
+    assert!(is_ignored(&rel("build/out.o"), &[]));
+    assert!(is_ignored(&rel("out/objs.o"), &[]));
+    assert!(is_ignored(&rel("bin/app.exe"), &[]));
+    assert!(is_ignored(&rel(".next/server/x.js"), &[]));
+    assert!(is_ignored(&rel("venv/lib/x.py"), &[]));
+    assert!(is_ignored(&rel(".venv/lib/x.py"), &[]));
+    assert!(is_ignored(&rel("pkg/__pycache__/m.pyc"), &[]));
     // *.jsonl anywhere; *.db covers sqlite sidecars by dir too.
     assert!(is_ignored(&rel("session_log.jsonl"), &[]));
     assert!(is_ignored(&rel("board.db-wal"), &[]));

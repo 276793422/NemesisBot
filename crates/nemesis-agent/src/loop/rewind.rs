@@ -528,6 +528,28 @@ impl AgentLoop {
         }))
     }
 
+    /// M6（2026-10-27 整改批次五）：checkpoint gc 的**下界查询口**——
+    /// 全会话 undo/redo 栈条目引用的全部影子 tree hex（forward/post/undo
+    /// 盘面三族）。gc 据此把这些 tree 并入保留集（栈是内存态，gc 掉栈里
+    /// 引用的 tree = redo 文件恢复必炸）。栈为内存态、重启即丢，重启后无
+    /// 栈约束属设计语义（gc 不需要跨重启保守）。
+    pub fn undo_stack_tree_refs(&self) -> Vec<String> {
+        let stacks = self.rewind_undo_stacks.lock();
+        stacks
+            .values()
+            .flat_map(|stack| {
+                stack.iter().flat_map(|e| {
+                    [
+                        e.forward_tree.clone(),
+                        e.post_tree.clone(),
+                        e.undo_disk_tree.clone(),
+                    ]
+                })
+            })
+            .flatten()
+            .collect()
+    }
+
     /// E3 redo：弹本会话 undo 栈顶，反向恢复——被截断的行 VERBATIM 回填
     /// jsonl，文件恢复到 undo 时刻的影子 tree。行数/行身份/tree 基线三重
     /// 陈旧性守卫：undo 之后该会话有任何新消息（含 clear 后同数重填——
