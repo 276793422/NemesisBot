@@ -78,11 +78,18 @@ impl GenerateImageTool {
                         .split_once('.')
                         .map(|(s, _)| s.to_string())
                         .unwrap_or_else(|| seg_str.clone());
-                    // Windows 保留设备名（aux/con/nul 等）在部分 API 上有
-                    // 特殊语义，宁可错杀——生成物命名不值得冒险。
-                    if ["aux", "con", "prn", "nul", "com1", "lpt1"]
-                        .iter()
-                        .any(|r| stem.eq_ignore_ascii_case(r))
+                    // Windows 保留设备名在部分 API 上有特殊语义，宁可错杀
+                    // ——生成物命名不值得冒险。全段 CON/PRN/AUX/NUL +
+                    // COM1-9/LPT1-9（微软命名规范明文含「紧跟扩展名的形态」
+                    // ——如 COM5.png），与 connectors/skills 同类清单对齐
+                    // （BUG-20261028-99：首版只列 com1/lpt1，漏 16 个）。
+                    if [
+                        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5",
+                        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5",
+                        "lpt6", "lpt7", "lpt8", "lpt9",
+                    ]
+                    .iter()
+                    .any(|r| stem.eq_ignore_ascii_case(r))
                         // 盘符/NTFS ADS 形态（Linux 上 "C:/..." 不是绝对路径，
                         // 冒号防御补上跨平台一致性）。
                         || seg_str.contains(':')
