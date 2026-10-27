@@ -502,8 +502,15 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // L6++ G6：redo 的 undo 栈住 loop 实例，同 rewind 路由项目会话。
+                // M4（2026-10-27 整改）：可选 force——冲突预检（回退窗口内
+                // 外部漂移）拒绝时前端确认后带 force 重试。
+                let force = data
+                    .as_ref()
+                    .and_then(|d| d.get("force"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
-                let mut out = al.redo_rewind(&session_key).await?;
+                let mut out = al.redo_rewind_with_force(&session_key, force).await?;
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
             }

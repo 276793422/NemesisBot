@@ -183,7 +183,12 @@ impl Tool for MessageTool {
 /// 保持旧行为（按进程 cwd 解析，基线/测试形态）。读族（read/list/delete/
 /// create_dir/delete_dir）此前不走本入口，exe 直启（cwd=部署目录）形态下
 /// 相对路径全部 File not found，且 restrict=true 时无第二道闸。
-fn resolve_tool_path(path: &str, boundary: Option<&WorkspaceBoundary>) -> Result<PathBuf, String> {
+/// M5（2026-10-27 整改）起 loop 写后钩子（format-on-save / 诊断回灌）同源
+/// 消费本入口——执行器与钩子单一真相源，故 pub(crate)。
+pub(crate) fn resolve_tool_path(
+    path: &str,
+    boundary: Option<&WorkspaceBoundary>,
+) -> Result<PathBuf, String> {
     match boundary {
         Some(b) => validate_workspace_path(path, b),
         None => Ok(PathBuf::from(path)),
@@ -8557,6 +8562,11 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             #[cfg(not(feature = "security"))]
             {
                 lsp_impl.security = config.security;
+            }
+            // M3（2026-10-27 整改）：rename 落盘挂工作区边界（与 write_file
+            // 等文件工具同一实例——纵深防御第二道闸覆盖 rename 这条写路径）。
+            if let Some(ref boundary) = config.workspace_boundary {
+                lsp_impl = lsp_impl.with_boundary(boundary.clone());
             }
             tools.insert("lsp".to_string(), Box::new(lsp_impl));
         }

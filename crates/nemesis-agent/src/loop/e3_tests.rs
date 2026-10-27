@@ -926,3 +926,107 @@ async fn e3_rewind_before_rejects_steer_row() {
     assert!(err.contains("steer"), "{err}");
     delete_chat_log(&key);
 }
+
+// —— M4（2026-10-27 整改）：redo 冲突预检（外部漂移检出 / 条目还栈 / force 强过） ——
+
+/// M4 主链路：undo→redo 窗口内 IDE 手改文件（不产生 checkpoint turn，三守
+/// 卫全盲）→ 无 force redo 结构化 blocked（drifted_paths 列出面、行与文件
+/// 零副作用）→ **条目还栈**（再次无 force 仍 blocked 而非「没有可重做」—
+/// —弹出不还回去则前端「确认覆盖 → force 重试」必撞空栈）→ force 强过
+/// （forced=true 审计标注，文件回实时树 v3、行回填）。
+#[tokio::test]
+async fn e3_git_redo_conflict_blocks_external_drift_then_force_overrides() {
+    let (al, key, dir) = stage_two_turns_git("mdrift").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    // rewind 到 turn 1：文件回 v2。
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+
+    // 外部改动（IDE 手改——无 checkpoint turn，行数/指纹/tree 基线三守卫全盲）。
+    std::fs::write(&file, "external").unwrap();
+
+    // 无 force redo：结构化 blocked + drifted_paths，行与文件零副作用。
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(out["blocked"], true, "{out}");
+    assert_eq!(out["reason"], "conflict");
+    let drifted = out["drifted_paths"].as_array().expect("drifted_paths 数组");
+    assert!(
+        drifted.iter().any(|v| v == "code.txt"),
+        "漂移面必须列出 code.txt: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "external",
+        "blocked 零副作用：外部改动不被碾掉"
+    );
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2, "blocked 不回填行");
+
+    // 条目还栈回归锁：再次无 force 仍 blocked（不是「没有可重做的回退」）。
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(
+        out["blocked"], true,
+        "条目必须还栈，force 重试才可能成功: {out}"
+    );
+
+    // force 强过：forced=true，文件回实时树 v3，行回填 4 行。
+    let out = al.redo_rewind_with_force(&key, true).await.unwrap();
+    assert_eq!(out["forced"], true, "{out}");
+    assert_eq!(out["restored_count"], 2, "{out}");
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "v3",
+        "强过后覆盖外部改动"
+    );
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4, "force redo 行回填");
+
+    delete_chat_log(&key);
+}
+
+/// M4 无漂移基线：undo→redo 窗口无人动文件 → 无 force 直接成功，回执带
+/// `forced: false` + 空 `drifted_paths`（新回执字段对既有行为零差）。
+#[tokio::test]
+async fn e3_git_redo_without_drift_reports_not_forced() {
+    let (al, key, dir) = stage_two_turns_git("mclean").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["file_restore"], "applied", "{out}");
+
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert!(out.get("blocked").is_none(), "无漂移不得 blocked: {out}");
+    assert_eq!(out["forced"], false, "{out}");
+    assert_eq!(out["drifted_paths"].as_array().unwrap().len(), 0);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4);
+
+    delete_chat_log(&key);
+}
+
+/// M4 JSON 形态诚实跳过：无影子 tree（forward_tree=None）→ 冲突扫描不可
+/// 用 = None = 不 blocked 照常 redo（前向恢复本就带不完整注记，扫描只是
+/// 增量防线，不能把 JSON 形态 redo 锁死）。
+#[tokio::test]
+async fn e3_json_redo_conflict_scan_unavailable_honest_skip() {
+    let (al, key, _dir) = stage_two_turns("mjson").await;
+
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["file_restore"], "applied", "{out}");
+
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert!(
+        out.get("blocked").is_none(),
+        "JSON 形态扫描不可用须跳过: {out}"
+    );
+    assert_eq!(out["forced"], false, "{out}");
+    assert_eq!(out["drifted_paths"].as_array().unwrap().len(), 0);
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4, "JSON 形态行回填照常");
+
+    delete_chat_log(&key);
+}

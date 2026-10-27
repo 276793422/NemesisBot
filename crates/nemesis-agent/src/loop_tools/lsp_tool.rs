@@ -19,10 +19,15 @@ use async_trait::async_trait;
 use nemesis_lsp::{AppliedFileEdit, LspManager, LspOp};
 
 use crate::context::RequestContext;
-use crate::loop_tools::Tool;
+use crate::loop_tools::{Tool, WorkspaceBoundary};
 
 pub struct LspTool {
     manager: Arc<LspManager>,
+    /// M3（2026-10-27 整改）：rename 落盘的工作区边界（与 write_file 等文件
+    /// 工具同源的第二道闸）。`gate_and_write` 对 WorkspaceEdit 逐文件过
+    /// `validate_workspace_path`，越界文件进拒绝清单不落盘；相对路径解析
+    /// 基点也随边界根（无边界维持 cwd 兼容——测试 / 独立 runner 形态）。
+    boundary: Option<Arc<WorkspaceBoundary>>,
     /// C7：rename 落盘闸宿主（SecurityPlugin）。rename 的每文件新全文以
     /// 合成 `write_file` 调用走完整 8 层管线（注入/凭据/DLP/scanner 见真
     /// 内容），auditor 审批在 `execute()` 内同步生效；guardian 语义二审
@@ -51,6 +56,7 @@ impl LspTool {
                 timeout_secs.map(Duration::from_secs),
                 idle_secs.map(Duration::from_secs),
             )),
+            boundary: None,
             security: None,
         }
     }
@@ -64,8 +70,17 @@ impl LspTool {
     pub fn with_manager(manager: Arc<LspManager>) -> Self {
         Self {
             manager,
+            boundary: None,
             security: None,
         }
+    }
+
+    /// M3（2026-10-27 整改）：挂工作区边界（生产装配形态）。rename 落盘
+    /// 逐文件过 `validate_workspace_path`，相对路径解析基点 = 边界根。
+    /// `new` / `with_manager` 签名不动（25+ 处测试调用点零波及）。
+    pub fn with_boundary(mut self, boundary: Arc<WorkspaceBoundary>) -> Self {
+        self.boundary = Some(boundary);
+        self
     }
 
     /// The backing manager (C5 test/observability access).
@@ -137,12 +152,17 @@ impl Tool for LspTool {
             .and_then(|p| p.as_str())
             .ok_or("Missing 'path' argument")?;
         let path = PathBuf::from(path_str);
-        // Relative paths resolve against the process working directory
-        // (the gateway's cwd, same convention as exec/file tools).
+        // M3：相对路径解析基点与文件工具同源——有边界按边界根（工作区），
+        // 无边界回落进程 cwd（测试 / 独立 runner 形态）。旧注释声称「与
+        // exec/file 工具同一 cwd 约定」失实：文件工具在生产形态锚定的是
+        // 工作区根，不是 cwd。
         let path = if path.is_relative() {
-            std::env::current_dir()
-                .map_err(|e| format!("cannot resolve relative path {path_str:?}: {e}"))?
-                .join(path)
+            match self.boundary.as_deref() {
+                Some(b) => b.root.join(path),
+                None => std::env::current_dir()
+                    .map_err(|e| format!("cannot resolve relative path {path_str:?}: {e}"))?
+                    .join(path),
+            }
         } else {
             path
         };
@@ -246,12 +266,20 @@ impl LspTool {
         let security = self.security.as_deref();
         #[cfg(not(feature = "security"))]
         let security = self.security.as_ref();
-        let written = gate_and_write(&outcome.files, security, context).await?;
+        let (written, rejected) =
+            gate_and_write(&outcome.files, security, self.boundary.as_deref(), context).await?;
 
         // Phase 3: resync server docs and harvest diagnostics. notify_change
         // is best-effort (diagnostics closure is an optimization, not a
-        // dependency — same policy as C3's edit path).
-        for f in &outcome.files {
+        // dependency — same policy as C3's edit path). 只同步实际落盘的文件
+        // （被边界拒绝的文件内容未变，回灌服务器反而制造幻影文档状态）。
+        let written_set: std::collections::HashSet<&str> =
+            written.iter().map(|s| s.as_str()).collect();
+        for f in outcome
+            .files
+            .iter()
+            .filter(|f| written_set.contains(f.path.as_str()))
+        {
             let _ = self
                 .manager
                 .notify_change(Path::new(&f.path), &f.new_text)
@@ -261,12 +289,37 @@ impl LspTool {
         let errs = diags.iter().filter(|d| d.severity == 1).count();
         let warns = diags.iter().filter(|d| d.severity == 2).count();
 
+        if written.is_empty() {
+            // 全部文件被边界拒绝 = rename 一个字节都没落——诚实失败并把
+            // 清单回给模型（与「rename produced no applicable file edits」
+            // 同语义级别）。
+            let detail = rejected
+                .iter()
+                .map(|(p, r)| format!("- {p}: {r}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(format!(
+                "rename rejected by workspace boundary, no files were modified:\n{detail}"
+            ));
+        }
+
         let mut out = format!(
             "Renamed to {new_name:?}: {} file(s) written:\n",
             written.len()
         );
-        for (i, f) in outcome.files.iter().enumerate() {
+        for (i, f) in outcome
+            .files
+            .iter()
+            .filter(|f| written_set.contains(f.path.as_str()))
+            .enumerate()
+        {
             out.push_str(&format!("{}. {} ({} edits)\n", i + 1, f.path, f.edit_count));
+        }
+        if !rejected.is_empty() {
+            out.push_str("Not written (outside workspace boundary):\n");
+            for (p, r) in &rejected {
+                out.push_str(&format!("- {p}: {r}\n"));
+            }
         }
         if !outcome.errors.is_empty() {
             out.push_str("Not applied (errors):\n");
@@ -311,14 +364,34 @@ impl LspTool {
 /// 破碎代码）。无闸形态（feature 裁剪/插件未注入）直接写——gate 缺席≠gate
 /// 通过，语义与无闸的普通写工具一致。
 ///
-/// 返回实际落盘的路径列表；写盘中途失败时已落盘者如实上报（调用方把失败
-/// 传给模型，由它决定补救——闸已全过，失败只可能是 IO 层）。
+/// M3（2026-10-27 整改）：安全闸之前先做**逐文件工作区边界预分**——
+/// `validate_workspace_path` 通过的文件才进闸+写阶段，越界文件进拒绝清单
+/// （部分成功语义，与 rename 跨文件自然对齐：拒一处不连坐其余文件）。
+/// 全部被拒时 written 为空，由调用方定失败语义。
+///
+/// 返回（实际落盘路径, 拒绝清单[(路径, 原因)]）；写盘中途失败时已落盘者
+/// 如实上报（调用方把失败传给模型，由它决定补救——闸已全过，失败只可能
+/// 是 IO 层）。
 #[cfg(feature = "security")]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
     security: Option<&nemesis_security::pipeline::SecurityPlugin>,
+    boundary: Option<&WorkspaceBoundary>,
     context: &RequestContext,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+    // 边界预分：越界文件不进闸（省审批面）也不落盘。界内文件带**解析后
+    // 的绝对路径**进闸+落盘（相对路径锚定边界根）——预分只校验不替换落点
+    // 的话，相对路径会写进进程 cwd（污染源树/丢文件，M3 实测抓到的缺陷）。
+    // None 边界 = resolve 透传（行为同前）。
+    let mut in_scope: Vec<(&AppliedFileEdit, std::path::PathBuf)> = Vec::with_capacity(files.len());
+    let mut rejected = Vec::new();
+    for f in files {
+        match crate::loop_tools::resolve_tool_path(&f.path, boundary) {
+            Ok(resolved) => in_scope.push((f, resolved)),
+            Err(reason) => rejected.push((f.path.clone(), reason)),
+        }
+    }
+
     if let Some(security) = security {
         let approval_ctx = nemesis_security::auditor::ApprovalContext {
             channel: context.channel.clone(),
@@ -326,8 +399,8 @@ async fn gate_and_write(
             session_key: context.session_key.clone(),
             ..Default::default()
         };
-        for f in files {
-            let args = serde_json::json!({"path": f.path, "content": f.new_text});
+        for (f, resolved) in &in_scope {
+            let args = serde_json::json!({"path": resolved, "content": f.new_text});
             let invocation = nemesis_security::types::ToolInvocation {
                 tool_name: "write_file".to_string(),
                 args: args.clone(),
@@ -345,7 +418,10 @@ async fn gate_and_write(
                 });
                 return Err(format!(
                     "⛔ SECURITY BLOCKED rename write to {}: [{}:{}] {} — no files were modified. Inform the user that the operation was rejected.",
-                    f.path, info.layer, info.policy, info.summary
+                    resolved.display(),
+                    info.layer,
+                    info.policy,
+                    info.summary
                 ));
             }
             // BUG-20261025-37：guardian 与 dispatch 同源（单一真相源
@@ -366,29 +442,39 @@ async fn gate_and_write(
             }
         }
     }
-    let mut written = Vec::with_capacity(files.len());
-    for f in files {
-        std::fs::write(&f.path, &f.new_text)
-            .map_err(|e| format!("write {} failed: {e}", f.path))?;
-        written.push(f.path.clone());
+    let mut written = Vec::with_capacity(in_scope.len());
+    for (f, resolved) in &in_scope {
+        std::fs::write(resolved, &f.new_text)
+            .map_err(|e| format!("write {} failed: {e}", resolved.display()))?;
+        written.push(resolved.to_string_lossy().into_owned());
     }
-    Ok(written)
+    Ok((written, rejected))
 }
 
-/// 非 security 形态：无闸直写（签名对齐让调用方 cfg-free）。
+/// 非 security 形态：无闸直写（签名对齐让调用方 cfg-free）。边界预分同上
+/// （界内文件以解析后的绝对路径落盘——相对路径锚定边界根，不碰进程 cwd）。
 #[cfg(not(feature = "security"))]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
     _security: Option<&()>,
+    boundary: Option<&WorkspaceBoundary>,
     _context: &RequestContext,
-) -> Result<Vec<String>, String> {
-    let mut written = Vec::with_capacity(files.len());
+) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+    let mut in_scope: Vec<(&AppliedFileEdit, std::path::PathBuf)> = Vec::with_capacity(files.len());
+    let mut rejected = Vec::new();
     for f in files {
-        std::fs::write(&f.path, &f.new_text)
-            .map_err(|e| format!("write {} failed: {e}", f.path))?;
-        written.push(f.path.clone());
+        match crate::loop_tools::resolve_tool_path(&f.path, boundary) {
+            Ok(resolved) => in_scope.push((f, resolved)),
+            Err(reason) => rejected.push((f.path.clone(), reason)),
+        }
     }
-    Ok(written)
+    let mut written = Vec::with_capacity(in_scope.len());
+    for (f, resolved) in &in_scope {
+        std::fs::write(resolved, &f.new_text)
+            .map_err(|e| format!("write {} failed: {e}", resolved.display()))?;
+        written.push(resolved.to_string_lossy().into_owned());
+    }
+    Ok((written, rejected))
 }
 
 #[cfg(test)]

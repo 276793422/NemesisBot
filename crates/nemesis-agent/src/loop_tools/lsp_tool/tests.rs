@@ -315,7 +315,10 @@ fn c7_two_files() -> (tempfile::TempDir, Vec<nemesis_lsp::AppliedFileEdit>) {
 #[tokio::test]
 async fn c7_gate_and_write_none_plugin_writes_all() {
     let (_dir, files) = c7_two_files();
-    let written = gate_and_write(&files, None, &test_ctx()).await.unwrap();
+    let (written, rejected) = gate_and_write(&files, None, None, &test_ctx())
+        .await
+        .unwrap();
+    assert!(rejected.is_empty());
     assert_eq!(written.len(), 2);
     assert_eq!(std::fs::read_to_string(&files[0].path).unwrap(), "new a\n");
     assert_eq!(std::fs::read_to_string(&files[1].path).unwrap(), "new b\n");
@@ -331,9 +334,10 @@ async fn c7_gate_and_write_allow_all_plugin_writes_all() {
     let audit_dir = tempfile::tempdir().unwrap();
     let plugin = allow_all_plugin(&audit_dir.path().join("audit.log"));
     let (_dir, files) = c7_two_files();
-    let written = gate_and_write(&files, Some(&plugin), &test_ctx())
+    let (written, rejected) = gate_and_write(&files, Some(&plugin), None, &test_ctx())
         .await
         .unwrap();
+    assert!(rejected.is_empty());
     assert_eq!(written.len(), 2);
     assert_eq!(std::fs::read_to_string(&files[0].path).unwrap(), "new a\n");
     assert_eq!(std::fs::read_to_string(&files[1].path).unwrap(), "new b\n");
@@ -369,7 +373,7 @@ async fn c7_gate_and_write_deny_blocks_everything() {
         })
     };
     let (_dir, files) = c7_two_files();
-    let err = gate_and_write(&files, Some(&plugin), &test_ctx())
+    let err = gate_and_write(&files, Some(&plugin), None, &test_ctx())
         .await
         .unwrap_err();
     assert!(err.contains("SECURITY BLOCKED"), "{err}");

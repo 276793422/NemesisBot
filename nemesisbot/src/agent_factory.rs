@@ -1101,6 +1101,11 @@ pub fn build_agent_loop(
     // N2（机会项）：present_plan 工具供给（plan 模式白名单 + SharedToolConfig
     // 注册同源；loop 侧 verdict 消费槽已装配）。
     tool_config.plan_present = Some(plan_present_handle);
+    // M5（2026-10-27 整改）：写后钩子路径解析边界与工具表同一 Arc（单一
+    // 真相源——format-on-save / 诊断回灌与执行器同一落点）。
+    if let Some(ref boundary) = tool_config.workspace_boundary {
+        agent_loop.set_workspace_boundary(boundary.clone());
+    }
     // N5（机会项）：present_files 工具供给——交付物流水桶与 loop 共享同一
     // Arc（工具登记、assistant 回复落盘时 drain 进 chat_log deliverables）。
     tool_config.turn_deliverables = Some(agent_loop.turn_deliverables_bucket());
@@ -2800,6 +2805,10 @@ pub fn build_cluster_agent_loop(
         root: shared.workspace_dir(),
         restrict: true,
     }));
+    // M5（2026-10-27 整改）：集群 loop 同挂钩子边界（同一 Arc 实例）。
+    if let Some(ref boundary) = tool_config.workspace_boundary {
+        agent_loop.set_workspace_boundary(boundary.clone());
+    }
     // Cluster agent does not use executor separation yet (B.0 scope: main agent
     // only). Pass None → all tools stay local. 常驻路由同不理（T7：worker 执行
     // 语境是任务级一次性装配，无 tasks.db 持久实体可解析）。
@@ -3611,6 +3620,10 @@ pub fn build_agent_loop_from_spec(
         root: project_dir.clone(),
         restrict: true,
     }));
+    // M5（2026-10-27 整改）：项目 loop 同挂钩子边界（同一 Arc 实例）。
+    if let Some(ref boundary) = tool_config.workspace_boundary {
+        agent_loop.set_workspace_boundary(boundary.clone());
+    }
     tool_config.todo = Some(nemesis_agent::loop_tools::TodoToolConfig {
         workspace: project_dir.clone(),
         event_tx: shared.agent_event_tx.clone(),

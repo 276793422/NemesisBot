@@ -30,6 +30,13 @@ pub(crate) struct RewindUndoEntry {
     /// verbatim 回填进无关对话；指纹维度补上「行数未变但内容已变」的
     /// 陈旧性判定。
     kept_rows_hash: String,
+    /// M4（2026-10-27 整改）：undo 完成时刻的**实时盘面**影子 tree（文件
+    /// 恢复已生效后的工作区快照）。redo 冲突预检以它为基线 diff 当前盘面
+    /// ——基线必须是「回退刚结束时的盘」而不是 forward_tree：回退本身就
+    /// 会把文件搬离前向目标（恢复到 begin 态），拿 forward_tree 当基线会
+    /// 把合法回退误报成漂移。JSON 形态 / store 未挂载 / tree 写失败 = None
+    /// （扫描诚实跳过）。
+    undo_disk_tree: Option<String>,
 }
 
 /// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json::to_string` 后
@@ -481,6 +488,12 @@ impl AgentLoop {
         let redoable = !removed.is_empty();
         if redoable {
             let kept_rows_hash = kept_rows_fingerprint(&rows[..cut]);
+            // M4：undo 完成时刻的实时盘面快照（文件恢复已生效）——redo 冲
+            // 突预检的漂移基线。取不到（JSON 形态/tree 写失败）= None，扫
+            // 描诚实跳过。
+            let undo_disk_tree = self
+                .attached_checkpoint()
+                .and_then(|cp| cp.current_tree_hex());
             let mut stacks = self.rewind_undo_stacks.lock();
             let stack = stacks.entry(session_key.to_string()).or_default();
             stack.push_back(RewindUndoEntry {
@@ -490,6 +503,7 @@ impl AgentLoop {
                 forward_tree,
                 post_tree,
                 kept_rows_hash,
+                undo_disk_tree,
             });
             while stack.len() > REWIND_UNDO_STACK_CAP {
                 stack.pop_front();
@@ -524,13 +538,29 @@ impl AgentLoop {
     /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
     /// 会话闸：经 [`Self::under_history_gate`] 真互斥（同 rewind 家族）。
     pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
+        self.redo_rewind_with_force(session_key, false).await
+    }
+
+    /// M4（2026-10-27 整改）：带 force 的 redo——冲突预检（见
+    /// `redo_rewind_inner`）检出外部漂移且未 force 时拒绝（结构化 blocked
+    /// 回执，对齐 rewind 冲突块形态）；force=true 强过（审计留痕，回执带
+    /// `forced: true`）。
+    pub async fn redo_rewind_with_force(
+        &self,
+        session_key: &str,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         self.under_history_gate(session_key, "重做", || {
-            self.redo_rewind_inner(session_key)
+            self.redo_rewind_inner(session_key, force)
         })
         .await
     }
 
-    async fn redo_rewind_inner(&self, session_key: &str) -> Result<serde_json::Value, String> {
+    async fn redo_rewind_inner(
+        &self,
+        session_key: &str,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         let entry = {
             let mut stacks = self.rewind_undo_stacks.lock();
             stacks.get_mut(session_key).and_then(|s| s.pop_back())
@@ -560,6 +590,54 @@ impl AgentLoop {
             .and_then(|cp| cp.latest_tree_hex());
         if cur_tree != entry.post_tree {
             return Err("回退后工作区发生了新的变化，redo 已失效".to_string());
+        }
+
+        // M4（2026-10-27 整改）：redo 冲突预检——undo→redo 窗口内的外部
+        // 改动（IDE 手改等）不产生新 checkpoint turn，上面三守卫全盲
+        // （守卫 2 的基线在 undo 时已被截断索引钉住，索引外漂移不可见）。
+        // 以 **undo 完成时刻的实时盘面**（undo_disk_tree）为基线 diff 当前
+        // 盘面——基线不能用 forward_tree：回退本身就会把文件搬离前向目标
+        // （恢复到 begin 态），拿它当基线会把合法回退误报成漂移。检出路径
+        // = redo restore 将碾掉且非回退本身造成的面（含外部新建文件——
+        // restore 对 Added 路径做删除）。冲突且未 force = 拒绝（结构化
+        // blocked 回执，对齐 rewind 冲突块形态）；force 强过（审计留痕）。
+        // 基线不可用（JSON 形态 / tree 写失败）= None，诚实跳过（前向
+        // 恢复本就带不完整注记，best-effort 语义不变）。
+        let drifted = match (entry.undo_disk_tree.as_deref(), self.attached_checkpoint()) {
+            (Some(hex), Some(cp)) => cp.conflict_scan_since_tree(hex),
+            _ => None,
+        }
+        .unwrap_or_default();
+        if !drifted.is_empty() && !force {
+            // 条目还栈：冲突拒绝是「等用户确认」的可重试阻塞点，不是终态
+            // ——上面弹出的条目必须 push_back（pop_back/push_back 同端，
+            // 栈序不变），否则前端「确认覆盖 → force 重试」会撞「没有可
+            // 重做的回退」。
+            self.rewind_undo_stacks
+                .lock()
+                .entry(session_key.to_string())
+                .or_default()
+                .push_back(entry);
+            warn!(
+                "[AgentLoop] redo 冲突预检拒绝：session={session_key} 检出 {} 个回退窗口内外部修改的路径（force 可强过）: {:?}",
+                drifted.len(),
+                drifted
+            );
+            return Ok(serde_json::json!({
+                "blocked": true,
+                "reason": "conflict",
+                "session_key": session_key,
+                "drifted_paths": drifted,
+                "note": "回退窗口内外部修改了以上文件，redo 的文件恢复将覆盖这些改动；确认覆盖请带 force 重试",
+            }));
+        }
+        let forced = force && !drifted.is_empty();
+        if forced {
+            warn!(
+                "[AgentLoop] redo 冲突被 force 强过（审计留痕）：session={session_key} 覆盖 {} 个外部漂移路径: {:?}",
+                drifted.len(),
+                drifted
+            );
         }
 
         // 1) 文件前向恢复（best-effort——失败只注记，行回填照常进行；
@@ -629,6 +707,8 @@ impl AgentLoop {
             "restore_failures": restore_failures.iter().map(|(p, e)| {
                 serde_json::json!({ "path": p, "error": e })
             }).collect::<Vec<_>>(),
+            "forced": forced,
+            "drifted_paths": drifted,
         }))
     }
 

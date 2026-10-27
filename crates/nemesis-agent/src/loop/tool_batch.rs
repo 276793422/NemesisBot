@@ -344,6 +344,20 @@ impl AgentLoop {
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
         {
             let paths = extract_diag_feedback_paths(&tc.name, &args_val);
+            // M5（2026-10-27 整改）：与 format-on-save 同源——钩子路径经
+            // resolve_tool_path 重算（相对路径锚定工作区根），不吃原始 args
+            // 的 cwd 歧义。解析失败诚实跳过该路径。
+            let paths: Vec<String> = paths
+                .into_iter()
+                .filter_map(|p| {
+                    crate::loop_tools::resolve_tool_path(
+                        &p,
+                        self.workspace_boundary.read().as_deref(),
+                    )
+                    .ok()
+                    .map(|pb| pb.to_string_lossy().into_owned())
+                })
+                .collect();
             if paths.is_empty() {
                 result
             } else {

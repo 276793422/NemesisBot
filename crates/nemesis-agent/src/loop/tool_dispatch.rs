@@ -920,6 +920,9 @@ impl AgentLoop {
         // A6：format-on-save 的 config.json 路径快照（每次 dispatch 新鲜读，
         // 同 C3 current_diagnostics_loop 模式——运行中可翻转开关）。
         let format_cfg_path = self.config_path.read().clone();
+        // M5：钩子路径解析边界快照（Arc 克隆进 'static 闭包；与工具表同一
+        // 实例，dispatch 时刻读一次即可——边界启动期装配、运行期不变）。
+        let hook_boundary = self.workspace_boundary.read().clone();
         // D3：本 turn 声明式文件变更的收集桶（Arc 捕获进 'static Fn 闭包）。
         let turn_fc = Arc::clone(&self.turn_file_changes);
         type NextExec = std::sync::Arc<
@@ -937,6 +940,7 @@ impl AgentLoop {
             let hooks = hooks_arc.clone();
             let format_cfg_path = format_cfg_path.clone();
             let turn_fc = turn_fc.clone();
+            let hook_boundary = hook_boundary.clone();
             std::sync::Arc::new(move |call: HookToolCall| {
                 // Fn 闭包：捕获的 Arc 每次调用克隆一份（不能 move 出 Fn）。
                 let ctx = ctx.clone();
@@ -945,6 +949,7 @@ impl AgentLoop {
                 let hooks = hooks.clone();
                 let format_cfg_path = format_cfg_path.clone();
                 let turn_fc = turn_fc.clone();
+                let hook_boundary = hook_boundary.clone();
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();
                     let tool_was_registered = tool_opt.is_some();
@@ -1080,6 +1085,25 @@ impl AgentLoop {
                                         } else {
                                             Vec::new()
                                         };
+                                    // M5（2026-10-27 整改）：钩子路径用与执行器
+                                    // 同源的 resolve_tool_path 重算（相对路径
+                                    // 锚定工作区根）——原始 args path 在 cwd≠
+                                    // 工作区根时会误导 format-on-save 摸错同
+                                    // 名文件。解析失败（越界）的路径诚实跳过
+                                    // （写工具既然成功落盘，说明 dispatch 时
+                                    // 解析过；此处失败 = 边界形态不一致，宁可
+                                    // 不格式化也不摸工作区外文件）。
+                                    let format_paths: Vec<String> = format_paths
+                                        .into_iter()
+                                        .filter_map(|p| {
+                                            crate::loop_tools::resolve_tool_path(
+                                                &p,
+                                                hook_boundary.as_deref(),
+                                            )
+                                            .ok()
+                                            .map(|pb| pb.to_string_lossy().into_owned())
+                                        })
+                                        .collect();
                                     let mut result = result;
                                     for path_str in format_paths {
                                         result = crate::formatter::format_on_save(

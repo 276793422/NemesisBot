@@ -145,9 +145,13 @@ async fn gate_and_write_without_security_writes_all_files() {
         },
     ];
 
-    let written = gate_and_write(&files, None, &cov_ctx())
+    let (written, rejected) = gate_and_write(&files, None, None, &cov_ctx())
         .await
         .expect("ungated write succeeds");
+    assert!(
+        rejected.is_empty(),
+        "无边界时拒绝清单必须为空: {rejected:?}"
+    );
     assert_eq!(
         written,
         vec![
@@ -169,12 +173,99 @@ async fn gate_and_write_without_security_writes_all_files() {
         new_text: "x".to_string(),
         edit_count: 1,
     }];
-    let err = gate_and_write(&bad, None, &cov_ctx())
+    let err = gate_and_write(&bad, None, None, &cov_ctx())
         .await
         .expect_err("unwritable target must fail");
     assert!(
         err.contains("write") && err.contains("failed"),
         "got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M3（2026-10-27 整改）：gate_and_write 工作区边界预分——越界文件进拒绝
+// 清单不落盘，界内文件照写（部分成功语义）；相对路径以边界根为基点。
+// ---------------------------------------------------------------------------
+
+/// 无闸形态下的边界预分：界外绝对路径被拒（不落盘），界内文件照写。
+#[test]
+fn gate_and_write_boundary_rejects_out_of_workspace_files() {
+    let ws = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let inside = ws.path().join("in.rs");
+    let out_of_ws = outside.path().join("out.rs");
+    let files = vec![
+        AppliedFileEdit {
+            path: inside.to_string_lossy().into_owned(),
+            new_text: "fn inside() {}".to_string(),
+            edit_count: 1,
+        },
+        AppliedFileEdit {
+            path: out_of_ws.to_string_lossy().into_owned(),
+            new_text: "fn outside() {}".to_string(),
+            edit_count: 1,
+        },
+    ];
+    let boundary = crate::loop_tools::WorkspaceBoundary {
+        root: ws.path().to_path_buf(),
+        restrict: true,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (written, rejected) = rt
+        .block_on(gate_and_write(&files, None, Some(&boundary), &cov_ctx()))
+        .expect("partial success must be Ok");
+    assert_eq!(written, vec![inside.to_string_lossy().into_owned()]);
+    assert_eq!(
+        std::fs::read_to_string(&inside).unwrap(),
+        "fn inside() {}",
+        "界内文件必须落盘"
+    );
+    assert_eq!(rejected.len(), 1, "越界文件进拒绝清单: {rejected:?}");
+    assert_eq!(rejected[0].0, out_of_ws.to_string_lossy().into_owned());
+    assert!(
+        rejected[0].1.contains("outside the workspace"),
+        "拒绝原因须注明越界: {}",
+        rejected[0].1
+    );
+    assert!(
+        !out_of_ws.exists(),
+        "越界文件绝不能落盘（快照语义：目标不存在）"
+    );
+}
+
+/// 相对路径以边界根为解析基点（与文件工具同源），不是进程 cwd。
+#[test]
+fn gate_and_write_boundary_resolves_relative_paths_against_root() {
+    let ws = tempfile::tempdir().unwrap();
+    // rename 写回既有文件的父目录本来就存在（模型语义）；这里显式摆出
+    // src/ 夹具——gate_and_write 不代建父目录（那是 write_file 的语义）。
+    std::fs::create_dir_all(ws.path().join("src")).unwrap();
+    let files = vec![AppliedFileEdit {
+        path: "src/rel.rs".to_string(),
+        new_text: "fn rel() {}".to_string(),
+        edit_count: 1,
+    }];
+    let boundary = crate::loop_tools::WorkspaceBoundary {
+        root: ws.path().to_path_buf(),
+        restrict: true,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (written, rejected) = rt
+        .block_on(gate_and_write(&files, None, Some(&boundary), &cov_ctx()))
+        .expect("relative in-workspace write succeeds");
+    assert!(rejected.is_empty());
+    assert_eq!(written.len(), 1);
+    let landed = ws.path().join("src").join("rel.rs");
+    assert_eq!(
+        std::fs::read_to_string(&landed).unwrap(),
+        "fn rel() {}",
+        "相对路径必须落在边界根下（落点={written:?}）"
     );
 }
 
@@ -277,7 +368,7 @@ async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
         edit_count: 1,
     }];
 
-    let err = gate_and_write(&files, Some(&plugin), &cov_ctx())
+    let err = gate_and_write(&files, Some(&plugin), None, &cov_ctx())
         .await
         .expect_err("guardian flag + no approval channel must fail closed");
     assert!(
@@ -318,9 +409,10 @@ async fn gate_and_write_guardian_high_allow_writes_files() {
         edit_count: 1,
     }];
 
-    let written = gate_and_write(&files, Some(&plugin), &cov_ctx())
+    let (written, rejected) = gate_and_write(&files, Some(&plugin), None, &cov_ctx())
         .await
         .expect("guardian allow must proceed to disk");
+    assert!(rejected.is_empty());
     assert_eq!(written.len(), 1);
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
@@ -356,9 +448,10 @@ async fn gate_and_write_guardian_default_off_never_calls_judge() {
         edit_count: 1,
     }];
 
-    let written = gate_and_write(&files, Some(&plugin), &cov_ctx())
+    let (written, rejected) = gate_and_write(&files, Some(&plugin), None, &cov_ctx())
         .await
         .expect("guardian off must write without review");
+    assert!(rejected.is_empty());
     assert_eq!(written.len(), 1);
     assert_eq!(
         judge.0.load(std::sync::atomic::Ordering::SeqCst),

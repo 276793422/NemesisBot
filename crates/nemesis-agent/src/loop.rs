@@ -780,6 +780,15 @@ pub struct AgentLoop {
     /// 渲染 L2 section（关 = 无 section = prompt 字节不变，cache 不动）。
     /// `None`（standalone / 未装配）= 永不注入。
     voice_prompt: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// M5（2026-10-27 整改）：写后钩子的路径解析基点——与工具表同一
+    /// `Arc<WorkspaceBoundary>` 实例（factory 注入）。写后钩子（format-on-
+    /// save、诊断回灌）此前从**原始 args** 抠 path：模型给相对路径而 cwd
+    /// 与工作区根不一致时，钩子摸到的是 cwd 下的同名文件（误格式化/误诊
+    /// 断）——两套真相源。钩子处用 [`crate::loop_tools::resolve_tool_path`]
+    /// + 本字段重算 = 执行器与钩子同一落点。
+    ///
+    /// `None` = 无界形态（resolve 按原样透传）。
+    workspace_boundary: parking_lot::RwLock<Option<Arc<crate::loop_tools::WorkspaceBoundary>>>,
     /// P8（集群无人值守硬化 A2）：per-session token 预算账本（累计 + soft
     /// 一次性闩）。类型与 seed 防双计语义见 [`crate::token_budget`]；接线
     /// 全在 loop/token_budget.rs（计划 §冲突面登记：预算域改动不进
@@ -960,18 +969,32 @@ impl AgentLoop {
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
+            workspace_boundary: parking_lot::RwLock::new(None),
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
             provider_reloader: parking_lot::RwLock::new(None),
         }
     }
-
     /// 语音对话提示词开关 late-binding（gateway 装配；仿 estop 模式）。
     /// 传 `Arc<AtomicBool>` 共享热态——`chat_config_set` 改内存热态，这里
     /// 无需重绑即被下一轮 build_messages 读到。
     pub fn set_voice_prompt(&self, flag: Arc<std::sync::atomic::AtomicBool>) {
         *self.voice_prompt.write() = Some(flag);
+    }
+
+    /// M5（2026-10-27 整改）：装配写后钩子的路径解析边界（factory 在
+    /// loop 构造后注入，与工具表同一 `Arc` 实例——单一真相源）。
+    pub fn set_workspace_boundary(&self, boundary: Arc<crate::loop_tools::WorkspaceBoundary>) {
+        *self.workspace_boundary.write() = Some(boundary);
+    }
+
+    /// M5 测试观察口（生产路径只写不读快照——dispatch 处局部克隆）。
+    #[cfg(test)]
+    pub(crate) fn hook_boundary_for_test(
+        &self,
+    ) -> Option<Arc<crate::loop_tools::WorkspaceBoundary>> {
+        self.workspace_boundary.read().clone()
     }
 
     /// L8 turn WAL late-binding（gateway 装配；仿 estop 模式）。装配后
@@ -1137,6 +1160,10 @@ mod cache_warmer_tests;
 // N1 (devtool-upgrade 阶段 1)：三级 context_window 解析链测试。
 #[cfg(test)]
 mod context_window_tests;
+// M5（2026-10-27 整改）：写后钩子路径解析边界（相对路径锚工作区根 / 越界
+// 跳过 / 注入回路同 Arc）。
+#[cfg(test)]
+mod m5_hook_boundary_tests;
 // P0 vault（C1/C2，2026-09-22 计划 §3）：凭据别名最后一刻注入机制。
 // pub（BUG-HUNT R17）：接管 wrapper（bot 层）需在 execute 入口自调注入——
 // dispatch 层读槽位与 execute 之间的翻位竞态要求「注入+路径决策」同点原子。

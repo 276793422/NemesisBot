@@ -1765,6 +1765,51 @@ impl CheckpointStore {
         Err("影子库未编译（checkpoint-git 关），无法按 tree 恢复文件".to_string())
     }
 
+    /// M4（2026-10-27 整改）：以指定基线 tree 为参照的盘面漂移扫描（redo
+    /// 冲突预检）。undo→redo 窗口内的**外部改动**（IDE 手改等）不产生新
+    /// checkpoint turn——行数/行身份/tree 基线三守卫全盲（守卫 2 只看索引
+    /// 最新 tree，而 undo 已把目标区间从索引截掉）；本扫描 diff 基线 tree
+    /// （undo 时刻的实时影子 tree = redo stack 的 forward_tree）vs 当前
+    /// 盘面，漂移路径即 redo restore_to_tree 将碾掉的面（含 restore 对
+    /// Added 路径的删除——外部新建文件同样被清）。
+    ///
+    /// 返回 `Some(漂移路径清单)`（排序去重）；`None` = 扫描不可用（JSON
+    /// 形态 / 基线 tree 不可达 / tree 写入失败）——调用方诚实跳过预检，
+    /// 与既有 best-effort 守卫同语义（redo 本就带 file_restore 不完整注记）。
+    #[cfg(feature = "checkpoint-git")]
+    pub fn conflict_scan_since_tree(&self, base_tree_hex: &str) -> Option<Vec<String>> {
+        let gb = self.git.as_ref()?;
+        let mut repo = gb.repo.lock();
+        // git2 借用纪律（同 git_restore）：先做可变操作（index 写入），
+        // 再拿 immutable 的 Tree 句柄——Tree 借用 repo，顺序不能反。
+        let cur_hex = Self::write_current_tree(&mut repo).ok()?;
+        let base_oid = git2::Oid::from_str(base_tree_hex).ok()?;
+        let base_tree = repo.find_tree(base_oid).ok()?;
+        let cur_oid = git2::Oid::from_str(&cur_hex).ok()?;
+        let cur_tree = repo.find_tree(cur_oid).ok()?;
+        let diff = repo
+            .diff_tree_to_tree(Some(&base_tree), Some(&cur_tree), None)
+            .ok()?;
+        // 新旧两侧路径都收：Added 只有 new、Deleted 只有 old、Modified 双侧
+        // 同名。BTreeSet 排序去重，回执稳定。
+        let mut paths = std::collections::BTreeSet::new();
+        for delta in diff.deltas() {
+            if let Some(p) = delta.new_file().path() {
+                paths.insert(p.to_string_lossy().to_string());
+            }
+            if let Some(p) = delta.old_file().path() {
+                paths.insert(p.to_string_lossy().to_string());
+            }
+        }
+        Some(paths.into_iter().collect())
+    }
+
+    /// checkpoint-git 关：JSON 形态无 tree——诚实返回 None（预检跳过）。
+    #[cfg(not(feature = "checkpoint-git"))]
+    pub fn conflict_scan_since_tree(&self, _base_tree_hex: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// M3：工作区根（`session_file_diff` 读现盘文件用——checkpoint 的
     /// root 即 AgentLoop 装配时的工作区根）。
     pub fn root(&self) -> &std::path::Path {

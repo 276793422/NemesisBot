@@ -1296,20 +1296,33 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
   }
 }
 
-/** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。 */
+/** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。
+ *  M4 冲突预检：回退窗口内外部改动过文件时后端返回 blocked（零副作用），
+ *  列出受影响路径由用户确认，确认才带 force 重试（后端审计留痕）。 */
 async function doRedo() {
   if (rewinding.value || !isDefaultChat.value) return
   const sid = effectiveSid.value
   if (!sid) return
   rewinding.value = true
   try {
-    await request('sessions', 'redo', { session_id: sid })
+    let out = await request('sessions', 'redo', { session_id: sid })
+    if (out?.blocked && out?.reason === 'conflict') {
+      const paths = (out.drifted_paths ?? []).join('\n')
+      if (
+        !window.confirm(
+          `回退窗口内外部修改了以下文件，重做将覆盖这些改动：\n${paths}\n\n确认覆盖？`,
+        )
+      )
+        return
+      out = await request('sessions', 'redo', { session_id: sid, force: true })
+    }
     toast.success('已重做上一次回退')
     resyncFromLog()
   } catch (e: any) {
     toast.error(e?.message || String(e))
+  } finally {
+    rewinding.value = false
   }
-  rewinding.value = false
 }
 
 /** 非末轮回退确认：本轮之后还有行 = 其后对话一并移除（回退是前缀截断，
