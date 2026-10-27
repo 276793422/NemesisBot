@@ -329,12 +329,21 @@ impl PermissionGate {
         });
         let frame = make_request(&rpc_id, "session/request_permission", params);
         if self.outbound.send(frame).await.is_err() {
+            // 客户端已断开：登记表同步自清（M13 同族——register 先于 send，
+            // 失败早退不摘条目就是泄漏）。
+            self.pending.resolve(&rpc_id, None);
             return PermissionOutcome::Denied;
         }
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(outcome)) => outcome,
-            // 超时 / oneshot 发送端已 drop（登记表被清）/ 接收失败 → 拒绝
-            _ => PermissionOutcome::Denied,
+            // 超时 / oneshot 发送端已 drop（登记表被清）/ 接收失败 → 拒绝。
+            // M13（2026-10-27 整改批次四）：失败臂摘除自身 rpc_id（复用
+            // resolve 的 remove 路径，传 None = 结果 Denied、sender 丢弃）——
+            // 否则编辑器侧从不回帧时超时条目滞留登记表恒久泄漏。
+            _ => {
+                self.pending.resolve(&rpc_id, None);
+                PermissionOutcome::Denied
+            }
         }
     }
 }

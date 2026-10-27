@@ -661,9 +661,14 @@ impl CheckpointStore {
                 continue;
             }
             let abs = root.join(&rel);
-            match std::fs::remove_file(&abs) {
-                Ok(()) => report.deleted.push(rel),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // M11（2026-10-27 整改批次四）：裸 remove_file 换 fsutil 韧性包装
+            //（Windows AV/索引器瞬时句柄是常态不是异常）。NotFound 语义保留：
+            // retry 包装对 NotFound 返 Ok，先探存在性把「快照本就记录不存在
+            // = 恢复语义已达成」与「真删了」分开（deleted 只计后者）。
+            let existed = abs.exists();
+            match nemesis_utils::fsutil::remove_file_retry(&abs) {
+                Ok(()) if existed => report.deleted.push(rel),
+                Ok(()) => {}
                 Err(e) => {
                     warn!("[checkpoint] 删除 {rel} 失败: {e}");
                     report.failures.push((rel, format!("删除失败: {e}")));
@@ -1580,13 +1585,23 @@ impl CheckpointStore {
                 continue;
             };
             match content {
-                None => match tokio::fs::remove_file(&abs).await {
-                    Ok(()) => report.deleted.push(path),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // 目标本就不存在 = 恢复语义已达成（快照也记录它不存在）。
+                None => {
+                    // M11（2026-10-27 整改批次四）：async 删除臂换 spawn_blocking +
+                    // fsutil 韧性包装（同步退避重试不堵 runtime；NotFound 语义
+                    // 保留——retry 包装对 NotFound 返 Ok，先探存在性分开
+                    // 「快照本就记录不存在」与「真删了」）。
+                    let existed = abs.exists();
+                    let rm = tokio::task::spawn_blocking(move || {
+                        nemesis_utils::fsutil::remove_file_retry(&abs)
+                    })
+                    .await;
+                    match rm {
+                        Ok(Ok(())) if existed => report.deleted.push(path),
+                        Ok(Ok(())) => {} // NotFound = 快照也记录它不存在，恢复语义已达成
+                        Ok(Err(e)) => report.failures.push((path, e.to_string())),
+                        Err(e) => report.failures.push((path, format!("删除任务失败: {e}"))),
                     }
-                    Err(e) => report.failures.push((path, e.to_string())),
-                },
+                }
                 Some(body) => {
                     if let Some(parent) = abs.parent() {
                         let _ = tokio::fs::create_dir_all(parent).await;

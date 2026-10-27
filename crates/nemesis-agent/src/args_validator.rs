@@ -200,10 +200,15 @@ pub fn validate(schema: &Value, args: &Value) -> Vec<Violation> {
     out
 }
 
-/// Attempt to auto-fix near-miss field names. Returns fixed args only if EVERY
-/// unknown field maps unambiguously to exactly one schema property within edit
-/// distance 2 (and no two unknowns collapse onto the same target). Otherwise
-/// returns `None` and the caller falls back to bouncing a structured error.
+/// Attempt to auto-fix near-miss field names. Fixable unknowns are renamed
+/// when they map unambiguously to exactly one schema property within edit
+/// distance 2 (no two unknowns collapsing onto the same target). Unknowns with
+/// NO near-miss candidate pass through unchanged — `validate` never flags them
+/// (truly extra fields are silently ignored), so they cannot block the
+/// "re-validate clean" gate. Returns `None` when some unknown is ambiguous
+/// (tied nearest candidates), two unknowns would collide on the same target,
+/// or there is nothing to rename; the caller then bounces the structured
+/// error.
 pub fn try_autofix(schema: &Value, args: &Value) -> Option<Value> {
     let props = schema.get("properties")?.as_object()?;
     let args_obj = args.as_object()?;
@@ -224,7 +229,11 @@ pub fn try_autofix(schema: &Value, args: &Value) -> Option<Value> {
         candidates.sort_by_key(|(_, d)| *d);
 
         if candidates.is_empty() {
-            return None;
+            // M12（2026-10-27 整改批次四）：无候选 = 纯多余字段，原样透传。
+            // 此前整单放弃（None → 回灌错误）——一个无害多余字段会连累
+            // 别处真实 typo 的修复；而 validate 本就不对它产违规，透传后
+            // 「复验 clean」闸自然放行。
+            continue;
         }
         let min_d = candidates[0].1;
         let tied: usize = candidates.iter().filter(|(_, d)| *d == min_d).count();

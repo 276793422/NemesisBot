@@ -589,11 +589,17 @@ async fn approval_manager_maps_verdicts_and_fails_closed() {
 async fn gate_denies_when_outbound_closed() {
     let (tx, rx) = mpsc::channel::<Value>(16);
     drop(rx); // 客户端断开
-    let gate = PermissionGate::new("s1".to_string(), tx, Arc::new(PendingPermissions::new()));
+    let pending = Arc::new(PendingPermissions::new());
+    let gate = PermissionGate::new("s1".to_string(), tx, Arc::clone(&pending));
     let o = gate
         .request("exec", "t", "HIGH", "why", Duration::from_secs(1))
         .await;
     assert_eq!(o, PermissionOutcome::Denied);
+    // M13 同族：register 先于 send，发送失败早退臂也必须自清条目。
+    assert!(
+        pending.inner.lock().unwrap().is_empty(),
+        "发送失败臂同样不得滞留登记表（M13）"
+    );
 }
 
 #[tokio::test]
@@ -611,6 +617,28 @@ async fn pending_resolve_unknown_id_is_honest_false() {
         "p-1",
         Some(&json!({"outcome": {"outcome": "selected", "optionId": "allow_once"}}))
     ));
+}
+
+/// M13（2026-10-27 整改批次四）：gate 超时臂自清——登记表不再持有超时
+/// 条目（此前滞留泄漏），迟到 resolve 诚实 false。
+#[tokio::test]
+async fn gate_timeout_removes_own_pending_entry() {
+    let (tx, mut rx) = mpsc::channel::<Value>(16);
+    let pending = Arc::new(PendingPermissions::new());
+    let gate = PermissionGate::new("s1".to_string(), tx, Arc::clone(&pending));
+    // 无人应答 → 短超时 Denied。
+    let o = gate
+        .request("exec", "t", "HIGH", "why", Duration::from_millis(50))
+        .await;
+    assert_eq!(o, PermissionOutcome::Denied);
+    assert!(
+        pending.inner.lock().unwrap().is_empty(),
+        "超时条目必须被失败臂自清（M13）"
+    );
+    // 请求帧确实发出（超时前 outbound 已投递）。
+    assert!(rx.try_recv().is_ok());
+    // 编辑器侧迟到回帧 = 无人等待，诚实丢弃。
+    assert!(!pending.resolve("perm-0", None));
 }
 
 // ---------------------------------------------------------------------------
