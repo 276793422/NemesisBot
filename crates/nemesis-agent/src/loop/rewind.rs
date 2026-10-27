@@ -713,6 +713,33 @@ impl AgentLoop {
             return Err("会话日志写回失败，重做未生效（会话保持回退态）".to_string());
         }
 
+        // F8 对称（BUG-20261028-106）：redo force 强过的强恢复动作同 rewind
+        // 落审计链台账——覆盖 undo→redo 窗口内的外部漂移是高影响操作，
+        // warn! 日志轮转即失，Merkle append-only 审计链才是「留痕」的诚实
+        // 形态。回填写入成功后记账（文件恢复 + 回填都已生效，不为未发生的
+        // 恢复记账）；审计链未启用（默认关）= None，保留上方 warn 兜底可见性。
+        if forced {
+            #[cfg(feature = "security")]
+            if let Some(plugin) = self.security.security_plugin.as_ref() {
+                let recorded = plugin.append_direct_audit_event(
+                    "session.redo",
+                    "redo_rewind",
+                    "user",
+                    "wsapi",
+                    &format!("{session_key}#restored={}", entry.removed_rows.len()),
+                    "forced",
+                    &format!(
+                        "redo force 覆盖 {} 个回退窗口内外部漂移路径（forward_tree={:?}）",
+                        drifted.len(),
+                        entry.forward_tree
+                    ),
+                );
+                if recorded.is_none() {
+                    warn!("[AgentLoop] redo force 审计链未启用，仅日志留痕");
+                }
+            }
+        }
+
         // 3) SessionStore 丢缓存（同 rewind——从回填后的 jsonl 重建）。
         if let Some(store) = self.session_store() {
             store.clear_session(session_key);

@@ -1029,6 +1029,66 @@ async fn e3_json_redo_conflict_scan_unavailable_honest_skip() {
     assert_eq!(total, 4, "JSON 形态行回填照常");
 }
 
+/// F8 对称（BUG-20261028-106）：force redo 覆盖外部漂移与 force rewind 是
+/// 同级高影响强恢复动作，必须同款落 Merkle append-only 审计链——旧行为只
+/// 有 tracing warn（轮转即失，不算留痕），docstring 声称「审计留痕」实为
+/// 谎报。修复后链上落一条 session.redo/forced 事件（operation/decision/
+/// target 可回读，链校验通过）；无漂移直通的 redo 不产生假账。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e3_redo_force_records_audit_chain_event() {
+    let (al, key, dir) = stage_two_turns_git("redo-audit").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    // 挂真实 SecurityPlugin（审计链启用，指向 tempdir）。
+    let chain_path = dir.path().join("audit_chain.jsonl");
+    let plugin = std::sync::Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig {
+            enabled: true,
+            audit_chain_enabled: true,
+            audit_chain_path: Some(chain_path.to_string_lossy().to_string()),
+            default_action: "allow".to_string(),
+            ..Default::default()
+        },
+    ));
+    let mut al_mut = al;
+    al_mut.set_security_plugin(plugin.clone());
+    let al = al_mut;
+    let chain = plugin.audit_chain().unwrap();
+
+    // rewind（无冲突不记账）→ 外部漂移 → force redo 强过 → 台账一条事件。
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    std::fs::write(&file, "external").unwrap();
+    let out = al.redo_rewind_with_force(&key, true).await.unwrap();
+    assert_eq!(out["forced"], true, "{out}");
+    assert_eq!(out["restored_count"], 2, "{out}");
+
+    let ev = chain
+        .get_event(0)
+        .expect("force redo 覆盖外部漂移必须在审计链落一条事件");
+    assert_eq!(ev.operation, "session.redo");
+    assert_eq!(ev.tool_name, "redo_rewind");
+    assert_eq!(ev.decision, "forced");
+    assert_eq!(ev.user, "user");
+    assert!(ev.target.contains(&key), "target 应含会话键: {}", ev.target);
+    assert!(
+        ev.reason.contains("外部漂移"),
+        "reason 应含漂移面描述: {}",
+        ev.reason
+    );
+    assert!(chain.verify_range(0, 0).unwrap(), "链校验");
+
+    // 无漂移直通的 redo（再撤再重做）不产生假账（链仍只有 1 条）。
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(out["forced"], false, "{out}");
+    assert_eq!(chain.total_event_count(), 1, "无漂移不得记账");
+
+    delete_chat_log(&key);
+}
+
 /// BUG-20261028-97 红证（窗口①）：集群任务已派发、回调未回（快照在册，
 /// 数小时级窗口）期间，rewind 必须诚实拒绝——旧行为放行：续行最终回复
 /// append 与 rewind 截断竞争，redo 行数守卫被续行新行击穿。
