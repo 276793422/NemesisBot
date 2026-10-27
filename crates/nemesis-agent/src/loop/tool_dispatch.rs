@@ -985,7 +985,47 @@ impl AgentLoop {
                                 Ok(a) => a,
                                 Err(errmsg) => return errmsg,
                             };
-                            match tool.execute(&exec_args, &ctx).await {
+                            // M1（2026-10-27 整改批次一）：工具 panic 隔离。
+                            // 工具在 agent loop task 内联执行，release
+                            // panic=unwind 下任一工具 panic 会沿 unwind 炸掉整
+                            // 个 loop task → 无 final、无错误回复、无集群回调，
+                            // A 端只能等 stale 安全网（24h 地板）判死。此处
+                            // catch_unwind 只包工具执行 future 本身（hooks/
+                            // formatter 是自有代码，不在包裹面）；panic 映射为
+                            // Err(合成串) 复用下方既有 Err 臂——"Tool error: "
+                            // 前缀让全部下游守卫（tool_result_indicates_error /
+                            // WAL ok 判定 / doom-loop 签名 / tool_batch
+                            // tool_succeeded）按既有失败语义识别，post-failure
+                            // hooks 照跑，loop 存活。诚实边界：iotsmall profile
+                            // 是 panic=abort，catch_unwind 接不住 abort（进程死
+                            // 即任务死，既有取舍）；工具半程副作用（如 multiedit
+                            // 写了一半 panic）与超时放弃 future 的孤儿语义同级，
+                            // 合成串里注明。
+                            let exec = futures::FutureExt::catch_unwind(
+                                std::panic::AssertUnwindSafe(tool.execute(&exec_args, &ctx)),
+                            )
+                            .await;
+                            let exec = match exec {
+                                Ok(inner) => inner,
+                                Err(panic_payload) => {
+                                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>()
+                                    {
+                                        (*s).to_string()
+                                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                        s.clone()
+                                    } else {
+                                        "opaque panic".to_string()
+                                    };
+                                    warn!(
+                                        "[AgentLoop] Tool {} PANIC caught, loop survives: {}",
+                                        call.name, msg
+                                    );
+                                    Err(format!(
+                                        "tool panicked: {msg} (partial side effects possible)"
+                                    ))
+                                }
+                            };
+                            match exec {
                                 Ok(result) => {
                                     debug!(
                                         "[AgentLoop] Tool {} returned: {} bytes",

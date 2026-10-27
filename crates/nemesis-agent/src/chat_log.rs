@@ -259,6 +259,11 @@ fn write_chat_entry(
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("[chat_log] Failed to open {}: {}", path.display(), e);
+            // M2：写入失败面可观测——进降级登记表，gateway 泵到 SSE/健康面。
+            nemesis_utils::degraded::report(
+                "chat_log",
+                format!("open failed: {} ({e})", path.display()),
+            );
             return;
         }
     };
@@ -317,6 +322,11 @@ fn write_chat_entry(
     line.push('\n');
     if let Err(e) = file.write_all(line.as_bytes()) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
+        // M2：写入失败面可观测（磁盘满/句柄失效等）。
+        nemesis_utils::degraded::report(
+            "chat_log",
+            format!("write failed: {} ({e})", path.display()),
+        );
         return;
     }
     // T6（扩展计划 D5）：append 记账——旁路事件账本，sha-only（chat_log

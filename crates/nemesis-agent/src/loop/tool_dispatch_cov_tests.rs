@@ -325,6 +325,61 @@ async fn dispatch_ok_tool_returns_result() {
     assert_eq!(out, "stub ok");
 }
 
+/// M1（2026-10-27 整改批次一）：工具 panic 被隔离为结构化失败——
+/// handle_tool_call 正常返回（loop task 不被 unwind 炸掉），结果带
+/// "Tool error:" + "tool panicked" 双锚（tool_result_indicates_error 等
+/// 下游守卫按既有失败语义识别），且 loop 后续调用照常工作。
+#[tokio::test]
+async fn dispatch_panicking_tool_is_isolated() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct PanicThenOkTool {
+        panics: AtomicBool,
+    }
+
+    #[async_trait]
+    impl Tool for PanicThenOkTool {
+        async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+            if self.panics.swap(false, Ordering::SeqCst) {
+                panic!("cov panic boom");
+            }
+            Ok("recovered".to_string())
+        }
+    }
+
+    let mut al = AgentLoop::new(Box::new(CovLlmProvider), cov_config());
+    al.register_tool(
+        "cov_panic".to_string(),
+        Box::new(PanicThenOkTool {
+            panics: AtomicBool::new(true),
+        }),
+    );
+
+    // 第一次调用：工具 panic → 合成失败串（带半程副作用注记），不炸 loop。
+    let out = al
+        .handle_tool_call(
+            &call("cov_panic", serde_json::json!({})),
+            &ctx_with_base(None),
+        )
+        .await;
+    assert!(
+        out.contains("Tool error:")
+            && out.contains("tool panicked")
+            && out.contains("cov panic boom")
+            && out.contains("partial side effects"),
+        "got: {out}"
+    );
+
+    // loop 存活证据：第二次调用（翻转为 Ok）照常返回成功结果。
+    let out2 = al
+        .handle_tool_call(
+            &call("cov_panic", serde_json::json!({})),
+            &ctx_with_base(None),
+        )
+        .await;
+    assert_eq!(out2, "recovered");
+}
+
 /// 调用点 Some 臂：tool_path_base 存在时，重写后的 args 才进工具
 /// （注册名为 read_file 的 stub —— 注册键与工具类型无关）。
 #[tokio::test]

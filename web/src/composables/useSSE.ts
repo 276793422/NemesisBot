@@ -27,7 +27,9 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 链 hub.publish 播报 starting/cancelled/complete/error）——此前白名单
 // 漏登记，EventSource 从不为该 type 挂 listener，VoiceTab 的订阅收不到
 // 帧（订阅存在 + 后端发布存在 + 白名单缺席 = 实时进度静默失效）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup']
+// M2（2026-10-27）：'system-alert' = 系统级降级告警（磁盘水位升档
+// disk_watermark + 关键写失败聚合 degraded_write），AppLayout 告警条消费。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

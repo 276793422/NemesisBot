@@ -14,6 +14,7 @@ import { useQuestions } from '../composables/useQuestions'
 import { useCredentials } from '../composables/useCredentials'
 import { useCanvas } from '../composables/useCanvas'
 import { useEditorMode } from '../composables/useEditorMode'
+import { useSystemAlerts } from '../composables/useSystemAlerts'
 // 皮肤结构皮肤（v2）：槽位由引擎渲染（skinHasSlot 判定在场，CSS-only
 // 包全部回落原生）；投影 + 动作白名单在此装配一次（模块单例）。
 import { skinHasSlot, ensureSkinMeta } from '../composables/useSkin'
@@ -30,6 +31,8 @@ const { initCredentials } = useCredentials()
 const { initCanvas } = useCanvas()
 // Full Access 放行开关单例订阅（SSE editor-mode + editor.get seed 对齐）。
 const { initEditorMode } = useEditorMode()
+// M2：系统级降级告警条单例订阅（SSE system-alert：磁盘水位 + 写失败聚合）。
+const { systemAlerts, initSystemAlerts, dismiss: dismissSystemAlert } = useSystemAlerts()
 
 // 皮肤数据投影 + 动作白名单装配（幂等单例；router 须从 setup 传）。
 const router = useRouter()
@@ -44,6 +47,7 @@ onMounted(() => {
   initCredentials()
   initCanvas()
   initEditorMode()
+  initSystemAlerts()
   if (skinHasSlot('sidebar') || skinHasSlot('statusbar')) ensureSkinMeta()
 })
 </script>
@@ -69,6 +73,21 @@ onMounted(() => {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <span style="font-weight:600;">NemesisBot</span>
+      </div>
+
+      <!-- M2：系统级降级告警条（磁盘水位 + 关键写失败聚合；critical 红 /
+           warn 琥珀；可手动关闭——磁盘水位回落后服务端也会推 ok 清除） -->
+      <div v-if="systemAlerts.length" class="system-alert-bar" role="alert">
+        <div
+          v-for="alert in systemAlerts"
+          :key="alert.id"
+          class="system-alert-item"
+          :class="alert.level === 'critical' ? 'is-critical' : 'is-warn'"
+        >
+          <span class="system-alert-icon">{{ alert.level === 'critical' ? '⛔' : '⚠️' }}</span>
+          <span class="system-alert-text">{{ alert.message }}</span>
+          <button class="system-alert-close" title="关闭" @click="dismissSystemAlert(alert.id)">×</button>
+        </div>
       </div>
 
       <!-- v3 page 槽：皮肤声明 page:<path> 槽（如 page:/models）时该路由

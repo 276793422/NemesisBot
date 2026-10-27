@@ -1078,6 +1078,12 @@ impl CheckpointStore {
                         warn!(
                             "[checkpoint] turn {turn} 影子 tree 写入失败（本 turn 不可 git 回滚）: {e}"
                         );
+                        // M2：写入失败面可观测——影子 tree 失败 = 该 turn 的
+                        // git 回滚能力丢失，用户需要知道。
+                        nemesis_utils::degraded::report(
+                            "checkpoint_tree",
+                            format!("turn {turn} 影子 tree 写入失败（本 turn 不可 git 回滚）: {e}"),
+                        );
                         None
                     }
                 }

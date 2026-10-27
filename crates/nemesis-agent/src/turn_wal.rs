@@ -177,8 +177,20 @@ impl TurnWal {
                 .and_then(|_| f.write_all(b"\n"))
             {
                 tracing::warn!("[TurnWal] WAL 写入失败（降级为无 WAL）: {e}");
+                // M2：写入失败面可观测（崩溃恢复窗口随之失效）。
+                nemesis_utils::degraded::report(
+                    "turn_wal",
+                    format!(
+                        "WAL 写入失败（降级为无 WAL）: {} ({e})",
+                        self.path.display()
+                    ),
+                );
             } else if let Err(e) = f.flush() {
                 tracing::warn!("[TurnWal] WAL flush 失败: {e}");
+                nemesis_utils::degraded::report(
+                    "turn_wal",
+                    format!("WAL flush 失败: {} ({e})", self.path.display()),
+                );
             }
         }
     }

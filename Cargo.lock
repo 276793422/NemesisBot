@@ -4012,6 +4012,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "libc",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4019,6 +4020,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

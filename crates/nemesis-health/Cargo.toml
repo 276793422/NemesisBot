@@ -19,3 +19,11 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+# M2（2026-10-27 整改批次一）：磁盘水位查询。零新依赖树外包——两平台
+# API 依赖都已在 workspace 依赖图内（Cargo.lock:3206/8516+）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

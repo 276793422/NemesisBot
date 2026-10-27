@@ -440,6 +440,143 @@ pub(crate) async fn init_services(
         info!("[Gateway] Logger → SSE EventHub bridge connected");
     }
 
+    // M2（2026-10-27 整改批次一）：磁盘水位 watchdog + 降级写入面泵。
+    // - watchdog：周期查 workspace 所在卷剩余空间，升档（Ok→Warn/Critical）
+    //   即 SSE `system-alert` + WARN 日志，降档（腾出空间）发恢复事件；
+    //   /ready 挂 disk_watermark 检查项（critical=不就绪）。config
+    //   health.disk_watermark 可关（enabled，默认开）。
+    // - 降级泵：nemesis_utils::degraded 登记表（chat_log/checkpoint_tree/
+    //   turn_wal 写失败聚合，去抖 10min）周期 take_pending → SSE
+    //   `system-alert`。写失败不致命但用户必须知道（回退网/历史落盘正在
+    //   失效），此前只有日志文件里有痕迹。
+    #[cfg(feature = "health")]
+    {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let dw = cfg
+            .health
+            .as_ref()
+            .map(|h| h.disk_watermark.clone())
+            .unwrap_or_default();
+        if dw.enabled {
+            let warn_gb = dw.warn_gb.max(1);
+            let critical_gb = dw.critical_gb;
+            let interval_secs = if dw.interval_secs == 0 {
+                60
+            } else {
+                dw.interval_secs
+            };
+            let workspace = common::workspace_path(&home);
+            // disk_level：0=ok/未知 1=warn 2=critical（watchdog 写，检查闭包读）。
+            let disk_level = Arc::new(AtomicU8::new(0));
+            let disk_detail = Arc::new(parking_lot::Mutex::new(String::new()));
+            health_server.register_check("disk_watermark", {
+                let level = disk_level.clone();
+                let detail = disk_detail.clone();
+                Box::new(move || match level.load(Ordering::Relaxed) {
+                    2 => (
+                        false,
+                        format!("磁盘剩余空间低于 critical 阈值: {}", detail.lock().clone()),
+                    ),
+                    1 => (
+                        true,
+                        format!("磁盘剩余空间低于 warn 阈值: {}", detail.lock().clone()),
+                    ),
+                    _ => (true, "ok".to_string()),
+                })
+            });
+            let level_for_loop = disk_level.clone();
+            let detail_for_loop = disk_detail.clone();
+            let hub_for_disk = web_server.event_hub().clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tick.tick().await;
+                    // 查询失败不打搅（偶发 IO 抖动，下轮再来）；升档错过比误报好。
+                    let Ok(free) = nemesis_health::volume_free_bytes(&workspace) else {
+                        continue;
+                    };
+                    let level = match nemesis_health::evaluate(free, warn_gb, critical_gb) {
+                        nemesis_health::WatermarkLevel::Ok => 0u8,
+                        nemesis_health::WatermarkLevel::Warn => 1,
+                        nemesis_health::WatermarkLevel::Critical => 2,
+                    };
+                    let prev = level_for_loop.swap(level, Ordering::Relaxed);
+                    if level == prev {
+                        continue;
+                    }
+                    let free_gb = free / (1024 * 1024 * 1024);
+                    let level_str = match level {
+                        2 => "critical",
+                        1 => "warn",
+                        _ => "ok",
+                    };
+                    let msg = format!(
+                        "磁盘剩余空间水位变化: {level_str}（剩 {free_gb} GB，warn<{warn_gb} GB，critical<{critical_gb} GB）"
+                    );
+                    *detail_for_loop.lock() = format!("剩 {free_gb} GB");
+                    hub_for_disk.publish(
+                        "system-alert",
+                        serde_json::json!({
+                            "kind": "disk_watermark",
+                            "level": level_str,
+                            "free_gb": free_gb,
+                            "warn_gb": warn_gb,
+                            "critical_gb": critical_gb,
+                            "message": msg,
+                        }),
+                    );
+                    if level == 2 {
+                        warn!("[disk-watermark] {msg}");
+                    } else {
+                        info!("[disk-watermark] {msg}");
+                    }
+                }
+            });
+            info!(
+                "[Gateway] Disk watermark watchdog started (warn<{warn_gb}GB, critical<{critical_gb}GB, every {interval_secs}s)"
+            );
+        }
+        // 降级写入面 /ready 可见（不判不就绪——写失败是降级不是宕机；
+        // 恒开，与磁盘水位开关无关）。
+        health_server.register_check("degraded_writes", {
+            Box::new(|| {
+                let snap = nemesis_utils::degraded::snapshot();
+                if snap.is_empty() {
+                    (true, "ok".to_string())
+                } else {
+                    let summary: Vec<String> = snap
+                        .iter()
+                        .map(|d| format!("{} ×{}", d.kind, d.count))
+                        .collect();
+                    (true, format!("degraded: {}", summary.join(", ")))
+                }
+            })
+        });
+        // 降级泵：恒开（登记表空转成本 ≈ 一次空锁）。interval 首 tick 立即
+        // 到达，登记表为空，零告警。
+        {
+            let hub_for_degraded = web_server.event_hub().clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tick.tick().await;
+                    for d in nemesis_utils::degraded::take_pending() {
+                        hub_for_degraded.publish(
+                            "system-alert",
+                            serde_json::json!({
+                                "kind": "degraded_write",
+                                "degraded": d,
+                            }),
+                        );
+                        warn!("[degraded-write] {} ×{}: {}", d.kind, d.count, d.detail);
+                    }
+                }
+            });
+        }
+    }
+
     // Step 16: Start outbound dispatch (bus outbound → WebSocket sessions)
     //  MSG: 目前这里暂不需要了，因为我们通过主通道直接来收发 web 消息了
     //let dispatch_bus = bus.clone();

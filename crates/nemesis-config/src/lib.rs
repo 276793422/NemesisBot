@@ -205,6 +205,11 @@ pub struct Config {
     /// `ziwei` cargo feature）。见 [`ZiweiConfig`]。
     #[serde(default)]
     pub ziwei: Option<ZiweiConfig>,
+    /// 健康监测旗标（M2；None = 全默认——磁盘水位开，warn 5GB / critical
+    /// 1GB / 60s；critical 只升级告警面不做自动 estop）。见
+    /// [`HealthFlagConfig`]。
+    #[serde(default)]
+    pub health: Option<HealthFlagConfig>,
 }
 
 /// 紫微系统配置（`config.json` 的 `"ziwei"` 段；总控 §9.1）。
@@ -2181,6 +2186,47 @@ impl Default for FormatOnSaveConfig {
             enabled: false,
             formatters: std::collections::BTreeMap::new(),
             timeout_secs: default_format_timeout_secs(),
+        }
+    }
+}
+
+/// 健康监测旗标（`config.json` 的 `health` 段；M2，2026-10-27 整改批次一）。
+/// None = 全默认——磁盘水位监测开（warn 5GB / critical 1GB / 60s）。
+/// critical 臂只升级告警面（SSE `system-alert` + `/ready` 降级），**不做
+/// 自动 estop**（防误伤）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HealthFlagConfig {
+    /// 磁盘水位监测（workspace 所在卷剩余空间）。
+    pub disk_watermark: DiskWatermarkConfig,
+}
+
+/// `health.disk_watermark`：workspace 所在卷剩余空间监测参数。字段全可省。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DiskWatermarkConfig {
+    /// 总开关（默认开——「快满了」可见是 M2 的最小代价最大收益项）。
+    pub enabled: bool,
+    /// warn 阈值（GB；低于此值升 warn 告警）。
+    pub warn_gb: u64,
+    /// critical 阈值（GB；低于此值升 critical——回退网/历史落盘即将失效）。
+    pub critical_gb: u64,
+    /// 监测周期秒数（默认 60；0 视作缺省防呆，与 format_on_save 同口径）。
+    pub interval_secs: u64,
+}
+
+/// 磁盘水位监测周期缺省秒数（serde 缺省 / Default / 0 防呆共用）。
+pub fn default_disk_watermark_interval_secs() -> u64 {
+    60
+}
+
+impl Default for DiskWatermarkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            warn_gb: 5,
+            critical_gb: 1,
+            interval_secs: default_disk_watermark_interval_secs(),
         }
     }
 }
@@ -5108,6 +5154,7 @@ pub fn default_config() -> Config {
         ui: None,
         connectors: None,
         ziwei: None,
+        health: None,
     }
 }
 

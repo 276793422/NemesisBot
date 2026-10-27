@@ -4,6 +4,10 @@
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
 pub mod env_sanitize;
+// M2（2026-10-27 整改批次一）：关键持久化写失败的进程级信号注册表——
+// 生产者 nemesis-agent（chat_log/checkpoint/turn_wal），消费者 gateway
+// 水泵（EventHub system-alert + /ready 面）。
+pub mod degraded;
 pub mod file;
 pub mod fsutil;
 pub mod http_retry;
