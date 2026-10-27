@@ -388,7 +388,12 @@ impl SessionStore {
                 .write()
                 .unwrap()
                 .insert(key.to_string(), session.clone());
-            let _ = self.save(key);
+            // BUG-20261028-95：自愈重建的立即持久化失败不得静默——落盘失败
+            // 时下次 get_or_create 会再重建一遍，故障（磁盘满/权限）完全
+            // 不可见。对齐调用方 save 的 warn 风格留可见信号。
+            if let Err(e) = self.save(key) {
+                tracing::warn!("[session-store] Failed to persist rebuilt session {key}: {e}");
+            }
             return session;
         }
 

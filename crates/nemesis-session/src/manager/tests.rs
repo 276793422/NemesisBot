@@ -1127,3 +1127,56 @@ fn test_concurrent_same_key_saves_produce_valid_file_and_no_tmp_residue() {
         .collect();
     assert!(residue.is_empty(), "residue: {residue:?}");
 }
+
+// —— BUG-20261028-95 红证：会话持久化失败不得静默 ——
+
+#[derive(Clone)]
+struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for CaptureWriter {
+    type Writer = CaptureWriter;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// 保存失败（存储路径被普通文件挡死，write_file_atomic 必 Err）必须留
+/// 可见信号（warn 日志）——旧行为 `let _ = save` 全静默，磁盘故障时用户
+/// 的会话历史悄悄丢，重启后凭空消失，无任何现场可查。
+#[test]
+fn chat_session_save_failure_warns_not_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    // 用普通文件占住存储目录位：save 时 create_dir_all/写 tmp 全部失败。
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let mgr = SessionMgr::with_storage(
+        std::time::Duration::from_secs(3600),
+        blocker.to_str().unwrap(),
+    );
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(CaptureWriter(captured.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    mgr.add_message("web/save-fail-case", "user", "hello");
+
+    let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("Failed to save chat session"),
+        "save 失败必须有可见信号（warn），实际日志: {logs}"
+    );
+}

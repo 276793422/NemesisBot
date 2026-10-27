@@ -1027,6 +1027,49 @@ async fn e3_json_redo_conflict_scan_unavailable_honest_skip() {
     assert_eq!(out["drifted_paths"].as_array().unwrap().len(), 0);
     let (_, total, _, _) = read_chat_log(&key, 100, None);
     assert_eq!(total, 4, "JSON 形态行回填照常");
+}
 
+/// BUG-20261028-97 红证（窗口①）：集群任务已派发、回调未回（快照在册，
+/// 数小时级窗口）期间，rewind 必须诚实拒绝——旧行为放行：续行最终回复
+/// append 与 rewind 截断竞争，redo 行数守卫被续行新行击穿。
+#[tokio::test]
+async fn rewind_rejects_while_continuation_snapshot_pending() {
+    let (mut al, key, _dir) = stage_two_turns("inflight-snap").await;
+    let mgr = Arc::new(crate::loop_continuation::ContinuationManager::new());
+    // 播种在途快照（session_key 指向本会话 = 窗口①）。
+    mgr.save_continuation(
+        "task-inflight-snap",
+        Vec::new(),
+        "call-1",
+        "web",
+        "c1",
+        &key,
+        "peer-1",
+    )
+    .await;
+    al.set_continuation_manager(mgr);
+    let err = al.rewind_to_message(&key, 0, false).await.unwrap_err();
+    assert!(err.contains("集群"), "rewind 必须拒绝在途续行会话: {err}");
+    delete_chat_log(&key);
+}
+
+/// BUG-20261028-97 红证（窗口②）：续行执行中（回调已到、LLM 续行进行时）
+/// rewind 必须拒绝；guard 释放后放行——标记是 RAII 瞬态，不能永久锁死会话。
+#[tokio::test]
+async fn rewind_rejects_while_continuation_executing_then_releases() {
+    let (mut al, key, _dir) = stage_two_turns("inflight-exec").await;
+    let mgr = Arc::new(crate::loop_continuation::ContinuationManager::new());
+    al.set_continuation_manager(mgr.clone());
+    // guard 借局部 Arc 克隆；set 已持独立克隆，两份并存到本测试结束。
+    let guard = mgr.mark_inflight_session(&key);
+    let err = al.rewind_to_message(&key, 0, false).await.unwrap_err();
+    assert!(
+        err.contains("集群"),
+        "rewind 必须拒绝续行执行中的会话: {err}"
+    );
+    drop(guard);
+    al.rewind_to_message(&key, 0, false)
+        .await
+        .expect("guard 释放后 rewind 应放行");
     delete_chat_log(&key);
 }

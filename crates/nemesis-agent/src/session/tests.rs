@@ -2412,3 +2412,66 @@ fn fe_projected_rows_tolerates_malformed_images() {
         "非字符串条目跳过"
     );
 }
+
+/// 测试用 tracing 捕获 writer（BUG-20261028-95 红证配套）。
+#[derive(Clone)]
+struct TraceCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for TraceCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for TraceCapture {
+    type Writer = TraceCapture;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// BUG-20261028-95 红证：自愈重建（rebuild_from_chat_log）后的立即持久化
+/// 失败不得静默——旧行为 `let _ = self.save(key)`，失忆自愈产物落盘失败
+/// （磁盘满/权限）时下一次 get_or_create 又要重建一遍，故障完全不可见。
+/// 造法：store json 位置被同名**目录**占住 → read_to_string 失败走 rebuild
+/// → save 的原子 rename 撞目录必 Err。
+#[test]
+fn rebuild_persist_failure_warns_not_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    // 只含 sanitize 安全字符 → blocker 文件名确定。
+    let key = "rebuildwarn-key1";
+    // rebuild 数据源：chat_log 有行（store json 缺失 + 内存缺失）。
+    crate::chat_log::append_chat_log(key, "user", "rebuild source row");
+
+    // 盘上 json 位置换成目录：读取失败走 rebuild；写入 rename 必败。
+    let blocker = dir.path().join("rebuildwarn-key1.json");
+    std::fs::create_dir_all(&blocker).unwrap();
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(TraceCapture(captured.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let store = SessionStore::new_with_storage(dir.path());
+    let session = store.get_or_create(key);
+    assert!(
+        !session.messages.is_empty(),
+        "前置：rebuild 必须命中（否则测试造数失败）"
+    );
+
+    let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("Failed to persist rebuilt session"),
+        "rebuild 落盘失败必须有可见信号（warn），实际日志: {logs}"
+    );
+
+    crate::chat_log::delete_chat_log(key);
+    let _ = std::fs::remove_dir_all(&blocker);
+}

@@ -1382,6 +1382,19 @@ impl AgentLoop {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, String>>,
     {
+        // BUG-20261028-96：集群续行在途检查。续行回调走 dispatch_continuation
+        // （inline/spawned）不经 session_busy——session_busy 只覆盖轮次生命
+        // 周期；而续行最终落库会 append chat_log + 保存会话，与截断/回退
+        // 竞争（redo 行数守卫被续行新行击穿；append 撞 truncate rename =
+        // 行写进幽灵文件静默丢）。两个在途窗口（快照在册 / 执行中）任一
+        // 命中即诚实拒绝。
+        if let Some(cm) = &self.continuation_manager
+            && cm.has_inflight_work(session_key).await
+        {
+            return Err(format!(
+                "该会话有集群任务在途（快照等待回调或续行执行中），请等任务完成后再{verb}"
+            ));
+        }
         if !self.try_acquire_session(session_key) {
             return Err(format!("会话正在处理消息，请等当前回合完成后再{verb}"));
         }

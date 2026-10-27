@@ -240,7 +240,9 @@ impl SessionMgr {
         session.messages.push(msg);
         session.updated = Local::now().to_rfc3339();
         drop(sessions);
-        let _ = self.save_chat_session(session_key);
+        if let Err(e) = self.save_chat_session(session_key) {
+            tracing::warn!("[session] Failed to save chat session {session_key}: {e}");
+        }
     }
 
     /// Get chat history for a session key.
@@ -260,7 +262,9 @@ impl SessionMgr {
             session.updated = Local::now().to_rfc3339();
         }
         drop(sessions);
-        let _ = self.save_chat_session(key);
+        if let Err(e) = self.save_chat_session(key) {
+            tracing::warn!("[session] Failed to save chat session {key}: {e}");
+        }
     }
 
     /// Get the summary for a chat session.
@@ -277,7 +281,9 @@ impl SessionMgr {
             session.updated = Local::now().to_rfc3339();
         }
         drop(sessions);
-        let _ = self.save_chat_session(key);
+        if let Err(e) = self.save_chat_session(key) {
+            tracing::warn!("[session] Failed to save chat session {key}: {e}");
+        }
     }
 
     /// Truncate history to keep only the last N messages.
@@ -293,7 +299,9 @@ impl SessionMgr {
             session.updated = Local::now().to_rfc3339();
         }
         drop(sessions);
-        let _ = self.save_chat_session(key);
+        if let Err(e) = self.save_chat_session(key) {
+            tracing::warn!("[session] Failed to save chat session {key}: {e}");
+        }
     }
 
     /// Save a single chat session to disk atomically.

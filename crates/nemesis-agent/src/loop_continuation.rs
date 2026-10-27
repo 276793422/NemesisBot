@@ -521,6 +521,25 @@ pub const BG_SPAWN_TASK_PREFIX: &str = "bg_";
 /// This is the main entry point for the Phase 2 continuation system.
 /// It holds an in-memory cache of active continuations and an optional
 /// disk store for persistence across restarts.
+/// BUG-20261028-96：续行执行期的会话级在途标记（RAII）。持有期间
+/// [`ContinuationManager::has_inflight_work`] 对该会话返回 true；drop
+/// （含 panic 展开、`?` 早退）自动清除，不会把会话永久锁死。
+pub(crate) struct ContinuationInflightGuard<'a> {
+    manager: &'a ContinuationManager,
+    session_key: String,
+}
+
+impl Drop for ContinuationInflightGuard<'_> {
+    fn drop(&mut self) {
+        let mut set = self
+            .manager
+            .inflight_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.remove(&self.session_key);
+    }
+}
+
 pub struct ContinuationManager {
     /// In-memory continuation data: task_id -> data.
     continuations: Mutex<HashMap<String, Arc<ContinuationData>>>,
@@ -538,6 +557,11 @@ pub struct ContinuationManager {
     /// [`crate::interrupt_replay::validate_restore_transition`]）。键缺省 =
     /// Checkpoint（存活快照的出厂相位）。进程内存态，随快照回收清理。
     restore_phases: std::sync::Mutex<HashMap<String, crate::interrupt_replay::RestorePhase>>,
+    /// BUG-20261028-96：续行执行中的会话键集合。`handling` 只存 task_id，
+    /// 从 task_id 找不回 session_key——history gate（rewind/undo/redo/fork）
+    /// 需要按会话查「有没有续行正在写历史」，必须有会话维度的独立标记。
+    /// 进程内存态：崩溃即消失，与 handling 同语义（磁盘快照兜底恢复）。
+    inflight_sessions: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl ContinuationManager {
@@ -549,6 +573,7 @@ impl ContinuationManager {
             barrier_timeout: Duration::from_secs(5),
             handling: std::sync::Mutex::new(std::collections::HashSet::new()),
             restore_phases: std::sync::Mutex::new(HashMap::new()),
+            inflight_sessions: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -565,6 +590,7 @@ impl ContinuationManager {
             barrier_timeout: Duration::from_secs(5),
             handling: std::sync::Mutex::new(std::collections::HashSet::new()),
             restore_phases: std::sync::Mutex::new(HashMap::new()),
+            inflight_sessions: std::sync::Mutex::new(std::collections::HashSet::new()),
         };
         // Recover any pending snapshots from disk
         if let Some(ref store) = manager.disk_store {
@@ -882,6 +908,48 @@ impl ContinuationManager {
     pub async fn release_handling(&self, task_id: &str) {
         let mut set = self.handling.lock().unwrap_or_else(|e| e.into_inner());
         set.remove(task_id);
+    }
+
+    /// BUG-20261028-96：该会话是否有集群续行在途（两个窗口任一命中即 true）：
+    /// ① 任务已派发、回调未回——快照仍在册（continuations map 记着
+    /// session_key）；② 回调已到、续行执行中（inflight_sessions 记着
+    /// session_key；`handling` 只存 task_id 找不回会话，必须独立标记）。
+    /// history gate（rewind/undo/redo/fork）据此诚实拒绝，防续行写历史
+    /// （append chat_log + 保存会话）与截断/回退竞争。
+    pub async fn has_inflight_work(&self, session_key: &str) -> bool {
+        if session_key.is_empty() {
+            return false;
+        }
+        if self
+            .inflight_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(session_key)
+        {
+            return true;
+        }
+        self.continuations
+            .lock()
+            .await
+            .values()
+            .any(|c| c.session_key == session_key)
+    }
+
+    /// BUG-20261028-96：标记某会话有续行正在执行，返回 RAII guard（drop 即清，
+    /// 覆盖全部 return 路径）。空 session_key（非会话路径）不打标记——gate
+    /// 只按会话拒绝，空键无从关联。同步锁：Drop 不能 await。
+    pub(crate) fn mark_inflight_session(&self, session_key: &str) -> ContinuationInflightGuard<'_> {
+        if !session_key.is_empty() {
+            let mut set = self
+                .inflight_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            set.insert(session_key.to_string());
+        }
+        ContinuationInflightGuard {
+            manager: self,
+            session_key: session_key.to_string(),
+        }
     }
 
     /// 单飞闸·收口 + 快照回收（发现 F 2026-09-11 真机根修）：最终回复已持久化，
@@ -1214,6 +1282,12 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             return;
         }
     };
+
+    // BUG-20261028-96：续行执行期盖会话级在途标记——history gate
+    // （rewind/undo/redo/fork）acquire 前查 [`ContinuationManager::has_inflight_work`]
+    // 诚实拒绝，防续行最终落库（append chat_log + 保存会话）与截断/回退
+    // 竞争。guard RAII 覆盖本函数全部 return 路径（含错误早退），drop 即清。
+    let _inflight_guard = manager.mark_inflight_session(&cont_data.session_key);
 
     // 1b. P33（2026-09-25 能力扩展）：相位严格校验——快照恢复状态机
     // checkpoint→restored→confirmed。键缺省 = Checkpoint（存活快照直达
