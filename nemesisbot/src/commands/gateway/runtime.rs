@@ -1134,6 +1134,14 @@ pub(crate) async fn run_runtime(
     nemesis_web::handlers::upload::spawn_uploads_sweeper();
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
+    // M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫（session_logs /
+    // boundary / request_logs / terminal / event_ledger；config `logs` 段逐族
+    // 天数，0=族关，全 0 不装配；启动扫一次 + 每 6h 一拍，与 uploads 同拍）。
+    // 删除走 fsutil 韧性包装 + 每族每拍限量；event_ledger 末行非 append 保留
+    //（truncate 旁证）；session_logs meta sidecar 配对同删。改 config 重启生效。
+    let logs_ttl = crate::logs_sweeper::LogsTtl::from_config(cfg.logs.as_ref());
+    crate::logs_sweeper::spawn_logs_sweeper(logs_ttl);
+
     // B11（2026-10-18 snooze）：暂停会话到期唤醒 sweeper（每 10s 扫 meta
     // sidecar；到期摘标记 + 注入恢复 system 行 + 事件广播）。
     nemesis_web::handlers::sessions::spawn_snooze_sweeper();

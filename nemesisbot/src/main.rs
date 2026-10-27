@@ -153,6 +153,10 @@ mod forge_test_runner;
 /// 集群专业职能框架 M4：generate_image 工具（images-openai lane 唯一消费
 /// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
 mod image_gen_tool;
+/// M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫器——session_logs
+/// / boundary / request_logs / terminal / event_ledger 按 `config.logs.ttl`
+/// 逐族保留天数清扫（0=族关），启动扫一次 + 每 6h 一拍，每族每拍限量。
+mod logs_sweeper;
 /// P23（能力扩展 WS10）：stdio MCP server——NemesisBot 能力经 MCP 协议
 /// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。

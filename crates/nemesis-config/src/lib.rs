@@ -210,6 +210,11 @@ pub struct Config {
     /// [`HealthFlagConfig`]。
     #[serde(default)]
     pub health: Option<HealthFlagConfig>,
+    /// 日志五族 TTL 清扫（M7/M8；None = 全默认——session_logs 30d /
+    /// boundary 30d / request_logs 14d / terminal 7d / event_ledger 30d；
+    /// 0 = 该族关闭清扫）。见 [`LogsTtlConfig`]。
+    #[serde(default)]
+    pub logs: Option<LogsTtlConfig>,
 }
 
 /// 紫微系统配置（`config.json` 的 `"ziwei"` 段；总控 §9.1）。
@@ -441,6 +446,42 @@ impl Default for TerminalConfig {
             enabled: false,
             max_sessions: 4,
             shell: None,
+        }
+    }
+}
+
+/// 日志五族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
+/// 2026-10-27 整改批次三）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
+/// 全默认。清扫器（nemesisbot logs_sweeper）启动扫一次 + 每 6h 一拍，
+/// 每族每拍限量 200 件防 IO 尖峰。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LogsTtlConfig {
+    /// 对话历史 JSONL（`logs/session_logs/`，含 .meta.json sidecar 配对
+    /// 同删）。默认 30。
+    pub session_logs: u64,
+    /// 轮次边界事件 sidecar（`logs/boundary/`）。默认 30。
+    pub boundary: u64,
+    /// 主 Agent LLM 请求日志会话目录（`logs/request_logs/{ts}_{rand}/`）。
+    /// 默认 14。
+    pub request_logs: u64,
+    /// PTY 终端全 I/O 审计（`logs/terminal/`，**含回显密码**，敏感面最短）。
+    /// 默认 7。
+    pub terminal: u64,
+    /// 对话账本（`logs/event_ledger/`；**删除条件 = 超龄 且 末行
+    /// op==append**——truncate/fork 行携带 chat_log 的唯一旁证正文，
+    /// 末行非 append 保留）。默认 30。
+    pub event_ledger: u64,
+}
+
+impl Default for LogsTtlConfig {
+    fn default() -> Self {
+        Self {
+            session_logs: 30,
+            boundary: 30,
+            request_logs: 14,
+            terminal: 7,
+            event_ledger: 30,
         }
     }
 }
@@ -5155,6 +5196,7 @@ pub fn default_config() -> Config {
         connectors: None,
         ziwei: None,
         health: None,
+        logs: None,
     }
 }
 
