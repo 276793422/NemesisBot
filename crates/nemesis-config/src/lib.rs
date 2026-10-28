@@ -2822,7 +2822,12 @@ impl std::fmt::Debug for WebChannelConfig {
 impl Default for WebChannelConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // 与字段级 `#[serde(default = "default_true")]` 收敛（serde 双路径
+            // 纪律：web 键整体缺席走这里、enabled 字段缺席走字段级 default，
+            // 两路必须同值——BUG-20261028-109：曾为 false，精简 config.json
+            // （channels 段或 web 子段缺席）会静默关掉 dashboard 唯一 UI，
+            // 与出厂模板/default_config()/migrate 产物的 enabled:true 相反。
+            enabled: true,
             host: default_web_host(),
             port: default_web_port(),
             path: default_web_path(),

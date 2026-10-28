@@ -1021,8 +1021,36 @@ fn test_delegation_tool_permission_tier_config() {
 #[test]
 fn test_channels_config_default() {
     let channels = ChannelsConfig::default();
-    assert!(!channels.web.enabled);
+    // BUG-20261028-109：与字段级 default_true / 出厂模板收敛（web 通道是
+    // dashboard 唯一 UI，缺省开启）。
+    assert!(channels.web.enabled);
     assert_eq!(channels.web.port, 8080);
+}
+
+/// BUG-20261028-109 回归锁：WebChannelConfig 的 serde 双路径默认值必须收敛。
+///
+/// 路径 A：`channels.web` 键整体缺席（含 `channels` 段缺席）→ 走结构体
+/// 手写 Default；路径 B：`web` 键在场但 `enabled` 字段缺席 → 走字段级
+/// `default_true`；路径 C：出厂硬编码默认 `default_config()`。三路必须
+/// 收敛同一默认值——修复前 A=false、B=true、C=true，磁盘 config.json
+/// 一旦精简掉 web 子段，dashboard 静默消失（gateway 照常起、无警告）。
+#[test]
+fn test_web_channel_enabled_default_paths_converge() {
+    let a = ChannelsConfig::default();
+    let b: ChannelsConfig = serde_json::from_str(r#"{"web": {}}"#).unwrap();
+    let c = default_config();
+    assert_eq!(
+        a.web.enabled, b.web.enabled,
+        "serde 双路径默认值必须收敛：web 键缺席与 enabled 键缺席不得给出相反结果"
+    );
+    assert_eq!(
+        a.web.enabled, c.channels.web.enabled,
+        "结构体 Default 必须与出厂硬编码默认收敛"
+    );
+    assert!(
+        a.web.enabled,
+        "web 通道（dashboard 唯一 UI）缺省语义应与出厂模板一致（开启）"
+    );
 }
 
 #[test]
@@ -1357,7 +1385,8 @@ fn test_channels_config_all_disabled() {
 #[test]
 fn test_web_channel_config_defaults() {
     let cfg = WebChannelConfig::default();
-    assert!(!cfg.enabled);
+    // BUG-20261028-109：与字段级 default_true 收敛（缺省开启）。
+    assert!(cfg.enabled);
     assert_eq!(cfg.host, "0.0.0.0");
     assert_eq!(cfg.port, 8080);
     assert_eq!(cfg.path, "/ws");
