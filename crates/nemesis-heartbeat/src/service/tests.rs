@@ -1403,3 +1403,43 @@ fn r46_heartbeat_excluded_channels_intentionally_differs_from_internal_channels(
         assert!(!nemesis_types::is_internal_channel(ch));
     }
 }
+
+// BUG-20261028-113 红证回归锁：handler panic 曾沿调用栈杀死常驻 tick
+// 任务——心跳服务静默永久停摆（running 残留 true，handle 无人 await，
+// panic 无任何日志面）。修复 = catch_unwind 隔离（对齐 observer
+// emit_sync 纪律）：panic 记 error、本拍跳过、循环继续。
+#[tokio::test]
+async fn handler_panic_does_not_kill_tick_loop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+    std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Test task").unwrap();
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let calls_clone = calls.clone();
+    let first = Arc::new(AtomicBool::new(true));
+    let first_clone = first.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace),
+        ..Default::default()
+    });
+    svc.set_handler(Box::new(move |_p, _c, _cid| {
+        if first_clone.swap(false, Ordering::SeqCst) {
+            panic!("simulated handler panic on first tick");
+        }
+        calls_clone.fetch_add(1, Ordering::SeqCst);
+        None
+    }));
+
+    svc.start().await.unwrap();
+    // 首拍（1s）panic；其后 100ms interval 多拍应继续执行。
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    svc.stop();
+    assert!(
+        calls.load(Ordering::SeqCst) >= 1,
+        "tick loop died after handler panic — later ticks never ran (post-panic calls = {})",
+        calls.load(Ordering::SeqCst)
+    );
+}

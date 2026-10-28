@@ -731,10 +731,25 @@ fn execute_heartbeat_tick(
     }
 
     // Step 4: Call handler.
-    let result = match handler {
-        Some(h) => h(prompt, channel, chat_id),
-        None => {
+    // BUG-20261028-113 panic 隔离：handler 是外部闭包（gateway 侧
+    // block_in_place+block_on 跑完整 agent loop），一次 panic 若沿调用栈
+    // 杀死本常驻 tick 任务，心跳服务静默永久停摆（running 残留 true、
+    // handle 无人 await、panic 零日志面——Go 原版 panic 至少 loud 崩进程，
+    // tokio 任务死是 fail-silent）。对齐 observer emit_sync 的隔离纪律：
+    // catch_unwind 记 error、本拍跳过、循环继续。
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handler.as_ref().map(|h| h(prompt, channel, chat_id))
+    }));
+    let result = match outcome {
+        Ok(Some(r)) => r,
+        Ok(None) => {
             tracing::error!("[Heartbeat] Heartbeat handler not configured");
+            return;
+        }
+        Err(_) => {
+            tracing::error!(
+                "[Heartbeat] Heartbeat handler panicked; skipping this tick (loop continues)"
+            );
             return;
         }
     };
