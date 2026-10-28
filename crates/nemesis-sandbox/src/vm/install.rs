@@ -1080,7 +1080,7 @@ async fn install_qemu_packages_termux(entry: &QemuPlatformEntry) -> Result<QemuI
     let sys_path = bin.join(sys_name);
     let version = super::probe::qemu_version_ok(&sys_path)
         .await
-        .map_err(|e| anyhow::anyhow!("包已安装但 {sys_path} 实跑探针失败：{e}"))?;
+        .map_err(|e| anyhow::anyhow!("包已安装但 {} 实跑探针失败：{e}", sys_path.display()))?;
     Ok(QemuInstallReport {
         install_dir: prefix,
         qemu_system: sys_path,
