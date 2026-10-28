@@ -415,6 +415,13 @@ impl CronService {
                                     && job.state.last_status.as_deref() == Some("ok")
                                 {
                                     // 成功单发：下方 retain 删除，无需收尾。
+                                } else if job.state.next_run_at_ms.is_some() {
+                                    // BUG-20261028-116：执行期内被并发 patch 换入
+                                    // 新调度——next_run 指向 patch 刚建立的未来触
+                                    // 发点（改期闸保证 enabled 单发的 at 恒在未来）。
+                                    // 本次触发消费的是「改期前」的调度，单发停摆
+                                    // 收尾（enabled=false + next_run=None）只对已
+                                    // 消费的单发成立，不得把新排程一并停摆。
                                 } else {
                                     // 非删除单发（成败皆然）/ 失败的删除单发：
                                     // 停摆保留。失败的 delete_after_run 任务被
@@ -448,6 +455,12 @@ impl CronService {
                             j.id != *job_id
                                 || !j.delete_after_run
                                 || j.state.last_status.as_deref() != Some("ok")
+                                // BUG-20261028-116：执行期内并发 patch 换入的新
+                                // 调度若已建立 pending 未来触发（next_run=Some），
+                                // 不得按「成功单发即删」移除——否则删掉的是用户
+                                // 刚改好的新排程（patch 后 delete_after_run 跟随
+                                // 新 kind，旧三条件在 cron→at 改期场景全部命中）。
+                                || j.state.next_run_at_ms.is_some()
                         });
                         let _ = save_store_to_path(&store_path, &s);
                     }

@@ -3725,3 +3725,187 @@ fn r127_pause_job_clears_next_run_w1b() {
     // 不存在的 job = false。
     assert!(!handle.pause_job("nope"));
 }
+
+/// 测试辅助：`Arc<Mutex<CronService>>` 的 arm+start。await_holding_lock 是
+/// 数据流型 lint 只认函数级 allow（同 gateway services.rs start_cron_scheduler
+/// 先例）——start 的 future 借用锁内数据，结构性无法先放锁；测试里锁内无
+/// 并发竞争者，无实际死锁风险。
+#[allow(clippy::await_holding_lock)]
+async fn arm_and_start(svc: &Arc<std::sync::Mutex<CronService>>) {
+    let s = svc.lock().unwrap();
+    s.arm(); // H1: arm before start
+    s.start().await.unwrap();
+}
+
+/// BUG-20261028-116 红证①：执行期内并发改期为「未来 at 单发」的任务，
+/// 触发循环的 retain 不得按「成功单发即删」把它吞掉。
+///
+/// patch 发生在 on_job handler 内部（reset next_run 之后、post-exec 之前），
+/// 交错完全确定：post-exec 读到的是 patch 后的当前态（kind=at、
+/// delete_after_run=true、next_run=未来 at_ms、status=ok），旧代码 retain
+/// 三条件全中 → 任务连同用户刚改好的新排程被静默删除。
+#[tokio::test]
+async fn test_fire_loop_keeps_job_rescheduled_to_future_at_during_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = Arc::new(std::sync::Mutex::new(CronService::new(&path)));
+
+    let job = {
+        let s = svc.lock().unwrap();
+        s.add_job(
+            "recurring",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(1000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap()
+    };
+
+    // handler 执行期内把任务改期为 60s 后的单发（模拟用户在执行窗口内改期）。
+    let svc_for_handler = svc.clone();
+    let patched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let patched_clone = patched.clone();
+    let id_for_handler = job.id.clone();
+    svc.lock().unwrap().set_on_job(move |_job| {
+        let s = svc_for_handler.lock().unwrap();
+        let at_ms = Local::now().timestamp_millis() + 60_000;
+        s.patch_job(
+            &id_for_handler,
+            &CronJobPatch {
+                schedule: Some(CronSchedule {
+                    kind: "at".to_string(),
+                    at_ms: Some(at_ms),
+                    every_ms: None,
+                    expr: None,
+                    tz: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("patch during execution must succeed");
+        patched_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok("ok".to_string())
+    });
+
+    arm_and_start(&svc).await;
+
+    // 等 handler 真正跑过（触发循环 tick 1s + job 1s 间隔，余量给慢机）。
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !patched.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "handler never ran within timeout"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // 再让触发循环走完 post-exec + retain（一个 tick 余量）。
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    svc.lock().unwrap().stop();
+
+    let after = svc
+        .lock()
+        .unwrap()
+        .get_job(&job.id)
+        .expect("执行期内被改期为未来单发的任务不得被触发循环 retain 吞掉");
+    assert_eq!(after.schedule.kind, "at");
+    assert!(after.delete_after_run);
+    assert!(after.enabled);
+    assert_eq!(
+        after.state.last_status,
+        Some("ok".to_string()),
+        "本次触发（改期前调度）应正常记账"
+    );
+    assert!(
+        after.state.next_run_at_ms.is_some(),
+        "patch 建立的未来触发点必须保留——删掉它 = 用户刚改好的排程静默失效"
+    );
+}
+
+/// BUG-20261028-116 红证②：执行期内改期 + 本次触发失败——单发停摆收尾
+/// （R34）不得把 patch 刚建立的新排程一并停用清空。
+#[tokio::test]
+async fn test_fire_loop_failed_fire_keeps_rescheduled_future_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = Arc::new(std::sync::Mutex::new(CronService::new(&path)));
+
+    let job = {
+        let s = svc.lock().unwrap();
+        s.add_job(
+            "recurring",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(1000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap()
+    };
+
+    let svc_for_handler = svc.clone();
+    let patched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let patched_clone = patched.clone();
+    let id_for_handler = job.id.clone();
+    svc.lock().unwrap().set_on_job(move |_job| {
+        let s = svc_for_handler.lock().unwrap();
+        let at_ms = Local::now().timestamp_millis() + 60_000;
+        s.patch_job(
+            &id_for_handler,
+            &CronJobPatch {
+                schedule: Some(CronSchedule {
+                    kind: "at".to_string(),
+                    at_ms: Some(at_ms),
+                    every_ms: None,
+                    expr: None,
+                    tz: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("patch during execution must succeed");
+        patched_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        Err("本次触发失败（改期前的调度）".to_string())
+    });
+
+    arm_and_start(&svc).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !patched.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "handler never ran within timeout"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    svc.lock().unwrap().stop();
+
+    let after = svc
+        .lock()
+        .unwrap()
+        .get_job(&job.id)
+        .expect("失败的触发只消费改期前那次，任务本身不得消失");
+    assert_eq!(after.state.last_status, Some("error".to_string()));
+    assert!(
+        after.enabled,
+        "执行期内建立的新排程不得被失败收尾一并停用（R34 只针对已消费的单发）"
+    );
+    assert!(
+        after.state.next_run_at_ms.is_some(),
+        "patch 建立的未来触发点不得被失败收尾清空"
+    );
+}
