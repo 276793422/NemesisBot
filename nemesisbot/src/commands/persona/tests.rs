@@ -1,8 +1,10 @@
-//! persona 命令单测：本地纯函数（解析/清洗/分类）+ 文件型子命令
-//! （current/list/activate/remove/restore —— 临时目录确定性）。
+//! persona 命令单测：文件型子命令（current/list/activate/remove/restore
+//! —— 临时目录确定性）+ 共享分类映射臂钉住。
 //!
 //! cmd_search / cmd_install / fetch_and_convert / search_personas 走 GitHub
-//! API（结构性不可离线单测，L2 集成真进程覆盖）。
+//! API（结构性不可离线单测，L2 集成真进程覆盖）。解析/筛选/转换纯函数的
+//! 真相源在 nemesis-web handlers/persona（BUG-20261028-117 起 CLI 全部委托
+//! 共享实现），其单测住 web crate，此处不重复。
 
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
 // 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
@@ -13,187 +15,78 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// is_agent_file_simple —— 远程仓库 .md 文件筛选
+// map_category（共享真相源：nemesis-web handlers/persona）—— 17 臂全钉。
+// web 侧测试只钉 6 臂，这里补齐其余臂；helper 的 CLI 专属副本已删。
 // ---------------------------------------------------------------------------
 
 #[test]
-fn agent_file_accepts_normal_docs() {
-    assert!(is_agent_file_simple("engineering/code-reviewer.md"));
-    assert!(is_agent_file_simple("marketing/brand/writer.md"));
-}
-
-#[test]
-fn agent_file_rejects_non_md_and_no_dir() {
-    assert!(!is_agent_file_simple("docs/readme.txt"), "not .md");
-    assert!(
-        !is_agent_file_simple("readme.md"),
-        "no '/' — root files rejected"
-    );
-    assert!(!is_agent_file_simple(""));
-}
-
-#[test]
-fn agent_file_rejects_meta_dirs() {
-    for dir in ["scripts", "examples", "integrations", "strategy", ".github"] {
-        assert!(
-            !is_agent_file_simple(&format!("{dir}/agent.md")),
-            "first dir {dir} must be rejected"
-        );
-    }
-}
-
-#[test]
-fn agent_file_rejects_meta_filenames() {
-    for name in [
-        "README.md",
-        "CONTRIBUTING.md",
-        "LICENSE.md",
-        "SECURITY.md",
-        "CONTRIBUTING_zh-CN.md",
-    ] {
-        assert!(
-            !is_agent_file_simple(&format!("engineering/{name}")),
-            "{name}"
-        );
-    }
-    assert!(!is_agent_file_simple("engineering/QUICKSTART.md"));
-    assert!(!is_agent_file_simple("engineering/EXECUTIVE_summary.md"));
-    // 前缀匹配只看文件名段：目录叫 QUICKSTART-x 不受影响。
-    assert!(is_agent_file_simple("QUICKSTART-x/agent.md"));
-}
-
-// ---------------------------------------------------------------------------
-// map_category_simple —— 目录 → 中文分类
-// ---------------------------------------------------------------------------
-
-#[test]
-fn category_maps_known_dirs() {
-    assert_eq!(map_category_simple("engineering"), "开发");
-    assert_eq!(map_category_simple("security"), "安全");
-    assert_eq!(map_category_simple("game-development"), "游戏开发");
-    assert_eq!(map_category_simple("project-management"), "项目管理");
-    assert_eq!(map_category_simple("gis"), "GIS");
-}
-
-#[test]
-fn category_unknown_dir_maps_to_generic() {
-    assert_eq!(map_category_simple("whatever"), "通用");
-    assert_eq!(map_category_simple(""), "通用");
-}
-
-// ---------------------------------------------------------------------------
-// strip_emoji_simple —— emoji 剥离 + trim + 小写
-// ---------------------------------------------------------------------------
-
-#[test]
-fn strip_emoji_removes_emoji_and_normalizes_case() {
-    assert_eq!(strip_emoji_simple("🚀 Rocket Man"), "rocket man");
-    assert_eq!(strip_emoji_simple("  Hello World  "), "hello world");
-    assert_eq!(strip_emoji_simple("开发者"), "开发者");
-}
-
-#[test]
-fn strip_emoji_handles_variation_selector_and_zwj() {
-    // 变体选择符（FE0F）与零宽连接符（200D）都在过滤范围。
-    assert_eq!(strip_emoji_simple("a\u{FE0F}b"), "ab");
-    assert_eq!(strip_emoji_simple("a\u{200D}b"), "ab");
-    // 全 emoji 输入剥完为空串。
-    assert_eq!(strip_emoji_simple("🎯🔥"), "");
-}
-
-// ---------------------------------------------------------------------------
-// parse_frontmatter_simple —— YAML frontmatter 四字段抽取
-// ---------------------------------------------------------------------------
-
-#[test]
-fn frontmatter_parses_all_fields_and_strips_quotes() {
-    let md = "---\nname: \"Code Reviewer\"\nemoji: \"🤖\"\ndescription: \"Reviews code\"\nvibe: strict\nother: ignored\n---\nbody";
-    let (name, emoji, desc, vibe) = parse_frontmatter_simple(md).expect("valid frontmatter parses");
-    assert_eq!(name, "Code Reviewer");
-    assert_eq!(emoji, "🤖");
-    assert_eq!(desc, "Reviews code");
-    assert_eq!(vibe, "strict");
-}
-
-#[test]
-fn frontmatter_without_marker_is_none() {
-    assert!(parse_frontmatter_simple("# Just a title\n\nbody").is_none());
-    assert!(parse_frontmatter_simple("").is_none());
-}
-
-#[test]
-fn frontmatter_missing_name_is_none() {
-    let md = "---\nemoji: 🤖\n---\nbody";
-    assert!(parse_frontmatter_simple(md).is_none(), "name 是必需字段");
-}
-
-#[test]
-fn frontmatter_name_only_yields_empty_optionals() {
-    let md = "---\nname: Writer\n---\nbody";
-    let (name, emoji, desc, vibe) = parse_frontmatter_simple(md).expect("name alone is enough");
-    assert_eq!(name, "Writer");
-    assert_eq!(emoji, "");
-    assert_eq!(desc, "");
-    assert_eq!(vibe, "");
-}
-
-#[test]
-fn frontmatter_unclosed_marker_is_none() {
-    assert!(
-        parse_frontmatter_simple("---\nname: X\n").is_none(),
-        "无闭合 ---"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// parse_sections_simple —— 正文 preamble + ## 段落切分
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sections_split_on_h2_and_keep_preamble() {
-    let md = "# Title\n\nintro line\n\n## First\ncontent A1\ncontent A2\n\n## Second\ncontent B\n";
-    let (preamble, sections) = parse_sections_simple(md);
-    assert_eq!(preamble, "intro line");
-    assert_eq!(sections.len(), 2);
+fn map_category_all_known_dirs() {
     assert_eq!(
-        sections[0],
-        ("First".to_string(), "content A1\ncontent A2".to_string())
+        nemesis_web::handlers::persona::map_category("engineering"),
+        "开发"
     );
-    assert_eq!(sections[1], ("Second".to_string(), "content B".to_string()));
-}
-
-#[test]
-fn sections_without_h2_yield_empty_vec() {
-    let (preamble, sections) = parse_sections_simple("only text\nmore text");
-    assert_eq!(preamble, "only text\nmore text");
-    assert!(sections.is_empty());
-}
-
-#[test]
-fn sections_strip_leading_frontmatter() {
-    let md = "---\nname: X\n---\nintro\n\n## Section\nbody";
-    let (preamble, sections) = parse_sections_simple(md);
-    assert_eq!(preamble, "intro", "frontmatter 不能进 preamble");
-    assert_eq!(sections.len(), 1);
-    assert_eq!(sections[0].0, "Section");
-}
-
-#[test]
-fn sections_h3_stays_inside_current_section() {
-    let md = "## Outer\nbefore\n\n### Inner\ndeep\n";
-    let (_preamble, sections) = parse_sections_simple(md);
-    assert_eq!(sections.len(), 1, "### 不开新段");
-    assert_eq!(sections[0].0, "Outer");
-    assert!(sections[0].1.contains("### Inner"), "### 行留在段内容里");
-}
-
-#[test]
-fn sections_after_first_h2_do_not_leak_into_preamble() {
-    let md = "pre\n\n## A\nx\n\npost-section-line-in-a\n";
-    let (preamble, sections) = parse_sections_simple(md);
-    assert_eq!(preamble, "pre");
-    assert_eq!(sections.len(), 1);
-    assert!(sections[0].1.contains("post-section-line-in-a"));
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("marketing"),
+        "营销"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("security"),
+        "安全"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("design"),
+        "创意"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("academic"),
+        "学术"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("product"),
+        "产品"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("paid-media"),
+        "付费媒体"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("sales"),
+        "销售"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("game-development"),
+        "游戏开发"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("finance"),
+        "金融"
+    );
+    assert_eq!(nemesis_web::handlers::persona::map_category("gis"), "GIS");
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("spatial-computing"),
+        "空间计算"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("specialized"),
+        "专业"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("testing"),
+        "测试"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("support"),
+        "客服"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("project-management"),
+        "项目管理"
+    );
+    assert_eq!(
+        nemesis_web::handlers::persona::map_category("whatever"),
+        "通用"
+    );
+    assert_eq!(nemesis_web::handlers::persona::map_category(""), "通用");
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +164,9 @@ mod file_commands {
     fn activate_missing_persona_bails() {
         let dir = ws();
         let err = cmd_activate(dir.path(), "ghost").expect_err("不存在的人格必须 Err");
-        assert!(err.to_string().contains("不存在"), "err: {err:#}");
+        // BUG-20261028-117 后与 web handler 共用单一真相源，错误文案同源
+        // （persona '<name>' not found）。
+        assert!(err.to_string().contains("not found"), "err: {err:#}");
     }
 
     #[test]
@@ -308,6 +203,61 @@ mod file_commands {
             "agent rules"
         );
         assert!(!dir.path().join("IDENTITY.md").exists(), "缺的文件不复制");
+    }
+
+    #[test]
+    fn activate_archives_memory_and_swaps_heartbeat_like_web() {
+        // BUG-20261028-117：CLI activate 必须与 web activate 同语义——当前
+        // 人格的 memory/ 与 HEARTBEAT.md 先归档回其目录，再恢复目标人格的；
+        // 旧 CLI 只拷 4 个 .md，运行期记忆滞留根目录，被下次 web 切换归档进
+        // 错误的人格（跨人格串档 + 原人格记忆丢失），HEARTBEAT 也不切换。
+        let dir = ws();
+        seed_persona(dir.path(), "default", "default identity");
+        seed_persona(dir.path(), "p1", "identity-1");
+        // 预置 active=default，跳过 ensure 初始化的首次归档（确定性）。
+        std::fs::create_dir_all(dir.path().join("personas")).unwrap();
+        std::fs::write(
+            dir.path().join("personas/_active.json"),
+            r#"{"name":"default"}"#,
+        )
+        .unwrap();
+        // default 的运行期产物：根 memory/ 与 HEARTBEAT.md。
+        std::fs::create_dir_all(dir.path().join("memory")).unwrap();
+        std::fs::write(dir.path().join("memory/note.txt"), "default-run-note").unwrap();
+        std::fs::write(dir.path().join("HEARTBEAT.md"), "default-heartbeat").unwrap();
+        // p1 自带 memory/ 与 HEARTBEAT.md。
+        std::fs::create_dir_all(dir.path().join("personas/p1/memory")).unwrap();
+        std::fs::write(dir.path().join("personas/p1/memory/p1.txt"), "p1-memory").unwrap();
+        std::fs::write(dir.path().join("personas/p1/HEARTBEAT.md"), "p1-heartbeat").unwrap();
+
+        cmd_activate(dir.path(), "p1").expect("activate ok");
+
+        // 归档：default 的运行期 memory/HEARTBEAT 落回 personas/default/。
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("personas/default/memory/note.txt")).unwrap(),
+            "default-run-note",
+            "当前人格运行期 memory 必须先归档"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("personas/default/HEARTBEAT.md")).unwrap(),
+            "default-heartbeat",
+            "当前人格 HEARTBEAT 必须先归档"
+        );
+        // 恢复：p1 的 memory/HEARTBEAT 上根，default 的运行期残留清掉。
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("memory/p1.txt")).unwrap(),
+            "p1-memory",
+            "目标人格 memory 恢复到根"
+        );
+        assert!(
+            !dir.path().join("memory/note.txt").exists(),
+            "旧人格 memory 不得残留根目录"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("HEARTBEAT.md")).unwrap(),
+            "p1-heartbeat",
+            "HEARTBEAT 随人格切换"
+        );
     }
 
     #[test]
@@ -372,8 +322,15 @@ mod file_commands {
     #[test]
     fn restore_requires_default_persona() {
         let dir = ws();
-        let err = cmd_restore(dir.path()).expect_err("无 default 目录 → activate(default) Err");
-        assert!(err.to_string().contains("不存在"), "err: {err:#}");
+        // BUG-20261028-117 后与 web restore 同源：ensure 初始化会从根文件
+        // 搭出 default 人格（空根 → 空 default），restore 在处女 workspace
+        // 上自愈成功而非 Err。
+        cmd_restore(dir.path()).expect("处女 workspace restore 自愈 Ok（同 web）");
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("personas/_active.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(marker["name"], "default", "marker 落到 default");
     }
 
     #[test]
@@ -431,31 +388,12 @@ async fn run_dispatches_local_file_commands() {
 }
 
 // ===========================================================================
-// S11c（quality-hardening goal 冲刺 S11）：map_category_simple 17 臂中只钉过
-// 6 臂——补齐其余 11 臂 + 边界。
-// ===========================================================================
-
-#[test]
-fn map_category_simple_remaining_arms() {
-    assert_eq!(map_category_simple("marketing"), "营销");
-    assert_eq!(map_category_simple("design"), "创意");
-    assert_eq!(map_category_simple("academic"), "学术");
-    assert_eq!(map_category_simple("product"), "产品");
-    assert_eq!(map_category_simple("paid-media"), "付费媒体");
-    assert_eq!(map_category_simple("sales"), "销售");
-    assert_eq!(map_category_simple("finance"), "金融");
-    assert_eq!(map_category_simple("spatial-computing"), "空间计算");
-    assert_eq!(map_category_simple("specialized"), "专业");
-    assert_eq!(map_category_simple("testing"), "测试");
-    assert_eq!(map_category_simple("support"), "客服");
-}
-
-// ===========================================================================
-// wave_b（覆盖率补测 B 波）：本地命令剩余分支 + 解析辅助剩余臂。
+// wave_b（覆盖率补测 B 波）：本地命令剩余分支。
 //
 // 不在此测（EXEMPT）：cmd_search / cmd_install 的联网路径与
 // fetch_and_convert / search_personas 整体函数体 —— GitHub API 真网络，
 // 结构性禁离线单测；Install 的唯一可离线触点是「已安装早退」（下方测）。
+// 解析辅助的 wave_b 测试随 CLI 专属 helper 一起退役（真相源测试住 web crate）。
 // ===========================================================================
 
 mod wave_b {
@@ -542,25 +480,26 @@ mod wave_b {
         assert!(err.to_string().contains("已经安装"), "err: {err:#}");
     }
 
-    /// cmd_remove：删除活动人格但 personas/default 不存在 → 不执行恢复块，
-    /// _active.json 悬空指向已删除的人格（产品现状，见报告可疑点）。
-    /// 这覆盖「匹配活动名但 default 目录缺席」的落穿区域（209-221 家族）。
+    /// cmd_remove：删除活动人格但 personas/default 不存在 → 与 web 同源的
+    /// 激活路径诚实 Err 中止（fail-closed），不删目录、不落悬空 marker。
+    /// （BUG-20261028-117 前旧 CLI 静默删除并留下指向已删人格的 _active.json，
+    /// 之后 web persona 面板读 active 的 PERSONA.json 报错——当时台账已标记
+    /// 可疑点，本轮收口。）预置 _active.json 跳过 ensure 初始化——否则
+    /// activate 内部的 ensure_persona_store 会先自愈搭出 default。
     #[test]
-    fn wave_b_remove_active_persona_without_default_dir_leaves_marker_dangling() {
+    fn wave_b_remove_active_persona_without_default_dir_aborts_fail_closed() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
         wb_seed(ws, "only", "only-identity");
-        cmd_activate(ws, "only").unwrap();
-        cmd_remove(ws, "only").expect("删除活动人格（无 default 可恢复）应 Ok");
-        assert!(!ws.join("personas/only").exists(), "目录已删");
+        wb_active(ws, "only");
+        let err = cmd_remove(ws, "only").expect_err("无 default 可恢复 → 诚实 Err 不悬空");
+        assert!(err.to_string().contains("not found"), "err: {err:#}");
+        assert!(ws.join("personas/only").exists(), "fail-closed：目录不删");
         let marker: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(ws.join("personas/_active.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            marker["name"], "only",
-            "无 default 时 marker 原样悬空指向已删人格"
-        );
+        assert_eq!(marker["name"], "only", "marker 保持一致（人格仍在）");
     }
 
     /// cmd_remove：完全无 _active.json → 跳过整个活动恢复检测块（204 存在性假臂），
@@ -573,26 +512,6 @@ mod wave_b {
         cmd_remove(ws, "loner").expect("无 marker 时 remove 应 Ok");
         assert!(!ws.join("personas/loner").exists());
         assert!(!ws.join("personas/_active.json").exists(), "不创建 marker");
-    }
-
-    /// strip_emoji_simple：U+1F000 段（低补充平面 emoji 区间臂，592 行模式段）。
-    #[test]
-    fn wave_b_strip_emoji_low_supplementary_plane_range() {
-        // U+1F000（麻将牌）落在 '\u{1F000}'..='\u{1FFFF}' 过滤臂，
-        // 与既有测试常用的 U+1F300.. 区分臂不同。
-        assert_eq!(strip_emoji_simple("\u{1F000}kept"), "kept");
-        assert_eq!(strip_emoji_simple("\u{1F0CF}"), "");
-    }
-
-    /// parse_sections_simple：frontmatter 以 --- 开头但无闭合 ---
-    /// → body 回退整段原文（635-637 else 臂）；所有非 H2 行进 preamble，
-    /// sections 为空。
-    #[test]
-    fn wave_b_parse_sections_unclosed_frontmatter_keeps_whole_body() {
-        let md = "---\nname: never-closed\nnot-a-section tail";
-        let (preamble, sections) = parse_sections_simple(md);
-        assert!(sections.is_empty(), "无闭合 frontmatter 不产生 section");
-        assert_eq!(preamble, md, "原文整体留在 preamble");
     }
 }
 

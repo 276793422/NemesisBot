@@ -81,7 +81,8 @@ struct Section {
 // Category mapping
 // ---------------------------------------------------------------------------
 
-fn map_category(dir: &str) -> &'static str {
+/// 目录名 → 中文分类展示名（单一真相源；CLI `persona search` 同源消费）。
+pub fn map_category(dir: &str) -> &'static str {
     match dir {
         "engineering" => "开发",
         "marketing" => "营销",
@@ -107,7 +108,9 @@ fn map_category(dir: &str) -> &'static str {
 // File filtering & parsing
 // ---------------------------------------------------------------------------
 
-fn is_agent_file(path: &str) -> bool {
+/// 超市 .md 路径筛选（CLI `persona search` 同源消费；BUG-20261028-117 前
+/// CLI 侧简化版漏 `filename == id` 臂）。
+pub fn is_agent_file(path: &str) -> bool {
     if !path.ends_with(".md") {
         return false;
     }
@@ -168,6 +171,13 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
+/// 剥掉取值段的 markdown 强调标记与空白：「**姓名：** Alice」与
+///「**姓名：Alice**」两种形态都不留星号（BUG-20261028-117：尾部 `**`
+/// 残留曾写进 PERSONA.json 展示名）。
+fn clean_name_value(raw: &str) -> String {
+    raw.trim().trim_matches('*').trim().to_string()
+}
+
 /// Extract name and emoji from NemesisBot IDENTITY.md format.
 fn extract_identity_info(content: &str) -> (String, String) {
     let mut name = "default".to_string();
@@ -181,18 +191,14 @@ fn extract_identity_info(content: &str) -> (String, String) {
                 .or_else(|| line.find(": **"))
                 .or_else(|| line.find(":**"))
             {
-                let rest = &line[idx + "：".len()..]
-                    .trim_start_matches('*')
-                    .trim_start_matches(' ')
-                    .trim_start_matches('*')
-                    .trim();
+                let rest = clean_name_value(&line[idx + "：".len()..]);
                 if !rest.is_empty() {
-                    name = rest.to_string();
+                    name = rest;
                 }
             } else if let Some(rest) = line.split_once(['：', ':']).map(|x| x.1) {
-                let rest = rest.trim().trim_start_matches('*').trim();
+                let rest = clean_name_value(rest);
                 if !rest.is_empty() {
-                    name = rest.to_string();
+                    name = rest;
                 }
             }
         }
@@ -645,6 +651,234 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
 }
 
 // ---------------------------------------------------------------------------
+// 共享真相源 API（BUG-20261028-117：CLI `nemesisbot persona` 同源消费。
+// 此前 CLI 侧各自维护简化实现——activate 不归档旧人格、install 转换产物缺
+// 字段——与 web 面语义分裂，跨入口切换会串档/丢文件。）
+// ---------------------------------------------------------------------------
+
+/// 初始化人格存储：首次（无 `_active.json`）把 workspace 根的现有人格文件
+/// 与 memory/sessions/logs 归档进 `personas/default/` 并写 default 激活标记。
+pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
+    let personas_dir = resolve_path(workspace, "personas")?;
+    // Gate on the real init marker (_active.json), NOT on the personas/ dir.
+    // A persona-shop download creates personas/<id>/ (hence personas/)
+    // without writing _active.json; gating on the dir alone would skip
+    // initialization and leave _active.json missing, so cmd_current /
+    // cmd_list fail with "failed to read _active.json".
+    if personas_dir.join("_active.json").exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&personas_dir)
+        .map_err(|e| format!("failed to create personas dir: {}", e))?;
+
+    let default_dir = personas_dir.join("default");
+    std::fs::create_dir_all(&default_dir)
+        .map_err(|e| format!("failed to create default dir: {}", e))?;
+
+    for &file in PERSONA_FILES.iter().chain(PERSONA_ARCHIVE_FILES.iter()) {
+        let src = resolve_path(workspace, file)?;
+        if src.exists() {
+            let content = std::fs::read_to_string(&src)
+                .map_err(|e| format!("failed to read {}: {}", file, e))?;
+            std::fs::write(default_dir.join(file), &content)
+                .map_err(|e| format!("failed to write {}: {}", file, e))?;
+        }
+    }
+
+    // Archive memory/ directory if it exists
+    for &dir_name in PERSONA_ARCHIVE_DIRS {
+        let src_dir = resolve_path(workspace, dir_name)?;
+        if src_dir.exists() {
+            let dst_dir = default_dir.join(dir_name);
+            copy_dir_recursive(&src_dir, &dst_dir)
+                .map_err(|e| format!("failed to archive {}: {}", dir_name, e))?;
+        }
+    }
+
+    // Build PERSONA.json from actual workspace files
+    let identity_path = resolve_path(workspace, "IDENTITY.md")?;
+    let (name, emoji) = if identity_path.exists() {
+        let content = std::fs::read_to_string(&identity_path).unwrap_or_default();
+        extract_identity_info(&content)
+    } else {
+        ("default".to_string(), "🤖".to_string())
+    };
+    let persona_json = serde_json::json!({
+        "name": name,
+        "emoji": emoji,
+        "description": "",
+    });
+    let json_str = serde_json::to_string_pretty(&persona_json)
+        .map_err(|e| format!("failed to serialize PERSONA.json: {}", e))?;
+    std::fs::write(default_dir.join("PERSONA.json"), json_str)
+        .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
+
+    let active = serde_json::json!({"name": "default"});
+    let active_str = serde_json::to_string_pretty(&active)
+        .map_err(|e| format!("failed to serialize _active.json: {}", e))?;
+    // REL-002：统一原子写入（人格激活状态）。
+    nemesis_utils::write_file_atomic(
+        &personas_dir.join("_active.json").to_string_lossy(),
+        active_str.as_bytes(),
+        0o600,
+    )
+    .map_err(|e| format!("failed to write _active.json: {}", e))?;
+
+    Ok(())
+}
+
+/// 人格激活完整生命周期（web activate/restore 与 CLI activate/remove 共享
+/// 的单一真相源）：归档当前人格 → 清理 workspace 根 → 恢复目标人格 →
+/// 原子写激活标记。
+pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), String> {
+    ensure_persona_store(workspace)?;
+
+    let target_dir = resolve_path(workspace, &format!("personas/{}", name))?;
+    if !target_dir.exists() {
+        return Err(format!("persona '{}' not found", name));
+    }
+
+    let read_active = || -> Result<String, String> {
+        let path = resolve_path(workspace, "personas/_active.json")?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read _active.json: {}", e))?;
+        let v: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("failed to parse _active.json: {}", e))?;
+        v.get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "invalid _active.json: missing name".to_string())
+    };
+
+    // Step 1: Archive current persona data
+    let current = read_active()?;
+    if current != name {
+        let archive_dir = resolve_path(workspace, &format!("personas/{}", current))?;
+        std::fs::create_dir_all(&archive_dir)
+            .map_err(|e| format!("failed to create archive dir: {}", e))?;
+        let all_files: Vec<&&str> = PERSONA_FILES
+            .iter()
+            .chain(PERSONA_ARCHIVE_FILES.iter())
+            .collect();
+        for &file in &all_files {
+            let src = resolve_path(workspace, file)?;
+            if src.exists() {
+                let content = std::fs::read_to_string(&src)
+                    .map_err(|e| format!("archive: failed to read {}: {}", file, e))?;
+                std::fs::write(archive_dir.join(file), &content)
+                    .map_err(|e| format!("archive: failed to write {}: {}", file, e))?;
+            }
+        }
+        // Archive directories (memory/)
+        for &dir_name in PERSONA_ARCHIVE_DIRS {
+            let src_dir = resolve_path(workspace, dir_name)?;
+            if src_dir.exists() {
+                let dst_dir = archive_dir.join(dir_name);
+                if dst_dir.exists() {
+                    std::fs::remove_dir_all(&dst_dir)
+                        .map_err(|e| format!("archive: failed to clean {}: {}", dir_name, e))?;
+                }
+                copy_dir_recursive(&src_dir, &dst_dir)
+                    .map_err(|e| format!("archive: failed to copy {}: {}", dir_name, e))?;
+            }
+        }
+    }
+
+    // Step 2: Clean workspace root of all persona-managed files/dirs
+    let all_files: Vec<&&str> = PERSONA_FILES
+        .iter()
+        .chain(PERSONA_ARCHIVE_FILES.iter())
+        .collect();
+    for &file in &all_files {
+        let dst = resolve_path(workspace, file)?;
+        if dst.exists() {
+            let _ = std::fs::remove_file(&dst);
+        }
+    }
+    for &dir_name in PERSONA_ARCHIVE_DIRS {
+        let dst_dir = resolve_path(workspace, dir_name)?;
+        if dst_dir.exists() {
+            std::fs::remove_dir_all(&dst_dir)
+                .map_err(|e| format!("clean: failed to remove {}: {}", dir_name, e))?;
+        }
+    }
+
+    // Step 3: Restore target persona data
+    for &file in &all_files {
+        let src = target_dir.join(file);
+        if src.exists() {
+            let content = std::fs::read_to_string(&src)
+                .map_err(|e| format!("restore: failed to read {}: {}", file, e))?;
+            let dst = resolve_path(workspace, file)?;
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&dst, &content)
+                .map_err(|e| format!("restore: failed to write {}: {}", file, e))?;
+        }
+    }
+    // Restore directories
+    for &dir_name in PERSONA_ARCHIVE_DIRS {
+        let src_dir = target_dir.join(dir_name);
+        if src_dir.exists() {
+            let dst_dir = resolve_path(workspace, dir_name)?;
+            std::fs::create_dir_all(&dst_dir)
+                .map_err(|e| format!("restore: failed to create {}: {}", dir_name, e))?;
+            copy_dir_recursive(&src_dir, &dst_dir)
+                .map_err(|e| format!("restore: failed to copy {}: {}", dir_name, e))?;
+        }
+    }
+
+    // Ensure memory/ dir and default MEMORY.md exist for new personas
+    let memory_dir = resolve_path(workspace, "memory")?;
+    let memory_file = memory_dir.join("MEMORY.md");
+    if !memory_file.exists() {
+        let _ = std::fs::create_dir_all(&memory_dir);
+        let default = "# 长期记忆\n\n（此文件存储应该跨会话持久化保存的重要信息。）\n\n## 用户信息\n\n（关于用户的重要事实）\n\n## 偏好\n\n（随时间了解到的用户偏好）\n\n## 重要笔记\n\n（需要记住的事情）\n";
+        let _ = std::fs::write(&memory_file, default);
+    }
+
+    let path = resolve_path(workspace, "personas/_active.json")?;
+    let v = serde_json::json!({"name": name});
+    let s = serde_json::to_string_pretty(&v).map_err(|e| format!("serialize error: {}", e))?;
+    // REL-002：统一原子写入（人格激活状态）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), s.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to write _active.json: {}", e))
+}
+
+/// 超市 agent md → 人格五件套的完整转换产物（install 转换单一真相源）。
+pub struct ConvertedPersona {
+    pub identity: String,
+    pub soul: String,
+    pub agent_full: String,
+    pub tools_full: String,
+    pub persona_json: String,
+}
+
+/// 把超市 .md 原文转换为五件套：IDENTITY/SOUL 全量替换；AGENT/TOOLS =
+/// 系统默认模板 + 人格附加段；PERSONA.json 含 color/tools/vibe/frontmatter
+/// 扩展字段（BUG-20261028-117 前 CLI 简化版缺这些字段与 HEARTBEAT.md）。
+pub fn convert_agent_content(content: &str) -> ConvertedPersona {
+    let fm = parse_frontmatter(content);
+    let files = convert_agent_md(content);
+    let agent_full = format!("{}\n{}", DEFAULT_AGENT_MD, files.agent_extra);
+    let tools_full = if files.tools_extra.is_empty() {
+        DEFAULT_TOOLS_MD.to_string()
+    } else {
+        format!("{}\n{}", DEFAULT_TOOLS_MD, files.tools_extra)
+    };
+    let persona_json =
+        serde_json::to_string_pretty(&build_persona_json(fm.as_ref())).unwrap_or_default();
+    ConvertedPersona {
+        identity: files.identity,
+        soul: files.soul,
+        agent_full,
+        tools_full,
+        persona_json,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PersonaHandler
 // ---------------------------------------------------------------------------
 
@@ -772,72 +1006,7 @@ impl PersonaHandler {
     // -----------------------------------------------------------------------
 
     fn ensure_initialized(&self, workspace: &str) -> Result<(), String> {
-        let personas_dir = resolve_path(workspace, "personas")?;
-        // Gate on the real init marker (_active.json), NOT on the personas/ dir.
-        // A persona-shop download creates personas/<id>/ (hence personas/)
-        // without writing _active.json; gating on the dir alone would skip
-        // initialization and leave _active.json missing, so cmd_current /
-        // cmd_list fail with "failed to read _active.json".
-        if personas_dir.join("_active.json").exists() {
-            return Ok(());
-        }
-        std::fs::create_dir_all(&personas_dir)
-            .map_err(|e| format!("failed to create personas dir: {}", e))?;
-
-        let default_dir = personas_dir.join("default");
-        std::fs::create_dir_all(&default_dir)
-            .map_err(|e| format!("failed to create default dir: {}", e))?;
-
-        for &file in PERSONA_FILES.iter().chain(PERSONA_ARCHIVE_FILES.iter()) {
-            let src = resolve_path(workspace, file)?;
-            if src.exists() {
-                let content = std::fs::read_to_string(&src)
-                    .map_err(|e| format!("failed to read {}: {}", file, e))?;
-                std::fs::write(default_dir.join(file), &content)
-                    .map_err(|e| format!("failed to write {}: {}", file, e))?;
-            }
-        }
-
-        // Archive memory/ directory if it exists
-        for &dir_name in PERSONA_ARCHIVE_DIRS {
-            let src_dir = resolve_path(workspace, dir_name)?;
-            if src_dir.exists() {
-                let dst_dir = default_dir.join(dir_name);
-                copy_dir_recursive(&src_dir, &dst_dir)
-                    .map_err(|e| format!("failed to archive {}: {}", dir_name, e))?;
-            }
-        }
-
-        // Build PERSONA.json from actual workspace files
-        let identity_path = resolve_path(workspace, "IDENTITY.md")?;
-        let (name, emoji) = if identity_path.exists() {
-            let content = std::fs::read_to_string(&identity_path).unwrap_or_default();
-            extract_identity_info(&content)
-        } else {
-            ("default".to_string(), "🤖".to_string())
-        };
-        let persona_json = serde_json::json!({
-            "name": name,
-            "emoji": emoji,
-            "description": "",
-        });
-        let json_str = serde_json::to_string_pretty(&persona_json)
-            .map_err(|e| format!("failed to serialize PERSONA.json: {}", e))?;
-        std::fs::write(default_dir.join("PERSONA.json"), json_str)
-            .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
-
-        let active = serde_json::json!({"name": "default"});
-        let active_str = serde_json::to_string_pretty(&active)
-            .map_err(|e| format!("failed to serialize _active.json: {}", e))?;
-        // REL-002：统一原子写入（人格激活状态）。
-        nemesis_utils::write_file_atomic(
-            &personas_dir.join("_active.json").to_string_lossy(),
-            active_str.as_bytes(),
-            0o600,
-        )
-        .map_err(|e| format!("failed to write _active.json: {}", e))?;
-
-        Ok(())
+        ensure_persona_store(workspace)
     }
 
     fn read_active(&self, workspace: &str) -> Result<String, String> {
@@ -850,15 +1019,6 @@ impl PersonaHandler {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| "invalid _active.json: missing name".to_string())
-    }
-
-    fn write_active(&self, workspace: &str, name: &str) -> Result<(), String> {
-        let path = resolve_path(workspace, "personas/_active.json")?;
-        let v = serde_json::json!({"name": name});
-        let s = serde_json::to_string_pretty(&v).map_err(|e| format!("serialize error: {}", e))?;
-        // REL-002：统一原子写入（人格激活状态）。
-        nemesis_utils::write_file_atomic(&path.to_string_lossy(), s.as_bytes(), 0o600)
-            .map_err(|e| format!("failed to write _active.json: {}", e))
     }
 
     fn read_persona_json(
@@ -965,103 +1125,7 @@ impl PersonaHandler {
         workspace: &str,
         name: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        self.ensure_initialized(workspace)?;
-
-        let target_dir = resolve_path(workspace, &format!("personas/{}", name))?;
-        if !target_dir.exists() {
-            return Err(format!("persona '{}' not found", name));
-        }
-
-        // Step 1: Archive current persona data
-        let current = self.read_active(workspace)?;
-        if current != name {
-            let archive_dir = resolve_path(workspace, &format!("personas/{}", current))?;
-            std::fs::create_dir_all(&archive_dir)
-                .map_err(|e| format!("failed to create archive dir: {}", e))?;
-            let all_files: Vec<&&str> = PERSONA_FILES
-                .iter()
-                .chain(PERSONA_ARCHIVE_FILES.iter())
-                .collect();
-            for &file in &all_files {
-                let src = resolve_path(workspace, file)?;
-                if src.exists() {
-                    let content = std::fs::read_to_string(&src)
-                        .map_err(|e| format!("archive: failed to read {}: {}", file, e))?;
-                    std::fs::write(archive_dir.join(file), &content)
-                        .map_err(|e| format!("archive: failed to write {}: {}", file, e))?;
-                }
-            }
-            // Archive directories (memory/)
-            for &dir_name in PERSONA_ARCHIVE_DIRS {
-                let src_dir = resolve_path(workspace, dir_name)?;
-                if src_dir.exists() {
-                    let dst_dir = archive_dir.join(dir_name);
-                    if dst_dir.exists() {
-                        std::fs::remove_dir_all(&dst_dir)
-                            .map_err(|e| format!("archive: failed to clean {}: {}", dir_name, e))?;
-                    }
-                    copy_dir_recursive(&src_dir, &dst_dir)
-                        .map_err(|e| format!("archive: failed to copy {}: {}", dir_name, e))?;
-                }
-            }
-        }
-
-        // Step 2: Clean workspace root of all persona-managed files/dirs
-        let all_files: Vec<&&str> = PERSONA_FILES
-            .iter()
-            .chain(PERSONA_ARCHIVE_FILES.iter())
-            .collect();
-        for &file in &all_files {
-            let dst = resolve_path(workspace, file)?;
-            if dst.exists() {
-                let _ = std::fs::remove_file(&dst);
-            }
-        }
-        for &dir_name in PERSONA_ARCHIVE_DIRS {
-            let dst_dir = resolve_path(workspace, dir_name)?;
-            if dst_dir.exists() {
-                std::fs::remove_dir_all(&dst_dir)
-                    .map_err(|e| format!("clean: failed to remove {}: {}", dir_name, e))?;
-            }
-        }
-
-        // Step 3: Restore target persona data
-        for &file in &all_files {
-            let src = target_dir.join(file);
-            if src.exists() {
-                let content = std::fs::read_to_string(&src)
-                    .map_err(|e| format!("restore: failed to read {}: {}", file, e))?;
-                let dst = resolve_path(workspace, file)?;
-                if let Some(parent) = dst.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                std::fs::write(&dst, &content)
-                    .map_err(|e| format!("restore: failed to write {}: {}", file, e))?;
-            }
-        }
-        // Restore directories
-        for &dir_name in PERSONA_ARCHIVE_DIRS {
-            let src_dir = target_dir.join(dir_name);
-            if src_dir.exists() {
-                let dst_dir = resolve_path(workspace, dir_name)?;
-                std::fs::create_dir_all(&dst_dir)
-                    .map_err(|e| format!("restore: failed to create {}: {}", dir_name, e))?;
-                copy_dir_recursive(&src_dir, &dst_dir)
-                    .map_err(|e| format!("restore: failed to copy {}: {}", dir_name, e))?;
-            }
-        }
-
-        // Ensure memory/ dir and default MEMORY.md exist for new personas
-        let memory_dir = resolve_path(workspace, "memory")?;
-        let memory_file = memory_dir.join("MEMORY.md");
-        if !memory_file.exists() {
-            let _ = std::fs::create_dir_all(&memory_dir);
-            let default = "# 长期记忆\n\n（此文件存储应该跨会话持久化保存的重要信息。）\n\n## 用户信息\n\n（关于用户的重要事实）\n\n## 偏好\n\n（随时间了解到的用户偏好）\n\n## 重要笔记\n\n（需要记住的事情）\n";
-            let _ = std::fs::write(&memory_file, default);
-        }
-
-        self.write_active(workspace, name)?;
-
+        activate_persona_workspace(workspace, name)?;
         Ok(Some(serde_json::json!({
             "activated": true,
             "name": name,
@@ -1221,7 +1285,7 @@ impl PersonaHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let content = fetch_agent_content(id).await?;
         let fm = parse_frontmatter(&content);
-        let files = convert_agent_md(&content);
+        let converted = convert_agent_content(&content);
 
         let name = fm.as_ref().map(|f| f.name.as_str()).unwrap_or(id);
         let emoji = fm.as_ref().map(|f| f.emoji.as_str()).unwrap_or("🤖");
@@ -1231,14 +1295,6 @@ impl PersonaHandler {
             .unwrap_or(false);
 
         // Build converted files preview
-        let agent_full = format!("{}\n{}", DEFAULT_AGENT_MD, files.agent_extra);
-        let tools_full = if files.tools_extra.is_empty() {
-            DEFAULT_TOOLS_MD.to_string()
-        } else {
-            format!("{}\n{}", DEFAULT_TOOLS_MD, files.tools_extra)
-        };
-        let persona_json = build_persona_json(fm.as_ref());
-
         Ok(Some(serde_json::json!({
             "id": id,
             "name": name,
@@ -1246,11 +1302,11 @@ impl PersonaHandler {
             "installed": installed,
             "raw": content,
             "converted": {
-                "IDENTITY.md": files.identity,
-                "SOUL.md": files.soul,
-                "AGENT.md": agent_full,
-                "TOOLS.md": tools_full,
-                "PERSONA.json": serde_json::to_string_pretty(&persona_json).unwrap_or_default(),
+                "IDENTITY.md": converted.identity,
+                "SOUL.md": converted.soul,
+                "AGENT.md": converted.agent_full,
+                "TOOLS.md": converted.tools_full,
+                "PERSONA.json": converted.persona_json,
             },
         })))
     }
@@ -1272,38 +1328,28 @@ impl PersonaHandler {
 
         let content = fetch_agent_content(id).await?;
         let fm = parse_frontmatter(&content);
-        let files = convert_agent_md(&content);
+        let converted = convert_agent_content(&content);
 
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create dir: {}", e))?;
 
         // Write PERSONA.json
-        let persona_json = build_persona_json(fm.as_ref());
-        std::fs::write(
-            dir.join("PERSONA.json"),
-            serde_json::to_string_pretty(&persona_json).unwrap(),
-        )
-        .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
+        std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)
+            .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
 
         // Write IDENTITY.md (full replacement)
-        std::fs::write(dir.join("IDENTITY.md"), &files.identity)
+        std::fs::write(dir.join("IDENTITY.md"), &converted.identity)
             .map_err(|e| format!("failed to write IDENTITY.md: {}", e))?;
 
         // Write SOUL.md (full replacement)
-        std::fs::write(dir.join("SOUL.md"), &files.soul)
+        std::fs::write(dir.join("SOUL.md"), &converted.soul)
             .map_err(|e| format!("failed to write SOUL.md: {}", e))?;
 
         // Write AGENT.md (system default + persona workflow)
-        let agent_content = format!("{}\n{}", DEFAULT_AGENT_MD, files.agent_extra);
-        std::fs::write(dir.join("AGENT.md"), &agent_content)
+        std::fs::write(dir.join("AGENT.md"), &converted.agent_full)
             .map_err(|e| format!("failed to write AGENT.md: {}", e))?;
 
         // Write TOOLS.md (system default + persona tools if any)
-        let tools_content = if files.tools_extra.is_empty() {
-            DEFAULT_TOOLS_MD.to_string()
-        } else {
-            format!("{}\n{}", DEFAULT_TOOLS_MD, files.tools_extra)
-        };
-        std::fs::write(dir.join("TOOLS.md"), &tools_content)
+        std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)
             .map_err(|e| format!("failed to write TOOLS.md: {}", e))?;
 
         // Write empty HEARTBEAT.md for new persona

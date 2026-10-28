@@ -348,6 +348,19 @@ fn extract_identity_info_defaults_when_missing() {
 }
 
 #[test]
+fn extract_identity_info_strips_trailing_bold_markers() {
+    // BUG-20261028-117：模板形态「- **姓名：Alice**」（值整体带强调标记）
+    // 的尾部 `**` 必须剥掉——trim 链只剥前导星号，残留曾写进 PERSONA.json
+    // 展示名（Dashboard 人格名带星号）。全角/半角冒号两臂都要干净。
+    let (name, _) = extract_identity_info("- **姓名：Alice**\n");
+    assert_eq!(name, "Alice", "全角冒号 + 尾部强调标记");
+    let (name, _) = extract_identity_info("- **姓名: Bob**\n");
+    assert_eq!(name, "Bob", "半角冒号 + 尾部强调标记");
+    let (name, _) = extract_identity_info("- **姓名：** Carol\n");
+    assert_eq!(name, "Carol", "既有模板形态不回归");
+}
+
+#[test]
 fn parse_frontmatter_full() {
     let md = "---\nname: \"Bot\"\nemoji: 🤖\ndescription: desc\ncolor: red\ntools: web\nvibe: chill\n---\nbody";
     let fm = parse_frontmatter(md).expect("frontmatter");

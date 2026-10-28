@@ -159,32 +159,11 @@ fn cmd_list(workspace: &std::path::Path) -> Result<()> {
 }
 
 fn cmd_activate(workspace: &std::path::Path, name: &str) -> Result<()> {
-    let src_dir = workspace.join(format!("personas/{}", name));
-    if !src_dir.exists() {
-        anyhow::bail!(
-            "人格 '{}' 不存在。使用 'nemesisbot persona list' 查看已安装的人格。",
-            name
-        );
-    }
-
-    // Copy persona files to workspace root
-    let persona_files = ["IDENTITY.md", "SOUL.md", "AGENT.md", "TOOLS.md"];
-    for file in &persona_files {
-        let src = src_dir.join(file);
-        if src.exists() {
-            let content = std::fs::read_to_string(&src)?;
-            std::fs::write(workspace.join(file), &content)?;
-        }
-    }
-
-    // Update active marker
-    let personas_dir = workspace.join("personas");
-    std::fs::create_dir_all(&personas_dir)?;
-    let active = serde_json::json!({"name": name});
-    std::fs::write(
-        personas_dir.join("_active.json"),
-        serde_json::to_string_pretty(&active)?,
-    )?;
+    // 与 web 面同源的完整生命周期（归档当前人格 → 清理根 → 恢复目标 →
+    // 原子写标记；BUG-20261028-117 前 CLI 简化版只拷 4 个 .md 不归档，
+    // 运行期 memory 滞留根目录，下次 web 切换时被归档进错误人格目录）。
+    nemesis_web::handlers::persona::activate_persona_workspace(&workspace.to_string_lossy(), name)
+        .map_err(anyhow::Error::msg)?;
 
     println!("已激活人格: {}", name);
     Ok(())
@@ -205,26 +184,14 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
         let c = std::fs::read_to_string(&active_path)?;
         let v: serde_json::Value = serde_json::from_str(&c)?;
         if v["name"].as_str() == Some(name) {
-            // Restore default
-            let default_dir = workspace.join("personas/default");
-            if default_dir.exists() {
-                let persona_files = ["IDENTITY.md", "SOUL.md", "AGENT.md", "TOOLS.md"];
-                for file in &persona_files {
-                    let src = default_dir.join(file);
-                    if src.exists() {
-                        let content = std::fs::read_to_string(&src)?;
-                        std::fs::write(workspace.join(file), &content)?;
-                    }
-                }
-                let active = serde_json::json!({"name": "default"});
-                // REL-002：统一原子写入（人格激活状态）。
-                nemesis_utils::write_file_atomic(
-                    &active_path.to_string_lossy(),
-                    serde_json::to_string_pretty(&active)?.as_bytes(),
-                    0o600,
-                )
-                .map_err(anyhow::Error::msg)?;
-            }
+            // 与 web 面同源的完整恢复（归档/清理/恢复 default + 原子写标记）。
+            // fail-closed：default 目录缺失时诚实报错中止，不静默删出悬空
+            // 激活标记（BUG-20261028-117 前 CLI 行为，见 wave_b 测试）。
+            nemesis_web::handlers::persona::activate_persona_workspace(
+                &workspace.to_string_lossy(),
+                "default",
+            )
+            .map_err(anyhow::Error::msg)?;
         }
     }
 
@@ -326,7 +293,7 @@ async fn search_personas(
     if let Some(tree) = json["tree"].as_array() {
         for item in tree {
             let path = item["path"].as_str().unwrap_or("");
-            if !is_agent_file_simple(path) {
+            if !nemesis_web::handlers::persona::is_agent_file(path) {
                 continue;
             }
             let parts: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
@@ -343,7 +310,7 @@ async fn search_personas(
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            let category = map_category_simple(&cat_dir);
+            let category = nemesis_web::handlers::persona::map_category(&cat_dir);
 
             let query_lower = query.to_lowercase();
             if !query_lower.is_empty() {
@@ -381,9 +348,11 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
         for item in tree {
             let p = item["path"].as_str().unwrap_or("");
             let filename = p.rsplit('/').next().unwrap_or("");
-            if filename.trim_end_matches(".md") == id
+            // 匹配口径与 web 面同源（`stem == id || filename == id`，
+            // BUG-20261028-117 前 CLI 漏第二臂）。
+            if (filename.trim_end_matches(".md") == id || filename == id)
                 && p.ends_with(".md")
-                && is_agent_file_simple(p)
+                && nemesis_web::handlers::persona::is_agent_file(p)
             {
                 agent_path = Some(p.to_string());
                 break;
@@ -414,264 +383,26 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
         .map_err(|e| anyhow::anyhow!("base64 decode error: {}", e))?;
     let content = String::from_utf8(decoded)?;
 
-    // Use handler's conversion logic (duplicated here for CLI independence)
-    // Parse frontmatter
-    let fm = parse_frontmatter_simple(&content);
-    let (preamble, sections) = parse_sections_simple(&content);
-
-    let name = fm.as_ref().map(|f| f.0.as_str()).unwrap_or(id);
-    let emoji = fm.as_ref().map(|f| f.1.as_str()).unwrap_or("🤖");
-    let description = fm.as_ref().map(|f| f.2.as_str()).unwrap_or("");
-    let vibe = fm.as_ref().map(|f| f.3.as_str()).unwrap_or("");
-
-    // Convert sections
-    let identity_secs: Vec<_> = sections
-        .iter()
-        .filter(|(t, _)| {
-            let n = strip_emoji_simple(t);
-            n.contains("identity") || n.contains("memory")
-        })
-        .collect();
-    let soul_secs: Vec<_> = sections
-        .iter()
-        .filter(|(t, _)| {
-            let n = strip_emoji_simple(t);
-            n.contains("critical rule") || n.contains("communication") || n.contains("checklist")
-        })
-        .collect();
-    let agent_secs: Vec<_> = sections
-        .iter()
-        .filter(|(t, _)| {
-            let n = strip_emoji_simple(t);
-            !(n.contains("identity")
-                || n.contains("memory")
-                || n.contains("critical rule")
-                || n.contains("communication")
-                || n.contains("checklist")
-                || n.contains("tool")
-                || n.contains("integration"))
-        })
-        .collect();
-    let tools_secs: Vec<_> = sections
-        .iter()
-        .filter(|(t, _)| {
-            let n = strip_emoji_simple(t);
-            n.contains("tool") || n.contains("integration")
-        })
-        .collect();
-
-    // Build files
-    let mut identity = format!(
-        "# {}\n\n{}{}\n\n## 基本信息\n\n- 姓名：{}\n- Emoji：{}\n- 风格：{}\n- 描述：{}\n",
-        name,
-        if vibe.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n\n", vibe)
-        },
-        if description.is_empty() {
-            String::new()
-        } else {
-            format!("> {}\n\n", description)
-        },
-        name,
-        emoji,
-        vibe,
-        description,
-    );
-    if !preamble.is_empty() {
-        identity.push_str(&format!("\n---\n\n{}\n", preamble));
-    }
-    let mut soul = format!("# {} — 行为规则\n\n", name);
-    for (title, content) in &soul_secs {
-        soul.push_str(&format!("## {}\n\n{}\n\n", title, content));
-    }
-    let mut agent_extra = format!("\n---\n\n# {} 专用工作流\n", name);
-    for (title, content) in &agent_secs {
-        agent_extra.push_str(&format!("\n## {}\n\n{}\n", title, content));
-    }
-    let tools_extra = if tools_secs.is_empty() {
-        String::new()
-    } else {
-        let mut extra = format!("\n---\n\n# {} 工具使用\n", name);
-        for (title, content) in &tools_secs {
-            extra.push_str(&format!("\n## {}\n\n{}\n", title, content));
-        }
-        extra
-    };
+    // 转换与 web shop.download 同源（convert_agent_content：AGENT/TOOLS 拼
+    // 系统模板、PERSONA.json 含 color/tools/vibe/frontmatter 扩展字段——
+    // BUG-20261028-117 前 CLI 简化转换缺字段，web 语义消费方读到空值）。
+    let converted = nemesis_web::handlers::persona::convert_agent_content(&content);
 
     // Write to disk
     let dir = std::path::Path::new(workspace).join(format!("personas/{}", id));
     std::fs::create_dir_all(&dir)?;
 
-    let persona_json =
-        serde_json::json!({"name": name, "emoji": emoji, "description": description});
-    std::fs::write(
-        dir.join("PERSONA.json"),
-        serde_json::to_string_pretty(&persona_json)?,
-    )?;
+    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)?;
+    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)?;
+    std::fs::write(dir.join("SOUL.md"), &converted.soul)?;
+    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)?;
+    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)?;
 
-    // Add identity sections
-    let mut identity_full = identity;
-    for (title, content) in &identity_secs {
-        identity_full.push_str(&format!("\n---\n\n## {}\n\n{}\n", title, content));
-    }
-    std::fs::write(dir.join("IDENTITY.md"), &identity_full)?;
-    std::fs::write(dir.join("SOUL.md"), &soul)?;
-
-    // AGENT.md = system default + extra
-    let default_agent = include_str!("../../workspace/AGENT.md");
-    std::fs::write(
-        dir.join("AGENT.md"),
-        format!("{}\n{}", default_agent, agent_extra),
-    )?;
-
-    // TOOLS.md = system default + extra
-    let default_tools = include_str!("../../workspace/TOOLS.md");
-    let tools_content = if tools_extra.is_empty() {
-        default_tools.to_string()
-    } else {
-        format!("{}\n{}", default_tools, tools_extra)
-    };
-    std::fs::write(dir.join("TOOLS.md"), &tools_content)?;
+    // 空心跳文件与 web shop.download 对齐：缺失/空 HEARTBEAT.md 会让心跳
+    // 服务跳过 LLM，之后 web activate 本人格时根 HEARTBEAT.md 被清掉不补。
+    std::fs::write(dir.join("HEARTBEAT.md"), "")?;
 
     Ok(Ok(()))
-}
-
-// Simple standalone parsing helpers for CLI (avoids dependency on handler)
-
-fn is_agent_file_simple(path: &str) -> bool {
-    if !path.ends_with(".md") || !path.contains('/') {
-        return false;
-    }
-    let first_dir = path.split('/').next().unwrap_or("");
-    if ["scripts", "examples", "integrations", "strategy", ".github"].contains(&first_dir) {
-        return false;
-    }
-    let filename = path.rsplit('/').next().unwrap_or("");
-    if [
-        "README.md",
-        "CONTRIBUTING.md",
-        "LICENSE.md",
-        "SECURITY.md",
-        "CONTRIBUTING_zh-CN.md",
-    ]
-    .contains(&filename)
-    {
-        return false;
-    }
-    if filename.starts_with("QUICKSTART") || filename.starts_with("EXECUTIVE") {
-        return false;
-    }
-    true
-}
-
-fn map_category_simple(dir: &str) -> &'static str {
-    match dir {
-        "engineering" => "开发",
-        "marketing" => "营销",
-        "security" => "安全",
-        "design" => "创意",
-        "academic" => "学术",
-        "product" => "产品",
-        "paid-media" => "付费媒体",
-        "sales" => "销售",
-        "game-development" => "游戏开发",
-        "finance" => "金融",
-        "gis" => "GIS",
-        "spatial-computing" => "空间计算",
-        "specialized" => "专业",
-        "testing" => "测试",
-        "support" => "客服",
-        "project-management" => "项目管理",
-        _ => "通用",
-    }
-}
-
-fn strip_emoji_simple(s: &str) -> String {
-    s.chars()
-        .filter(|c| {
-            !matches!(c,
-                '\u{1F300}'..='\u{1F9FF}' | '\u{2600}'..='\u{26FF}' |
-                '\u{2700}'..='\u{27BF}' | '\u{FE00}'..='\u{FE0F}' |
-                '\u{1F000}'..='\u{1FFFF}' | '\u{200D}'
-            )
-        })
-        .collect::<String>()
-        .trim()
-        .to_lowercase()
-}
-
-fn parse_frontmatter_simple(content: &str) -> Option<(String, String, String, String)> {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return None;
-    }
-    let after = &trimmed[3..];
-    let end = after.find("---")?;
-    let yaml = &after[..end];
-    let mut name = String::new();
-    let mut emoji = String::new();
-    let mut desc = String::new();
-    let mut vibe = String::new();
-    for line in yaml.lines() {
-        let l = line.trim();
-        if let Some(v) = l.strip_prefix("name:") {
-            name = v.trim().trim_matches('"').to_string();
-        } else if let Some(v) = l.strip_prefix("emoji:") {
-            emoji = v.trim().trim_matches('"').to_string();
-        } else if let Some(v) = l.strip_prefix("description:") {
-            desc = v.trim().trim_matches('"').to_string();
-        } else if let Some(v) = l.strip_prefix("vibe:") {
-            vibe = v.trim().trim_matches('"').to_string();
-        }
-    }
-    if name.is_empty() {
-        return None;
-    }
-    Some((name, emoji, desc, vibe))
-}
-
-fn parse_sections_simple(content: &str) -> (String, Vec<(String, String)>) {
-    let body = if content.trim_start().starts_with("---") {
-        let after = &content.trim_start()[3..];
-        if let Some(end) = after.find("---") {
-            &after[end + 3..]
-        } else {
-            content
-        }
-    } else {
-        content
-    };
-
-    let mut preamble_lines: Vec<String> = Vec::new();
-    let mut sections = Vec::new();
-    let mut title = String::new();
-    let mut lines = Vec::new();
-    let mut found = false;
-
-    for line in body.lines() {
-        let t = line.trim();
-        if t.starts_with("## ") && !t.starts_with("### ") {
-            if found {
-                sections.push((title.clone(), lines.join("\n").trim().to_string()));
-                lines.clear();
-            }
-            found = true;
-            title = t[3..].trim().to_string();
-        } else if found {
-            lines.push(line.to_string());
-        } else {
-            let is_h1 = t.starts_with("# ") && !t.starts_with("## ");
-            if !is_h1 {
-                preamble_lines.push(line.to_string());
-            }
-        }
-    }
-    if found && !title.is_empty() {
-        sections.push((title, lines.join("\n").trim().to_string()));
-    }
-    (preamble_lines.join("\n").trim().to_string(), sections)
 }
 
 #[cfg(test)]
