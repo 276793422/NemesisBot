@@ -968,3 +968,80 @@ fn w4a_parse_duration_suffix_with_non_numeric_body_is_none() {
     assert_eq!(parse_duration("10s"), Some(Duration::from_secs(10)));
     assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-119：Workflow::hash 跨进程不稳定
+// ---------------------------------------------------------------------------
+
+/// 构造 hash 稳定性探针工作流：单个节点、config 带 12 个键。
+/// HashMap 迭代序跨进程不同（RandomState 每进程随机种子），
+/// 12 键两次进程迭代序完全相同的概率 ~1/12!——bug 存在时
+/// 断言「两次 hash 相等」几乎必然失败（稳定红）。
+fn hash_probe_workflow() -> Workflow {
+    let mut config = HashMap::new();
+    for i in 0..12 {
+        config.insert(format!("key_{i:02}"), serde_json::json!(i));
+    }
+    Workflow {
+        name: "hash_probe".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: Vec::new(),
+        nodes: vec![NodeDef {
+            id: "n1".to_string(),
+            node_type: "http".to_string(),
+            config,
+            depends_on: Vec::new(),
+            retry_count: 0,
+            timeout: None,
+            is_terminal: true,
+        }],
+        edges: Vec::new(),
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    }
+}
+
+#[test]
+fn test_workflow_hash_stable_across_processes() {
+    // 消费点：engine::restore_incomplete_executions 用当前进程重算的
+    // Workflow::hash() 匹配磁盘 checkpoint 的 workflow_hash（gateway
+    // 启动恢复链路）。canonical JSON 直接序列化 NodeDef.config
+    // （HashMap）→ serde 按 HashMap 迭代序输出 → 跨进程不稳定 →
+    // 重启后全部中断执行被误判 "config drift" 静默放弃恢复。
+    //
+    // 红证形态：spawn 测试二进制自身两次（WF_HASH_PROBE=1 走探针
+    // 分支，--exact 只跑本测试），两次 hash 必须逐字节一致。
+    const SELF_TEST_PATH: &str = "types::tests::test_workflow_hash_stable_across_processes";
+
+    if std::env::var("WF_HASH_PROBE").is_ok() {
+        // 子进程探针分支：算 hash 写文件即返回。
+        let out = std::env::var("WF_HASH_OUT").expect("WF_HASH_OUT required in probe mode");
+        std::fs::write(out, hash_probe_workflow().hash()).expect("write probe hash");
+        return;
+    }
+
+    let exe = std::env::current_exe().expect("current_exe");
+    let tmp = std::env::temp_dir().join(format!("wf_hash_probe_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create probe dir");
+
+    let mut hashes = Vec::new();
+    for i in 0..2 {
+        let out = tmp.join(format!("hash_{i}.txt"));
+        let status = std::process::Command::new(&exe)
+            .args(["--exact", SELF_TEST_PATH, "--nocapture"])
+            .env("WF_HASH_PROBE", "1")
+            .env("WF_HASH_OUT", &out)
+            .status()
+            .expect("spawn self for hash probe");
+        assert!(status.success(), "probe subprocess {i} exited {status}");
+        hashes.push(std::fs::read_to_string(&out).expect("read probe hash"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert_eq!(
+        hashes[0], hashes[1],
+        "同一定义两次进程 hash 不一致：canonical JSON 依赖 HashMap 迭代序，\
+         restore_incomplete_executions 的 checkpoint 匹配在重启后必然漂移"
+    );
+}

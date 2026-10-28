@@ -717,7 +717,14 @@ impl WorkflowEngine {
         };
 
         let mut count = 0usize;
-        for entry in entries.flatten() {
+        // BUG-20261028-119：read_dir 迭代序是平台实现细节（NTFS 字典序 vs
+        // ext4 哈希序）。register_workflow 对重名是后者静默覆盖——同名定义
+        // 文件组（用户拷贝变体忘改 name 的常见错误）的加载赢家随平台漂移，
+        // cron/触发器/节点配置在 Windows 与 Linux 部署上静默不同。显式按
+        // 路径排序，契约固定为「字典序最后者赢」，与文件系统实现解耦。
+        let mut entries: Vec<std::fs::DirEntry> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.path());
+        for entry in entries {
             let path = entry.path();
             let is_wf_file = path
                 .extension()

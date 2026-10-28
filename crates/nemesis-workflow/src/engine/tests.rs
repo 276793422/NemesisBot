@@ -4957,3 +4957,59 @@ async fn test_delete_workflow_file_skips_collision_sibling_file() {
         "属主本人删除必须照常生效"
     );
 }
+
+// ===========================================================================
+// BUG-20261028-119：同名定义文件组的加载赢家必须跨平台确定
+// ===========================================================================
+
+#[tokio::test]
+async fn test_load_workflows_from_dir_duplicate_name_winner_is_deterministic() {
+    // 两个文件定义同名 workflow（name: dup_wf），仅节点数不同：
+    // a-dup.yaml = 1 节点，z-dup.yaml = 2 节点。register_workflow 重名
+    // 后者覆盖——修复前赢家 = read_dir 迭代序的最后一个（NTFS 字典序 vs
+    // ext4 哈希序，跨平台漂移）；修复后显式按路径排序，契约固定为
+    // 「字典序最后者赢」（z-dup.yaml 的 2 节点形态）。
+    // 注：本机 Windows read_dir 恰为字典序，修复前该测试亦绿——
+    // 回归锁钉的是确定性契约（排序后与平台实现解耦）， ext4 侧防回归。
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("a-dup.yaml"),
+        r#"name: dup_wf
+version: "1.0.0"
+nodes:
+  - id: n1
+    node_type: delay
+    config:
+      seconds: 0
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("z-dup.yaml"),
+        r#"name: dup_wf
+version: "1.0.0"
+nodes:
+  - id: n1
+    node_type: delay
+    config:
+      seconds: 0
+  - id: n2
+    node_type: delay
+    config:
+      seconds: 0
+    depends_on: [n1]
+"#,
+    )
+    .unwrap();
+
+    let engine = WorkflowEngine::new();
+    let count = engine.load_workflows_from_dir(tmp.path()).unwrap();
+    assert_eq!(count, 2, "两个文件都解析注册成功（后者覆盖前者）");
+
+    let wf = engine.get_workflow("dup_wf").expect("dup_wf registered");
+    assert_eq!(
+        wf.nodes.len(),
+        2,
+        "赢家必须是字典序最后者（z-dup.yaml，2 节点形态）——排序契约"
+    );
+}

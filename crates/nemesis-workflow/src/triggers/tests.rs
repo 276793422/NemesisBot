@@ -628,3 +628,39 @@ fn w4a_match_glob_middle_part_missing() {
     assert!(!match_glob("a*b*c", "aXXc"));
     assert!(!match_glob("a*b*c", "bXXbXXc"));
 }
+
+/// BUG-20261028-120: leading/trailing literal parts must not overlap —
+/// "a*a" cannot match "a" (the same character cannot serve as both the
+/// required start and the required end). Old implementation only checked
+/// starts_with/ends_with and passed short strings as false positives.
+/// Red-proof before fix: `match_glob("a*a", "a")` returned true.
+#[test]
+fn bug_120_match_glob_leading_trailing_overlap_rejected() {
+    assert!(!match_glob("a*a", "a"));
+    assert!(!match_glob("ab*ab", "ab"));
+    assert!(!match_glob("foo*foo", "foo"));
+    // Empty middle is fine — "aa" = "a" + "" + "a".
+    assert!(match_glob("a*a", "aa"));
+}
+
+/// BUG-20261028-120 companion: legal overlaps must keep matching.
+/// Empty first/last parts ("*x*") never overlap; a middle segment may
+/// share characters with the anchors ("aba" = "a"+"b"+"a" for "a*b*a").
+#[test]
+fn bug_120_match_glob_legal_overlaps_still_match() {
+    assert!(match_glob("*x*", "x"));
+    assert!(match_glob("*x*", "axb"));
+    assert!(match_glob("a*b*a", "aba"));
+    assert!(match_glob("foo*", "foobar"));
+    assert!(match_glob("*bar", "foobar"));
+    assert!(match_glob("foo*", "foo"));
+    assert!(match_glob("*bar", "bar"));
+}
+
+/// BUG-20261028-120: byte-length guard aligns with the byte-offset middle
+/// scan — multibyte anchors cannot overlap either.
+#[test]
+fn bug_120_match_glob_multibyte_anchor_overlap_rejected() {
+    assert!(!match_glob("é*é", "é"));
+    assert!(match_glob("é*é", "éé"));
+}
