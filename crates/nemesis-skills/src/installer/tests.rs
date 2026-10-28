@@ -1736,3 +1736,46 @@ async fn test_install_duplicate_target_detected_at_commit() {
             .unwrap();
     assert_eq!(winner, "# installed by the other winner\n");
 }
+
+// BUG-20261028-118 回归锁：回滚备份恢复式清扫——遗孤（skills/<slug> 缺失）
+// 先恢复原位；过期备份（原位已在）直接删；skill 本体永不被动。
+#[test]
+fn r118_rollback_recover_restores_orphans_and_drops_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+
+    // 遗孤：skills/orphan 缺失（失败/取消现场）→ 恢复。
+    let orphan_backup = installer.rollback_root().join("orphan.old-1-2");
+    std::fs::create_dir_all(&orphan_backup).unwrap();
+    std::fs::write(orphan_backup.join("SKILL.md"), "# orphan old").unwrap();
+
+    // 过期备份：skills/stale 已在新版 → 备份删，skill 不动。
+    let stale_skill = dir.path().join("skills/stale");
+    std::fs::create_dir_all(stale_skill.join("new-version")).unwrap();
+    std::fs::write(stale_skill.join("new-version").join("SKILL.md"), "# new").unwrap();
+    let stale_backup = installer.rollback_root().join("stale.old-3-4");
+    std::fs::create_dir_all(&stale_backup).unwrap();
+    std::fs::write(stale_backup.join("SKILL.md"), "# stale old").unwrap();
+
+    let recovered = installer.recover_stale_rollbacks();
+
+    assert_eq!(
+        recovered,
+        vec![dir.path().join("skills").join("orphan")],
+        "只有遗孤进恢复清单"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("skills/orphan/SKILL.md")).unwrap(),
+        "# orphan old",
+        "遗孤备份必须原样恢复到原位"
+    );
+    assert!(!orphan_backup.exists(), "恢复后备份不再留存");
+    assert!(!stale_backup.exists(), "原位已在 = 过期备份直接删");
+    assert_eq!(
+        std::fs::read_to_string(stale_skill.join("new-version").join("SKILL.md")).unwrap(),
+        "# new",
+        "在场的新版技能不被清扫触碰"
+    );
+    // 根内无残留（round 2 = 幂等 no-op）。
+    assert!(installer.recover_stale_rollbacks().is_empty());
+}

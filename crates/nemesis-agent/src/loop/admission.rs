@@ -75,9 +75,10 @@ pub(crate) struct TurnAdmission {
     pub(crate) agent_id: String,
     pub(crate) session_key: String,
     pub(crate) cancel_token: tokio_util::sync::CancellationToken,
-    /// E3：本消息在 `turn_preamble` 里 begin 的 checkpoint turn 序号（无
-    /// store 挂载时 None）。随 admission 穿针到行落盘点——不能落盘时反查
-    /// `cur`（整 turn 的 await 间隙里可能被其他会话/steer 的 begin 翻掉）。
+    /// E3：本回合在 `begin_turn_checkpoint`（Admitted 构造点）begin 的
+    /// checkpoint turn 序号（无 store 挂载时 None）。随 admission 穿针到
+    /// 行落盘点——不能落盘时反查 `cur`（BUG-20261028-121 后 begin 只在
+    /// 真回合发生，指针归属稳定；该防御注释保留说明历史形态）。
     cp_turn: Option<usize>,
 }
 /// K4 (b): IM 审批卡回执语法——`/approve <id>` / `/deny <id>`（id 为审批
@@ -437,43 +438,46 @@ impl AgentLoop {
         }
     }
 
-    /// Turn preamble shared by every gated path (V5: extracted verbatim from
-    /// the head of the pre-split `process_inbound_message`, so gate-time
-    /// short-circuits — busy receipts, slash replies — behave exactly as
-    /// before: the monolith opened the checkpoint turn and logged BEFORE any
-    /// classification).
+    /// Gate-head receipt log shared by every gated path (V5: extracted
+    /// verbatim from the head of the pre-split `process_inbound_message`).
     ///
-    /// E3：返回本消息 begin 的 checkpoint turn 序号（无 store 挂载时
-    /// None）——gate 捕获后装进 [`TurnAdmission`]，随链穿针到行落盘点做
-    /// `checkpoint_turn` 行标记（消息级回退的行→turn 定位锚）。
-    ///
-    /// R31：checkpoint 条目带会话归属（`begin_for_session`）——`route_message`
-    /// 是纯解析（registry 查表，gate 各分支本就多次现取），这里提前取一次只
-    /// 用于归属穿针；会话级回退据此把截断/冲突预检收窄到本会话。
-    fn turn_preamble(&self, msg: &nemesis_types::channel::InboundMessage) -> Option<usize> {
-        // Open a checkpoint turn for the edit safety net (so writer-tool changes
-        // during this message can be rewound). No-op when no store is attached.
-        let cp_turn = self
-            .turn_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let session_key = self.route_message(msg).1;
-        let attached = {
-            let cp = self.security.checkpoint_store.read().as_ref().cloned();
-            if let Some(cp) = cp {
-                cp.begin_for_session(cp_turn, &msg.content, Some(&session_key));
-                true
-            } else {
-                false
-            }
-        };
-
+    /// BUG-20261028-121：本函数只剩「观测日志」一个职责——检查点 begin
+    /// 已拆出（[`Self::begin_turn_checkpoint`]，只在 Admitted 构造点调用）。
+    /// 旧实现在这里无条件 `begin_for_session`，导致 slash 回执/维护命令/
+    /// busy 弹回/steer 插话这些「非回合消息」也换掉当前会话的 cur 指针
+    /// （begin 无条件 finalize 上一 cur → done + 插新），运行中回合的
+    /// 工具变更快照被错挂到命令消息的桶上、回退锚丢失。
+    fn log_gate_receipt(&self, msg: &nemesis_types::channel::InboundMessage) {
         info!(
             "[AgentLoop] Processing message from {}:{}: {}",
             msg.channel,
             msg.sender_id,
             truncate(&msg.content, 80)
         );
-        attached.then_some(cp_turn)
+    }
+
+    /// Open a checkpoint turn for a **real admitted turn** (edit safety net,
+    /// so writer-tool changes during this message can be rewound). No-op when
+    /// no store is attached. Returns the minted checkpoint turn number.
+    ///
+    /// BUG-20261028-121：调用点唯一——`gate_inbound` 的 `Admitted` 构造处
+    /// （session_key 已裁决、busy/slash/maintenance/system/continuation/
+    /// steer 全部短路之后）。排队消息在 drain 时重新过闸，会以队首身份
+    /// 走到本函数，归属不受影响。
+    ///
+    /// R31：checkpoint 条目带会话归属（`begin_for_session`）——会话级回退
+    /// 据此把截断/冲突预检收窄到本会话。
+    fn begin_turn_checkpoint(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+        session_key: &str,
+    ) -> Option<usize> {
+        let cp_turn = self
+            .turn_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cp = self.security.checkpoint_store.read().as_ref().cloned()?;
+        cp.begin_for_session(cp_turn, &msg.content, Some(session_key));
+        Some(cp_turn)
     }
 
     /// Resolve (agent_id, session_key) for a message (V5: extracted verbatim
@@ -623,9 +627,9 @@ impl AgentLoop {
     /// 本体）留给 tail。slash 命令在这里同步执行并短路（原路径在 busy
     /// 检查前同步返回；且命令可能有副作用，tail 不得重跑）。
     pub(crate) fn gate_inbound(&self, msg: &nemesis_types::channel::InboundMessage) -> GateOutcome {
-        // E3：begin 的 turn 序号在此捕获（admitted 链穿针用；其余 outcome
-        // 不产生带 checkpoint_turn 标记的行，值自然丢弃）。
-        let cp_turn = self.turn_preamble(msg);
+        // 观测日志对全部消息保留（BUG-20261028-121：检查点 begin 已拆到
+        // Admitted 构造点——非回合消息不再换 cur 指针）。
+        self.log_gate_receipt(msg);
 
         // Route system messages.
         if msg.channel == "system" {
@@ -933,6 +937,11 @@ impl AgentLoop {
         // gate so the spawned turn tail starts with everything the
         // pre-split monolith had at this point).
         let cancel_token = self.create_cancel_token(&session_key);
+        // BUG-20261028-121：检查点 begin 只在此处（真回合准入）发生——
+        // session_key 已裁决，slash 回执/maintenance/busy 弹回/steer 插话/
+        // system/continuation 都已在前面短路，不会换掉当前会话的 cur
+        // 指针（运行中回合的变更快照归属稳定）。
+        let cp_turn = self.begin_turn_checkpoint(msg, &session_key);
         GateOutcome::Admitted(TurnAdmission {
             agent_id,
             session_key,

@@ -2321,6 +2321,28 @@ async fn test_wrapper_restart_clamd_if_down_manager_error_returns_false() {
 
 // ---- Windows-only: where.exe 假 clamd.exe + 进程内 PONG ----
 
+/// 测试专用根目录：target/scanner-test/<tag>-<pid>-<纳秒>。**不放 %TEMP%**——
+/// 外部删除者家族（2026-10-28 实录第 5 起：restart/stop wrapper 测试的
+/// tempdir 在 mgr.start() 的 readiness 轮询窗内被并发进程删掉 clamd.exe，
+/// restart 二次 exe 检查假红；迁址先例 = download 测试 f9e0165a + lsp
+/// fixture 案）。pid+纳秒唯一不互踩；调用方尾部自清。
+#[cfg(windows)]
+fn scanner_test_root(tag: &str) -> std::path::PathBuf {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/scanner-test")
+        .join(format!(
+            "{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
 #[cfg(windows)]
 fn place_where_as(dir: &std::path::Path, name: &str) {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
@@ -2375,23 +2397,24 @@ fn fake_started_manager(
 async fn test_wrapper_restart_clamd_if_down_manager_restart_ok_returns_true() {
     // wrapper 指向关闭端口（ping 失败 → manager 分支）；注入一个完整假启动的
     // manager（readiness 地址=进程内 PONG）→ restart Ok → true。
-    let clamav_dir = tempfile::tempdir().unwrap();
-    place_where_as(clamav_dir.path(), "clamd");
-    let data_dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
-    std::fs::write(
-        data_dir.path().join("database").join("main.cvd"),
-        "fake cvd",
-    )
-    .unwrap();
+    // exe/data 放 target/ 不放 %TEMP%（外部删除者家族第 5 起：tempdir 在
+    // readiness 轮询窗内被并发清扫 → restart 二次 exe 检查假红）。
+    let root = scanner_test_root("restart");
+    let clamav_dir = root.join("clamav");
+    std::fs::create_dir_all(&clamav_dir).unwrap();
+    place_where_as(&clamav_dir, "clamd");
+    let data_dir = root.join("data");
+    std::fs::create_dir_all(data_dir.join("database")).unwrap();
+    std::fs::write(data_dir.join("database").join("main.cvd"), "fake cvd").unwrap();
 
     let pong = serve_pong().await;
-    let mut mgr = fake_started_manager(clamav_dir.path(), data_dir.path(), pong);
+    let mut mgr = fake_started_manager(&clamav_dir, &data_dir, pong);
     mgr.start().await.unwrap();
 
     let w = wrapper_on("127.0.0.1:1");
     *w.manager.lock().await = Some(mgr);
     assert!(w.restart_clamd_if_down().await);
+    let _ = nemesis_utils::fsutil::remove_dir_all_resilient(&root);
 }
 
 #[tokio::test]
@@ -2406,24 +2429,25 @@ async fn test_wrapper_stop_foreign_clamd_skips_shutdown() {
 #[tokio::test]
 async fn test_wrapper_stop_with_manager_stops_manager() {
     // manager Some 分支：stop() → mgr.stop()（杀 where.exe 死 child）→ Ok。
-    let clamav_dir = tempfile::tempdir().unwrap();
-    place_where_as(clamav_dir.path(), "clamd");
-    let data_dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
-    std::fs::write(
-        data_dir.path().join("database").join("main.cvd"),
-        "fake cvd",
-    )
-    .unwrap();
+    // 同 restart 测试：迁出 %TEMP%（外部删除者家族；start 的 spawn 前 exe
+    // 检查同样怕并发清扫）。
+    let root = scanner_test_root("stop-mgr");
+    let clamav_dir = root.join("clamav");
+    std::fs::create_dir_all(&clamav_dir).unwrap();
+    place_where_as(&clamav_dir, "clamd");
+    let data_dir = root.join("data");
+    std::fs::create_dir_all(data_dir.join("database")).unwrap();
+    std::fs::write(data_dir.join("database").join("main.cvd"), "fake cvd").unwrap();
 
     let pong = serve_pong().await;
-    let mut mgr = fake_started_manager(clamav_dir.path(), data_dir.path(), pong);
+    let mut mgr = fake_started_manager(&clamav_dir, &data_dir, pong);
     mgr.start().await.unwrap();
 
     let w = wrapper_on("127.0.0.1:1");
     *w.manager.lock().await = Some(mgr);
     w.started.store(true, Ordering::SeqCst);
     w.stop().await.unwrap();
+    let _ = nemesis_utils::fsutil::remove_dir_all_resilient(&root);
 }
 
 #[cfg(windows)]

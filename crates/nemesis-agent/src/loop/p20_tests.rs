@@ -312,9 +312,10 @@ async fn r31_rewind_session_scoped_other_session_paths_block_by_default() {
 
     let cp = al.attached_checkpoint().unwrap();
 
-    // A turn1：a.txt → v2。turn 序号模拟 loop 全局计数器（turn_preamble
-    // 的 fetch_add），会话归属经 begin_for_session 穿针。R4：snapshot 同键
-    // 归属（生产 tool_dispatch 与 begin 同源传会话键）。
+    // A turn1：a.txt → v2。turn 序号模拟 loop 全局计数器
+    // （begin_turn_checkpoint 的 fetch_add），会话归属经 begin_for_session
+    // 穿针。R4：snapshot 同键归属（生产 tool_dispatch 与 begin 同源传会
+    // 话键）。
     cp.begin_for_session(1, "a q1", Some(&key_a));
     std::fs::write(root.join("a.txt"), "a2").unwrap();
     cp.snapshot_for_session(&p20_modify("a.txt"), Some(&key_a))

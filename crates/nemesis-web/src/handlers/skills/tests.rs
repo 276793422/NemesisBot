@@ -102,19 +102,83 @@ async fn r6_force_update_install_failure_restores_backup() {
     assert!(old.exists(), "failed install must restore the backup");
     assert_eq!(std::fs::read_to_string(&old).unwrap(), old_content);
 
-    // 备份已回滚消化（.skill-staging 无遗留）。
-    let staging = dir.path().join(".skill-staging");
-    if staging.exists() {
-        let leftovers: Vec<_> = std::fs::read_dir(&staging)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "backup must be consumed by rollback: {leftovers:?}"
-        );
+    // 备份已回滚消化（`.skill-rollback/` 与 `.skill-staging/` 均无遗留）。
+    // BUG-20261028-118：备份根从 staging 迁到 rollback（staging 24h 一刀切
+    // 清扫会在回滚消费前删掉继承旧 mtime 的备份）。
+    for root_name in [".skill-staging", ".skill-rollback"] {
+        let staging = dir.path().join(root_name);
+        if staging.exists() {
+            let leftovers: Vec<_> = std::fs::read_dir(&staging)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "backup must be consumed by rollback: {leftovers:?}"
+            );
+        }
     }
+}
+
+// BUG-20261028-118 回归锁：取消窗口——force 更新在「备份已挪走、新版未
+// 落位」窗口内被取消（future drop）时，Drop guard 必须把备份复位回原位，
+// 旧版本零丢失；备份根留在 `.skill-rollback/`（staging 清扫器射程外）。
+#[tokio::test]
+async fn r118_cancelled_force_update_restores_backup_via_drop_guard() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30)))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_clawhub_config(dir.path(), &server.uri(), true);
+    let old = dir.path().join("skills/review-cancel/SKILL.md");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    let old_content = "# working old skill";
+    std::fs::write(&old, old_content).unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+
+    let task = tokio::spawn(async move {
+        SkillsHandler::new()
+            .install(
+                &serde_json::json!({"slug": "review-cancel", "registry": "clawhub", "force": true}),
+                &ws,
+            )
+            .await
+    });
+    // 等进入网络 await（此时备份 rename 已发生——它在 install() 之前）。
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if !server.received_requests().await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    // 取消窗口：旧版本被 guard 复位回原位，备份根清空。
+    assert!(
+        old.exists(),
+        "cancel must restore the backup to the original path"
+    );
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), old_content);
+    let rollback_root = dir.path().join(".skill-rollback");
+    let leftover = if rollback_root.exists() {
+        std::fs::read_dir(&rollback_root).unwrap().count()
+    } else {
+        0
+    };
+    assert_eq!(
+        leftover, 0,
+        "backup must be consumed by the drop-guard restore"
+    );
 }
 
 // ---------------------------------------------------------------------

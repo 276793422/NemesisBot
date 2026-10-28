@@ -4013,8 +4013,8 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     let file = root.join("target.txt");
     tokio::fs::write(&file, "ORIGINAL").await.unwrap();
     // simulate process_inbound_message opening a turn（R4：与生产同键——
-    // turn_preamble 带 session_key begin，下方 handle_tool_call 的 snapshot
-    // 同键落桶）。
+    // Admitted 点 begin_turn_checkpoint 带 session_key begin，下方
+    // handle_tool_call 的 snapshot 同键落桶）。
     store.begin_for_session(0, "edit the file", Some("session1"));
 
     let context = RequestContext::new("web", "chat1", "user1", "session1");
@@ -8672,6 +8672,192 @@ fn test_gate_busy_reject_mode_bounces() {
     // Nothing parked anywhere.
     assert_eq!(agent_loop.inbox.pending(&session_key), (0, 0));
     agent_loop.release_session(&session_key);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-121 回归锁：检查点 begin 只在真回合准入（Admitted 构造点）
+// 发生——slash 回执/维护命令撞闸/busy 弹回/steer 插话一律不建检查点、不换
+// cur 指针。旧实现在 gate 头部无条件 begin：非回合消息把运行中回合的
+// cur 换成自己的桶（工具变更快照错挂 + 消息级回退锚丢失）。三方探针
+// 断言改写为期望行为锁（修复前红、修复后绿）。
+// ---------------------------------------------------------------------------
+
+/// 真回合 Admitted 才 begin；slash 同步短路零检查点；下一真回合指针
+/// 正常轮转（turn 0 → done，turn 1 → cur），轮转能力不被本修复破坏。
+#[test]
+fn test_gate_checkpoint_begins_only_on_admitted_not_slash() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(
+        Some(dir.path().join(".ck")),
+        dir.path().to_path_buf(),
+    ));
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_checkpoint_store(store.clone());
+
+    // 真回合 1：Admitted → 恰建 turn 0 一个检查点。
+    let msg1 = make_inbound("write the file", "web", "chat1", "user1", "");
+    assert!(matches!(
+        agent_loop.gate_inbound(&msg1),
+        GateOutcome::Admitted(_)
+    ));
+    let meta = store.list_meta();
+    assert_eq!(meta.len(), 1, "Admitted 恰建一个检查点: {meta:?}");
+    assert_eq!(meta[0].turn, 0);
+    assert_eq!(meta[0].prompt, "write the file");
+    let (_, session_key) = agent_loop.route_message(&msg1);
+
+    // slash 同步短路（Immediate 回执，先于 busy 检查——租约在场也走）
+    // → 不建检查点、不换指针。
+    let slash = make_inbound("/help", "web", "chat1", "user1", "");
+    assert!(matches!(
+        agent_loop.gate_inbound(&slash),
+        GateOutcome::Immediate { .. }
+    ));
+    let meta = store.list_meta();
+    assert_eq!(meta.len(), 1, "slash 不得产生检查点: {meta:?}");
+    assert_eq!(
+        meta[0].prompt, "write the file",
+        "运行中回合的桶未被 slash 换掉"
+    );
+
+    // 模拟 turn 1 收尾放租约（gate 的 busy 检查在 msg1 准入时已持有），
+    // 真回合 2 才能再度准入。
+    agent_loop.release_session(&session_key);
+
+    // 真回合 2：指针轮转保留（finalize turn 0 → done，turn 1 → cur）。
+    let msg2 = make_inbound("second turn", "web", "chat1", "user1", "");
+    assert!(matches!(
+        agent_loop.gate_inbound(&msg2),
+        GateOutcome::Admitted(_)
+    ));
+    let meta = store.list_meta();
+    assert_eq!(meta.len(), 2, "两个真回合两个检查点: {meta:?}");
+    assert_eq!((meta[0].turn, meta[1].turn), (0, 1));
+    assert_eq!(meta[1].prompt, "second turn");
+}
+
+/// busy 弹回与维护命令撞闸（/clear busy 拒绝）都零检查点——两者都是
+/// Immediate 短路路径，从不准入成回合。
+#[test]
+fn test_gate_busy_and_maintenance_refusal_create_no_checkpoint() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(crate::checkpoint::CheckpointStore::new(
+        Some(dir.path().join(".ck")),
+        dir.path().to_path_buf(),
+    ));
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![])),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_checkpoint_store(store.clone());
+
+    let msg = make_inbound("趁乱写入", "web", "chat1", "user1", "");
+    let (_, session_key) = agent_loop.route_message(&msg);
+    assert!(agent_loop.try_acquire_session(&session_key));
+
+    // busy 弹回：Immediate，零检查点（旧实现在这里 begin 了一条弹回消息
+    // 的 prompt——三方探针实锤）。
+    let response = match agent_loop.gate_inbound(&msg) {
+        GateOutcome::Immediate { response, .. } => response,
+        other => panic!("expected Immediate busy bounce, got {other:?}"),
+    };
+    assert!(response.contains("try again later"), "bounce: {response}");
+    assert!(
+        store.list_meta().is_empty(),
+        "busy 弹回不得建检查点: {:?}",
+        store.list_meta()
+    );
+
+    // 维护命令撞闸：Immediate 忽略回执，同样零检查点。
+    let m = make_inbound("/clear", "web", "chat1", "user1", "");
+    let response = match agent_loop.gate_inbound(&m) {
+        GateOutcome::Immediate { response, .. } => response,
+        other => panic!("expected Immediate maintenance refusal, got {other:?}"),
+    };
+    assert!(response.contains("忽略"), "maintenance refusal: {response}");
+    assert!(
+        store.list_meta().is_empty(),
+        "维护命令撞闸不得建检查点: {:?}",
+        store.list_meta()
+    );
+
+    agent_loop.release_session(&session_key);
+}
+
+/// steer 插话不换指针：!前缀消息在 busy 时走 QueuedForNextStep 短路，
+/// 运行中回合随后做的工具变更快照仍落原 turn 桶（旧实现会把快照错挂
+/// 到 steer 消息新建的桶上——探针的 code.txt 归属断言）。
+#[tokio::test]
+async fn test_gate_steer_replaces_no_checkpoint_pointer_mid_turn() {
+    use std::sync::Arc;
+
+    use crate::r#loop::FileChange;
+    use crate::r#loop::FileChangeKind;
+
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(
+        Some(dir.path().join(".ck")),
+        dir.path().to_path_buf(),
+    ));
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![])),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+    agent_loop.set_checkpoint_store(store.clone());
+
+    // 真回合准入 turn 0（gate 的 busy 检查随之持有租约——模拟 tail 在
+    // 途，后续 steer 走 busy 分支）。
+    let msg1 = make_inbound("turn one", "web", "chat1", "user1", "");
+    assert!(matches!(
+        agent_loop.gate_inbound(&msg1),
+        GateOutcome::Admitted(_)
+    ));
+    let (_, session_key) = agent_loop.route_message(&msg1);
+    assert!(
+        !agent_loop.try_acquire_session(&session_key),
+        "msg1 准入时应已持有租约（运行中）"
+    );
+
+    // !插话：Immediate steer 回执，零新检查点、指针不动。
+    let steer = make_inbound("!urgent 插话", "web", "chat1", "user1", "");
+    assert!(matches!(
+        agent_loop.gate_inbound(&steer),
+        GateOutcome::Immediate { .. }
+    ));
+    let meta = store.list_meta();
+    assert_eq!(meta.len(), 1, "steer 不得新建检查点: {meta:?}");
+    assert_eq!(meta[0].prompt, "turn one", "指针未被 steer 换掉");
+
+    // 运行中回合的工具变更快照：必须记在 turn 0 的 paths（探针的
+    // code.txt 归属断言——旧实现落 steer 桶，turn 0 paths 恒空）。
+    store
+        .snapshot_for_session(
+            &FileChange {
+                path: "code.txt".to_string(),
+                kind: FileChangeKind::Modify,
+            },
+            Some(&session_key),
+        )
+        .await;
+    let meta = store.list_meta();
+    assert_eq!(meta.len(), 1, "快照不得产生新条目: {meta:?}");
+    assert_eq!(
+        meta[0].paths,
+        vec!["code.txt".to_string()],
+        "变更快照必须归运行中回合的 turn 0"
+    );
 }
 
 /// Queue mode + busy session → parked in the next-turn inbox with the ⏳

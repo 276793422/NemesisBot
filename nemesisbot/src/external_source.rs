@@ -19,8 +19,11 @@
 //! `board.external_sources[]`（mtime 缓存，热改即时生效；空 = 整模块不装）。
 //!
 //! 边界（诚实声明）：
+//! - 轮询翻页：`limit=20` 满页且有新导入则继续翻页（末页/满页零新导入
+//!   即停，单轮硬上限 10 页；BUG-20261028-122 修复——此前固定首页 20 条）。
 //! - 轮询结果体经 `HTTP_BODY_CAP`（8K 字符）截断——整段 JSON 解析失败时
-//!   按括号配对抢救完整条目（截断尾部条目本轮丢失，下轮重取；WARN 可见）。
+//!   按括号配对抢救完整条目（截断尾部条目本轮丢失，WARN 可见）；一条都
+//!   抢救不出来 = 轮询失败状态（`last_error` 可见），绝不伪成功。
 //! - git2 无 TLS 后端：`https://` 克隆诚实报错，`http://`/本地路径可用
 //!   （试验靶 Gitea 为 http）。
 //! - 回写 v1 只评三类终态转移，编辑/关闭外动作不回写。
@@ -39,6 +42,9 @@ use serde_json::json;
 const MIN_POLL_INTERVAL_SECS: u64 = 15;
 /// issues_list 单页条数（默认按最新更新序返回）。
 const POLL_PAGE_LIMIT: i64 = 20;
+/// 单来源单轮翻页硬上限（防御闸：对端不翻页/去重失效时不无限烧请求；
+/// 10 页 × 20 条 = 单轮最多回填 200 个 issue）。
+const MAX_POLL_PAGES: i64 = 10;
 /// 轮询循环空转步长。
 const LOOP_TICK_SECS: u64 = 5;
 /// 启动静默窗（等 gateway 组件装配完：connector 注册/cluster 启动）。
@@ -69,6 +75,10 @@ pub struct SourceStatus {
     pub last_poll: Option<String>,
     /// 最近一次错误（诚实面：轮询/解析/物化/建单失败都落这里）。
     pub last_error: Option<String>,
+    /// 最近一次警告（部分截断抢救：尾部条目本轮丢失且下轮同样截断=不自
+    /// 愈；干净轮询一轮后清除。与 last_error 分槽——部分成功轮不是错误轮，
+    /// BUG-20261028-122）。
+    pub last_warning: Option<String>,
     /// 累计导入单数（本进程生命周期内）。
     pub imported_total: u64,
     /// 最近一轮导入的 origin_id（空 = 无新单）。
@@ -78,6 +88,10 @@ pub struct SourceStatus {
     /// 回写成功 / 失败累计。
     pub writeback_ok: u64,
     pub writeback_failed: u64,
+    /// 水位：本进程已导入的最大外部 issue 号（观测面——翻页停页判定走
+    /// 「满页零新导入即停」，对端排序无关；水位只是导入深度的可读投影，
+    /// BUG-20261028-122）。
+    pub watermark: Option<i64>,
 }
 
 /// 回写请求（observer 侧产、消费者侧消；跨线程过无界通道）。
@@ -190,6 +204,8 @@ pub fn spawn(
                 clone_base_sha: None,
                 writeback_ok: 0,
                 writeback_failed: 0,
+                watermark: None,
+                last_warning: None,
             });
         }
     }
@@ -289,76 +305,111 @@ async fn poll_source(
 ) {
     let key = format!("{}/{}/{}", src.connector, src.owner, src.repo);
     let run = async {
-        // ① 拉取 open issues（经完整 dispatch 瀑布；凭据缺失 = 诚实报错）。
-        let text = invoke_connector(
-            rt,
-            &src.connector,
-            "issues_list",
-            json!({
-                "owner": src.owner,
-                "repo": src.repo,
-                "state": "open",
-                "limit": POLL_PAGE_LIMIT,
-            }),
-        )
-        .await?;
-        // ② 解析（8K 截断兜底：括号配对抢救完整条目）。
-        let (entries, truncated) = parse_issue_list(&text);
-        if entries.is_empty() && !text.trim_start().starts_with('[') {
-            return Err(format!("issues_list 返回非 JSON 数组形态: {}", head(&text, 200)));
-        }
-        if truncated {
-            tracing::warn!(
-                "[ExternalSource] {key}: 响应体超 8K 截断，本轮抢救出 {} 条完整条目（尾部丢失，下轮重取）",
-                entries.len()
-            );
-        }
-        // ③ 物化来源项目（首次导入前；失败 = 本轮不建单）。
+        // ① 物化来源项目（导入前；失败 = 本轮不建单）。翻页导入沿页推进，
+        //    物化必须在首页之前完成。
         let project = match ensure_source_project(rt, src) {
             Ok(p) => p,
             Err(e) => {
                 return Err(format!("任务副本物化失败（本轮跳过导入）: {e}"));
             }
         };
-        // ④ 去重导入 + 自动派发。
+        // ② 翻页拉取 + 去重导入（BUG-20261028-122：此前固定首页 limit=20，
+        //    第 21 条起的 issue 永远导入不了；issues_list 默认按最新更新序
+        //    返回，新 issue 恒在首页——满页零新导入即停，稳态 1 请求/轮）。
         let mut imported = Vec::new();
-        for entry in &entries {
-            if entry.get("pull_request").is_some() {
-                continue; // Gitea issues_list 混入 PR——不导入
+        // 本轮已导入的最大外部 issue 号（水位投影，跨轮取 max）。
+        let mut watermark: Option<i64> = None;
+        let mut page: i64 = 1;
+        loop {
+            let text = invoke_connector(rt, &src.connector, "issues_list", page_args(src, page))
+                .await?;
+            // ③ 解析（8K 截断兜底：括号配对抢救完整条目）。
+            let (entries, truncated) = parse_issue_list(&text);
+            if entries.is_empty() && !text.trim_start().starts_with('[') {
+                return Err(format!(
+                    "issues_list 第 {page} 页返回非 JSON 数组形态: {}",
+                    head(&text, 200)
+                ));
             }
-            let Some(number) = entry.get("number").and_then(|v| v.as_i64()) else {
-                continue;
-            };
-            let origin_id = format!("{}/{}/{}#{}", src.connector, src.owner, src.repo, number);
-            if !rt
-                .store
-                .list_issues_by_origin(&src.connector, &origin_id, 1)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                continue; // 已导入
+            // 截断诚实化（BUG-20261028-122：旧实现「下轮重取」是空头支票
+            // ——下轮还是同一个被截断的首页）：一条都抢救不出来 = 轮询失败
+            // 状态（外部可见 last_error），绝不伪造成功。
+            if truncation_blocked(truncated, entries.len()) {
+                return Err(format!(
+                    "issues_list 第 {page} 页响应超 8K 截断且抢救出 0 条完整条目——本轮放弃（响应 {} 字节）",
+                    text.len()
+                ));
             }
-            if !labels_match(src, entry) {
-                continue;
+            if truncated {
+                let msg = format!(
+                    "第 {page} 页响应超 8K 截断，抢救出 {} 条完整条目（页内尾部丢失；同参数下轮同样截断=不自愈，需调大 HTTP_BODY_CAP 或等结构化通道）",
+                    entries.len()
+                );
+                tracing::warn!("[ExternalSource] {key}: {msg}");
+                // 部分截断 ≠ 错误轮：导入照常推进，警告落独立槽（外部可见）。
+                return Ok((imported, watermark, Some(msg)));
             }
-            match import_entry(rt, src, &project, entry, &origin_id, cluster) {
-                Ok(number) => imported.push(number),
-                Err(e) => {
-                    tracing::warn!("[ExternalSource] {key}: 导入 {origin_id} 失败: {e}");
+            // ④ 去重导入 + 自动派发（沿页推进）。
+            let mut newly_imported = false;
+            for entry in &entries {
+                if entry.get("pull_request").is_some() {
+                    continue; // Gitea issues_list 混入 PR——不导入
+                }
+                let Some(number) = entry.get("number").and_then(|v| v.as_i64()) else {
+                    continue;
+                };
+                let origin_id = format!("{}/{}/{}#{}", src.connector, src.owner, src.repo, number);
+                if !rt
+                    .store
+                    .list_issues_by_origin(&src.connector, &origin_id, 1)
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    continue; // 已导入
+                }
+                if !labels_match(src, entry) {
+                    continue;
+                }
+                match import_entry(rt, src, &project, entry, &origin_id, cluster) {
+                    Ok(board_no) => {
+                        imported.push(board_no);
+                        newly_imported = true;
+                        watermark = Some(watermark.map_or(number, |w| w.max(number)));
+                    }
+                    Err(e) => {
+                        tracing::warn!("[ExternalSource] {key}: 导入 {origin_id} 失败: {e}");
+                    }
                 }
             }
+            // 停页判定（纯函数 [`should_stop_paging`]，回归锁钉死）：末页
+            // （返回不足一页）或满页但零新导入（前沿已过）。
+            if should_stop_paging(entries.len() as i64, newly_imported) {
+                break;
+            }
+            page += 1;
+            if page > MAX_POLL_PAGES {
+                tracing::warn!(
+                    "[ExternalSource] {key}: 翻页达硬上限 {MAX_POLL_PAGES} 页，本轮停止（对端未取尽——若常态出现请检查去重/水位）"
+                );
+                break;
+            }
         }
-        Ok(imported)
+        Ok((imported, watermark, None))
     }
     .await;
     let mut statuses = rt.statuses.lock();
     if let Some(st) = statuses.iter_mut().find(|s| s.source == key) {
         match run {
-            Ok(imported) => {
+            Ok((imported, watermark, warning)) => {
                 st.last_poll = Some(chrono::Local::now().to_rfc3339());
                 st.last_error = None;
+                // 干净轮询一轮即清警告（与 last_error=None 同语义）。
+                st.last_warning = warning;
                 st.imported_total += imported.len() as u64;
                 st.last_imported = imported;
+                if let Some(w) = watermark {
+                    st.watermark = Some(st.watermark.map_or(w, |old| old.max(w)));
+                }
             }
             Err(e) => {
                 st.last_poll = Some(chrono::Local::now().to_rfc3339());
@@ -370,6 +421,34 @@ async fn poll_source(
             }
         }
     }
+}
+
+/// 翻页请求体（wire 契约单一真相源，回归锁钉死）：`page` 是
+/// BUG-20261028-122 修复核心——此前固定首页（无 page 参数），第 21 条起
+/// 的 issue 永远导入不了。
+fn page_args(src: &ExternalSourceConfig, page: i64) -> serde_json::Value {
+    json!({
+        "owner": src.owner,
+        "repo": src.repo,
+        "state": "open",
+        "limit": POLL_PAGE_LIMIT,
+        "page": page,
+    })
+}
+
+/// 翻页停页判定（BUG-20261028-122 回归锁锚点）：末页（返回不足一页，
+/// 对端已取尽）或满页但零新导入（前沿已过——全熟/全被标签滤掉）即停。
+/// 前提：issues_list 默认最新更新序，新 issue 恒出现在首页——满页有新
+/// 导入才值得继续翻。
+fn should_stop_paging(fetched: i64, newly_imported: bool) -> bool {
+    fetched < POLL_PAGE_LIMIT || !newly_imported
+}
+
+/// 截断诚实化判定（BUG-20261028-122 回归锁锚点）：响应被 8K 截断且一条
+/// 完整条目都抢救不出来 = 本轮失败（真数据可能全在那个被斩断的尾部，
+/// 旧代码 `[` 前缀守卫会把它当空列表伪成功 + 「下轮重取」空头支票）。
+fn truncation_blocked(truncated: bool, salvaged: usize) -> bool {
+    truncated && salvaged == 0
 }
 
 /// 标签过滤：源配置 `labels` 空 = 全收；非空 = issue 至少命中一个。
