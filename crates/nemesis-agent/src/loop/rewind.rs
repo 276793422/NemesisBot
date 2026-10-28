@@ -379,18 +379,10 @@ impl AgentLoop {
             if report.ok() {
                 written = report.written;
                 deleted = report.deleted;
-                // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘
-                // JSON）原样保留，其回退历史不被本会话的回退摧毁。
-                cp.truncate_from_scoped(t, Some(session_key));
-                // R71（BUG-20261024-02）：post 基线 = scoped 截断后的真实索引
-                // 态。R31 改 scoped 截断时这里没跟着改口径——此前在截断前按
-                // tree_hex_before(t) 采集（unscoped 时代与截断后 latest_tree_hex
-                // 等值），其他会话 turn ≥ t 的条目截断后存活且带树，redo 守卫
-                // 2 拿 latest_tree_hex() 对照会把它们误判成「undo 后工作区变
-                // 了」：零变化也恒拒，且弹出条目作废、redo 永久死亡。两侧同
-                // 读截断后索引即同口径（真阳性不变：截断后任何新 turn 仍会
-                // 改变 latest → 拒绝）。
-                post_tree = cp.latest_tree_hex();
+                // BUG-20261028-120：检查点退役（scoped 截断 + post 基线读取）
+                // 不在这里做——退役必须以「全部持久化提交成功」为前提，否则
+                // jsonl 写回失败 = 文件已恢复 + 回退锚已没 + 文案谎称「原会
+                // 话完好」的三输态。移到步骤 2 成功之后（2b）。
                 file_restore = "applied";
             } else {
                 let partial = !report.written.is_empty() || !report.deleted.is_empty();
@@ -424,10 +416,34 @@ impl AgentLoop {
         // 2) jsonl 截断（tmp+rename 原子重写；verbatim 保留保留侧行）。
         let n = crate::chat_log::truncate_chat_log_rows(session_key, &rows[..cut]);
         if n != cut {
+            // BUG-20261028-120：此刻文件已恢复（file_restore=applied）但
+            // jsonl 与 checkpoint 索引都未动——如实报结构化 partial，不再谎
+            // 称「回退未生效（原会话完好）」。重试安全：restore_code 见文件
+            // 已在目标 → written=[]；检查点退役只发生在提交成功后（2b）。
             warn!(
-                "[AgentLoop] rewind 截断写回不完整（期望 {cut} 行写 {n} 行）——jsonl 保留原样，回退未生效"
+                "[AgentLoop] rewind 截断写回不完整（期望 {cut} 行写 {n} 行）——jsonl 与 checkpoint 索引保留原样，文件已恢复到目标点，可重试"
             );
-            return Err("会话日志写回失败，回退未生效（原会话完好）".to_string());
+            return Ok(serde_json::json!({
+                "blocked": true,
+                "reason": "commit_failed",
+                "session_key": session_key,
+                "message_index": report_index,
+                "restore_turn": restore_turn,
+                "file_restore": file_restore,
+                "checkpoint_retained": true,
+                "note": "工作区文件已恢复到目标点，但会话日志写回失败——对话与 checkpoint 均未改动，解决文件占用后可重试本操作",
+            }));
+        }
+
+        // 2b) 提交成功 → 检查点退役（BUG-20261028-120：从步骤 1 移来）。
+        // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）原样
+        // 保留，其回退历史不被本会话的回退摧毁。
+        // R71（BUG-20261024-02）：post 基线 = scoped 截断后的真实索引态，
+        // 两侧同读截断后索引（redo 守卫 2 对照 latest_tree_hex 即同口径；
+        // 截断前其他会话 turn ≥ t 的条目带树会被误判「undo 后工作区变了」）。
+        if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
+            cp.truncate_from_scoped(t, Some(session_key));
+            post_tree = cp.latest_tree_hex();
         }
 
         // F8（2026-09-27）：force 强过的强恢复动作落审计链台账——跳过冲突

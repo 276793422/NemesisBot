@@ -29,7 +29,10 @@ intent = ["列出 issue", "仓库有哪些问题", "看看 issue"]
 risk = "low"
 class = "network"
 http = { method = "GET", path = "/repos/{owner}/{repo}/issues" }
-args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" }, state = { type = "string", enum = ["open", "closed", "all"], description = "缺省 open" }, limit = { type = "integer", description = "分页大小" } } }
+# page（BUG-20261028-122）：Gitea REST 原生分页参数（?page=N&limit=M）。
+# external_source 轮询翻页依赖此参数——schema 是 LLM 可见契约，漏声明 =
+# 轮询只能看到首页（执行器不拒未声明参数，但契约面必须诚实）。
+args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" }, state = { type = "string", enum = ["open", "closed", "all"], description = "缺省 open" }, limit = { type = "integer", description = "分页大小", minimum = 1, maximum = 50 }, page = { type = "integer", description = "页码（从 1 起）", minimum = 1 } } }
 
 [[op]]
 id = "issue_get"

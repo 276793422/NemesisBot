@@ -265,6 +265,39 @@ fn normalize_repo_ref(repo: &str, ref_field: Option<&str>) -> Result<String, Str
     }
 }
 
+/// BUG-20261028-118 取消窗口兜底：force 更新在「备份已挪走、新版未落位」
+/// 的窗口内 future 被 drop（任务取消/超时）时，Drop 同步触发把备份复位回
+/// 原位。显式成功/失败路径先 `disarm()` 再走自己的消费/回滚逻辑，guard
+/// 只对「没有任何一方负责」的取消场景兜底。复位失败 best-effort（备份
+/// 留在 `.skill-rollback/`，下次安装的恢复式清扫收编）。
+struct RollbackGuard {
+    backup: PathBuf,
+    target: PathBuf,
+    armed: bool,
+}
+
+impl RollbackGuard {
+    fn new(backup: PathBuf, target: PathBuf) -> Self {
+        Self {
+            backup,
+            target,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RollbackGuard {
+    fn drop(&mut self) {
+        if self.armed && self.backup.exists() && !self.target.exists() {
+            let _ = std::fs::rename(&self.backup, &self.target);
+        }
+    }
+}
+
 impl SkillsHandler {
     fn installed(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let skills_dir = PathBuf::from(workspace).join("skills");
@@ -547,8 +580,12 @@ impl SkillsHandler {
         // ① GitHub ref 语法预检提前；② registry 名预检提前；③ 旧目录原子
         // 备份改名（不删除）→ 装成功清备份，装失败原样复位。
         // lockfile/origin 记账随安装成功被同 slug upsert 覆盖（失败时旧记账
-        // 与旧目录保持一致）；备份放 `.skill-staging/`（点开头 loader 不扫描，
-        // 24h 残留清扫兜底）。
+        // 与旧目录保持一致）。
+        // BUG-20261028-118：备份放独立根 `.skill-rollback/`（不再住
+        // `.skill-staging/`——备份继承旧目录 mtime，会被 staging 24h 一刀切
+        // 清扫在回滚消费它之前删掉）。建新备份前先跑恢复式清扫，收编上次
+        // 失败/取消的遗孤；本次事务挂 Drop guard，任务取消窗口内旧版本
+        // 自动复位。
         let repo_ref = match repo {
             Some(r) => Some(normalize_repo_ref(
                 r,
@@ -556,7 +593,10 @@ impl SkillsHandler {
             )?),
             None => None,
         };
+        // 恢复式清扫：只在此点调（无 in-flight 备份），见 recover_stale_rollbacks 注。
+        installer.recover_stale_rollbacks();
         let mut backup: Option<PathBuf> = None;
+        let mut rollback_guard: Option<RollbackGuard> = None;
         if force {
             if repo.is_none() {
                 let config = load_registry_config(&skills_config_path(workspace));
@@ -578,13 +618,17 @@ impl SkillsHandler {
                         .unwrap_or(0)
                 );
                 let backup_dir = PathBuf::from(workspace)
-                    .join(".skill-staging")
+                    .join(".skill-rollback")
                     .join(format!("{}.{}", slug, suffix));
                 std::fs::create_dir_all(backup_dir.parent().unwrap())
                     .map_err(|e| format!("备份目录创建失败（未做任何改动）: {}", e))?;
                 std::fs::rename(&target_dir, &backup_dir)
                     .map_err(|e| format!("备份旧版本失败（未做任何改动）: {}", e))?;
-                backup = Some(backup_dir);
+                backup = Some(backup_dir.clone());
+                // 取消窗口兜底：future 在任何 await 点被 drop（任务取消/超时）
+                // 时 Drop 触发复位；显式成功/失败路径先 disarm 再走自己的
+                // 消费/回滚逻辑。
+                rollback_guard = Some(RollbackGuard::new(backup_dir, target_dir.clone()));
             }
         }
 
@@ -634,24 +678,41 @@ impl SkillsHandler {
 
         match install_result {
             Ok(v) => {
-                // 装成功：备份退役（best-effort；残留被 24h sweep 兜底）。
+                // 装成功：备份退役（best-effort；遗孤由下次安装的恢复式清扫收编）。
                 if let Some(b) = &backup {
                     nemesis_utils::fsutil::remove_dir_all_resilient(b);
+                }
+                if let Some(g) = &mut rollback_guard {
+                    g.disarm();
                 }
                 Ok(v)
             }
             Err(e) => {
-                // 装失败：旧目录原样复位（回滚失败 = 备份原地保留 + 诚实报错）。
+                // 装失败：旧目录原样复位（回滚失败 = 备份原地保留 + 诚实报错；
+                // 文案基于 backup 实检，不谎报——BUG-20261028-118）。
                 if let Some(b) = &backup {
                     let _ = std::fs::create_dir_all(target_dir.parent().unwrap());
                     if let Err(re) = std::fs::rename(b, &target_dir) {
-                        return Err(format!(
-                            "{}；回滚失败——旧版本完整备份保留在 {}（可手动复位）：{}",
-                            e,
-                            b.display(),
-                            re
-                        ));
+                        let tail = if b.exists() {
+                            format!(
+                                "回滚失败——旧版本完整备份保留在 {}（可手动复位）：{}",
+                                b.display(),
+                                re
+                            )
+                        } else {
+                            format!(
+                                "回滚失败且备份已丢失（下次安装的恢复清扫若也无法收编，旧版本需重装）：{}",
+                                re
+                            )
+                        };
+                        if let Some(g) = &mut rollback_guard {
+                            g.disarm();
+                        }
+                        return Err(format!("{}；{}", e, tail));
                     }
+                }
+                if let Some(g) = &mut rollback_guard {
+                    g.disarm();
                 }
                 Err(e)
             }

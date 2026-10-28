@@ -320,4 +320,179 @@ mod vault_arm {
         assert_eq!(second["skipped_env"], 1, "m2 env 引用照常跳过");
         assert_eq!(read_config_text(&home), snap, "幂等：配置逐字节不变");
     }
+
+    /// BUG-20261028-119 回归锁：config 提交失败（文件被占用）→ Err；
+    /// **yaml 别名必须仍在**（config 的 yaml: 引用可解析，重试收敛）；
+    /// vault 已落盘（密钥零丢失）。修复前：闭包内先删别名 → 提交失败 =
+    /// 永久断链，重试 Ok + yaml_broken。Windows 形态测试（rename-while-open
+    /// 失败是 Windows 共享语义）。
+    #[cfg(windows)]
+    #[test]
+    fn vault_config_commit_failure_keeps_alias_and_retry_converges() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, ctx) = make_home_ctx(&dir);
+        write_config(&home, SEED);
+        std::fs::create_dir_all(cred_path(&home).parent().unwrap()).unwrap();
+        nemesis_config::credentials::save_credentials_file(
+            &cred_path(&home),
+            &nemesis_config::credentials::CredentialsFile {
+                keys: [("legacy".to_string(), "sk-legacy-real".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+        )
+        .unwrap();
+
+        // 占住 config.json（仅共享读）→ 原子写 rename 必败（os error 5）。
+        use std::os::windows::fs::OpenOptionsExt;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1) // FILE_SHARE_READ
+            .open(home.join("config.json"))
+            .unwrap();
+
+        let err = ModelsHandler::migrate_keys(
+            &home.to_string_lossy(),
+            &ctx,
+            &serde_json::json!({ "target": "vault", "passphrase": "migrate-test-pw" }),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("config.json"),
+            "失败必须指向 config 提交环节: {err}"
+        );
+
+        // 别名仍在（回退物未销毁）+ vault 已落盘（密钥零丢失）。
+        let creds: nemesis_config::credentials::CredentialsFile =
+            nemesis_config::credentials::load_credentials_file(&cred_path(&home)).unwrap();
+        assert_eq!(
+            creds.keys.get("legacy").map(String::as_str),
+            Some("sk-legacy-real"),
+            "config 提交失败不得销毁 yaml 别名"
+        );
+        let mut store =
+            nemesis_security::vault::VaultStore::open(&vault_file(&home.join("workspace")))
+                .unwrap();
+        if store.mode() == nemesis_security::vault::VaultMode::Argon2id {
+            store.unlock("migrate-test-pw").unwrap();
+        }
+        assert_eq!(
+            store.get("m1").unwrap(),
+            "sk-secret-1",
+            "vault 先落盘不回退"
+        );
+        drop(store);
+        drop(lock);
+
+        // 重试：完整收敛——yaml_broken 恒空（修复前这里 Ok + broken 死路）。
+        let out = call(&home, &ctx, "migrate-test-pw");
+        assert_eq!(out["migrated"].as_array().unwrap().len(), 2);
+        assert_eq!(out["yaml_broken"], serde_json::json!([]));
+        assert!(out.get("warning").is_none(), "收敛路径无 warning");
+        let creds: nemesis_config::credentials::CredentialsFile =
+            nemesis_config::credentials::load_credentials_file(&cred_path(&home)).unwrap();
+        assert!(!creds.keys.contains_key("legacy"), "重试收敛后别名清除");
+    }
+
+    /// BUG-20261028-119 回归锁②：creds 后置回写失败 → Ok + 诚实 warning；
+    /// config 已提交为 vault 引用（功能自洽）；重试经 already_vault 残留
+    /// 清扫臂清掉明文别名，真正收敛。Windows 形态（同上）。
+    #[cfg(windows)]
+    #[test]
+    fn vault_creds_write_failure_reports_warning_and_retry_cleans_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, ctx) = make_home_ctx(&dir);
+        write_config(&home, SEED);
+        std::fs::create_dir_all(cred_path(&home).parent().unwrap()).unwrap();
+        nemesis_config::credentials::save_credentials_file(
+            &cred_path(&home),
+            &nemesis_config::credentials::CredentialsFile {
+                keys: [("legacy".to_string(), "sk-legacy-real".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+        )
+        .unwrap();
+
+        // 占住 credentials.yaml → 后置回写失败。
+        use std::os::windows::fs::OpenOptionsExt;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1) // FILE_SHARE_READ
+            .open(cred_path(&home))
+            .unwrap();
+
+        let out = call(&home, &ctx, "migrate-test-pw");
+        drop(lock);
+
+        // Ok + warning（不假失败不谎报）。
+        let warning = out
+            .get("warning")
+            .and_then(|w| w.as_str())
+            .expect("creds 回写失败必须带诚实 warning");
+        assert!(
+            warning.contains("credentials.yaml"),
+            "warning 指向真实环节: {warning}"
+        );
+
+        // config 已提交为 vault 引用（功能自洽），明文已离 config。
+        let cfg = read_config_raw(&home);
+        assert_eq!(cfg["model_list"][0]["api_key"], "vault:m1");
+        assert_eq!(cfg["model_list"][2]["api_key"], "vault:legacy");
+        assert!(!read_config_text(&home).contains("sk-secret-1"));
+
+        // 残留：明文别名仍在 creds（本次回写失败的现场）。
+        let creds: nemesis_config::credentials::CredentialsFile =
+            nemesis_config::credentials::load_credentials_file(&cred_path(&home)).unwrap();
+        assert!(creds.keys.contains_key("legacy"), "失败回写 = 明文残留现场");
+
+        // 重试：already_vault 残留清扫臂清掉明文别名，warning 消失。
+        let out2 = call(&home, &ctx, "migrate-test-pw");
+        assert!(out2.get("warning").is_none(), "收敛后无 warning");
+        let creds: nemesis_config::credentials::CredentialsFile =
+            nemesis_config::credentials::load_credentials_file(&cred_path(&home)).unwrap();
+        assert!(
+            !creds.keys.contains_key("legacy"),
+            "重试必须清掉残留明文别名（明文彻底离盘）"
+        );
+    }
+
+    /// BUG-20261028-119 回归锁③：断引自修复——config 指 `yaml:legacy` 但
+    /// creds 缺条目、vault 有同名条目（历史受损现场）→ 引用直接升格
+    /// `vault:legacy`（死路变自愈），不再 Ok + yaml_broken 挂死。
+    #[test]
+    fn vault_yaml_broken_self_heals_when_vault_has_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, ctx) = make_home_ctx(&dir);
+        // m3 指 yaml:legacy，creds 缺条目（断引现场）；预置 vault 已有 legacy。
+        write_config(&home, SEED);
+        let vf = vault_file(&home.join("workspace"));
+        let mut store = nemesis_security::vault::VaultStore::create(
+            &vf,
+            nemesis_security::vault::VaultMode::Argon2id,
+            Some("migrate-test-pw"),
+        )
+        .unwrap();
+        store.set("legacy", "sk-legacy-real", "model", "").unwrap();
+        store.save().unwrap();
+        drop(store);
+
+        let out = call(&home, &ctx, "migrate-test-pw");
+
+        // 自修复：m3 升格 vault 引用，不再 yaml_broken。
+        assert_eq!(out["yaml_broken"], serde_json::json!([]));
+        let migrated = out["migrated"].as_array().unwrap();
+        assert!(
+            migrated
+                .iter()
+                .any(|m| m["name"] == "m3" && m["alias"] == "legacy"),
+            "断引条目必须走自修复臂: {migrated:?}"
+        );
+        let cfg = read_config_raw(&home);
+        assert_eq!(cfg["model_list"][2]["api_key"], "vault:legacy");
+        // m1 明文照常迁移。
+        assert_eq!(cfg["model_list"][0]["api_key"], "vault:m1");
+    }
 }

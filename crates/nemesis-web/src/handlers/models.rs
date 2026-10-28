@@ -238,15 +238,21 @@ impl ModelsHandler {
         };
         let mode = store.mode().to_string();
 
+        // BUG-20261028-119：creds 在闭包**外**加载、闭包内借可变引用搬家，
+        // 回写挪到 config 提交成功之后（跨文件提交顺序：config 提交是事务
+        // 点，事务点之前只许准备（vault 落盘），不许销毁回退物（yaml 别名）
+        // ——闭包内删别名 + 提交失败 = config 仍指 `yaml:<alias>` 但别名已
+        // 删的永久断链，重试落 yaml_broken 死路）。
+        let mut creds = if cred_path.exists() {
+            Some(
+                nemesis_config::credentials::load_credentials_file(&cred_path)
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
+
         let report = super::config::update_raw_config(home, |cfg| {
-            let mut creds = if cred_path.exists() {
-                Some(
-                    nemesis_config::credentials::load_credentials_file(&cred_path)
-                        .map_err(|e| e.to_string())?,
-                )
-            } else {
-                None
-            };
             let report = nemesis_security::vault::migrate_model_keys_to_vault(
                 cfg,
                 &mut store,
@@ -261,22 +267,33 @@ impl ModelsHandler {
                     format!("vault 落盘失败（明文 key 未离盘，修复后重跑即可）: {e}")
                 })?;
             }
-            if report.creds_changed {
-                nemesis_config::credentials::save_credentials_file(
-                    &cred_path,
-                    creds.as_ref().expect("creds_changed 蕴含 creds 在场"),
-                )
-                .map_err(|e| format!("credentials.yaml 写入失败: {e}"))?;
-            }
+            // 注意：creds 改写不在此处落盘（见上，提交成功后才回写）。
             Ok(report)
         })?;
+
+        // config 已提交（事务点已过）：现在才回写 credentials.yaml。失败 =
+        // config 新形态自洽（vault 引用可解析，功能不受影响），残留别名无害
+        // 且重跑可清（migrate 核心的 already_vault 残留清扫臂）——诚实
+        // warning，不谎报成功也不假失败。
+        let mut warning: Option<String> = None;
+        if report.creds_changed
+            && let Err(e) = nemesis_config::credentials::save_credentials_file(
+                &cred_path,
+                creds.as_ref().expect("creds_changed 蕴含 creds 在场"),
+            )
+        {
+            warning = Some(format!(
+                "credentials.yaml 回写失败（config 已提交为 vault 引用，功能不受影响；明文别名仍留在 credentials.yaml，修复文件占用后重跑迁移即可清除）: {e}"
+            ));
+        }
         tracing::info!(
-            "[Web/WSAPI] models.migrate_keys target=vault mode={mode} migrated={} broken={} yaml_removed={}",
+            "[Web/WSAPI] models.migrate_keys target=vault mode={mode} migrated={} broken={} yaml_removed={} creds_warning={}",
             report.migrated.len(),
             report.yaml_broken.len(),
-            report.yaml_aliases_removed.len()
+            report.yaml_aliases_removed.len(),
+            warning.is_some()
         );
-        Ok(Some(serde_json::json!({
+        let mut out = serde_json::json!({
             "target": "vault",
             "mode": mode,
             "migrated": report
@@ -298,7 +315,11 @@ impl ModelsHandler {
             "yaml_aliases_removed": report.yaml_aliases_removed,
             "skipped_env": report.skipped_env,
             "already_vault": report.already_vault,
-        })))
+        });
+        if let Some(w) = warning {
+            out["warning"] = serde_json::Value::String(w);
+        }
+        Ok(Some(out))
     }
 }
 

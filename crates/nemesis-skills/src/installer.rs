@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_types::error::{NemesisError, Result};
 use serde::{Deserialize, Serialize};
@@ -232,6 +232,64 @@ impl SkillInstaller {
                 nemesis_utils::fsutil::remove_dir_all_resilient(ent.path());
             }
         }
+    }
+
+    /// BUG-20261028-118：force 更新回滚备份根（`.skill-rollback/`）——与
+    /// staging **目录级隔离**。备份目录经 rename 落进来时继承旧技能目录的
+    /// 历史 mtime，住进 `.skill-staging/` 会被 [`Self::sweep_stale_staging`]
+    /// 的 24h 一刀切在回滚消费它之前删掉（失败场景 = 旧版本彻底丢失）。
+    /// 点开头目录 loader 不扫描，与 staging 同性质。
+    pub fn rollback_root(&self) -> PathBuf {
+        self.workspace.join(".skill-rollback")
+    }
+
+    /// BUG-20261028-118：回滚备份**恢复优先**清扫——处理上次失败/取消
+    /// 遗孤（进程死在「备份已挪走、新版未落位」窗口，或任务取消 Drop
+    /// guard 的 rename 也失败时）：
+    /// - `skills/<slug>` 缺失 = 旧版本无着落 → 先 rename 回原位（恢复）；
+    /// - 原位已在 = 备份过期 → 直接删。
+    ///
+    /// 返回恢复的原位路径（可观测/测试断言用）。best-effort：单项失败不
+    /// 中断整轮。
+    ///
+    /// ⚠ 调用时机约束：只允许在「本进程没有任何 in-flight force 备份」时
+    /// 调（生产挂点是 skills.rs install_with_ctx 建**新备份之前**）——
+    /// in-flight 备份期间调用会把刚建的新备份误判遗孤搬回原位。
+    pub fn recover_stale_rollbacks(&self) -> Vec<PathBuf> {
+        let mut recovered = Vec::new();
+        let Ok(entries) = std::fs::read_dir(self.rollback_root()) else {
+            return recovered;
+        };
+        for ent in entries.flatten() {
+            let backup = ent.path();
+            // 备份命名 `<slug>.old-<pid>-<millis>`；取首段为 slug。
+            let Some(slug) = ent
+                .file_name()
+                .to_string_lossy()
+                .split('.')
+                .next()
+                .map(String::from)
+            else {
+                continue;
+            };
+            if slug.is_empty() {
+                continue;
+            }
+            let target = self.workspace.join("skills").join(&slug);
+            if target.exists() {
+                debug!("removing stale skill rollback backup: {}", backup.display());
+                nemesis_utils::fsutil::remove_dir_all_resilient(&backup);
+            } else if std::fs::rename(&backup, &target).is_ok() {
+                info!("recovered skill rollback backup to {}", target.display());
+                recovered.push(target);
+            } else {
+                warn!(
+                    "failed to recover skill rollback backup {} (kept for retry)",
+                    backup.display()
+                );
+            }
+        }
+        recovered
     }
 
     /// R2：提交前 digest 复核——staging 现内容必须与审批通过的逐文件 sha256

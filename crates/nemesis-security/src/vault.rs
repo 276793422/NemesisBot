@@ -810,10 +810,15 @@ impl VaultMigrateReport {
 /// **Err 中断**——调用方据此放弃落盘（WSAPI 事务闭包 Err = config 不回写；
 /// CLI 壳 = 整体报错），绝不带着半迁移态静默继续。
 ///
-/// **纯内存**：本函数不落任何盘——持久化与顺序不变量（**vault 落盘先于
-/// config 回写**：先剥离明文再落 vault 的中间态 = 配置指 `vault:<alias>` 但
-/// vault 没有该别名的断链盘面）由调用方保证。WSAPI 在 update_raw_config
-/// 事务闭包内先 `store.save()` 再让闭包返回 Ok；CLI 壳同序。
+/// **纯内存**：本函数不落任何盘——持久化与顺序不变量由调用方保证
+/// （BUG-20261028-119 后的完整口径）：
+/// ① **vault 落盘先于 config 回写**——先剥离明文再落 vault 的中间态 =
+/// 配置指 `vault:<alias>` 但 vault 没有该别名的断链盘面；
+/// ② **creds 改写后于 config 提交**——config 提交是事务点，事务点之前
+/// 销毁 yaml 别名会把提交失败变成永久断链（config 仍指 `yaml:<alias>`
+/// 但别名已删）；WSAPI 形态 = 闭包内只 `store.save()`，creds 回写在
+/// `update_raw_config` 返回 Ok 之后，后置失败以 warning 诚实上报。
+/// CLI 壳同序。
 pub fn migrate_model_keys_to_vault(
     config: &mut serde_json::Value,
     store: &mut VaultStore,
@@ -850,6 +855,17 @@ pub fn migrate_model_keys_to_vault(
             continue;
         }
         if api_key.starts_with(nemesis_config::vault_ref::VAULT_PREFIX) {
+            // 残留清扫（BUG-20261028-119）：config 已指 vault 但 creds 仍留
+            // 同名明文别名 = 上次迁移 config 已提交、creds 回写失败的现场
+            // ——顺手清掉，让重试真正收敛（明文彻底离盘）。
+            if let (Some(alias), Some(creds_mut)) = (
+                api_key.strip_prefix(nemesis_config::vault_ref::VAULT_PREFIX),
+                creds.as_mut(),
+            ) && creds_mut.keys.remove(alias).is_some()
+            {
+                report.creds_changed = true;
+                report.yaml_aliases_removed.push(alias.to_string());
+            }
             report.already_vault += 1;
             continue;
         }
@@ -863,8 +879,23 @@ pub fn migrate_model_keys_to_vault(
             match creds.as_ref().and_then(|c| c.keys.get(alias)) {
                 Some(v) => (v.clone(), Some(alias.to_string())),
                 None => {
-                    // 断引用：不动配置，报给调用方（fail loud 而非静默丢引用）。
-                    report.yaml_broken.push((display_name, alias.to_string()));
+                    // 断引自修复（BUG-20261028-119）：vault 已有同名条目 =
+                    // 先前迁移已把值收进 vault 但 config 提交失败（旧顺序在
+                    // 事务点前删别名的现场）——直接把引用升格 `vault:<alias>`，
+                    // 死路变自愈；vault 无此条目才是真断引，照旧不动配置。
+                    if store.get(alias).is_ok() {
+                        let repaired = alias.to_string();
+                        obj.insert(
+                            "api_key".to_string(),
+                            serde_json::Value::String(format!("vault:{repaired}")),
+                        );
+                        report
+                            .migrated
+                            .push((display_name, repaired, "model".into()));
+                    } else {
+                        // 断引用：不动配置，报给调用方（fail loud 而非静默丢引用）。
+                        report.yaml_broken.push((display_name, alias.to_string()));
+                    }
                     continue;
                 }
             }

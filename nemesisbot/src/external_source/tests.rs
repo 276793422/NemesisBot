@@ -188,3 +188,78 @@ fn writeback_source_key_derivation_contract() {
     let key = format!("gitea/{repo_path}");
     assert_eq!(key, "gitea/myowner/myrepo");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-122 回归锁：外部 issue 轮询固定首页 + 8K 截断伪成功。
+// 旧实现单发 issues_list（limit=20 无 page），第 21 条起的 issue 永远导
+// 入不了；截断且 0 条可解析时 `[` 前缀守卫当空列表伪成功 + 「下轮重取」
+// 空头支票（下轮还是同一个被截断的首页）。修复：翻页（末页/满页零新导
+// 入即停 + 硬上限）+ 截断诚实化（0 条抢救 = last_error 落状态）。
+// 端到端翻页行为（真 connector 拉真仓库）是网关活体验证面（P0，见模块
+// 头测试哲学注记）——本组锁钉住决策逻辑与 wire 契约这三个可纯测点。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn page_args_carries_paging_params() {
+    // wire 契约：翻页请求必须带 page（修复前根本不发 page——本锁修复前红）。
+    let src = ExternalSourceConfig {
+        owner: "o".into(),
+        repo: "r".into(),
+        ..Default::default()
+    };
+    let args = page_args(&src, 3);
+    assert_eq!(args["page"], 3, "page 参数必须随轮次透传: {args}");
+    assert_eq!(args["owner"], "o");
+    assert_eq!(args["repo"], "r");
+    assert_eq!(args["state"], "open");
+    assert_eq!(args["limit"], 20, "单页条数 = POLL_PAGE_LIMIT");
+}
+
+#[test]
+fn should_stop_paging_decision() {
+    // 末页（返回不足一页）即停——即使有新导入（对端已取尽）。
+    assert!(should_stop_paging(5, true));
+    assert!(should_stop_paging(0, false));
+    // 满页但零新导入 = 前沿已过，停（修复前该场景不存在：翻页根本不会
+    // 发生——本锁把「稳态 1 请求/轮」钉死）。
+    assert!(should_stop_paging(20, false));
+    // 满页且有新导入 = 继续翻（回填推进的核心判定）。
+    assert!(!should_stop_paging(20, true));
+}
+
+#[test]
+fn truncation_blocked_only_when_zero_salvaged() {
+    // 截断且 0 条抢救 = 本轮失败（诚实化核心；修复前这里伪成功）。
+    assert!(truncation_blocked(true, 0));
+    // 抢救出条目 = 照常处理（截断尾部本轮丢失，WARN 可见，不算失败）。
+    assert!(!truncation_blocked(true, 3));
+    // 未截断 = 永不因截断失败。
+    assert!(!truncation_blocked(false, 0));
+    assert!(!truncation_blocked(false, 5));
+}
+
+#[test]
+fn gitea_manifest_issues_list_declares_page_param() {
+    // 真实 gitea connector.toml 契约锁（修复前红：schema 无 page——LLM
+    // 可见契约缺页参数，翻页请求参数成为未声明魔法）。清单是分发产物，
+    // schema 面变更必须随代码锁同步钉住。
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/workspace/connectors/gitea/connector.toml"
+    );
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读 {path} 失败: {e}"));
+    let doc: toml::Value = toml::from_str(&raw).expect("connector.toml 必须是合法 TOML");
+    let ops = doc["op"].as_array().expect("[[op]] 数组");
+    let issues_list = ops
+        .iter()
+        .find(|o| o["id"].as_str() == Some("issues_list"))
+        .expect("gitea 清单必须声明 issues_list");
+    let props = &issues_list["args_schema"]["properties"];
+    let page = props
+        .get("page")
+        .unwrap_or_else(|| panic!("issues_list args_schema 必须声明 page 参数"));
+    assert_eq!(page["type"].as_str(), Some("integer"));
+    assert_eq!(page["minimum"].as_integer(), Some(1), "页码从 1 起");
+    // limit 的分页边界同步钉住（Gitea REST 真实上限 50）。
+    assert_eq!(props["limit"]["maximum"].as_integer(), Some(50));
+}
