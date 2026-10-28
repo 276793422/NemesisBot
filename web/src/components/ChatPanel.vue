@@ -2334,16 +2334,30 @@ watch(() => chatStore.input, () => {
   const tok = currentAtToken()
   if (!tok) {
     atItems.value = []
+    // token 消失须同步撤销在途 debounce——否则 150ms 后请求照发、回包把
+    // 已关闭的菜单重新弹开（幽灵菜单 + Enter 被拦截吞键）。
+    if (atDebounce !== null) {
+      clearTimeout(atDebounce)
+      atDebounce = null
+    }
     return
   }
   if (atDebounce) clearTimeout(atDebounce)
   atDebounce = setTimeout(async () => {
     try {
       const out = await request('fs', 'complete_path', { prefix: tok.prefix })
+      // 响应围栏：请求在途期间 token 可能已删除/变更——陈旧回包不得应用。
+      // 菜单只是 currentAtToken 的视图（与 syncMissedChat/handleHistoryResponse
+      // 的响应围栏同模式：回包应用前先验当前态仍匹配）。
+      const cur = currentAtToken()
+      if (!cur || cur.prefix !== tok.prefix) return
       atItems.value = (out?.paths as string[] | undefined) ?? []
       atTruncated.value = !!(out?.truncated)
       atIndex.value = 0
     } catch {
+      // 失败臂同围栏：陈旧失败不得清掉新 token 刚填的菜单。
+      const cur = currentAtToken()
+      if (!cur || cur.prefix !== tok.prefix) return
       atItems.value = [] // 补全失败静默——不影响输入
     }
   }, 150)

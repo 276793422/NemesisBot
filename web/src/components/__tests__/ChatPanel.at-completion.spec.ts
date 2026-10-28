@@ -144,4 +144,60 @@ describe('ChatPanel @文件引用补全', () => {
     expect(wrapper.find('.slash-menu').exists()).toBe(false)
     wrapper.unmount()
   })
+
+  // BUG-20261028-134：token 删除须撤销在途 debounce——旧行为只清 atItems
+  // 不清定时器，150ms 后请求照发、回包把已关闭的菜单重新弹开。
+  it('debounce 到期前 token 已删除 → 不发请求不出幽灵菜单', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+
+    chat.input = '看 @src'
+    await vi.advanceTimersByTimeAsync(100) // debounce 未到
+    chat.input = '看 ' // token 消失
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+
+    expect(fsCalls()).toHaveLength(0)
+    expect(wrapper.find('.slash-menu').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('在途回包到达前 token 已删除 → 回包不弹幽灵菜单', async () => {
+    let resolveReq!: (v: { paths: string[]; truncated: boolean }) => void
+    requestMock.mockReturnValue(new Promise(resolve => { resolveReq = resolve }))
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+
+    chat.input = '看 @src'
+    await vi.advanceTimersByTimeAsync(200) // 请求已发出、回包挂起
+    expect(fsCalls()).toHaveLength(1)
+    chat.input = '看 ' // token 删除
+    await nextTick()
+    resolveReq({ paths: ['src/main.rs'], truncated: false })
+    await flushPromises()
+
+    expect(wrapper.find('.slash-menu').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('陈旧失败回包不清掉新 token 刚填的菜单', async () => {
+    let rejectReq!: (e: Error) => void
+    requestMock.mockReturnValueOnce(new Promise((_res, rej) => { rejectReq = rej }))
+    requestMock.mockResolvedValue({ paths: ['new.txt'], truncated: false })
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+
+    chat.input = '@ol'
+    await vi.advanceTimersByTimeAsync(200) // 第一发已发出（挂起，将失败）
+    chat.input = '@old' // token 增长 → 第二发排队
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises() // 第二发成功 → 菜单出现
+    expect(wrapper.find('.slash-menu').text()).toContain('new.txt')
+
+    rejectReq(new Error('stale boom')) // 旧请求失败迟到
+    await flushPromises()
+    expect(wrapper.find('.slash-menu').exists()).toBe(true) // 不被陈旧失败清掉
+    wrapper.unmount()
+  })
 })
