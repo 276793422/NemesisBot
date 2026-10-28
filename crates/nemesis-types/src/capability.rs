@@ -204,18 +204,27 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
 /// Resolve the per-model output token cap (`max_output_tokens`) for the active
 /// model alias, by looking up `model_list[]` for the matching entry (by
 /// `model_name` or `model`) and returning its `max_output_tokens` field. `None`
-/// when the entry isn't found or the field is absent — the caller falls back to
-/// a default.
+/// when the entry isn't found, the field is absent, or the value is 0/negative
+/// — the caller falls back to a default.
 ///
 /// Lets each model declare its real output ceiling so the agent requests
 /// `max_tokens = cap` instead of a one-size-fits-all default: large files that
 /// fit within the model's real cap write in one shot instead of truncating.
 /// Pure (no IO); `AgentLoop::current_max_tokens` reads config.json fresh and
 /// hands the parsed value here. Mirrors [`resolve_active_tier`].
+///
+/// BUG-20261029-144：0/负值按缺席处理（`.filter(|v| *v > 0)`，与 resolver
+/// 家族 `resolve_context_window`/`resolve_agents_default_max_tokens` 等同款）。
+/// 缺 filter 时 Some(0) 经 run_loop `unwrap_or(DEFAULT_MAX_TOKENS)` 直达请求体
+/// `max_tokens: 0`（provider 400 要求 ≥1，agent 全瘫且伪装成模型故障）；
+/// openai_compat bare lane（`model_card_semantics`）更把负数以 Option<i64>
+/// 原样透传——消费侧 config_watch 的 `u32::try_from` 只堵负数与超 u32 值域，
+/// 0 仍穿透，故在 resolver 层统一收口。
 pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) -> Option<i64> {
     find_model_entry(cfg, active_alias)?
         .get("max_output_tokens")
         .and_then(|v| v.as_i64())
+        .filter(|v| *v > 0)
 }
 
 /// M6-1（2026-10-10 机制加固）：resolve `agents.defaults.max_tool_iterations`

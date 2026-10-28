@@ -160,6 +160,24 @@ fn resolve_max_output_tokens_from_config() {
     );
 }
 
+/// BUG-20261029-144：`max_output_tokens` 为 0 / 负数时必须按缺席处理（None）。
+/// resolver 家族惯例（context_window / compact_context_tokens /
+/// agents.defaults.max_tokens / max_output_ceiling 全带 `.filter(|v| *v > 0)`）
+/// 唯独本函数漏 filter——Some(0) 经 run_loop `unwrap_or(DEFAULT)` 直达请求体
+/// `max_tokens: 0`（provider 400 要求 ≥1，agent 全瘫）；openai_compat bare lane
+/// 更把负数原样透传（Option<i64> 直传）。修复后 0/负 = 未声明，回落默认。
+#[test]
+fn resolve_max_output_tokens_rejects_non_positive() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model": "m/zero", "max_output_tokens": 0},
+            {"model": "m/neg", "max_output_tokens": -5}
+        ]
+    });
+    assert_eq!(resolve_max_output_tokens(&cfg, "m/zero"), None);
+    assert_eq!(resolve_max_output_tokens(&cfg, "m/neg"), None);
+}
+
 #[test]
 fn resolve_agents_default_max_tokens_and_const() {
     // 2026-10-23 P0：主轮回退链第二级（条目 max_output_tokens > 本键 >

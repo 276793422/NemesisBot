@@ -73,6 +73,19 @@ fn negative_value_treated_as_absent_not_wrapped() {
 }
 
 #[test]
+fn zero_value_treated_as_absent_reaches_default_fallback() {
+    // BUG-20261029-144：resolver 层补 `.filter(>0)` 前穿透——try_from(0)=Ok(0)
+    // 是值域内合法值，unwrap_or(DEFAULT) 不触发 → 请求体 max_tokens: 0 →
+    // provider 400（要求 ≥1）。修复后 0 按缺席处理，调用方回落 64K 默认。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [
+            {"model": "m/zero", "model_name": "m-zero", "max_output_tokens": 0}
+        ]
+    }));
+    assert_eq!(override_of(&loop_, "m-zero"), None);
+}
+
+#[test]
 fn over_u32_value_treated_as_absent_not_truncated() {
     // 修复前：99_999_999_999i64 as u32 高位截断成无意义小值。
     let (_dir, loop_) = loop_with_config(serde_json::json!({

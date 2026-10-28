@@ -1049,6 +1049,21 @@ fn model_card_semantics_reads_effort_and_max_output() {
     assert_eq!(max_out, None);
 }
 
+/// BUG-20261029-144：`max_output_tokens` 0/负值按缺席处理——bare lane 以
+/// Option<i64> 原样透传 ChatOptions.max_tokens（providers 侧无 u32 收口），
+/// resolver 层不加 filter 时负数直接进请求体打 provider 400。
+#[test]
+fn model_card_semantics_rejects_non_positive_max_output() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "m-zero", "max_output_tokens": 0},
+            {"model_name": "m-neg", "max_output_tokens": -5}
+        ]
+    });
+    assert_eq!(super::model_card_semantics(&cfg, "m-zero").1, None);
+    assert_eq!(super::model_card_semantics(&cfg, "m-neg").1, None);
+}
+
 #[tokio::test]
 async fn bare_chat_options_merge_caller_params_and_master_card() {
     let dir = std::env::temp_dir().join(format!(
