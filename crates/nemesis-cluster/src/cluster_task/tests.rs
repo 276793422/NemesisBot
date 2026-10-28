@@ -915,3 +915,100 @@ fn test_remove_terminal_tasks_empty_is_zero() {
     let list = ClusterTaskList::new(std::env::temp_dir());
     assert_eq!(list.remove_terminal_tasks(), 0);
 }
+
+// ===========================================================================
+// BUG-20261029-140：出队执行原子化（begin_execution）
+//
+// 旧消费序列（nemesisbot/src/cluster_agent.rs 修复前 169/182/205）三步分离：
+// get_task 读快照 → 内存检查 Cancelled → update_status(Running)。A 侧
+// task_cancel 的 cancel_task() 落在检查与转移之间时（读 Pending → 过检 →
+// 写 Cancelled），随后的 update_status(Running) 无条件覆盖终态——A 端已
+// 收到 QueuedCancelled 承诺（「不会再执行」），任务却照常执行到底。
+// 与 inject_callback 的 LOW-4 同族（先 get 读后 get_mut 写的 TOCTOU），
+// 修复 = 同款 guard 内原子判定：begin_execution 把「取消判定 + Running
+// 转移 + 快照返回」收进单个 DashMap get_mut 临界区。
+// ===========================================================================
+
+// Pending 任务正常出队：原子置 Running 并返回快照。
+#[test]
+fn test_begin_execution_starts_pending_task() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    list.create_task(make_task("t1", TaskStatus::Pending));
+
+    let started = list.begin_execution("t1");
+    let task = match started {
+        DequeueOutcome::Started(t) => t,
+        other => panic!("期望 Started，实际 {:?}", queue_outcome_tag(&other)),
+    };
+    assert_eq!(task.task_id, "t1");
+    assert_eq!(list.get_task("t1").unwrap().status, TaskStatus::Running);
+}
+
+// 核心不变量：已取消任务出队 → 拒绝执行且终态**不被覆盖**为 Running。
+// 旧两步序列在此场景失约（update_status(Running) 覆盖 Cancelled）。
+#[test]
+fn test_begin_execution_refuses_cancelled_task() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    list.create_task(make_task("t1", TaskStatus::Cancelled));
+
+    let outcome = list.begin_execution("t1");
+    assert!(
+        matches!(outcome, DequeueOutcome::Cancelled(ref t) if t.task_id == "t1"),
+        "已取消任务出队必须落 Cancelled 臂"
+    );
+    assert_eq!(
+        list.get_task("t1").unwrap().status,
+        TaskStatus::Cancelled,
+        "Cancelled 终态不得被出队转移覆盖"
+    );
+}
+
+// WaitingRemote 出队同样原子置 Running（恢复路径与旧无条件转移等价）。
+#[test]
+fn test_begin_execution_starts_waiting_remote_task() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    list.create_task(make_task("t1", TaskStatus::WaitingRemote));
+
+    assert!(matches!(
+        list.begin_execution("t1"),
+        DequeueOutcome::Started(_)
+    ));
+    assert_eq!(list.get_task("t1").unwrap().status, TaskStatus::Running);
+}
+
+// 任务不存在（从未入册/已回收）→ Missing，不 panic 不转移。
+#[test]
+fn test_begin_execution_missing_task() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    assert!(matches!(
+        list.begin_execution("ghost"),
+        DequeueOutcome::Missing
+    ));
+}
+
+// 出队置 Running 后取消仍可达：命中 Running 分支（token 打断路径）。
+#[test]
+fn test_cancel_after_begin_execution_hits_running_branch() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    list.create_task(make_task("t1", TaskStatus::Pending));
+
+    assert!(matches!(
+        list.begin_execution("t1"),
+        DequeueOutcome::Started(_)
+    ));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    list.register_cancel_token("t1", token.clone());
+    assert_eq!(list.cancel_task("t1"), CancelOutcome::RunningCancelled);
+    assert!(token.is_cancelled());
+    assert_eq!(list.get_task("t1").unwrap().status, TaskStatus::Cancelled);
+}
+
+// DequeueOutcome 无 Debug 时的标签辅助（panic 消息可读）。
+fn queue_outcome_tag(o: &DequeueOutcome) -> &'static str {
+    match o {
+        DequeueOutcome::Missing => "Missing",
+        DequeueOutcome::Cancelled(_) => "Cancelled",
+        DequeueOutcome::Started(_) => "Started",
+    }
+}

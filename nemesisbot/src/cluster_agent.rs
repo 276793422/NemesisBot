@@ -18,7 +18,9 @@ use nemesis_agent::r#loop::AgentLoop;
 use nemesis_agent::turn_guard::ESCALATION_MARKER;
 use nemesis_agent::types::AgentConfig;
 use nemesis_agent::types::AgentEvent;
-use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatus};
+use nemesis_cluster::cluster_task::{
+    ClusterTaskList, ClusterWorkQueue, DequeueOutcome, TaskStatus,
+};
 use nemesis_cluster::envelope::{self, Envelope, EnvelopeResponse};
 use nemesis_cluster::rpc::client::RpcClient;
 use nemesis_cluster::rpc::peer_chat_handler::{TaskResultPersister, send_callback_or_persist};
@@ -166,43 +168,45 @@ pub async fn cluster_agent_loop(
                 continue;
             }
         };
-        let task = match task_list.get_task(&task_id) {
-            Some(t) => t,
-            None => {
+        // 出队执行原子化（BUG-20261029-140）：旧序列 get_task → 内存检查
+        // Cancelled → update_status(Running) 三步分离，task_cancel 落在检查
+        // 与转移之间时终态被覆盖成 Running（A 端已收 QueuedCancelled 承诺，
+        // 任务却照常执行到底）。begin_execution 在单个 get_mut 临界区内完成
+        // 取消判定 + Running 转移 + 快照返回（inject_callback LOW-4 同款纪律）。
+        let task = match task_list.begin_execution(&task_id) {
+            DequeueOutcome::Missing => {
                 tracing::warn!(
                     task_id = %task_id,
                     "[ClusterAgent] Task not found in task list, skipping"
                 );
                 continue;
             }
+            // 排队期间被 task_cancel 下行取消的任务直接报错回收，不再执行
+            // （cancel_task 只能标终态，回收靠出队；终态不被本侧覆盖）。
+            DequeueOutcome::Cancelled(task) => {
+                tracing::info!(
+                    task_id = %task_id,
+                    "[ClusterAgent] Dequeued task was cancelled, dropping"
+                );
+                handle_task_error(
+                    &task_list,
+                    rpc_client.as_deref(),
+                    result_persister.as_deref(),
+                    &task,
+                    &self_node_id,
+                    "cancelled",
+                )
+                .await;
+                continue;
+            }
+            DequeueOutcome::Started(task) => task,
         };
-
-        // 取消检查（W2 P4 per-task cancel）：排队期间被 task_cancel 下行取消
-        // 的任务直接报错回收，不再执行（cancel_task 只能标终态，回收靠出队）。
-        if task.status == TaskStatus::Cancelled {
-            tracing::info!(
-                task_id = %task_id,
-                "[ClusterAgent] Dequeued task was cancelled, dropping"
-            );
-            handle_task_error(
-                &task_list,
-                rpc_client.as_deref(),
-                result_persister.as_deref(),
-                &task,
-                &self_node_id,
-                "cancelled",
-            )
-            .await;
-            continue;
-        }
 
         tracing::info!(
             task_id = %task_id,
             status = %task.status,
             "[ClusterAgent] Processing task"
         );
-
-        task_list.update_status(&task_id, TaskStatus::Running);
 
         // D0b（goal P2）：出队开跑上报——master 把 dispatch 标 running
         // （queued vs executing 分界；重平衡只挪 queued 单）。fire-and-forget：

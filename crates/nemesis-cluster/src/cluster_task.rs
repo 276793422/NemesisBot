@@ -54,6 +54,18 @@ pub enum CancelOutcome {
     AlreadyTerminal { status: String },
 }
 
+/// 出队执行结局（BUG-20261029-140：消费方出队序列原子化）。
+#[derive(Debug, Clone)]
+pub enum DequeueOutcome {
+    /// 任务不存在（从未入册或已回收）。
+    Missing,
+    /// 出队时已被取消——终态保持 Cancelled 未被触碰，调用方走取消回收，
+    /// **不得执行**（A 端已收到 QueuedCancelled 承诺）。
+    Cancelled(ClusterTask),
+    /// 已原子置 Running，返回任务快照，调用方照常执行。
+    Started(ClusterTask),
+}
+
 /// Origin of a cluster task (who sent the request).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSource {
@@ -418,6 +430,30 @@ impl ClusterTaskList {
                 );
                 CancelOutcome::RunningCancelled
             }
+        }
+    }
+
+    /// 出队执行原子化（BUG-20261029-140，inject_callback 的 LOW-4 同族）：
+    /// 旧消费序列 get_task 读快照 → 内存检查 Cancelled → update_status(Running)
+    /// 三步分离，cancel_task 落在检查与转移之间时（读 Pending → 过检 → 写
+    /// Cancelled）终态被随后的 update_status(Running) 无条件覆盖——A 端已收
+    /// QueuedCancelled 承诺（「不会再执行」），任务却照常执行到底。本方法把
+    /// 「取消判定 + 状态转移 + 快照返回」收进单个 get_mut 临界区：Cancelled →
+    /// 拒绝执行且终态不被触碰；其余状态（Pending/WaitingRemote/恢复路径任意
+    /// 非终态）→ 原子置 Running 并返回快照（与旧无条件转移等价）；不存在 →
+    /// Missing。guard 持有期间不调 persist_to_disk/complete_task（内部 iter
+    /// 同一把 DashMap，LOW-4 注释同款纪律）；与 update_status 同为纯内存态，
+    /// 落盘语义随任务既有的 persist 节点。
+    pub fn begin_execution(&self, task_id: &str) -> DequeueOutcome {
+        match self.tasks.get_mut(task_id) {
+            Some(mut task) => {
+                if task.status == TaskStatus::Cancelled {
+                    return DequeueOutcome::Cancelled(task.clone());
+                }
+                task.status = TaskStatus::Running;
+                DequeueOutcome::Started(task.clone())
+            }
+            None => DequeueOutcome::Missing,
         }
     }
 
