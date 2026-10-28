@@ -21,6 +21,13 @@ use crate::registry::{self, Lang};
 /// 既有 Err 链收口（读循环把 Err 视为会话结束）。
 const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
+/// 单条 LSP 头行上限（read_message 头部循环的读闸）。与 body 侧
+/// MAX_LSP_MESSAGE_BYTES 同一威胁模型：崩溃/被替换的语言服务器输出
+/// 无换行/超长行时，无上界的行读会把字节无限累积进 String（gateway
+/// OOM 面）。64 KiB 远大于任何合法头行（Content-Length/Content-Type
+/// 均在百字节级）。
+const MAX_LSP_HEADER_LINE_BYTES: usize = 64 * 1024;
+
 /// The operations this crate exposes. Four are read-only queries; C7 adds
 /// the write-capable pair — `Rename` produces file edits that the CALLER
 /// (the agent tool) must push through the security pipeline before any
@@ -265,21 +272,57 @@ async fn write_message(inner: &mut Inner, msg: &Value) -> Result<(), String> {
         .map_err(|e| format!("flush to server stdin failed: {e}"))
 }
 
+/// Read one `\n`-terminated header line with a hard cap on its length.
+/// `read_line` can't be capped — it accumulates unboundedly before
+/// returning — so this scans the BufReader manually via `fill_buf`.
+/// Return shape matches `read_line`: the full line including `\n`
+/// (callers trim `\r\n` themselves). EOF with nothing buffered is a clean
+/// end-of-stream; EOF mid-line is the same transport family (the stream
+/// ended before the header block did).
+async fn read_header_line(reader: &mut BufReader<ChildStdout>) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let available = reader
+            .fill_buf()
+            .await
+            .map_err(|e| format!("read header line failed: {e}"))?;
+        if available.is_empty() {
+            return if buf.is_empty() {
+                Err("server closed the stream".to_string())
+            } else {
+                Err("server closed the stream mid-header-line".to_string())
+            };
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            buf.extend_from_slice(&available[..=pos]);
+            let len = buf.len();
+            reader.consume(pos + 1);
+            if len > MAX_LSP_HEADER_LINE_BYTES {
+                return Err(format!(
+                    "header line {len} bytes exceeds cap {MAX_LSP_HEADER_LINE_BYTES}"
+                ));
+            }
+            return Ok(String::from_utf8_lossy(&buf).into_owned());
+        }
+        let n = available.len();
+        buf.extend_from_slice(available);
+        reader.consume(n);
+        if buf.len() > MAX_LSP_HEADER_LINE_BYTES {
+            return Err(format!(
+                "header line {} bytes exceeds cap {MAX_LSP_HEADER_LINE_BYTES} (no newline)",
+                buf.len()
+            ));
+        }
+    }
+}
+
 /// Read one framed message straight off the BufReader (line-oriented
 /// headers then an exact-length body).
 async fn read_message(inner: &mut Inner) -> Result<Value, String> {
     // Headers.
     let mut content_length: Option<usize> = None;
     loop {
-        let mut line = String::new();
-        inner
-            .stdout
-            .read_line(&mut line)
-            .await
-            .map_err(|e| format!("read header line failed: {e}"))?;
-        if line.is_empty() {
-            return Err("server closed the stream".to_string());
-        }
+        let line = read_header_line(&mut inner.stdout).await?;
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break; // end of headers

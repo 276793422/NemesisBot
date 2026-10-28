@@ -66,6 +66,11 @@ fn session_poisoning_detection() {
     assert!(is_session_poisoning(
         "Content-Length 99999999 exceeds cap 67108864"
     ));
+    // R205（BUG-20261029-136）：头行超限与 body 超限同族——读过未知量
+    // 字节、会话不可信，必须驱逐。
+    assert!(is_session_poisoning(
+        "header line 131072 bytes exceeds cap 65536"
+    ));
     // Well-formed LSP error: session stays.
     assert!(!is_session_poisoning(
         "server error on textDocument/definition: {code:-32601}"
@@ -674,6 +679,14 @@ def handle(msg):
     if method == "exit":
         sys.exit(0)
     if method == "textDocument/hover":
+        if MODE == "giant-header":
+            # R205：崩溃/被替换的服务器输出无换行长流——头行超限必须被
+            # cap 拒绝并按 poisoning 驱逐。131072 > 客户端 64KiB 头行 cap；
+            # 发完即止（不发正常帧），客户端读到超限错误就断流。
+            with send_lock:
+                sys.stdout.buffer.write(b"X" * 131072 + b"\r\n")
+                sys.stdout.buffer.flush()
+            return
         if MODE == "diag-on-hover":
             # C2：在响应前先推一条诊断——request() 读循环的 Notification
             # 臂必须把它缓存住（而非只等自己的响应）。
@@ -996,6 +1009,29 @@ async fn s1_fake_server_extra_headers_are_skipped() {
         .await
         .unwrap();
     assert!(hover.contains("fake_hover_value"), "{hover}");
+    let _ = mgr.shutdown_all().await;
+}
+
+/// R205（BUG-20261029-136）：崩溃/被替换的语言服务器输出无换行长流——
+/// 头行超限必须被 cap 拒绝并按 poisoning 驱逐，而不是无上界累积进
+/// String（gateway OOM 面）。修复前 `read_line` 无上界：超长行被照常
+/// 吞下、随后 EOF → transport 族 → respawn 一次 → 新会话同样死 → 报
+/// "server closed the stream"（不含 exceeds cap），且 respawn 出的新
+/// 会话残留在表里（count==1）——两个断言在修复前都红。
+#[tokio::test]
+async fn fake_server_giant_header_line_is_capped_and_poisons_session() {
+    let (dir, _path) = plant_fake_gopls("giant-header");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let err = mgr
+        .query(LspOp::Hover, &dir.path().join("main.go"), 0, 0)
+        .await
+        .unwrap_err();
+    assert!(err.contains("exceeds cap"), "{err}");
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "poisoned session must be evicted"
+    );
     let _ = mgr.shutdown_all().await;
 }
 
