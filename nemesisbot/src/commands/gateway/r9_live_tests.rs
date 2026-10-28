@@ -745,16 +745,20 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
         tree_contains(&logs_b, &peer_msg)
     })
     .await;
-    assert!(
-        mock_a.hits() >= 2,
-        "A must consume ≥2 script entries (initial tool-call round + resumed round), got {}",
-        mock_a.hits()
-    );
-    assert!(
-        mock_b.hits() >= 1,
-        "B must have served its canned reply over HTTP, got {}",
-        mock_b.hits()
-    );
+    // hits 断言必须走 wait_until（2026-10-28 CI shard1 实录假红）：round-trip
+    // marker 的出现（admission 路由日志行含原文）先于 A 续行 LLM 调用（此
+    // 刻 permits=0 排队中，前一轮未释放）；B 侧 peer_msg 日志同理先于 B 的
+    // LLM 请求。本机毫秒级延迟不可见，CI 满载（10 分片并行）下秒级必踩。
+    // r10 同形测试（resumed final text 断言）一直是 wait_until 正确形态。
+    // 120s = 失败路径等待上限，正常全链秒级到达。
+    wait_until(120, "A consumed resumed round (hits >= 2)", || {
+        mock_a.hits() >= 2
+    })
+    .await;
+    wait_until(30, "B served its canned reply (hits >= 1)", || {
+        mock_b.hits() >= 1
+    })
+    .await;
     // cron 驱动任务自身也应记账 ok（fire → on_job → on_job 分支 A 走到 agent）。
     wait_until(20, "driver cron job marked ok", || {
         read_cron_store(&home_a)
