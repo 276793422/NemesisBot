@@ -79,19 +79,23 @@ fn layer_fires_callback_for_info_event() {
     assert_eq!(ev.level, "INFO");
     assert_eq!(ev.message, "hello world");
     assert_eq!(ev.source, "general");
-    // seq must be populated and consistent with next_seq's layout
-    // (high 44 bits = boot_unix_ms, low 20 bits = counter)
+    // seq must be populated and anchored to this boot's base.
+    // BUG-20261028-110 修复后：seq = (boot_ms << 20) + 自由增长计数器，
+    // 计数器跨过 2^20 后 seq 高位会进入 boot+1 段——所以只断言 ≥ 本进程
+    // 基址，不钉死高位精确相等（严格单调性由
+    // next_seq_strictly_monotonic_across_counter_wrap 钉死）。
     assert!(
-        ev.seq >> 20 == boot_unix_ms(),
-        "seq's high bits should equal boot_unix_ms"
+        ev.seq >= boot_unix_ms() << 20,
+        "seq should be >= this boot's base"
     );
 }
 
 #[test]
 fn next_seq_is_monotonic_and_distinct() {
     // Consecutive calls must return strictly increasing values.
-    // The high 44 bits are fixed per boot, so monotonicity comes from the
-    // low 20-bit counter incrementing.
+    // BUG-20261028-110 修复后单调性来自「boot 基址 + 不掩码自由计数器」的
+    // 加法布局，跨 2^20 边界不回绕（边界行为由
+    // next_seq_strictly_monotonic_across_counter_wrap 覆盖）。
     let a = next_seq();
     let b = next_seq();
     let c = next_seq();
@@ -100,11 +104,39 @@ fn next_seq_is_monotonic_and_distinct() {
 }
 
 #[test]
-fn next_seq_high_bits_match_boot_unix_ms() {
-    // The high 44 bits of seq must equal boot_unix_ms. This is the invariant
-    // the frontend relies on for cross-restart uniqueness.
+fn next_seq_anchored_to_boot_base() {
+    // The seq domain starts at this boot's base (boot_unix_ms << 20). This is
+    // the invariant the frontend relies on for cross-restart uniqueness.
+    // BUG-20261028-110 修复后计数器不掩码自由增长：跨过 2^20 边界后高位会
+    // 落在 boot+1 段，因此断言用 ≥ 基址而非高位精确相等。
     let s = next_seq();
-    assert_eq!(s >> 20, boot_unix_ms());
+    assert!(
+        s >= boot_unix_ms() << 20,
+        "seq must stay at or above this boot's base: s={s:#x} base={:#x}",
+        boot_unix_ms() << 20
+    );
+}
+
+#[test]
+fn next_seq_strictly_monotonic_across_counter_wrap() {
+    // BUG-20261028-110 红证：旧实现 `(boot_ms << 20) | (counter & 0xFFFFF)`
+    // 的 20-bit 掩码让计数器在 2^20 次调用后回绕——seq 域重复且回退。
+    // 前端 EventStream 按 `seq <= maxSeqSeen` 去重，回退的 seq 会被静默
+    // 丢弃：gateway 是长驻进程（+ 文件/SSE 两层各消费一个 seq，实际约
+    // 52 万个 tracing 事件即触界），实时事件流从此假死直到重启。
+    // 断言：连跨一个 2^20 边界（区间长度 > 2^20，起点任意都必然越界）
+    // 仍严格递增。掩码回绕的旧实现会在边界处失败。
+    const SPAN: u64 = 1_050_000; // > 2^20 = 1_048_576
+    let mut prev = next_seq();
+    for i in 1..SPAN {
+        let s = next_seq();
+        assert!(
+            s > prev,
+            "next_seq must be strictly monotonic across the 2^20 wrap boundary \
+             (iteration {i}): prev={prev} cur={s}"
+        );
+        prev = s;
+    }
 }
 
 #[test]

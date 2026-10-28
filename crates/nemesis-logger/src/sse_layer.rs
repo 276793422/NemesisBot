@@ -46,12 +46,21 @@ pub fn boot_unix_ms() -> u64 {
 
 /// Build a globally-unique sequence number.
 ///
-/// Layout: high 44 bits = boot_unix_ms, low 20 bits = per-process counter (1M events
-/// per boot before wraparound — far more than any realistic session produces between
-/// restarts). The boot_ms prefix guarantees cross-restart uniqueness; the counter
-/// guarantees in-process monotonicity.
+/// Layout: `(boot_unix_ms << 20) + free-running counter`. The counter is
+/// deliberately **not masked** to 20 bits (BUG-20261028-110): a masked counter
+/// wraps after 2^20 calls and re-enters an already-emitted seq range — the
+/// dashboard's `seq <= maxSeqSeen` dedup (`EventStream.vue`) then silently
+/// drops every live log event until restart. The additive layout keeps the
+/// sequence strictly monotonic for the whole process lifetime. Cross-restart
+/// uniqueness comes from the boot_ms base: a restart's base advances by
+/// `uptime_ms << 20` while a dead process's counter grows at most ~10^6 per
+/// second, so a new process's base always lands strictly above the previous
+/// process's maximum. Layers sharing one counter (GlobalSseLogLayer live +
+/// JsonLinesFormatter file) each get their own consecutive seq; live is
+/// registered first so its seq is always the smaller one, which keeps the
+/// frontend's history→live boundary dedup dropping the duplicate live copy.
 pub fn next_seq() -> u64 {
-    (boot_unix_ms() << 20) | (SEQ_COUNTER.fetch_add(1, Ordering::Relaxed) & 0xFFFFF)
+    (boot_unix_ms() << 20) + SEQ_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A serialized log event ready to be pushed onto the SSE EventHub.
