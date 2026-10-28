@@ -10,7 +10,7 @@
 //! | 4 | heartbeat 多臂 (3146-3252)         | 实例 a：BOOTSTRAP.md 在 → 零 LLM 命中；实例 b：HEARTBEAT.md 有任务行 + interval=5min（BUG-64 收编后 gateway 走 HeartbeatConfig::new，<5min 钳到下限）→ 第一拍(+1s)喂 passthrough 文本、第二拍(≈+301s，interval_at 节奏)喂 "  HEARTBEAT_OK\n"（trim 归一命中）|
 //! | 5 | workflow message/event 触发驱动    | definitions/ 放两条 YAML：wf-r9-msg(message 触发, transform 节点零依赖) + wf-r9-event(event 触发, 匹配 workflow.completed 且 workflow_name==wf-r9-msg 防自递归)；由同一条 cron InboundMessage 广播级联点亮 2908-3078 两个订阅任务；断言 workspace/workflow/executions/*.jsonl |
 //! | 6 | approval ask 规则链 (196-274)      | config.security.json file_rules.write=[{pattern:"*",action:"ask"}] + MockAi 首条 write_file 工具调用 → WebApprovalManager 审批卡无人应答 → approval_timeout_secs=300s 到点自动 deny（M7 起 plugin-ui 早拒臂已死，2026-09-08 更名对齐）；工具结果回灌后第二轮出终文本 |
-//! | 7 | open_dashboard / shutdown 内部命令 | POST /api/internal {"cmd":"open_dashboard"}（dll 缺席守卫下无窗口风险）拿 {"status":"ok"} ack；随后每实例的优雅停机本身走 Shutdown 臂 (3601-3608) |
+//! | 7 | open_dashboard / shutdown 内部命令 | POST /api/internal {"cmd":"open_dashboard"} 拿 {"status":"ok"} ack。fixture 显式停用 plugin_ui（config.plugin.native.json）→ gateway 走 DisabledBySwitch 生产分支，确定性无窗口——注意 dll 缺席时 Allow 臂反而会 fallback 开浏览器（display.rs），守卫靠开关不靠 dll 检测；随后每实例的优雅停机本身走 Shutdown 臂 (3601-3608) |
 //!
 //! 无 WS 说明：nemesisbot dev-deps 只有 tempfile + test-harness（tokio-tungstenite
 //! 只在 test-harness 内部传递可用，测试体无法 `use`）。因此所有入站驱动一律用
@@ -708,6 +708,16 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
     install_home_config(&home_a, &cfg_a);
     install_peers_toml(&home_a, "R9NODEA", "R9NODEB", udp_b);
     install_cluster_app_config(&home_a, udp_a, rpc_a, &cluster_token);
+    // #7 open_dashboard 走 DisabledBySwitch：显式停用 plugin_ui（gateway 侧
+    // open_dash_cfg_dir = <home>/workspace/config，runtime.rs 读开关在查 dll 之前），
+    // 两种 dll 部署形态（在场/缺席）都确定性无窗口。Allow 臂的窗口行为机器相关，
+    // 归 native_plugins_tests 单元层覆盖。
+    nemesis_config::plugins_native::set_enabled(
+        &home_a.join("workspace").join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginUi,
+        false,
+    )
+    .expect("disable plugin_ui switch for open_dashboard arm");
     seed_cron_store(
         &home_a,
         vec![seeded_at_job(
@@ -775,13 +785,9 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
     .await;
 
     // —— #7 open_dashboard：ack 是 mpsc fire-and-forget，无论下游 spawn 成败都回 ok。
-    // 若 exe 旁真有 plugin_ui.dll 则会拉起真实 WebView 窗口（禁），跳过该 POST。
-    if plugin_ui_dll_next_to_bin(&bin) {
-        eprintln!(
-            "[r9-live] plugin_ui library found beside binary; skipping open_dashboard POST \
-             to honor the no-popup discipline (ack arm remains covered by code reading)"
-        );
-    } else {
+    // fixture 已显式停用 plugin_ui → POST 走 DisabledBySwitch 生产分支，确定性无窗口
+    // （Allow 臂在 dll 缺席时会 fallback 开浏览器，在场时弹 WebView——机器相关，不在此覆盖）。
+    {
         let url = format!("http://127.0.0.1:{web_port_a}/api/internal");
         let resp = http_client()
             .post(&url)

@@ -313,7 +313,10 @@ impl SkillsHandler {
         })))
     }
 
-    fn open_dir(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+    /// 决策纯函数面——spawn 臂不进单测（对齐 fs/tests.rs 同款纪律）：
+    /// skills open_dir 的路径拼接 + 存在性校验，happy 路径单测只测这里。
+    /// pub(crate)：skills_extra_tests（同 crate 兄弟模块）是它的消费者。
+    pub(crate) fn resolve_skill_dir(workspace: &str, name: &str) -> Result<PathBuf, String> {
         let skill_dir = PathBuf::from(workspace).join("skills").join(name);
         if !skill_dir.exists() {
             return Err(format!(
@@ -322,6 +325,11 @@ impl SkillsHandler {
                 skill_dir.display()
             ));
         }
+        Ok(skill_dir)
+    }
+
+    fn open_dir(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let skill_dir = Self::resolve_skill_dir(workspace, name)?;
         let path = skill_dir.to_string_lossy().to_string();
         #[cfg(target_os = "windows")]
         std::process::Command::new("explorer")

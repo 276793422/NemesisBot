@@ -541,24 +541,21 @@ async fn test_skills_detail_reads_markdown() {
 
 // -----------------------------------------------------------------------
 // open_dir — happy and not-found
+// happy 只测决策纯函数 resolve_skill_dir（spawn 臂不进单测，避免每跑一次
+// 弹一个【文档】窗口：explorer 对「tempdir 已删路径」参数回落打开 Documents）。
+// handle_cmd → open_dir 的分发接线由下方 not_found 等错误路径测试覆盖。
 // -----------------------------------------------------------------------
 
-#[tokio::test]
-async fn test_skills_open_dir_happy() {
-    let handler = skills::SkillsHandler::new();
+#[test]
+fn test_skills_resolve_skill_dir_happy() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     std::fs::create_dir_all(ws.join("skills/opener")).unwrap();
-    let ctx = make_ctx(&dir);
 
-    let data = serde_json::json!({ "name": "opener" });
-    let result = handler
-        .handle_cmd("open_dir", Some(data), &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(result["opened"].as_bool().unwrap());
-    assert!(result["path"].as_str().unwrap().contains("opener"));
+    let resolved =
+        skills::SkillsHandler::resolve_skill_dir(ws.to_str().unwrap(), "opener").unwrap();
+    assert_eq!(resolved, ws.join("skills").join("opener"));
+    assert!(resolved.exists());
 }
 
 #[tokio::test]
