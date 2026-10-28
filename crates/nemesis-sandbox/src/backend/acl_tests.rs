@@ -758,6 +758,75 @@ fn ensure_grant_ace_tree_skips_junction_entries() {
     super::revoke_ace(&real, &ws_sid).expect("revoke real");
 }
 
+/// label_tree 树内 junction：遍历跳过链接项（不打不计数）——
+/// BUG-20261029-135。实测（本测试先红形态）：junction 的 symlink_metadata
+/// is_dir() 为 false（Rust FileType 对 reparse point 排除），目标树**不会**
+/// 被枚举重标（泄到树外的路径不存在）；但修复前 junction 自身仍被遍历
+/// set_integrity_label 显式打标 + 计数。语义与 ensure_grant_ace_tree 的
+/// 保守跳过对齐。victim/outside 断言兼作回归锁：若未来有人改用跟随语义
+/// （metadata()）枚举，树外重标会在这里先红。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn label_tree_skips_junction_entries() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let outside = base.path().join("outside"); // 树外目标（junction 指向它）
+    let ws = base.path().join("ws"); // 工作区根
+    let junc = ws.join("junc");
+    std::fs::create_dir_all(&outside).expect("mkdir outside");
+    std::fs::create_dir_all(&ws).expect("mkdir ws");
+    std::fs::write(outside.join("victim.txt"), b"x").expect("write victim");
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junc)
+        .arg(&outside)
+        .output()
+        .expect("run mklink");
+    assert!(
+        out.status.success(),
+        "mklink /J failed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let n = label_tree(&ws, IntegrityLevel::Low, 100).expect("label_tree");
+    // 根 1 项；junction 跳过不计（修复前：根+junc = 2，junction 被显式打标）。
+    assert_eq!(n, 1, "junction 项不入计数（跳过）: {n}");
+    // 注：junction 自身的 SD 仍可能带 Low——根打标的 OICI 继承传播
+    // （SetNamedSecurityInfoW 自动下传现有子对象）是 Win32 行为，显式遍历
+    // 拦不住，ensure_grant_ace_tree 的根 standing ACE 同等波及（共同边界，
+    // 两函数对称）。此处只钉「显式遍历跳过」面。
+    assert_eq!(
+        get_integrity_label(&outside).expect("query outside dir"),
+        None,
+        "junction 目标目录不得被重标（继承传播不穿透 reparse point）"
+    );
+    assert_eq!(
+        get_integrity_label(&outside.join("victim.txt")).expect("query victim file"),
+        None,
+        "junction 目标树内文件不得被重标"
+    );
+}
+
+/// label_tree 根是 symlink/junction → Err（工作区根必须是真实目录）——与
+/// ensure_grant_ace_tree 的根检查语义对齐。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn label_tree_root_junction_rejected() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let real = base.path().join("real");
+    let junc = base.path().join("junc");
+    std::fs::create_dir_all(&real).expect("mkdir real");
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junc)
+        .arg(&real)
+        .output()
+        .expect("run mklink");
+    assert!(out.status.success(), "mklink /J failed");
+
+    let r = label_tree(&junc, IntegrityLevel::Low, 100);
+    assert!(r.is_err(), "根是 junction 应 Err，实际: {r:?}");
+}
+
 /// D4 状态面（2026-09-27；2026-09-28 基线单口径）：只读根 ACE 探针三态——
 /// 未打标 (false,false,true) / 打标 (true,false,true)（grant 覆盖
 /// [`GRANT_MASK`] 含 DELETE、无 deny 面）/ 撤销后全 false。grant 判定与

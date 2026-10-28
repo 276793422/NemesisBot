@@ -409,6 +409,14 @@ pub fn remove_integrity_label(path: &Path) -> Result<(), String> {
 /// 明细诚实入错），不静默截断。符号链接不跟随（symlink_metadata 判定），
 /// 防出树重标。
 pub fn label_tree(root: &Path, level: IntegrityLevel, max_files: usize) -> Result<usize, String> {
+    let root_meta = std::fs::symlink_metadata(root)
+        .map_err(|e| format!("label_tree: 元数据 {} 失败: {e}", root.display()))?;
+    if root_meta.is_symlink() {
+        return Err("label_tree: 根是 symlink/junction——工作区根必须是真实目录".to_string());
+    }
+    if !root_meta.is_dir() {
+        return Err(format!("label_tree: 根 {} 不是目录", root.display()));
+    }
     set_integrity_label(root, level)?;
     let mut count: usize = 1;
     let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
@@ -420,6 +428,14 @@ pub fn label_tree(root: &Path, level: IntegrityLevel, max_files: usize) -> Resul
             let p = entry.path();
             let meta = std::fs::symlink_metadata(&p)
                 .map_err(|e| format!("label_tree: 元数据 {} 失败: {e}", p.display()))?;
+            // 链接项跳过（不打不计数）——语义对齐 ensure_grant_ace_tree：
+            // 工作区里的 junction/symlink 是用户对象，打标改写其 SD；junction
+            // 被降 Low 后 Low 令牌（agent）反而获得改写 reparse target / 删
+            // 链接的能力。跟随面已由 Rust FileType 排除（symlink 的 is_dir()
+            // 为 false，不会递归进目标树）——此处拦的是「打在链接自身」。
+            if meta.is_symlink() {
+                continue;
+            }
             if meta.is_dir() {
                 stack.push(p.clone());
             }
