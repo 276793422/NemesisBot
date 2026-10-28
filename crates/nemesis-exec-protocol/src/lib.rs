@@ -216,6 +216,74 @@ pub async fn send_request_line(
     writer.flush().await.map_err(TransportError::Io)
 }
 
+/// 单帧字节上限（行协议读侧统一闸；`read_line_bounded` 消费）。
+///
+/// 量纲依据：合法巨帧下界 = bulk_write 单块 raw 8MiB
+/// （`nemesis-guest` `bulk::BULK_CHUNK_MAX_BYTES`）base64 进 JSON 行 ≈
+/// 10.7MiB；hash_tree 全树指纹响应随条目数线性（40 万条目量级）。64MiB
+/// 对 bulk 最坏情形留 ~6x 余量；超限 = 帧已越出协议契约（对端失控 /
+/// 换行丢失 / 攻击面——被攻陷 guest 灌 gateway 读侧正是执行体隔离要防
+/// 的对手），诚实报错而不是无界 `read_line` 把对端内存读爆。
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// [`read_line_bounded`] 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundedLine {
+    /// 一行就绪（换行终止，或 EOF 收尾的部分行；尾部 `\n`/`\r` 已剥——
+    /// 与旧 `read_line` + `trim_end_matches(['\n','\r'])` 语义对齐）。
+    Line(String),
+    /// 零字节 EOF（对端收尾，无事可读）。
+    Eof,
+    /// 帧超过 [`MAX_FRAME_BYTES`]。**不 drain**——帧已失步，继续读只会
+    /// 给对端白嫖带宽；调用方应回一行错误（可选）后收尾连接。
+    Overflow,
+}
+
+/// 有界行读（行协议读侧单点：宿主 `read_response` 与 guest 协议循环
+/// 同源消费，防两端口径漂移）。
+///
+/// 语义对齐旧 `read_line` + trim：换行分帧、CRLF 容错、EOF 部分行仍
+/// 返回；非 UTF-8 与旧 `read_line` 一致报 InvalidData。唯一增量是
+/// [`MAX_FRAME_BYTES`] 闸——超限返回 [`BoundedLine::Overflow`]，不吞掉
+/// 也不无界累积。
+pub async fn read_line_bounded<R>(reader: &mut R) -> std::io::Result<BoundedLine>
+where
+    R: tokio::io::AsyncBufRead + Unpin + Send,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        if buf.len() > MAX_FRAME_BYTES {
+            return Ok(BoundedLine::Overflow);
+        }
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            break; // EOF
+        }
+        let newline = available.iter().position(|&b| b == b'\n');
+        let take = newline.unwrap_or(available.len());
+        buf.extend_from_slice(&available[..take]);
+        reader.consume(take + usize::from(newline.is_some()));
+        if newline.is_some() {
+            while buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return String::from_utf8(buf)
+                .map(BoundedLine::Line)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+        }
+    }
+    if buf.is_empty() {
+        return Ok(BoundedLine::Eof);
+    }
+    // EOF 收尾的部分行（旧 read_line 同语义：仍返回给上层解析）。
+    while buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    String::from_utf8(buf)
+        .map(BoundedLine::Line)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 /// 读一行响应（带超时）并解析。`expected_call_id` 非空时校验响应的
 /// `call_id` 匹配（journal replay 后乱序/串话防线——虽然 persistent 会话
 /// 内严格逐请求应答，校验是把契约钉进代码而不是钉进注释）。
@@ -227,16 +295,18 @@ pub async fn read_response<R>(
 where
     R: tokio::io::AsyncBufRead + Unpin + Send,
 {
-    let mut line = String::new();
-    let read = tokio::time::timeout(timeout, reader.read_line(&mut line)).await;
-    match read {
+    let line = match tokio::time::timeout(timeout, read_line_bounded(reader)).await {
         Err(_) => return Err(TransportError::Timeout),
         Ok(Err(e)) => return Err(TransportError::Io(e)),
-        Ok(Ok(0)) => return Err(TransportError::Eof),
-        Ok(Ok(_)) => {}
-    }
-    let line = line.trim_end_matches(['\n', '\r']);
-    let resp: ExecutorResponseWire = serde_json::from_str(line)
+        Ok(Ok(BoundedLine::Eof)) => return Err(TransportError::Eof),
+        Ok(Ok(BoundedLine::Overflow)) => {
+            return Err(TransportError::Protocol(format!(
+                "frame exceeds MAX_FRAME_BYTES ({MAX_FRAME_BYTES}); line protocol desynced, closing"
+            )));
+        }
+        Ok(Ok(BoundedLine::Line(line))) => line,
+    };
+    let resp: ExecutorResponseWire = serde_json::from_str(&line)
         .map_err(|e| TransportError::Protocol(format!("bad response line: {e}")))?;
     if let Some(expected) = expected_call_id
         && !expected.is_empty()

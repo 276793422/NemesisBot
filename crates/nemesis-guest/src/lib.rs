@@ -28,9 +28,10 @@
 use std::path::{Path, PathBuf};
 
 use nemesis_exec_protocol::{
-    ExecutorRequestOwned, ExecutorResponseWire, ExecutorStream, PROTOCOL_V2,
+    BoundedLine, ExecutorRequestOwned, ExecutorResponseWire, ExecutorStream, PROTOCOL_V2,
+    read_line_bounded,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 
 pub mod tools;
 // B9-1/B9-2 内部方法（bulk_write/bulk_read/bulk_read_chunk/hash_tree/
@@ -145,13 +146,22 @@ impl GuestAgent {
             return Ok(()); // 鉴权失败：错误行已回、连接关闭（诚实拒绝）
         }
         loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line).await {
-                Ok(0) => return Ok(()),
-                Ok(_) => {}
+            let line = match read_line_bounded(&mut reader).await {
+                Ok(BoundedLine::Line(l)) => l,
+                Ok(BoundedLine::Eof) => return Ok(()),
+                Ok(BoundedLine::Overflow) => {
+                    // 巨帧（BUG-20261028-128）：回一行诚实错误后收尾连接。
+                    // 不 drain——帧已失步，drain 只给对端白嫖带宽；合法巨帧
+                    // （bulk 分块 base64 ≈11MiB）远低于闸，超限即失控/攻击。
+                    let resp = frame_error_line(
+                        "frame exceeds protocol MAX_FRAME_BYTES; line desynced, closing",
+                    );
+                    reader.get_mut().write_all(resp.as_bytes()).await?;
+                    reader.get_mut().flush().await?;
+                    return Ok(());
+                }
                 Err(e) => return Err(e),
-            }
-            let line = line.trim_end_matches(['\n', '\r']).to_string();
+            };
             if line.is_empty() {
                 continue; // 空行静默跳过（TCP 粘包拆包容错）
             }
@@ -166,13 +176,19 @@ impl GuestAgent {
         &self,
         reader: &mut BufReader<S>,
     ) -> std::io::Result<bool> {
-        let mut line = String::new();
-        match reader.read_line(&mut line).await {
-            Ok(0) => return Ok(false), // 连了就断：无事可服务
-            Ok(_) => {}
+        let line = match read_line_bounded(reader).await {
+            Ok(BoundedLine::Line(l)) => l,
+            Ok(BoundedLine::Eof) => return Ok(false), // 连了就断：无事可服务
+            Ok(BoundedLine::Overflow) => {
+                let resp = frame_error_line(
+                    "frame exceeds protocol MAX_FRAME_BYTES; line desynced, closing",
+                );
+                reader.get_mut().write_all(resp.as_bytes()).await?;
+                reader.get_mut().flush().await?;
+                return Ok(false);
+            }
             Err(e) => return Err(e),
-        }
-        let line = line.trim_end_matches(['\n', '\r']).to_string();
+        };
 
         // 是否鉴权帧：顶层 "auth" 键（协议保留键——工具请求不带它）。
         let is_auth_frame = serde_json::from_str::<serde_json::Value>(&line)
@@ -268,6 +284,18 @@ fn serialize(resp: &ExecutorResponseWire) -> String {
     });
     line.push('\n');
     line
+}
+
+/// 帧级失败的错误响应行（巨帧闸等帧未解析形态——call_id 无从回显，
+/// 恒空；guest 与 stdio/TCP 两形态入口同源消费）。
+pub fn frame_error_line(error: &str) -> String {
+    serialize(&ExecutorResponseWire {
+        v: PROTOCOL_V2,
+        call_id: String::new(),
+        ok: false,
+        result: String::new(),
+        error: error.to_string(),
+    })
 }
 
 /// 工作区边界判定（guest 栖息地 = musl Linux 的最小实现）：

@@ -225,3 +225,84 @@ async fn bad_response_json_is_protocol_error() {
         .unwrap_err();
     assert!(matches!(err, TransportError::Protocol(_)), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// 有界行读（MAX_FRAME_BYTES 闸；BUG-20261028-128 读侧 OOM 防线）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_line_bounded_crlf_and_eof_semantics() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    server.write_all(b"line-a\r\nline-b\n").await.unwrap();
+    server.shutdown().await.unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(
+        read_line_bounded(&mut reader).await.unwrap(),
+        BoundedLine::Line("line-a".into())
+    );
+    assert_eq!(
+        read_line_bounded(&mut reader).await.unwrap(),
+        BoundedLine::Line("line-b".into())
+    );
+    assert_eq!(
+        read_line_bounded(&mut reader).await.unwrap(),
+        BoundedLine::Eof
+    );
+}
+
+#[tokio::test]
+async fn read_line_bounded_returns_partial_line_at_eof() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    server.write_all(b"no-trailing-newline").await.unwrap();
+    server.shutdown().await.unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(
+        read_line_bounded(&mut reader).await.unwrap(),
+        BoundedLine::Line("no-trailing-newline".into())
+    );
+}
+
+/// 合法大帧（2MiB，远低于闸）必须原样通过——闸不误伤正常大载荷。
+#[tokio::test]
+async fn read_response_accepts_large_but_legal_frame() {
+    let (read, _write, server) = boxed_halves();
+    tokio::spawn(async move {
+        let mut server = server;
+        let big = "x".repeat(2 * 1024 * 1024);
+        let resp = format!(r#"{{"v":2,"call_id":"c-big","ok":true,"result":"{big}"}}"#);
+        server.write_all(resp.as_bytes()).await.unwrap();
+        server.write_all(b"\n").await.unwrap();
+    });
+    let mut reader = BufReader::new(read);
+    let resp = read_response(&mut reader, SHORT, Some("c-big"))
+        .await
+        .expect("2MiB legal frame must pass");
+    assert!(resp.is_v2());
+    assert_eq!(resp.result.len(), 2 * 1024 * 1024);
+}
+
+/// 巨帧（超 MAX_FRAME_BYTES 且无换行）= 诚实 Protocol 错误，不是无界
+/// read_line 的 OOM——被攻陷 guest 灌 gateway 读侧的防线本体。
+#[tokio::test]
+async fn read_response_rejects_oversized_frame_as_protocol_error() {
+    let (read, mut write, server) = boxed_halves();
+    tokio::spawn(async move {
+        let mut server = server;
+        let chunk = vec![b'a'; 1024 * 1024];
+        for _ in 0..=(MAX_FRAME_BYTES / chunk.len()) {
+            if server.write_all(&chunk).await.is_err() {
+                break; // 对端读完即撤（溢出判错），写侧断管是预期收尾
+            }
+        }
+        let _ = server.flush().await;
+    });
+    let mut reader = BufReader::new(read);
+    let line = build_v2_request_line("exec", "{}", &serde_json::json!({}), &new_call_id()).unwrap();
+    let err = call_over_halves(write.as_mut(), &mut reader, &line, None, SHORT)
+        .await
+        .unwrap_err();
+    match err {
+        TransportError::Protocol(m) => assert!(m.contains("MAX_FRAME_BYTES"), "{m}"),
+        other => panic!("期望 Protocol 错误，得到 {other}"),
+    }
+}

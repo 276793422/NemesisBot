@@ -292,3 +292,87 @@ async fn auth_gate_off_first_frame_as_request_still_works() {
     let resp = read_resp(&mut reader).await;
     assert!(resp.ok, "{resp:?}");
 }
+
+// ---------------------------------------------------------------------------
+// 巨帧闸（BUG-20261028-128：读侧无界 read_line OOM 防线的 guest 半边）
+// ---------------------------------------------------------------------------
+
+/// 跨 crate 锁：帧上限 ≥ bulk_write 最大合法请求行（8MiB raw base64 +
+/// JSON 包裹开销）——正常大载荷通道不得被闸误伤（bulk 通道经同一
+/// serve_stream 入口进 guest）。
+#[test]
+fn max_frame_covers_bulk_worst_case_line() {
+    let worst = bulk::BULK_CHUNK_MAX_BYTES.div_ceil(3) * 4 + 4096;
+    assert!(
+        nemesis_exec_protocol::MAX_FRAME_BYTES >= worst,
+        "MAX_FRAME_BYTES={} < bulk 最坏请求行 {worst}",
+        nemesis_exec_protocol::MAX_FRAME_BYTES
+    );
+}
+
+/// 巨帧（超限无换行）= 一行诚实错误 + 连接收尾（EOF 收敛）——不是无界
+/// read_line 把 guest 读侧内存读爆。首帧即溢出走 auth_gate 同一闸。
+#[tokio::test]
+async fn serve_stream_rejects_oversized_first_frame_with_error_line_then_eof() {
+    let (agent, _dir) = agent_with_tmp();
+    let (server_side, mut client) = tokio::io::duplex(1024 * 1024);
+    let handle = tokio::spawn(async move { agent.serve_stream(server_side).await });
+    let chunk = vec![b'a'; 1024 * 1024];
+    for _ in 0..=(nemesis_exec_protocol::MAX_FRAME_BYTES / chunk.len()) {
+        // 溢出判定后 guest 收尾 drop，写侧断管是预期收尾。
+        if client.write_all(&chunk).await.is_err() {
+            break;
+        }
+    }
+    let _ = client.flush().await;
+    let mut reader = BufReader::new(client);
+    let resp = read_resp(&mut reader).await;
+    assert!(!resp.ok, "巨帧必须被拒: {resp:?}");
+    assert!(
+        resp.error.contains("MAX_FRAME_BYTES"),
+        "错误面必须点名帧闸: {resp:?}"
+    );
+    // 连接收尾：EOF 收敛（读不到 EOF = 收尾失败，测试超时即失败面）。
+    let mut eof = Vec::new();
+    reader
+        .read_to_end(&mut eof)
+        .await
+        .expect("eof after overflow");
+    let _ = handle.await.unwrap();
+}
+
+/// 溢出发生在鉴权之后的请求循环同样被闸：小鉴权帧放行后，巨帧请求
+/// 得到错误行并收尾。
+#[tokio::test]
+async fn serve_stream_rejects_oversized_request_after_auth() {
+    let (agent, _dir) = agent_with_tmp();
+    let (server_side, mut client) = tokio::io::duplex(1024 * 1024);
+    let handle = tokio::spawn(async move { agent.serve_stream(server_side).await });
+    client
+        .write_all(b"{\"v\":2,\"auth\":\"whatever\"}\n")
+        .await
+        .unwrap();
+    let chunk = vec![b'b'; 1024 * 1024];
+    for _ in 0..=(nemesis_exec_protocol::MAX_FRAME_BYTES / chunk.len()) {
+        if client.write_all(&chunk).await.is_err() {
+            break;
+        }
+    }
+    let _ = client.flush().await;
+    let mut reader = BufReader::new(client);
+    // 第一行 = 鉴权 ok。
+    let resp = read_resp(&mut reader).await;
+    assert!(resp.ok, "闸关时鉴权帧照常容忍: {resp:?}");
+    // 第二行 = 巨帧错误行。
+    let resp = read_resp(&mut reader).await;
+    assert!(
+        !resp.ok && resp.error.contains("MAX_FRAME_BYTES"),
+        "{resp:?}"
+    );
+    let mut eof = Vec::new();
+    reader
+        .read_to_end(&mut eof)
+        .await
+        .expect("eof after overflow");
+    let _ = handle.await.unwrap();
+}
