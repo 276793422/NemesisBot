@@ -444,3 +444,67 @@ fn profile_id_shape() {
     // 不同种子（名字 + 纳秒时间）产出不同 id。
     assert_ne!(new_profile_id("另一个软件"), id);
 }
+
+// ── BUG-20261028-123/124/125 回归锁 ─────────────────────────────────────
+
+#[test]
+fn size_of_returns_u64_truth_no_wraparound() {
+    // BUG-20261028-123：u32 乘法在 `u64[536870913]` 上回绕——8×(2^29+1)
+    // mod 2^32 = 8。size_of 必须回 u64 真值（修前 debug panic / release
+    // 静默变小使 validate 越界闸失效）。
+    let big = FieldType::parse("u64[536870913]").unwrap();
+    assert_eq!(big.size_of(), 4_294_967_304u64);
+    // 常规数组真值不受影响。
+    assert_eq!(FieldType::parse("u32[16]").unwrap().size_of(), 64);
+    assert_eq!(FieldType::parse("char[32]").unwrap().size_of(), 32);
+}
+
+#[test]
+fn reject_overflow_array_field_out_of_bounds() {
+    // 同上：回绕后 8 < 96 曾溜过越界闸（release 误过、debug panic）。
+    // 修复后按 u64 真值 loud 拒绝。
+    let mut p = sample_profile();
+    p.data_structures[0].fields[0].type_ = FieldType::parse("u64[536870913]").unwrap();
+    let err = p.validate().unwrap_err();
+    assert!(err.contains("越界"), "{err}");
+}
+
+#[test]
+fn reject_windows_reserved_names_in_dest() {
+    // BUG-20261028-124：22 个 Windows 保留设备名（按「首个点之前」的
+    // stem 判定、大小写不敏感）——修前只拦冒号，con.txt 等可溜过。
+    for dest in ["con.txt", "reports/nul", "COM1.dat", "lpt9"] {
+        let mut p = sample_profile();
+        p.tools[0].output.as_mut().unwrap().dest = dest.to_string();
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("保留"), "dest={dest}: {err}");
+    }
+    // 不误伤面：stem 不在保留集照常通过。
+    for dest in [
+        "workspace/reports/config.json",
+        "console.log",
+        "con-x/con_x.json",
+        "auxiliary/x.json",
+    ] {
+        let mut p = sample_profile();
+        p.tools[0].output.as_mut().unwrap().dest = dest.to_string();
+        assert!(p.validate().is_ok(), "dest={dest} 不应被拦");
+    }
+}
+
+#[test]
+fn reject_duplicate_struct_and_fn_names() {
+    // BUG-20261028-125：结构/函数语义名均按名引用（struct:/fn:/锚/
+    // recover_confirm 接受集），重名即引用歧义。
+    let mut p = sample_profile();
+    let dup_ds = p.data_structures[0].clone();
+    p.data_structures.push(dup_ds);
+    let err = p.validate().unwrap_err();
+    assert!(err.contains("重名"), "{err}");
+
+    let mut p = sample_profile();
+    let dup_fn = p.functions[0].clone();
+    p.functions.push(dup_fn);
+    let err = p.validate().unwrap_err();
+    assert!(err.contains("重名"), "{err}");
+}

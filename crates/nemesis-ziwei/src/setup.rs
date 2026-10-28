@@ -1996,7 +1996,10 @@ impl SetupManager {
             let type_ = nemesis_ziwei_profile::FieldType::parse(ty_raw).ok_or_else(|| {
                 format!("fields[{i}] type {ty_raw:?} 无法解析（如 u32/f64/char[16]）")
             })?;
-            if offset as u64 + type_.size_of() as u64 > size as u64 {
+            // BUG-20261028-123：size_of 现为 u64 真值（u32 乘法回绕曾把
+            // `u64[536870913]` 缩成 8 溜过此闸）——向导 1MB size 上限自然
+            // 拒掉溢出数组。
+            if offset as u64 + type_.size_of() > size as u64 {
                 return Err(format!(
                     "fields[{i}] {} 越界（offset {offset} + {} > size {size}）",
                     fname,

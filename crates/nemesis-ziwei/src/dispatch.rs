@@ -98,6 +98,21 @@ pub fn parse_read_mem_resp(resp: &str) -> Result<Vec<u8>, PipeError> {
 pub fn decode_struct(data: &[u8], ds: &DataStructure) -> Result<serde_json::Value, String> {
     let mut out = serde_json::Map::new();
     for f in &ds.fields {
+        // BUG-20261028-123：解码前重验字段界（validate 同闸 u64 真值）——
+        // decode 自含，不依赖调用方先跑过 validate；此前 u32 乘法回绕使
+        // `u64[536870913]` 这类字段绕闸进解码，0 步长死循环 + 巨量
+        // with_capacity 可打爆进程。
+        let end = u64::from(f.offset) + f.type_.size_of();
+        if end > u64::from(ds.size) {
+            return Err(format!(
+                "结构 {} 字段 {} 越界（offset {} + size {} > struct size {}）",
+                ds.name,
+                f.name,
+                f.offset,
+                f.type_.size_of(),
+                ds.size
+            ));
+        }
         let val = decode_field(data, f.offset, &f.type_, f.decode)?;
         out.insert(f.name.clone(), val);
     }
@@ -110,7 +125,10 @@ fn decode_field(
     ft: &FieldType,
     decode: Option<FieldDecode>,
 ) -> Result<serde_json::Value, String> {
-    let elem = ft.size_of() / ft.array_len.unwrap_or(1).max(1);
+    // 元素步长：size_of（u64 真值）/ 元素数。经 decode_struct 重验后
+    // size_of ≤ u32::MAX，转 u32 无损；`as` 只兜手改盘上 profile 的路径。
+    let n = ft.array_len.unwrap_or(1).max(1);
+    let elem = (ft.size_of() / u64::from(n)) as u32;
     let is_text = matches!(ft.base, FieldBase::Char | FieldBase::WChar);
     if is_text {
         // 文本域：整体一块解码（NUL 截断）

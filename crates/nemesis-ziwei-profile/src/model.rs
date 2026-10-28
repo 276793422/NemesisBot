@@ -265,14 +265,19 @@ pub enum FieldBase {
 
 impl FieldType {
     /// 单元素字节数（数组整体大小 = size_of * array_len）。
-    pub fn size_of(&self) -> u32 {
-        let base = match self.base {
+    ///
+    /// BUG-20261028-123：返回 u64——u32 乘法在 `u64[536870913]` 这类大
+    /// 数组上回绕（8×(2^29+1) mod 2^32 = 8），debug panic / release 静默
+    /// 变小，validate 的越界闸随之失效（decode 面 with_capacity 巨量分配
+    /// 打爆进程）。u64 真值下 validate 按实际大小 loud 拒绝。
+    pub fn size_of(&self) -> u64 {
+        let base: u64 = match self.base {
             FieldBase::U8 | FieldBase::I8 | FieldBase::Char | FieldBase::Bool => 1,
             FieldBase::U16 | FieldBase::I16 | FieldBase::WChar => 2,
             FieldBase::U32 | FieldBase::I32 | FieldBase::F32 => 4,
             FieldBase::U64 | FieldBase::I64 | FieldBase::F64 => 8,
         };
-        base * self.array_len.unwrap_or(1)
+        base * u64::from(self.array_len.unwrap_or(1))
     }
 }
 
@@ -500,11 +505,17 @@ impl Profile {
             return Err("profile name 不得为空".to_string());
         }
 
-        let struct_names: std::collections::HashSet<&str> = self
-            .data_structures
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        // BUG-20261028-125：结构按名引用（struct:/capture.decode）——重名即
+        // 引用歧义，与 tool_name 唯一性同一不变量。在位去重收集，重名 loud。
+        let mut struct_names: std::collections::HashSet<&str> = Default::default();
+        for ds in &self.data_structures {
+            if !struct_names.insert(ds.name.as_str()) {
+                return Err(format!(
+                    "结构 {:?} 重名（结构按名引用，重名即歧义）",
+                    ds.name
+                ));
+            }
+        }
         // 结构自身校验：字段越界 + 偏移重叠是数据错误（重叠在标注期人工裁量，
         // 这里只拦越界——union 语义 v1 不支持）。
         for ds in &self.data_structures {
@@ -512,11 +523,10 @@ impl Profile {
                 return Err(format!("结构 {} size=0 非法", ds.name));
             }
             for f in &ds.fields {
-                let end = f
-                    .offset
-                    .checked_add(f.type_.size_of())
-                    .ok_or_else(|| format!("结构 {} 字段 {} 偏移溢出", ds.name, f.name))?;
-                if end > ds.size {
+                // BUG-20261028-123：u64 真值比较（u32 乘法回绕曾使该闸失效）；
+                // u64 域内无溢出（最大 4G offset + 34G size）。
+                let end = u64::from(f.offset) + f.type_.size_of();
+                if end > u64::from(ds.size) {
                     return Err(format!(
                         "结构 {} 字段 {} 越界（offset {} + size {} > struct size {}）",
                         ds.name,
@@ -529,8 +539,17 @@ impl Profile {
             }
         }
 
-        let fn_names: std::collections::HashSet<&str> =
-            self.functions.iter().map(|f| f.semantic.as_str()).collect();
+        // BUG-20261028-125：函数语义名按名引用（锚/fn:/call_fn/hook）——
+        // 重名即引用歧义（recover_confirm 的接受集、地址查表都按它索引）。
+        let mut fn_names: std::collections::HashSet<&str> = Default::default();
+        for f in &self.functions {
+            if !fn_names.insert(f.semantic.as_str()) {
+                return Err(format!(
+                    "函数语义名 {:?} 重名（锚/fn: 引用按语义名，重名即歧义）",
+                    f.semantic
+                ));
+            }
+        }
 
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.tools {
@@ -726,9 +745,26 @@ fn validate_rel_dest(dest: &str) -> Result<(), String> {
     if p.is_absolute() {
         return Err(format!("output.dest {dest:?} 须为相对路径"));
     }
+    // BUG-20261028-124：Windows 保留设备名清单（与 image_gen_tool /
+    // connectors::manifest / skills::types 同族纪律——此前注释声称对齐
+    // image_gen，代码却只拦冒号，22 名漏检）。逐组件按「首个点之前」的
+    // stem 判定、大小写不敏感精确比对：`con.txt`/`nul` 会落到设备而非
+    // 文件，`con-x`/`con_x`/`config.json` 不在保留集不误伤。
+    const WINDOWS_RESERVED: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
     for comp in p.components() {
         match comp {
-            std::path::Component::Normal(_) => {}
+            std::path::Component::Normal(seg) => {
+                let seg_str = seg.to_string_lossy();
+                let stem = seg_str.split_once('.').map_or(&*seg_str, |(s, _)| s);
+                if WINDOWS_RESERVED.contains(&stem.to_ascii_lowercase().as_str()) {
+                    return Err(format!(
+                        "output.dest {dest:?} 含 Windows 保留设备名 {stem:?}（无法作为文件/目录名创建）"
+                    ));
+                }
+            }
             _ => return Err(format!("output.dest {dest:?} 含非法路径组件（../盘符/根）")),
         }
     }

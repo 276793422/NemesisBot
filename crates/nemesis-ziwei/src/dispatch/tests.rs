@@ -165,6 +165,26 @@ fn decode_out_of_bounds_rejected() {
     assert!(decode_struct(&buf, &ds).is_err());
 }
 
+#[test]
+fn decode_revalidates_field_bounds_u64_truth() {
+    // BUG-20261028-123 红证：u32 乘法回绕曾把 8×536870913 缩成 8 < 96
+    // 溜过界检，随后 0 步长 + 巨量 with_capacity 可打爆进程。decode
+    // 自含重验（u64 真值，不依赖调用方先跑 validate）必须 loud 拒绝。
+    let ds = DataStructure {
+        name: "Boom".into(),
+        size: 96,
+        fields: vec![FieldDef {
+            offset: 0,
+            name: "boom".into(),
+            type_: ft("u64[536870913]"),
+            decode: None,
+        }],
+    };
+    let buf = vec![0u8; 96];
+    let err = decode_struct(&buf, &ds).unwrap_err();
+    assert!(err.contains("越界"), "{err}");
+}
+
 // ── M4：call_fn 三态 / hook 事件拉取解析面 ─────────────────────────────
 
 #[test]
