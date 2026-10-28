@@ -3814,6 +3814,42 @@ fn test_route_message_dm_scope_and_identity_links_wiring() {
     assert_eq!(session_key, "agent:main:telegram:direct:alice");
 }
 
+/// BUG-20261028-114 红证：G1 agent 实体会话键（`agents:{agent_id}:session:{sid}`，
+/// web 层 `agent_session_key` 单一真相源构造、`agents.send` 投递）此前被
+/// route_message 的 `agent:`（单数）前缀 honor 检查漏接——`agents:` 不匹配
+/// `agent:`（第 6 字节 `s` vs `:`），会话身份被静默替换成路由键（缺省形态
+/// `agent:main:main`）：回复错落主 DM 会话（与 IM 通道 Main scope 塌缩键同
+/// 文件，跨上下文串写）、agent 会话视图（chat.sync 按 agents: 键补拉）只有
+/// user 行没有回复。honor 检查补 `agents:` 家族。
+#[test]
+fn test_route_message_honors_agents_entity_session_key() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![])),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let msg = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "web".to_string(),
+        chat_id: "web:conn-1".to_string(),
+        content: "hello".to_string(),
+        media: vec![],
+        session_key: "agents:abcd1234:session:default".to_string(),
+        correlation_id: String::new(),
+        metadata: Default::default(),
+        voice_playback: None,
+    };
+    let (_agent_id, session_key) = agent_loop.route_message(&msg);
+    assert_eq!(
+        session_key, "agents:abcd1234:session:default",
+        "agents: 前缀的 agent 实体会话键必须原样 honor（G1 会话身份），不得被路由键替换"
+    );
+}
+
 #[test]
 fn test_set_cluster_and_get() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());

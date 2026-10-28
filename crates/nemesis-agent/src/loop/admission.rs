@@ -519,12 +519,11 @@ impl AgentLoop {
 
             // Use routed session key, but honor pre-set agent-scoped keys
             // (mirrors Go's logic for ProcessDirect/cron).
-            let session_key =
-                if !msg.session_key.is_empty() && msg.session_key.starts_with("agent:") {
-                    msg.session_key.clone()
-                } else {
-                    route.session_key.clone()
-                };
+            let session_key = if is_preset_session_key(&msg.session_key) {
+                msg.session_key.clone()
+            } else {
+                route.session_key.clone()
+            };
 
             info!(
                 "[AgentLoop] Routed message: agent_id={}, session_key={}, matched_by={}",
@@ -541,12 +540,11 @@ impl AgentLoop {
                 .unwrap_or_else(|| "main".to_string());
 
             let peer = extract_peer(msg);
-            let session_key =
-                if !msg.session_key.is_empty() && msg.session_key.starts_with("agent:") {
-                    msg.session_key.clone()
-                } else {
-                    format!("{}:{}", msg.channel, peer)
-                };
+            let session_key = if is_preset_session_key(&msg.session_key) {
+                msg.session_key.clone()
+            } else {
+                format!("{}:{}", msg.channel, peer)
+            };
 
             info!(
                 "[AgentLoop] Routed message (no resolver): agent_id={}, session_key={}",
@@ -1496,6 +1494,23 @@ impl AgentLoop {
 // ---------------------------------------------------------------------------
 // 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
+
+/// Pre-set（预置）会话键判定——非空且带已知会话键族前缀时 route_message /
+/// pump 原样采纳，跳过重路由。单一真相源（BUG-20261028-114：此前散布的
+/// `starts_with("agent:")` 检查漏接 G1 agent 实体键族 `agents:{id}:session:
+/// {sid}`——`agents:` 不匹配 `agent:`（第 6 字节 `s` vs `:`），agents.send
+/// 的会话身份被静默替换成路由键（缺省 `agent:main:main`），回复错落主 DM
+/// 会话、agent 会话视图只有 user 行没有回复）。
+///
+/// 键族清单：
+/// - `agent:` —— 路由族（`agent:{agent}:{rest}`；web 主会话/项目键
+///   `agent:main:session:{sid}`、cron/ProcessDirect 预置）
+/// - `agents:` —— G1 agent 实体族（`agents:{agent_id}:session:{sid}`，web
+///   `agent_session_key` 构造、`agent_owner_of` 解析）
+pub(crate) fn is_preset_session_key(session_key: &str) -> bool {
+    !session_key.is_empty()
+        && (session_key.starts_with("agent:") || session_key.starts_with("agents:"))
+}
 
 /// Extract a peer identifier from an inbound message.
 ///

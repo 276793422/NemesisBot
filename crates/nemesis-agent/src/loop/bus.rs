@@ -797,9 +797,9 @@ impl AgentLoop {
     }
 
     /// L8 turn WAL 启动恢复：`recover_and_finalize` 产出断头候选 →
-    /// `agent:` 前缀键会话合成续轮消息（session_key 原样回填——route_message
-    /// 对 agent 前缀键原样采纳，重路由确定性落回原会话）→ 走
-    /// [`Self::pump_dispatch`] 正常闸门。非 agent 键（standalone fallback /
+    /// 预置键会话合成续轮消息（session_key 原样回填——route_message 对
+    /// `is_preset_session_key` 命中键原样采纳，重路由确定性落回原会话）→
+    /// 走 [`Self::pump_dispatch`] 正常闸门。非预置键（standalone fallback /
     /// 集群复合键）不自动续轮——重路由不保证落回原会话（fallback 按
     /// sender/chat 重组、集群会话有自己的 G5 恢复链），诚实放弃，
     /// interrupted 留痕照写。
@@ -817,9 +817,9 @@ impl AgentLoop {
         );
         for cand in candidates {
             let rec = &cand.record;
-            if !rec.session_key.starts_with("agent:") {
+            if !crate::r#loop::is_preset_session_key(&rec.session_key) {
                 info!(
-                    "[AgentLoop] Turn WAL：会话 {} 非 agent 键，跳过自动续轮（interrupted 已留痕）",
+                    "[AgentLoop] Turn WAL：会话 {} 非预置键，跳过自动续轮（interrupted 已留痕）",
                     rec.session_key
                 );
                 continue;
