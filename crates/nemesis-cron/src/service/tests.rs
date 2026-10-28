@@ -3909,3 +3909,244 @@ async fn test_fire_loop_failed_fire_keeps_rescheduled_future_at() {
         "patch 建立的未来触发点不得被失败收尾清空"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R197 绿证（BUG-20261028-131）：collect + reset 已合并进单临界区 helper
+// （`collect_and_reset_due`）。旧形态 collect（读锁）与 reset（写锁）两段
+// 之间，并发 patch_job 可给到期 at 作业换入新未来 next_run，reset 无条件按
+// due 列表践踏回 None——执行后 at 分支见 None 走失败臂（disable 停摆）或
+// delete_after_run 臂（整单删除）。合并后窗口结构性消除：patch 落在前 =
+// next_run 已是未来不被收集；落在后 = post-execution 保留臂接住
+//（test_fire_loop_keeps_job_rescheduled_to_future_at_during_execution /
+//  test_fire_loop_failed_fire_keeps_rescheduled_future_at，BUG-116 双红证）。
+// 窗口本身是微秒级并发时序，不可稳定红证——以下四用例钉 helper 的直接
+// 可观察不变量（纯同步、无 sleep）。
+// ---------------------------------------------------------------------------
+
+/// 到期 enabled 作业：收集 + next_run 同临界区复位 + 落盘；同场未来作业
+/// 不受扰动。
+#[test]
+fn collect_and_reset_due_collects_due_resets_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    // 到期形态造数走内部旁路（用户漏斗拒绝过期 at，BUG-20261024-11），
+    // next_run 手动钉死（不依赖墙钟与 recompute）。
+    let due_job = svc
+        .add_job_internal(
+            "due",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(1000),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let future_job = svc
+        .add_job_internal(
+            "future",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(10_000),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    {
+        let mut s = svc.store.lock();
+        s.jobs
+            .iter_mut()
+            .find(|j| j.id == due_job.id)
+            .unwrap()
+            .state
+            .next_run_at_ms = Some(1000);
+        s.jobs
+            .iter_mut()
+            .find(|j| j.id == future_job.id)
+            .unwrap()
+            .state
+            .next_run_at_ms = Some(10_000);
+        super::save_store_to_path(&path, &s).unwrap();
+    }
+
+    let due = collect_and_reset_due(&svc.store, &path, 5000);
+
+    assert_eq!(due, vec![due_job.id.clone()], "只收集到期 enabled 作业");
+    {
+        let s = svc.store.lock();
+        assert!(
+            s.jobs
+                .iter()
+                .find(|j| j.id == due_job.id)
+                .unwrap()
+                .state
+                .next_run_at_ms
+                .is_none(),
+            "到期作业 next_run 必须在收集中被复位"
+        );
+        assert_eq!(
+            s.jobs
+                .iter()
+                .find(|j| j.id == future_job.id)
+                .unwrap()
+                .state
+                .next_run_at_ms,
+            Some(10_000),
+            "未来作业不得被扰动"
+        );
+    }
+    // 落盘：盘上 next_run 同步复位（save 与复位同临界区）。
+    let on_disk = crate::store::load(std::path::Path::new(&path)).unwrap();
+    assert!(
+        on_disk
+            .jobs
+            .iter()
+            .find(|j| j.id == due_job.id)
+            .unwrap()
+            .state
+            .next_run_at_ms
+            .is_none(),
+        "复位必须与收集同临界区落盘"
+    );
+}
+
+/// disabled 作业即使盘上残留过期 next_run 也不得被收集、状态不得被碰。
+#[test]
+fn collect_and_reset_due_skips_disabled_expired_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let disabled_job = svc
+        .add_job_internal(
+            "disabled",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(1000),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false, // enabled = false
+        )
+        .unwrap();
+    {
+        let mut s = svc.store.lock();
+        s.jobs
+            .iter_mut()
+            .find(|j| j.id == disabled_job.id)
+            .unwrap()
+            .state
+            .next_run_at_ms = Some(1000);
+        super::save_store_to_path(&path, &s).unwrap();
+    }
+
+    let due = collect_and_reset_due(&svc.store, &path, 5000);
+
+    assert!(due.is_empty(), "disabled 作业不得进 due");
+    let s = svc.store.lock();
+    assert_eq!(
+        s.jobs
+            .iter()
+            .find(|j| j.id == disabled_job.id)
+            .unwrap()
+            .state
+            .next_run_at_ms,
+        Some(1000),
+        "未收集的作业状态不得被触碰"
+    );
+}
+
+/// BUG-131 主场景绿证：到期作业已被并发 patch 换入未来 next_run（落定
+/// 形态）——reset 不得按「曾经到期」践踏新排程；合并临界区后收集判定与
+/// 复位原子，next_run 已是未来 ⇒ 不进 due ⇒ 状态原样保留。
+#[test]
+fn collect_and_reset_due_respects_future_next_run_after_reschedule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    // 单发 at（delete_after_run=true，旧行为下整单删除的最坏臂）。
+    let job = svc
+        .add_job_internal(
+            "rescheduled",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(1000),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    // 并发 patch 赢得窗口的落定形态：next_run 已被换到未来。
+    let patched_next = 1000 + 60_000;
+    {
+        let mut s = svc.store.lock();
+        s.jobs
+            .iter_mut()
+            .find(|j| j.id == job.id)
+            .unwrap()
+            .state
+            .next_run_at_ms = Some(patched_next);
+        super::save_store_to_path(&path, &s).unwrap();
+    }
+
+    let due = collect_and_reset_due(&svc.store, &path, 5000);
+
+    assert!(due.is_empty(), "patch 后的未来 next_run 不得被收集");
+    let s = svc.store.lock();
+    let j = s.jobs.iter().find(|j| j.id == job.id).unwrap();
+    assert_eq!(
+        j.state.next_run_at_ms,
+        Some(patched_next),
+        "改期后的触发点必须原样保留——践踏回 None 会让执行后 at 分支走删除臂"
+    );
+}
+
+/// 空 due：不触发任何落盘（保持旧形态每秒空转零 IO 的语义）。
+#[test]
+fn collect_and_reset_due_no_due_no_disk_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    // CronService::new 对缺失文件返回空 store 且不写盘（store::load 短路）。
+    assert!(!std::path::Path::new(&path).exists());
+    let svc = CronService::new(&path);
+
+    let due = collect_and_reset_due(&svc.store, &path, 5000);
+
+    assert!(due.is_empty());
+    assert!(
+        !std::path::Path::new(&path).exists(),
+        "空 due 不得创建/改写存储文件"
+    );
+}

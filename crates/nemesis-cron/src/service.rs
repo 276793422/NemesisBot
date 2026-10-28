@@ -209,6 +209,37 @@ impl JobPauseHandle {
     }
 }
 
+/// 到期收集 + next_run 复位（**同一临界区**，BUG-20261028-131）。
+///
+/// 旧形态是两个锁段：collect（读锁挑出 due 列表）与 reset（写锁无条件把
+/// due 列表的 `next_run_at_ms` 践踏回 `None`）之间，并发 `patch_job`/
+/// `update_job` 可给已到期的 at 作业换入新未来 next_run——reset 仍按
+/// 「曾经到期」把新排程清掉，执行后 at 分支见 `next_run_at_ms.is_none()`
+/// 走失败臂（disable 停摆）或 delete_after_run 臂（整单删除），用户刚改好
+/// 的排程 / 单发任务丢失。合并进单临界区后窗口结构性消除：并发 patch
+/// 要么整体落在前（next_run 已是未来 → 不满足到期谓词 → 不被收集 → 改期
+/// 被尊重），要么整体落在后（执行后 post-execution 保留臂接住——
+/// BUG-20261028-116 同源不变量：所有 patch 产出的 next_run 恒晚于本次
+/// fire 循环的 now_ms）。due 非空才落盘（保持旧形态「无 due 零写盘」）。
+fn collect_and_reset_due(
+    store: &Mutex<CronStoreData>,
+    store_path: &str,
+    now_ms: i64,
+) -> Vec<String> {
+    let mut s = store.lock();
+    let mut due = Vec::new();
+    for job in s.jobs.iter_mut() {
+        if job.enabled && job.state.next_run_at_ms.is_some_and(|t| t <= now_ms) {
+            job.state.next_run_at_ms = None;
+            due.push(job.id.clone());
+        }
+    }
+    if !due.is_empty() {
+        let _ = save_store_to_path(store_path, &s);
+    }
+    due
+}
+
 impl CronService {
     /// Create a new cron service. Starts DISARMED (see [`Self::arm`]).
     pub fn new(store_path: &str) -> Self {
@@ -293,32 +324,17 @@ impl CronService {
                 if *pending_arm_flag.lock() {
                     continue;
                 }
-                let due: Vec<String> = {
-                    let s = store.lock();
-                    s.jobs
-                        .iter()
-                        .filter(|j| {
-                            j.enabled && j.state.next_run_at_ms.is_some_and(|t| t <= now_ms)
-                        })
-                        .map(|j| j.id.clone())
-                        .collect()
-                };
+                // Collect due jobs and reset their next_run in ONE critical
+                // section (BUG-20261028-131): the old two-lock-section shape
+                // let a concurrent patch_job slip a new future next_run into a
+                // due at-job between collect and reset — the reset then
+                // clobbered it back to None and the post-execution at-branch
+                // disabled/deleted the job. See collect_and_reset_due doc.
+                let due = collect_and_reset_due(&store, &store_path, now_ms);
                 if due.is_empty() {
                     continue;
                 }
                 debug!("[Cron] Found {} due job(s)", due.len());
-
-                // Reset next_run for due jobs and save (under lock), matching Go's
-                // "reset before unlock to avoid duplicate execution" pattern.
-                {
-                    let mut s = store.lock();
-                    for job in &mut s.jobs {
-                        if due.contains(&job.id) {
-                            job.state.next_run_at_ms = None;
-                        }
-                    }
-                    let _ = save_store_to_path(&store_path, &s);
-                }
 
                 // Execute jobs outside lock — mirrors Go's checkJobs -> executeJobByID
                 for job_id in &due {
