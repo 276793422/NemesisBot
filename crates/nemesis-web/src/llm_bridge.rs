@@ -210,6 +210,11 @@ fn provider_response_to_agent(
 
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
+    /// 委托内层 provider（NullProvider → "null"，gateway heartbeat 降级判定）。
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
     async fn chat(
         &self,
         model: &str,

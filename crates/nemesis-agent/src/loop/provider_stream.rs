@@ -185,6 +185,11 @@ impl StreamingLlmProvider {
 
 #[async_trait]
 impl LlmProvider for StreamingLlmProvider {
+    /// 委托内层（降级判定穿透流式包装）。
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
     async fn chat(
         &self,
         model: &str,

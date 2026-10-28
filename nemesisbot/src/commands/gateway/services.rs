@@ -195,6 +195,23 @@ pub(crate) async fn init_services(
                     }
                 };
 
+                // 无模型降级（NullProvider）：heartbeat 每拍要走 LLM，恒失败只产出
+                // 占位文本。安静跳过（与 BOOTSTRAP.md / agent-not-running 两个跳过臂
+                // 同语义）；provider_arc() 走 RwLock 读——Dashboard 配好模型 set_default
+                // 热切真实 provider 后本分支自然不再命中，心跳无需重启自动恢复。
+                if agent_loop_for_hb.provider_arc().name() == "null" {
+                    tracing::debug!(
+                        "[Gateway] No LLM configured (null provider), skipping heartbeat"
+                    );
+                    return Some(nemesis_heartbeat::service::HeartbeatResult {
+                        is_error: false,
+                        is_async: false,
+                        silent: true,
+                        for_user: String::new(),
+                        for_llm: "HEARTBEAT_OK".to_string(),
+                    });
+                }
+
                 // Use cli:direct as fallback (matching Go).
                 if channel.is_empty() || chat_id.is_empty() {
                     channel = "cli".to_string();

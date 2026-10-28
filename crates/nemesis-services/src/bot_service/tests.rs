@@ -214,7 +214,9 @@ fn test_save_config_rejects_no_api_key() {
 #[test]
 fn test_validate_config_checks_models() {
     let dir = tempfile::tempdir().unwrap();
-    // Config with no models
+    // Config with no models — 校验失败降级启动（BUG-20261029-149）：
+    // start() Ok + state=Running + last_error 保留失败记录 + can_stop（shutdown
+    // 路径能完整停机，此前 Error 态跳过 bot stop）。
     let config_path = dir.path().join("config.json");
     std::fs::write(&config_path, r#"{"models": []}"#).unwrap();
 
@@ -224,8 +226,11 @@ fn test_validate_config_checks_models() {
     });
 
     let result = svc.start();
-    assert!(result.is_err());
+    assert!(result.is_ok());
+    assert_eq!(svc.get_state(), BotState::Running);
     assert!(svc.get_error().unwrap().contains("no models configured"));
+    assert!(svc.get_state().can_stop());
+    assert!(svc.stop().is_ok());
 }
 
 #[test]
@@ -243,8 +248,10 @@ fn test_validate_config_checks_api_keys() {
         ..BotServiceConfig::default()
     });
 
+    // 校验失败降级启动：Ok + Running + 失败记录保留。
     let result = svc.start();
-    assert!(result.is_err());
+    assert!(result.is_ok());
+    assert_eq!(svc.get_state(), BotState::Running);
     assert!(
         svc.get_error()
             .unwrap()
@@ -1685,8 +1692,9 @@ fn test_config_file_empty_json() {
     });
 
     let result = svc.start();
-    assert!(result.is_err());
-    // Should fail on validation: no models configured
+    assert!(result.is_ok());
+    // Empty JSON → no models → 降级启动（BUG-20261029-149），失败记录保留
+    assert_eq!(svc.get_state(), BotState::Running);
     assert!(svc.get_error().unwrap().contains("no models"));
 }
 
@@ -2110,9 +2118,10 @@ fn test_validate_config_not_loaded() {
         ..BotServiceConfig::default()
     });
 
-    // This will fail at validate_config since config is loaded but models is empty
+    // Config loaded but models empty → 降级启动（BUG-20261029-149）。
     let result = svc.start();
-    assert!(result.is_err());
+    assert!(result.is_ok());
+    assert_eq!(svc.get_state(), BotState::Running);
     assert!(svc.get_error().unwrap().contains("no models"));
 }
 
@@ -2140,9 +2149,10 @@ fn test_validate_config_not_loaded() {
 // 结构性不可达（不试图覆盖，仅记录证据）：
 // - 650-654（start() Phase 3 init_components 失败 arm）：init_components
 //   唯一的 Err 是 config_file 为 None（bot_service.rs:1231），而走到
-//   Phase 3 前提是 Phase 1 load_config 成功（会把 config_file 置 Some）、
-//   Phase 2 validate_config 通过（config_loaded=true ⇒ config_file 必为
-//   Some）→ 650-654 只有在 load_config 成功但 config_file 又是 None 的
+//   Phase 3 前提是 Phase 1 load_config 成功（会把 config_file 置 Some；
+//   Phase 2 校验失败自 BUG-20261029-149 起降级不拦，但其两个「未加载/
+//   未解析」臂在 Phase 1 成功后本就不可达，models 臂不依赖 config_file
+//   存在性）→ 650-654 只有在 load_config 成功但 config_file 又是 None 的
 //   矛盾状态下才可达。
 // ============================================================
 

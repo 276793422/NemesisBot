@@ -296,10 +296,14 @@ pub(crate) async fn run_runtime(
         cron.arm();
     }
 
-    // Step 19: Start bot service (for state tracking)
+    // Step 19: Start bot service — health/heartbeat/devices 三服务的唯一生产
+    // 启动点（start_services）。BUG-20261029-149 纠偏：旧注释「for state
+    // tracking / real services are already started above」不实——三服务没有
+    // "above" 启动点，start_bot 失败（旧:validate 无模型 → Err）即三服务全灭
+    // 且 Error 态停不掉。现 BotService 对模型面校验失败自降级（warn + Running），
+    // 本处失败只剩真实装配错误，仍非致命（loud log，不阻断 gateway 主流程）。
     if let Err(e) = svc_mgr.start_bot() {
         warn!("[Gateway] Bot service start note: {}", e);
-        // Non-fatal: the real services are already started above
     }
 
     // Step 20: Compute display URLs (real_port already resolved via oneshot in Step 17)

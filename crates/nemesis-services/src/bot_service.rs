@@ -610,15 +610,26 @@ impl BotService {
             )));
         }
 
-        // Phase 2: Validate configuration
+        // Phase 2: Validate configuration.
         debug!("[BotService] Starting component: {}", "validate_config");
-        if let Err(e) = self.validate_config() {
-            self.set_state_with_error(BotState::Error, &e);
-            return Err(nemesis_types::error::NemesisError::Other(format!(
-                "config validation failed: {}",
-                e
-            )));
-        }
+        // 校验失败不再拦截启动（BUG-20261029-149）：gateway 对无模型配置走
+        // NullProvider 降级哲学（对话面诚实报「未配置模型」，Dashboard 配好
+        // 后 set_default 热切恢复），服务面生命周期不应被模型面校验闸死——
+        // 此前 Phase 2 失败 → state=Error → health/heartbeat/devices 三服务
+        // （唯一启动点在本函数 Phase 4）永不启动，且 Error 态 can_stop()=false
+        // 令 shutdown 跳过 bot stop。现降级：warn + last_error 记录 + 继续，
+        // state 终态 Running（诚实反映「降级运行」）。写路径校验（save_config）
+        // 维持严格——「写严格 / 启动宽容」对称。
+        let validation_error = match self.validate_config() {
+            Ok(()) => None,
+            Err(e) => {
+                warn!(
+                    "[BotService] Config validation failed: {} — degraded start (no LLM; conversation unavailable, services starting normally)",
+                    e
+                );
+                Some(format!("config validation failed: {}", e))
+            }
+        };
 
         // Phase 3: Initialize components
         debug!("[BotService] Starting component: {}", "init_components");
@@ -644,6 +655,8 @@ impl BotService {
         {
             let mut inner = self.inner.write();
             inner.state = BotState::Running;
+            // 降级启动时保留校验失败记录（get_error 可观测）；正常启动为 None。
+            inner.last_error = validation_error;
         }
         info!("[BotService] Bot service started successfully");
         Ok(())

@@ -134,6 +134,13 @@ pub trait LlmProvider: Send + Sync {
         let _ = on_delta;
         self.chat(model, messages, options, tools).await
     }
+
+    /// Provider 标识名（BUG-20261029-149：gateway heartbeat 降级判定——
+    /// NullProvider 返回 "null" 时心跳安静跳过，热切真实模型后自动恢复）。
+    /// 默认空串：测试桩与不关心该判定的实现无需逐一实现。
+    fn name(&self) -> &str {
+        ""
+    }
 }
 
 impl AgentLoop {
