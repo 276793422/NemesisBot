@@ -537,3 +537,41 @@ mod git_gc {
         );
     }
 }
+
+/// `dir_size` 链接项跳过（BUG-20261029-139，collect_relative_files
+/// BUG-20261029-138 同族横向清扫）：跟随版 `is_dir()` 会把 junction/
+/// symlink 当目录 push 进栈——外指链接把目标树字节计入 total（体积虚报），
+/// 自指链接无限 push/pop 死循环（gc 任务挂死）。本测试用外指链接钉跟随
+/// 语义（自指死循环不可断言，同一跟随语义的推论）；git objects 树正常
+/// 无链接，跳过语义零行为变化。
+#[test]
+fn dir_size_skips_link_entries() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let dir = base.path().join("objects_old");
+    std::fs::create_dir_all(&dir).expect("mkdir objects_old");
+    std::fs::write(dir.join("real.obj"), vec![0u8; 100]).expect("write real");
+    let outside = base.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("mkdir outside");
+    std::fs::write(outside.join("leak.bin"), vec![0u8; 4096]).expect("write leak");
+
+    #[cfg(windows)]
+    {
+        let junc = dir.join("link");
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junc)
+            .arg(&outside)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, dir.join("link")).expect("symlink");
+
+    let total = super::gc::dir_size(&dir);
+    assert_eq!(total, 100, "链接目标树字节不得计入: {total}");
+}

@@ -244,6 +244,106 @@ fn empty_frontmatter_no_leading_blank() {
 }
 
 #[test]
+fn clarify_skips_code_block_marker_lines() {
+    // 代码块内的「必须」是代码/注释内容不是 skill 约束——抽走会挖洞
+    // 代码块并产出语境错乱的假约束。仅代码块内有标记行 = 诚实拒绝。
+    // （样本用非 `#` 前缀代码行——`#` 注释撞既有 starts_with('#') 排除，
+    // 打不中缺陷路径。）
+    let body = "说明。\n\n```text\n输出前必须先校验参数\nrun.sh\n```\n\n## 输出\n\n结果。\n";
+    let r = apply(
+        Operator::ClarifyConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    );
+    assert!(
+        r.is_err(),
+        "代码块内标记行不得被收拢: {:?}",
+        r.map(|c| c.content)
+    );
+}
+
+#[test]
+fn clarify_keeps_code_block_intact_with_mixed_markers() {
+    // 正文真实约束 + 代码块标记行并存：只收正文行，代码块原样保留。
+    let body =
+        "说明。\n- 不要越权\n\n```text\n输出前必须先校验参数\nrun.sh\n```\n\n## 输出\n\n结果。\n";
+    let c = apply(
+        Operator::ClarifyConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    )
+    .unwrap();
+    assert_eq!(c.summary, "收拢 1 条散点约束为显式段", "{}", c.content);
+    assert!(
+        c.content.contains("输出前必须先校验参数"),
+        "代码块行不得被抽走: {}",
+        c.content
+    );
+    assert!(c.content.contains("run.sh"));
+}
+
+#[test]
+fn reorder_does_not_anchor_on_code_block_pseudo_heading() {
+    // 代码块内的 `## 注意` 是示例文本——当约束锚点会把代码块中部拆散
+    // 前置。fence 感知下无真实约束段 = 诚实拒绝。
+    let body = "intro\n\n## 步骤\n\n示例：\n\n```markdown\n## 注意\n示例文本\n```\n\n后续说明。\n";
+    let r = apply(
+        Operator::ReorderConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    );
+    assert!(
+        r.is_err(),
+        "代码块内伪标题不得当约束锚: {:?}",
+        r.map(|c| c.content)
+    );
+}
+
+#[test]
+fn reorder_preserves_intro_with_code_block() {
+    // intro 段含代码块（内有 `## ` 行）：代码块属于 intro 整体保留在最前，
+    // 不得在伪标题处截断丢失后半（数据丢失面）。附真实其他节使重排合法。
+    // （无其他节时 fence 感知下约束是唯一节 = 诚实 Err「nothing to
+    // reorder」——旧码靠伪节才能「成功」重排出损坏文档。）
+    let body = "说明。\n\n```text\n## 标题示例\n正文示例\n```\n\n## 注意\n\n- 不要越权\n\n## 输出\n\n结果。\n";
+    let c = apply(
+        Operator::ReorderConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    )
+    .unwrap();
+    assert!(
+        c.content.contains("```text\n## 标题示例\n正文示例\n```"),
+        "intro 代码块必须完整保留: {}",
+        c.content
+    );
+    let intro_pos = c.content.find("```text").unwrap();
+    let cons_pos = c.content.find("## 注意").unwrap();
+    assert!(intro_pos < cons_pos);
+}
+
+#[test]
+fn reorder_single_real_section_is_err_even_with_code_block() {
+    // fence 感知后约束是唯一真实节（代码块伪节不算 others）= 诚实拒绝，
+    // 不再借伪节产出损坏排序。
+    let body = "说明。\n\n```text\n## 标题示例\n正文示例\n```\n\n## 注意\n\n- 不要越权\n";
+    let r = apply(
+        Operator::ReorderConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    );
+    assert!(
+        r.unwrap_err().contains("nothing to reorder"),
+        "唯一真实节应诚实拒绝重排"
+    );
+}
+
+#[test]
 fn operator_parse_roundtrip() {
     for op in [
         Operator::ReorderConstraints,

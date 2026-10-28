@@ -209,7 +209,10 @@ fn skill_name_of(content: &str) -> String {
     "under-test".into()
 }
 
-/// 递归收集相对路径（跳过 skills/ 自身与隐藏文件）。
+/// 递归收集相对路径（跳过 skills/ 自身与隐藏文件）。符号链接/junction
+/// 一律跳过（不跟随不收集，symlink_metadata 判定，R204/BUG-20261029-135
+/// 同族）——被测 agent 可在临时工作区造自指链接，跟随版递归挂死 runner；
+/// 目标树文件也不得以 `link/` 前缀污染 files_exist 断言面。
 fn collect_relative_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -219,12 +222,18 @@ fn collect_relative_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
     for e in entries {
         let name = e.file_name().to_string_lossy().to_string();
         let p = e.path();
+        let Ok(meta) = p.symlink_metadata() else {
+            continue; // 消失/不可达条目不收集不递归（跟随版旧码会当文件 push）
+        };
+        if meta.is_symlink() {
+            continue;
+        }
         let rel = p
             .strip_prefix(root)
             .unwrap_or(&p)
             .to_string_lossy()
             .to_string();
-        if p.is_dir() {
+        if meta.is_dir() {
             if name == "skills" || name.starts_with('.') {
                 continue;
             }
@@ -234,6 +243,9 @@ fn collect_relative_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 // ---------------------------------------------------------------------------
 // C 线失败重放执行面（用例管理在 nemesis_forge::replay；执行装配同 K1 链）

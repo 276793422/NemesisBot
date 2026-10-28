@@ -155,12 +155,23 @@ fn reorder_constraints(body: &str) -> Result<(String, String), String> {
     }
     // 布局：引导文本 → 约束段 → 其余段（原序）。引导文本必须在约束段
     // 之前（首版把 intro 拼在约束段之后且无标题分隔，渲染时被并进
-    // 「## 约束」节 = 文档结构损坏，二轮复查根修）。
-    let intro_src = body
-        .lines()
-        .take_while(|l| !l.starts_with("## "))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // 「## 约束」节 = 文档结构损坏，二轮复查根修）。intro 边界按 fence
+    // 感知识别——代码块内的 `## ` 行不当节边界（否则 intro 代码块被
+    // 截断丢失后半）。
+    let mut intro_lines: Vec<&str> = Vec::new();
+    let mut in_code = false;
+    for l in body.lines() {
+        if is_fence_line(l) {
+            in_code = !in_code;
+            intro_lines.push(l);
+            continue;
+        }
+        if !in_code && l.starts_with("## ") {
+            break;
+        }
+        intro_lines.push(l);
+    }
+    let intro_src = intro_lines.join("\n");
     let intro = if intro_src.trim().is_empty() {
         String::new()
     } else {
@@ -194,19 +205,42 @@ fn extract_section(body: &str, aliases: &[&str]) -> Result<(Option<String>, Vec<
     Ok((found, others))
 }
 
+/// 行是否为围栏开关行（``` 或 ~~~ 起始，容许前导缩进与语言标注）。
+/// 围栏内的行不参与结构识别——否则代码块内的 `## ` 示例行被当节边界
+/// （contains 误锚定时约束段被错误前置、代码块内容拆散）、含「必须/
+/// 不要」的代码行被 clarify 抽走（代码块挖洞，产出损坏候选）。
+fn is_fence_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("```") || t.starts_with("~~~")
+}
+
 /// 按 `## ` 标题切分 body（返回 (标题文本, 段正文) 对；标题前导文本忽略）。
+/// 围栏内的行计入所在节正文、不识别标题。
 fn split_sections(body: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut cur_title: Option<String> = None;
     let mut cur_text = String::new();
+    let mut in_code = false;
     for line in body.lines() {
-        if let Some(t) = line.strip_prefix("## ") {
+        if is_fence_line(line) {
+            in_code = !in_code;
+            if cur_title.is_some() {
+                cur_text.push_str(line);
+                cur_text.push('\n');
+            }
+            continue;
+        }
+        if let Some(t) = line.strip_prefix("## ")
+            && !in_code
+        {
             if let Some(prev) = cur_title.take() {
                 out.push((prev, cur_text.trim_end().to_string()));
             }
             cur_title = Some(t.trim().to_string());
             cur_text.clear();
-        } else if cur_title.is_some() {
+            continue;
+        }
+        if cur_title.is_some() {
             cur_text.push_str(line);
             cur_text.push('\n');
         }
@@ -232,9 +266,18 @@ fn clarify_constraints(body: &str) -> Result<(String, String), String> {
         return Err("constraint section already exists (use reorder instead)".into());
     }
     const MARKERS: &[&str] = &["不要", "必须", "避免", "禁止", "不允许"];
+    // 围栏内的行是代码/注释内容，不是 skill 约束——抓走会挖洞代码块并
+    // 产出语境错乱的假约束（fence 感知，与 split_sections 同一识别）。
+    let mut in_code = false;
     let picked: Vec<&str> = body
         .lines()
-        .filter(|l| !l.starts_with('#') && MARKERS.iter().any(|m| l.contains(m)))
+        .filter(|l| {
+            if is_fence_line(l) {
+                in_code = !in_code;
+                return false;
+            }
+            !in_code && !l.starts_with('#') && MARKERS.iter().any(|m| l.contains(m))
+        })
         .collect();
     if picked.is_empty() {
         return Err("no inline constraint lines found to clarify".into());

@@ -632,8 +632,12 @@ impl CheckpointStore {
     }
 }
 
-/// 目录体积快算（gc 报告素材；读不到 = 0）。
-fn dir_size(dir: &std::path::Path) -> u64 {
+/// 目录体积快算（gc 报告素材；读不到 = 0）。符号链接/junction 一律
+/// 跳过（symlink_metadata 判定，BUG-20261029-139 与 collect_relative_files
+/// 同族）——跟随版会把链接当目录入栈：外指链接把目标树字节计入体积
+/// （虚报），自指链接无限入栈死循环挂死 gc 任务。git objects 树正常无
+/// 链接，跳过零行为变化。
+pub(super) fn dir_size(dir: &std::path::Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -642,10 +646,16 @@ fn dir_size(dir: &std::path::Path) -> u64 {
         };
         for ent in rd.flatten() {
             let p = ent.path();
-            if p.is_dir() {
+            let Ok(meta) = p.symlink_metadata() else {
+                continue; // 消失/不可达条目不计不入栈
+            };
+            if meta.is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
                 stack.push(p);
-            } else if let Ok(m) = ent.metadata() {
-                total += m.len();
+            } else {
+                total += meta.len();
             }
         }
     }
