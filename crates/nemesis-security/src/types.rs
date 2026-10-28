@@ -543,6 +543,28 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        // BUG-20261028-118：run_script 与 exec 同为 ProcessExec 档任意代码
+        // 执行——target 取 script 本体，让 Layer 2 命令守卫与 preexec 脚本
+        // 内容扫描照常工作（此前无臂 → target 恒空 → 两层被
+        // `!target.is_empty()` 前置整体跳过）。spawn/claude_code 等
+        // task/prompt 载荷是自然语言（子调用各自过闸），语义上不适用命令
+        // 守卫，不在此列。
+        "run_script" => args
+            .get("script")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // BUG-20261028-118：multiedit 的 path 内嵌在 edits[].path（顶层无
+        // path）——取首个 edit 的 path 作 target，审计链/审计日志与按路径
+        // 匹配的 ABAC 规则对 multiedit 生效（与 edit_file 对齐）。
+        "multiedit" => args
+            .get("edits")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|e| e.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
         | "find_skills" => args
             .get("url")

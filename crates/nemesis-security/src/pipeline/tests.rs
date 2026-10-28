@@ -57,6 +57,29 @@ fn test_dangerous_command_blocked() {
     assert!(err.unwrap().summary.contains("command guard"));
 }
 
+// BUG-20261028-118 红证（管线级）：run_script 与 exec 同为 ProcessExec 档
+// 任意代码执行，危险 script 内容必须同样被 Layer 2 命令守卫拦截——此前
+// extract_target 无 run_script 臂 → target 空 → 守卫被 `!target.is_empty()`
+// 前置整体跳过（exec 拦得住的 run_script 放行）。
+#[test]
+fn test_run_script_dangerous_script_blocked() {
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "run_script".to_string(),
+        args: serde_json::json!({
+            "interpreter": "bash",
+            "flag": "-c",
+            "script": "rm -rf /"
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    assert!(err.unwrap().summary.contains("command guard"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_safe_operation_allowed() {
     let plugin = make_plugin();
