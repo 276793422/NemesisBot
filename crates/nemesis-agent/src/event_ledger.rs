@@ -145,6 +145,25 @@ pub fn ledger_record(session_key: &str, op: LedgerOp, actor: &str, rows: Vec<Led
     }
 }
 
+/// BUG-20261028-121：同会话并发记账源真实存在——R100 注记承认的「spawned
+/// 续行 final vs 主循环下一条 user 行」双写形态，加 B11 snooze sweeper 唤醒
+/// 行（gateway 常驻任务，不经 history gate）。「读链尾 → 追加」两步若不
+/// 串行，两方并发读到同一 (seq, prev_hash) → 重复 seq → ledger_verify 从
+/// 断点起永久红（append-only 无修复路径），完整性证据工具自身产生永久
+/// 假阳性。按账本文件路径分锁（不同会话互不阻塞）；parking_lot 无毒化，
+/// 文件 IO 全程持锁（临界区 = 一次读尾 + 单行 append，量级与原实现持平）。
+static LEDGER_IO_LOCKS: std::sync::OnceLock<
+    dashmap::DashMap<PathBuf, std::sync::Arc<parking_lot::Mutex<()>>>,
+> = std::sync::OnceLock::new();
+
+fn ledger_io_lock(path: &std::path::Path) -> std::sync::Arc<parking_lot::Mutex<()>> {
+    LEDGER_IO_LOCKS
+        .get_or_init(dashmap::DashMap::new)
+        .entry(path.to_path_buf())
+        .or_default()
+        .clone()
+}
+
 /// 显式路径记账（worker；测试用 [`record_entry_at`] 打临时路径，
 /// 生产走 [`ledger_record`]）。
 pub fn record_entry_at(
@@ -153,7 +172,24 @@ pub fn record_entry_at(
     actor: &str,
     rows: Vec<LedgerRow>,
 ) -> Result<u64, String> {
+    // BUG-20261028-121：读尾 → 构造 → 追加全程持同路径锁（见
+    // LEDGER_IO_LOCKS 注记）。
+    let io_lock = ledger_io_lock(path);
+    let _io = io_lock.lock();
     let (seq, prev_hash) = read_chain_tail(path)?;
+    let line = build_entry_line(seq, &prev_hash, op, actor, rows)?;
+    append_entry_line(path, &line)?;
+    Ok(seq)
+}
+
+/// 由链尾坐标构造一条待追加的 jsonl 行（拆出供测试确定性红证旧无锁交错）。
+fn build_entry_line(
+    seq: u64,
+    prev_hash: &str,
+    op: LedgerOp,
+    actor: &str,
+    rows: Vec<LedgerRow>,
+) -> Result<String, String> {
     let body = LedgerBody {
         seq,
         op: op.as_str().to_string(),
@@ -161,13 +197,17 @@ pub fn record_entry_at(
         actor: actor.to_string(),
         rows,
     };
-    let hash = chain_hash(&prev_hash, &body);
+    let hash = chain_hash(prev_hash, &body);
     let entry = LedgerEntry {
-        prev_hash,
+        prev_hash: prev_hash.to_string(),
         hash,
         body,
     };
-    let line = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+    serde_json::to_string(&entry).map_err(|e| e.to_string())
+}
+
+/// 单行追加（OpenOptions append；目录惰性创建）。
+fn append_entry_line(path: &std::path::Path, line: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -177,8 +217,7 @@ pub fn record_entry_at(
         .append(true)
         .open(path)
         .map_err(|e| format!("open: {e}"))?;
-    writeln!(f, "{}", line).map_err(|e| format!("write: {e}"))?;
-    Ok(seq)
+    writeln!(f, "{line}").map_err(|e| format!("write: {e}"))
 }
 
 /// 全链重算验证。任何一行被改/删/插（或行内 sha 与自带正文矛盾）→ Err。

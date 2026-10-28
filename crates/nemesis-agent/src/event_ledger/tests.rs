@@ -210,3 +210,70 @@ fn genesis_and_empty_file() {
     let stats = ledger_verify(&empty).unwrap();
     assert_eq!(stats.events, 0);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-121：并发记账竞速（读链尾→追加两步无锁 → 重复 seq → verify
+// 永久红）。两则：确定性红证（手工复现旧交错形态）+ 并发回归锁（持锁实现
+// 下高竞争全链干净）。
+// ---------------------------------------------------------------------------
+
+/// 红证（确定性）：模拟修复前 record_entry_at 的无锁交错——两个并发方都
+/// 在同一链尾坐标上构造并追加 → 第二条 seq 与前驱断裂，verify 红。修复后
+/// 该交错只能由测试直接拼装底层 helper 产生，公共入口已全程持锁。
+#[test]
+fn bug_121_tail_race_interleave_breaks_chain() {
+    let (_d, path) = temp_ledger("bug121_race_red");
+    record_entry_at(&path, LedgerOp::Append, "t", vec![]).unwrap();
+
+    // 交错窗口：两个并发方先后读到同一链尾坐标（修复前 read_chain_tail
+    // 无锁，这正是并发时的真实读数）。
+    let tail_a = read_chain_tail(&path).unwrap();
+    let tail_b = read_chain_tail(&path).unwrap();
+    assert_eq!(tail_a.0, tail_b.0, "交错窗口内两方读到同一 seq");
+
+    // 各自构造并追加（旧实现的两步在对方 write 之前都已完成读尾）。
+    let line_a = build_entry_line(tail_a.0, &tail_a.1, LedgerOp::Append, "t", vec![]).unwrap();
+    let line_b = build_entry_line(tail_b.0, &tail_b.1, LedgerOp::Append, "t", vec![]).unwrap();
+    append_entry_line(&path, &line_a).unwrap();
+    append_entry_line(&path, &line_b).unwrap();
+
+    let err = ledger_verify(&path).unwrap_err();
+    assert!(err.contains("seq"), "重复 seq 应断链，got: {err}");
+}
+
+/// 回归锁：8 线程 × 25 条屏障起跑并发记账（修复前概率性产生重复 seq →
+/// verify 永久红），持锁实现下全链干净、计数准确。
+#[test]
+fn bug_121_concurrent_records_keep_chain_consistent() {
+    let (_d, path) = temp_ledger("bug121_concurrent");
+    const THREADS: usize = 8;
+    const PER: usize = 25;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let mut handles = Vec::new();
+    for t in 0..THREADS {
+        let barrier = barrier.clone();
+        let path = path.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..PER {
+                record_entry_at(
+                    &path,
+                    LedgerOp::Append,
+                    "t",
+                    vec![LedgerRow {
+                        role: "user".to_string(),
+                        content_sha256: sha256_hex(format!("t{t}-{i}").as_bytes()),
+                        content: None,
+                    }],
+                )
+                .unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let stats = ledger_verify(&path).unwrap();
+    assert_eq!(stats.events, (THREADS * PER) as u64);
+    assert_eq!(stats.appends, (THREADS * PER) as u64);
+}

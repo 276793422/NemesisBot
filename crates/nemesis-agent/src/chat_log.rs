@@ -1188,7 +1188,11 @@ pub fn write_session_snooze(session_key: &str, until_rfc3339: &str, note: Option
 }
 
 /// B11：摘除暂停标记（与 upsert_meta 同锁——check-then-write 原子性）。
-/// 返回被摘除的 `(until, note)`；无标记/无 meta = `None`（不空写文件）。
+/// 返回被摘除的 `(until, note)`；无标记/无 meta = `None`（不空写文件）；
+/// 落盘失败也返回 `None`（BUG-20261028-122：写失败 = 标记仍在盘上，谎报
+/// 「已摘除」会让 sweeper append 恢复行后下一轮 sweep 再来一遍——磁盘故障
+/// 持续期间每 10s 刷一条重复恢复行。返 None 让 sweeper 跳过下轮重试、
+/// unsnooze 臂回 unsnoozed:false 诚实）。
 pub fn clear_session_snooze(session_key: &str) -> Option<(String, Option<String>)> {
     let _guard = META_LOCK.lock();
     let mut meta = read_meta_full(session_key)?;
@@ -1201,6 +1205,7 @@ pub fn clear_session_snooze(session_key: &str) -> Option<(String, Option<String>
             path.display(),
             e
         );
+        return None;
     }
     Some((until, note))
 }
