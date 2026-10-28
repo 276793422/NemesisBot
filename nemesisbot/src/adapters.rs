@@ -589,3 +589,83 @@ impl WebServerOps for WebServerOpsAdapter {
 
     fn stop_server(&self) {}
 }
+
+// ---------------------------------------------------------------------------
+// DeviceService adapter（BUG-20261028-126 Layer C）
+// ---------------------------------------------------------------------------
+
+/// Adapter wrapping `nemesis_devices::service::DeviceService` to implement the
+/// `nemesis_services::DeviceService` trait.
+///
+/// 长寿命持有链：init_services 构造 + 接线 → `BotService.inject_devices`
+/// 持有本 adapter → BotService.start_services/stop 统一管生命周期。此前
+/// device_service 是装配块局部变量，块尾 drop 连带杀掉 UsbEventSource
+/// （udevadm 子进程），监控装配后瞬间静默死亡。
+#[cfg(feature = "devices")]
+pub struct DeviceServiceAdapter {
+    inner: Arc<nemesis_devices::service::DeviceService>,
+    started: AtomicBool,
+}
+
+#[cfg(feature = "devices")]
+impl DeviceServiceAdapter {
+    pub fn new(inner: Arc<nemesis_devices::service::DeviceService>) -> Self {
+        Self {
+            inner,
+            started: AtomicBool::new(false),
+        }
+    }
+}
+
+#[cfg(feature = "devices")]
+impl LifecycleService for DeviceServiceAdapter {
+    fn start(&self) -> Result<(), String> {
+        if self.started.swap(true, Ordering::SeqCst) {
+            return Ok(()); // Already started
+        }
+        let inner = self.inner.clone();
+        tokio::spawn(async move {
+            if let Err(e) = inner.start().await {
+                tracing::error!("[Main] Device service error: {}", e);
+            }
+        });
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), String> {
+        self.inner.stop();
+        self.started.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "devices")]
+impl nemesis_services::DeviceService for DeviceServiceAdapter {}
+
+/// 设备通知的 last channel 供给器：从 AgentLoopServiceAdapter 实时取
+/// agent loop 持有的 WorkspaceStateManager（BUG-20261028-126 Layer B）。
+///
+/// 不缓存：state manager 独立实例内存态只在 new 时读盘一次，agent 每轮
+/// turn 写入的是 loop 自己那份实例——必须经 getter 共享同一实例实时读。
+#[cfg(feature = "devices")]
+pub struct AgentLastChannelProvider {
+    adapter: Arc<AgentLoopServiceAdapter>,
+}
+
+#[cfg(feature = "devices")]
+impl AgentLastChannelProvider {
+    pub fn new(adapter: Arc<AgentLoopServiceAdapter>) -> Self {
+        Self { adapter }
+    }
+}
+
+#[cfg(feature = "devices")]
+impl nemesis_devices::service::LastChannelProvider for AgentLastChannelProvider {
+    fn get_last_channel(&self) -> String {
+        self.adapter
+            .current()
+            .and_then(|al| al.state_manager())
+            .map(|m| m.get_last_channel())
+            .unwrap_or_default()
+    }
+}

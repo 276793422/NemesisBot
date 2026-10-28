@@ -220,6 +220,17 @@ impl AgentLoop {
         debug!("[AgentLoop] State manager configured");
     }
 
+    /// Get the state manager (if configured).
+    ///
+    /// BUG-20261028-126 Layer B：设备服务通知路由需要实时 last channel——
+    /// WorkspaceStateManager 是独立实例内存态（仅 new 时读盘一次），必须
+    /// 共享 agent loop 持有的同一实例才能读到每轮 turn 的最新值。
+    pub fn state_manager(
+        &self,
+    ) -> Option<Arc<nemesis_state::workspace_state::WorkspaceStateManager>> {
+        self.state_manager.clone()
+    }
+
     /// Set the observer callback for event emission.
     /// Mirrors Go's `SetObserverManager()`.
     pub fn set_observer_callback(

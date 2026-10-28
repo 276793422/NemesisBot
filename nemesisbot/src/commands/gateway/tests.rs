@@ -3552,7 +3552,7 @@ mod wave_b {
 //     （+ 同块尾部 scanner 配置缺失 info 臂）
 //   - 2540-2545 Security plugin disabled by configuration 显式禁用臂
 //   - 2568-2572 logging.llm 非空 log_dir else 臂（空字符串回退臂已由 S11d 覆盖）
-//   - 3254-3285 devices.enabled=true 的 DeviceService 启动成功 info 臂
+//   - devices.enabled=true 的 DeviceService 装配+注入臂（BUG-20261028-126 后 start 归 BotService.start_services）
 //   - 1182-1280 workflow 装配块的活动分支：defs 加载 Ok(n>0) info / cron 触发器
 //     注册计数>0 info / checkpoint 恢复 Ok(n>0) info / executor world Some 接线 /
 //     legacy 目录迁移在真实启动路径上执行
@@ -3809,7 +3809,7 @@ mod r9_gateway_boot_scenarios {
     ///
     /// 点亮：2540-2545 禁用臂、1597-1600 缺席 info 臂、2188-2191 dev-mode 臂、
     /// 2568-2572 非空 log_dir 臂（_=>Full 由默认 summary 已命中，仍显式给值
-    /// 保持意图）、3276-3285 DeviceService 启动成功臂、1843 的 0=不限臂
+    /// 保持意图）、devices.enabled=true 装配+注入臂（BUG-20261028-126 后 start 归 BotService.start_services）、1843 的 0=不限臂
     /// （2026-09-11 前是 24h 回退臂，语义已改写为文档口径 0=不限）。
     /// 这些分支只能靠日志文本观测，测试断言收敛到「按期就绪 + 干净退出」。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)

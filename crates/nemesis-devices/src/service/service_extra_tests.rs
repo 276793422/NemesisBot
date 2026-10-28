@@ -2,7 +2,7 @@
 //! - `with_config(monitor_usb=true)` line 136
 //! - `start()` source iteration (lines 213-235) via a mock EventSource
 //! - `stop()` source error path (lines 251-253)
-//! - `handle_events_task` private function (lines 326-355)
+//! - `handle_events_task` event loop (notification routing since BUG-20261028-126)
 //! - All parse/serialization edge cases
 //! - All bus/state configuration combinations
 
@@ -11,6 +11,19 @@ use crate::source::{Action, EventSource, Kind, UsbEventSource};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-126：handle_events_task 签名从 bool 探测值改为真实依赖
+// （bus/state Arc 克隆）。既有 smoke 测试统一经空依赖 helper 构造。
+// ---------------------------------------------------------------------------
+
+fn empty_bus_deps() -> Arc<Mutex<Option<OutboundSender>>> {
+    Arc::new(Mutex::new(None))
+}
+
+fn empty_state_deps() -> Arc<Mutex<Option<Arc<dyn LastChannelProvider>>>> {
+    Arc::new(Mutex::new(None))
+}
 
 // ---------------------------------------------------------------------------
 // MockEventSource — controllable source for testing source lifecycle
@@ -221,7 +234,8 @@ async fn test_handle_events_task_stops_on_stop_flag() {
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, true, true).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     // Set the stop flag — task should break out of the loop
@@ -238,7 +252,8 @@ async fn test_handle_events_task_processes_event_and_continues() {
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, false, false).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     // Send an event
@@ -268,7 +283,7 @@ async fn test_handle_events_task_stops_on_channel_close() {
     let stop = Arc::new(AtomicBool::new(false));
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop, true, true).await;
+        DeviceService::handle_events_task(rx, stop, empty_bus_deps(), empty_state_deps()).await;
     });
 
     // Drop the sender — receiver will return None, breaking the loop
@@ -284,7 +299,8 @@ async fn test_handle_events_task_multiple_events() {
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, false, false).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     // Send multiple events
@@ -316,7 +332,8 @@ async fn test_handle_events_task_remove_event() {
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, false, false).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     let ev = DeviceEvent {
@@ -343,7 +360,8 @@ async fn test_handle_events_task_change_event() {
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, false, false).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     let ev = DeviceEvent {
@@ -365,13 +383,14 @@ async fn test_handle_events_task_change_event() {
 
 #[tokio::test]
 async fn test_handle_events_task_with_bus_and_state_true() {
-    // Verify _bus_available=true and _state_available=true parameters
+    // 空依赖形态：bus/state 均未接线，事件只 debug log 不通知（route_notification 短路）。
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, true, true).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     let ev = DeviceEvent {
@@ -393,13 +412,14 @@ async fn test_handle_events_task_with_bus_and_state_true() {
 
 #[tokio::test]
 async fn test_handle_events_task_with_bus_and_state_false() {
-    // Verify _bus_available=false and _state_available=false parameters
+    // 同上（BUG-20261028-126 后 bool 探测参数已退役，两用例保留 smoke 覆盖）。
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
-        DeviceService::handle_events_task(rx, stop_clone, false, false).await;
+        DeviceService::handle_events_task(rx, stop_clone, empty_bus_deps(), empty_state_deps())
+            .await;
     });
 
     let ev = DeviceEvent {
@@ -1469,4 +1489,139 @@ fn test_set_state_manager_overrides_previous() {
     // Verify it used the second state manager
     assert_eq!(msgs[0].0, "telegram");
     assert_eq!(msgs[0].1, "second");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261028-126 回归锁：事件必须真正路由到通知（bus + state 接线后）
+//
+// 修前 handle_events_task 收到事件只 debug log（bool 探测参数弃用），
+// send_notification 生产零调用——本测试的 PushingSource 事件永不触达
+// bus_sender，断言超时失败（诚实红证）。修后事件经 route_notification
+// 走完整路由：last channel 解析 → internal 通道过滤 → bus 投递。
+// ---------------------------------------------------------------------------
+
+/// start() 即推送一条事件的源（模拟 udevadm 热插拔事件到达）。
+struct PushingSource {
+    started: Arc<AtomicUsize>,
+}
+
+impl EventSource for PushingSource {
+    fn kind(&self) -> Kind {
+        Kind::Usb
+    }
+
+    fn start(&self) -> Result<mpsc::Receiver<DeviceEvent>, String> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel::<DeviceEvent>(4);
+        let ev = DeviceEvent {
+            action: Action::Add,
+            kind: Kind::Usb,
+            device_id: "hotplug-1".to_string(),
+            vendor: "VendorX".to_string(),
+            product: "ProductY".to_string(),
+            serial: String::new(),
+            capabilities: String::new(),
+            raw: HashMap::new(),
+        };
+        tokio::spawn(async move {
+            let _ = tx.send(ev).await;
+            // 保持 tx 存活片刻，避免 rx 立即关闭导致任务提前退出
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        });
+        Ok(rx)
+    }
+
+    fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// 静态 last channel 供给器（web:user1；web 非内部通道，路由放行）。
+struct StaticLastChannel {
+    channel: &'static str,
+}
+
+impl LastChannelProvider for StaticLastChannel {
+    fn get_last_channel(&self) -> String {
+        self.channel.to_string()
+    }
+}
+
+#[tokio::test]
+async fn test_device_event_routes_to_bus_notification() {
+    let started = Arc::new(AtomicUsize::new(0));
+    let svc = DeviceService::with_sources_for_test(
+        DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 1,
+            monitor_usb: false,
+        },
+        vec![Box::new(PushingSource {
+            started: started.clone(),
+        })],
+    );
+
+    let (tx_capture, mut rx_capture) = mpsc::channel::<(String, String, String)>(8);
+    svc.set_bus_sender(Box::new(
+        move |channel: &str, chat_id: &str, content: &str| {
+            let _ = tx_capture.try_send((
+                channel.to_string(),
+                chat_id.to_string(),
+                content.to_string(),
+            ));
+        },
+    ));
+    svc.set_state_manager(Arc::new(StaticLastChannel {
+        channel: "web:user1",
+    }));
+
+    svc.start().await.unwrap();
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+
+    // 事件 → route_notification → bus（修前此处超时：事件只进 debug log）
+    let got = tokio::time::timeout(std::time::Duration::from_secs(3), rx_capture.recv())
+        .await
+        .expect("device event 未路由到 bus_sender（BUG-20261028-126 通知断链回归）");
+    let (channel, chat_id, content) = got.expect("capture channel closed");
+    assert_eq!(channel, "web");
+    assert_eq!(chat_id, "user1");
+    assert!(!content.is_empty(), "通知内容为空");
+
+    svc.stop();
+}
+
+#[tokio::test]
+async fn test_device_event_notification_skips_internal_channel() {
+    let started = Arc::new(AtomicUsize::new(0));
+    let svc = DeviceService::with_sources_for_test(
+        DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 1,
+            monitor_usb: false,
+        },
+        vec![Box::new(PushingSource {
+            started: started.clone(),
+        })],
+    );
+
+    let (tx_capture, mut rx_capture) = mpsc::channel::<(String, String, String)>(8);
+    svc.set_bus_sender(Box::new(
+        move |channel: &str, chat_id: &str, content: &str| {
+            let _ = tx_capture.try_send((
+                channel.to_string(),
+                chat_id.to_string(),
+                content.to_string(),
+            ));
+        },
+    ));
+    // cli 是内部通道：路由必须跳过（is_internal_channel 闸仍生效）
+    svc.set_state_manager(Arc::new(StaticLastChannel { channel: "cli:ops" }));
+
+    svc.start().await.unwrap();
+
+    // 内部通道被跳过：3 秒内不应有任何投递
+    let got = tokio::time::timeout(std::time::Duration::from_secs(3), rx_capture.recv()).await;
+    assert!(got.is_err(), "内部通道 cli 不应收到设备通知");
+
+    svc.stop();
 }

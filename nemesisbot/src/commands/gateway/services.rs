@@ -254,16 +254,26 @@ pub(crate) async fn init_services(
 
     // M1: Create and wire DeviceService.
     // Mirrors Go's bot_service.go:409-413: devices.NewService(Config{Enabled, MonitorUSB}).
+    //
+    // BUG-20261028-126（Layer B+C）修复：
+    // - Layer B：set_state_manager 此前生产零调用——事件通知要查 last
+    //   channel，没接 state 就永远短路。现接 AgentLastChannelProvider，
+    //   经 agent loop getter 实时取同一 WorkspaceStateManager 实例。
+    // - Layer C：device_service 此前是本块局部变量，块尾 drop 连带
+    //   UsbEventSource::drop 杀掉 udevadm——监控装配后瞬间静默死亡。
+    //   现装箱为 Option 存活到下方 BotService.inject_devices，生命周期
+    //   归 BotService（start_services/stop 统一管），此处不再自行 start。
     #[cfg(feature = "devices")]
-    {
+    let device_service: Option<Arc<nemesis_devices::service::DeviceService>> =
         if cfg.devices.enabled {
             let device_config = nemesis_devices::service::DeviceServiceConfig {
                 enabled: true,
                 poll_interval_secs: 30,
                 monitor_usb: cfg.devices.monitor_usb,
             };
-            let device_service =
-                nemesis_devices::service::DeviceService::with_config(device_config);
+            let device_service = Arc::new(nemesis_devices::service::DeviceService::with_config(
+                device_config,
+            ));
             // Wire bus sender: device events → outbound messages via bus
             let bus_for_devices = bus.clone();
             device_service.set_bus_sender(Box::new(
@@ -278,16 +288,15 @@ pub(crate) async fn init_services(
                     bus_for_devices.publish_outbound(msg);
                 },
             ));
-            // Start monitoring (USB hotplug, etc.) — async, fire-and-forget
-            if let Err(e) = device_service.start().await {
-                warn!("[Gateway] Device service start note: {} (non-fatal)", e);
-            } else {
-                info!("[Gateway] Device service started (USB hotplug monitoring)");
-            }
+            // Wire state manager: 通知路由实时查 agent loop 的 last channel
+            device_service.set_state_manager(Arc::new(adapters::AgentLastChannelProvider::new(
+                agent_adapter.clone(),
+            )));
+            Some(device_service)
         } else {
             info!("[Gateway] Device service disabled (config.json: devices.enabled = false)");
-        }
-    } // #[cfg(feature = "devices")]
+            None
+        }; // #[cfg(feature = "devices")]
 
     // Step 13: Create ServiceManager with config
     let bot_config = nemesis_services::BotServiceConfig {
@@ -321,7 +330,14 @@ pub(crate) async fn init_services(
                 heartbeat_service.clone(),
             )));
         }
-        #[cfg(not(any(feature = "health", feature = "heartbeat")))]
+        // BUG-20261028-126 Layer C：devices 归 BotService 长寿命持有，
+        // start_services()/stop() 统一管起停（镜像 heartbeat 注入先例）。
+        #[cfg(feature = "devices")]
+        if let Some(ref ds) = device_service {
+            bot.inject_devices(Arc::new(adapters::DeviceServiceAdapter::new(ds.clone())));
+            info!("[Gateway] Device service injected into BotService (lifecycle owned)");
+        }
+        #[cfg(not(any(feature = "health", feature = "heartbeat", feature = "devices")))]
         let _ = bot;
         // Agent is NOT injected into BotService — its lifecycle is managed directly
         // by AgentLoopServiceAdapter (tray start/stop, gateway shutdown).

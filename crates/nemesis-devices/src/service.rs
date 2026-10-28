@@ -114,9 +114,11 @@ pub struct DeviceService {
     handler: Mutex<Option<DeviceEventHandler>>,
     running: AtomicBool,
     /// Outbound message sender (bus integration).
-    bus_sender: Mutex<Option<OutboundSender>>,
+    /// Arc 化：start() 把克隆传入 handle_events_task（BUG-20261028-126 Layer A）。
+    bus_sender: Arc<Mutex<Option<OutboundSender>>>,
     /// State manager for retrieving last channel info.
-    state: Mutex<Option<Arc<dyn LastChannelProvider>>>,
+    /// Arc 化：同上，事件任务按事件实时取 last channel。
+    state: Arc<Mutex<Option<Arc<dyn LastChannelProvider>>>>,
     /// Event sources (e.g. USB monitor).
     sources: Vec<Box<dyn EventSource>>,
     /// Stop flag for event processing tasks.
@@ -131,8 +133,8 @@ impl DeviceService {
             devices: Arc::new(Mutex::new(HashMap::new())),
             handler: Mutex::new(None),
             running: AtomicBool::new(false),
-            bus_sender: Mutex::new(None),
-            state: Mutex::new(None),
+            bus_sender: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(None)),
             sources: Vec::new(),
             stop_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -150,8 +152,8 @@ impl DeviceService {
             devices: Arc::new(Mutex::new(HashMap::new())),
             handler: Mutex::new(None),
             running: AtomicBool::new(false),
-            bus_sender: Mutex::new(None),
-            state: Mutex::new(None),
+            bus_sender: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(None)),
             sources,
             stop_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -170,8 +172,8 @@ impl DeviceService {
             devices: Arc::new(Mutex::new(HashMap::new())),
             handler: Mutex::new(None),
             running: AtomicBool::new(false),
-            bus_sender: Mutex::new(None),
-            state: Mutex::new(None),
+            bus_sender: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(None)),
             sources,
             stop_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -246,15 +248,11 @@ impl DeviceService {
                 Ok(rx) => {
                     let kind = format!("{:?}", source.kind());
                     let stop = self.stop_flag.clone();
-                    let bus = {
-                        let b = self.bus_sender.lock();
-                        b.is_some()
-                    };
-                    let state_present = {
-                        let s = self.state.lock();
-                        s.is_some()
-                    };
-                    tokio::spawn(Self::handle_events_task(rx, stop, bus, state_present));
+                    // BUG-20261028-126 Layer A：把 bus/state 依赖的真实克隆
+                    // 传入事件任务（此前只传 bool 探测值，任务无法通知）。
+                    let bus_sender = self.bus_sender.clone();
+                    let state = self.state.clone();
+                    tokio::spawn(Self::handle_events_task(rx, stop, bus_sender, state));
                     tracing::info!("Device source started: {}", kind);
                 }
                 Err(e) => {
@@ -308,8 +306,22 @@ impl DeviceService {
     /// Send a device event as a notification to the last active channel.
     /// Mirrors Go `Service.sendNotification(ev)`.
     pub fn send_notification(&self, ev: &DeviceEvent) {
+        Self::route_notification(&self.bus_sender, &self.state, ev);
+    }
+
+    /// Notification routing core (BUG-20261028-126 Layer A 抽取).
+    ///
+    /// 此前通知主体只活在 `send_notification` 里，而 `handle_events_task`
+    /// 收到事件仅打 debug log——生产路径（source 事件流 → 任务）从不触达
+    /// 通知，`send_notification` 全仓零调用，三层断链的第一层。
+    /// 抽成关联函数后事件任务与 pub API 共用同一路由体。
+    fn route_notification(
+        bus_sender: &Mutex<Option<OutboundSender>>,
+        state: &Mutex<Option<Arc<dyn LastChannelProvider>>>,
+        ev: &DeviceEvent,
+    ) {
         // Check if bus is available
-        let bus_guard = self.bus_sender.lock();
+        let bus_guard = bus_sender.lock();
         if bus_guard.is_none() {
             return;
         }
@@ -317,7 +329,7 @@ impl DeviceService {
 
         // Get last channel from state
         let last_channel = {
-            let state = self.state.lock();
+            let state = state.lock();
             match state.as_ref() {
                 Some(s) => s.get_last_channel(),
                 None => return,
@@ -340,7 +352,7 @@ impl DeviceService {
         let msg = ev.format_message();
 
         // Send via bus
-        let bus = self.bus_sender.lock();
+        let bus = bus_sender.lock();
         if let Some(ref sender) = *bus {
             sender(&platform, &user_id, &msg);
             tracing::info!(
@@ -354,11 +366,15 @@ impl DeviceService {
 
     /// Background task to handle events from a source channel.
     /// Mirrors Go `Service.handleEvents(kind, eventCh)`.
+    ///
+    /// BUG-20261028-126 Layer A：此前收两个 bool 探测值（`_bus_available`/
+    /// `_state_available`，下划线弃用），收到事件只打 debug log，通知永不
+    /// 发出。现收 bus/state 依赖的 Arc 克隆，逐事件路由通知。
     async fn handle_events_task(
         mut rx: tokio::sync::mpsc::Receiver<DeviceEvent>,
         stop: Arc<AtomicBool>,
-        _bus_available: bool,
-        _state_available: bool,
+        bus_sender: Arc<Mutex<Option<OutboundSender>>>,
+        state: Arc<Mutex<Option<Arc<dyn LastChannelProvider>>>>,
     ) {
         loop {
             if stop.load(Ordering::SeqCst) {
@@ -372,6 +388,7 @@ impl DeviceService {
                                 "Device event: action={:?} kind={:?} device={}",
                                 ev.action, ev.kind, ev.device_id
                             );
+                            Self::route_notification(&bus_sender, &state, &ev);
                         }
                         None => break,
                     }

@@ -128,12 +128,16 @@ impl EventSource for UsbEventSource {
             let (tx, rx) = tokio::sync::mpsc::channel(100);
 
             // Spawn udevadm monitor
-            let spawned = std::process::Command::new("udevadm")
+            // W1（BUG-20261028-126 伴生）：spawn 失败此前被 `if let Ok` 吞掉，
+            // udevadm 缺失时返回 Ok(rx) 假装在监控（事件永不到达、无错误面）。
+            // 诚实传播 Err，由 DeviceService::start 的 source 循环记 error。
+            let mut child = std::process::Command::new("udevadm")
                 .args(["monitor", "--property", "--subsystem-match=usb"])
                 .stdout(std::process::Stdio::piped())
-                .spawn();
+                .spawn()
+                .map_err(|e| format!("udevadm spawn failed (USB monitoring unavailable): {e}"))?;
 
-            if let Ok(mut child) = spawned {
+            {
                 let stdout = child.stdout.take();
                 // Hand the child to the shared slot BEFORE moving stdout into
                 // the reader thread, so stop() can kill it at any time.
