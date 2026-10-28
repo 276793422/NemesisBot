@@ -177,8 +177,11 @@ impl ConnectionPool {
             .await
     }
 
-    /// 下载实现的单一真相源：`max_bytes` 双闸 + 原子落盘，重定向行为由
-    /// 传入的 client 决定（两个公开入口的唯一差异点）。
+    /// 下载实现的单一真相源：`max_bytes` 双闸（Content-Length 预检 +
+    /// 流式硬上限）+ 全量缓冲后落盘。**落盘是裸 `std::fs::write` 非原子**
+    /// ——原子性由调用方负责（board 资产面走 `.part` 临时名 + finalize
+    /// 改名；R180 修正：旧注释宣称「原子落盘」与实现不符）。重定向行为
+    /// 由传入的 client 决定（两个公开入口的唯一差异点）。
     async fn download_file_capped_on(
         &self,
         client: &reqwest::Client,

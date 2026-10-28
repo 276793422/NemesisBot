@@ -2543,3 +2543,160 @@ async fn bug61_post_json_request_timeout_not_retried() {
         "GET must still retry on timeout: {get_elapsed:?}"
     );
 }
+
+// ================================================================
+// D10-1 download_file_capped 双闸回归锁（R180）
+//
+// 此前 2545 行测试无一覆盖 cap 闸（R36 只钉了 strict 的重定向语义）——
+// 安全闸无回归锁 = 未来重构可静默拆掉。两道闸各一锁 + 边界各一锁 +
+// strict 版同源语义一锁。断言钉死实现的具体错误文案（分支执行证明）。
+// ================================================================
+
+/// D10-1 专用：响应**不带 Content-Length**（chunked 编码）——驱动
+/// `download_file_capped_on` 的流式硬上限分支（缺/谎报 CL 时由实收字节
+/// 兜底的那条路；共享基建硬编码 CL 无法构造该形态）。
+async fn start_chunked_server(response_body: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let body = Arc::new(response_body);
+    let handle = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                if stream.read(&mut buf).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                // chunked 帧：hex 长度 + CRLF + 数据 + CRLF，结尾 0 帧终止
+                let mut resp = format!(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                resp.extend_from_slice(&body);
+                resp.extend_from_slice(b"\r\n0\r\n\r\n");
+                let _ = stream.write_all(&resp).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+
+    (base_url, handle)
+}
+
+/// 每测试独立 temp 目录（pid + 用例后缀，避免并行冲突）。
+fn capped_test_dir(case: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("nb_pool_capped_{}_{}", std::process::id(), case))
+}
+
+#[tokio::test]
+async fn test_download_capped_content_length_preflight_rejects() {
+    // 预检闸：CL 超限在传输前拒绝。错误文案钉死 = 该分支被执行。
+    let (url, handle) = start_http_server(200, vec![b'x'; 1000]).await;
+    let dir = capped_test_dir("preflight");
+    let dest = dir.join("preflight.bin");
+    let pool = ConnectionPool::with_defaults();
+    let err = pool
+        .download_file_capped(&url, &dest.to_string_lossy(), 100)
+        .await
+        .err_context();
+    assert!(
+        err.contains("Content-Length 1000 > cap 100"),
+        "expected preflight rejection, got: {err}"
+    );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_download_capped_stream_cap_enforced_without_content_length() {
+    // 流式硬上限：无 CL（chunked）时由实收字节兜底——谎报/缺失 CL 的
+    // 恶意响应不可能绕过 cap 灌内存。
+    let (url, handle) = start_chunked_server(vec![b'y'; 1000]).await;
+    let dir = capped_test_dir("stream");
+    let dest = dir.join("stream.bin");
+    let pool = ConnectionPool::with_defaults();
+    let err = pool
+        .download_file_capped(&url, &dest.to_string_lossy(), 100)
+        .await
+        .err_context();
+    assert!(
+        err.contains("exceeded cap 100 while streaming"),
+        "expected streaming cap enforcement, got: {err}"
+    );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_download_capped_exact_cap_succeeds() {
+    // 边界：实收字节 == cap 必须成功（实现用 `>` 不是 `>=`，越界才拒）。
+    let (url, handle) = start_chunked_server(vec![b'z'; 100]).await;
+    let dir = capped_test_dir("exact");
+    let dest = dir.join("exact.bin");
+    let pool = ConnectionPool::with_defaults();
+    pool.download_file_capped(&url, &dest.to_string_lossy(), 100)
+        .await
+        .unwrap_or_else(|e| panic!("exact cap must succeed: {e}"));
+    let written = std::fs::read(&dest).unwrap();
+    assert_eq!(written.len(), 100);
+    assert!(written.iter().all(|&b| b == b'z'));
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_download_capped_under_cap_succeeds() {
+    // cap 内完整下载：内容 byte-identical 落盘。
+    let (url, handle) = start_http_server(200, vec![b'a'; 500]).await;
+    let dir = capped_test_dir("under");
+    let dest = dir.join("under.bin");
+    let pool = ConnectionPool::with_defaults();
+    pool.download_file_capped(&url, &dest.to_string_lossy(), 2000)
+        .await
+        .unwrap_or_else(|e| panic!("under cap must succeed: {e}"));
+    let written = std::fs::read(&dest).unwrap();
+    assert_eq!(written.len(), 500);
+    assert!(written.iter().all(|&b| b == b'a'));
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_download_capped_strict_enforces_cap() {
+    // strict（不跟随重定向 client）与普通版走同一实现：cap 语义同源。
+    let (url, handle) = start_http_server(200, vec![b's'; 800]).await;
+    let dir = capped_test_dir("strict");
+    let dest = dir.join("strict.bin");
+    let pool = ConnectionPool::with_defaults();
+    let err = pool
+        .download_file_capped_strict(&url, &dest.to_string_lossy(), 100)
+        .await
+        .err_context();
+    assert!(
+        err.contains("Content-Length 800 > cap 100"),
+        "expected strict preflight rejection, got: {err}"
+    );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Result<_, String> 的错误上下文提取（失败时 panic 消息带结论）。
+trait ErrContext {
+    fn err_context(self) -> String;
+}
+
+impl ErrContext for Result<(), String> {
+    fn err_context(self) -> String {
+        match self {
+            Ok(()) => panic!("expected download to be rejected, but it succeeded"),
+            Err(e) => e,
+        }
+    }
+}
