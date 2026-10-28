@@ -106,7 +106,11 @@ pub struct EmailChannel {
     running: Arc<parking_lot::RwLock<bool>>,
     seen_uids: Arc<parking_lot::RwLock<HashMap<String, bool>>>,
     /// Maps chat_id -> EmailMessageInfo for reply routing.
-    sender_map: dashmap::DashMap<String, EmailMessageInfo>,
+    ///
+    /// BUG-20261029-142：必须 `Arc<DashMap>`——裸 `DashMap::clone()` 是逐
+    /// shard 深拷贝，start() 交给 IMAP 轮询任务的副本与 send() 读的原表
+    /// 分叉，回复线索写入恒不可见（Re: 主题静默落默认值）。
+    sender_map: Arc<dashmap::DashMap<String, EmailMessageInfo>>,
     /// Cancellation sender for stopping the polling loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -130,7 +134,7 @@ impl EmailChannel {
             config,
             running: Arc::new(parking_lot::RwLock::new(false)),
             seen_uids: Arc::new(parking_lot::RwLock::new(HashMap::new())),
-            sender_map: dashmap::DashMap::new(),
+            sender_map: Arc::new(dashmap::DashMap::new()),
             cancel_tx: parking_lot::Mutex::new(None),
         })
     }

@@ -363,3 +363,38 @@ async fn test_smtp_send_black_hole_times_out() {
         started.elapsed()
     );
 }
+
+// BUG-20261029-142：start() 把 sender_map 交给 IMAP 轮询任务的必须是共享
+// 克隆——裸 DashMap::clone() 是逐 shard 深拷贝，任务侧写入的回复线索
+// （chat_id -> 发件人/主题）落私有副本，send() 的读路径（self.sender_map
+// .get）读原表恒 miss，邮件回复线程化静默失效（Re: 主题恒落默认值）。
+// 本测试复刻任务侧捕获形态（与字段同源 .clone()）写入后，断言结构体侧
+// 读路径可见——旧实现（裸 DashMap）红，Arc 化后绿。
+#[test]
+fn test_sender_map_shared_between_task_clone_and_read_path() {
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config).unwrap();
+
+    // 复刻 start() 542 行的捕获形态：与字段同源克隆交给「任务侧」。
+    let task_side_map = ch.sender_map.clone();
+    task_side_map.insert(
+        "chat-1".to_string(),
+        EmailMessageInfo {
+            sender_email: "alice@example.com".to_string(),
+            subject: "Re: Hello".to_string(),
+        },
+    );
+
+    // 结构体侧读路径（send() 859 行同源表达式）：必须看到任务侧写入。
+    assert_eq!(
+        ch.sender_map.get("chat-1").map(|info| info.subject.clone()),
+        Some("Re: Hello".to_string()),
+        "reply info written via the task-side clone must be visible to the send() read path (BUG-20261029-142)"
+    );
+}

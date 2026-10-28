@@ -147,7 +147,12 @@ pub struct DingTalkChannel {
     config: DingTalkConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    session_webhooks: dashmap::DashMap<String, String>,
+    /// Session webhook per chat (chat_id -> webhook URL).
+    ///
+    /// BUG-20261029-143：必须 `Arc<DashMap>`——裸 `DashMap::clone()` 是逐
+    /// shard 深拷贝，start() 交给流任务的副本与 send() 读的原表分叉，
+    /// 会话 webhook 写入恒不可见（每条回复必失败）。
+    session_webhooks: Arc<dashmap::DashMap<String, String>>,
     access_token: Arc<parking_lot::RwLock<String>>,
     /// Bus sender for publishing inbound messages to the agent engine.
     bus_sender: broadcast::Sender<InboundMessage>,
@@ -172,7 +177,10 @@ impl DingTalkChannel {
             config,
             http: reqwest::Client::new(),
             running: Arc::new(parking_lot::RwLock::new(false)),
-            session_webhooks: dashmap::DashMap::new(),
+            // BUG-20261029-143：必须 Arc 包装——裸 DashMap 经 clone() 交给
+            // 流任务的是深拷贝副本，任务侧写入的会话 webhook 对 send()
+            // 读路径恒不可见（每条回复必失败）。
+            session_webhooks: Arc::new(dashmap::DashMap::new()),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),

@@ -582,3 +582,50 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
 
     blocked.abort();
 }
+
+// BUG-20261029-141：cleanup 线程双重失职的行为锁，两段断言各钉一面。
+//
+// 旧缺陷一（活性缺失）：start_cleanup 用 `DashMap::clone()` 把映射交给
+// 线程——dashmap 的 Clone 是逐 shard 深拷贝而非共享克隆，线程迭代的是
+// 构造瞬间的私有快照（永远为空），逐出从不落真表：活性段轮询等真表
+// 会话被逐出，旧实现 4s 预算内 count 恒 1 → 红。
+//
+// 旧缺陷二（终止缺失）：stop_cleanup 永不 Some（start_cleanup 丢弃
+// JoinHandle），shutdown 的 abort 是死路径，线程永续且持有映射副本
+// 永不归还（「DashMap drop 后线程退出」的旧注释因果颠倒——线程不死
+// 映射就永不 drop）。终止段 shutdown 后新建会话，若循环仍活着会在
+// ~1.1s 处逐出它 → 1600ms 等待后断言红。
+#[test]
+fn test_shutdown_stops_cleanup_thread() {
+    // 逐出谓词是 num_seconds() > timeout.as_secs()（秒级地板）：timeout 取
+    // 500ms → 实际阈值 = 年龄跨过 1s 后的首拍；拍间隔 100ms。
+    let mgr = SessionManager::new_with_cleanup_interval(
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(100),
+    );
+    // 活性段：轮询等循环把会话逐出（非 shutdown 清空）；逐出点 ≈ 1.0-1.1s。
+    mgr.create_session();
+    for _ in 0..40 {
+        if mgr.active_count() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        mgr.active_count(),
+        0,
+        "cleanup loop must evict inactive sessions before shutdown (BUG-20261029-141: eviction must land on the real map)"
+    );
+
+    // 终止段：shutdown 后新建的会话不再被（应已退出的）循环逐出。
+    // 若取消失效，泄漏循环在 ~1.1s 处必然逐出它 → 1600ms 等待后本断言红。
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(mgr.shutdown());
+    mgr.create_session();
+    std::thread::sleep(std::time::Duration::from_millis(1600));
+    assert_eq!(
+        mgr.active_count(),
+        1,
+        "cleanup thread must stop evicting after shutdown (BUG-20261029-141)"
+    );
+}

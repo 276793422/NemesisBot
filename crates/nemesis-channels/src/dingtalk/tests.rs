@@ -162,3 +162,58 @@ fn test_parse_and_dispatch_event_unhandled_type() {
     DingTalkChannel::parse_and_dispatch_event(&event, &tx, &session_webhooks, &[]);
     assert!(rx.try_recv().is_err());
 }
+
+// BUG-20261029-143：start() 把 session_webhooks 交给流任务的必须是共享
+// 克隆——裸 DashMap::clone() 是逐 shard 深拷贝，流事件写入的会话 webhook
+// 落私有副本，send() 的读路径（self.session_webhooks.get）读原表恒 miss，
+// 钉钉通道每条回复必失败（"no session_webhook found for chat"）。
+// 本测试复刻任务侧捕获形态 + 真实写入路径（parse_and_dispatch_event）
+// 后，断言结构体侧读路径可见——旧实现（裸 DashMap）红，Arc 化后绿。
+#[test]
+fn test_session_webhook_shared_between_task_clone_and_read_path() {
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    // 复刻 start() 397 行的捕获形态：与字段同源克隆交给「任务侧」。
+    let task_side_map = ch.session_webhooks.clone();
+
+    let (event_tx, event_rx) = broadcast::channel(256);
+    drop(event_rx); // 事件分发结果本测试不消费
+    let event = StreamEvent {
+        headers: Some(StreamEventHeaders {
+            event_type: Some("dingtalk.oapi.capi.conversation.message.receive".to_string()),
+            event_id: Some("evt-share-1".to_string()),
+            message_id: None,
+        }),
+        data: Some(
+            serde_json::json!({
+                "senderStaffId": "staff-123",
+                "senderNick": "Alice",
+                "conversationId": "conv-share",
+                "conversationType": "1",
+                "sessionWebhook": "https://example.com/webhook",
+                "text": {
+                    "content": "Hello DingTalk"
+                },
+                "msgtype": "text"
+            })
+            .to_string(),
+        ),
+        event_type: None,
+    };
+    DingTalkChannel::parse_and_dispatch_event(&event, &event_tx, &task_side_map, &[]);
+
+    // 结构体侧读路径（send() 同源表达式）：必须看到任务侧写入的 webhook。
+    assert_eq!(
+        ch.session_webhooks
+            .get("conv-share")
+            .map(|w| w.value().clone()),
+        Some("https://example.com/webhook".to_string()),
+        "webhook written via the task-side clone must be visible to the send() read path (BUG-20261029-143)"
+    );
+}
