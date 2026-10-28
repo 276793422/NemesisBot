@@ -1779,3 +1779,57 @@ fn r118_rollback_recover_restores_orphans_and_drops_stale() {
     // 根内无残留（round 2 = 幂等 no-op）。
     assert!(installer.recover_stale_rollbacks().is_empty());
 }
+
+// BUG-20261029-150 回归锁：含点 slug（validate_skill_identifier 允许）的回滚
+// 备份——解析必须按**最后一个** ".old-" 分隔，而非 split('.') 首段切分。
+#[test]
+fn r150_dotted_slug_backup_parses_last_old_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+
+    // 形态 1（旧代码恢复错名）：slug "my.skill" 的遗孤备份——skills/my.skill
+    // 缺失。旧代码解析成 "my" → 恢复到 skills/my（错误名字，lockfile 漂移）。
+    let orphan_backup = installer.rollback_root().join("my.skill.old-11-22");
+    std::fs::create_dir_all(&orphan_backup).unwrap();
+    std::fs::write(orphan_backup.join("SKILL.md"), "# dotted orphan").unwrap();
+
+    // 形态 2（旧代码误删唯一备份）：slug "util.parser" 的备份 + skills/util
+    // 已被其他技能占用。旧代码解析成 "util" → target 在场 → 过期臂**误删
+    // 唯一备份**；正确解析 → target=skills/util.parser 缺失 → 恢复原位。
+    let other_skill = dir.path().join("skills/util");
+    std::fs::create_dir_all(&other_skill).unwrap();
+    std::fs::write(other_skill.join("SKILL.md"), "# someone else").unwrap();
+    let dotted_backup = installer.rollback_root().join("util.parser.old-33-44");
+    std::fs::create_dir_all(&dotted_backup).unwrap();
+    std::fs::write(dotted_backup.join("SKILL.md"), "# parser saved").unwrap();
+
+    let mut recovered = installer.recover_stale_rollbacks();
+    recovered.sort();
+
+    assert_eq!(
+        recovered,
+        vec![
+            dir.path().join("skills").join("my.skill"),
+            dir.path().join("skills").join("util.parser"),
+        ],
+        "含点 slug 遗孤按全名恢复（不做首段切分）"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("skills/my.skill/SKILL.md")).unwrap(),
+        "# dotted orphan",
+        "含点 slug 备份恢复到原名 skills/my.skill，不是 skills/my"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("skills/util.parser/SKILL.md")).unwrap(),
+        "# parser saved",
+        "skills/util 在场不构成过期信号——备份按全名恢复而非误删"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("skills/util/SKILL.md")).unwrap(),
+        "# someone else",
+        "与含点 slug 共享首段的在场技能不被触碰"
+    );
+    // 两个备份都已消化（恢复即 rename 走人）。
+    assert!(!orphan_backup.exists());
+    assert!(!dotted_backup.exists());
+}

@@ -262,13 +262,15 @@ impl SkillInstaller {
         };
         for ent in entries.flatten() {
             let backup = ent.path();
-            // 备份命名 `<slug>.old-<pid>-<millis>`；取首段为 slug。
+            // 备份命名 `<slug>.old-<pid>-<millis>`；按**最后一个** ".old-" 分隔
+            // 取 slug 段（BUG-20261029-150：split('.') 首段切分对含点 slug
+            // 错误——"my.skill.old-…" 被解析成 "my"，恢复错名 / 误删唯一备份；
+            // slug 本身可合法含点）。无 ".old-" 标记的外来文件跳过不碰。
             let Some(slug) = ent
                 .file_name()
                 .to_string_lossy()
-                .split('.')
-                .next()
-                .map(String::from)
+                .rsplit_once(".old-")
+                .map(|(slug, _)| slug.to_string())
             else {
                 continue;
             };
