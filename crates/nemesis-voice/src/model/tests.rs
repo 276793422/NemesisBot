@@ -242,6 +242,63 @@ fn ensure_vad_model_auto_download_disabled_bails() {
 }
 
 #[test]
+fn ensure_vad_model_empty_files_source_bails_not_panics() {
+    // BUG-20261029-145：`files = []` 是合法 TOML（serde 不拒），本地命中检查
+    // 被跳过、auto_download 开启时走到下载后的 `source.files[0]` 裸索引 ——
+    // 修复前 panic（index out of bounds）。同文件 `model_source_installed`
+    // 对空 files 判「未安装」，此处应诚实 bail 而非 panic。
+    crate::test_util::ensure_global_subscriber();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = cfg_with_model_dir(tmp.path(), vec![source_with("silero_vad", "user/vad", &[])]);
+    let err = format!("{:#}", ensure_vad_model(&cfg).unwrap_err());
+    assert!(err.contains("no files"), "{err}");
+}
+
+/// BUG-20261029-148：`files = []` 源在 auto_download 开启时零跑下载后无条件
+/// `Ok(dir)`——Ready 假成功（目录恒空，下游装载必炸且伪装成已就绪）。五个
+/// ensure 兄弟（stt/tts/punct/speaker/stt_stream）统一诚实 bail，判据对齐
+/// `model_source_installed`（空 files = 无法验证 = 未安装）。修复前这些测试
+/// 走到 `unwrap_err()` 即 panic（Ok(..) unwrap_err）。
+macro_rules! empty_files_bail_test {
+    ($fn_name:ident, $ensure:expr, $model_name:expr) => {
+        #[test]
+        fn $fn_name() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut cfg = cfg_with_model_dir(tmp.path(), vec![]);
+            let name = $model_name(&cfg).to_string();
+            cfg.models.sources = vec![source_with(&name, "user/model", &[])];
+            let err = format!("{:#}", ($ensure)(&cfg).unwrap_err());
+            assert!(err.contains("no files"), "{err}");
+        }
+    };
+}
+empty_files_bail_test!(
+    ensure_stt_model_empty_files_source_bails,
+    ensure_stt_model,
+    |c: &AppConfig| c.stt.model_name.clone()
+);
+empty_files_bail_test!(
+    ensure_tts_model_empty_files_source_bails,
+    ensure_tts_model,
+    |c: &AppConfig| c.tts.model_name.clone()
+);
+empty_files_bail_test!(
+    ensure_punct_model_empty_files_source_bails,
+    ensure_punct_model,
+    |c: &AppConfig| c.punct.model_name.clone()
+);
+empty_files_bail_test!(
+    ensure_speaker_model_empty_files_source_bails,
+    ensure_speaker_model,
+    |c: &AppConfig| c.speaker.model_name.clone()
+);
+empty_files_bail_test!(
+    ensure_stt_stream_model_empty_files_source_bails,
+    ensure_stt_stream_model,
+    |c: &AppConfig| c.stt_stream.model_name.clone()
+);
+
+#[test]
 fn ensure_tts_model_local_files_hit_returns_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("data").join("tts").join("kokoro");
@@ -620,6 +677,28 @@ fn download_model_files_reports_progress_on_download_thread() {
             "progress messages missing '下载完成': {got:?}"
         );
     });
+}
+
+#[test]
+fn download_model_files_survives_tokio_runtime_context() {
+    // BUG-20261029-146：调用线程在 tokio runtime context（block_on 内）时，
+    // download_model_files 的 reqwest::blocking Client 在函数返回时 drop，
+    // 其内部 runtime 的关闭需要 block → tokio panic（blocking shutdown
+    // 「Cannot drop a runtime in a context where blocking is not allowed」）。
+    // 真实调用面：CLI `voice download`（main.rs 同步段跑在 #[tokio::main]
+    // worker 上）、网关语音管线 create_detector。修复 = 下载体移独立 std
+    // 线程（bootstrap.rs 运行库下载同款先例）。本测试与 CLI 同构：直接在
+    // block_on 闭包里同步调用。空 files 即可复现——client 构造/丢弃与
+    // files 无关，无需网络。
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("vad").join("m");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let result = rt.block_on(async {
+        download_model_files("https://unused.invalid", "m", "r", &[], &target, "")
+    });
+    result.unwrap(); // 修复前：panic at tokio blocking shutdown.rs
 }
 
 // ---------------------------------------------------------------------------

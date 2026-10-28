@@ -74,9 +74,23 @@ pub fn strict_offline() -> bool {
 }
 
 /// 拉取并验证 CRL（被根签）。返回验过的 Crl。
+///
+/// BUG-20261029-147：网络调用在独立线程执行——`reqwest::blocking` 的 Client
+/// drop 时其内部 runtime 关闭需要 block，在 tokio runtime 上下文内 drop 即
+/// panic（「Cannot drop a runtime in a context where blocking is not
+/// allowed」）。本库调用方横跨三类上下文：CLI 工具（exe-sign-tool，无
+/// tokio，安全）、WSAPI handler（skins list/detail 直调 verify_bytes，async
+/// worker 线程）、gateway 启动签名闸（`#[tokio::main]` 主体内同步执行）——
+/// 后两类不包装必炸。线程包装对无 tokio 的调用方零影响。先例：
+/// nemesis-voice bootstrap.rs download_runtime_libs、
+/// nemesis-voice model.rs download_model_files（BUG-20261029-146 同款修复）。
 fn fetch_crl(base_url: &str, root_pub: &VerifyingKey) -> Result<Crl> {
     let url = format!("{}/v1/crl", base_url.trim_end_matches('/'));
-    let resp: SignedResponse<Crl> = reqwest::blocking::get(&url)?.json()?;
+    let resp: SignedResponse<Crl> = std::thread::spawn(move || -> Result<SignedResponse<Crl>> {
+        Ok(reqwest::blocking::get(&url)?.json()?)
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("CRL fetch thread panicked"))??;
     if !verify_response(&resp, root_pub)? {
         anyhow::bail!("CRL signature invalid (root pubkey mismatch / tampered)");
     }
@@ -192,8 +206,20 @@ pub fn ocsp_check_single(
         content_hash: Some(hex_encode(content_hash)),
         publisher: publisher.map(String::from),
     };
-    let client = reqwest::blocking::Client::new();
-    let resp: SignedResponse<OcspResp> = client.post(&url).json(&req).send().ok()?.json().ok()?;
+    // BUG-20261029-147：同 fetch_crl——独立线程执行 blocking 网络（tokio
+    // 上下文安全）；线程 panic = 传输层不可达，与 send Err 同待遇（None）。
+    let resp: Option<SignedResponse<OcspResp>> = std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::new();
+        client
+            .post(&url)
+            .json(&req)
+            .send()
+            .ok()
+            .and_then(|r| r.json::<SignedResponse<OcspResp>>().ok())
+    })
+    .join()
+    .unwrap_or(None);
+    let resp: SignedResponse<OcspResp> = resp?;
     if !verify_response(&resp, root_pub).ok()? {
         return None; // 验签失败 = 不可信，视作未查到（fallback 到 strict 拒）
     }

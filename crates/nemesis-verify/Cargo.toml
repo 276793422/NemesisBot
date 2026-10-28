@@ -29,6 +29,8 @@ reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# BUG-20261029-147 红证：current_thread block_on 复现 tokio 上下文内 blocking drop panic
+tokio = { workspace = true }
 
 [lints]
 workspace = true

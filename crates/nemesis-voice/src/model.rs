@@ -86,6 +86,16 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
         "STT model '{}' not found in config [models.sources]. Add it to config.toml.",
         model_name
     ))?;
+    if source.files.is_empty() {
+        // BUG-20261029-148：`files = []` 是合法 TOML（serde 不拒），此前零跑
+        // 下载后无条件 Ok(dir)——Ready 假成功（目录恒空，下游装载必炸且伪装成
+        // 已就绪）。与 ensure_vad_model（BUG-20261029-145）及
+        // model_source_installed「空 files = 无法验证 = 未安装」判据对齐。
+        anyhow::bail!(
+            "STT model source '{}' declares no files in config [models.sources]; add the file list",
+            model_name
+        );
+    }
 
     download_model_files(
         &cfg.models.mirror.base,
@@ -135,6 +145,14 @@ pub fn ensure_stt_stream_model(cfg: &AppConfig) -> Result<PathBuf> {
         "Streaming STT model '{}' not found in config [models.sources]. Add it to config.toml.",
         model_name
     ))?;
+    if source.files.is_empty() {
+        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
+        anyhow::bail!(
+            "Streaming STT model source '{}' declares no files in config [models.sources]; add the file list",
+            model_name
+        );
+    }
 
     download_model_files(
         &cfg.models.mirror.base,
@@ -203,6 +221,16 @@ pub fn ensure_vad_model(cfg: &AppConfig) -> Result<PathBuf> {
         "VAD model '{}' not found in config [models.sources]. Add it to config.toml.",
         model_name
     ))?;
+    if source.files.is_empty() {
+        // BUG-20261029-145：`files = []` 是合法 TOML 值（serde 不拒），此处
+        // 裸索引 files[0] 曾在下载空跑后 panic（index out of bounds），报错
+        // 零引导性。诚实 bail 指向 config 修复路径；与 model_source_installed
+        // 「空 files = 无法验证 = 未安装」的判据一致。
+        anyhow::bail!(
+            "VAD model source '{}' declares no files in config [models.sources]; add the file list",
+            model_name
+        );
+    }
 
     download_model_files(
         &cfg.models.mirror.base,
@@ -248,6 +276,14 @@ pub fn ensure_tts_model(cfg: &AppConfig) -> Result<PathBuf> {
         "TTS model '{}' not found in config [models.sources]. Add it to config.toml.",
         model_name
     ))?;
+    if source.files.is_empty() {
+        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
+        anyhow::bail!(
+            "TTS model source '{}' declares no files in config [models.sources]; add the file list",
+            model_name
+        );
+    }
 
     download_model_files(
         &cfg.models.mirror.base,
@@ -292,6 +328,14 @@ pub fn ensure_punct_model(cfg: &AppConfig) -> Result<PathBuf> {
         "Punctuation model '{}' not found in config [models.sources]. Add it to config.toml.",
         model_name
     ))?;
+    if source.files.is_empty() {
+        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
+        anyhow::bail!(
+            "Punctuation model source '{}' declares no files in config [models.sources]; add the file list",
+            model_name
+        );
+    }
 
     download_model_files(
         &cfg.models.mirror.base,
@@ -340,6 +384,14 @@ pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
         "Speaker model '{}' not found in config [models.sources]. Add it to config.toml.",
         model_name
     ))?;
+    if source.files.is_empty() {
+        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
+        anyhow::bail!(
+            "Speaker model source '{}' declares no files in config [models.sources]; add the file list",
+            model_name
+        );
+    }
 
     download_model_files(
         &cfg.models.mirror.base,
@@ -457,8 +509,49 @@ fn ensure_model_core(cfg: &AppConfig, category: &str, model_name: &str) -> Resul
 
 /// Download all files for a model from the configured mirror with resume support.
 /// Downloads to `.part` temp files, renames to final name on completion.
+///
+/// 整个下载体在独立 std 线程上执行：reqwest::blocking 的 Client 在函数返回时
+/// drop，其内部 runtime 的关闭需要 block——调用线程若在 tokio runtime context
+/// （CLI `voice download` 的 main.rs 同步段、网关语音管线 create_detector），
+/// drop 即 panic（BUG-20261029-146；bootstrap.rs 运行库下载有同坑的独立线程
+/// 先例）。thread_local 进度回调 take-and-move 进下载线程（Box 装回新线程的
+/// thread_local），调用方 set_progress 的 SSE 进度链路保持不变。
 #[cfg(feature = "download")]
 fn download_model_files(
+    mirror_base: &str,
+    model_name: &str,
+    repo: &str,
+    files: &[crate::config::ModelFile],
+    target_dir: &Path,
+    proxy_url: &str,
+) -> Result<()> {
+    let progress_cb = PROGRESS_CB.with(|p| p.borrow_mut().take());
+    let mirror_base = mirror_base.to_string();
+    let model_name = model_name.to_string();
+    let repo = repo.to_string();
+    let files = files.to_vec();
+    let target_dir = target_dir.to_path_buf();
+    let proxy_url = proxy_url.to_string();
+
+    let handle = std::thread::spawn(move || {
+        PROGRESS_CB.with(|p| *p.borrow_mut() = progress_cb);
+        download_model_files_inner(
+            &mirror_base,
+            &model_name,
+            &repo,
+            &files,
+            &target_dir,
+            &proxy_url,
+        )
+    });
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Model download thread panicked"))?
+}
+
+/// 下载主体（[`download_model_files`] 的独立线程执行体，参数已 owned 化）。
+#[cfg(feature = "download")]
+fn download_model_files_inner(
     mirror_base: &str,
     model_name: &str,
     repo: &str,

@@ -102,6 +102,53 @@ fn no_url_returns_unknown() {
     }
 }
 
+/// BUG-20261029-147：tokio runtime 上下文内查吊销不得 panic。修复前
+/// fetch_crl 的 `reqwest::blocking` Client 在 block_on 线程上 drop，其内部
+/// runtime 关闭被 tokio 拒绝（「Cannot drop a runtime in a context where
+/// blocking is not allowed」）——skins.list/detail WSAPI（async handler 直调
+/// verify_bytes → check_revocation）与 gateway 启动签名闸（`#[tokio::main]`
+/// 主体内同步执行）两条真实链都踩得到。current_thread block_on 与之一致；
+/// dead URL 保证走完整网络臂（缓存已清），连接拒 → Unknown（soft-fail 语义）。
+#[test]
+fn check_revocation_survives_tokio_runtime_context() {
+    let _g = TEST_LOCK.lock().unwrap();
+    let url = dead_url();
+    set_env_url(&url);
+    *cache().lock().unwrap() = None;
+    let (_, vk) = keypair(3);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let result =
+        rt.block_on(async { check_revocation(&[0xEEu8; 32], &[0u8; 32], &[0u8; 32], None, &vk) });
+    match result {
+        RevocationResult::Unknown => {}
+        o => panic!("expected Unknown, got {:?}", o),
+    }
+    clear_revocation_env();
+}
+
+/// BUG-20261029-147 同函数族：ocsp_check_single 的 `Client::new()` + POST
+/// 同在独立线程执行（修复前同型 panic——blocking Client drop 于 tokio 上下文）。
+/// dead URL → send 失败 → None（不可达语义），绝不 panic。
+#[test]
+fn ocsp_check_single_survives_tokio_runtime_context() {
+    let _g = TEST_LOCK.lock().unwrap();
+    let url = dead_url();
+    set_env_url(&url);
+    let (_, vk) = keypair(5);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let result =
+        rt.block_on(async { ocsp_check_single(&[0xEFu8; 32], &[0u8; 32], &[0u8; 32], None, &vk) });
+    assert!(
+        result.is_none(),
+        "dead endpoint must be None, got {result:?}"
+    );
+    clear_revocation_env();
+}
+
 // ---------------------------------------------------------------------------
 // S6 覆盖率批次（quality-hardening goal 2026-08-25）：
 // 本地 std TCP 假 HTTP 服务器驱动 fetch_crl / get_crl 全部缓存与联网臂、
