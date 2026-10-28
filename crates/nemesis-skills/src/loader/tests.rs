@@ -1499,3 +1499,85 @@ fn test_scan_directory_warns_and_skips_unreadable_skill_md() {
 //   Windows.
 // - loader.rs ~422-426 inner `if let Ok(content)` read-failure arm: same
 //   reason as above (std read of a regular file cannot fail in-process).
+
+/// BUG-20261028-115 红证：frontmatter 声明名 ≠ 目录名时，list_skills 链路
+/// （scan_directory_into）此前照单收录——列表展示声明名，而 load_skill（按名
+/// 拼 join(name) 读目录）/ install / uninstall / lockfile / drift / Dashboard
+/// 列表全部以**目录名**为 slug 真相源：skills_info 按列表名找到条目（path=
+/// 目录 a）却 load 不到内容（读目录名 weather），uninstall 按列表名找不到目录。
+/// 等值校验后不一致条目拒绝收录。
+#[test]
+fn test_list_skills_rejects_frontmatter_name_mismatch() {
+    let workspace = tempfile::tempdir().unwrap();
+    let global = tempfile::tempdir().unwrap();
+    let builtin = tempfile::tempdir().unwrap();
+
+    // 目录名 weather，frontmatter 声明 not-weather（slug 形态、能过 is_valid_name）。
+    let skill_dir = workspace.path().join("skills").join("weather");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: not-weather\ndescription: Mismatched declaration\n---\nBody",
+    )
+    .unwrap();
+
+    let loader = SkillsLoader::new(
+        &workspace.path().to_string_lossy(),
+        &global.path().to_string_lossy(),
+        &builtin.path().to_string_lossy(),
+    );
+
+    let skills = loader.list_skills();
+    assert!(
+        skills.iter().all(|s| s.name != "not-weather"),
+        "声明名与目录名不一致的技能必须拒绝收录（列表名必须与 load_skill/uninstall \
+         的目录名真相源一致），got: {:?}",
+        skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>()
+    );
+    // 等值声明不受影响。
+    let ok_dir = workspace.path().join("skills").join("aligned");
+    fs::create_dir_all(&ok_dir).unwrap();
+    fs::write(
+        ok_dir.join("SKILL.md"),
+        "---\nname: aligned\ndescription: Aligned declaration\n---\nBody",
+    )
+    .unwrap();
+    let skills = loader.list_skills();
+    assert_eq!(
+        skills.iter().filter(|s| s.name == "aligned").count(),
+        1,
+        "等值声明的技能照常收录"
+    );
+}
+
+/// BUG-20261028-115 同族：read_dir 枚举序是平台实现细节（NTFS 字典序 vs
+/// ext4 哈希序）——list_skills 同级输出必须按名字显式排序（SkillsInfoTool
+/// 的 find 命中与注入 LLM 的技能摘要顺序跨平台确定）。Windows NTFS 上枚举
+/// 恰好字典序，本测试在该平台恒绿；契约在 Linux ext4 上防回归。
+#[test]
+fn test_list_skills_sorted_by_name_within_source() {
+    let workspace = tempfile::tempdir().unwrap();
+    let global = tempfile::tempdir().unwrap();
+    let builtin = tempfile::tempdir().unwrap();
+
+    for name in ["z-skill", "a-skill", "m-skill"] {
+        let dir = workspace.path().join("skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: d\n---\nBody"),
+        )
+        .unwrap();
+    }
+
+    let loader = SkillsLoader::new(
+        &workspace.path().to_string_lossy(),
+        &global.path().to_string_lossy(),
+        &builtin.path().to_string_lossy(),
+    );
+
+    let names: Vec<String> = loader.list_skills().into_iter().map(|s| s.name).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "同级技能列表必须按名字排序（跨平台确定序）");
+}

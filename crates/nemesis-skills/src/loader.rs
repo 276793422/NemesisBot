@@ -384,6 +384,11 @@ impl SkillsLoader {
             Err(_) => return,
         };
 
+        // 级内输出按名字排序：read_dir 枚举序是平台实现细节（BUG-20261028-115，
+        // NTFS 字典序 vs ext4 哈希序）——SkillsInfoTool 的 find 命中与注入 LLM
+        // 的技能摘要顺序必须跨平台确定。只排序本级新增段，级间优先序保持。
+        let batch_start = skills.len();
+
         for entry in entries {
             let entry = match entry {
                 Ok(e) => e,
@@ -414,6 +419,23 @@ impl SkillsLoader {
                 warn!("Invalid skill name from {}: {}", source, info.name);
                 continue;
             }
+            // BUG-20261028-115：声明名与目录名等值校验——列表（本链路）信
+            // frontmatter 声明名，而 load_skill（按名拼 `join(name)` 读目录）、
+            // install/uninstall/lockfile/drift 与 Dashboard 列表全部以**目录名**
+            // 为 slug 真相源。声明名 ≠ 目录名时列表展示的名字 load_skill 读不到
+            // 内容（skills_info 显示 "(no content available)"）、uninstall 按列表
+            // 名找不到目录。skip 对齐 is_valid_name 失败同形态。
+            let dir_name = Path::new(&info.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if info.name != dir_name {
+                warn!(
+                    "Skill name mismatch from {} (dir '{}'): frontmatter name '{}' != directory name — skipped",
+                    source, dir_name, info.name
+                );
+                continue;
+            }
             if info.description.is_empty() || info.description.len() > MAX_DESCRIPTION_LENGTH {
                 warn!(
                     "Invalid skill description from {} (name: {})",
@@ -440,6 +462,8 @@ impl SkillsLoader {
             );
             skills.push(info);
         }
+
+        skills[batch_start..].sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     /// Parse frontmatter from SKILL.md content.
