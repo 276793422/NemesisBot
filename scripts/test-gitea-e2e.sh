@@ -177,7 +177,7 @@ PAT=$(printf '%s' "$PAT_JSON" | sed -n 's/.*"sha1":"\([0-9a-f]*\)".*/\1/p')
 curl -sf -u "root:$ADMIN_PASS" -X POST "$BASE_URL/api/v1/user/repos" \
     -H 'Content-Type: application/json' \
     -d '{"name":"demo","auto_init":true,"private":false}' >/dev/null \
-    || { curl -s "$BASE_URL/api/v1/repos/root/demo" -u "root:$ADMIN_PASS" >/dev/null \
+    || { curl -sf "$BASE_URL/api/v1/repos/root/demo" -u "root:$ADMIN_PASS" >/dev/null \
          || fail "repo 创建失败"; }
 
 curl -sf -X POST "$BASE_URL/api/v1/repos/$REPO/issues" \

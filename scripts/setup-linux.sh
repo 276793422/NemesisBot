@@ -177,7 +177,7 @@ else
 
     if [ "$ALL_OK" = false ]; then
         fail "Some packages failed to install"
-        echo "  Try manually: sudo apt-get install -y ${MISS_PACKAGES[*]}"
+        echo "  Try manually: sudo apt-get install -y ${MISSING_PACKAGES[*]}"
     fi
 fi
 
