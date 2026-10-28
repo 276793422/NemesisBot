@@ -30,9 +30,12 @@ const ELFDATA2MSB: u8 = 2; // big-endian
 const PT_LOAD: u32 = 1;
 
 /// 读 u16（按字节序）。
+/// 偏移来自 u64 全域字段（e_phoff/p_offset/e_shoff），`off + N` 可在 debug
+/// 构建溢出 panic（BUG-20261028-130 同族）——两段式 get 零算术。
 fn u16(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u16, CodecError> {
     let s = b
-        .get(off..off + 2)
+        .get(off..)
+        .and_then(|s| s.get(..2))
         .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(if le {
         u16::from_le_bytes([s[0], s[1]])
@@ -41,10 +44,11 @@ fn u16(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u16, CodecE
     })
 }
 
-/// 读 u32（按字节序）。
+/// 读 u32（按字节序）；两段式 get 同 [`u16`]。
 fn u32(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u32, CodecError> {
     let s = b
-        .get(off..off + 4)
+        .get(off..)
+        .and_then(|s| s.get(..4))
         .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(if le {
         u32::from_le_bytes([s[0], s[1], s[2], s[3]])
@@ -53,10 +57,11 @@ fn u32(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u32, CodecE
     })
 }
 
-/// 读 u64（按字节序）。
+/// 读 u64（按字节序）；两段式 get 同 [`u16`]。
 fn u64(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u64, CodecError> {
-    let s = b
-        .get(off..off + 8)
+    let s: &[u8] = b
+        .get(off..)
+        .and_then(|s| s.get(..8))
         .ok_or(CodecError::FieldOutOfBounds(name))?;
     let arr: [u8; 8] = s
         .try_into()
@@ -106,7 +111,16 @@ fn compute_elf_l(bytes: &[u8]) -> Result<usize, CodecError> {
         )
     };
     for i in 0..phnum {
-        let ph = phoff + i * phentsize;
+        // e_phoff 是 u64 全域字段：与条目落点相加可溢出（debug panic /
+        // release 回绕落点漂移）——checked 后诚实 Malformed（BUG-20261028-130）
+        let Some(ph) = i
+            .checked_mul(phentsize)
+            .and_then(|off| phoff.checked_add(off))
+        else {
+            return Err(CodecError::Malformed(format!(
+                "program header {i} 落点溢出：e_phoff {phoff:#x} + {i}*{phentsize}"
+            )));
+        };
         let p_type = u32(bytes, ph, le, "p_type")?;
         if p_type != PT_LOAD {
             continue;
@@ -122,7 +136,13 @@ fn compute_elf_l(bytes: &[u8]) -> Result<usize, CodecError> {
                 u32(bytes, ph + 16, le, "p_filesz")? as usize,
             )
         };
-        l = l.max(p_offset + p_filesz);
+        // p_offset + p_filesz 同为 u64 全域：加法可溢出（同上）
+        let Some(load_end) = p_offset.checked_add(p_filesz) else {
+            return Err(CodecError::Malformed(format!(
+                "PT_LOAD 段末溢出：p_offset {p_offset:#x} + p_filesz {p_filesz:#x}"
+            )));
+        };
+        l = l.max(load_end);
     }
 
     // 源 2：section header table end = e_shoff + e_shnum*e_shentsize（e_shoff>0 时）
@@ -140,7 +160,16 @@ fn compute_elf_l(bytes: &[u8]) -> Result<usize, CodecError> {
         )
     };
     if shoff > 0 {
-        l = l.max((shoff as usize) + (shentsize as usize) * (shnum as usize));
+        // e_shoff u64 全域：表末 = shoff + shentsize*shnum 可溢出（同上）
+        let Some(tbl_end) = (shentsize as usize)
+            .checked_mul(shnum as usize)
+            .and_then(|t| (shoff as usize).checked_add(t))
+        else {
+            return Err(CodecError::Malformed(format!(
+                "section header table 末尾溢出：e_shoff {shoff:#x} + {shnum}*{shentsize}"
+            )));
+        };
+        l = l.max(tbl_end);
     }
 
     // 交叉校验：L 不应超过文件长度

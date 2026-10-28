@@ -40,16 +40,21 @@ pub(crate) struct PeLayout {
 }
 
 /// 读 little-endian u16。
+/// 两段式 get 零算术（`off + N` 形态在 offset 巨大时 debug 构建溢出 panic，
+/// BUG-20261028-130 同族——PE 侧偏移源自 u32 字段、64-bit usize 不可能溢出，
+/// 此处为形态统一防御）。
 fn u16le(b: &[u8], off: usize, name: &'static str) -> Result<u16, CodecError> {
     let s = b
-        .get(off..off + 2)
+        .get(off..)
+        .and_then(|s| s.get(..2))
         .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(u16::from_le_bytes([s[0], s[1]]))
 }
-/// 读 little-endian u32。
+/// 读 little-endian u32；两段式 get 同 [`u16le`]。
 fn u32le(b: &[u8], off: usize, name: &'static str) -> Result<u32, CodecError> {
     let s = b
-        .get(off..off + 4)
+        .get(off..)
+        .and_then(|s| s.get(..4))
         .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
@@ -144,6 +149,16 @@ fn parse_pe(bytes: &[u8]) -> Result<PeLayout, CodecError> {
     // 保险：L 至少覆盖到 section table 末尾（确保所有 headers 在 [0, L) 内）。
     let sec_tbl_end = sec_tbl + num_sections * 40;
     l = l.max(sec_tbl_end);
+    // 保险：L 至少覆盖到 Security 表项末尾。合法 PE 里 sec_tbl_end ≥ se 恒成立
+    //（表项在 Optional header 内、section table 紧随其后），crafted 头
+    //（SizeOfOptionalHeader 偏小）可让表项落在 section table 之外——不补此
+    // 下界则 va < l 交叉校验穿透、va < se 反向成立，authenticode_digest 的
+    // bytes[se..va] 与 replace_certificate_table 的表项清零双双越界 panic
+    // （BUG-20261028-129）。se ≤ len 由表项两次 u32le 成功读取保证，
+    // max 后 min(len) 不可能把 l 压回 se 之下。
+    if let Some((_, se)) = security_dir_range {
+        l = l.max(se);
+    }
     // L 不超过文件长度
     l = l.min(bytes.len());
 
@@ -205,8 +220,8 @@ pub fn authenticode_digest(bytes: &[u8]) -> Result<[u8; 32], CodecError> {
             // Security 表项 8B 整体跳过
             match layout.auth_region {
                 Some((va, vend)) => {
-                    // 证书表 VA ≥ L ≥ section table 末尾 > Security 表项末尾（parse_pe 保证），
-                    // 此处 va ≥ se 恒成立，直接喂中间段
+                    // parse_pe 交叉校验强制 va ≥ L，L 保险含 Security 表项末尾
+                    // （va ≥ se，BUG-20261028-129），直接喂中间段
                     h.update(&bytes[se..va]);
                     if vend < bytes.len() {
                         // 证书表之后还有尾巴（多 WIN_CERTIFICATE 链被截 / 附加数据）→ 全参与

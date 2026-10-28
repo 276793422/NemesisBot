@@ -218,3 +218,75 @@ fn elf_error_paths() {
         Err(CodecError::UnsupportedElfData(7))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// R196 红证（BUG-20261028-130）：L 计算三处裸加法在 u64 全域字段下溢出
+// ——debug 构建 panic（`attempt to add with overflow`），release 回绕后
+// 语义错（落点漂移 / L 谎报）。位点：phoff+i*phentsize、p_offset+p_filesz、
+// shoff+shentsize*shnum，外加第四位点 = 读侧 u16/u32/u64 helper 自身的
+// `off..off + N` range 构造（位点 1 红证的实际炸点：phoff=usize::MAX 时
+// i=0 的 helper 在 off+4 处 debug panic，早于任何语义判断）。
+// ---------------------------------------------------------------------------
+
+/// 绿证（回归锁）：三处裸加法 checked 后诚实失败；读侧 helper 两段式 get
+/// 零算术后巨偏移诚实 FieldOutOfBounds。
+/// 可达性事实（红证复盘）：位点 2/3 的溢出真实可达（字段读成功后加法炸，
+/// debug 构建旧代码 panic）；位点 1（phoff 落点）的 checked 溢出分支
+/// **运行时不可达**——phoff 巨大时 i=0 的读侧 helper 先失败（修复前是
+/// helper 内 off+4 debug panic，修复后诚实 FieldOutOfBounds），永远走不到
+/// i=1 的落点加法。checked_add/mul 保留为 belt-and-braces（防未来循环
+/// 重构改读序）。
+#[test]
+fn elf_header_arithmetic_overflow_honest_failure() {
+    // 位点 1：e_phoff=usize::MAX + e_phnum=2 → i=0 读侧诚实 FieldOutOfBounds
+    //（非溢出臂——溢出臂不可达，见上）
+    let mut b1 = vec![0u8; 64];
+    b1[0] = 0x7f;
+    b1[1] = b'E';
+    b1[2] = b'L';
+    b1[3] = b'F';
+    b1[4] = 2; // ELFCLASS64
+    b1[5] = 1; // LE
+    put64(&mut b1, 32, u64::MAX, true); // e_phoff
+    put16(&mut b1, 54, 56, true); // e_phentsize
+    put16(&mut b1, 56, 2, true); // e_phnum = 2
+    assert!(matches!(
+        ElfCodec.compute_l(&b1),
+        Err(CodecError::FieldOutOfBounds(_))
+    ));
+
+    // 位点 2：PT_LOAD p_offset=u64::MAX + p_filesz=2 → 段末加法溢出 → Malformed
+    let mut b2 = vec![0u8; 120];
+    b2[0] = 0x7f;
+    b2[1] = b'E';
+    b2[2] = b'L';
+    b2[3] = b'F';
+    b2[4] = 2;
+    b2[5] = 1;
+    put64(&mut b2, 32, 64, true); // e_phoff = 64
+    put16(&mut b2, 54, 56, true); // e_phentsize
+    put16(&mut b2, 56, 1, true); // e_phnum = 1
+    put32(&mut b2, 64, 1, true); // p_type = PT_LOAD
+    put64(&mut b2, 72, u64::MAX, true); // p_offset
+    put64(&mut b2, 96, 2, true); // p_filesz
+    assert!(matches!(
+        ElfCodec.compute_l(&b2),
+        Err(CodecError::Malformed(_))
+    ));
+
+    // 位点 3：e_shoff=u64::MAX + 64*1 → 表末加法溢出 → Malformed
+    let mut b3 = vec![0u8; 64];
+    b3[0] = 0x7f;
+    b3[1] = b'E';
+    b3[2] = b'L';
+    b3[3] = b'F';
+    b3[4] = 2;
+    b3[5] = 1;
+    put64(&mut b3, 40, u64::MAX, true); // e_shoff
+    put16(&mut b3, 58, 64, true); // e_shentsize
+    put16(&mut b3, 60, 1, true); // e_shnum
+    assert!(matches!(
+        ElfCodec.compute_l(&b3),
+        Err(CodecError::Malformed(_))
+    ));
+}

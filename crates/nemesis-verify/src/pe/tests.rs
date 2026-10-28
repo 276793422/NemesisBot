@@ -1279,3 +1279,72 @@ fn replace_certificate_table_rejects_unsigned_trailing_and_empty() {
     let msg = format!("{e:#}");
     assert!(msg.contains("CMS DER 为空"), "{msg}");
 }
+
+// ---------------------------------------------------------------------------
+// R196 红证（BUG-20261028-129）：parse_pe 的 L 保险只含 section table 末尾、
+// 不含 Security 表项末尾——crafted 头（SizeOfOptionalHeader 偏小）让 Security
+// 表项落在 [0, L) 之外，VA < L 交叉校验穿透，下游两处 panic：
+//   位点 1 authenticode_digest：`bytes[se..va]`（va=216 < se=224，start>end）
+//   位点 2 replace_certificate_table：`stripped[entry_off..entry_off+8]`
+//         （stripped=len 216，越界 [216..224]）
+// ---------------------------------------------------------------------------
+
+/// 最小 crafted PE（len=224）：PE32、零 section、SizeOfOptionalHeader=0
+/// → sec_tbl_end=88；nrva=5 → Security 表项 [216,224)（悬在 opt header 结构外）；
+/// Security.VA=216、Size=8。旧 L 保险下 l=88：交叉校验 va=216 ≥ 88 ✓、
+/// end=224 ≤ len ✓ 双过——但 va < se，digest/replace 两点位全部越界。
+fn crafted_pe_security_entry_outside_l() -> Vec<u8> {
+    let mut b = vec![0u8; 224];
+    b[0] = b'M';
+    b[1] = b'Z';
+    put32(&mut b, 0x3C, P as u32); // e_lfanew = 0x40
+    b[P..P + 4].copy_from_slice(b"PE\0\0");
+    put16(&mut b, P + 6, 0); // NumberOfSections = 0
+    put16(&mut b, P + 20, 0); // SizeOfOptionalHeader = 0（crafted：表项悬在结构外）
+    put16(&mut b, P + 24, 0x10b); // Magic = PE32
+    put32(&mut b, P + 116, 5); // NumberOfRvaAndSizes = 5（Security 表项在场）
+    put32(&mut b, 216, 216); // Security.VA（datadir_start = P+120 = 184，表项 @184+32）
+    put32(&mut b, 220, 8); // Security.Size = 8
+    b
+}
+
+/// 绿证（回归锁）：L 保险补 se 后 l=224（=表项末尾=文件长），交叉校验把
+/// va=216 < l=224 判 Malformed——两个 panic 位点在 parse 层就被诚实失败拦下。
+#[test]
+fn crafted_pe_security_entry_outside_l_is_malformed() {
+    let pe = crafted_pe_security_entry_outside_l();
+    // 修复本体语义：交叉校验错误消息同时携带 va 与抬升后的 l（216 < 224），
+    // 直接钉住「L 补 se 抬升 → va < l 诚实拒绝」的因果链
+    let e = PeCodec.compute_l(&pe).unwrap_err();
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("VA 216 < overlay start L 224"),
+        "L 保险必须抬到 se=224 并由交叉校验拒绝: {msg}"
+    );
+    // digest 与 replace 共用 parse_pe，双双在解析层诚实失败（旧代码此处 panic）
+    assert!(matches!(
+        authenticode_digest(&pe),
+        Err(CodecError::Malformed(_))
+    ));
+    assert!(matches!(
+        replace_certificate_table(&pe, &[0x01u8; 16]),
+        Err(CodecError::Malformed(_))
+    ));
+}
+
+/// 合法 PE 零行为变化：真实形态（SizeOfOptionalHeader 决定 sec_tbl_end > se）
+/// 下 L 保险补 se 是无操作——合法形态的 L 全谱系由上方 compute_l_* 测试钉死，
+/// 此处补一条「Security 表项在场 + section 主导 L」的最短对照。
+#[test]
+fn legal_pe_l_insurance_with_security_entry_is_noop() {
+    // PE32+：sec_tbl_end = P+24+240+40 = 368 > se = P+136+40 = 240 → max 无操作
+    let pe = build_pe(&PeSpec {
+        plus: true,
+        sections: vec![(0x100, 0x200)],
+        security: Some((0, 0)),
+        force_len: None,
+    });
+    assert_eq!(PeCodec.compute_l(&pe).unwrap(), Some(0x300));
+    // digest 照常成功（合法形态零误伤）
+    let _ = authenticode_digest(&pe).unwrap();
+}
