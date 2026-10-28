@@ -2065,9 +2065,23 @@ fn engine_with_url(url: String) -> ClamAVEngine {
 #[tokio::test]
 async fn test_engine_download_connection_refused() {
     // 关闭端口 → reqwest Err；嵌套目标目录先被 create_dir_all 建好。
+    // dest 放 target/ 不放 %TEMP%（2026-10-28 CI shard1 实录：tempdir 内
+    // nested/deep 在 download 的 ~2s 网络等待窗内被并发进程删除 → is_dir
+    // 断言假红；%TEMP% 外部删除者家族第 4 起，lsp fixture 案迁址先例同款
+    // 免疫）。pid+纳秒唯一不互踩；尾部自清（断言失败残留 target/ 生命周期
+    // 内可接受）。
     let engine = engine_with_url("http://127.0.0.1:1/clamav.zip".to_string());
-    let dir = tempfile::tempdir().unwrap();
-    let dest = dir.path().join("nested").join("deep");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/scanner-test")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    let dest = root.join("nested").join("deep");
     let err = engine
         .download(
             &dest.to_string_lossy(),
@@ -2078,6 +2092,7 @@ async fn test_engine_download_connection_refused() {
         .unwrap_err();
     assert!(err.contains("download failed"), "{err}");
     assert!(dest.is_dir(), "target dir must be created before download");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[tokio::test]

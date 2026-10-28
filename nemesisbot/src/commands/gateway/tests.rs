@@ -872,7 +872,10 @@ fn test_apply_security_layer_switches_injection_threshold_out_of_range_rejected(
 
 #[test]
 fn test_count_enabled_channels_none() {
-    let config = nemesis_config::Config::default();
+    // BUG-20261028-109 后 WebChannelConfig::default().enabled=true（与字段级
+    // default_true 收敛）——「无启用通道」场景须显式关掉 web 才成立。
+    let mut config = nemesis_config::Config::default();
+    config.channels.web.enabled = false;
     let count = count_enabled_channels(&config);
     assert_eq!(count, 0);
 }
@@ -1027,7 +1030,10 @@ fn test_parse_host_port_multiple_colons() {
 
 #[test]
 fn test_count_enabled_channels_zero() {
-    let config = nemesis_config::Config::default();
+    // BUG-20261028-109 后 WebChannelConfig::default().enabled=true（与字段级
+    // default_true 收敛）——「全零」场景须显式关掉 web 才成立。
+    let mut config = nemesis_config::Config::default();
+    config.channels.web.enabled = false;
     assert_eq!(count_enabled_channels(&config), 0);
 }
 
@@ -1586,10 +1592,12 @@ fn test_enabled_channels_construction_logic() {
         channels.push("onebot");
     }
 
-    // Default config has all channels disabled
-    assert!(
-        channels.is_empty(),
-        "Default config should have no enabled channels"
+    // BUG-20261028-109 后 web 默认启用（default_true 收敛），default 通道表
+    // 恰为 ["web"]；其余通道仍默认关。
+    assert_eq!(
+        channels,
+        vec!["web"],
+        "Default config should enable exactly the web channel"
     );
 }
 
