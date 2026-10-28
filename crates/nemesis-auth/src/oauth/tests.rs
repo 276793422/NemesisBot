@@ -1005,9 +1005,25 @@ fn test_parse_jwt_claims_impl_empty_string() {
 
 #[test]
 fn test_url_encode_cjk_chars() {
-    // CJK characters should be percent-encoded (each byte)
+    // BUG-20261028-111 红证：percent-encoding 按 RFC 3986 必须对 multibyte
+    // 字符的 UTF-8 字节序列逐字节编码；旧实现 `c as u8` 把 char 截断到低
+    // 字节（'中' U+4E2D → 0x2D），产出错误编码 %2D 而非 %E4%B8%AD。
+    // （旧测试名实不符：名为 cjk_chars 实测 "hello"，恰好掩盖了该缺陷。）
     let encoded = url_encode("hello");
     assert_eq!(encoded, "hello");
+    assert_eq!(url_encode("中"), "%E4%B8%AD");
+    assert_eq!(url_encode("français"), "fran%C3%A7ais");
+}
+
+#[test]
+fn test_url_decode_multibyte_utf8_roundtrip() {
+    // BUG-20261028-111 红证：url_decode 旧实现逐字节 `b as char`，UTF-8
+    // 字节序列被拆成独立码位（mojibake）；修复后按字节收集再整体重组。
+    assert_eq!(url_decode("%E4%B8%AD"), "中");
+    assert_eq!(url_decode("fran%C3%A7ais"), "français");
+    // ASCII 路径 byte-identical（既有钉死语义不回退）。
+    assert_eq!(url_decode("a%20b%20c"), "a b c");
+    assert_eq!(url_decode("%3C%3E%23"), "<>#");
 }
 
 #[test]

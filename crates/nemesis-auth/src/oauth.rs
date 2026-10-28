@@ -754,23 +754,27 @@ fn parse_query_params(query: &str) -> HashMap<String, String> {
 }
 
 /// URL-decode a string.
+///
+/// BUG-20261028-111：percent-encoding 的解码必须按 UTF-8 字节序列整体重组。
+/// 旧实现逐字节 `b as char`，multibyte 序列（如 `中` = %E4%B8%AD）被拆成
+/// 三个独立码位产出 mojibake。现按字节收集后 `from_utf8_lossy` 重组——
+/// 合法 UTF-8 正确还原，非法序列以 U+FFFD 诚实降级（不伪造码位）。
 fn url_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
+    let mut bytes = Vec::with_capacity(s.len());
     let mut chars = s.bytes();
 
     while let Some(b) = chars.next() {
         if b == b'%' {
             let hi = chars.next().unwrap_or(b'0');
             let lo = chars.next().unwrap_or(b'0');
-            let val = hex_val(hi) << 4 | hex_val(lo);
-            result.push(val as char);
+            bytes.push(hex_val(hi) << 4 | hex_val(lo));
         } else if b == b'+' {
-            result.push(' ');
+            bytes.push(b' ');
         } else {
-            result.push(b as char);
+            bytes.push(b);
         }
     }
-    result
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Convert a hex char byte to its value.
@@ -784,13 +788,18 @@ fn hex_val(b: u8) -> u8 {
 }
 
 /// URL-encode a string.
+///
+/// BUG-20261028-111：按 RFC 3986，multibyte 字符必须对其 **UTF-8 字节序列**
+/// 逐字节 percent-encode。旧实现 `s.chars()` + `c as u8` 把 char 截断到低
+/// 字节（'中' U+4E2D → %2D，恰是 '-'），产出错误编码。改 `s.bytes()` 后
+/// 非 ASCII 字节自然落入 %XX 分支；ASCII 输入 byte-identical。
 fn url_encode(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
-                c.to_string()
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+                (b as char).to_string()
             } else {
-                format!("%{:02X}", c as u8)
+                format!("%{b:02X}")
             }
         })
         .collect()
