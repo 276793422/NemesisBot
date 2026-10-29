@@ -30,6 +30,64 @@ fn modify(rel: &str) -> FileChange {
     }
 }
 
+fn commit_file(repo: &git2::Repository, rel: &str, body: &str, message: &str) -> git2::Oid {
+    let workdir = repo.workdir().unwrap();
+    let path = workdir.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&path, body).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(rel)).unwrap();
+    index.write().unwrap();
+    let tree_oid = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_oid).unwrap();
+    let sig = git2::Signature::now("checkpoint-test", "checkpoint@test.invalid").unwrap();
+    let parents = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .into_iter()
+        .collect::<Vec<_>>();
+    let parent_refs = parents.iter().collect::<Vec<_>>();
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+        .unwrap()
+}
+
+fn add_parent_gitlink(root: &Path, rel: &str, oid: git2::Oid) {
+    let repo = git2::Repository::open(root).unwrap();
+    let mut index = repo.index().unwrap();
+    index
+        .add(&git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o160000,
+            uid: 0,
+            gid: 0,
+            file_size: 0,
+            id: oid,
+            flags: 0,
+            flags_extended: 0,
+            path: rel.as_bytes().to_vec(),
+        })
+        .unwrap();
+    index.write().unwrap();
+}
+
+fn current_tree_entry(store: &CheckpointStore, rel: &str) -> Option<(git2::Oid, i32)> {
+    let backend = store.git.as_ref().unwrap();
+    let mut repo = backend.repo.lock();
+    let tree_hex = CheckpointStore::write_current_tree(&mut repo).unwrap();
+    let tree = repo
+        .find_tree(git2::Oid::from_str(&tree_hex).unwrap())
+        .unwrap();
+    tree.get_path(Path::new(rel))
+        .ok()
+        .map(|entry| (entry.id(), entry.filemode()))
+}
+
 // ---------------------------------------------------------------------------
 // 后端选择（D4 两形态）
 // ---------------------------------------------------------------------------
@@ -84,6 +142,195 @@ fn add_all_glob_pathspec_with_callback_is_safe() {
         idx.write_tree().unwrap().to_string(),
         "4b825dc642cb6eb9a060e54bf8d69288fbee4904" // 空树
     );
+}
+
+#[test]
+fn git_mode_records_submodules_as_gitlinks_without_recursing() {
+    let (_d, root) = git_root();
+    let docs_root = root.join("docs");
+    std::fs::create_dir_all(&docs_root).unwrap();
+    let docs_repo = git2::Repository::init(&docs_root).unwrap();
+    let docs_head = commit_file(&docs_repo, "inside.txt", "docs-v1", "docs v1");
+    add_parent_gitlink(&root, "docs", docs_head);
+
+    let skins_root = root.join("skins");
+    std::fs::create_dir_all(&skins_root).unwrap();
+    let skins_repo = git2::Repository::init(&skins_root).unwrap();
+    let skins_head = commit_file(&skins_repo, "inside.txt", "skins-v1", "skins v1");
+    add_parent_gitlink(&root, "skins", skins_head);
+
+    let store = CheckpointStore::new(None, root);
+    let (docs_tree_oid, docs_mode) = current_tree_entry(&store, "docs").unwrap();
+    assert_eq!(docs_tree_oid, docs_head);
+    assert_eq!(docs_mode, 0o160000);
+    assert!(current_tree_entry(&store, "docs/inside.txt").is_none());
+
+    let (skins_tree_oid, skins_mode) = current_tree_entry(&store, "skins").unwrap();
+    assert_eq!(skins_tree_oid, skins_head);
+    assert_eq!(skins_mode, 0o160000);
+    assert!(current_tree_entry(&store, "skins/inside.txt").is_none());
+}
+
+#[test]
+fn git_mode_records_current_submodule_head_and_ignores_dirty_files() {
+    let (_d, root) = git_root();
+    let sub_root = root.join("docs");
+    std::fs::create_dir_all(&sub_root).unwrap();
+    let sub_repo = git2::Repository::init(&sub_root).unwrap();
+    let indexed_head = commit_file(&sub_repo, "inside.txt", "v1", "submodule v1");
+    add_parent_gitlink(&root, "docs", indexed_head);
+    let current_head = commit_file(&sub_repo, "inside.txt", "v2", "submodule v2");
+    std::fs::write(sub_root.join("dirty.txt"), "not committed").unwrap();
+
+    let store = CheckpointStore::new(None, root);
+    let (tree_oid, mode) = current_tree_entry(&store, "docs").unwrap();
+    assert_eq!(tree_oid, current_head);
+    assert_eq!(mode, 0o160000);
+    assert!(current_tree_entry(&store, "docs/dirty.txt").is_none());
+}
+
+#[test]
+fn git_mode_uses_parent_gitlink_for_uninitialized_submodule() {
+    let (_d, root) = git_root();
+    let oid = git2::Oid::from_str("1111111111111111111111111111111111111111").unwrap();
+    add_parent_gitlink(&root, "docs", oid);
+
+    let store = CheckpointStore::new(None, root);
+    let (tree_oid, mode) = current_tree_entry(&store, "docs").unwrap();
+    assert_eq!(tree_oid, oid);
+    assert_eq!(mode, 0o160000);
+}
+
+#[tokio::test]
+async fn git_mode_restore_reports_submodule_head_change_without_touching_head() {
+    let (_d, root) = git_root();
+    std::fs::write(root.join("code.txt"), "parent-v1").unwrap();
+    let sub_root = root.join("docs");
+    std::fs::create_dir_all(&sub_root).unwrap();
+    let sub_repo = git2::Repository::init(&sub_root).unwrap();
+    let first_head = commit_file(&sub_repo, "inside.txt", "v1", "submodule v1");
+    add_parent_gitlink(&root, "docs", first_head);
+
+    let store = CheckpointStore::new(None, root.clone());
+    store.begin(1, "before changes");
+    std::fs::write(root.join("code.txt"), "parent-v2").unwrap();
+    let second_head = commit_file(&sub_repo, "inside.txt", "v2", "submodule v2");
+    assert_ne!(first_head, second_head);
+
+    let report = store.restore_code(1).await;
+    assert!(!report.ok(), "gitlink 变化不能伪报完整恢复");
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|(path, reason)| path == "docs" && reason.contains("gitlink")),
+        "failures: {:?}",
+        report.failures
+    );
+    assert_eq!(
+        sub_repo.head().unwrap().target(),
+        Some(second_head),
+        "父仓 checkpoint 不得擅自移动子模块 HEAD"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("code.txt")).unwrap(),
+        "parent-v1",
+        "普通父仓文件仍按既有部分恢复语义处理"
+    );
+}
+
+#[tokio::test]
+async fn git_mode_restore_never_deletes_new_submodule_directory_as_file() {
+    let (_d, root) = git_root();
+    let store = CheckpointStore::new(None, root.clone());
+    store.begin(1, "before submodule");
+
+    let sub_root = root.join("docs");
+    std::fs::create_dir_all(&sub_root).unwrap();
+    let sub_repo = git2::Repository::init(&sub_root).unwrap();
+    let head = commit_file(&sub_repo, "inside.txt", "v1", "submodule v1");
+    add_parent_gitlink(&root, "docs", head);
+
+    let report = store.restore_code(1).await;
+    assert!(!report.ok());
+    assert!(sub_root.is_dir(), "gitlink 不得走普通文件删除路径");
+    assert_eq!(
+        std::fs::read_to_string(sub_root.join("inside.txt")).unwrap(),
+        "v1"
+    );
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|(path, reason)| path == "docs" && reason.contains("gitlink")),
+        "failures: {:?}",
+        report.failures
+    );
+}
+
+#[tokio::test]
+async fn git_mode_incomplete_real_git_still_restores_normal_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+
+    let store = CheckpointStore::new(None, root.clone());
+    assert_eq!(store.backend(), CheckpointBackend::Git);
+    store.begin(1, "lightweight git");
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+
+    let report = store.restore_code(1).await;
+    assert!(report.ok(), "failures: {:?}", report.failures);
+    assert_eq!(
+        std::fs::read_to_string(root.join("code.txt")).unwrap(),
+        "v1"
+    );
+}
+
+#[test]
+fn git_mode_delivery_files_keep_normal_evidence_when_gitlink_changes() {
+    let (_d, root) = git_root();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    let sub_root = root.join("docs");
+    std::fs::create_dir_all(&sub_root).unwrap();
+    let sub_repo = git2::Repository::init(&sub_root).unwrap();
+    let first_head = commit_file(&sub_repo, "inside.txt", "v1", "submodule v1");
+    add_parent_gitlink(&root, "docs", first_head);
+
+    let store = CheckpointStore::new(None, root.clone());
+    let base = store.current_tree_hex().unwrap();
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    let second_head = commit_file(&sub_repo, "inside.txt", "v2", "submodule v2");
+    assert_ne!(first_head, second_head);
+
+    let capture = store
+        .capture_delivery_branch(Some(&base), "gitlink-evidence")
+        .unwrap();
+    assert_eq!(capture.files.len(), 1, "gitlink 不得清空普通文件证据");
+    assert_eq!(capture.files[0].path, "code.txt");
+    assert_eq!(capture.files[0].kind, DeliveryFileKind::Modify);
+}
+
+#[test]
+fn git_mode_removes_stale_gitlink_from_shadow_index() {
+    let (_d, root) = git_root();
+    let sub_root = root.join("docs");
+    std::fs::create_dir_all(&sub_root).unwrap();
+    let sub_repo = git2::Repository::init(&sub_root).unwrap();
+    let head = commit_file(&sub_repo, "inside.txt", "v1", "submodule v1");
+    add_parent_gitlink(&root, "docs", head);
+
+    let store = CheckpointStore::new(None, root.clone());
+    assert!(current_tree_entry(&store, "docs").is_some());
+
+    let parent = git2::Repository::open(&root).unwrap();
+    let mut parent_index = parent.index().unwrap();
+    parent_index.remove_path(Path::new("docs")).unwrap();
+    parent_index.write().unwrap();
+    nemesis_utils::fsutil::remove_dir_all_retry(&sub_root).unwrap();
+
+    assert!(current_tree_entry(&store, "docs").is_none());
 }
 
 #[test]

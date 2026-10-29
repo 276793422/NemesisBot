@@ -280,6 +280,17 @@ struct GitBackend {
     repo: Mutex<git2::Repository>,
 }
 
+/// 主仓 index 中的一条 gitlink（mode 160000）。`path` 保留 Git index
+/// 原始 forward-slash 字节用于回写；`match_path` 只供 add_all 回调判断
+/// 子模块边界。`oid` 优先取已初始化子模块当前 HEAD，无法读取时回落父仓
+/// index OID（未初始化子模块的标准形态）。
+#[cfg(feature = "checkpoint-git")]
+struct GitlinkEntry {
+    path: Vec<u8>,
+    match_path: String,
+    oid: git2::Oid,
+}
+
 /// checkpoint-git 关：git2（libgit2 ~1.5MB）不编译。空形态**刻意保留**
 /// `git: Option<GitBackend>` 字段形与全部 `self.git` 读点的编译面；
 /// `try_git_backend` 恒 None → JSON 快照回落（D4）自然接管，行为与
@@ -518,9 +529,70 @@ impl CheckpointStore {
     // git 操作（全部短锁：拿 repo 锁做完即放，绝不嵌套 inner 锁）
     // ------------------------------------------------------------------
 
+    #[cfg(feature = "checkpoint-git")]
+    fn normalized_git_path(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    #[cfg(feature = "checkpoint-git")]
+    fn collect_gitlinks(repo: &git2::Repository) -> Vec<GitlinkEntry> {
+        let Some(root) = repo.workdir() else {
+            warn!("[checkpoint] 影子库未挂载工作区，跳过主仓 gitlink 扫描");
+            return Vec::new();
+        };
+        let real_repo = match git2::Repository::open(root) {
+            Ok(repo) => repo,
+            Err(e) => {
+                // D2 存量兼容：只存在 `.git` 目录的轻量夹具/半初始化工作区
+                // 过去仍可由影子库独立快照普通文件。gitlink 是增强元数据，
+                // 真实主仓不可读时不能反向拖垮基础 checkpoint。
+                warn!("[checkpoint] 真实主仓不可读，跳过 gitlink 扫描: {e}");
+                return Vec::new();
+            }
+        };
+        let real_index = match real_repo.index() {
+            Ok(index) => index,
+            Err(e) => {
+                warn!("[checkpoint] 真实主仓 index 不可读，跳过 gitlink 扫描: {e}");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for entry in real_index.iter().filter(|entry| entry.mode == 0o160000) {
+            let match_path = String::from_utf8_lossy(&entry.path).replace('\\', "/");
+            let submodule_path = root.join(Path::new(&match_path));
+            let oid = git2::Repository::open(&submodule_path)
+                .ok()
+                .and_then(|submodule| submodule.head().ok()?.target())
+                .unwrap_or(entry.id);
+            out.push(GitlinkEntry {
+                path: entry.path.to_vec(),
+                match_path,
+                oid,
+            });
+        }
+        out
+    }
+
+    #[cfg(feature = "checkpoint-git")]
+    fn is_gitlink_path(path: &Path, gitlinks: &[GitlinkEntry]) -> bool {
+        let candidate = Self::normalized_git_path(path);
+        gitlinks.iter().any(|gitlink| {
+            candidate == gitlink.match_path
+                || candidate
+                    .strip_prefix(&gitlink.match_path)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
     /// 工作区现状 → 影子库 tree hex。add_all 默认跳过 .gitignore 命中文件；
     /// matcher 再跳过运行时属主目录（`is_workspace_ignored` 单一真相源——
-    /// logs/cluster/board/... 与 fs_watcher 同表）。
+    /// logs/cluster/board/... 与 fs_watcher 同表）和真实主仓 index 声明的
+    /// gitlink 边界。子模块不能递归扫成普通目录：扫描后以 mode 160000 显式
+    /// 写回影子 index，记录当前 HEAD（未初始化时记录父仓 index OID）。
     ///
     /// ⚠️ libgit2 坑（2026-09-06 实测）：**空 pathspec + 回调**组合下，
     /// `git_pathspec__match` 对空 spec 直接 `return true` 但不填
@@ -529,13 +601,31 @@ impl CheckpointStore {
     /// 非空全匹配 spec（`**` 递归匹配含子目录），不能用空数组表示「全部」。
     #[cfg(feature = "checkpoint-git")]
     fn write_current_tree(repo: &mut git2::Repository) -> Result<String, String> {
+        let gitlinks = Self::collect_gitlinks(repo);
         let mut index = repo.index().map_err(|e| e.to_string())?;
+
+        // 影子 index 跨 turn 复用；先清掉旧 gitlink，防真实主仓移除子模块后
+        // 幽灵 160000 条目永久残留。当前 gitlink 会在 add_all 后统一重建。
+        let stale_gitlinks = index
+            .iter()
+            .filter(|entry| entry.mode == 0o160000)
+            .map(|entry| entry.path.to_vec())
+            .collect::<Vec<_>>();
+        for path in stale_gitlinks {
+            let rel = String::from_utf8_lossy(&path);
+            index
+                .remove_path(Path::new(rel.as_ref()))
+                .map_err(|e| format!("清理影子 gitlink {rel} 失败: {e}"))?;
+        }
+
         index
             .add_all(
                 ["**"], // 见下方坑注：空 pathspec + 回调 = libgit2 空指针崩
                 git2::IndexAddOption::DEFAULT,
                 Some(&mut |path: &Path, _spec: &[u8]| {
-                    if nemesis_path::is_workspace_ignored(path) {
+                    if nemesis_path::is_workspace_ignored(path)
+                        || Self::is_gitlink_path(path, &gitlinks)
+                    {
                         1 // skip
                     } else {
                         0 // add
@@ -543,6 +633,26 @@ impl CheckpointStore {
                 }),
             )
             .map_err(|e| e.to_string())?;
+
+        for gitlink in gitlinks {
+            index
+                .add(&git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o160000,
+                    uid: 0,
+                    gid: 0,
+                    file_size: 0,
+                    id: gitlink.oid,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: gitlink.path,
+                })
+                .map_err(|e| format!("写入影子 gitlink {} 失败: {e}", gitlink.match_path))?;
+        }
+
         // 先 write（index 落盘 = stat 缓存跨 turn 复用，重复 add_all 只重哈
         // 希 stat 变化的文件），再 write_tree。
         index.write().map_err(|e| e.to_string())?;
@@ -620,9 +730,29 @@ impl CheckpointStore {
         };
 
         // Added（现状有、目标无）→ 删除；Deleted/Modified/Typechange → 恢复。
+        // gitlink（FileMode::Commit）是 opaque 子模块边界：父仓 checkpoint 只
+        // 记录 OID，不具备安全修改真实子模块 HEAD / 初始化状态的能力。不得
+        // 把它当普通文件 checkout，也不得对已初始化子模块目录调用文件删除；
+        // 有差异时诚实列失败，普通父仓文件仍继续恢复。
         let mut to_checkout: Vec<String> = Vec::new();
         let mut to_remove: Vec<String> = Vec::new();
         for delta in diff.deltas() {
+            let old_gitlink = delta.old_file().mode() == git2::FileMode::Commit;
+            let new_gitlink = delta.new_file().mode() == git2::FileMode::Commit;
+            if old_gitlink || new_gitlink {
+                let path = delta
+                    .new_file()
+                    .path()
+                    .or_else(|| delta.old_file().path())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "<unknown-gitlink>".to_string());
+                report.failures.push((
+                    path,
+                    "子模块 gitlink 状态未自动恢复（父仓 checkpoint 只记录 commit OID）"
+                        .to_string(),
+                ));
+                continue;
+            }
             match delta.status() {
                 git2::Delta::Added => {
                     if let Some(p) = delta.new_file().path() {
@@ -822,6 +952,14 @@ impl CheckpointStore {
                 // Unmodified/Conflicted/Unreadable 不应出现在 tree-to-tree
                 // diff；保守跳过（与旧行为一致，不造第五类）。
                 _ => continue,
+            }
+            // gitlink OID 指向 commit 而非 blob。typed files 块当前合同是
+            // “文件内容 sha256”，不能伪造 commit 摘要；跳过 gitlink 但保留
+            // 同一 diff 中其他普通文件证据，避免一次子模块变化清空整份清单。
+            if delta.old_file().mode() == git2::FileMode::Commit
+                || delta.new_file().mode() == git2::FileMode::Commit
+            {
+                continue;
             }
             let new_oid = delta.new_file().id();
             let old_oid = delta.old_file().id();
