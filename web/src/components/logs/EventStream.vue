@@ -163,6 +163,22 @@ function appendLogEntry(data: any) {
   }
 }
 
+// L2 契约（useSSE.ts / server.rs SSE 端点）：resync = 服务端提示缺口已滑出
+// 重放窗口（或网关重启 seq 域重置），订阅方应全量刷新兜底。ChatPanel 有
+// onSSEResync，本组件此前漏实现——断线窗口内发布超回放窗（1000 帧；status
+// 5s/条 ≈ 83 分钟，高流量日志远快于此）后实时流带洞不自愈，只有重挂载才恢复。
+// 全量重载 = 清状态重拉 /api/logs：文件是全量真相源，重载天然覆盖洞口；
+// 重载期间到达的实时帧走 pendingDuringLoad 缓冲 + seq 去重 flush，不丢不重。
+function onSSEResync() {
+  if (paused.value) return // 用户显式冻结视图：不趁 resync 重灌（诚实边界：解冻前的洞保留）
+  if (!historyLoaded.value) return // 首载/重载在飞：在飞的 loadHistory + flush 本就按 seq 自愈
+  pendingDuringLoad.length = 0
+  maxSeqSeen.value = 0
+  entries.value = []
+  historyLoaded.value = false
+  loadHistory()
+}
+
 function onLogEvent(data: any) {
   eventCount.value++
   if (paused.value) return
@@ -260,6 +276,7 @@ onMounted(() => {
   connectEvents()
   sseOn('log', onLogEvent)
   sseOn('heartbeat', onHeartbeat)
+  sseOn('resync', onSSEResync)
   // 先订阅 SSE 再加载历史——race window 内到达的 SSE 事件进 pendingDuringLoad
   // 缓冲，等历史加载完按 seq 去重 flush，保证不丢不重
   loadHistory()
@@ -275,6 +292,7 @@ onMounted(() => {
 onUnmounted(() => {
   sseOff('log', onLogEvent)
   sseOff('heartbeat', onHeartbeat)
+  sseOff('resync', onSSEResync)
   if (pollTimer) clearInterval(pollTimer)
 })
 
