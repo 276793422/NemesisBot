@@ -681,6 +681,22 @@ fn validate_rule_rejects_bad_source_op_regex() {
     rule.conditions[0].value = serde_json::json!("^box:");
     rule.level = "extreme".into();
     assert!(validate_rule(&rule).is_err());
+
+    // BUG-20261029-168：regex value 非字符串此前被 `as_str().unwrap_or("")`
+    // 按空模式校验放行（编译永远通过），求值侧 as_str()=None 恒 false——
+    // 规则静默失效（fail-open），与「非法规则加载期 loud 拒绝」立场矛盾。
+    rule.level = "low".into();
+    rule.conditions[0].value = serde_json::json!(42);
+    assert!(
+        validate_rule(&rule).is_err(),
+        "regex value 非字符串必须加载期拒绝"
+    );
+    // contains 同口径：needle 非字符串求值恒 false，静默失效。
+    rule.conditions[0].op = "contains".into();
+    assert!(
+        validate_rule(&rule).is_err(),
+        "contains value 非字符串必须加载期拒绝"
+    );
 }
 
 #[test]
@@ -2006,9 +2022,11 @@ fn assess_zero_final_response_len_with_empty_file_is_unknown_no_response() {
 }
 
 #[test]
-fn assess_regex_condition_with_non_string_value_never_matches() {
-    // value 非字符串：validate 用 unwrap_or("") 空模式校验（放行），
-    // 预编译表 c.value.as_str()=None 跳过 → 求值恒 false（不炸、不命中）。
+fn assess_regex_condition_with_non_string_value_is_skipped_as_invalid() {
+    // BUG-20261029-168 后：value 非字符串的 regex 在 validate_rule 即拒绝；
+    // assess 的防线对齐校验（对直传规则重跑 validate）把它跳过记 gap——
+    // 直传坏规则不再「静默恒 false 还判 Safe」，而是 Unknown（评估覆盖为
+    // 零不能下结论，fail-closed）。
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().join("report");
     write_healthy_report(&dir, "prompt");
@@ -2024,9 +2042,17 @@ fn assess_regex_condition_with_non_string_value_never_matches() {
         }],
     };
     let r = assess(&dir, &rules);
-    assert_eq!(r.conclusion, Conclusion::Safe, "gaps={:?}", r.gaps);
-    assert_eq!(r.rules_loaded, 1);
-    assert!(r.matched_rules.is_empty());
+    assert_eq!(r.conclusion, Conclusion::Unknown, "gaps={:?}", r.gaps);
+    assert!(
+        r.gaps.iter().any(|g| g.contains("非法被跳过")),
+        "gaps={:?}",
+        r.gaps
+    );
+    assert!(
+        r.gaps.iter().any(|g| g.contains("覆盖为零，无法下结论")),
+        "gaps={:?}",
+        r.gaps
+    );
 }
 
 #[test]

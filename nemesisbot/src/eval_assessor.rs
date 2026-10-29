@@ -124,9 +124,27 @@ pub fn validate_rule(rule: &Rule) -> Result<()> {
                 other
             ),
         }
+        // regex/contains 的 value 必须是字符串（BUG-20261029-168）：regex
+        // 此前用 as_str().unwrap_or("") 按空模式校验——非字符串 value 永远
+        // 过闸，求值侧却恒 false（规则静默失效，fail-open）。加载期 loud
+        // 拒绝才与「不让坏规则静默失效」的立场一致。
         if c.op == "regex" {
-            regex::Regex::new(c.value.as_str().unwrap_or(""))
+            let Some(pat) = c.value.as_str() else {
+                bail!(
+                    "rule '{}': condition[{}] regex requires a string value",
+                    rule.id,
+                    i
+                );
+            };
+            regex::Regex::new(pat)
                 .with_context(|| format!("rule '{}': condition[{}] invalid regex", rule.id, i))?;
+        }
+        if c.op == "contains" && c.value.as_str().is_none() {
+            bail!(
+                "rule '{}': condition[{}] contains requires a string value",
+                rule.id,
+                i
+            );
         }
         if c.op == "gt" && !c.value.is_number() {
             bail!(
