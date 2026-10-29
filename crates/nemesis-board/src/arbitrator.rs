@@ -121,7 +121,17 @@ pub(crate) fn extract_mentions_with_roster(content: &str, names: &[&str]) -> Vec
         }
         let token: String = rest
             .chars()
-            .take_while(|c| !(c.is_whitespace() || *c == '，' || *c == '。' || *c == '、'))
+            // BUG-20261029-169：ASCII 常见标点同为 token 终止符——
+            // `@role:qa, 请查看` / `@all, 集合` 此前把 `,` 吃进 token
+            // （"role:qa," / "all,"），@all/@role: 精确比对落空静默
+            // not_found 不唤醒（roster 形态有词边界不受影响，同源语义
+            // 漂移）。`:` 不终止（@role: 的分隔符依赖它）；roster 形态
+            // 在此前缀匹配已 continue，token 只服务 @all/@role:/未知名，
+            // 名内含 `.` 的 roster 名不受影响。
+            .take_while(|c| {
+                !(c.is_whitespace()
+                    || matches!(c, '，' | '。' | '、' | ',' | ';' | '!' | '?' | '.'))
+            })
             .collect();
         if !token.is_empty() {
             out.push(token);

@@ -22,6 +22,23 @@ fn input<'a>(thread_kind: &'a str, content: &'a str, sender: &'a str) -> WakeInp
     }
 }
 
+/// BUG-20261029-169 红证：@all / @role: 的 fallback token 提取不带词边界
+/// ——尾随 ASCII 标点被吃进 token，`@role:qa,` / `@all,` 匹配失败静默
+/// not_found（roster 形态 @id/@name 有词边界不受影响——同源语义漂移）。
+#[test]
+fn test_trailing_ascii_punctuation_breaks_role_and_all_mentions() {
+    let nodes = vec![
+        node("qa-1", "QA One", "qa", true),
+        node("dev-1", "Dev", "worker", true),
+    ];
+    // @role:qa, → token="role:qa," → strip 后 "qa," ≠ "qa" → not_found。
+    let plan = resolve_wake_targets(&input("channel", "@role:qa, 请查看", "admin"), &nodes);
+    assert_eq!(plan.targets, vec!["qa-1"], "@role:qa 尾随逗号必须命中角色");
+    // @all, → token="all," ≠ "all" → not_found，全员不唤醒。
+    let plan = resolve_wake_targets(&input("channel", "@all, 集合", "admin"), &nodes);
+    assert_eq!(plan.targets, vec!["qa-1", "dev-1"], "@all 尾随逗号必须群发");
+}
+
 /// 规则①：@name / @id 均可命中，大小写不敏感；离线目标进 skipped。
 #[test]
 fn test_rule1_direct_mention_by_id_and_name() {
