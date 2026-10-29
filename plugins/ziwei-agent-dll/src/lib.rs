@@ -13,7 +13,9 @@
 //!   真正工作在 `ZiWeiInit` 导出（远线程上下文，无 loader lock）里 CreateThread。
 //! - read_mem 用 ReadProcessMemory(self)（ntdll 内部 SEH 守护，坏地址诚实报错
 //!   而非崩溃）；残余风险（释放竞态 TOCTOU）已在总控 §14 声明。
-//! - unload 走 FreeLibraryAndExitThread（先应答后自卸，防 use-after-free）。
+//! - unload 先过 `unload_prepare` 三关闸（在途 call / 泄漏线程 / 在场 hook /
+//!   VEH 全部清场）才 FreeLibraryAndExitThread——任一关不过 = 诚实拒绝继续
+//!   服务（宿主进程安全优先于卸载意愿，BUG-200）。
 //!
 //! 帧协议：`[u32 LE 长度][JSON UTF-8]`（长度=JSON 字节数，≤4MB）。
 //! 值域约束：本协议所有字符串值不含 JSON 转义字符（令牌/base64/固定命令名），
@@ -101,6 +103,7 @@ unsafe extern "system" {
         lpOverlapped: *mut c_void,
     ) -> i32;
     fn CloseHandle(hObject: *mut c_void) -> i32;
+    fn WaitForSingleObject(hHandle: *mut c_void, dwMilliseconds: u32) -> u32;
     fn GetLastError() -> u32;
     fn GetCurrentProcess() -> *mut c_void;
     fn GetCurrentProcessId() -> u32;
@@ -219,16 +222,31 @@ unsafe extern "system" fn worker_main(_arg: *mut c_void) -> u32 {
         return 3;
     }
 
-    // 命令循环
+    // 命令循环。unload 精确分派先于 handle_command：prepare 成功才应答 bye
+    // 并自卸；失败诚实报错继续服务（先发 bye 再补发错误帧会打破管道的
+    // 请求-响应配对——bot 侧 detach 以 "ok":true 应答判「已卸」）。
     while let Some(frame) = read_frame(handle) {
         let req = String::from_utf8_lossy(&frame).to_string();
+        if json_get_str(&req, "cmd") == Some("unload") {
+            match unsafe { unload_prepare() } {
+                Ok(n) => {
+                    let resp = format!("{{\"ok\":true,\"bye\":true,\"unhooked\":{n}}}");
+                    write_frame(handle, resp.as_bytes());
+                    // 应答已写回 → 自卸（不返回）
+                    unsafe { FreeLibraryAndExitThread(G_HMODULE, 0) }
+                }
+                Err(e) => {
+                    let resp = format!("{{\"ok\":false,\"error\":\"unload 拒绝：{e}\"}}");
+                    if !write_frame(handle, resp.as_bytes()) {
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
         let resp = handle_command(&req);
         if !write_frame(handle, resp.as_bytes()) {
             break;
-        }
-        if req.contains("\"unload\"") {
-            // 应答已写回 → 自卸（不返回）
-            unsafe { FreeLibraryAndExitThread(G_HMODULE, 0) }
         }
     }
     CloseHandle(handle);
@@ -236,13 +254,12 @@ unsafe extern "system" fn worker_main(_arg: *mut c_void) -> u32 {
 }
 
 /// 命令分派（v1：ping / read_mem / call_fn / hook_set / hook_unset /
-/// poll_events / unload；unknown 诚实报错）。
+/// poll_events；unload 在 worker 循环先于本函数分派（三关闸语义）；unknown
+/// 诚实报错）。
 fn handle_command(req: &str) -> String {
     match json_get_str(req, "cmd").unwrap_or("") {
         "ping" => {
-            let arch = unsafe {
-                G_PARAM.map(|p| cstr_to_string(&p.arch)).unwrap_or_default()
-            };
+            let arch = unsafe { G_PARAM.map(|p| cstr_to_string(&p.arch)).unwrap_or_default() };
             format!(
                 "{{\"ok\":true,\"pong\":true,\"arch\":\"{arch}\",\"pid\":{},\"proto\":{PROTO_VERSION}}}",
                 unsafe { GetCurrentProcessId() }
@@ -301,8 +318,9 @@ fn handle_command(req: &str) -> String {
                     .to_string();
             }
             let (args, _) = json_args(req, "args").unwrap_or(([0; 4], 0));
-            let timeout_ms =
-                json_get_u64(req, "timeout_ms").unwrap_or(10_000).min(u32::MAX as u64) as u32;
+            let timeout_ms = json_get_u64(req, "timeout_ms")
+                .unwrap_or(10_000)
+                .min(u32::MAX as u64) as u32;
             unsafe { call_fn(addr, conv, args, timeout_ms) }
         }
         "hook_set" => {
@@ -330,7 +348,6 @@ fn handle_command(req: &str) -> String {
             let max = json_get_u64(req, "max").unwrap_or(512).min(4096) as u32;
             poll_events(max)
         }
-        "unload" => "{\"ok\":true,\"bye\":true}".to_string(),
         other => format!("{{\"ok\":false,\"error\":\"unknown command: {other}\"}}"),
     }
 }
@@ -418,7 +435,13 @@ fn json_get_u64(s: &str, key: &str) -> Option<u64> {
     let start = s.find(&needle)? + needle.len();
     let rest = &s[start..];
     let end = rest
-        .find(|c: char| !(c.is_ascii_digit() || c == 'x' || c == 'X' || ('a'..='f').contains(&c) || ('A'..='F').contains(&c)))
+        .find(|c: char| {
+            !(c.is_ascii_digit()
+                || c == 'x'
+                || c == 'X'
+                || ('a'..='f').contains(&c)
+                || ('A'..='F').contains(&c))
+        })
         .unwrap_or(rest.len());
     let raw = &rest[..end];
     if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
@@ -435,12 +458,24 @@ fn base64_encode(data: &[u8]) -> String {
     const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(TBL[(n >> 18) as usize & 63] as char);
         out.push(TBL[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { TBL[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TBL[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TBL[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TBL[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -459,9 +494,11 @@ fn cstr_to_string(b: &[u8]) -> String {
 
 /// String → UTF-16（NUL 结尾，按容量截断）。
 fn string_to_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().take(259).chain(std::iter::once(0)).collect()
+    s.encode_utf16()
+        .take(259)
+        .chain(std::iter::once(0))
+        .collect()
 }
-
 
 // ===========================================================================
 // M4 扩展（T4.1/T4.2）：call_fn + hook_capture + 事件环 + VEH 看门狗
@@ -491,6 +528,7 @@ const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
 const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 const EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
+const WAIT_OBJECT_0: u32 = 0;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -517,6 +555,7 @@ unsafe extern "system" {
         first: u32,
         handler: unsafe extern "system" fn(*mut c_void) -> i32,
     ) -> *mut c_void;
+    fn RemoveVectoredExceptionHandler(Handler: *mut c_void) -> u32;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -609,6 +648,8 @@ fn ring_push(id: u32, regs: [u64; 4]) {
 #[cfg(target_arch = "x86_64")]
 std::arch::global_asm!(
     ".balign 16",
+    // .globl：跨 CGU 引用（如测试）需全局符号；不影响 DLL 导出表
+    ".globl ziwei_hook_common_x64",
     "ziwei_hook_common_x64:",
     // 入场（stub 契约：6×push 自 rsp0 到 C，rsp0 = C+0x30）：
     //   [C+0x00]=id  [C+0x08]=resume  [C+0x10]=orig r11  [C+0x18]=orig r10
@@ -637,9 +678,9 @@ std::arch::global_asm!(
     "mov  r11, [rsp+0x10]", // 还原 orig r11 / r10
     "mov  r10, [rsp+0x18]",
     "add  rsp, 0x30",       // rsp = rsp0（E9 时刻的栈；0x30 = stub 的 6 槽）
+    "mov  rax, [rsp-0x08]", // 先救 orig rax（[C+0x28]=rsp0-8）——push resume 会覆写此槽
     "push qword ptr [rsp-0x28]", // resume 压到 rsp0-8（末尾 ret 消费，不占寄存器）
     "push qword ptr [rsp-0x08]", // flags 临时压到 rsp0-16
-    "mov  rax, [rsp+0x08]", // 还原 orig rax（[rsp0-0x10+0x08]）
     "popfq",                // 还原 flags（rsp 回到 rsp0-8）
     "ret",                  // → entry+5；rsp = rsp0；全部寄存器/flags 原值
     emit = sym ziwei_hook_emit_x64,
@@ -653,6 +694,8 @@ unsafe extern "system" fn ziwei_hook_emit_x64(id: u32, a: u64, b: u64, c: u64, d
 #[cfg(target_arch = "x86")]
 std::arch::global_asm!(
     ".balign 4",
+    // .globl：跨 CGU 引用（如测试）需全局符号；不影响 DLL 导出表
+    ".globl _ziwei_hook_common_x86",
     "_ziwei_hook_common_x86:", // i686 cdecl 符号装饰（前导下划线）
     // 入场：[esp]=恢复地址（stub push 的 entry+5），ecx = id；
     // 目标参数：[esp+8..0x14]=arg0..3（[esp+4]=目标返回地址）。
@@ -762,6 +805,34 @@ unsafe fn arena_alloc(near: u64, size: usize) -> Result<usize, String> {
     Ok(picked)
 }
 
+/// x64 stub 字节装配（hook_set 与单测共用——单测须复刻与生产逐字节一致的 stub）。
+/// 全状态入栈（common 契约，6 槽）：orig rax → flags → orig r10 → orig
+/// r11 → resume → id；rax 之后纯当载体。x64 的一切易失寄存器都可能
+/// 在 mid-function 锚点存活，stub 不许裸写任何一个。
+#[cfg(target_arch = "x86_64")]
+fn build_stub_x64(id: u32, resume: usize, common: usize) -> [u8; 64] {
+    let mut code = [0xCCu8; 64];
+    code[0] = 0x50; // push rax（orig rax → [C+0x28]）
+    code[1] = 0x9C; // pushfq（flags → [C+0x20]）
+    code[2] = 0x41;
+    code[3] = 0x52; // push r10（→ [C+0x18]）
+    code[4] = 0x41;
+    code[5] = 0x53; // push r11（→ [C+0x10]）
+    code[6] = 0x48;
+    code[7] = 0xB8; // movabs rax, resume
+    code[8..16].copy_from_slice(&(resume as u64).to_le_bytes());
+    code[16] = 0x50; // push rax（resume → [C+0x08]）
+    code[17] = 0xB8; // mov eax, id
+    code[18..22].copy_from_slice(&id.to_le_bytes());
+    code[22] = 0x50; // push rax（id → [C+0x00]）
+    code[23] = 0x48;
+    code[24] = 0xB8; // movabs rax, common
+    code[25..33].copy_from_slice(&(common as u64).to_le_bytes());
+    code[33] = 0xFF;
+    code[34] = 0xE0; // jmp rax
+    code
+}
+
 /// hook_set：id + 目标地址 → 二次实核入口 5×0x90 → 建 stub → 入口补丁。
 unsafe fn hook_set(id: u32, addr: u64) -> Result<String, String> {
     let mut meta = HOOK_META.lock().unwrap_or_else(|p| p.into_inner());
@@ -804,30 +875,12 @@ unsafe fn hook_set(id: u32, addr: u64) -> Result<String, String> {
     #[cfg(target_arch = "x86")]
     let common = ziwei_hook_common_x86 as unsafe extern "C" fn() as usize;
     let resume = addr as usize + 5;
+    // x64 下整包被 build_stub_x64 覆写，填充值只有 x86 读——此处静默误报
+    #[cfg_attr(target_arch = "x86_64", allow(unused_assignments))]
     let mut code = [0xCCu8; 64];
     #[cfg(target_arch = "x86_64")]
     {
-        // 全状态入栈（common 契约，6 槽）：orig rax → flags → orig r10 → orig
-        // r11 → resume → id；rax 之后纯当载体。x64 的一切易失寄存器都可能
-        // 在 mid-function 锚点存活，stub 不许裸写任何一个。
-        code[0] = 0x50; // push rax（orig rax → [C+0x28]）
-        code[1] = 0x9C; // pushfq（flags → [C+0x20]）
-        code[2] = 0x41;
-        code[3] = 0x52; // push r10（→ [C+0x18]）
-        code[4] = 0x41;
-        code[5] = 0x53; // push r11（→ [C+0x10]）
-        code[6] = 0x48;
-        code[7] = 0xB8; // movabs rax, resume
-        code[8..16].copy_from_slice(&(resume as u64).to_le_bytes());
-        code[16] = 0x50; // push rax（resume → [C+0x08]）
-        code[17] = 0xB8; // mov eax, id
-        code[18..22].copy_from_slice(&id.to_le_bytes());
-        code[22] = 0x50; // push rax（id → [C+0x00]）
-        code[23] = 0x48;
-        code[24] = 0xB8; // movabs rax, common
-        code[25..33].copy_from_slice(&(common as u64).to_le_bytes());
-        code[33] = 0xFF;
-        code[34] = 0xE0; // jmp rax
+        code = build_stub_x64(id, resume, common);
     }
     #[cfg(target_arch = "x86")]
     {
@@ -858,8 +911,7 @@ unsafe fn hook_set(id: u32, addr: u64) -> Result<String, String> {
     meta.push(HookMeta { addr, id });
     // 新 hook 从空环计起（防旧事件混入新口径）：read 追平 write + 清丢弃计数
     ring_lock();
-    RING
-        .read
+    RING.read
         .store(RING.write.load(Ordering::Relaxed), Ordering::Release);
     RING.dropped.store(0, Ordering::Release);
     RING.lock.store(0, Ordering::Release);
@@ -869,11 +921,9 @@ unsafe fn hook_set(id: u32, addr: u64) -> Result<String, String> {
 }
 
 /// hook_unset：实核补丁在场 → 还原 5×0x90。stub 不回收（安全优先）。
-unsafe fn hook_unset(addr: u64) -> Result<String, String> {
-    let mut meta = HOOK_META.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(pos) = meta.iter().position(|h| h.addr == addr) else {
-        return Err(format!("地址 {addr:#x} 无在场 hook"));
-    };
+/// 入口补丁还原为 5×0x90（实核 0xE9 在场 → VirtualProtect → 写 → 还原保护 →
+/// 刷 icache）。hook_unset 与 unload_prepare 共用。
+unsafe fn restore_entry_nops(addr: u64) -> Result<(), String> {
     let base = addr as *mut u8;
     let mut cur = [0u8; 5];
     core::ptr::copy_nonoverlapping(base, cur.as_mut_ptr(), 5);
@@ -889,8 +939,60 @@ unsafe fn hook_unset(addr: u64) -> Result<String, String> {
     core::ptr::copy_nonoverlapping(nop.as_ptr(), base, 5);
     VirtualProtect(base as *mut c_void, 5, old, &mut old);
     FlushInstructionCache(GetCurrentProcess(), base as *const c_void, 5);
+    Ok(())
+}
+
+unsafe fn hook_unset(addr: u64) -> Result<String, String> {
+    let mut meta = HOOK_META.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(pos) = meta.iter().position(|h| h.addr == addr) else {
+        return Err(format!("地址 {addr:#x} 无在场 hook"));
+    };
+    restore_entry_nops(addr)?;
     let id = meta.remove(pos).id;
-    Ok(format!("{{\"ok\":true,\"unset\":true,\"id\":{id},\"addr\":{addr:#x}}}"))
+    Ok(format!(
+        "{{\"ok\":true,\"unset\":true,\"id\":{id},\"addr\":{addr:#x}}}"
+    ))
+}
+
+/// unload 三关闸（BUG-200）：任何一关不过 = Err（worker 拒绝卸载，管道继续
+/// 服务）——宿主进程安全优先于卸载意愿。
+/// ① 在途 call_fn：等不得（单飞占位未清）也杀不得（Win32 无安全强杀）→ 拒；
+/// ② 泄漏调用线程仍在执行 DLL 代码：等 3s，不退 = 拒（卸载后线程踩已卸载
+///    代码 = AV）；
+/// ③ 在场 hook 逐个还原入口（LIFO；stub jmp 的 common 在 DLL 镜像内，镜像
+///    卸载后 hook 命中即 AV）：已还原的从表内移除，失败的中止并留表（重试
+///    unload 可续）。
+/// 收尾：摘 VEH handler（代码在镜像内——悬垂 handler 是卸载后宿主任何
+/// first-chance 异常的死路）。
+/// 返回解除的 hook 数（bot 侧 detach 据此与应答审计对账）。
+unsafe fn unload_prepare() -> Result<u32, String> {
+    if CALL.active.load(Ordering::Acquire) != 0 {
+        return Err("在途 call_fn 未完成".to_string());
+    }
+    let th = CALL_THREAD.swap(0, Ordering::AcqRel);
+    if th != 0 {
+        if WaitForSingleObject(th as *mut c_void, 3000) != WAIT_OBJECT_0 {
+            CALL_THREAD.store(th, Ordering::Release); // 还回去：下次 unload 再等
+            return Err("调用线程 3s 未退出（超时泄漏中）".to_string());
+        }
+        CloseHandle(th as *mut c_void);
+    }
+    let mut meta = HOOK_META.lock().unwrap_or_else(|p| p.into_inner());
+    let mut unhooked = 0u32;
+    while let Some(h) = meta.last() {
+        let addr = h.addr;
+        if let Err(e) = unsafe { restore_entry_nops(addr) } {
+            return Err(format!("hook @{addr:#x} 入口还原失败：{e}"));
+        }
+        meta.pop();
+        unhooked += 1;
+    }
+    drop(meta);
+    let veh = VEH_HANDLE.swap(0, Ordering::AcqRel);
+    if veh != 0 {
+        RemoveVectoredExceptionHandler(veh as *mut c_void);
+    }
+    Ok(unhooked)
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1037,16 @@ struct RescueStack(#[allow(dead_code)] std::cell::UnsafeCell<[u8; 0x8000]>);
 unsafe impl Sync for RescueStack {}
 static RESCUE: RescueStack = RescueStack(std::cell::UnsafeCell::new([0; 0x8000]));
 static BAIL_STUB: AtomicU64 = AtomicU64::new(0);
+
+/// VEH 句柄（文件级；BUG-200①）：handler 代码在 DLL 镜像内，卸载前必须摘除
+/// ——悬垂 handler 会让宿主进程任何 first-chance 异常（ntdll 内部 SEH 是常态）
+/// 调进已卸载地址 → 进程死。曾经 call_fn 函数局部 static，unload 够不着。
+static VEH_HANDLE: AtomicUsize = AtomicUsize::new(0);
+/// 最近一通 call_fn 的专用线程句柄（BUG-200②）：泄漏线程执行 DLL 代码期间
+/// 卸载 = AV——unload_prepare 需等它退出（超时拒绝卸载）。句柄不主动关：
+/// 下一通 call_fn 收尸，或 unload_prepare 收尾，最终一条随进程终止回收
+/// （与线程本体同款「泄漏已声明，损失有界」口径）。
+static CALL_THREAD: AtomicUsize = AtomicUsize::new(0);
 
 /// 带约定的任意地址调用（调用线程上下文；shadow space / 清栈自管）。
 #[cfg(target_arch = "x86_64")]
@@ -984,7 +1096,8 @@ unsafe fn call_with_conv(addr: usize, conv: u32, a: [u64; 4]) -> u64 {
 
 /// 调用线程入口：从 CALL 静态槽取参 → 调 → 写回 → done。
 unsafe extern "system" fn call_thread_main(_arg: *mut c_void) -> u32 {
-    CALL.thread_id.store(GetCurrentThreadId(), Ordering::Release);
+    CALL.thread_id
+        .store(GetCurrentThreadId(), Ordering::Release);
     let addr = CALL.addr.load(Ordering::Acquire) as usize;
     let conv = CALL.conv.load(Ordering::Acquire);
     let args = [
@@ -1115,14 +1228,13 @@ unsafe fn call_fn(addr: u64, conv: u32, args: [u64; 4], timeout_ms: u32) -> Stri
     for (i, v) in args.iter().enumerate() {
         CALL.args[i].store(*v, Ordering::Release);
     }
-    static VEH: AtomicUsize = AtomicUsize::new(0);
-    if VEH.load(Ordering::Acquire) == 0 {
+    if VEH_HANDLE.load(Ordering::Acquire) == 0 {
         let h = AddVectoredExceptionHandler(1, call_veh);
         if h.is_null() {
             CALL.active.store(0, Ordering::Release);
             return "{\"ok\":false,\"error\":\"VEH 注册失败\"}".to_string();
         }
-        VEH.store(h as usize, Ordering::Release);
+        VEH_HANDLE.store(h as usize, Ordering::Release);
     }
     let h = CreateThread(
         std::ptr::null_mut(),
@@ -1139,7 +1251,12 @@ unsafe fn call_fn(addr: u64, conv: u32, args: [u64; 4], timeout_ms: u32) -> Stri
             GetLastError()
         );
     }
-    CloseHandle(h);
+    // 句柄留档 CALL_THREAD（unload_prepare 等退/收口）；上一通线程收尸：
+    // 等 100ms，已退出则关句柄，未退出留置（与线程同款泄漏口径）
+    let prev = CALL_THREAD.swap(h as usize, Ordering::AcqRel);
+    if prev != 0 && WaitForSingleObject(prev as *mut c_void, 100) == WAIT_OBJECT_0 {
+        CloseHandle(prev as *mut c_void);
+    }
     let t0 = std::time::Instant::now();
     loop {
         if CALL.done.load(Ordering::Acquire) != 0 {
@@ -1219,3 +1336,6 @@ fn json_args(s: &str, key: &str) -> Option<([u64; 4], usize)> {
     }
     Some((out, n))
 }
+
+#[cfg(test)]
+mod tests;
