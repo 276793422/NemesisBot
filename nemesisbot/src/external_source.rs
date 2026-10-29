@@ -4,8 +4,9 @@
 //! 1. **导入循环**：gateway 内定时轮询外部仓库 issues（经主 loop
 //!    `handle_tool_call` 完整 dispatch 瀑布调 `connector_invoke`，非旁路——
 //!    estop/hidden/安全 8 层/凭据注入/回执全生效），新 issue → board 建单，
-//!    `origin = TaskOrigin{origin_type: <connector>, origin_id: "owner/repo#N"}`
-//!    按 origin 去重（已导入不再建单）。
+//!    `origin = TaskOrigin{origin_type: <connector>, origin_id: "<connector>/<owner>/<repo>#N"}`
+//!    按 origin 去重（已导入不再建单；回写侧经 [`split_origin_id`] 单一
+//!    真相源拆解，BUG-20261029-175）。
 //! 2. **任务专属副本**：首次导入前按来源物化 board 项目（一仓一项目），
 //!    clone=true 时 `git_repo::clone_repo` 真克隆到
 //!    `<workspace>/board-projects/<来源名>/`（origin 在场，P3 交付分支可
@@ -791,6 +792,26 @@ fn head(s: &str, n: usize) -> String {
 // 状态回写（transition observer → 通道 → 消费者 issue_comment）
 // ---------------------------------------------------------------------------
 
+/// origin_id 形态解析单一真相源（BUG-20261029-175）：生产构造（唯一构造
+/// 点 `import_entry` 的调用方轮询去重段）为三段
+/// `{connector}/{owner}/{repo}#{index}`。返回 `(owner, repo, index,
+/// source_key)`——source_key 与状态表键（`{connector}/{owner}/{repo}`）
+/// 同构。缺 `#` / index 非整数 / 段数不足三 = None（调用方诚实跳过，
+/// 不猜形态）。
+fn split_origin_id(origin_id: &str) -> Option<(String, String, i64, String)> {
+    let (repo_path, index) = origin_id.rsplit_once('#')?;
+    let index = index.parse::<i64>().ok()?;
+    let mut segs = repo_path.rsplitn(3, '/');
+    let repo = segs.next()?.to_string();
+    let owner = segs.next()?.to_string();
+    let connector = segs.next()?.to_string();
+    if connector.is_empty() || owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let source_key = format!("{connector}/{owner}/{repo}");
+    Some((owner, repo, index, source_key))
+}
+
 fn install_write_back(rt: &Arc<ExternalSourceRuntime>) {
     let rt = rt.clone();
     let store = rt.store.clone();
@@ -811,17 +832,20 @@ fn install_write_back(rt: &Arc<ExternalSourceRuntime>) {
             return;
         }
         let body = render_writeback(issue, from, to);
-        // origin_id="owner/repo#N" → 状态表键 "connector/owner/repo"。
-        let repo_path = origin
-            .origin_id
-            .rsplit_once('#')
-            .map(|(a, _)| a)
-            .unwrap_or(&origin.origin_id);
+        // origin_id="connector/owner/repo#N" → source_key 走单一真相源
+        // 拆解（BUG-20261029-175：此前 `format!("{origin_type}/{repo_path}")`
+        // 在三段 origin_id 上重复拼 connector，四段键与状态表永不匹配，
+        // writeback 成败计数恒 0）。形态不合法 = 不发（无 '#' 的历史
+        // 兜底 unwrap 是在给不存在的形态造数据）。
+        let source_key = match split_origin_id(&origin.origin_id) {
+            Some((_, _, _, key)) => key,
+            None => return,
+        };
         let _ = rt.writeback_tx.send(WriteBack {
             connector: origin.origin_type.clone(),
             origin_id: origin.origin_id.clone(),
             body,
-            source_key: format!("{}/{}", origin.origin_type, repo_path),
+            source_key,
         });
     }));
 }
@@ -851,11 +875,12 @@ fn spawn_writeback_consumer(
 ) {
     tokio::spawn(async move {
         while let Some(wb) = rx.recv().await {
-            // origin_id = "owner/repo#N" → owner/repo + index
-            let Some((repo_path, index)) = wb.origin_id.rsplit_once('#') else {
-                continue;
-            };
-            let Some((owner, repo)) = repo_path.rsplit_once('/') else {
+            // origin_id = "connector/owner/repo#N" → owner/repo/index 走
+            // 单一真相源拆解（BUG-20261029-175：此前 rsplit_once('/') 一次
+            // 停在两段假设，owner 参数吃进 connector 段成 "connector/owner"
+            // 复合段——Gitea /repos/{owner}/{repo}/... 路径错位，回帖自
+            // 落地起 100% 失败）。
+            let Some((owner, repo, index, _key)) = split_origin_id(&wb.origin_id) else {
                 continue;
             };
             let result = invoke_connector(
@@ -865,7 +890,7 @@ fn spawn_writeback_consumer(
                 json!({
                     "owner": owner,
                     "repo": repo,
-                    "index": index.parse::<i64>().unwrap_or(0),
+                    "index": index,
                     "body": wb.body,
                 }),
             )

@@ -175,18 +175,32 @@ fn exclude_projection_files_writes_once_and_idempotent() {
 // 来源键推导（回写 source_key 与状态表对齐）
 // ---------------------------------------------------------------------------
 
+// BUG-20261029-175 回归锁：origin_id 生产形态为三段
+// "connector/owner/repo#N"（唯一构造点，自 P1 引入即三段），回写链路的
+// source_key 推导与 owner/repo/index 拆解必须同源——旧实现停在两段假设
+// "owner/repo#N"：source_key 重复拼 connector 成四段（与状态表键永不匹配，
+// writeback 成败计数恒 0），owner 参数吃进 connector 段（Gitea
+// /repos/{owner}/... 路径错位，回帖自落地起 100% 失败）。修复 =
+// [`super::split_origin_id`] 单一真相源，observer 与 consumer 双侧共用。
 #[test]
-fn writeback_source_key_derivation_contract() {
-    // 消费者按 origin_id="owner/repo#N" 推状态表键 "connector/owner/repo"；
-    // 此契约由 spawn() 初始化表 + install_write_back 双侧共享，钉在纯函数
-    // 语义层（拆函数会破坏对齐）。
-    let origin_id = "myowner/myrepo#42";
-    let repo_path = origin_id
-        .rsplit_once('#')
-        .map(|(a, _)| a)
-        .unwrap_or(origin_id);
-    let key = format!("gitea/{repo_path}");
-    assert_eq!(key, "gitea/myowner/myrepo");
+fn split_origin_id_three_segment_contract() {
+    let (owner, repo, index, source_key) =
+        split_origin_id("gitea/myowner/myrepo#42").expect("三段形态必须可拆");
+    assert_eq!(owner, "myowner", "owner 不得吃进 connector 段");
+    assert_eq!(repo, "myrepo");
+    assert_eq!(index, 42);
+    assert_eq!(source_key, "gitea/myowner/myrepo", "与状态表键同构");
+}
+
+#[test]
+fn split_origin_id_rejects_malformed() {
+    // 无 '#' / index 非整数 / 段数不足三 / 空段：一律 None（诚实跳过，
+    // 不猜形态——旧 consumer 的 index unwrap_or(0) 会白发必 404 的请求）。
+    assert!(split_origin_id("gitea/myowner/myrepo").is_none());
+    assert!(split_origin_id("gitea/myowner/myrepo#x").is_none());
+    assert!(split_origin_id("myrepo#42").is_none());
+    assert!(split_origin_id("gitea/#42").is_none());
+    assert!(split_origin_id("#42").is_none());
 }
 
 // ---------------------------------------------------------------------------
