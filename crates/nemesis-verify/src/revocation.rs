@@ -97,19 +97,38 @@ fn fetch_crl(base_url: &str, root_pub: &VerifyingKey) -> Result<Crl> {
     Ok(resp.payload)
 }
 
+/// CRL 本体有效期（设计契约：云端吊销方案「缓存带 valid_until；窗口内信任，
+/// 过期必须重新拉取」）。签名只证明数据出自根，不证明数据未过时——CRL 走
+/// plain HTTP GET，重放旧签名 CRL 可冻结吊销状态（已吊销 key 永查不到），
+/// 故 valid_until 过期 = 视同无 CRL（拉取失败语义）。
+fn crl_expired(crl: &Crl, now: u64) -> bool {
+    now > crl.valid_until
+}
+
 /// 取有效 CRL（缓存优先，过期/无则拉取）。soft-fail：拉失败用旧缓存。
+/// 三臂全部按 valid_until 门控（BUG-20261029-190）：缓存命中臂（本地 TTL 内
+/// 但 CRL 本体过期 → 不用）、新拉臂（拉到即过期的 CRL 视同拉取失败）、
+/// stale-fallback 臂（只回退到 valid_until 内的旧缓存）。
 fn get_crl(root_pub: &VerifyingKey) -> Option<Crl> {
     let now = now_secs();
-    // 缓存命中（未过期）
+    // 缓存命中（本地 TTL 内且 CRL 本体未过 valid_until）
     if let Ok(c) = cache().lock()
         && let Some(cached) = c.as_ref()
         && now < cached.fetched_at + CRL_TTL_SECS
+        && !crl_expired(&cached.crl, now)
     {
         return Some(cached.crl.clone());
     }
     // 缓存过期/无 → 拉取
     if let Some(base) = revocation_url() {
-        match fetch_crl(&base, root_pub) {
+        // 新拉的 CRL 已过 valid_until（服务端时钟漂移/重放）→ 视同拉取失败
+        let fetched = fetch_crl(&base, root_pub).and_then(|crl| {
+            if crl_expired(&crl, now) {
+                anyhow::bail!("CRL expired (valid_until passed)");
+            }
+            Ok(crl)
+        });
+        match fetched {
             Ok(crl) => {
                 if let Ok(mut c) = cache().lock() {
                     *c = Some(CrlCache {
@@ -120,11 +139,14 @@ fn get_crl(root_pub: &VerifyingKey) -> Option<Crl> {
                 Some(crl)
             }
             Err(_) => {
-                // 拉取失败：strict 拒（None→Unknown）；soft-fail 用旧缓存
+                // 拉取失败/CRL 过期：strict 拒（None→Unknown）；soft-fail 用
+                // 未过期的旧缓存（valid_until 内信任）
                 if strict_offline() {
                     None
                 } else if let Ok(c) = cache().lock() {
-                    c.as_ref().map(|c| c.crl.clone())
+                    c.as_ref()
+                        .filter(|cached| !crl_expired(&cached.crl, now))
+                        .map(|c| c.crl.clone())
                 } else {
                     None
                 }

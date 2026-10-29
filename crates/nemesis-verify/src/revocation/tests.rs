@@ -551,6 +551,67 @@ fn verify_bytes_strict_ocsp_fallback_revoked() {
     clear_revocation_env();
 }
 
+// ===== BUG-20261029-190：CRL valid_until 客户端零强制（半接线安全字段）=====
+// 设计契约（docs/REPORT/2026-07-18_signature-revocation-cloud.md）：
+// L326「缓存带 valid_until；窗口内信任，过期必须重新拉取」、
+// L335「云端不可达 → 本地缓存 fallback（valid_until 内信任）」。
+// 签名只证明数据出自根，不证明数据未过时——CRL 走 plain HTTP GET，
+// MITM 可无限重放旧签名 CRL 冻结吊销状态（已吊销 key 永查不到）。
+
+/// 根签名有效但 valid_until 已过期的 CRL：视同拉取失败——无缓存 → None，
+/// 且过期 CRL 不得写入缓存（否则污染后续 TTL 窗口）。
+#[test]
+fn bug190_get_crl_rejects_expired_valid_until_crl() {
+    let _g = TEST_LOCK.lock().unwrap();
+    clear_revocation_env();
+    let (root_sk, root_vk) = keypair(39);
+    let expired = sign_response(
+        &Crl {
+            version: 9,
+            valid_until: now_secs() - 100,
+            entries: vec![],
+        },
+        &root_sk,
+    )
+    .unwrap();
+    let base = serve_map(vec![("/v1/crl", serde_json::to_string(&expired).unwrap())]);
+    set_env_url(&base);
+
+    assert!(
+        get_crl(&root_vk).is_none(),
+        "expired valid_until CRL must be treated as fetch failure"
+    );
+    assert!(
+        cache().lock().unwrap().is_none(),
+        "expired CRL must not be cached"
+    );
+    clear_revocation_env();
+}
+
+/// soft-fail 的 stale-cache fallback 也必须按 valid_until 门控：本地 TTL
+/// 内但 CRL 本体已过期 → 不得回退使用（fallback 契约是「valid_until 内信任」）。
+#[test]
+fn bug190_stale_fallback_respects_valid_until() {
+    let _g = TEST_LOCK.lock().unwrap();
+    clear_revocation_env();
+    let (_, vk) = keypair(40);
+    *cache().lock().unwrap() = Some(CrlCache {
+        crl: Crl {
+            version: 1,
+            valid_until: now_secs() - 50,
+            entries: vec![],
+        },
+        fetched_at: now_secs(), // 本地 TTL 内
+    });
+    set_env_url(&dead_url()); // 云端不可达 + 非 strict
+
+    assert!(
+        get_crl(&vk).is_none(),
+        "stale fallback must not use CRL past valid_until"
+    );
+    clear_revocation_env();
+}
+
 // ===== 本地 CRL 快照四件套（皮肤管理面 P3：revocation_meta / crl_match_meta /
 // root_pubkey_from_anchored / load_crl_snapshot）=====
 
