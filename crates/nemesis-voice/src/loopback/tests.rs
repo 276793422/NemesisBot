@@ -34,6 +34,41 @@ fn stop_loopback_without_start_is_noop() {
 }
 
 #[test]
+fn exit_clears_only_own_registration_not_restarted_thread_flag() {
+    let _guard = LOOPBACK_TEST_LOCK.lock().unwrap();
+    // BUG-20261029-180 回归锁：stop→start 快速重启后，旧线程退出时 slot 里
+    // 已是新线程的旗标——旧线程的退出清理必须按身份（ptr_eq）判定，不得
+    // 无条件清 None（否则新线程从此不可停 + 下次 start 再 spawn =
+    // 线程泄漏 + far-end 双喂，每次重启再漏一个）。
+    let old_thread_flag = Arc::new(AtomicBool::new(true)); // 旧线程已被 stop
+    let new_thread_flag = Arc::new(AtomicBool::new(false)); // 新线程运行中
+    {
+        let mut slot = loopback_slot().lock().unwrap();
+        *slot = Some(new_thread_flag.clone());
+    }
+
+    // 旧线程带着自己的旗标退出：slot 里的注册是别人的 → 不清
+    clear_loopback_slot_if_owner(&old_thread_flag);
+    {
+        let slot = loopback_slot().lock().unwrap();
+        let cur = slot
+            .as_ref()
+            .expect("new thread's registration must survive a stale thread's exit");
+        assert!(
+            Arc::ptr_eq(cur, &new_thread_flag),
+            "stale thread's exit must not clear another thread's registration"
+        );
+    }
+
+    // 新线程自己退出：清掉自己的注册（正常退出路径不回归）
+    clear_loopback_slot_if_owner(&new_thread_flag);
+    assert!(
+        loopback_slot().lock().unwrap().is_none(),
+        "owner's own exit must clear the slot"
+    );
+}
+
+#[test]
 fn start_loopback_already_running_returns_early_without_spawning() {
     let _guard = LOOPBACK_TEST_LOCK.lock().unwrap();
     // 33 行 tracing::debug! 参数求值需要 subscriber（lcov 机制，见 test_util.rs）

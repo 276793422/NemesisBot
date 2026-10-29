@@ -135,13 +135,13 @@ impl AudioCapture {
 
 /// 全局共享的「远端参考信号」缓冲（AEC 用）。
 ///
-/// 由 [`AudioPlayback`] 的输出 callback 写入（设备采样率、单声道 f32 ——
-/// 即「此刻正推给扬声器」的样本，时间上与真实播放对齐）；由 STT pipeline
-/// 读取，重采样到 16k 后作为 AEC 的 far-end 输入。
+/// 由 loopback 采集线程（`loopback.rs::run_loopback_inner`）写入——抓取的是
+/// 系统混音（正在播放的全部声音，单声道 f32，采样率见 [`FAR_END_RATE`]）；
+/// 由 STT pipeline 读取，重采样到 16k 后作为 AEC 的 far-end 输入。
 ///
-/// 用模块级单例而不是 AudioPlayback 实例字段：STT pipeline 和 TTS 播放循环
+/// 用模块级单例而不是采集/播放实例字段：STT pipeline 和 TTS 播放循环
 /// 是分离的生命周期（可能各自创建/销毁 AudioCapture/AudioPlayback），单例
-/// 保证无论哪个 AudioPlayback 实例在播，参考信号都汇入同一处，STT 侧始终能读到。
+/// 保证无论哪条采集流在跑，参考信号都汇入同一处，STT 侧始终能读到。
 static FAR_END_BUFFER: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
 
 /// 拿远端参考信号缓冲的共享句柄（首次调用时惰性创建）。
@@ -151,15 +151,24 @@ pub fn far_end_buffer() -> Arc<Mutex<VecDeque<f32>>> {
         .clone()
 }
 
-/// 播放设备采样率（由 [`AudioPlayback::new`] 写入）。STT pipeline 用它把 far-end
-/// 参考信号从设备率重采样到 16k 喂 AEC——采集和播放可能是不同设备、不同采样率，
-/// 不能复用 near-end 的 resampler。默认 48000（未创建过播放设备时的兜底，那时 far-end
+/// far-end 参考信号的采样率（由 loopback 采集线程初始化成功后写入，
+/// BUG-20261029-181：此前全仓无 store 点——「由 AudioPlayback::new 写入」
+/// 是死接线声明，far_end_sample_rate() 恒等于默认值，loopback 采样率一改
+/// 就静默失配）。STT pipeline 用它把 far-end 参考信号重采样到 16k 喂 AEC
+/// ——采集和播放可能是不同设备、不同采样率，不能复用 near-end 的
+/// resampler。默认 48000（未启动过 loopback 时的兜底，那时 far-end
 /// 也是空的，不影响）。
 static FAR_END_RATE: AtomicU32 = AtomicU32::new(48000);
 
-/// 当前播放设备的采样率。
+/// 当前 far-end 参考信号的采样率。
 pub fn far_end_sample_rate() -> u32 {
     FAR_END_RATE.load(Ordering::Relaxed)
+}
+
+/// loopback 采集线程初始化成功后登记实际参考信号采样率（crate 内专用；
+/// 唯一调用点 `loopback.rs::run_loopback_inner`，与它请求的采集率同源）。
+pub(crate) fn set_far_end_sample_rate(rate: u32) {
+    FAR_END_RATE.store(rate, Ordering::Relaxed);
 }
 
 pub struct AudioPlayback {

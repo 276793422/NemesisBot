@@ -54,14 +54,23 @@ pub fn stop_loopback() {
     }
 }
 
+/// 线程退出只清自己的注册（BUG-20261029-180）：stop→start 快速重启时
+/// slot 可能已换成新线程的旗标——旧线程无条件清 None 会把新注册抹掉
+/// （新线程从此不可停 + 下次 start 再 spawn = 线程泄漏 + far-end 双喂）。
+fn clear_loopback_slot_if_owner(stop: &Arc<AtomicBool>) {
+    let mut slot = loopback_slot().lock().unwrap();
+    if slot.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, stop)) {
+        *slot = None;
+    }
+}
+
 fn run_loopback(stop: Arc<AtomicBool>) {
     match run_loopback_inner(&stop) {
         Ok(()) => {}
         Err(e) => tracing::warn!("[AEC Loopback] capture ended with error: {}", e),
     }
-    // 线程退出后清掉自己，方便 start_loopback 重新拉起
-    let mut slot = loopback_slot().lock().unwrap();
-    *slot = None;
+    // 线程退出后清掉自己的注册，方便 start_loopback 重新拉起
+    clear_loopback_slot_if_owner(&stop);
 }
 
 fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
@@ -78,7 +87,8 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
         .map_err(|e| format!("get_iaudioclient: {}", e))?;
 
     // 请求 f32 / 48k / 立体声（autoconvert 让 WASAPI 转成这个格式给我）
-    let format = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
+    const FAR_RATE: usize = 48000;
+    let format = WaveFormat::new(32, 32, &SampleType::Float, FAR_RATE, 2, None);
     let blockalign = format.get_blockalign() as usize; // bytes/frame，f32 立体声 = 8
     let channels = blockalign / 4; // f32 = 4 bytes/sample
 
@@ -103,8 +113,10 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
         .start_stream()
         .map_err(|e| format!("start_stream: {}", e))?;
 
-    // loopback 跑在 48k（我们请求的），FAR_END_RATE 默认也是 48000，
-    // far_resampler 用 far_end_sample_rate()=48000 → 16k，一致。
+    // loopback 跑在 FAR_RATE（我们请求的）。BUG-20261029-181：初始化成功即
+    // 登记实际参考信号采样率——此前 FAR_END_RATE 全仓无 store 点（死接线），
+    // far_resampler 只能吃默认值，loopback 采样率一改就静默失配。
+    crate::audio::set_far_end_sample_rate(FAR_RATE as u32);
 
     let far_end = far_end_buffer();
     tracing::info!(

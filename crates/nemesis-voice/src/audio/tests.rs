@@ -176,9 +176,30 @@ fn far_end_buffer_returns_shared_handle() {
     b.lock().unwrap().clear();
 }
 
+/// 触碰 FAR_END_RATE 全局态的测试串行锁（同二进制并行默认，不锁会互踩：
+/// setter 测试改率期间默认值断言可能并发读到非 48000）。
+static FAR_RATE_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn far_end_sample_rate_defaults_to_48000() {
-    // 从未创建过播放设备时的兜底默认（166 行）；不写 FAR_END_RATE 保持默认语义
+    let _guard = FAR_RATE_LOCK.lock().unwrap();
+    // 从未启动过 loopback 时的兜底默认；不写 FAR_END_RATE 保持默认语义
+    assert_eq!(far_end_sample_rate(), 48000);
+}
+
+#[test]
+fn set_far_end_sample_rate_roundtrip_and_default_restore() {
+    let _guard = FAR_RATE_LOCK.lock().unwrap();
+    // BUG-20261029-181 回归锁：FAR_END_RATE 此前全仓无 store 点（死接线，
+    // 注释声称「由 AudioPlayback::new 写入」从未发生）——setter 是 loopback
+    // 初始化成功后登记实际参考信号采样率的唯一通路，far_resampler 靠它
+    // 把重采样源率钉对。
+    set_far_end_sample_rate(44100);
+    assert_eq!(far_end_sample_rate(), 44100);
+    set_far_end_sample_rate(16000);
+    assert_eq!(far_end_sample_rate(), 16000);
+    // 还原默认，避免污染其他测试
+    set_far_end_sample_rate(48000);
     assert_eq!(far_end_sample_rate(), 48000);
 }
 
