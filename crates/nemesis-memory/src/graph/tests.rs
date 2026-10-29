@@ -918,3 +918,112 @@ async fn bug59_persist_survives_residue_at_fixed_tmp_paths() {
         "triples persist must be applied (old fixed-tmp shape silently defeated): {tri:?}"
     );
 }
+
+// -- BUG-20261029-182 回归锁：键归一大小写一致性 --------------------------
+// 存储键统一小写归一（entities 键 + triples 双索引键），结构体字段保留
+// 原始大小写供展示；任何大小写形态的查询必须命中同一份数据。
+
+#[tokio::test]
+async fn graph_triple_lookup_case_insensitive_same_session() {
+    let store = InMemoryGraphStore::new();
+    store
+        .upsert_entity(GraphEntity::new("Alice".into(), "person".into()))
+        .await
+        .unwrap();
+    store
+        .add_triple(GraphTriple::new(
+            "Alice".into(),
+            "knows".into(),
+            "Bob".into(),
+        ))
+        .await
+        .unwrap();
+
+    // 旧缺陷：add_triple 以原始大小写建索引，get_related 以小写查 →
+    // 同会话漏查返回空。
+    let related = store.get_related("Alice", 1).await.unwrap();
+    assert_eq!(
+        related.len(),
+        1,
+        "get_related must find the stored triple regardless of case"
+    );
+    assert_eq!(related[0].object, "Bob");
+
+    let listed = store.list_triples("alice").await.unwrap();
+    assert_eq!(
+        listed.len(),
+        1,
+        "list_triples must match case-insensitively"
+    );
+}
+
+#[tokio::test]
+async fn graph_delete_entity_removes_entity_and_triples_case_insensitive() {
+    let store = InMemoryGraphStore::new();
+    store
+        .upsert_entity(GraphEntity::new("Alice".into(), "person".into()))
+        .await
+        .unwrap();
+    store
+        .add_triple(GraphTriple::new(
+            "Alice".into(),
+            "knows".into(),
+            "Bob".into(),
+        ))
+        .await
+        .unwrap();
+
+    // 旧缺陷：delete_entity 以小写键查，upsert/add_triple 以原始键存 →
+    // 删除假成功（返回 Ok 但数据全残留）。
+    store.delete_entity("alice").await.unwrap();
+
+    assert!(
+        store.get_entity("Alice").await.unwrap().is_none(),
+        "entity must be gone after delete_entity"
+    );
+    assert_eq!(store.entity_count().await.unwrap(), 0);
+    assert_eq!(store.triple_count().await.unwrap(), 0);
+    assert!(
+        store.list_triples("Alice").await.unwrap().is_empty(),
+        "triples referencing the deleted entity must be gone"
+    );
+}
+
+#[tokio::test]
+async fn graph_reload_matches_mixed_case_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+        store
+            .upsert_entity(GraphEntity::new("Alice".into(), "person".into()))
+            .await
+            .unwrap();
+        store
+            .add_triple(GraphTriple::new(
+                "Alice".into(),
+                "knows".into(),
+                "Bob".into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    // 旧缺陷：load_from_disk 以小写建键，get_entity/query_bfs 以原始大小写
+    // 查 → 重启后同名查询漏。
+    let store2 = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+    let entity = store2.get_entity("Alice").await.unwrap();
+    assert!(entity.is_some(), "get_entity must hit after reload");
+    assert_eq!(entity.unwrap().name, "Alice");
+
+    let related = store2.get_related("alice", 1).await.unwrap();
+    assert_eq!(related.len(), 1, "get_related must hit after reload");
+    assert_eq!(related[0].object, "Bob");
+
+    let bfs = store2.query_bfs("Alice", 1).await.unwrap();
+    assert_eq!(
+        bfs.paths.len(),
+        1,
+        "query_bfs must find the reloaded triple"
+    );
+    assert!(bfs.entities.iter().any(|e| e.name == "Alice"));
+}

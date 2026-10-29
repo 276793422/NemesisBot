@@ -361,14 +361,16 @@ async fn store_flush_fails_when_parent_is_file() {
     std::fs::write(&blocker, "x").unwrap();
     let path = blocker.join("store.jsonl");
 
-    // load: path does not exist → Ok. store(): flush → create_dir_all(parent=file) fails.
+    // load: path does not exist → Ok. store(): flush → atomic write 的
+    // create_dir_all(parent=file) 失败（BUG-20261029-183 起走统一原子写
+    // helper，目录错误从写文件步骤冒出）。
     let store = TfIdfLocalStore::new(&path).await.unwrap();
     let err = store
         .store(make_entry(MemoryType::LongTerm, "x"))
         .await
         .unwrap_err();
     assert!(
-        err.contains("Failed to create store directory"),
+        err.contains("Failed to write store file") && err.contains("mkdir"),
         "got: {err}"
     );
 }
@@ -429,7 +431,8 @@ async fn tfidf_flush_fails_when_parent_is_a_file() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, b"x").unwrap();
 
-    // Constructor only records the path; the parent check fires on flush().
+    // Constructor only records the path; the parent check fires on flush()
+    // （BUG-20261029-183 起走统一原子写 helper，目录错误从写文件步骤冒出）。
     let store = TfIdfLocalStore::new(blocker.join("store.jsonl"))
         .await
         .unwrap();
@@ -438,7 +441,7 @@ async fn tfidf_flush_fails_when_parent_is_a_file() {
         Ok(_) => panic!("flushing into a parent-is-file path must fail"),
     };
     assert!(
-        err.contains("Failed to create store directory"),
+        err.contains("Failed to write store file") && err.contains("mkdir"),
         "got: {err}"
     );
 }

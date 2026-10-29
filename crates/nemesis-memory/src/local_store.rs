@@ -72,7 +72,7 @@ impl TfIdfLocalStore {
     /// the resulting future is `Send`.
     async fn flush(&self) -> Result<(), String> {
         // Snapshot entries under the read lock, then release it.
-        let snapshot: Vec<Vec<u8>> = {
+        let snapshot: Vec<u8> = {
             let guard = self.entries.read();
             let mut buf = Vec::with_capacity(guard.len() * 256);
             for entry in guard.values() {
@@ -81,28 +81,14 @@ impl TfIdfLocalStore {
                 line.push('\n');
                 buf.extend_from_slice(line.as_bytes());
             }
-            // Collect into a single buffer so we drop the lock.
-            vec![buf]
+            buf
         };
 
-        // Ensure parent directory exists.
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create store directory: {e}"))?;
-        }
-
-        let mut file = tokio::fs::File::create(&self.path)
-            .await
-            .map_err(|e| format!("Failed to create store file: {e}"))?;
-
-        file.write_all(&snapshot[0])
-            .await
+        // BUG-20261029-183：改原子写权威 helper（旧 `File::create` 打开即
+        // 截断，写中途崩溃 = 整库丢失；BUG-20261025-59 同族漏修兄弟）。
+        // helper 内建 create_dir_all + 唯一临时名 + rename + 失败清理。
+        nemesis_utils::file::write_file_atomic(&self.path.to_string_lossy(), &snapshot, 0o644)
             .map_err(|e| format!("Failed to write store file: {e}"))?;
-
-        file.flush()
-            .await
-            .map_err(|e| format!("Failed to flush store file: {e}"))?;
 
         Ok(())
     }

@@ -180,12 +180,16 @@ pub trait GraphStore: Send + Sync {
 /// On construction, existing data is loaded from `entities.jsonl` and
 /// `triples.jsonl`. Every mutation (upsert, add, remove, delete) triggers
 /// an atomic rewrite of the corresponding file.
+///
+/// 键归一策略（BUG-20261029-182）：所有 map 键（entity 名、triple 索引键）
+/// 一律小写归一，任何大小写形态的查询命中同一份数据；`GraphEntity.name` /
+/// `GraphTriple.subject/object` 字段保留原始大小写供展示与持久化。
 pub struct InMemoryGraphStore {
-    /// Entity name -> GraphEntity.
+    /// Entity name（小写归一键） -> GraphEntity。
     entities: DashMap<String, GraphEntity>,
-    /// All triples stored as a flat list (indexed by subject for fast lookup).
+    /// All triples stored as a flat list (indexed by lowercased subject).
     triples_by_subject: DashMap<String, Vec<GraphTriple>>,
-    /// Secondary index: object -> triples where this is the object.
+    /// Secondary index: lowercased object -> triples where this is the object.
     triples_by_object: DashMap<String, Vec<GraphTriple>>,
     /// Optional directory for JSONL persistence.
     persistence_dir: Option<PathBuf>,
@@ -266,8 +270,9 @@ impl InMemoryGraphStore {
                     continue;
                 }
                 if let Ok(triple) = serde_json::from_str::<GraphTriple>(trimmed) {
-                    let subject = triple.subject.clone();
-                    let object = triple.object.clone();
+                    // 键统一小写归一（BUG-20261029-182），与 add_triple 同源。
+                    let subject = triple.subject.to_lowercase();
+                    let object = triple.object.to_lowercase();
 
                     self.triples_by_subject
                         .entry(subject)
@@ -386,11 +391,12 @@ impl GraphStore for InMemoryGraphStore {
     async fn add_triple(&self, triple: GraphTriple) -> Result<(), String> {
         self.ensure_loaded();
 
-        let subject = triple.subject.clone();
-        let object = triple.object.clone();
+        // 键统一小写归一（BUG-20261029-182）：索引键小写，值保留原始大小写。
+        let subject = triple.subject.to_lowercase();
+        let object = triple.object.to_lowercase();
 
         self.triples_by_subject
-            .entry(subject.clone())
+            .entry(subject)
             .or_default()
             .push(triple.clone());
 
@@ -411,8 +417,9 @@ impl GraphStore for InMemoryGraphStore {
     async fn upsert_entity(&self, entity: GraphEntity) -> Result<(), String> {
         self.ensure_loaded();
 
-        let name = entity.name.clone();
-        self.entities.insert(name, entity);
+        // 键统一小写归一（BUG-20261029-182），与 load_from_disk 同源。
+        let key = entity.name.to_lowercase();
+        self.entities.insert(key, entity);
 
         if self.persistence_dir.is_some()
             && let Err(e) = self.persist_entities()
@@ -431,16 +438,27 @@ impl GraphStore for InMemoryGraphStore {
     ) -> Result<bool, String> {
         self.ensure_loaded();
 
+        // 键统一小写归一（BUG-20261029-182）；值匹配与 query_triples 的
+        // lowercase 比较语义对齐（任何大小写形态定位同一条 triple）。
+        let subject_key = subject.to_lowercase();
+        let object_key = object.to_lowercase();
+        let pred_lower = predicate.to_lowercase();
+
         let mut removed = false;
 
-        if let Some(mut triples) = self.triples_by_subject.get_mut(subject) {
+        if let Some(mut triples) = self.triples_by_subject.get_mut(&subject_key) {
             let before = triples.len();
-            triples.retain(|t| !(t.predicate == predicate && t.object == object));
+            triples.retain(|t| {
+                !(t.predicate.to_lowercase() == pred_lower && t.object.to_lowercase() == object_key)
+            });
             removed = triples.len() < before;
         }
 
-        if let Some(mut triples) = self.triples_by_object.get_mut(object) {
-            triples.retain(|t| !(t.subject == subject && t.predicate == predicate));
+        if let Some(mut triples) = self.triples_by_object.get_mut(&object_key) {
+            triples.retain(|t| {
+                !(t.subject.to_lowercase() == subject_key
+                    && t.predicate.to_lowercase() == pred_lower)
+            });
         }
 
         if removed
@@ -455,7 +473,8 @@ impl GraphStore for InMemoryGraphStore {
 
     async fn get_entity(&self, name: &str) -> Result<Option<GraphEntity>, String> {
         self.ensure_loaded();
-        Ok(self.entities.get(name).map(|r| r.value().clone()))
+        let key = name.to_lowercase();
+        Ok(self.entities.get(&key).map(|r| r.value().clone()))
     }
 
     async fn query_bfs(
@@ -469,13 +488,16 @@ impl GraphStore for InMemoryGraphStore {
         let mut visited: HashSet<String> = HashSet::new();
         let mut discovered_entities: Vec<GraphEntity> = Vec::new();
 
-        // BFS queue: (current_entity, path_so_far)
+        // BFS queue: (current_entity, path_so_far)。键统一小写归一
+        // （BUG-20261029-182）：start 与邻居都以小写键查表/去重，PathHop
+        // 值保留 triple 原始大小写供展示。
+        let start = start_entity.to_lowercase();
         let mut queue: VecDeque<(String, Vec<PathHop>)> = VecDeque::new();
-        queue.push_back((start_entity.to_string(), Vec::new()));
-        visited.insert(start_entity.to_string());
+        queue.push_back((start.clone(), Vec::new()));
+        visited.insert(start.clone());
 
         // Include the start entity if it exists.
-        if let Some(e) = self.entities.get(start_entity) {
+        if let Some(e) = self.entities.get(&start) {
             discovered_entities.push(e.value().clone());
         }
 
@@ -496,12 +518,13 @@ impl GraphStore for InMemoryGraphStore {
                     });
                     paths.push(new_path.clone());
 
-                    if !visited.contains(&triple.object) {
-                        visited.insert(triple.object.clone());
-                        if let Some(e) = self.entities.get(&triple.object) {
+                    let neighbor = triple.object.to_lowercase();
+                    if !visited.contains(&neighbor) {
+                        visited.insert(neighbor.clone());
+                        if let Some(e) = self.entities.get(&neighbor) {
                             discovered_entities.push(e.value().clone());
                         }
-                        queue.push_back((triple.object.clone(), new_path));
+                        queue.push_back((neighbor, new_path));
                     }
                 }
             }
@@ -519,8 +542,11 @@ impl GraphStore for InMemoryGraphStore {
         let mut result = Vec::new();
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
 
+        // 键统一小写归一（BUG-20261029-182）。
+        let entity_key = entity.to_lowercase();
+
         // Triples where entity is the subject.
-        if let Some(triples) = self.triples_by_subject.get(entity) {
+        if let Some(triples) = self.triples_by_subject.get(&entity_key) {
             for t in triples.iter() {
                 let key = (t.subject.clone(), t.predicate.clone(), t.object.clone());
                 if seen.insert(key) {
@@ -530,7 +556,7 @@ impl GraphStore for InMemoryGraphStore {
         }
 
         // Triples where entity is the object.
-        if let Some(triples) = self.triples_by_object.get(entity) {
+        if let Some(triples) = self.triples_by_object.get(&entity_key) {
             for t in triples.iter() {
                 let key = (t.subject.clone(), t.predicate.clone(), t.object.clone());
                 if seen.insert(key) {
@@ -599,12 +625,15 @@ impl GraphStore for InMemoryGraphStore {
         };
 
         for (subject, predicate, object) in triples_to_remove {
-            // Remove from subject index
-            if let Some(mut triples) = self.triples_by_subject.get_mut(&subject) {
+            // Remove from subject index（键小写归一，BUG-20261029-182：
+            // 收集到的 subject/object 是原始大小写值，查索引键必须归一）。
+            let subject_key = subject.to_lowercase();
+            let object_key = object.to_lowercase();
+            if let Some(mut triples) = self.triples_by_subject.get_mut(&subject_key) {
                 triples.retain(|t| !(t.predicate == predicate && t.object == object));
             }
             // Remove from object index
-            if let Some(mut triples) = self.triples_by_object.get_mut(&object) {
+            if let Some(mut triples) = self.triples_by_object.get_mut(&object_key) {
                 triples.retain(|t| !(t.subject == subject && t.predicate == predicate));
             }
         }

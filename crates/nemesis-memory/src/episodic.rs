@@ -218,9 +218,14 @@ impl EpisodicStore for FileEpisodicStore {
                         out.push_str(&serde_json::to_string(ep).unwrap_or_default());
                         out.push('\n');
                     }
-                    fs::write(&path, out)
-                        .await
-                        .map_err(|e| format!("Failed to rewrite session file: {e}"))?;
+                    // BUG-20261029-183：原子重写（旧 fs::write 截断原地写，
+                    // 崩溃窗口丢整段会话；BUG-20261025-59 同族漏修兄弟）。
+                    nemesis_utils::file::write_file_atomic(
+                        &path.to_string_lossy(),
+                        out.as_bytes(),
+                        0o644,
+                    )
+                    .map_err(|e| format!("Failed to rewrite session file: {e}"))?;
                 }
                 return Ok(true);
             }
@@ -315,9 +320,14 @@ impl EpisodicStore for FileEpisodicStore {
                         lines.push(line);
                     }
                     let content = lines.join("\n") + "\n";
-                    fs::write(&path, content)
-                        .await
-                        .map_err(|e| format!("Failed to rewrite session file: {e}"))?;
+                    // BUG-20261029-183：原子重写（同 delete_by_id，
+                    // BUG-20261025-59 同族漏修兄弟）。
+                    nemesis_utils::file::write_file_atomic(
+                        &path.to_string_lossy(),
+                        content.as_bytes(),
+                        0o644,
+                    )
+                    .map_err(|e| format!("Failed to rewrite session file: {e}"))?;
                 }
             }
         }
