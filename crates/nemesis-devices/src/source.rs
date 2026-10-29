@@ -147,58 +147,15 @@ impl EventSource for UsbEventSource {
                     if let Some(stdout) = stdout {
                         use std::io::{BufRead, BufReader};
                         let reader = BufReader::new(stdout);
-                        let mut current_props: HashMap<String, String> = HashMap::new();
+                        let mut parser = MonitorParser::default();
 
                         for line in reader.lines() {
                             match line {
                                 Ok(l) => {
-                                    let l = l.trim().to_string();
-                                    if l.is_empty() {
-                                        // End of block - process accumulated properties
-                                        if !current_props.is_empty() {
-                                            let action = match current_props
-                                                .get("ACTION")
-                                                .map(|s| s.as_str())
-                                            {
-                                                Some("add") => Action::Add,
-                                                Some("remove") => Action::Remove,
-                                                Some("change") => Action::Change,
-                                                _ => Action::Add,
-                                            };
-                                            let event = DeviceEvent {
-                                                action,
-                                                kind: Kind::Usb,
-                                                device_id: current_props
-                                                    .get("DEVPATH")
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                                vendor: current_props
-                                                    .get("ID_VENDOR_FROM_DATABASE")
-                                                    .or_else(|| current_props.get("ID_VENDOR"))
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                                product: current_props
-                                                    .get("ID_MODEL_FROM_DATABASE")
-                                                    .or_else(|| current_props.get("ID_MODEL"))
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                                serial: current_props
-                                                    .get("ID_SERIAL_SHORT")
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                                capabilities: current_props
-                                                    .get("ID_USB_INTERFACES")
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                                raw: current_props.clone(),
-                                            };
-                                            if tx.blocking_send(event).is_err() {
-                                                break;
-                                            }
+                                    if let Some(event) = parser.feed_line(&l) {
+                                        if tx.blocking_send(event).is_err() {
+                                            break;
                                         }
-                                        current_props.clear();
-                                    } else if let Some((k, v)) = l.split_once('=') {
-                                        current_props.insert(k.to_string(), v.to_string());
                                     }
                                 }
                                 Err(_) => break,
@@ -227,6 +184,113 @@ impl EventSource for UsbEventSource {
         Self::kill_child(&self.child);
         Ok(())
     }
+}
+
+/// Emitter of a `udevadm monitor` block, named by the block header line
+/// (`KERNEL[ts] add /devices/...` vs `UDEV  [ts] add /devices/...`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(target_os = "linux", test))]
+enum MonitorBlockSource {
+    Kernel,
+    Udev,
+}
+
+/// Classify a `udevadm monitor --property` line as a block header.
+/// Header lines carry the emitter tag followed by a `[` (`KERNEL[ts] ...`,
+/// `UDEV  [ts] ...`); property lines are KEY=value and banner lines lack
+/// the bracket — all three must not match.
+#[cfg(any(target_os = "linux", test))]
+fn parse_block_header(line: &str) -> Option<MonitorBlockSource> {
+    if line.starts_with("KERNEL[") {
+        Some(MonitorBlockSource::Kernel)
+    } else if line.starts_with("UDEV") && line.contains('[') {
+        Some(MonitorBlockSource::Udev)
+    } else {
+        None
+    }
+}
+
+/// Streaming parser for `udevadm monitor --property` stdout. Feed lines as
+/// they arrive; each completed block (blank-line terminated) surfaces as at
+/// most one DeviceEvent. Kept as a plain struct so the parse rules stay
+/// testable off-Linux (the spawn path is cfg(linux)-only).
+#[derive(Default)]
+#[cfg(any(target_os = "linux", test))]
+struct MonitorParser {
+    props: HashMap<String, String>,
+    source: Option<MonitorBlockSource>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl MonitorParser {
+    /// Feed one raw stdout line; returns the event for a completed block.
+    fn feed_line(&mut self, raw: &str) -> Option<DeviceEvent> {
+        let line = raw.trim();
+        if line.is_empty() {
+            let event = if self.props.is_empty() {
+                None
+            } else {
+                block_to_event(self.source, &self.props)
+            };
+            self.props.clear();
+            self.source = None;
+            return event;
+        }
+        if let Some(source) = parse_block_header(line) {
+            self.source = Some(source);
+        } else if let Some((k, v)) = line.split_once('=') {
+            self.props.insert(k.to_string(), v.to_string());
+        }
+        None
+    }
+}
+
+/// Map one accumulated property block to a DeviceEvent.
+///
+/// Only UDEV-source blocks surface as events: `udevadm monitor --property`
+/// prints every physical transition twice — the raw kernel uevent (KERNEL
+/// block, sparse properties, no hwdb lookups) and the rule-processed udev
+/// event (UDEV block, full property set). Emitting both duplicated every
+/// notification (and the KERNEL block rendered as an "Unknown Device").
+/// Skipping KERNEL loses no property — the UDEV block is the same physical
+/// event with the enriched set (BUG-20261030-194).
+///
+/// Actions other than add/remove/change (bind/unbind driver attachment,
+/// online/offline power transitions) are not physical connect/disconnect
+/// transitions — surfacing them would fabricate "Device Connected"
+/// notifications, so they produce no event.
+#[cfg(any(target_os = "linux", test))]
+fn block_to_event(
+    source: Option<MonitorBlockSource>,
+    props: &HashMap<String, String>,
+) -> Option<DeviceEvent> {
+    if source != Some(MonitorBlockSource::Udev) {
+        return None;
+    }
+    let action = match props.get("ACTION").map(|s| s.as_str()) {
+        Some("add") => Action::Add,
+        Some("remove") => Action::Remove,
+        Some("change") => Action::Change,
+        _ => return None,
+    };
+    Some(DeviceEvent {
+        action,
+        kind: Kind::Usb,
+        device_id: props.get("DEVPATH").cloned().unwrap_or_default(),
+        vendor: props
+            .get("ID_VENDOR_FROM_DATABASE")
+            .or_else(|| props.get("ID_VENDOR"))
+            .cloned()
+            .unwrap_or_default(),
+        product: props
+            .get("ID_MODEL_FROM_DATABASE")
+            .or_else(|| props.get("ID_MODEL"))
+            .cloned()
+            .unwrap_or_default(),
+        serial: props.get("ID_SERIAL_SHORT").cloned().unwrap_or_default(),
+        capabilities: props.get("ID_USB_INTERFACES").cloned().unwrap_or_default(),
+        raw: props.clone(),
+    })
 }
 
 #[cfg(test)]

@@ -485,3 +485,134 @@ fn test_device_event_format_bluetooth_add() {
     assert!(msg.contains("Serial: BT-SN-001"));
     assert!(msg.contains("Capabilities: audio"));
 }
+
+// ---- BUG-20261030-194: KERNEL/UDEV double-block duplicate events ----
+//
+// `udevadm monitor --property` prints every physical event twice: the raw
+// kernel uevent (KERNEL block, sparse properties — no hwdb lookups) and the
+// rule-processed udev event (UDEV block, full property set). Block-level
+// event emission therefore duplicated every notification (and the KERNEL
+// block surfaced as an "Unknown Device" because it lacks the ID_*_FROM_
+// DATABASE enrichment).
+
+/// Realistic `udevadm monitor --property` capture for one USB stick plug-in
+/// (banner + KERNEL block + UDEV block, blank-line terminated).
+const KERNEL_UDEV_ADD_SAMPLE: &str = "\
+monitor will print the received events for:
+UDEV - the event which udev sends out after rule processing
+KERNEL - the kernel uevent
+
+KERNEL[7341.176970] add      /devices/pci0000:00/0000:00:14.0/usb1/1-2 (usb)
+ACTION=add
+DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-2
+SUBSYSTEM=usb
+SEQNUM=2244
+DEVNAME=/dev/bus/usb/001/004
+DEVTYPE=usb_device
+PRODUCT=781/9200/100
+
+UDEV  [7341.191233] add      /devices/pci0000:00/0000:00:14.0/usb1/1-2 (usb)
+ACTION=add
+DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-2
+SUBSYSTEM=usb
+DEVNAME=/dev/bus/usb/001/004
+DEVTYPE=usb_device
+PRODUCT=781/9200/100
+ID_VENDOR=SanDisk
+ID_VENDOR_FROM_DATABASE=SanDisk Corp.
+ID_MODEL=Cruzer_Blade
+ID_MODEL_FROM_DATABASE=Cruzer Blade
+ID_SERIAL_SHORT=4C531001590211109394
+ID_USB_INTERFACES=:080650:
+
+";
+
+/// UDEV block for ACTION=bind (driver attachment — not a physical
+/// connect/disconnect transition).
+const UDEV_BIND_SAMPLE: &str = "\
+UDEV  [7342.011002] bind      /devices/pci0000:00/0000:00:14.0/usb1/1-2 (usb)
+ACTION=bind
+DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-2
+SUBSYSTEM=usb
+DEVNAME=/dev/bus/usb/001/004
+DRIVER=usb
+ID_VENDOR_FROM_DATABASE=SanDisk Corp.
+
+";
+
+fn feed_sample(parser: &mut MonitorParser, sample: &str) -> Vec<DeviceEvent> {
+    let mut events = Vec::new();
+    for line in sample.lines() {
+        if let Some(ev) = parser.feed_line(line) {
+            events.push(ev);
+        }
+    }
+    events
+}
+
+#[test]
+fn bug194_kernel_and_udev_blocks_yield_single_event() {
+    let mut parser = MonitorParser::default();
+    let events = feed_sample(&mut parser, KERNEL_UDEV_ADD_SAMPLE);
+    assert_eq!(
+        events.len(),
+        1,
+        "one physical plug-in (KERNEL+UDEV double block) must surface exactly one event"
+    );
+    // The surviving event is the UDEV block with the enriched property set
+    // (not the sparse KERNEL block that would render as "Unknown Device").
+    assert_eq!(events[0].action, Action::Add);
+    assert_eq!(events[0].vendor, "SanDisk Corp.");
+    assert_eq!(events[0].product, "Cruzer Blade");
+    assert_eq!(events[0].serial, "4C531001590211109394");
+    assert_eq!(
+        events[0].device_id,
+        "/devices/pci0000:00/0000:00:14.0/usb1/1-2"
+    );
+}
+
+#[test]
+fn bug194_udev_remove_block_yields_remove_event() {
+    let sample = "\
+UDEV  [7350.400112] remove   /devices/pci0000:00/0000:00:14.0/usb1/1-2 (usb)
+ACTION=remove
+DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-2
+SUBSYSTEM=usb
+ID_VENDOR_FROM_DATABASE=SanDisk Corp.
+ID_MODEL_FROM_DATABASE=Cruzer Blade
+
+";
+    let mut parser = MonitorParser::default();
+    let events = feed_sample(&mut parser, sample);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, Action::Remove);
+    assert!(events[0].format_message().contains("Disconnected"));
+}
+
+#[test]
+fn bug194_bind_action_not_surfaced_as_connected() {
+    let mut parser = MonitorParser::default();
+    let events = feed_sample(&mut parser, UDEV_BIND_SAMPLE);
+    assert!(
+        events.is_empty(),
+        "driver bind/unbind must not surface as a device notification, got {:?}",
+        events
+    );
+}
+
+#[test]
+fn bug194_kernel_only_block_surfaces_nothing() {
+    // A monitor configured to only print kernel uevents (or a udev rule
+    // failure swallowing the UDEV block) must not fake an event out of the
+    // sparse KERNEL block either.
+    let sample = "\
+KERNEL[7341.176970] add      /devices/pci0000:00/0000:00:14.0/usb1/1-2 (usb)
+ACTION=add
+DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-2
+SUBSYSTEM=usb
+
+";
+    let mut parser = MonitorParser::default();
+    let events = feed_sample(&mut parser, sample);
+    assert!(events.is_empty());
+}
