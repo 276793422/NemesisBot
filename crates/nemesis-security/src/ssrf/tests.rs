@@ -113,6 +113,52 @@ fn test_private_ip_blocked() {
 }
 
 // =======================================================================
+// IPv4-mapped IPv6（BUG-20261029-186）：::ffff:0:0/96 双栈翻译形态
+// =======================================================================
+
+/// `::ffff:127.0.0.1` 等映射形态在双栈 socket 上按内嵌 IPv4 连接；
+/// 不归一则 std 的 V6 分类（is_loopback 只认 ::1 等）全部漏放 —— SSRF
+/// 旁路。修复后分类必须与内嵌 IPv4 同判。
+#[test]
+fn test_ipv4_mapped_ipv6_blocked() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    // loopback 映射（点分与十六进制两种字面形态）
+    assert!(guard.check_ip("::ffff:127.0.0.1").is_err());
+    assert!(guard.check_ip("::ffff:7f00:1").is_err());
+    // 私网映射（RFC 1918 三段）
+    assert!(guard.check_ip("::ffff:10.0.0.1").is_err());
+    assert!(guard.check_ip("::ffff:192.168.1.1").is_err());
+    assert!(guard.check_ip("::ffff:172.16.0.1").is_err());
+    // 云元数据映射
+    assert!(guard.check_ip("::ffff:169.254.169.254").is_err());
+    // 链路本地映射
+    assert!(guard.check_ip("::ffff:169.254.1.1").is_err());
+    // 未指定/保留映射
+    assert!(guard.check_ip("::ffff:0.0.0.0").is_err());
+    // URL 级：bracket 形态走完整 validate_url 管线（无 DNS 参与）
+    assert!(
+        guard
+            .validate_url("http://[::ffff:127.0.0.1]:49000/")
+            .is_err()
+    );
+    assert!(
+        guard
+            .validate_url("http://[::ffff:169.254.169.254]/meta")
+            .is_err()
+    );
+}
+
+/// 真 IPv6 不受归一影响：公网 V6 字面量（非映射、非保留）照常放行。
+#[test]
+fn test_real_ipv6_unaffected_by_mapping_normalization() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    // 2606:4700::1111（公网单播）——check_ip 不做 DNS，纯分类。
+    assert!(guard.check_ip("2606:4700::1111").is_ok());
+    // 真 V4 公网同样放行。
+    assert!(guard.check_ip("93.184.216.34").is_ok());
+}
+
+// =======================================================================
 // validate_url — metadata blocked
 // =======================================================================
 

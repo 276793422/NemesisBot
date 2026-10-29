@@ -101,6 +101,21 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
     }
 }
 
+/// IPv4-mapped IPv6（`::ffff:0:0/96`）归一为内嵌 IPv4 地址；其余原样返回。
+///
+/// 双栈 socket 连接 `::ffff:127.0.0.1` 时 OS 按内嵌 IPv4 翻译——而 std 的
+/// V6 分类（`is_loopback` 只认 `::1` 等）对映射形态全部漏放，构成 SSRF
+/// 旁路（BUG-20261029-186）。IP 分类入口必须先过本函数再判定。
+pub fn normalize_ipv4_mapped(ip: &IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or_else(|| IpAddr::V6(*v6)),
+        other => *other,
+    }
+}
+
 fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
     let octets = ip.octets();
 
