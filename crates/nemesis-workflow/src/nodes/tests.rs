@@ -4821,10 +4821,11 @@ async fn w4a_loop_child_failed_without_error_uses_generic_message() {
         .execute(&node, &HashMap::new(), &empty_wf_ctx())
         .await
         .unwrap();
-    // Actual contract: the loop node itself stays Completed; child failure is
-    // surfaced ONLY through `error` (the scheduler keys failure off
-    // result.error, mirroring the sub_workflow contract).
-    assert_eq!(result.state, ExecutionState::Completed);
+    // Actual contract: the loop node reports Failed when it aborted mid-run
+    // (honest failure, mirroring every other executor). The scheduler keys
+    // off `state != Failed` — an error string alone would be silently
+    // dropped on the success arm.
+    assert_eq!(result.state, ExecutionState::Failed);
     let err = result.error.unwrap();
     assert!(
         err.contains("loop iteration 0 node boom failed"),
@@ -4832,6 +4833,84 @@ async fn w4a_loop_child_failed_without_error_uses_generic_message() {
     );
     // failed before completing iteration 1
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn r151_loop_midway_failure_reports_failed_state() {
+    // Iteration 1 succeeds, iteration 2 hits a failing child: the loop node
+    // must report Failed (not Completed) with partial progress preserved —
+    // downstream branching and the scheduler's retry path key off `state`.
+    let registry = Arc::new(NodeExecutorRegistry::new());
+    let fail_after = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    struct FailEveryThird {
+        count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl NodeExecutor for FailEveryThird {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            let now = Local::now();
+            let n = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 2 {
+                Ok(NodeResult {
+                    node_id: node.id.clone(),
+                    output: serde_json::Value::Null,
+                    error: Some("iteration 2 exploded".to_string()),
+                    state: ExecutionState::Failed,
+                    started_at: now,
+                    ended_at: Local::now(),
+                    metadata: HashMap::new(),
+                })
+            } else {
+                Ok(NodeResult {
+                    node_id: node.id.clone(),
+                    output: serde_json::json!({ "n": n }),
+                    error: None,
+                    state: ExecutionState::Completed,
+                    started_at: now,
+                    ended_at: Local::now(),
+                    metadata: HashMap::new(),
+                })
+            }
+        }
+    }
+    registry.register(
+        "r151_fail_every_third",
+        Arc::new(FailEveryThird {
+            count: Arc::clone(&fail_after),
+        }),
+    );
+    let exec = LoopNodeExecutor::new(Arc::clone(&registry));
+
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(5));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "child", "node_type": "r151_fail_every_third" }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    // The child's own error message is passed through verbatim (the
+    // "loop iteration N node X" prefix is only synthesized for Err paths or
+    // silent child failures).
+    let err = result.error.unwrap();
+    assert!(
+        err.contains("iteration 2 exploded"),
+        "unexpected error: {err}"
+    );
+    // Iterations i=0 and i=1 completed; the run aborted at i=2 (before
+    // counting it), and last_output keeps the last successful iteration's
+    // output.
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
+    assert_eq!(result.output["last_output"]["n"], serde_json::json!(1));
 }
 
 /// Spawn a one-shot raw HTTP server on 127.0.0.1 returning `body`.

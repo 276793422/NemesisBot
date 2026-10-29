@@ -1531,11 +1531,21 @@ impl NodeExecutor for LoopNodeExecutor {
             output["items_iterated"] = serde_json::json!(actual_iterations);
         }
 
+        // Honest failure: when the loop aborted mid-run, report Failed so the
+        // scheduler's retry / failure-tracking path runs and downstream nodes
+        // can branch on the failure. Reporting Completed with `error: Some`
+        // would silently swallow the failure (the scheduler keys off `state`).
+        let state = if loop_error.is_some() {
+            ExecutionState::Failed
+        } else {
+            ExecutionState::Completed
+        };
+
         Ok(NodeResult {
             node_id: node.id.clone(),
             output,
             error: loop_error,
-            state: ExecutionState::Completed,
+            state,
             started_at: now,
             ended_at: Local::now(),
             metadata: HashMap::new(),
@@ -1644,12 +1654,12 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
             output_map.insert(node_id.clone(), nr.output.clone());
         }
 
-        // When the child execution failed, surface an error string so the
-        // scheduler's retry / failure-tracking logic (which keys off
-        // `result.error`) can propagate the failure to the parent execution.
-        // Without this, a Failed child state would be silently swallowed
-        // because the scheduler treats `Ok(result) where error.is_none()` as
-        // success regardless of `result.state`.
+        // When the child execution failed, surface an error string alongside
+        // the Failed state so parent-side retry / failure-tracking has a
+        // concrete cause message. Failure propagation itself keys off
+        // `state: exec_result.state` (the scheduler branches on
+        // `state != Failed`), not off `error`; without the state passthrough
+        // a Failed child would be treated as success regardless of `error`.
         let error = if exec_result.state == ExecutionState::Failed {
             Some(
                 exec_result
@@ -3498,6 +3508,15 @@ impl NodeExecutor for LoopNodeStub {
             actual_iterations = i + 1;
         }
 
+        // Honest failure: mirror LoopNodeExecutor — report Failed when the
+        // loop aborted mid-run so the scheduler's retry / failure-tracking
+        // path runs instead of treating the node as completed.
+        let state = if loop_error.is_some() {
+            ExecutionState::Failed
+        } else {
+            ExecutionState::Completed
+        };
+
         Ok(NodeResult {
             node_id: node.id.clone(),
             output: serde_json::json!({
@@ -3505,7 +3524,7 @@ impl NodeExecutor for LoopNodeStub {
                 "last_output": last_output,
             }),
             error: loop_error,
-            state: ExecutionState::Completed,
+            state,
             started_at: now,
             ended_at: Local::now(),
             metadata: HashMap::new(),

@@ -2328,9 +2328,15 @@ impl WorkflowEngine {
     ///
     /// When `workflow_name` is empty, returns all executions. Otherwise,
     /// returns only executions for the specified workflow.
+    ///
+    /// Result is ordered newest-first (`started_at` descending, `id`
+    /// descending as tie-break). The backing map is a `HashMap` with no
+    /// inherent order — without an explicit sort, consumers that truncate to
+    /// a limit (REST / WSAPI `limit` param) would take an arbitrary,
+    /// unstable subset.
     pub async fn list_executions(&self, workflow_name: Option<&str>) -> Vec<Execution> {
         let execs = self.executions.read().await;
-        execs
+        let mut listed: Vec<Execution> = execs
             .values()
             .filter(|exec| {
                 workflow_name
@@ -2338,7 +2344,13 @@ impl WorkflowEngine {
                     .unwrap_or(true)
             })
             .cloned()
-            .collect()
+            .collect();
+        listed.sort_by(|a, b| {
+            b.started_at
+                .cmp(&a.started_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        listed
     }
 
     // -----------------------------------------------------------------------

@@ -663,6 +663,49 @@ async fn test_list_executions_empty() {
     assert!(all.is_empty());
 }
 
+#[tokio::test]
+async fn r152_list_executions_newest_first_with_id_tiebreak() {
+    // The backing map is a HashMap (unordered); list_executions must sort
+    // newest-first so REST/WSAPI consumers that truncate to `limit` get the
+    // latest runs, deterministically.
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "r152wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    let mut ids_in_start_order = Vec::new();
+    for _ in 0..3 {
+        let handle = engine
+            .start_execution("r152wf", HashMap::new())
+            .await
+            .unwrap();
+        ids_in_start_order.push(handle.id);
+        // Ensure distinct started_at timestamps (chrono has ns precision but
+        // back-to-back calls can still land on the same tick).
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+
+    let listed = engine.list_executions(None).await;
+    assert_eq!(listed.len(), 3);
+    let listed_ids: Vec<&str> = listed.iter().map(|e| e.id.as_str()).collect();
+    let expected_newest_first: Vec<&str> = ids_in_start_order
+        .iter()
+        .rev()
+        .map(|s| s.as_str())
+        .collect();
+    assert_eq!(
+        listed_ids, expected_newest_first,
+        "list must be newest-first so `limit` truncation keeps the latest runs"
+    );
+
+    // limit semantics: an arbitrary truncate must now yield the newest subset.
+    let limited: Vec<&str> = listed.iter().take(2).map(|e| e.id.as_str()).collect();
+    assert_eq!(limited, &expected_newest_first[..2]);
+}
+
 // -----------------------------------------------------------------------
 // close tests
 // -----------------------------------------------------------------------
