@@ -232,6 +232,111 @@ fn test_extract_paths_from_args() {
     assert!(paths2.contains(&"/home/user/file.txt".to_string()));
 }
 
+// BUG-20261029-171 红证：multiedit 载荷内嵌 edits[].path（顶层无
+// path/file_path 键），缺臂 = 路径提取恒空（目标文件不进扫描）。
+// BUG-20261028-118 在 extract_target（ABAC/审计面）修过同族漂移，本表漏改。
+#[test]
+fn test_extract_paths_from_args_multiedit() {
+    let chain = ScanChain::with_defaults();
+    let args = serde_json::json!({"edits": [
+        {"path": "/tmp/a.txt", "old_text": "x", "new_text": "y"},
+        {"path": "/tmp/b.txt", "old_text": "z", "new_text": "w"},
+        {"path": "/tmp/a.txt", "old_text": "p", "new_text": "q"}
+    ]});
+    let paths = chain.extract_paths_from_args("multiedit", &args);
+    // 全部条目提取、去重保序（同一文件多条编辑不重复扫描）。
+    assert_eq!(paths, vec!["/tmp/a.txt", "/tmp/b.txt"]);
+
+    // 异常入参诚实回落空（缺 edits / edits 非数组 / 条目缺 path）。
+    assert!(
+        chain
+            .extract_paths_from_args("multiedit", &serde_json::json!({}))
+            .is_empty()
+    );
+    assert!(
+        chain
+            .extract_paths_from_args("multiedit", &serde_json::json!({"edits": "nope"}))
+            .is_empty()
+    );
+}
+
+/// 感染型 Mock（scan_file/scan_content 恒报 EICAR）——
+/// scan_tool_invocation 拦截臂测试用（StubScanner 恒干净测不出拦截）。
+struct InfectedMock;
+
+#[async_trait::async_trait]
+impl VirusScanner for InfectedMock {
+    fn name(&self) -> &str {
+        "infectedmock"
+    }
+    async fn get_info(&self) -> EngineInfo {
+        EngineInfo {
+            name: "infectedmock".to_string(),
+            version: String::new(),
+            address: String::new(),
+            ready: true,
+            start_time: String::new(),
+        }
+    }
+    async fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn is_ready(&self) -> bool {
+        true
+    }
+    async fn scan_file(&self, path: &Path) -> ScanResult {
+        ScanResult::with_threats("infectedmock", "EICAR", &path.to_string_lossy())
+    }
+    async fn scan_content(&self, _content: &[u8]) -> ScanResult {
+        ScanResult::with_threats("infectedmock", "EICAR", "")
+    }
+    async fn scan_directory(&self, _dir: &Path) -> Vec<ScanResult> {
+        Vec::new()
+    }
+    async fn get_database_status(&self) -> DatabaseStatus {
+        DatabaseStatus::default()
+    }
+    async fn update_database(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn get_stats(&self) -> std::collections::HashMap<String, serde_json::Value> {
+        std::collections::HashMap::new()
+    }
+}
+
+// BUG-20261029-171 红证：multiedit 待写内容在 edits[].new_text（顶层无
+// content 键，写系 content 臂取不到）= 内容不扫即放行。
+#[tokio::test]
+async fn test_scan_tool_invocation_multiedit_blocked() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(InfectedMock));
+    chain.set_enabled(true);
+
+    let args = serde_json::json!({"edits": [
+        {"path": "/tmp/a.txt", "old_text": "", "new_text": "X5O!P%@AP[EICAR]"}
+    ]});
+    let (allowed, error) = chain.scan_tool_invocation("multiedit", &args).await;
+    assert!(!allowed);
+    let err = error.expect("virus block reason");
+    assert!(err.contains("virus detected"), "{err}");
+
+    // 空 new_text 条目不触发误拦（干净链路上空载荷放行）。
+    let mut clean_chain = ScanChain::with_defaults();
+    clean_chain.add_engine(Box::new(StubScanner));
+    clean_chain.set_enabled(true);
+    let empty_args = serde_json::json!({"edits": [
+        {"path": "/tmp/a.txt", "old_text": "x", "new_text": ""}
+    ]});
+    let (allowed, error) = clean_chain
+        .scan_tool_invocation("multiedit", &empty_args)
+        .await;
+    assert!(allowed);
+    assert!(error.is_none());
+}
+
 #[tokio::test]
 async fn test_scan_tool_invocation_clean() {
     let mut chain = ScanChain::with_defaults();

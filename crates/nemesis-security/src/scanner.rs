@@ -1772,6 +1772,31 @@ impl ScanChain {
                     }
                 }
             }
+            // BUG-20261029-171：multiedit 待写内容内嵌 edits[].new_text
+            // （顶层无 content 键，写系 content 臂取不到；本函数头的
+            // file_path 扩展名闸读顶层 path/save_path，对 multiedit 恒空
+            // 不适用）——逐条扫 new_text，不过扩展名闸（over-approve，
+            // 与 Layer 7 主拦截的 content 臂同构）。
+            "multiedit" => {
+                if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
+                    for edit in edits {
+                        if let Some(new_text) = edit.get("new_text").and_then(|v| v.as_str())
+                            && !new_text.is_empty()
+                        {
+                            let result = self.scan_content(new_text.as_bytes()).await;
+                            if result.blocked {
+                                return (
+                                    false,
+                                    Some(format!(
+                                        "virus detected by {}: multiedit new_text (virus: {})",
+                                        result.engine, result.virus
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1809,6 +1834,21 @@ impl ScanChain {
                     for part in cmd.split_whitespace() {
                         if part.contains('/') || part.contains('\\') || part.contains('.') {
                             paths.push(part.to_string());
+                        }
+                    }
+                }
+            }
+            // BUG-20261029-171：multiedit 载荷内嵌 edits[].path（顶层无
+            // path/file_path 键），缺臂 = 目标文件不进路径扫描。
+            // BUG-20261028-118 在 extract_target（ABAC/审计面）修过同族
+            // 漂移，本表漏改——同类白名单式 match 表新工具必须同步补臂。
+            "multiedit" => {
+                if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
+                    for edit in edits {
+                        if let Some(path) = edit.get("path").and_then(|v| v.as_str())
+                            && !paths.contains(&path.to_string())
+                        {
+                            paths.push(path.to_string());
                         }
                     }
                 }

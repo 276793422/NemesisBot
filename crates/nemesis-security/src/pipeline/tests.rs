@@ -1410,6 +1410,33 @@ async fn test_plugin_execute_layer7_blocks_infected_path() {
     assert!(e.summary.contains("/tmp/dl.exe"), "{}", e.summary);
 }
 
+// BUG-20261029-171 红证：multiedit 待写内容内嵌 edits[].new_text（顶层
+// 无 content/data/body/html 键，上方键循环取不到）+ extract_paths 无
+// multiedit 臂——双盲区 = multiedit 写盘内容完全绕过 Layer 7（write_file
+// 拦得住的 multiedit 拦不住；BUG-20261028-118 同族漂移在扫描面复发）。
+// content-only 引擎隔离内容臂：file 臂恒干净，命中必来自 new_text 扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_blocks_infected_multiedit_content() {
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "multiedit".to_string(),
+        args: serde_json::json!({"edits": [
+            {"path": "/tmp/out.txt", "old_text": "", "new_text": "X5O!P%@AP[EICAR]"}
+        ]}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("virus scanner"), "{}", e.summary);
+    assert!(e.summary.contains("new_text"), "{}", e.summary);
+}
+
 #[tokio::test]
 #[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_detects_threat() {

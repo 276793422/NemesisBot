@@ -1053,6 +1053,36 @@ impl SecurityPlugin {
                     }
                 }
 
+                // BUG-20261029-171：multiedit 待写内容内嵌 edits[].new_text
+                // （顶层无 content/data/body/html 键，上方键循环取不到）——
+                // 缺此段 = multiedit 写盘内容完全绕过病毒扫描（write_file
+                // 拦得住的 multiedit 拦不住；BUG-20261028-118 同族漂移在
+                // 扫描面复发）。逐条扫，命中即拦。
+                if tool_name == "multiedit"
+                    && let Some(edits) = args.get("edits").and_then(|v| v.as_array())
+                {
+                    for edit in edits {
+                        if let Some(new_text) = edit.get("new_text").and_then(|v| v.as_str())
+                            && !new_text.is_empty()
+                        {
+                            let result = rt.block_on(chain.scan_content(new_text.as_bytes()));
+                            if result.blocked {
+                                return Some((
+                                    false,
+                                    Some(deny_info(
+                                        "virus",
+                                        "virus_scanner",
+                                        format!(
+                                            "operation blocked by virus scanner: threat detected in multiedit new_text (engine: {})",
+                                            result.engine
+                                        ),
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 None
             });
 
