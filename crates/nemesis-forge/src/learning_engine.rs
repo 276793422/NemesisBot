@@ -1265,11 +1265,12 @@ impl LearningEngine {
         };
 
         // Iterative refinement loop
-        let max_refine = if self.config.learning.max_auto_creates > 0 {
-            self.config.learning.max_auto_creates.min(3)
-        } else {
-            3
-        };
+        // （BUG-20261029-189：refine 轮数预算此前误读 `max_auto_creates`
+        // ——那是「每周期自动创建上限」（run_cycle 的 max_auto 闸），不是
+        // refine 轮数，用户配的 max_refine_rounds 被无视。与私有
+        // execute_create_skill（读 max_refine_rounds）同字段收口：两条
+        // 平行 create 路径的同一语义旋钮必须同源，R17 同步演进纪律。）
+        let max_refine = self.config.learning.max_refine_rounds;
 
         // Arc clone 后立即放锁（F-M7 同款模式）：迭代 refine 是 30s+ 墙钟
         // 的 LLM 调用，持 pipeline 锁跨 LLM 会把并发路径（observe/reflect

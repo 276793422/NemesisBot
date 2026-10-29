@@ -2683,16 +2683,14 @@ async fn test_s8_get_latest_cycle_from_store() {
     }
 }
 
-/// execute_create_skill_action (public wrapper) variants with max_auto_creates=0
-/// (default refine budget): happy deploy, refine-error failure, and the
-/// no-pipeline draft registration.
+/// execute_create_skill_action (public wrapper) variants: happy deploy,
+/// refine-error failure, and the no-pipeline draft registration.
 #[test]
 fn test_s8_execute_create_skill_action_variants() {
     // Happy path: valid draft deploys through the pipeline.
     {
         let dir = tempfile::tempdir().unwrap();
-        let mut config = ForgeConfig::default();
-        config.learning.max_auto_creates = 0; // -> default 3 refine rounds
+        let config = ForgeConfig::default();
         let (engine, registry) = s8_engine(dir.path(), config);
         engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
             ForgeConfig::default(),
@@ -2765,6 +2763,40 @@ fn test_s8_execute_create_skill_action_variants() {
             "no-pipeline path should register a Draft artifact"
         );
     }
+}
+
+/// BUG-20261029-189 红证：公开门面 refine 轮数预算必须读
+/// `learning.max_refine_rounds`（与私有 execute_create_skill 同一字段）。
+/// 修复前误读 `max_auto_creates`（每周期自动创建上限）——0 落 else 臂
+/// 拿到 3 轮预算，坏稿照样 refine 成功部署，max_refine_rounds 被无视。
+#[test]
+fn test_s8_public_refine_budget_reads_max_refine_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learning.max_refine_rounds = 0; // 零 refine 预算：仅一次验证机会
+    config.learning.max_auto_creates = 0; // 修复前该值被误当 refine 预算（=3）
+    let (engine, registry) = s8_engine(dir.path(), config);
+    engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    )));
+    // 第二个 LLM 响应（VALID）只有 refine 预算 >0 才会被消费：
+    // 修复后预算 0 → 不 refine → failed；修复前预算 3 → refine → executed。
+    engine.set_provider(Arc::new(S8QueueLLM::new(vec![
+        Ok(S8_BAD_DRAFT.to_string()),
+        Ok(S8_VALID_DRAFT.to_string()),
+    ])));
+    let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+    action.draft_name = Some("s8-refine-budget".into());
+    let result = engine.execute_create_skill_action(&action);
+    assert_eq!(
+        result.status, "failed",
+        "max_refine_rounds=0 must not refine the failed draft"
+    );
+    assert!(
+        result.error_msg.unwrap().contains("0 refinement rounds"),
+        "failure must report the actual (zero) refine budget"
+    );
 }
 
 /// generate_skill_name with a chain whose compressed form exceeds 50 chars —

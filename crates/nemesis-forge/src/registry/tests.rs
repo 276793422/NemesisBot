@@ -566,3 +566,55 @@ fn test_s8_add_existing_non_numeric_patch_version_bumps_with_suffix() {
     registry.add(a2);
     assert_eq!(registry.get(&id).unwrap().version, "0.1.0rc1.1");
 }
+
+/// BUG-20261029-188 红证：replace（版本 bump）= 新一代产物，评估账本
+/// （usage_count/success_rate/consecutive_observing_rounds/last_degraded_at/
+/// last_efficacy）是 per-version 状态，必须重置——旧实现跨代残留会让重建
+/// （Degraded/Archived 重蒸馏、dedup 过期重建）的新版本带着旧时代的
+/// success_rate 与 last_degraded_at cooldown 免疫进 monitor（未评估先判罚
+/// 或免罚），stale 实效快照还会顶替新代展示。deployed_at 盖重部署时刻
+/// （修复前全仓零写入点，monitor 的 before/after 实效窗退化为 created_at
+/// 全历史）。created_at 保留首代出生时间（账本不变量）。
+#[test]
+fn test_add_existing_resets_generation_ledger() {
+    let registry = Registry::new(RegistryConfig::default());
+    let a1 = make_artifact("ledger-test", ArtifactKind::Skill);
+    let id = registry.add(a1);
+
+    // 旧代走到 Degraded：负评压低 success_rate、留下 cooldown 时间戳、
+    // 观察计数与 stale 实效快照。
+    registry.update(&id, |a| {
+        a.status = ArtifactStatus::Degraded;
+        a.usage_count = 50;
+        a.success_rate = 0.1;
+        a.consecutive_observing_rounds = 2;
+        a.last_degraded_at = Some(chrono::Local::now().to_rfc3339());
+        a.last_efficacy = Some(nemesis_types::forge::EfficacySnapshot {
+            measured_at: chrono::Local::now().to_rfc3339(),
+            success_before: 0.4,
+            success_after: 0.2,
+            samples_before: 3,
+            samples_after: 5,
+            verdict: "negative".into(),
+        });
+    });
+
+    let created_at_gen1 = registry.get(&id).unwrap().created_at.clone();
+    let mut a2 = make_artifact("ledger-test", ArtifactKind::Skill);
+    a2.content = "regenerated".into();
+    registry.add(a2);
+
+    let gen2 = registry.get(&id).unwrap();
+    assert_eq!(gen2.version, "0.1.1");
+    assert_eq!(gen2.content, "regenerated");
+    // 评估账本归零（修复前：50 / 0.1 / 2 / Some / Some 全部残留）
+    assert_eq!(gen2.usage_count, 0);
+    assert_eq!(gen2.success_rate, 0.0);
+    assert_eq!(gen2.consecutive_observing_rounds, 0);
+    assert!(gen2.last_degraded_at.is_none(), "cooldown 免疫不得跨代残留");
+    assert!(gen2.last_efficacy.is_none(), "stale 实效快照不得跨代残留");
+    // deployed_at 盖重部署时刻（修复前恒 None——F 线实效窗锚点缺写入点）
+    assert!(gen2.deployed_at.is_some());
+    // created_at 保留首代出生时间
+    assert_eq!(gen2.created_at, created_at_gen1);
+}

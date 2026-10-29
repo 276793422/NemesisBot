@@ -335,3 +335,48 @@ async fn test_s8_append_empty_path_takes_no_parent_branch() {
     let result = store.append(&make_event("no-parent")).await;
     assert!(result.is_err());
 }
+
+/// BUG-20261029-187 配套：cleanup 重写后文件内容必须恰好是保留事件
+/// （JSONL 契约：每行合法 JSON 且以 \n 收尾，append 侧可继续追加），
+/// 且不留原子写临时残渣。注：旧实现（write+truncate 原地重写）在成功
+/// 路径上产出相同内容——本测试钉行为不回归；崩溃/并发丢失窗口的消除
+/// 由修复构造性保证（唯一临时名 + rename，与 experience_store F-D2 /
+/// registry F-D4 同族），单测无法注入 crash 验证。
+#[tokio::test]
+async fn test_cleanup_rewrite_content_and_no_tmp_residue() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traces.jsonl");
+    let store = TraceStore::new(&path);
+
+    let now = chrono::Local::now();
+    store
+        .append(&make_event_at(
+            "old_event",
+            now - chrono::Duration::days(10),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(&make_event_at("fresh_event", now))
+        .await
+        .unwrap();
+
+    let removed = store.cleanup(7).await.unwrap();
+    assert_eq!(removed, 1);
+
+    let content = tokio::fs::read_to_string(&path).await.unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 1, "only the fresh event line must remain");
+    let parsed: TraceEvent = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(parsed.event_type, "fresh_event");
+    assert!(content.ends_with('\n'), "JSONL lines must end with newline");
+
+    // 原子写临时文件不残留（write_file_atomic 的 .tmp-<pid>-<seq>- 形态）
+    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "tmp residue: {leftovers:?}");
+}

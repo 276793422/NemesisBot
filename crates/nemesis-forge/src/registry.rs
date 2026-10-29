@@ -56,13 +56,30 @@ impl Registry {
             .iter_mut()
             .find(|a| a.name == artifact.name && a.kind == artifact.kind)
         {
-            // Bump version
+            // 版本 bump = 新一代产物（BUG-20261029-188）：评估账本
+            // （usage_count/success_rate/consecutive_observing_rounds/
+            // last_degraded_at/last_efficacy）是 per-version 状态，必须重置
+            // ——跨代残留会让重建（Degraded/Archived 重蒸馏、dedup 过期
+            // 重建）的新版本带着旧时代的 success_rate 与 last_degraded_at
+            // cooldown 免疫进 monitor（未评估先判罚或免罚），stale 实效
+            // 快照还会顶替新代展示。deployed_at 盖重部署时刻——这是全仓
+            // 唯一写入点，monitor 的 before/after 实效窗（F 线「SPO 迭代
+            // 重部署独立实效窗」）由此锚定本代，不再退化为 created_at
+            // 全历史。created_at 保留首代出生时间（账本不变量：
+            // created=首生，updated=本代）。
             let new_version = Self::increment_version(&existing.version);
+            let now = chrono::Local::now().to_rfc3339();
             existing.version = new_version;
             existing.content = artifact.content;
             existing.tool_signature = artifact.tool_signature;
-            existing.updated_at = chrono::Local::now().to_rfc3339();
+            existing.updated_at = now.clone();
             existing.status = ArtifactStatus::Draft;
+            existing.usage_count = 0;
+            existing.success_rate = 0.0;
+            existing.consecutive_observing_rounds = 0;
+            existing.last_degraded_at = None;
+            existing.last_efficacy = None;
+            existing.deployed_at = Some(now);
             let id = existing.id.clone();
             drop(arts);
             self.save_sync();
