@@ -135,6 +135,10 @@ pub struct WebSocketChannel {
     accept_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Handles to all reader tasks. Aborted on stop().
     reader_tasks: Arc<parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// BUG-20261030-192（web 通道 C4 同款）：已做过「目标会话不属于当前
+    /// 连接」一次性 WARN 的 client_id 集合。断线重连后旧 chat_id 失效是
+    /// 常态，逐条 WARN 刷屏无信息量——每目标只 WARN 一次，后续降 debug。
+    dead_targets: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl WebSocketChannel {
@@ -151,6 +155,26 @@ impl WebSocketChannel {
             active_conn: Arc::new(parking_lot::Mutex::new(None)),
             accept_task: parking_lot::Mutex::new(None),
             reader_tasks: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            dead_targets: parking_lot::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// BUG-20261030-192（web 通道 C4 同款）：死目标会话一次性留痕——
+    /// 同 client_id 首次 WARN（带恢复路径说明），之后 debug。
+    fn note_dead_target(&self, target_id: &str, chat_id: &str) {
+        let first = self.dead_targets.lock().insert(target_id.to_string());
+        if first {
+            warn!(
+                client_id = %target_id,
+                chat_id = %chat_id,
+                "[WebSocketChannel] outbound target session is gone (client reconnected?); message kept in chat history only, further reports for this target downgraded to debug"
+            );
+        } else {
+            debug!(
+                client_id = %target_id,
+                chat_id = %chat_id,
+                "[WebSocketChannel] outbound target still gone; message kept in chat history only"
+            );
         }
     }
 }
@@ -438,6 +462,25 @@ impl Channel for WebSocketChannel {
             return Err(NemesisError::Channel(
                 "websocket channel not running".to_string(),
             ));
+        }
+
+        // BUG-20261030-192：出站归属校验——入站按 websocket:{client_id} 精确
+        // 寻址，出站必须对称校验：断线重连后旧 chat_id 的迟到回复若直投单槽
+        // （latest-wins 接管），会串到重连的新客户端（跨会话串台/信息泄露）。
+        // 分级：
+        // - 无 websocket: 前缀（跨通道 sync 镜像 / programmatic 直发）→ 直发；
+        // - 有前缀且 id 匹配当前连接 → 直发；
+        // - 有前缀且 id 不匹配 → 死目标软失败（C4 同款：一次性 WARN + 后续
+        //   debug + Ok，正文已由 agent 落 chat_log）。
+        if let Some(target_id) = msg.chat_id.strip_prefix("websocket:") {
+            let mismatch = {
+                let guard = self.active_conn.lock();
+                matches!(&*guard, Some(conn) if conn.client_id != target_id)
+            };
+            if mismatch {
+                self.note_dead_target(target_id, &msg.chat_id);
+                return Ok(());
+            }
         }
 
         let json = {

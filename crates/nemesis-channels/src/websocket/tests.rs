@@ -818,10 +818,27 @@ async fn test_websocket_send_with_active_client() {
 
     // Read welcome message
     let welcome = read.next().await.unwrap().unwrap();
-    match welcome {
-        Message::Text(t) => assert!(t.contains("Connected to NemesisBot")),
+    // BUG-20261030-192：出站按 chat_id 归属校验，chat_id 必须用欢迎帧里
+    // 的真实 client_id（服务端秒级时间戳），不能用字面量。Text 载荷是
+    // JSON——先反序列化取 content，再从文本里抠 id（对 JSON 原文 split 会
+    // 捞进尾随 JSON 垃圾）。
+    let client_id = match &welcome {
+        Message::Text(t) => {
+            let msg: ClientMessage = serde_json::from_str(t).expect("welcome is valid JSON");
+            assert!(
+                msg.content.contains("Connected to NemesisBot"),
+                "unexpected welcome: {}",
+                msg.content
+            );
+            msg.content
+                .split("Client ID: ")
+                .nth(1)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        }
         _ => panic!("expected text welcome message"),
-    }
+    };
+    assert!(!client_id.is_empty(), "welcome must carry client id");
 
     // Wait briefly to ensure the server has stored the active connection
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -829,7 +846,7 @@ async fn test_websocket_send_with_active_client() {
     // Now send should succeed
     let msg = OutboundMessage {
         channel: "websocket".to_string(),
-        chat_id: "websocket:client".to_string(),
+        chat_id: format!("websocket:{}", client_id),
         content: "hello from server".to_string(),
         message_type: String::new(),
         meta: Default::default(),
@@ -1655,4 +1672,92 @@ async fn s2_websocket_send_dead_sender_returns_disconnected_err() {
         "got: {}",
         err
     );
+}
+
+// ===========================================================================
+// BUG-20261030-192 (R244): send() 必须校验 chat_id 归属——断线重连后旧
+// 会话的迟到回复不得串到接管单槽的新客户端（入站按 websocket:{client_id}
+// 精确寻址，出站此前完全忽略 chat_id → 跨会话串台）。
+// ===========================================================================
+
+/// 旧会话 chat_id + 新客户端接管单槽 → 死目标软失败（Ok，不投递）。
+#[tokio::test]
+async fn bug192_send_mismatched_chat_id_soft_fails() {
+    let (bus_tx, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let ch = WebSocketChannel::new(WebSocketChannelConfig::default(), bus_tx);
+
+    // 新客户端接管单槽（latest-wins，client_id 不同于旧会话）
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    *ch.active_conn.lock() = Some(ActiveConnection {
+        send_tx: tx,
+        client_id: "client-new".to_string(),
+    });
+    ch.base.set_running(true);
+
+    // 旧会话（client-old）的迟到回复到达
+    let result = ch
+        .send(OutboundMessage::new(
+            "websocket",
+            "websocket:client-old",
+            "stale reply",
+        ))
+        .await;
+    assert!(
+        result.is_ok(),
+        "dead target must soft-fail Ok (C4 semantics), got: {:?}",
+        result.err()
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "stale reply must NOT reach the reconnected client"
+    );
+}
+
+/// chat_id 匹配当前连接 client_id → 正常投递（回归钉）。
+#[tokio::test]
+async fn bug192_send_matching_chat_id_delivers() {
+    let (bus_tx, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let ch = WebSocketChannel::new(WebSocketChannelConfig::default(), bus_tx);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    *ch.active_conn.lock() = Some(ActiveConnection {
+        send_tx: tx,
+        client_id: "client-cur".to_string(),
+    });
+    ch.base.set_running(true);
+
+    ch.send(OutboundMessage::new(
+        "websocket",
+        "websocket:client-cur",
+        "fresh reply",
+    ))
+    .await
+    .unwrap();
+    let delivered = rx
+        .try_recv()
+        .expect("matching chat_id must deliver to active client");
+    assert!(delivered.contains("fresh reply"));
+}
+
+/// chat_id 无 websocket: 前缀（跨通道 sync 镜像 / programmatic 直发）→
+/// 保持直发语义（回归钉，s2_websocket_send_dead_sender 同族形态）。
+#[tokio::test]
+async fn bug192_send_non_prefixed_chat_id_delivers() {
+    let (bus_tx, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let ch = WebSocketChannel::new(WebSocketChannelConfig::default(), bus_tx);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    *ch.active_conn.lock() = Some(ActiveConnection {
+        send_tx: tx,
+        client_id: "client-cur".to_string(),
+    });
+    ch.base.set_running(true);
+
+    ch.send(OutboundMessage::new("web", "web:other-session", "mirrored"))
+        .await
+        .unwrap();
+    let delivered = rx
+        .try_recv()
+        .expect("non-prefixed chat_id (sync mirror) must keep direct-send semantics");
+    assert!(delivered.contains("mirrored"));
 }
