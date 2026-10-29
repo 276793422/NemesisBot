@@ -83,6 +83,9 @@ where
 /// # Returns
 /// `Some(Ok(response))` on success, `Some(Err(error))` on failure, or `None` if
 /// the request body could not be cloned for retry.
+// http 门控（BUG 2026-10-30）：本文件唯一 reqwest 类型化函数——未启用 `http`
+// feature 的消费方（nemesis-guest musl 交叉构建）不编译它，reqwest 不进依赖图。
+#[cfg(feature = "http")]
 pub async fn do_request_with_retry_reqwest(
     client: &reqwest::Client,
     req: &reqwest::Request,

@@ -152,10 +152,10 @@ impl EventSource for UsbEventSource {
                         for line in reader.lines() {
                             match line {
                                 Ok(l) => {
-                                    if let Some(event) = parser.feed_line(&l) {
-                                        if tx.blocking_send(event).is_err() {
-                                            break;
-                                        }
+                                    if let Some(event) = parser.feed_line(&l)
+                                        && tx.blocking_send(event).is_err()
+                                    {
+                                        break;
                                     }
                                 }
                                 Err(_) => break,

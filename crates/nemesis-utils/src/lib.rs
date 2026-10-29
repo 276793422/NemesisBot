@@ -12,6 +12,9 @@ pub mod file;
 pub mod fsutil;
 pub mod http_retry;
 pub mod llm_error_class;
+// http 门控（BUG 2026-10-30）：media 模块核心是 reqwest 下载——未启用 `http`
+// feature 的消费方（nemesis-guest musl 交叉构建）不编译本模块。
+#[cfg(feature = "http")]
 pub mod media;
 pub mod message;
 // 有界管道排干（BUG 2026-10-29 横扫角度 B）：子进程 stdout/stderr 收集
@@ -30,10 +33,12 @@ pub mod zip_util;
 
 // Re-export the most commonly used functions
 pub use file::{ensure_dir, read_file_string, write_file_atomic};
+#[cfg(feature = "http")]
+pub use http_retry::do_request_with_retry_reqwest;
 pub use http_retry::{
-    RetryConfig, RetryableResponse, do_request_with_retry_reqwest, do_request_with_retry_simple,
-    should_retry, sleep_with_cancel,
+    RetryConfig, RetryableResponse, do_request_with_retry_simple, should_retry, sleep_with_cancel,
 };
+#[cfg(feature = "http")]
 pub use media::{
     DownloadOptions, detect_media_type, download_file, download_file_simple,
     download_file_with_opts, is_audio_file, sanitize_filename,

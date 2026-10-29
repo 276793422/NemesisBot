@@ -12,6 +12,9 @@
 #   4. 宿主构建 stdio 冒烟（本机可跑）+ x86_64-musl 在 Linux 宿主的功能
 #      冒烟；aarch64 产物只做头断言——「运行不承诺」双注明（本地无
 #      aarch64 运行环境；远程 aarch64 设备冒烟是后续项）。
+#   5. musl 依赖图纯度（BUG 2026-10-30）：依赖图不得含 C 代码 crate
+#      （ring / aws-lc-sys / libsqlite3-sys）——guest 保持纯 Rust，
+#      nemesis-utils 的 "http" feature 在 guest 树保持关闭。
 #
 # 用法（仓库根目录）：
 #   bash scripts/build-guest.sh                     # 双 musl 目标 + 宿主冒烟
@@ -83,6 +86,22 @@ for t in $TARGETS; do
         rustup target add "$t" || { echo "!! rustup target add $t 失败"; exit 1; }
     fi
 done
+
+step "musl 依赖图纯度绊线（C 依赖检查，BUG 2026-10-30）"
+# guest 必须保持纯 Rust（.cargo/config.toml 链接器注记的前提）：任何 C 代码
+# crate（ring / aws-lc-sys / libsqlite3-sys）进 musl 依赖图都会把交叉构建变成
+# C 工具链构建——无 musl-gcc 的机器死在 ring 编译段，有 musl-tools 的机器更糟：
+# 静默编过 = 纯 Rust 不变量被破坏且无任何报错。`cargo tree -i X` 在 X 在图中时
+# 退出 0（纯元数据查询，零编译），所以这里命令成功 = 绊线触发。
+for p in ring aws-lc-sys libsqlite3-sys; do
+    if cargo tree -p "$PKG" --target x86_64-unknown-linux-musl -i "$p" >/dev/null 2>&1; then
+        echo "!! guest musl 依赖图含 C 代码依赖: $p"
+        echo "   guest 必须保持纯 Rust——勿启用 nemesis-utils 的 http feature，"
+        echo "   或向 guest 依赖树添加任何 C 支撑的 crate"
+        exit 1
+    fi
+done
+echo "ok: musl 依赖图无 C 代码依赖（ring/aws-lc-sys/libsqlite3-sys）"
 
 step "宿主构建 + stdio 冒烟（本机形态，跨平台行为基准）"
 cargo build --release -p "$PKG" || { echo "!! 宿主构建失败"; exit 1; }
