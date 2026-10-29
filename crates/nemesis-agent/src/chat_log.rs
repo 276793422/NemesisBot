@@ -952,10 +952,13 @@ pub fn first_user_message(session_key: &str, max_chars: usize) -> Option<String>
 
 /// E4: record fork lineage (`parent` = source session key, `forked_at_turn`
 /// = the kept-turn count) in the sidecar meta. Upsert — preserves `title`.
+/// 重新上血缘同时解除 BUG-20261030-197 的 detach 封印位（「clear 是摘除
+/// 不是封禁」的镜像面：re-fork 后新摘要可照常落盘）。
 pub fn write_session_parent(session_key: &str, parent: &str, forked_at_turn: usize) {
     upsert_meta(session_key, |m| {
         m.parent = Some(parent.to_string());
         m.forked_at_turn = Some(forked_at_turn);
+        m.lineage_detached = false;
     });
 }
 
@@ -998,6 +1001,11 @@ pub fn write_session_rewind(
 /// WS9/P18：把分支摘要落盘（fork/rewind 丢弃后缀 ≥3 turn 时由小模型通道
 /// 生成；这里 trim + 空跳过 + 硬上限截断兜底——生成侧已按预算裁剪，此处
 /// 防御性二次钳制，两边共用 [`BRANCH_SUMMARY_MAX_CHARS`]）。
+/// BUG-20261030-197：detach 封印位在册时拒绝落盘——摘要 spawn 于
+/// detach 之前、LLM 往返数秒后才到这里，无条件 upsert 会把
+/// `clear_session_lineage` 刚摘除的 branch_summary 复活（Branch Context
+/// 恢复注入，detach 契约违约）。检查在 upsert 闭包内（META_LOCK 下
+/// check-then-write 原子）。
 pub fn write_session_branch_summary(session_key: &str, summary: &str) {
     let summary = summary.trim();
     if summary.is_empty() {
@@ -1005,6 +1013,9 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
     }
     let clipped: String = summary.chars().take(BRANCH_SUMMARY_MAX_CHARS).collect();
     upsert_meta(session_key, |m| {
+        if m.lineage_detached {
+            return;
+        }
         m.branch_summary = Some(clipped);
     });
 }
@@ -1104,7 +1115,9 @@ pub fn clear_session_project(session_key: &str) -> bool {
 /// 会话「脱离父分支」（2026-10-20）：摘除 fork 血缘四字段（parent /
 /// forked_at_turn / fork_reason / branch_summary），其余 meta（title /
 /// project 归属 / manual 标记 / last_rewind / snooze / undelivered）全部
-/// 保留。语义：
+/// 保留，并置 `lineage_detached` 封印位（BUG-20261030-197：挡住 spawn 于
+/// detach 之前的 in-flight 分支摘要迟到复活；write_session_parent 解除）。
+/// 语义：
 /// - meta 缺失 / 本就无血缘 = no-op 返 false（调用方诚实报「没有父分支」）；
 /// - 有血缘 = 读改写摘除（META_LOCK 下 check-then-write 原子，同
 ///   clear_session_project）；
@@ -1129,6 +1142,10 @@ pub fn clear_session_lineage(session_key: &str) -> bool {
     meta.forked_at_turn = None;
     meta.fork_reason = None;
     meta.branch_summary = None;
+    // BUG-20261030-197：封印位——spawn 于 detach 之前的分支摘要还在 LLM
+    // 途中，落盘时若不挡，branch_summary 会被复活、Branch Context 恢复
+    // 注入（detach 契约违约）。re-fork（write_session_parent）解除。
+    meta.lineage_detached = true;
     let path = meta_path(session_key);
     if let Err(e) = write_meta_file_atomic(&path, &meta) {
         tracing::warn!(
@@ -1412,6 +1429,13 @@ pub struct SessionMeta {
     /// （未达阈值 / 小模型未配置——诚实跳过）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_summary: Option<String>,
+    /// BUG-20261030-197：本会话已「脱离父分支」（sessions.detach →
+    /// clear_session_lineage）。true = 迟到的分支摘要后台写不再落盘——
+    /// detach 契约「Branch Context 停止注入」不被 spawn 于 detach 之前的
+    /// in-flight 摘要（LLM 往返数秒后落盘）复活击穿；re-fork
+    /// （write_session_parent 重新上血缘）解除封印。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lineage_detached: bool,
     /// B11（2026-10-18 snooze）：会话暂停到点（RFC3339，含时区）。None =
     /// 未暂停。到期由 gateway 的 snooze sweeper 摘除标记并注入恢复 system
     /// 行；期间消息照常处理（snooze 只是 UI 标记 + 到期唤醒语义，不拦截

@@ -86,3 +86,72 @@ fn detach_without_lineage_returns_false() {
 
     delete_chat_log(&key);
 }
+
+/// BUG-20261030-197 红证：detach 后迟到的分支摘要后台写不得复活
+/// branch_summary——detach 契约「Branch Context 停止注入」不被 in-flight
+/// 摘要（spawn 于 fork/rewind、LLM 往返数秒后落盘）击穿；re-fork
+/// （write_session_parent）解除封印。
+#[test]
+fn bug197_late_branch_summary_after_detach_does_not_resurrect() {
+    let key = unique_key("late");
+    let parent = unique_key("lateparent");
+
+    // fork 血缘在册，摘要在飞（模拟 spawn_write 尚未落盘）。
+    write_session_parent(&key, &parent, 4);
+    // 用户 detach（摘要还在 LLM 途中）。
+    assert!(clear_session_lineage(&key));
+    // 迟到的摘要落盘——不得复活。
+    write_session_branch_summary(&key, "迟到的分支前情提要");
+    assert_eq!(
+        read_session_meta_full(&key).unwrap().branch_summary,
+        None,
+        "detach 后迟到的分支摘要不落盘"
+    );
+
+    // re-fork 上血缘后封印解除（新摘要可落盘；「clear 是摘除不是封禁」
+    // 契约的镜像面）。
+    write_session_parent(&key, &parent, 2);
+    write_session_branch_summary(&key, "重新分支后的摘要");
+    assert_eq!(
+        read_session_meta_full(&key)
+            .unwrap()
+            .branch_summary
+            .as_deref(),
+        Some("重新分支后的摘要"),
+        "re-fork 解除封印"
+    );
+
+    delete_chat_log(&key);
+    delete_chat_log(&parent);
+}
+
+/// BUG-20261030-197 对照：未 detach 的会话摘要照常落盘——fork 血缘在册
+/// 与无血缘（rewind 摘要形态）两臂都不受封印影响。
+#[test]
+fn bug197_branch_summary_writes_normally_without_detach() {
+    let key = unique_key("normal");
+    write_session_parent(&key, &unique_key("normalparent"), 1);
+    write_session_branch_summary(&key, "正常摘要");
+    assert_eq!(
+        read_session_meta_full(&key)
+            .unwrap()
+            .branch_summary
+            .as_deref(),
+        Some("正常摘要"),
+        "血缘在册 + 未 detach → 照常落盘"
+    );
+
+    let plain = unique_key("plain");
+    write_session_branch_summary(&plain, "回退摘要");
+    assert_eq!(
+        read_session_meta_full(&plain)
+            .unwrap()
+            .branch_summary
+            .as_deref(),
+        Some("回退摘要"),
+        "无血缘会话（rewind 摘要形态）→ 照常落盘"
+    );
+
+    delete_chat_log(&key);
+    delete_chat_log(&plain);
+}
