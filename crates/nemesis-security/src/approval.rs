@@ -306,8 +306,12 @@ impl ApprovalManager {
     ///
     /// Returns the number of requests that were expired.
     pub fn cleanup_expired(&self) -> usize {
+        // timeout_secs 是外部配置 u64：写 u64::MAX 表「永不」会踩 chrono
+        // panic 带（>~9.2e15s）或 2^63 负回绕（阈值落过去 → pending 全量
+        // 立即过期）。钳位 100 年——远超合法语义、物理不可达两个坏 band。
+        const MAX_TIMEOUT_SECS: u64 = 100 * 365 * 24 * 3600;
         let now = chrono::Local::now();
-        let timeout_dur = chrono::Duration::seconds(self.timeout_secs as i64);
+        let timeout_dur = chrono::Duration::seconds(self.timeout_secs.min(MAX_TIMEOUT_SECS) as i64);
 
         let mut map = self.requests.write();
         let expired_ids: Vec<String> = map

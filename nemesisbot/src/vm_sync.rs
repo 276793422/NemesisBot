@@ -764,11 +764,21 @@ async fn pack_tar(
     );
     let out = std::env::temp_dir().join(format!("nemesis-vm-sync-{id}.tar"));
     let out_for_task = out.clone();
-    let (hashes, payload_bytes) =
-        tokio::task::spawn_blocking(move || pack_tar_blocking(&root, &files, &out_for_task))
-            .await
-            .map_err(|e| format!("打包任务失败: {e}"))??;
-    Ok((out, hashes, payload_bytes))
+    // 错误清理臂：打包中途失败（stat 失配/IO/JoinError）时半截 tar 已由
+    // File::create 落盘——不留系统 temp 成孤儿（唯一名会随失败反复累积）。
+    let packed =
+        tokio::task::spawn_blocking(move || pack_tar_blocking(&root, &files, &out_for_task)).await;
+    match packed {
+        Ok(Ok((hashes, payload_bytes))) => Ok((out, hashes, payload_bytes)),
+        Ok(Err(e)) => {
+            let _ = std::fs::remove_file(&out);
+            Err(e)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&out);
+            Err(format!("打包任务失败: {e}"))
+        }
+    }
 }
 
 fn pack_tar_blocking(

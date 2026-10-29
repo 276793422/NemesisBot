@@ -346,3 +346,28 @@ fn b11_parse_snooze_until_units() {
         assert!(parse_snooze_until(bad).is_err(), "{bad} 应报错");
     }
 }
+
+/// 用户可控秒数双重坏带回归锁：`until` 是 WSAPI 入参字符串，天文数字曾
+/// 直接进 panicking 的 chrono::Duration::seconds——构造带（>~9.2e15s chrono
+/// 毫秒 i64 溢出 panic）与加法溢出带（>~7.5e12s 溢出 NaDateTime 年域，
+/// `+` expect panic）都会炸 handler。修为 try_seconds + checked_add_signed
+/// 后越界诚实报错。
+#[test]
+fn b11_parse_snooze_until_astronomical_secs_no_panic() {
+    for bad in [
+        "9000000000000",       // 9e12：构造过但加法溢出 NaDateTime 年域（实证 panic 点）
+        "10000000000000",      // 1e13：同洞带
+        "99999999999999999",   // ~1e17：chrono 构造 panic 带
+        "9223372036854775807", // i64::MAX
+    ] {
+        let r = parse_snooze_until(bad);
+        assert!(r.is_err(), "{bad} 应诚实报错而非 panic/接受");
+        assert!(
+            r.unwrap_err().contains("超出可表示范围"),
+            "报错必须说明越界语义"
+        );
+    }
+    // 边界可表示侧：8e12s ≈ 25.4 万年，年份 ≈ 255,704 仍在年域（262143）内
+    // → 荒谬但可表示，诚实放行（不猜用户意图）。
+    parse_snooze_until("8000000000000").unwrap();
+}

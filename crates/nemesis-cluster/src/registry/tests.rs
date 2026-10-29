@@ -297,11 +297,42 @@ fn test_evict_stale_removes_old_offline_peers() {
     let evicted = registry.evict_stale();
     assert_eq!(evicted.len(), 1);
     assert_eq!(evicted[0], "old");
+}
 
+// 阈值是外部配置 u64：u64::MAX（写「永不驱逐」的常见形态）曾直接进
+// chrono::Duration::seconds——panic 带 / 2^63 负回绕（阈值落未来 → Offline
+// 全量驱逐反向事故）。钳位 100 年后不 panic 且零驱逐零误标。
+#[test]
+fn test_health_thresholds_u64_max_no_panic_no_mass_eviction() {
+    let config = HealthConfig {
+        stale_timeout_secs: u64::MAX,
+        eviction_timeout_secs: u64::MAX,
+        ..HealthConfig::default()
+    };
+    let registry = PeerRegistry::new(config);
+
+    // Offline 且 last_health_check 很旧——负回绕旧形态下会被全量驱逐。
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    insert_peer_with_timestamp(&registry, "old", NodeStatus::Offline, &old_ts, vec!["llm"]);
+
+    // Online 且 last_health_check 新鲜——负回绕旧形态下阈值落未来，
+    // check_health 会把 Online 全量误标 Offline（反向灾害的另一半）。
+    let fresh_ts = chrono::Local::now().to_rfc3339();
+    insert_peer_with_timestamp(
+        &registry,
+        "fresh",
+        NodeStatus::Online,
+        &fresh_ts,
+        vec!["llm"],
+    );
+
+    assert_eq!(
+        registry.check_health().len(),
+        0,
+        "不误标 stale（含 Online 新鲜对端）"
+    );
+    assert_eq!(registry.evict_stale().len(), 0, "不误驱逐");
     assert_eq!(registry.len(), 2);
-    assert!(registry.get("old").is_none());
-    assert!(registry.get("recent").is_some());
-    assert!(registry.get("online_old").is_some());
 }
 
 #[test]

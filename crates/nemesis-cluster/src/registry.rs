@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{ExtendedNodeInfo, NodeStatus};
 
+/// 健康阈值秒数上限（100 年）：HealthConfig 阈值是外部配置 u64，用户写
+/// u64::MAX 表「永不驱逐」会踩 chrono panic 带（>~9.2e15s）或 `as i64`
+/// 2^63 负回绕（阈值落未来 → Offline 全量驱逐反向事故）。钳位后两个坏
+/// band 物理不可达，远超任何合法语义。
+const MAX_THRESHOLD_SECS: u64 = 100 * 365 * 24 * 3600;
+
 /// Configuration for peer health-checking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthConfig {
@@ -359,8 +365,12 @@ impl PeerRegistry {
     /// Returns the list of evicted node IDs.
     pub fn evict_stale(&self) -> Vec<String> {
         let now = chrono::Local::now();
-        let threshold =
-            now - chrono::Duration::seconds(self.health_config.eviction_timeout_secs as i64);
+        let threshold = now
+            - chrono::Duration::seconds(
+                self.health_config
+                    .eviction_timeout_secs
+                    .min(MAX_THRESHOLD_SECS) as i64,
+            );
 
         let mut peers = self.peers.lock();
         let to_evict: Vec<String> = peers
@@ -393,8 +403,12 @@ impl PeerRegistry {
     /// are now marked Offline because their last health check is too old).
     pub fn check_health(&self) -> Vec<String> {
         let now = chrono::Local::now();
-        let threshold =
-            now - chrono::Duration::seconds(self.health_config.stale_timeout_secs as i64);
+        let threshold = now
+            - chrono::Duration::seconds(
+                self.health_config
+                    .stale_timeout_secs
+                    .min(MAX_THRESHOLD_SECS) as i64,
+            );
 
         let mut peers = self.peers.lock();
         let mut newly_stale = Vec::new();

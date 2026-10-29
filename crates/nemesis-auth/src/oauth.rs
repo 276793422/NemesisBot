@@ -632,8 +632,18 @@ fn parse_token_response_impl(body: &[u8], provider: &str) -> Result<AuthCredenti
     let expires_in = resp["expires_in"].as_u64().unwrap_or(0);
     let id_token = resp["id_token"].as_str().unwrap_or("").to_string();
 
+    // expires_in 是远端可控值，三层坏带全部诚实落「无过期」（与响应缺
+    // expires_in 同语义）：① `as i64` 在 ≥2^63 负回绕（try_from 拒）；
+    // ② TimeDelta::try_seconds 在 >~9.2e15s 拒（chrono 内部毫秒 i64 溢出
+    // 是 panic 语义）；③ try_seconds 放行带内 (~7.5e12, 9.2e15] 的值
+    // `now + d` 仍会溢出 NaDateTime 年域（±26 万年）panic——必须用
+    // checked_add_signed 而非 `+`（Add impl 对 None expect panic）。
+    // 0 = 缺席/无过期语义保持。
     let expires_at = if expires_in > 0 {
-        Some(Local::now() + chrono::Duration::seconds(expires_in as i64))
+        i64::try_from(expires_in)
+            .ok()
+            .and_then(chrono::TimeDelta::try_seconds)
+            .and_then(|d| Local::now().checked_add_signed(d))
     } else {
         None
     };

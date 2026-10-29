@@ -126,6 +126,34 @@ fn test_parse_token_response_minimal() {
 }
 
 #[test]
+fn test_parse_token_response_zero_expires_in_is_none() {
+    let body = br#"{"access_token":"at","expires_in":0}"#;
+    let cred = parse_token_response_impl(body, "test").unwrap();
+    assert!(cred.expires_at.is_none(), "0 = 缺席语义，不产立即过期");
+}
+
+// expires_in 是远端可控值：荒谬值诚实落无过期，三段坏带全钉——
+// ① try_seconds 拒绝带（>~9.2e15s 构造 panic / 1e16）；② u64::MAX `as i64`
+// 负回绕带；③ try_seconds 放行但 `now + d` 溢出 NaDateTime 年域的洞带
+// （~7.5e12..9.2e15，`+` 在此 panic——1e13/9e15 实证过，修为
+// checked_add_signed 后落 None）。每段各取一点防回归。
+#[test]
+fn test_parse_token_response_astronomical_expires_in_no_panic() {
+    for body in [
+        br#"{"access_token":"at","expires_in":10000000000000}"#.as_slice(), // 1e13 洞带（加法溢出）
+        br#"{"access_token":"at","expires_in":9000000000000000}"#.as_slice(), // 9e15 洞带上沿
+        br#"{"access_token":"at","expires_in":10000000000000000}"#.as_slice(), // 1e16 try_seconds 拒绝带
+        br#"{"access_token":"at","expires_in":18446744073709551615}"#.as_slice(), // u64::MAX 负回绕 band
+    ] {
+        let cred = parse_token_response_impl(body, "test").unwrap();
+        assert!(
+            cred.expires_at.is_none(),
+            "荒谬 expires_in 应落无过期，不 panic 不回绕"
+        );
+    }
+}
+
+#[test]
 fn test_parse_token_response_no_access_token() {
     let body = br#"{"refresh_token":"rt_only"}"#;
     let result = parse_token_response_impl(body, "test");

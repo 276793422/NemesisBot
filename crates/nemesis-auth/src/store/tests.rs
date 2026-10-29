@@ -66,6 +66,14 @@ fn test_new_with_empty_path() {
 
 #[test]
 fn test_new_with_corrupted_json() {
+    // 必须持有捕获 guard：本测试与 test_corrupted_store_load_warns_loudly
+    // 共享 store.rs `AuthStore::new` 同一条 warn! 语句的 callsite，而 tracing
+    // 的 callsite interest 缓存是进程级全局单值——若本测试（无 subscriber）
+    // 在对方 set_default 与 emit 之间的窗口内先执行该 warn 语句，callsite 会
+    // 在本测试线程上注册并解析到 NoSubscriber（register_callsite 返回
+    // Interest::never），缓存为 NEVER 后对方的 emit 被宏层永久短路 → 假红。
+    // 持 guard 后任何注册时序/全量重建都解析到 fmt subscriber，坑不可达。
+    let (_, _guard) = warn_capture_setup();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     std::fs::write(&path, "{invalid json!!!}").unwrap();

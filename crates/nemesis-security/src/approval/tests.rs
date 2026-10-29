@@ -60,6 +60,18 @@ fn test_cleanup_expired() {
     assert!(mgr.list_pending().is_empty());
 }
 
+// timeout_secs 是外部配置 u64：u64::MAX 曾直接进 chrono::Duration::seconds
+// （panic 带 / 2^63 负回绕 → pending 全量立即过期的反向事故）。钳位后不
+// panic 且 pending 存活。
+#[test]
+fn test_cleanup_expired_astronomical_timeout_no_panic() {
+    let mgr = ApprovalManager::new(u64::MAX);
+    let id = mgr.request_approval("op-huge-timeout", "agent");
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    assert_eq!(mgr.cleanup_expired(), 0, "钳位 100 年内不误过期");
+    assert_eq!(mgr.get(&id).unwrap().status, ApprovalStatus::Pending);
+}
+
 // ---- Multi-process tests ----
 
 #[test]

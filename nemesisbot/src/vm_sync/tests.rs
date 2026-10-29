@@ -753,3 +753,51 @@ fn browser_profile_excluded_uploads_admitted() {
     // vm_sync 回灌宿主 → vision 评审 M5 同源。
     assert!(admits("uploads/browser-1730000000000.png"));
 }
+
+// ---------------------------------------------------------------------------
+// pack_tar 错误清理臂：打包中途失败不留半截 tar 孤儿（系统 temp 唯一名会累积）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pack_tar_failure_leaves_no_orphan_tar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("ok.txt"), b"hello").unwrap();
+
+    // 系统 temp 中本前缀 tar 计数差值断言（pack_tar 仅生产两处调用，无并发
+    // 测试竞争此前缀；绝对计数会被历史残留干扰，差值不受影响）。
+    let tar_count = || {
+        std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("nemesis-vm-sync-")
+            })
+            .count()
+    };
+    let before = tar_count();
+
+    // 第二条目是目录：stat 通过后 is_file 闸失败——此时 File::create 已经
+    // 落盘，修复前半截 tar 留系统 temp 成孤儿，修复后错误清理臂即删。
+    let files = vec![
+        FileSync {
+            rel: "ok.txt".to_string(),
+            mode: 0o644,
+        },
+        FileSync {
+            rel: "sub".to_string(),
+            mode: 0o755,
+        },
+    ];
+    let result = super::pack_tar(&root, &files).await;
+    assert!(result.is_err());
+
+    assert_eq!(
+        tar_count(),
+        before,
+        "打包失败后系统 temp 不应残留 nemesis-vm-sync-* tar"
+    );
+}

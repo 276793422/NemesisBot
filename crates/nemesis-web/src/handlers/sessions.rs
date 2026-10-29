@@ -756,7 +756,15 @@ pub(crate) fn parse_snooze_until(raw: &str) -> Result<String, String> {
         if secs <= 0 {
             return Err(format!("相对秒数必须为正整数: {raw}"));
         }
-        let due = chrono::Local::now() + chrono::Duration::seconds(secs);
+        // 用户可控秒数双重坏带：panicking 构造带（>~9.2e15s chrono 内部
+        // 毫秒 i64 溢出）+ 加法溢出带（>~7.5e12s 溢出 NaDateTime 年域，
+        // `+` 对 None expect panic）——try_seconds + checked_add_signed
+        // 双闸，越界诚实报错不炸 handler。
+        let delta = chrono::TimeDelta::try_seconds(secs)
+            .ok_or_else(|| format!("秒数超出可表示范围: {raw}"))?;
+        let due = chrono::Local::now()
+            .checked_add_signed(delta)
+            .ok_or_else(|| format!("暂停时刻超出可表示范围: {raw}"))?;
         return Ok(due.to_rfc3339());
     }
     let dt = chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| {
