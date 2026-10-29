@@ -3,7 +3,6 @@ import { useRouter, useRoute } from 'vue-router'
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
-import { useTheme } from '../composables/useTheme'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useToast } from '../composables/useToast'
@@ -14,7 +13,6 @@ const router = useRouter()
 const route = useRoute()
 const appStore = useAppStore()
 const auth = useAuthStore()
-const { theme, toggleTheme } = useTheme()
 // Full Access 激活徽标（只读呈现；开关本体在 useEditorMode 单例）。
 const { fullAccess } = useEditorMode()
 
@@ -25,6 +23,20 @@ function navigate(page: string) {
 
 function handleLogout() {
   auth.logout()
+}
+
+// 打开主目录（2026-10-29，主题切换迁设置页【配色】TAB 后顶替侧边栏原位）：
+// 系统文件管理器打开 .nemesisbot 根目录，免用户满盘找主目录位置。后端
+// system.open_home_dir 服务端自解析路径；远程访问时文件管理器开在 gateway
+// 所在机器（与 projects.open_dir 同一边界）。无桌面形态走诚实报错 toast。
+async function openHomeDir() {
+  try {
+    const resp = await request('system', 'open_home_dir', {}, 8000)
+    useToast().success(`已打开主目录：${resp?.opened ?? ''}`)
+    appStore.showMobileSidebar = false
+  } catch (e: any) {
+    useToast().error(`打开主目录失败：${e?.message ?? e}`)
+  }
 }
 
 // E-stop (kill switch): reflect + toggle global agent freeze via WSAPI.
@@ -401,12 +413,13 @@ const visibleNavGroups = computed(visibleNavGroupsFiltered)
         </span>
         <span class="nav-label">{{ estopBusy ? '处理中…' : (estopEngaged ? '⛔ 急停中（点此释放）' : '急停 E-Stop') }}</span>
       </a>
-      <a class="nav-item" @click="toggleTheme()">
+      <!-- 打开主目录（2026-10-29）：顶替迁走的主题切换按钮；模式切换在
+           设置页【配色】TAB。系统文件管理器打开 .nemesisbot 根目录。 -->
+      <a class="nav-item" title="在系统文件管理器中打开主目录（.nemesisbot 根目录）" @click="openHomeDir()">
         <span class="nav-icon">
-          <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </span>
-        <span class="nav-label">{{ theme === 'dark' ? '浅色模式' : '深色模式' }}</span>
+        <span class="nav-label">打开主目录</span>
       </a>
       <!-- L9 自更新三态长条（2026-10-21 按钮流计划 §3.6）：无更新不渲染；
            hidden 之外四态 =【下载更新】/ 进度条+取消 /【开始更新】/ 更新执行中 -->

@@ -21,7 +21,14 @@ impl ModuleHandler for SystemHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["version", "status", "commands", "lease_status", "features"]
+        &[
+            "version",
+            "status",
+            "commands",
+            "lease_status",
+            "features",
+            "open_home_dir",
+        ]
     }
 
     async fn handle_cmd(
@@ -65,6 +72,26 @@ impl ModuleHandler for SystemHandler {
                     "total_modules": modules.len(),
                     "total_cmds": total_cmds,
                 })))
+            }
+            // 打开主目录（2026-10-29 侧边栏【打开主目录】按钮后端）：用系统
+            // 文件管理器打开 home 根目录，免用户满盘找 .nemesisbot 位置。路径
+            // 完全由服务端 ctx 解析、不收客户端任何路径参数——比
+            // projects.open_dir（注册表白名单闸）攻击面更低一档；信任级 =
+            // dashboard 登录用户。远程访问语义与 projects.open_dir 一致：
+            // 文件管理器开在 gateway 所在机器。无桌面形态（Android/IoT）spawn
+            // 失败走 Err 诚实报错。
+            "open_home_dir" => {
+                let home = ctx.home.as_deref().ok_or_else(|| {
+                    "主目录未知（会话上下文未携带 home 路径），无法打开".to_string()
+                })?;
+                crate::handlers::projects::open_in_file_manager(std::path::Path::new(home))?;
+                let mut out = serde_json::json!({ "opened": home });
+                if let Some(ref ws) = ctx.workspace {
+                    out.as_object_mut()
+                        .unwrap()
+                        .insert("workspace".to_string(), serde_json::json!(ws));
+                }
+                Ok(Some(out))
             }
             _ => Err(format!("unknown command: system.{}", cmd)),
         }

@@ -425,6 +425,30 @@ async fn dispatch_safe_readonly_subset_ok() {
     ok_cmd!(super::config::ConfigHandler::new(), "get");
 }
 
+// 打开主目录（2026-10-29）：注册面 + 诚实报错分支。**不得**把 open_home_dir
+// 加进上面 ok_cmd! 清单——make_ctx 的 home=Some(临时目录)，直调会真 spawn
+// explorer 弹窗（弹窗纪律，同 projects agt_tests 豁免先例）。
+#[tokio::test]
+async fn system_open_home_dir_registration_and_honest_error() {
+    // ① L1 注册面：命令清单含 open_home_dir。
+    assert!(
+        super::system::SystemHandler
+            .commands()
+            .contains(&"open_home_dir")
+    );
+
+    // ② home=None 的会话上下文 → Err 诚实报错，绝不 spawn（None 分支在
+    // spawn 之前短路，直调安全）。
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = make_ctx(&dir, false);
+    ctx.home = None;
+    let err = super::system::SystemHandler
+        .handle_cmd("open_home_dir", None, &ctx)
+        .await
+        .expect_err("home=None must fail honestly");
+    assert!(err.contains("主目录未知"), "unexpected error: {err}");
+}
+
 #[tokio::test]
 async fn dispatch_dependent_commands_report_honest_errors() {
     let dir = tempfile::tempdir().unwrap();

@@ -5,6 +5,7 @@ import { useToast } from '../composables/useToast'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useSessionAllowAll } from '../composables/useSessionAllowAll'
 import { useSessionStore } from '../stores/session'
+import { useTheme } from '../composables/useTheme'
 
 // 皮肤管理面板（skins feature / VITE_FEATURE_SKINS 门控）：`!== 'false'`
 // = 默认开（与 router 门控同一约定）；env 为 'false' 时 Vite 把死分支
@@ -15,6 +16,11 @@ const SkinsPanel = import.meta.env.VITE_FEATURE_SKINS !== 'false'
 
 const { request } = useWSAPI()
 const toast = useToast()
+
+// 配色 TAB（2026-10-29）：亮暗模式切换从侧边栏迁入——后续 UI 配色自定义
+// 的统一入口。状态与持久化仍在 useTheme 单例（localStorage），按钮挪位
+// 零迁移。
+const { theme, setTheme } = useTheme()
 
 const activeTab = ref('agent')
 const config = ref<any>({})
@@ -35,6 +41,9 @@ const tabs = [
   { id: 'editor', label: '编辑器' },
   { id: 'logging', label: '日志' },
   { id: 'cors', label: 'CORS' },
+  // 配色 tab（2026-10-29）：亮暗模式切换（侧边栏原位换【打开主目录】），
+  // 后续 UI 配色自定义统一入口；与皮肤 tab 相邻（外观类）。
+  { id: 'appearance', label: '配色' },
   // 皮肤 tab（skins feature 门控；skins 关 = tab 不出现）
   ...(import.meta.env.VITE_FEATURE_SKINS !== 'false' ? [{ id: 'skins', label: '皮肤' }] : []),
   { id: 'raw', label: '原始 JSON' },
@@ -417,6 +426,28 @@ onMounted(async () => {
           </div>
         </div>
 
+        <!-- 配色（2026-10-29）：亮暗模式切换从侧边栏迁入；后续 UI 配色
+             自定义（主题色/强调色等）都在此 TAB 扩展。setTheme 即时生效，
+             localStorage 持久化刷新保持。 -->
+        <div v-if="activeTab === 'appearance'" class="card">
+          <div class="card-header">
+            <h3>配色</h3>
+          </div>
+          <p class="theme-hint">Dashboard 界面亮暗模式，选择即时生效并自动记住。后续 UI 配色自定义都在这里扩展。</p>
+          <div class="theme-cards">
+            <div class="theme-card" :class="{ active: theme === 'light' }" @click="setTheme('light')">
+              <span class="theme-card-icon">☀️</span>
+              <span class="theme-card-name">浅色模式</span>
+              <span v-if="theme === 'light'" class="theme-card-check">✓ 当前</span>
+            </div>
+            <div class="theme-card" :class="{ active: theme === 'dark' }" @click="setTheme('dark')">
+              <span class="theme-card-icon">🌙</span>
+              <span class="theme-card-name">深色模式</span>
+              <span v-if="theme === 'dark'" class="theme-card-check">✓ 当前</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 皮肤（skins feature 门控；异步组件，关 = 死分支被 tree-shake） -->
         <component :is="SkinsPanel" v-if="activeTab === 'skins' && SkinsPanel" />
 
@@ -489,5 +520,52 @@ onMounted(async () => {
 .lease-refresh:hover {
   color: var(--text);
   background: var(--bg-primary, #f5f5f5);
+}
+
+/* 配色 TAB（2026-10-29）：亮暗模式双卡片选择器 */
+.theme-hint {
+  margin: 0 0 var(--space-3, 12px);
+  font-size: var(--text-sm, 13px);
+  color: var(--text-secondary, #888);
+}
+.theme-cards {
+  display: flex;
+  gap: var(--space-3, 12px);
+}
+.theme-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-width: 140px;
+  padding: var(--space-4, 16px) var(--space-3, 12px);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  background: var(--bg-primary, transparent);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.theme-card:hover {
+  border-color: var(--accent, #4a9eff);
+}
+.theme-card.active {
+  border-color: var(--accent, #4a9eff);
+  box-shadow: 0 0 0 1px var(--accent, #4a9eff);
+}
+.theme-card-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+.theme-card-name {
+  font-size: var(--text-sm, 13px);
+  color: var(--text, inherit);
+}
+.theme-card-check {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 12px;
+  color: var(--accent, #4a9eff);
 }
 </style>
