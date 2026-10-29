@@ -211,3 +211,20 @@ fn agt_broadcast_to_session_debug_fields_evaluated() {
         tracing::subscriber::with_default(AgtDbgSubscriber, || futures::executor::block_on(fut));
     assert!(res.is_err(), "无注册队列必须 Err");
 }
+
+/// BUG-20261029-185 红证：content_preview 字节切片落在多字节字符中间 panic。
+///
+/// 34 个中文字符 = 102 字节，`&content[..102.min(100)]` 的字节 100 恰在
+/// 第 34 个字符（字节 99-101）内部 → 修复前 panic（byte index 100 is not
+/// a char boundary）；修复后取边界内前缀，函数体走到 record 后诚实 Err。
+/// debug 字段求值需 subscriber 在位（同上）。
+#[test]
+fn agt_broadcast_to_session_multibyte_preview_no_panic() {
+    let sm = SessionManager::with_default_timeout();
+    let content = "中".repeat(34);
+    assert_eq!(content.len(), 102, "前置：102 字节，字节 100 非字符边界");
+    let fut = broadcast_to_session(&sm, "agt-bcast-mb", "assistant", &content);
+    let res =
+        tracing::subscriber::with_default(AgtDbgSubscriber, || futures::executor::block_on(fut));
+    assert!(res.is_err(), "无注册队列必须 Err（走到函数体而非 panic）");
+}

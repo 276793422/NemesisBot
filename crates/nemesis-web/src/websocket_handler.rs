@@ -984,7 +984,10 @@ pub async fn broadcast_to_session(
         session_id = %session_id,
         role = %role,
         content_len = content.len(),
-        content_preview = &content[..content.len().min(100)],
+        // BUG-20261029-185：字节切片在多字节字符中间 panic（中文 3 字节/字符，
+        // 100%3=1 极易跨界）——floor_char_boundary 收到字符边界（api_handlers
+        // 脱敏同款 helper）。
+        content_preview = &content[..nemesis_types::utils::floor_char_boundary(content, 100)],
         "[WebSocket] broadcast_to_session called"
     );
 
