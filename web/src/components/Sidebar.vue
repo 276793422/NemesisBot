@@ -556,4 +556,23 @@ const visibleNavGroups = computed(visibleNavGroupsFiltered)
   font-size: 11px;
   opacity: 0.75;
 }
+/* 收起态（56px 栏）：进度条压成迷你轨道——藏两行文本（类名不带 nav-label，
+   收起态 display:none 射程外，曾继承 .nav-item 的 nowrap 溢出栏外压盖主
+   内容），保留 ✕ 取消钮 + 居中窄轨道；容器 title hover 提示仍在。 */
+.sidebar.collapsed .selfupdate-item {
+  margin: 1px 4px;
+}
+.sidebar.collapsed .su-progress {
+  padding: 8px;
+}
+.sidebar.collapsed .su-progress-title,
+.sidebar.collapsed .su-progress-text {
+  display: none;
+}
+.sidebar.collapsed .su-progress-top {
+  justify-content: center;
+}
+.sidebar.collapsed .su-progress-track {
+  margin: 4px 0 0;
+}
 </style>
