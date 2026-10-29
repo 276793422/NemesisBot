@@ -29,8 +29,10 @@ interface AuditRow {
   issue_title: string
 }
 
-// 决策词 → 人话标签（与 board_review.rs 8 处处置臂 + A1 auto_confirm 对齐；
+// 决策词 → 人话标签（与 board_review.rs 处置臂 + A1 auto_confirm 对齐；
 // P5 冲突漏斗 4 词：conflict 停车 / conflict_auto_resolve 硬解 / 重派 / 换人）。
+// BUG-20261029-172 回填 3 词（生产在写、词表缺席——缺陷闸 2026-10-22 拍板
+// 契约闸父/项目两级 + 父单自动修复臂，此前落英文原词兜底语义丢失）。
 const DECISION_LABEL: Record<string, string> = {
   auto_accept: '验收 PASS · 自动收货',
   suggest_manual: '验收通过 · 建议人工确认',
@@ -40,6 +42,9 @@ const DECISION_LABEL: Record<string, string> = {
   parent_escalate_human: '父单 FAIL/UNSURE · 转人工',
   project_complete: '项目验收 PASS · 自动收口',
   project_escalate_human: '项目 FAIL/UNSURE · 转人工',
+  parent_defect_gate: '父单缺陷闸 · 转人工收口',
+  parent_auto_remediate: '父单自动修复 · 建单派发',
+  project_defect_gate: '项目缺陷闸 · 转人工收口',
   auto_confirm_dispatch: '拆解计划 · 自动发车',
   conflict: '合并冲突 · 冻结转人工',
   conflict_auto_resolve: '合并冲突 · AI 硬解落定',
@@ -49,11 +54,16 @@ const DECISION_LABEL: Record<string, string> = {
 }
 
 // 非 auto_decide 活动词 → 人话标签（S-O1：合并停车行要能被认出来）。
+// BUG-20261029-172 回填 3 词（board_archive_ingest/archive_writer 生产
+// 在写：变更集入库 / 合并延后 / 档案写失败，此前落英文原词兜底）。
 const ACTION_LABEL: Record<string, string> = {
   merge_parked: '合并停车（变更集未入库）',
   archive_overlimit: '执行档案超护栏',
   archive_orphaned: '执行档案无处安置',
   archive_superseded: '变更集丢弃（基线失配）',
+  changeset_merged: '变更集入库',
+  merge_deferred: '合并延后',
+  archive_write_failed: '档案写失败',
 }
 
 interface ParsedDetails {

@@ -1459,6 +1459,48 @@ describe('AuditPanel（决策流 全自动流转 P5/E2）', () => {
     expect(items[1].findAll('.expand-btn').length).toBe(0)
   })
 
+  it('BUG-20261029-172 回填：缺陷闸/自动修复决策词与档案活动词渲染人话标签（不落英文原词兜底）', async () => {
+    const w = await mountAudit([
+      auditRow({
+        details: JSON.stringify({
+          decision: 'parent_defect_gate',
+          verdict: 'escalate',
+          unclosed_defects: 3,
+        }),
+      }),
+      auditRow({
+        id: 2,
+        details: JSON.stringify({
+          decision: 'parent_auto_remediate',
+          verdict: 'PASS',
+          remediation_issue: 'NB-12',
+        }),
+      }),
+      auditRow({
+        id: 3,
+        details: JSON.stringify({
+          decision: 'project_defect_gate',
+          verdict: 'escalate',
+          unclosed_defects: 1,
+        }),
+      }),
+      auditRow({ id: 4, action: 'changeset_merged', details: null }),
+      auditRow({ id: 5, action: 'merge_deferred', details: null }),
+      auditRow({ id: 6, action: 'archive_write_failed', details: null }),
+    ])
+    await w.find('.rollback-toggle input').setValue(false)
+    await flushPromises()
+    const items = w.findAll('.audit-item')
+    // 决策词 3 回填（board_review.rs 缺陷闸父/项目两级 + 自动修复臂）。
+    expect(items[0].text()).toContain('父单缺陷闸 · 转人工收口')
+    expect(items[1].text()).toContain('父单自动修复 · 建单派发')
+    expect(items[2].text()).toContain('项目缺陷闸 · 转人工收口')
+    // 活动 kind 3 回填（board_archive_ingest / archive_writer 生产在写）。
+    expect(items[3].text()).toContain('变更集入库')
+    expect(items[4].text()).toContain('合并延后')
+    expect(items[5].text()).toContain('档案写失败')
+  })
+
   it('详情展开：点击切换显示格式化 JSON', async () => {
     const w = await mountAudit([auditRow()])
     expect(w.find('.audit-details').exists()).toBe(false)
