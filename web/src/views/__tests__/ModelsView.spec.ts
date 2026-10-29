@@ -643,3 +643,68 @@ describe('ModelsView 明文 Key 一步迁移（2026-10-27）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 属性数字输入类型漂移（BUG-20261029-175 回归锁）：裸 v-model + type="number"
+// 的输入框，Vue looseToNumber 会把合法数字输入从字符串漂移成 number——
+// 修复前渲染路径 dirtyFields 调 d.size.trim() 抛 TypeError → 组件子树卸载
+// → 模型列表整页消失。修复后所有草稿读值经 asStr 归一。
+describe('ModelsView 属性数字输入类型漂移（BUG-20261029-175）', () => {
+  /** 属性编辑器里按 placeholder 定位 type="number" 输入框。 */
+  function numberInput(w: ReturnType<typeof mount>, placeholder: string) {
+    return w
+      .find('.attr-editor')
+      .findAll('input')
+      .find((i) => (i.element as HTMLInputElement).type === 'number' && (i.element as HTMLInputElement).placeholder === placeholder)!
+  }
+  async function openAttrs(w: ReturnType<typeof mount>) {
+    const attrBtn = w.findAll('button').find((b) => b.text() === '属性')!
+    await attrBtn.trigger('click')
+    await flushPromises()
+  }
+
+  it('数字输入框打入数字（草稿漂移成 number）后渲染不崩、dirty 徽标正确', async () => {
+    const w = await mountView([
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', model_size_b: 30, context_window: 131072 }),
+    ])
+    await openAttrs(w)
+    expect(w.find('.attr-editor').exists()).toBe(true)
+    // setValue 走 v-model looseToNumber：草稿从 '30' 漂移成 number 3——
+    // 修复前这一步触发重渲染 → d.size.trim() TypeError → 列表整页消失。
+    await numberInput(w, '30').setValue('3')
+    await flushPromises()
+    expect(w.findAll('.model-card').length, '渲染树存活（列表未消失）').toBe(1)
+    expect(w.find('.attr-editor').exists(), '属性编辑器未卸载').toBe(true)
+    expect(w.find('.attr-dirty').text()).toContain('model_size_b')
+    w.unmount()
+  })
+
+  it('number 草稿保存：载荷 Number 归一正确；渲染路径全程无异常', async () => {
+    const updateCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') {
+        return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', model_size_b: 30, context_window: 131072 })] }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'models' && cmd === 'update_field') {
+        updateCalls.push(data)
+        return { updated: true }
+      }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await openAttrs(w)
+    // context_window 打入数字（本案用户现场：报错 e.ctx.trim）→ 保存。
+    await numberInput(w, '131072').setValue('262144')
+    await flushPromises()
+    expect(w.find('.attr-dirty').text()).toContain('context_window')
+    const saveBtn = w.findAll('button').find((b) => b.text() === '保存属性')!
+    await saveBtn.trigger('click')
+    await flushPromises()
+    expect(updateCalls).toHaveLength(1)
+    expect(updateCalls[0]).toMatchObject({ name: 'glm', field: 'context_window', value: 262144 })
+    w.unmount()
+  })
+})

@@ -427,6 +427,14 @@ function toggleAttrs(m: Model) {
   expandedAttrs.value = s
 }
 
+/** v-model 对 type="number" 输入自动转 number（Vue looseToNumber，输入合法
+ * 数字时草稿从字符串漂移成 number）——凡从 attrDrafts 读值做字符串运算/
+ * 比较必须先经本函数归一，否则 number.trim() 抛 TypeError 炸掉整棵渲染树
+ * （BUG-20261029-175）。null/undefined 归空串，与 seed 语义一致。 */
+function asStr(v: unknown): string {
+  return String(v ?? '')
+}
+
 /** Fields whose draft differs from the loaded values (only these are saved). */
 function dirtyFields(m: Model): string[] {
   const d = attrDrafts.value[m.model_name]
@@ -435,13 +443,12 @@ function dirtyFields(m: Model): string[] {
   if ((m.model_tier || 'auto') !== d.tier) out.push('model_tier')
   if ((m.reasoning_effort || '') !== d.effort) out.push('reasoning_effort')
   const sizeStr = m.model_size_b != null ? String(m.model_size_b) : ''
-  if (sizeStr !== d.size.trim()) out.push('model_size_b')
-  if ((m.real_name || '') !== d.realName.trim()) out.push('real_name')
+  if (sizeStr !== asStr(d.size).trim()) out.push('model_size_b')
+  if ((m.real_name || '') !== asStr(d.realName).trim()) out.push('real_name')
   const ctxStr = m.context_window != null ? String(m.context_window) : ''
-  if (ctxStr !== d.ctx.trim()) out.push('context_window')
+  if (ctxStr !== asStr(d.ctx).trim()) out.push('context_window')
   const ccStr = m.compact_context_tokens != null ? String(m.compact_context_tokens) : ''
-  // v-model 对 type="number" 输入自动转 number——String 归一后比较。
-  if (ccStr !== String(d.compactCtx ?? '').trim()) out.push('compact_context_tokens')
+  if (ccStr !== asStr(d.compactCtx).trim()) out.push('compact_context_tokens')
   if ((m.protocol || '') !== d.protocol) out.push('protocol')
   if ((m.stream || '') !== d.stream) out.push('stream')
   return out
@@ -470,16 +477,17 @@ async function saveAttrs(m: Model) {
     toast.info('没有修改过的属性')
     return
   }
+  const sizeRaw = asStr(d.size).trim()
+  const ctxRaw = asStr(d.ctx).trim()
   const values: Record<string, unknown> = {
     model_tier: d.tier,
     // ''（off）由后端归一为空串 = 不发送
     reasoning_effort: d.effort || 'off',
-    model_size_b: d.size.trim() === '' ? null : Number(d.size.trim()),
-    real_name: d.realName.trim(),
-    context_window: d.ctx.trim() === '' ? null : Number(d.ctx.trim()),
+    model_size_b: sizeRaw === '' ? null : Number(sizeRaw),
+    real_name: asStr(d.realName).trim(),
+    context_window: ctxRaw === '' ? null : Number(ctxRaw),
     // 压缩点后端支持空串清除（移键落盘）——直接发串，不做 v1 skip-null。
-    // v-model 对 type="number" 输入自动转 number——String 归一。
-    compact_context_tokens: String(d.compactCtx ?? '').trim(),
+    compact_context_tokens: asStr(d.compactCtx).trim(),
     protocol: d.protocol, // 空串 = 自动识别（后端接受空串清除，非 null）
     stream: d.stream, // 空串 = auto（后端接受空串清除，非 null）
   }
@@ -527,12 +535,11 @@ function fillCtxFromCatalog(m: Model) {
 }
 
 /** 压缩点超窗口的前端黄字提醒（真实钳制在网关运行期，一次性 warn）。
- * 窗口取条目 context_window，缺省回落目录值；两者皆缺 = 无法预判，不提示。
- * 注意 v-model 对 type="number" 输入会自动转 number——一律 String 归一。 */
+ * 窗口取条目 context_window，缺省回落目录值；两者皆缺 = 无法预判，不提示。 */
 function compactCtxClampHint(m: Model): string {
   const d = attrDrafts.value[m.model_name]
   if (!d) return ''
-  const raw = String(d.compactCtx ?? '').trim()
+  const raw = asStr(d.compactCtx).trim()
   if (raw === '') return ''
   const v = Number(raw)
   if (!Number.isFinite(v) || v <= 0) return ''
