@@ -792,3 +792,52 @@ mod download_paths {
         clean_all_setup_tmps();
     }
 }
+
+// ---- BUG-20261030-195: bootstrap 解压目录残留清理（必须成功才能继续）----
+// helper 与下载函数同 cfg（windows + download）；Linux 无此路径。
+
+#[cfg(all(target_os = "windows", feature = "download"))]
+use std::os::windows::fs::OpenOptionsExt as _;
+
+#[cfg(all(target_os = "windows", feature = "download"))]
+#[test]
+fn bug195_prepare_extract_dir_wipes_stale_content_and_recreates() {
+    let dir = tempfile::tempdir().unwrap();
+    let stale = dir.path().join("old_lib");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("stale.dll"), b"stale").unwrap();
+
+    prepare_extract_dir(dir.path()).unwrap();
+
+    assert!(dir.path().is_dir(), "extract dir must be recreated");
+    assert!(
+        !stale.exists(),
+        "stale subtree from a previous failed cleanup must be wiped before extraction"
+    );
+}
+
+#[cfg(all(target_os = "windows", feature = "download"))]
+#[test]
+fn bug195_prepare_extract_dir_fails_loud_when_dir_locked() {
+    // 模拟 AV/索引器：持有目录内文件的句柄（share_mode 仅 FILE_SHARE_READ，
+    // 无 FILE_SHARE_DELETE → 删除被拒）。旧内联形态 `let _ = remove_dir_all`
+    // 会静默吞掉失败、带着残留目录继续解压（新旧混合库）——新契约 = loud 失败。
+    let dir = tempfile::tempdir().unwrap();
+    let locked = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(1)
+        .open(dir.path().join("locked.dll"))
+        .unwrap();
+
+    let outcome = prepare_extract_dir(dir.path());
+
+    drop(locked);
+    assert!(
+        outcome.is_err(),
+        "held handle must surface as a loud failure, not a silent stale-mix proceed"
+    );
+    // 句柄释放后目录可正常清理（重试耗尽后的收尾）
+    std::fs::remove_dir_all(dir.path()).ok();
+}

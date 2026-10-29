@@ -4517,6 +4517,7 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "nemesis-channels",
+ "nemesis-utils",
  "reqwest",
  "serde",
  "serde_json",

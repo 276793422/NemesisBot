@@ -312,6 +312,19 @@ fn format_speed(bytes_per_sec: f64) -> String {
     }
 }
 
+/// 清空并重建解压目录。上一次运行的残留（先前清理被 AV/索引器瞬时句柄
+/// 打败而遗留）会让 tar 增量解压出「新旧混合」的库目录——清理必须成功
+/// 才能继续（BUG-20261030-195）。
+#[cfg(all(target_os = "windows", feature = "download"))]
+fn prepare_extract_dir(dir: &Path) -> Result<()> {
+    // 韧性删除（退避重试）+ loud 失败：带着残留目录继续解压 = 新旧混合库，
+    // 比中止更糟（BUG-20261030-195）。NotFound 视为成功（首次下载）。
+    nemesis_utils::fsutil::remove_dir_all_retry(dir)
+        .with_context(|| format!("清理解压目录失败: {}", dir.display()))?;
+    fs::create_dir_all(dir).with_context(|| "创建解压目录失败")?;
+    Ok(())
+}
+
 #[cfg(all(target_os = "windows", feature = "download"))]
 async fn try_download_and_extract(
     url: &str,
@@ -449,7 +462,7 @@ async fn try_download_and_extract(
         );
 
         // Promote .part → final name only after successful download
-        let _ = fs::remove_file(&archive_path);
+        nemesis_utils::fsutil::remove_file_retry(&archive_path)?;
         fs::rename(&part_path, &archive_path)
             .with_context(|| "Failed to rename downloaded file")?;
     } else {
@@ -467,8 +480,7 @@ async fn try_download_and_extract(
         message: "下载完成，解压运行库...".to_string(),
     });
     let extract_dir = temp_dir.join("extracted");
-    let _ = fs::remove_dir_all(&extract_dir);
-    fs::create_dir_all(&extract_dir)?;
+    prepare_extract_dir(&extract_dir)?;
 
     let status = {
         // CREATE_NO_WINDOW：gateway 托盘/无控制台运行（release windows 子
@@ -505,15 +517,15 @@ async fn try_download_and_extract(
 
     if !status.status.success() {
         let stderr = String::from_utf8_lossy(&status.stderr);
-        let _ = fs::remove_file(&archive_path);
-        let _ = fs::remove_file(&part_path);
+        let _ = nemesis_utils::fsutil::remove_file_retry(&archive_path);
+        let _ = nemesis_utils::fsutil::remove_file_retry(&part_path);
         bail!("tar extraction failed: {}", stderr.trim());
     }
 
     let lib_dir = find_lib_dir(&extract_dir)?;
     copy_libs_from(&lib_dir, exe_dir)?;
 
-    let _ = fs::remove_dir_all(&extract_dir);
+    let _ = nemesis_utils::fsutil::remove_dir_all_resilient(&extract_dir);
 
     Ok(())
 }
@@ -620,8 +632,7 @@ async fn try_download_aec(
     // 解压（zip —— Windows 10+ 的 bsdtar 用 `tar -xf` 可直接解 zip）
     tracing::info!("[aec] Extracting ...");
     let extract_dir = temp_dir.join("extracted");
-    let _ = fs::remove_dir_all(&extract_dir);
-    fs::create_dir_all(&extract_dir)?;
+    prepare_extract_dir(&extract_dir)?;
     let status = {
         // 同上：压掉 console 子进程 tar 的弹窗。
         #[cfg(target_os = "windows")]
@@ -654,7 +665,7 @@ async fn try_download_aec(
     };
     if !status.status.success() {
         let stderr = String::from_utf8_lossy(&status.stderr);
-        let _ = fs::remove_file(&archive_path);
+        let _ = nemesis_utils::fsutil::remove_file_retry(&archive_path);
         bail!("[aec] extraction failed: {}", stderr.trim());
     }
 
@@ -670,7 +681,7 @@ async fn try_download_aec(
         AEC_LIB_FILENAME,
         fs::metadata(&dst)?.len() as f64 / 1024.0
     );
-    let _ = fs::remove_dir_all(&extract_dir);
+    let _ = nemesis_utils::fsutil::remove_dir_all_resilient(&extract_dir);
     Ok(dst)
 }
 
@@ -763,7 +774,7 @@ async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &st
     );
     drop(file); // Windows 上 rename 前关掉句柄
 
-    let _ = fs::remove_file(archive_path);
+    nemesis_utils::fsutil::remove_file_retry(archive_path)?;
     fs::rename(&part_path, archive_path).with_context(|| "Failed to rename downloaded file")?;
     Ok(())
 }
