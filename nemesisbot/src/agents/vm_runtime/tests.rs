@@ -383,6 +383,50 @@ fn disk_garbage_sweep_decision_table() {
     assert!(vm_images_root(ws).join("base.new.qcow2").exists());
 }
 
+/// BUG-20261030-196 红证：换装闸被持（promote 在飞）时 sweep 不得删
+/// base.new——canonical 与 base.new 同时在场正是 promote ①→③ 相位的
+/// 工作形态，此时删它 = 删掉换装在飞的新 base（rebase 断链、overlay
+/// 悬空）。闸忙 = GC 本轮整体跳过（best-effort，watchdog 下轮重试）。
+#[tokio::test]
+async fn bug196_sweep_disk_garbage_skipped_while_swap_gate_held() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(vm_images_root(ws)).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.qcow2"), vec![0u8; 64]).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.new.qcow2"), vec![0u8; 64]).unwrap();
+    let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
+
+    let _gate = IMAGE_SWAP_GATE.lock().await; // 模拟 promote/spawn 在飞
+    assert_eq!(sup.sweep_disk_garbage(), 0, "换装闸被持 → 磁盘 GC 本轮跳过");
+    assert!(
+        vm_images_root(ws).join("base.new.qcow2").exists(),
+        "闸忙时 base.new 在飞工作文件不得被删"
+    );
+    drop(_gate);
+
+    // 闸释放后恢复回收（同一批残留，下轮照常清理）。
+    assert_eq!(sup.sweep_disk_garbage(), 1, "闸释放 → base.new 照常回收");
+    assert!(!vm_images_root(ws).join("base.new.qcow2").exists());
+}
+
+/// BUG-20261030-196 对照：闸空闲时既有回收行为不变（与决策表测试的
+/// 「canonical 在场 → base.new 回收」臂同义，钉住闸不改变空闲路径）。
+#[tokio::test]
+async fn bug196_sweep_disk_garbage_still_collects_when_gate_free() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(vm_images_root(ws)).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.qcow2"), vec![0u8; 64]).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.new.qcow2"), vec![0u8; 64]).unwrap();
+    let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
+
+    assert_eq!(sup.sweep_disk_garbage(), 1, "闸空闲 → 照常回收");
+    assert!(
+        !vm_images_root(ws).join("base.new.qcow2").exists(),
+        "陈旧残留照常回收"
+    );
+}
+
 /// 引用集纯函数：run 目录名 + 记录 sanitize id + 记录 overlay stem 三族并集；
 /// run 根缺席 = 空集（此时所有 overlay 都成孤儿——全新 workspace 本来就
 /// 不该有 overlay，真出现即垃圾）。

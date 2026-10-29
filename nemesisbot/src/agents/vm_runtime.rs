@@ -1648,7 +1648,16 @@ impl VmSupervisor {
     /// 在场才删（promote_staging ③ 转正后的中断残留；canonical 缺席时
     /// base.new 是唯一落点，删了 = 毁镜像）。`.staging` 目录刻意不碰——
     /// 构建失败保留供排查是 vm_bridge 的既定决策，GC 不翻案。
+    ///
+    /// **换装闸互斥（BUG-20261030-196）**：promote_staging ①落临时名到
+    /// ③rename 转正之间，canonical 与 base.new **同时在场**正是本函数的
+    /// 陈旧残留判定签名——闸忙（换装/启动在飞）时整轮跳过（GC 本就是
+    /// best-effort「下轮重试」语义，watchdog 15s tick 自会再来）。
     pub fn sweep_disk_garbage(&self) -> usize {
+        let Ok(_swap_gate) = IMAGE_SWAP_GATE.try_lock() else {
+            tracing::info!("[vm-runtime] 镜像换装/启动在飞——磁盘 GC 本轮跳过");
+            return 0;
+        };
         let mut removed = 0usize;
         let refs = referenced_overlay_stems(&self.workspace);
         if let Ok(rd) = std::fs::read_dir(vm_overlays_root(&self.workspace)) {
