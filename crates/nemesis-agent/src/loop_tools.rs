@@ -1762,14 +1762,12 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
     }
 }
 
-/// B2：排干管道到字节缓冲（pipe 缺失时返空）。
+/// B2：排干管道到字节缓冲（pipe 缺失时返空）。有界排干（BUG 2026-10-29
+/// 横扫角度 B）：1 MiB 丢头保尾（`join_pipe_task` 的 5s 上限只兜孙进程
+/// 占管道 EOF 不达，不兜体量）。
 async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
     match pipe {
-        Some(mut p) => {
-            let mut buf = Vec::new();
-            let _ = tokio::io::AsyncReadExt::read_to_end(&mut p, &mut buf).await;
-            buf
-        }
+        Some(p) => nemesis_utils::pipe_cap::drain_capped_async(p).await,
         None => Vec::new(),
     }
 }

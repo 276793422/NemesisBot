@@ -619,7 +619,6 @@ fn run_with_timeout(
     mut cmd: std::process::Command,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
-    use std::io::Read;
     use std::process::Stdio;
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -629,14 +628,18 @@ fn run_with_timeout(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                if let Some(mut s) = child.stdout.take() {
-                    let _ = s.read_to_end(&mut stdout);
-                }
-                let mut stderr = Vec::new();
-                if let Some(mut s) = child.stderr.take() {
-                    let _ = s.read_to_end(&mut stderr);
-                }
+                // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾，
+                // 输出体量不受我方控制。
+                let stdout = child
+                    .stdout
+                    .take()
+                    .map(nemesis_utils::pipe_cap::drain_capped_sync)
+                    .unwrap_or_default();
+                let stderr = child
+                    .stderr
+                    .take()
+                    .map(nemesis_utils::pipe_cap::drain_capped_sync)
+                    .unwrap_or_default();
                 return Ok(std::process::Output {
                     status,
                     stdout,

@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 nemesis-exec-protocol = { workspace = true }
+nemesis-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "process", "fs", "macros", "sync"] }

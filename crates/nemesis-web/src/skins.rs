@@ -42,9 +42,15 @@ use nemesis_verify::verify::VerifyOutcome;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Read;
+
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// 有界解压上限（BUG 2026-10-29 横扫角度 B：皮肤包条目解压无界入内存）。
+/// 清单是几 KB 的 JSON，4 MB 已是荒谬余量；载荷（css/html/js）与安装端
+/// 单条目 32 MB 上限同源。超限 → 该皮肤按不可用处理（None/404/Broken）。
+const SKIN_MANIFEST_ENTRY_CAP: usize = 4 * 1024 * 1024;
+const SKIN_PAYLOAD_ENTRY_CAP: usize = 32 * 1024 * 1024;
 
 /// 皮肤宿主：skins 目录 + 激活 id（共享锁，热切地基）+ home（脚本闸
 /// config 现读现判用；None = 无法判闸 → 脚本端点诚实 403）。
@@ -87,16 +93,18 @@ impl SkinHost {
 
     /// 读 manifest.json 的字符串字段（拒 `..` 穿越）。泛型后端：
     /// load_css/structure 走 `BufReader<File>`，load_script_with_sha 走
-    /// `Cursor<Vec<u8>>`（sha256 需整包字节在手）。
+    /// `Cursor<Vec<u8>>`（sha256 需整包字节在手）。manifest 条目有界读
+    /// （BUG 2026-10-29 横扫角度 B；4 MB 对几 KB 的清单已是荒谬余量）。
     fn manifest_str<R: std::io::Read + std::io::Seek>(
         zip: &mut zip::ZipArchive<R>,
         field: &str,
     ) -> Option<String> {
-        let mut manifest = String::new();
-        zip.by_name("manifest.json")
-            .ok()?
-            .read_to_string(&mut manifest)
-            .ok()?;
+        let manifest = nemesis_utils::zip_util::read_entry_capped(
+            &mut zip.by_name("manifest.json").ok()?,
+            SKIN_MANIFEST_ENTRY_CAP,
+        )
+        .ok()?;
+        let manifest = String::from_utf8(manifest).ok()?;
         let value = serde_json::from_str::<serde_json::Value>(&manifest)
             .ok()?
             .get(field)?
@@ -113,8 +121,12 @@ impl SkinHost {
     fn load_css(&self, id: &str) -> Option<String> {
         let mut zip = self.open_zip(id)?;
         let entry = Self::manifest_str(&mut zip, "entry")?;
-        let mut css = String::new();
-        zip.by_name(&entry).ok()?.read_to_string(&mut css).ok()?;
+        let css = nemesis_utils::zip_util::read_entry_capped(
+            &mut zip.by_name(&entry).ok()?,
+            SKIN_PAYLOAD_ENTRY_CAP,
+        )
+        .ok()?;
+        let css = String::from_utf8(css).ok()?;
         Some(sanitize_css_urls(&css))
     }
 
@@ -123,9 +135,12 @@ impl SkinHost {
     fn load_structure(&self, id: &str) -> Option<String> {
         let mut zip = self.open_zip(id)?;
         let entry = Self::manifest_str(&mut zip, "structure")?;
-        let mut html = String::new();
-        zip.by_name(&entry).ok()?.read_to_string(&mut html).ok()?;
-        Some(html)
+        let html = nemesis_utils::zip_util::read_entry_capped(
+            &mut zip.by_name(&entry).ok()?,
+            SKIN_PAYLOAD_ENTRY_CAP,
+        )
+        .ok()?;
+        String::from_utf8(html).ok()
     }
 
     /// 从包读取脚本载荷 + 整包 SHA-256（P2a；`load_structure` 镜像）。
@@ -144,9 +159,12 @@ impl SkinHost {
         let sha = sha256_hex(&bytes);
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
         let entry = Self::manifest_str(&mut zip, "script")?;
-        let mut js = String::new();
-        zip.by_name(&entry).ok()?.read_to_string(&mut js).ok()?;
-        Some((js, sha))
+        let js = nemesis_utils::zip_util::read_entry_capped(
+            &mut zip.by_name(&entry).ok()?,
+            SKIN_PAYLOAD_ENTRY_CAP,
+        )
+        .ok()?;
+        Some((String::from_utf8(js).ok()?, sha))
     }
 
     /// 脚本能力总闸现读现判（`ui.skins.allow_scripts`）。home 未装配 /
@@ -519,21 +537,34 @@ fn inspect_package(bytes: &[u8]) -> (SkinStatus, Option<String>, Option<Manifest
         Ok(z) => z,
         Err(e) => return (SkinStatus::Broken, Some(format!("ZIP 无法解析：{e}")), None),
     };
-    let mut manifest_raw = String::new();
-    match zip.by_name("manifest.json") {
+    // manifest 条目有界读（BUG 2026-10-29 横扫角度 B）：导入面收的是
+    // 上传字节，炸弹 manifest 在撑爆内存前判 Broken。
+    let manifest_raw = match zip.by_name("manifest.json") {
         Ok(mut f) => {
-            if let Err(e) = f.read_to_string(&mut manifest_raw) {
-                return (
-                    SkinStatus::Broken,
-                    Some(format!("manifest.json 不可读：{e}")),
-                    None,
-                );
+            match nemesis_utils::zip_util::read_entry_capped(&mut f, SKIN_MANIFEST_ENTRY_CAP) {
+                Ok(b) => match String::from_utf8(b) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return (
+                            SkinStatus::Broken,
+                            Some("manifest.json 不是 UTF-8".into()),
+                            None,
+                        );
+                    }
+                },
+                Err(e) => {
+                    return (
+                        SkinStatus::Broken,
+                        Some(format!("manifest.json 不可读：{e}")),
+                        None,
+                    );
+                }
             }
         }
         Err(_) => {
             return (SkinStatus::Broken, Some("缺少 manifest.json".into()), None);
         }
-    }
+    };
     let manifest: ManifestInfo = match serde_json::from_str(&manifest_raw) {
         Ok(m) => m,
         Err(e) => {

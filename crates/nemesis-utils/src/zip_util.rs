@@ -108,6 +108,35 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 有界读入内存（BUG 2026-10-29 横扫角度 B：zip 条目解压无界入内存的
+/// 单一真相源修复）。
+///
+/// 不信任 zip/tar 条目头声明的 size 做预分配（撒谎 size = 上限外预分配，
+/// 1 MB 压缩体可声明并撑出 GB 级内存），16 KB 分块流式读，累计超 `cap`
+/// 立即报错——解压炸弹在撑爆内存**之前**被拒绝，而不是读完全量再截断。
+///
+/// 所有「zip/tar 条目 → `Vec<u8>` 进内存」的路径都应走这里，不要裸
+/// `read_to_end`：显示层截断发生在读完之后，防不了读入过程本身。
+pub fn read_entry_capped<R: std::io::Read>(reader: &mut R, cap: usize) -> Result<Vec<u8>, String> {
+    const CHUNK: usize = 16 * 1024;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; CHUNK];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("读取失败：{e}"))?;
+        if n == 0 {
+            return Ok(buf);
+        }
+        if buf.len() + n > cap {
+            return Err(format!(
+                "数据超过上限（>{cap} 字节）：疑似解压炸弹或损坏条目，已拒绝"
+            ));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
 /// 词法级相对路径安全闸（zip-slip / 归档穿越判定的单一真相源）。
 ///
 /// canonicalize 型检查（父目录规范化后 `starts_with` 目标目录）在**父目录

@@ -223,7 +223,6 @@ const WSL_TOOL_PROBE_SCRIPT: &str = "for t in qemu-img file curl wget apt-get; d
 /// 单独 pub(crate) 是给伴生测试文件做环境无关断言（只验「落在四态之一」）。
 #[cfg(windows)]
 pub(crate) fn wsl_spawn_probe() -> WslProbe {
-    use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -241,16 +240,15 @@ pub(crate) fn wsl_spawn_probe() -> WslProbe {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .ok()?;
-        let mut stdout = child.stdout.take()?;
-        let mut stderr = child.stderr.take()?;
+        let stdout = child.stdout.take()?;
+        let stderr = child.stderr.take()?;
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let mut out = Vec::new();
-                    let mut err = Vec::new();
-                    let _ = stdout.read_to_end(&mut out);
-                    let _ = stderr.read_to_end(&mut err);
+                    // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾。
+                    let out = nemesis_utils::pipe_cap::drain_capped_sync(stdout);
+                    let err = nemesis_utils::pipe_cap::drain_capped_sync(stderr);
                     return Some((status.code().unwrap_or(-1), out, err));
                 }
                 Ok(None) if Instant::now() >= deadline => {

@@ -941,3 +941,79 @@ fn test_extract_zip_rejects_traversal_entry() {
     .unwrap_err();
     assert!(err.contains("zip slip detected"), "{err}");
 }
+
+// ===== read_entry_capped（BUG 2026-10-29 横扫角度 B：解压无界入内存）=====
+
+#[test]
+fn test_read_entry_capped_under_cap_is_verbatim() {
+    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let mut r: &[u8] = &data;
+    let got = read_entry_capped(&mut r, 1 << 20).unwrap();
+    assert_eq!(got, data);
+}
+
+#[test]
+fn test_read_entry_capped_exact_cap_ok() {
+    let data = vec![7u8; 4096];
+    let mut r: &[u8] = &data;
+    assert_eq!(read_entry_capped(&mut r, 4096).unwrap(), data);
+}
+
+#[test]
+fn test_read_entry_capped_over_cap_errors() {
+    let data = vec![7u8; 4097];
+    let mut r: &[u8] = &data;
+    let err = read_entry_capped(&mut r, 4096).unwrap_err();
+    assert!(err.contains("超过上限"), "{err}");
+}
+
+#[test]
+fn test_read_entry_capped_empty_ok() {
+    let mut r: &[u8] = b"";
+    assert!(read_entry_capped(&mut r, 1024).unwrap().is_empty());
+}
+
+/// 真 zip 炸弹形态：高可压载荷（1 MiB 零）压成 ~1 KB 条目，cap 64 KB
+/// 必须在读入过程中报错——不是读完再截断。
+#[test]
+fn test_read_entry_capped_real_zip_bomb_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("bomb.zip");
+    {
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("payload.bin", options).unwrap();
+        std::io::Write::write_all(&mut writer, &vec![0u8; 1024 * 1024]).unwrap();
+        writer.finish().unwrap();
+    }
+    let raw = fs::read(&zip_path).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&raw)).unwrap();
+    let mut entry = archive.by_index(0).unwrap();
+    let err = read_entry_capped(&mut entry, 64 * 1024).unwrap_err();
+    assert!(err.contains("超过上限"), "{err}");
+}
+
+/// 正常 zip 条目（小于 cap）照常读全——修复不破坏合法包。
+#[test]
+fn test_read_entry_capped_normal_zip_entry_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("ok.zip");
+    {
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("a.bin", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"hello nemesis").unwrap();
+        writer.finish().unwrap();
+    }
+    let raw = fs::read(&zip_path).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&raw)).unwrap();
+    let mut entry = archive.by_index(0).unwrap();
+    assert_eq!(
+        read_entry_capped(&mut entry, 1024).unwrap(),
+        b"hello nemesis"
+    );
+}

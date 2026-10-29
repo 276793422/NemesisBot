@@ -5,6 +5,18 @@
 
 use anyhow::Result;
 
+/// Chunk word-aligned advance（饱和算术，BUG 2026-10-29 横扫角度 B）。
+///
+/// `size` 是 chunk 头里的**未信任 u32**。旧式 `body_start + size.div_ceil(2)*2`
+/// 在 32 位目标（armeabi-v7a 是显式支持面）上对 `size = 0xFFFFFFFF` 溢出：
+/// release 回绕成 0 → 步进错乱按字节垃圾重解析；debug 直接 panic。饱和到
+/// `usize::MAX` 后主循环条件自然判出界收尾。64 位语义逐字节不变
+/// （`u32::MAX.div_ceil(2)*2 = 2^32` 在 64 位 usize 内精确无饱和）。
+fn advance_chunk_pos(pos: usize, size: u32) -> usize {
+    let step = (size as usize).div_ceil(2).saturating_mul(2);
+    pos.saturating_add(step)
+}
+
 /// Minimal RIFF/WAVE parser → (mono f32 samples, sample_rate).
 pub fn parse_wav(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
@@ -18,7 +30,9 @@ pub fn parse_wav(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
     let mut bits: u16 = 0;
     let mut data: Option<&[u8]> = None;
 
-    while pos + 8 <= bytes.len() {
+    // saturating 形式循环条件：pos 经 advance_chunk_pos 饱和后可能是
+    // usize::MAX，裸 `pos + 8` 在 debug 下会先于循环体溢出 panic。
+    while pos.saturating_add(8) <= bytes.len() {
         let id = &bytes[pos..pos + 4];
         let size = u32::from_le_bytes([
             bytes[pos + 4],
@@ -42,8 +56,8 @@ pub fn parse_wav(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
             b"data" => data = Some(body),
             _ => {}
         }
-        // Chunks are word-aligned.
-        pos = body_start + size.div_ceil(2) * 2;
+        // Chunks are word-aligned（饱和步进，见 advance_chunk_pos）。
+        pos = advance_chunk_pos(body_start, size as u32);
     }
 
     let data = data.ok_or_else(|| anyhow::anyhow!("WAVE data chunk missing"))?;

@@ -140,8 +140,6 @@ async fn run_process(
     args: &[String],
     timeout: Duration,
 ) -> Result<RunOutput, String> {
-    use tokio::io::AsyncReadExt;
-
     // 安装程序（npm/cargo 等）是 console 程序；gateway 托盘/无控制台运行
     // （release windows 子系统，2026-09-21）时压掉弹窗（stdio 走 null/管道）。
     let mut cmd = tokio::process::Command::new(program);
@@ -159,20 +157,15 @@ async fn run_process(
         }
     })?;
 
-    let mut stdout = child.stdout.take().ok_or("stdout not captured")?;
-    let mut stderr = child.stderr.take().ok_or("stderr not captured")?;
-    // 独立任务排水（join 句柄在 wait 之后收——超时分支里任务随进程死，
-    // read 返 Err 被吞掉即可，不影响诚实报错）。
-    let out_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf).await;
-        buf
-    });
-    let err_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf).await;
-        buf
-    });
+    let stdout = child.stdout.take().ok_or("stdout not captured")?;
+    let stderr = child.stderr.take().ok_or("stderr not captured")?;
+    // 独立任务排水（join 句柄在 wait 之后收——超时分支里任务随进程死）。
+    // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾，读错误按
+    // EOF 收尾（诚实报错路径不受影响）。
+    let out_task =
+        tokio::spawn(async move { nemesis_utils::pipe_cap::drain_capped_async(stdout).await });
+    let err_task =
+        tokio::spawn(async move { nemesis_utils::pipe_cap::drain_capped_async(stderr).await });
 
     let status = tokio::time::timeout(timeout, child.wait())
         .await

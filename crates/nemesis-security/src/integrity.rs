@@ -95,7 +95,9 @@ impl AuditChain {
 
     /// Append an event to the audit chain.
     ///
-    /// Returns an error if the chain has been closed.
+    /// Returns an error if the chain has been closed, or if the event could
+    /// not be persisted to disk (in which case the in-memory chain tail is
+    /// NOT advanced — memory stays consistent with disk).
     pub fn append(
         &self,
         operation: &str,
@@ -113,7 +115,9 @@ impl AuditChain {
 
     /// Append an event with an optional signature.
     ///
-    /// Returns an error if the chain has been closed.
+    /// Returns an error if the chain has been closed, or if the event could
+    /// not be persisted to disk (in which case the in-memory chain tail is
+    /// NOT advanced — memory stays consistent with disk).
     pub fn append_with_sign(
         &self,
         operation: &str,
@@ -162,6 +166,31 @@ impl AuditChain {
             sign,
         };
 
+        // 盘先行（BUG 2026-10-29 横扫角度 A）：磁盘是审计链的真相源——只有
+        // 行真正落盘才推进内存链状态（last_hash/计数器）并返回 Ok。旧的
+        // 「先推进内存、落盘 let _ = 吞错、恒返回 Ok」在磁盘写失败时内存与
+        // 盘脱节：verify 按盘上行链式校验从此必 FAIL，事发时刻零可见。
+        let json = serde_json::to_string(&event)
+            .map_err(|e| format!("audit event serialize failed: {e}"))?;
+        let storage_path = self.get_current_segment_path();
+        if let Err(e) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&storage_path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{json}")
+            })
+        {
+            tracing::error!(
+                target: "nemesis_security::integrity",
+                segment = %storage_path.display(),
+                error = %e,
+                "[AuditChain] 审计事件落盘失败：本事件未入链（内存链尾未推进，下个事件重用同一 prev_hash）"
+            );
+            return Err(format!("audit chain persist failed: {e}"));
+        }
+
         *self.last_hash.lock() = hash;
         let count = self
             .event_count
@@ -170,22 +199,9 @@ impl AuditChain {
         self.total_events
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        // Persist to JSONL
-        if let Ok(json) = serde_json::to_string(&event) {
-            let storage_path = self.get_current_segment_path();
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&storage_path)
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    writeln!(f, "{}", json)
-                });
-
-            // Check if rotation is needed
-            if count >= self.config.max_events_per_segment {
-                self.rotate_segment();
-            }
+        // Check if rotation is needed
+        if count >= self.config.max_events_per_segment {
+            self.rotate_segment();
         }
 
         Ok(event)

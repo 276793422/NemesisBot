@@ -295,13 +295,26 @@ async fn publish_task_delivery(
             // 非 PR JSON（HTTP 错误页/截断/未知形态）→ 对账兜底。
             None => {
                 match reconcile_pr_by_head(agent_loop, &connector, &owner, &repo, &branch).await {
-                    Some(found) => found,
-                    None => {
+                    ReconcileOutcome::Found(n, u) => (n, u),
+                    // 扫尽确认不在：重试建 PR 安全（不会重复）。
+                    ReconcileOutcome::Absent => {
                         return Ok(fail_outcome(
                             &task_id,
                             &branch,
                             format!(
-                                "PR 创建未确认（结果非 PR JSON），对账无同 head PR——保守判失败可重试。原始响应: {}",
+                                "PR 创建未确认（结果非 PR JSON），对账扫尽全仓无同 head PR——保守判失败可重试。原始响应: {}",
+                                head_chars(&resp, 400)
+                            ),
+                        ));
+                    }
+                    // 未能扫尽（页数封顶/响应不可解析/查询失败）：可能已建成
+                    // ——重试有重复建 PR 风险，操作者文案如实告知。
+                    ReconcileOutcome::Inconclusive => {
+                        return Ok(fail_outcome(
+                            &task_id,
+                            &branch,
+                            format!(
+                                "PR 创建未确认且对账未能扫尽（页数封顶/响应不可解析/查询失败），无法排除已建成 PR——保守判失败可重试，但重复建 PR 风险自担（可人工到仓库按分支 {branch} 核实）。原始响应: {}",
                                 head_chars(&resp, 400)
                             ),
                         ));
@@ -484,24 +497,83 @@ fn parse_pr_response(text: &str) -> Option<(i64, Option<String>)> {
 }
 
 /// unknown 对账：pr_list 按 head 分支回查同仓 PR（state=all——open/closed
-/// 一并认，报告既有 PR 比重复建一个诚实）。响应解析失败（截断/非 JSON）=
-/// None（保守判失败，不造 PR 号）。
+/// 一并认，报告既有 PR 比重复建一个诚实）。
+///
+/// 翻页（BUG-20261028 pr_list 对账固定首页）：仓库 PR 总数超过单页 limit
+/// 时目标 PR 可能落在后续页——固定首页对账看不到已建成 PR → 重试重复建
+/// PR。对账专用小翻页循环 + 硬上限：满页才翻下一页，不足一页 = 末页即停；
+/// 页数硬上限防对端异常（恒满页/无限分页）把对账变成无界循环。
+///
+/// 三态结论（BUG-20261029 回顾收紧）：Absent = 扫到不足一页的短页仍无命中
+/// （**扫尽确认不在**，重试建 PR 安全）；Inconclusive = 页数硬上限封顶 /
+/// 某页响应不可解析 / 查询本身失败（**未能扫尽**——保守判失败可重试，但
+/// 重试存在重复建 PR 风险，操作者文案必须如实区分）。
+const RECONCILE_PAGE_LIMIT: usize = 20;
+const RECONCILE_MAX_PAGES: usize = 5;
+
+/// 对账结论三态（语义见 [`reconcile_pr_by_head`] 文档）。
+enum ReconcileOutcome {
+    Found(i64, Option<String>),
+    Absent,
+    Inconclusive,
+}
+
+/// 对账翻页推进判定（纯函数）：本页不足一页 = 末页取尽（Absent）；
+/// 满页未中 = 翻下一页（Next），超过硬上限封顶（Inconclusive）。
+fn reconcile_advance(page: usize, page_len: usize) -> ReconcilePaging {
+    if page_len < RECONCILE_PAGE_LIMIT {
+        return ReconcilePaging::Absent;
+    }
+    let next = page + 1;
+    if next <= RECONCILE_MAX_PAGES {
+        ReconcilePaging::Next(next)
+    } else {
+        ReconcilePaging::Inconclusive
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ReconcilePaging {
+    Next(usize),
+    Absent,
+    Inconclusive,
+}
+
 async fn reconcile_pr_by_head(
     agent_loop: &Arc<AgentLoop>,
     connector: &str,
     owner: &str,
     repo: &str,
     head_branch: &str,
-) -> Option<(i64, Option<String>)> {
-    let text = invoke(
-        agent_loop,
-        connector,
-        "pr_list",
-        json!({"owner": owner, "repo": repo, "state": "all", "limit": 20}),
-    )
-    .await
-    .ok()?;
-    find_pr_by_head(&text, head_branch)
+) -> ReconcileOutcome {
+    let mut page = 1usize;
+    loop {
+        let text = match invoke(
+            agent_loop,
+            connector,
+            "pr_list",
+            json!({"owner": owner, "repo": repo, "state": "all", "limit": RECONCILE_PAGE_LIMIT, "page": page}),
+        )
+        .await
+        {
+            Ok(t) => t,
+            // 查询失败 = 对账没跑成，不是「不存在」。
+            Err(_) => return ReconcileOutcome::Inconclusive,
+        };
+        if let Some((n, u)) = find_pr_by_head(&text, head_branch) {
+            return ReconcileOutcome::Found(n, u);
+        }
+        // 页体不可解析（截断/错误页）= 未能扫尽，不冒充「扫尽不在」。
+        let list: Vec<Value> = match serde_json::from_str(text.trim()) {
+            Ok(l) => l,
+            Err(_) => return ReconcileOutcome::Inconclusive,
+        };
+        match reconcile_advance(page, list.len()) {
+            ReconcilePaging::Next(next) => page = next,
+            ReconcilePaging::Absent => return ReconcileOutcome::Absent,
+            ReconcilePaging::Inconclusive => return ReconcileOutcome::Inconclusive,
+        }
+    }
 }
 
 /// pr_list JSON 数组中找 `head.ref == head_branch` 的首条 → (number, url)。

@@ -699,13 +699,12 @@ impl Tool for ShellTool {
 }
 
 async fn drain_child_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>) -> String {
-    let Some(mut pipe) = pipe else {
+    let Some(pipe) = pipe else {
         return String::new();
     };
-    let mut buf = Vec::new();
-    use tokio::io::AsyncReadExt;
-    let _ = pipe.read_to_end(&mut buf).await;
-    String::from_utf8_lossy(&buf).into_owned()
+    // 有界排干（BUG 2026-10-29 横扫角度 B）：输出体量不受我方控制（`yes`
+    // 类高吞吐 × 超时窗口 = OOM 面），1 MiB 丢头保尾，显示层截断照旧。
+    String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
 }
 
 /// 超时树杀（guest `tools::kill_tree` / `background_registry::tree_kill`

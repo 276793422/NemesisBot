@@ -150,7 +150,17 @@ impl AuditLogger {
                 sanitize_reason(reason),
                 policy_rule,
             );
-            let _ = file.write_all(log_line.as_bytes());
+            // 明文审计不允许静默丢行：写失败必须可见（BUG 2026-10-29 横扫
+            // 角度 A）。句柄已打开时写失败多为磁盘满/IO 瞬时错误，后续行
+            // 继续 best-effort，但本次丢失必须留痕。
+            if let Err(e) = file.write_all(log_line.as_bytes()) {
+                tracing::warn!(
+                    target: "nemesis_security::audit_log",
+                    event_id = %event_id,
+                    error = %e,
+                    "[AuditLog] 审计明文日志写入失败，本条决策记录丢失: {e}"
+                );
+            }
         }
     }
 

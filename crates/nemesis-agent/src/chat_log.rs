@@ -1534,7 +1534,15 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
     if let Ok(line) = serde_json::to_string(&entry) {
         let mut buf = line;
         buf.push('\n');
-        let _ = file.write_all(buf.as_bytes());
+        // 写失败与 open 失败同款可见（BUG 2026-10-29 横扫角度 A）：侧车是
+        // 重放/审计的轻量证据面，丢行不允许无痕。
+        if let Err(e) = file.write_all(buf.as_bytes()) {
+            tracing::warn!(
+                "[chat_log] boundary event write failed {}: {}",
+                path.display(),
+                e
+            );
+        }
     }
 }
 

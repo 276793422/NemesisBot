@@ -352,11 +352,17 @@ async fn install_zip_entries(
         if entry.is_dir() || !name.ends_with(".nbskin") {
             continue; // signatures.json / certs/ / 目录条目不是可安装对象
         }
-        let mut buf = Vec::new();
-        if let Err(e) = std::io::Read::read_to_end(&mut entry, &mut buf) {
-            errors.push(json!({ "file": name, "error": format!("条目不可读：{e}") }));
-            continue;
-        }
+        // 有界解压（BUG 2026-10-29 横扫角度 B）：单条目 32 MiB 上限（皮肤
+        // 包远小于此），解压炸弹逐条记 errors 不炸整包——与名字解码失败
+        // 同款容错形态。
+        const SKIN_ENTRY_CAP: usize = 32 * 1024 * 1024;
+        let buf = match nemesis_utils::zip_util::read_entry_capped(&mut entry, SKIN_ENTRY_CAP) {
+            Ok(b) => b,
+            Err(e) => {
+                errors.push(json!({ "file": name, "error": format!("条目不可读：{e}") }));
+                continue;
+            }
+        };
         match install_bytes(dir, &buf, overwrite) {
             Ok(o) => match serde_json::to_value(&o) {
                 Ok(mut v) => {

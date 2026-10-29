@@ -320,7 +320,6 @@ impl Default for PluginsHandler {
 /// 逐级 create_dir_all。返回写入的文件数。
 #[cfg(feature = "plugins-wasm")]
 fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usize, String> {
-    use std::io::Read as _;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("ZIP 无法解析：{e}"))?;
     std::fs::create_dir_all(dest).map_err(|e| format!("创建目录失败：{e}"))?;
@@ -364,9 +363,10 @@ fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usi
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
         }
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
+        // 有界解压（BUG 2026-10-29 横扫角度 B）：单条目 64 MiB 上限，
+        // 解压炸弹在撑爆内存前拒绝。
+        const DEVKIT_ENTRY_CAP: usize = 64 * 1024 * 1024;
+        let buf = nemesis_utils::zip_util::read_entry_capped(&mut entry, DEVKIT_ENTRY_CAP)
             .map_err(|e| format!("条目 {raw} 不可读：{e}"))?;
         std::fs::write(&out, &buf).map_err(|e| format!("写入 {} 失败：{e}", out.display()))?;
         written += 1;

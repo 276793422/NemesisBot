@@ -742,3 +742,52 @@ fn concurrent_appends_keep_chain_linked() {
         "并发 append 后链必须完整"
     );
 }
+
+#[test]
+fn test_append_persist_failure_does_not_advance_chain() {
+    // BUG（2026-10-29 横扫角度 A）：落盘失败曾静默吞 + 内存链照常推进 +
+    // 恒返回 Ok——内存与盘脱节后 verify 按盘上行校验从此必 FAIL，事发零
+    // 可见。盘先行后：落盘失败必须返回 Err、内存链尾不动（下个事件重用
+    // 同一 prev_hash，内存==磁盘保持一致），恢复后链继续且盘上可验。
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("missing_dir").join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    let genesis = chain.current_hash();
+
+    // 父目录不存在 → open 必失败（全平台确定性注入，不玩权限游戏）
+    let err = chain
+        .append("file_read", "read_file", "u", "cli", "/t", "allowed", "r")
+        .expect_err("落盘失败必须返回 Err，不得谎报 Ok");
+    assert!(!err.is_empty());
+    assert_eq!(chain.current_hash(), genesis, "落盘失败不得推进内存链尾");
+    assert_eq!(chain.event_count(), 0, "落盘失败不得计数");
+    assert_eq!(chain.total_event_count(), 0);
+
+    // 恢复（父目录就位）→ 追加成功且链尾正确衔接失败前的 genesis
+    std::fs::create_dir_all(dir.path().join("missing_dir")).unwrap();
+    let ev1 = chain
+        .append("file_read", "read_file", "u", "cli", "/t", "allowed", "r")
+        .expect("恢复后 append 应成功");
+    assert_eq!(ev1.prev_hash, genesis, "恢复后首事件必须重用失败前的链尾");
+    let ev2 = chain
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r")
+        .expect("第二次 append 应成功");
+    assert_eq!(ev2.prev_hash, ev1.hash);
+    assert_eq!(chain.event_count(), 2);
+
+    // 盘上链可独立校验（防篡改语义在失败恢复后完整）
+    let content =
+        std::fs::read_to_string(dir.path().join("missing_dir").join("audit.jsonl")).unwrap();
+    let events: Vec<AuditEvent> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("parse event"))
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(
+        AuditChain::verify_chain(&events),
+        "失败恢复后的盘上链必须 verify 通过"
+    );
+}

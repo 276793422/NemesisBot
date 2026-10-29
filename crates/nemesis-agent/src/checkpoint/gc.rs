@@ -88,6 +88,9 @@ pub(crate) struct RetentionEntry {
 pub(crate) struct RetentionDecision {
     pub kept_turns: HashSet<usize>,
     /// 需要保留对象的 tree hex（保留条目的 tree ∪ extras 解析成功者）。
+    /// 消费点只在 checkpoint-git 形态（重建式清扫对象集），无该 feature
+    /// 的组合下允许 dead（字段仍随保留集构造，语义完整）。
+    #[cfg_attr(not(feature = "checkpoint-git"), allow(dead_code))]
     pub kept_trees: HashSet<String>,
 }
 
@@ -636,7 +639,8 @@ impl CheckpointStore {
 /// 跳过（symlink_metadata 判定，BUG-20261029-139 与 collect_relative_files
 /// 同族）——跟随版会把链接当目录入栈：外指链接把目标树字节计入体积
 /// （虚报），自指链接无限入栈死循环挂死 gc 任务。git objects 树正常无
-/// 链接，跳过零行为变化。
+/// 链接，跳过零行为变化。消费点只在 checkpoint-git 重建式清扫。
+#[cfg_attr(not(feature = "checkpoint-git"), allow(dead_code))]
 pub(super) fn dir_size(dir: &std::path::Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![dir.to_path_buf()];

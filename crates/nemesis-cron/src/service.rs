@@ -127,6 +127,37 @@ use crate::store::CronStoreData;
 #[allow(dead_code)]
 type JobHandlerFn = Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>;
 
+/// BUG-20261029 panic 隔离：on_job handler 是 gateway 侧大闭包（board
+/// autopilot / 记忆 dreaming / 消息投递多分支），一次 panic 沿调用栈炸掉
+/// 常驻 tick 任务（spawn 于 [`CronService::run`]）→ cron 服务静默永久停摆
+/// （running 残留 true、handle 无人 await、panic 零日志面）。对齐 heartbeat
+/// BUG-20261028-113 的隔离纪律：catch_unwind 把 panic 映射为 Err(合成串)
+/// ——落进调用点既有失败记账面（G3 ledger settle failed + job.last_status
+/// =error + history），循环继续。诚实边界：panic=abort profile（iotsmall）
+/// 接不住（进程死即任务死，既有取舍）；handler 半程副作用由 Err 记账诚实
+/// 标注，不回滚。
+fn invoke_handler_catch_panic(
+    handler: Option<&Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>>,
+    job: &CronJob,
+) -> Option<Result<String, String>> {
+    handler.map(|h| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h(job))).unwrap_or_else(|p| {
+            let msg = if let Some(s) = p.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = p.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "opaque panic".to_string()
+            };
+            error!(
+                "[Cron] on_job handler panicked (job name={}, id={}): {msg} — 映射为 Err，循环继续",
+                job.name, job.id
+            );
+            Err(format!("handler panicked: {msg}"))
+        })
+    })
+}
+
 /// 系统内部 cron 作业的保留名字前缀（单一真相源）。这些前缀是 gateway
 /// on_job 分派分支（`ctx.rs` 按 `job.name.starts_with` 路由）与 board 启动
 /// 孤儿清理（按前缀 + id 判定）的**按名约定**——用户作业撞名会被劫持
@@ -365,10 +396,11 @@ impl CronService {
                         serde_json::json!({ "trigger": "schedule" }),
                     );
 
-                    // Call on_job handler (outside lock)
+                    // Call on_job handler (outside lock)——panic 隔离见
+                    // invoke_handler_catch_panic（BUG-20261029）。
                     let handler_result = {
                         let on_job = on_job.lock();
-                        on_job.as_ref().map(|h| h(&callback_job))
+                        invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
                     };
 
                     // G3：触发账本收口（无 handler 也算触发完成——与 cron
@@ -1047,10 +1079,12 @@ impl CronService {
             serde_json::json!({ "trigger": "manual" }),
         );
 
-        // Call on_job handler (outside lock).
+        // Call on_job handler (outside lock)——panic 隔离见
+        // invoke_handler_catch_panic（BUG-20261029；web 立即运行路径同源，
+        // panic 不再跨越 svc.lock() 外层互斥守卫传播）。
         let handler_result = {
             let on_job = self.on_job.lock();
-            on_job.as_ref().map(|h| h(&callback_job))
+            invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
         };
 
         // G3：手动触发收口（None=无 handler，同 execute 语义视为完成）。

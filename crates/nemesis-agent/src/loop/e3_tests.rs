@@ -274,6 +274,49 @@ async fn e3_redo_rejects_refilled_same_count_session() {
     delete_chat_log(&key);
 }
 
+/// BUG-20261028 回归锁：redo 回填**写回失败**时 undo 条目必须还栈可重试。
+/// removed_rows 是被回退对话行的唯一副本——修复前写回失败分支直接把弹出的
+/// 条目丢弃（冲突路径还栈、写回失败路径不还，不对称），文件占用解除后用户
+/// 重试撞「没有可重做的回退」，对话行永久丢失。share_mode(1)（仅
+/// FILE_SHARE_READ）锁会话 jsonl → truncate 的 rename 覆盖失败 → 写回 0 行。
+/// 解锁后重试成功 = 条目确实还在栈中（若被丢弃这里报「没有可重做」）。
+#[cfg(windows)]
+#[tokio::test]
+async fn redo_writeback_failure_restores_undo_entry_for_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (al, key, _dir) = stage_two_turns("redo-wb").await;
+
+    al.rewind_to_message(&key, 0, false).await.unwrap();
+
+    // 锁会话 jsonl：sanitize 与落盘侧同源（chat_log::log_path 同构）。
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&key);
+    let jsonl = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.jsonl", safe_key));
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&jsonl)
+        .expect("打开会话 jsonl 锁句柄");
+
+    // 写回失败：诚实报错（不是 Ok 假成功）。
+    let err = al.redo_rewind(&key).await.unwrap_err();
+    assert!(err.contains("写回失败"), "{err}");
+    // jsonl 保留回退态（0 行写入，没有半截回填）。
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2, "写回失败 = 会话保持回退态");
+
+    // 解锁重试：成功 = undo 条目仍在栈中（修复前这里「没有可重做」）。
+    drop(lock);
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(out["restored_count"], 2, "{out}");
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4, "重试回填生效");
+    assert_eq!(rows[2]["content"], "turn 2 q");
+
+    delete_chat_log(&key);
+}
+
 /// 边界：空会话 Err；越界 index Err；末尾消息 no-op（removed 0，
 /// redoable=false，文件/日志都不动）。
 #[tokio::test]

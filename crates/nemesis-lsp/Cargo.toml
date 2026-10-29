@@ -6,6 +6,8 @@ edition.workspace = true
 
 [dependencies]
 tokio = { workspace = true }
+# 有界管道排干（BUG 2026-10-29 横扫角度 B）：安装器输出 1 MiB 丢头保尾。
+nemesis-utils = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }

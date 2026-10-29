@@ -725,7 +725,17 @@ impl AgentLoop {
         let expected = all.len();
         let n = crate::chat_log::truncate_chat_log_rows(session_key, &all);
         if n != expected {
-            warn!("[AgentLoop] redo 回填写回不完整（期望 {expected} 行写 {n} 行）——jsonl 保留原样");
+            // 写回失败是可重试阻塞点（文件占用/磁盘瞬时问题），不是终态
+            // ——与上方冲突路径同语义：条目必须还栈（removed_rows 是被回
+            // 退对话行的唯一副本，丢了 = 永久丢失且无法重试）。
+            self.rewind_undo_stacks
+                .lock()
+                .entry(session_key.to_string())
+                .or_default()
+                .push_back(entry);
+            warn!(
+                "[AgentLoop] redo 回填写回不完整（期望 {expected} 行写 {n} 行）——jsonl 保留原样，undo 条目已还栈可重试"
+            );
             return Err("会话日志写回失败，重做未生效（会话保持回退态）".to_string());
         }
 

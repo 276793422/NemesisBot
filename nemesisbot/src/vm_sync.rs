@@ -1910,7 +1910,6 @@ async fn pull_files_to_host(
     let chunks = head["chunks"]
         .as_u64()
         .ok_or_else(|| "bulk_read 响应缺 chunks".to_string())?;
-    let expect_bytes = head["bytes"].as_u64().unwrap_or(0);
     if !head["missing"].as_array().is_none_or(|m| m.is_empty()) {
         // 清单里的路径在 VM 缺席 = 基线与 VM 树在打包窗口内被并发改动
         // （commit 持锁期间不该发生）——诚实报错重试，不落半份。
@@ -1919,7 +1918,12 @@ async fn pull_files_to_host(
             head["missing"].as_array().map(|m| m.len()).unwrap_or(0)
         ));
     }
-    let mut buf = Vec::with_capacity(expect_bytes as usize);
+    // 不按响应头 `bytes` 预分配（BUG-20261029 zip 撒谎 size 同族横扫补漏）：
+    // head 声明来自 VM 侧 wire，谎报/损坏值 `with_capacity` 即成无中生有的
+    // 巨额分配（u64::MAX 直接 capacity overflow abort）。本路径对路径已做
+    // fail-closed 防御（safe_rel/symlink 闸），size 头没有理由盲信——按实
+    // 到 chunk 增长，payload 总量由 chunk 分次传输天然有界。
+    let mut buf = Vec::new();
     for seq in 0..chunks {
         let args = serde_json::json!({ "transfer": transfer, "seq": seq });
         let chunk_raw = sup

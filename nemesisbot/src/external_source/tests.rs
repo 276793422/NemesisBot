@@ -263,3 +263,28 @@ fn gitea_manifest_issues_list_declares_page_param() {
     // limit 的分页边界同步钉住（Gitea REST 真实上限 50）。
     assert_eq!(props["limit"]["maximum"].as_integer(), Some(50));
 }
+
+#[test]
+fn gitea_manifest_pr_list_declares_page_param() {
+    // 同上契约锁钉 pr_list（BUG-20261028 横扫补齐：issues_list 修复时未
+    // 横扫同清单同类 op——pr_list 无 page，publish 对账固定首页，PR 总数
+    // 超页后重试重复建 PR）。
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/workspace/connectors/gitea/connector.toml"
+    );
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读 {path} 失败: {e}"));
+    let doc: toml::Value = toml::from_str(&raw).expect("connector.toml 必须是合法 TOML");
+    let ops = doc["op"].as_array().expect("[[op]] 数组");
+    let pr_list = ops
+        .iter()
+        .find(|o| o["id"].as_str() == Some("pr_list"))
+        .expect("gitea 清单必须声明 pr_list");
+    let props = &pr_list["args_schema"]["properties"];
+    let page = props
+        .get("page")
+        .unwrap_or_else(|| panic!("pr_list args_schema 必须声明 page 参数"));
+    assert_eq!(page["type"].as_str(), Some("integer"));
+    assert_eq!(page["minimum"].as_integer(), Some(1), "页码从 1 起");
+    assert_eq!(props["limit"]["maximum"].as_integer(), Some(50));
+}

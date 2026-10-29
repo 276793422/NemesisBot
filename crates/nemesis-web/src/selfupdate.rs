@@ -2546,6 +2546,15 @@ fn classify_entry(name: &str) -> Result<BundleEntry, String> {
     Ok(BundleEntry::Ignored)
 }
 
+/// 有界解压上限（BUG 2026-10-29 横扫角度 B：更新包条目解压无界入内存，
+/// 且旧 zip 臂按条目头撒谎 size 预分配）。exe 实测 ~93 MB，留 2.5x 余量；
+/// version.txt 是一行文本，1 MB 已是荒谬余量。超限 = 解压炸弹/损坏包，
+/// 诚实拒收（在撑爆内存之前）。
+#[cfg(feature = "selfupdate")]
+const SELFUPDATE_ENTRY_CAP: usize = 256 * 1024 * 1024;
+#[cfg(feature = "selfupdate")]
+const SELFUPDATE_TEXT_ENTRY_CAP: usize = 1024 * 1024;
+
 /// 解包产物收口（exe 必在；commit 从 version.txt 解析）。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
@@ -2594,27 +2603,32 @@ fn extract_zip_bundle(zip_bytes: &[u8]) -> Result<ExtractedBundle, String> {
         let name = normalize_entry_name(&raw)?;
         match classify_entry(&name)? {
             BundleEntry::Exe => {
-                let mut buf = Vec::with_capacity(entry.size() as usize);
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
+                let buf =
+                    nemesis_utils::zip_util::read_entry_capped(&mut entry, SELFUPDATE_ENTRY_CAP)
+                        .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
                 exe_bytes = Some(buf);
             }
             BundleEntry::VersionTxt => {
-                let mut buf = String::new();
-                std::io::Read::read_to_string(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
-                version_txt = Some(buf);
+                let buf = nemesis_utils::zip_util::read_entry_capped(
+                    &mut entry,
+                    SELFUPDATE_TEXT_ENTRY_CAP,
+                )
+                .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
+                version_txt = Some(
+                    String::from_utf8(buf)
+                        .map_err(|_| "读取包内 version.txt 失败：非 UTF-8".to_string())?,
+                );
             }
             BundleEntry::Manifest => {
-                let mut buf = Vec::with_capacity(entry.size() as usize);
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
+                let buf =
+                    nemesis_utils::zip_util::read_entry_capped(&mut entry, SELFUPDATE_ENTRY_CAP)
+                        .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
                 manifest_bytes = Some(buf);
             }
             BundleEntry::Plugin(pname) => {
-                let mut buf = Vec::with_capacity(entry.size() as usize);
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内插件 {pname} 失败：{e}"))?;
+                let buf =
+                    nemesis_utils::zip_util::read_entry_capped(&mut entry, SELFUPDATE_ENTRY_CAP)
+                        .map_err(|e| format!("读取包内插件 {pname} 失败：{e}"))?;
                 plugins.insert(pname, buf);
             }
             BundleEntry::Ignored => {}
@@ -2661,28 +2675,33 @@ fn extract_tar_gz_bundle(pkg_bytes: &[u8]) -> Result<ExtractedBundle, String> {
         let mode = entry.header().mode().ok();
         match classify_entry(&name)? {
             BundleEntry::Exe => {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
+                let buf =
+                    nemesis_utils::zip_util::read_entry_capped(&mut entry, SELFUPDATE_ENTRY_CAP)
+                        .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
                 exe_bytes = Some(buf);
                 exe_unix_mode = mode;
             }
             BundleEntry::VersionTxt => {
-                let mut buf = String::new();
-                std::io::Read::read_to_string(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
-                version_txt = Some(buf);
+                let buf = nemesis_utils::zip_util::read_entry_capped(
+                    &mut entry,
+                    SELFUPDATE_TEXT_ENTRY_CAP,
+                )
+                .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
+                version_txt = Some(
+                    String::from_utf8(buf)
+                        .map_err(|_| "读取包内 version.txt 失败：非 UTF-8".to_string())?,
+                );
             }
             BundleEntry::Manifest => {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
+                let buf =
+                    nemesis_utils::zip_util::read_entry_capped(&mut entry, SELFUPDATE_ENTRY_CAP)
+                        .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
                 manifest_bytes = Some(buf);
             }
             BundleEntry::Plugin(pname) => {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut buf)
-                    .map_err(|e| format!("读取包内插件 {pname} 失败：{e}"))?;
+                let buf =
+                    nemesis_utils::zip_util::read_entry_capped(&mut entry, SELFUPDATE_ENTRY_CAP)
+                        .map_err(|e| format!("读取包内插件 {pname} 失败：{e}"))?;
                 plugins.insert(pname, buf);
             }
             BundleEntry::Ignored => {}

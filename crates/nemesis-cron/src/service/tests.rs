@@ -4150,3 +4150,151 @@ fn collect_and_reset_due_no_due_no_disk_write() {
         "空 due 不得创建/改写存储文件"
     );
 }
+
+// ===== BUG-20261029：on_job handler panic 隔离 =====
+
+#[test]
+fn invoke_handler_catch_panic_maps_panic_to_err() {
+    let job = CronJob {
+        id: "j1".to_string(),
+        name: "boom".to_string(),
+        enabled: true,
+        schedule: CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        payload: CronPayload {
+            kind: "agent_turn".to_string(),
+            message: String::new(),
+            command: None,
+            deliver: false,
+            channel: None,
+            to: None,
+            session_key: None,
+            max_rounds: None,
+        },
+        state: CronJobState {
+            next_run_at_ms: None,
+            last_run_at_ms: None,
+            last_status: None,
+            last_error: None,
+            history: Vec::new(),
+        },
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        delete_after_run: false,
+    };
+    let h: Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync> =
+        Box::new(|_j| panic!("handler exploded"));
+    let out = invoke_handler_catch_panic(Some(&h), &job).unwrap();
+    let err = out.unwrap_err();
+    assert!(
+        err.contains("handler panicked") && err.contains("handler exploded"),
+        "panic 必须映射为 Err 合成串: {err}"
+    );
+
+    // 正常路径透传：Ok / Err 原样，None handler → None。
+    let ok: Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync> =
+        Box::new(|_j| Ok("fine".to_string()));
+    assert_eq!(
+        invoke_handler_catch_panic(Some(&ok), &job)
+            .unwrap()
+            .unwrap(),
+        "fine"
+    );
+    let e: Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync> =
+        Box::new(|_j| Err("plain error".to_string()));
+    assert_eq!(
+        invoke_handler_catch_panic(Some(&e), &job)
+            .unwrap()
+            .unwrap_err(),
+        "plain error"
+    );
+    assert!(invoke_handler_catch_panic(None, &job).is_none());
+}
+
+#[test]
+fn execute_job_survives_panicking_handler_and_records_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "boom",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    svc.set_on_job(|_j| panic!("delivery branch exploded"));
+
+    // 修复前：panic 沿 execute_job 炸出调用方（本测试 panic）；修复后：
+    // Err 合成串落 job 记账面，execute_job 正常返回。
+    svc.execute_job(&job.id).unwrap();
+
+    let s = svc.store.lock();
+    let j = s.jobs.iter().find(|j| j.id == job.id).unwrap();
+    assert_eq!(j.state.last_status.as_deref(), Some("error"));
+    let last_err = j.state.last_error.as_deref().unwrap_or_default();
+    assert!(
+        last_err.contains("handler panicked"),
+        "失败记账必须诚实标注 panic: {last_err}"
+    );
+}
+
+/// tick 循环存活锁：panicking handler 不杀常驻 tick 任务——修复前第一拍
+/// panic 即任务死（计数停在 1），修复后循环继续（计数 ≥2）。
+#[test]
+fn cron_tick_loop_survives_handler_panic() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    svc.add_job(
+        "boom-every",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(200),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let t2 = ticks.clone();
+    svc.set_on_job(move |_j| {
+        t2.fetch_add(1, Ordering::SeqCst);
+        panic!("tick boom");
+    });
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc.arm();
+        svc.start().await.unwrap();
+    });
+    // tick 粒度是 1s（interval(Duration::from_secs(1))，首拍即触发）：留
+    // ~2.5s 窗口稳拿 ≥2 拍（1.2s 窗口实测调度抖动下只逮到 1 拍假红）。
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    svc.stop();
+    let n = ticks.load(Ordering::SeqCst);
+    assert!(
+        n >= 2,
+        "tick 循环必须在 handler panic 后继续（实际 {n} 拍）"
+    );
+}

@@ -14,6 +14,9 @@ pub mod http_retry;
 pub mod llm_error_class;
 pub mod media;
 pub mod message;
+// 有界管道排干（BUG 2026-10-29 横扫角度 B）：子进程 stdout/stderr 收集
+// 的单一真相源——1 MiB 丢头保尾，防高吞吐输出 OOM。
+pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;

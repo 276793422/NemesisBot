@@ -67,7 +67,7 @@ intent = ["列出 PR", "有哪些合并请求"]
 risk = "low"
 class = "network"
 http = { method = "GET", path = "/repos/{owner}/{repo}/pulls" }
-args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" }, state = { type = "string", enum = ["open", "closed", "all"], description = "缺省 open" }, limit = { type = "integer" } } }
+args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" }, state = { type = "string", enum = ["open", "closed", "all"], description = "缺省 open" }, limit = { type = "integer", description = "分页大小", minimum = 1, maximum = 50 }, page = { type = "integer", description = "页码（从 1 起）", minimum = 1 } } }
 
 [[op]]
 id = "pr_get"

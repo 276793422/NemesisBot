@@ -86,6 +86,34 @@ fn find_pr_by_head_state_all_accepts_closed() {
     assert_eq!(find_pr_by_head(list, "nemesis/task-x").unwrap().0, 5);
 }
 
+#[test]
+fn reconcile_advance_short_page_is_absent_even_at_page_one() {
+    // 不足一页 = 末页取尽即停（BUG-20261028：对账固定首页漏后续页 PR）。
+    assert_eq!(reconcile_advance(1, 3), ReconcilePaging::Absent);
+    assert_eq!(
+        reconcile_advance(1, RECONCILE_PAGE_LIMIT - 1),
+        ReconcilePaging::Absent
+    );
+    assert_eq!(
+        reconcile_advance(1, 0),
+        ReconcilePaging::Absent,
+        "空页 = 扫尽停"
+    );
+}
+
+#[test]
+fn reconcile_advance_full_page_advances_until_hard_cap() {
+    assert_eq!(
+        reconcile_advance(1, RECONCILE_PAGE_LIMIT),
+        ReconcilePaging::Next(2)
+    );
+    assert_eq!(
+        reconcile_advance(RECONCILE_MAX_PAGES, RECONCILE_PAGE_LIMIT),
+        ReconcilePaging::Inconclusive,
+        "页数硬上限封顶（防对端恒满页把对账变无界循环）——封顶是「未能扫尽」不是「不在」"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // validate_task_id_for_branch
 // ---------------------------------------------------------------------------

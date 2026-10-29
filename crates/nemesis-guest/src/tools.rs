@@ -183,18 +183,13 @@ async fn kill_tree(pid: Option<u32>) {
 }
 
 async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>) -> String {
-    let Some(mut pipe) = pipe else {
+    let Some(pipe) = pipe else {
         return String::new();
     };
-    let mut buf = Vec::new();
-    if tokio::io::AsyncReadExt::read_to_end(&mut pipe, &mut buf)
-        .await
-        .is_ok()
-    {
-        String::from_utf8_lossy(&buf).into_owned()
-    } else {
-        String::new()
-    }
+    // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾。与旧 is_ok
+    // 分支的差异（刻意）：读错误时旧版丢弃已收字节返空串，本版保留部分
+    // 数据——kill_tree 场景拿到的 pidlist 片段仍是证据， partial 好过空。
+    String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
 }
 
 fn truncate(s: &str) -> String {

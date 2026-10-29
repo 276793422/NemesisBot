@@ -3997,6 +3997,7 @@ dependencies = [
  "base64",
  "futures",
  "nemesis-exec-protocol",
+ "nemesis-utils",
  "serde",
  "serde_json",
  "sha2",
@@ -4081,6 +4082,7 @@ dependencies = [
 name = "nemesis-lsp"
 version = "0.1.0"
 dependencies = [
+ "nemesis-utils",
  "serde_json",
  "tempfile",
  "tokio",
