@@ -137,7 +137,8 @@ fn scan_strings(image: &ImageMap) -> Vec<(u32, String, bool)> {
                         .chars()
                         .take(256)
                         .collect();
-                    out.push((info.rva + s as u32, text, false));
+                    // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                    out.push((info.rva.saturating_add(s as u32), text, false));
                 }
             }
         }
@@ -149,7 +150,8 @@ fn scan_strings(image: &ImageMap) -> Vec<(u32, String, bool)> {
                     .chars()
                     .take(256)
                     .collect();
-                out.push((info.rva + s as u32, text, false));
+                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                out.push((info.rva.saturating_add(s as u32), text, false));
             }
         }
         // UTF-16LE 宽串：[printable, 0x00] 交替 run，字符数 ≥4
@@ -166,7 +168,8 @@ fn scan_strings(image: &ImageMap) -> Vec<(u32, String, bool)> {
                         .map(|c| c[0] as char)
                         .take(256)
                         .collect();
-                    out.push((info.rva + i as u32, text, true));
+                    // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                    out.push((info.rva.saturating_add(i as u32), text, true));
                 }
                 i = j;
             } else {

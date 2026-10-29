@@ -193,17 +193,25 @@ impl PeInfo {
     /// 磁盘布局映射：RVA → 文件内偏移（走 raw_ptr/raw_size）。
     pub fn rva_to_file_offset(&self, rva: u32) -> Option<usize> {
         for s in &self.sections {
-            if rva >= s.rva && rva < s.rva + s.raw_size.max(1) {
-                return Some((rva - s.rva + s.raw_ptr) as usize);
+            // 节界比较走 u64（BUG-20261029-154 同族）：损坏 PE 的节
+            // rva/raw_size 可顶到 u32 边界，u32 加法 debug panic / release
+            // 回绕——把「诚实映射失败」变成崩溃或错误节命中。
+            let start = s.rva as u64;
+            let end = start + s.raw_size.max(1) as u64;
+            let r = rva as u64;
+            if r >= start && r < end {
+                // 文件偏移同样走 u64：raw_ptr + 节内跨度可破 u32 域
+                return Some(((r - start) + s.raw_ptr as u64) as usize);
             }
         }
         None
     }
 
     pub fn section_by_rva(&self, rva: u32) -> Option<&SectionInfo> {
+        let r = rva as u64;
         self.sections
             .iter()
-            .find(|s| rva >= s.rva && rva < s.rva + s.vsize.max(s.raw_size).max(1))
+            .find(|s| r >= s.rva as u64 && r < s.rva as u64 + s.vsize.max(s.raw_size).max(1) as u64)
     }
 
     /// machine 的 iced-x86 bitness（异常 machine → None，调用方诚实拒绝）。
@@ -346,7 +354,11 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
     let mut out = Vec::new();
     // 遍历 IMAGE_IMPORT_DESCRIPTOR（20 字节/项，全零终止；上限 512 DLL 防御）
     for di in 0..512 {
-        let desc_rva = dir_rva + (di * 20) as u32;
+        // 目录基址越界即断（BUG-20261029-154 同族：checked 防 u32 加法溢出）
+        let desc_rva = match dir_rva.checked_add((di * 20) as u32) {
+            Some(v) => v,
+            None => break,
+        };
         let desc_off = match pe.rva_to_file_offset(desc_rva) {
             Some(o) => o,
             None => break,
@@ -372,7 +384,11 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
         };
         let mut funcs = Vec::new();
         for ti in 0..0x1_0000u32 {
-            let t_off = match pe.rva_to_file_offset(thunk_rva + ti * 8) {
+            let thunk_i = match thunk_rva.checked_add(ti * 8) {
+                Some(v) => v,
+                None => break, // 名字表基址越界：后续槽位必然越界
+            };
+            let t_off = match pe.rva_to_file_offset(thunk_i) {
                 Some(o) => o,
                 None => break,
             };
@@ -389,7 +405,11 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
                     .and_then(|o| cstr_at(file, o + 2, 512))
                     .unwrap_or_else(|| format!("#unk_{hint_rva:X}"))
             };
-            funcs.push((fname, first_thunk + ti * 8));
+            let slot = match first_thunk.checked_add(ti * 8) {
+                Some(v) => v,
+                None => break, // IAT 基址越界：槽位记录无效，诚实止步
+            };
+            funcs.push((fname, slot));
         }
         out.push(ImportDll { dll, funcs });
     }
@@ -527,7 +547,11 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
     let mut out = Vec::new();
     // IMAGE_DELAYLOAD_DESCRIPTOR 32 字节/项，全零终止；上限 512 防御
     for di in 0..512 {
-        let desc_off = match pe.rva_to_file_offset(dir_rva + (di * 32) as u32) {
+        let desc_off = match dir_rva.checked_add((di * 32) as u32) {
+            Some(v) => pe.rva_to_file_offset(v),
+            None => None, // 目录基址越界（BUG-20261029-154 同族）
+        };
+        let desc_off = match desc_off {
             Some(o) => o,
             None => break,
         };
@@ -561,7 +585,11 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
         let iat_rva = norm(iat_field, rva_form);
         let mut funcs = Vec::new();
         for ti in 0..0x1_0000u32 {
-            let Some(t_off) = pe.rva_to_file_offset(thunk_rva + ti * 8) else {
+            let thunk_i = match thunk_rva.checked_add(ti * 8) {
+                Some(v) => v,
+                None => break,
+            };
+            let Some(t_off) = pe.rva_to_file_offset(thunk_i) else {
                 break;
             };
             let thunk = u64_at(file, t_off)?;
@@ -576,7 +604,11 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
                     .and_then(|o| cstr_at(file, o + 2, 512))
                     .unwrap_or_else(|| format!("#unk_{hint_rva:X}"))
             };
-            funcs.push((fname, iat_rva + ti * 8));
+            let slot = match iat_rva.checked_add(ti * 8) {
+                Some(v) => v,
+                None => break,
+            };
+            funcs.push((fname, slot));
         }
         out.push(ImportDll { dll, funcs });
     }
@@ -612,7 +644,10 @@ pub fn parse_debug_file(file: &[u8], pe: &PeInfo) -> Option<DebugInfo> {
     let mut pdb_path = None;
     let n = (dir_size as usize / 28).min(64); // 防御
     for i in 0..n {
-        let Some(off) = pe.rva_to_file_offset(dir_rva + (i * 28) as u32) else {
+        let Some(off) = dir_rva
+            .checked_add((i * 28) as u32)
+            .and_then(|rva| pe.rva_to_file_offset(rva))
+        else {
             break;
         };
         let Ok(ty) = u32_at(file, off + 12) else {
@@ -758,7 +793,9 @@ pub fn parse_relocations_file(file: &[u8], pe: &PeInfo) -> Option<RelocTable> {
     // 块游标按目录起点 + 已消费 BlockSize 走；64 块 / 4MB 防御
     let mut cur = dir_rva;
     let end_rva = dir_rva.saturating_add(dir_size);
-    while cur + 8 <= end_rva && blocks.len() < 64 {
+    // 余量判边界而非 cur+8（BUG-20261029-154 同族：cur 可顶到 u32::MAX，
+    // cur+8 debug panic）
+    while end_rva.saturating_sub(cur) >= 8 && blocks.len() < 64 {
         let Some(off) = pe.rva_to_file_offset(cur) else {
             break;
         };

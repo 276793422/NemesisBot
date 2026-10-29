@@ -227,3 +227,116 @@ fn arch_namespaces_and_disassembler_gate() {
     assert!(Arch::X64.disassembler_available());
     assert!(!Arch::Arm64.disassembler_available());
 }
+
+// ── BUG-20261029-154 回归锁：损坏 PE 的 u32 算术溢出必须诚实降级非 panic ──
+
+/// 节 rva 顶到地址空间顶部（rva+size 破 u32 域）：RVA 映射与节归属判定
+/// 必须 u64 中间算术给出诚实结果（旧代码 debug panic / release 回绕）。
+#[test]
+fn rva_map_overflow_bounds_honest() {
+    let pe = PeInfo {
+        machine: 0x8664,
+        image_base: 0x1400_0000,
+        entry_rva: 0x1000,
+        timestamp: 0,
+        checksum: 0,
+        sections: vec![SectionInfo {
+            name: ".rdata".to_string(),
+            rva: 0xFFFF_F000,
+            vsize: 0x2000,
+            raw_size: 0x2000,
+            raw_ptr: 0x1000,
+            characteristics: 0x4000_0040,
+        }],
+        directories: vec![(0u32, 0u32); 16],
+    };
+    // 旧代码：0xFFFF_F000 + 0x2000 u32 溢出。新代码：命中节内 → 有偏移。
+    assert_eq!(pe.rva_to_file_offset(0xFFFF_F800), Some(0x1800));
+    // 节界上沿之下（0xFFFF_F000+0x1FFF）仍命中
+    assert_eq!(pe.rva_to_file_offset(0xFFFF_FFFF), Some(0x1FFF));
+    // 节外（低于节基址 / 越过 u64 节界）→ 诚实 None
+    assert_eq!(pe.rva_to_file_offset(0x0000_1000), None);
+    assert_eq!(
+        pe.section_by_rva(0xFFFF_F800).map(|s| s.name.as_str()),
+        Some(".rdata")
+    );
+    assert!(pe.section_by_rva(0x0000_0800).is_none());
+}
+
+/// 导入描述符基址 di=1 溢出：checked 断走诚实 break（旧代码 debug panic）。
+#[test]
+fn imports_desc_base_overflow_honest_break() {
+    // 节 rva 0xFFFF_F000 raw 0x1000 @raw_ptr 0x600；目录 @0xFFFF_FFF0
+    let pe = PeInfo {
+        machine: 0x8664,
+        image_base: 0x1400_0000,
+        entry_rva: 0x1000,
+        timestamp: 0,
+        checksum: 0,
+        sections: vec![SectionInfo {
+            name: ".rdata".to_string(),
+            rva: 0xFFFF_F000,
+            vsize: 0x1000,
+            raw_size: 0x1000,
+            raw_ptr: 0x600,
+            characteristics: 0x4000_0040,
+        }],
+        directories: {
+            let mut d = vec![(0u32, 0u32); 16];
+            d[pe::DIRECTORY_IMPORT] = (0xFFFF_FFF0, 0x40);
+            d
+        },
+    };
+    let mut f = vec![0u8; 0x1800];
+    let w32 =
+        |f: &mut Vec<u8>, off: usize, v: u32| f[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    let w64 =
+        |f: &mut Vec<u8>, off: usize, v: u64| f[off..off + 8].copy_from_slice(&v.to_le_bytes());
+    // 描述符 di=0 @0xFFFF_FFF0（raw 0x15F0）：OriginalFirstThunk / 名 / FirstThunk
+    w32(&mut f, 0x15F0, 0xFFFF_F300); // OriginalFirstThunk（节内）
+    w32(&mut f, 0x15FC, 0xFFFF_F200); // Name RVA（raw 0x800）
+    w32(&mut f, 0x1600, 0x0000_0000); // FirstThunk = 0 → 走名字表
+    f[0x800..0x800 + 6].copy_from_slice(b"a.dll\0");
+    w64(&mut f, 0x900, 0); // 名字表首槽 = 终止 → funcs 空
+    // di=0 正常解析；di=1 desc 基址 0xFFFF_FFF0+20 溢出 → checked break
+    let dlls = pe::parse_imports_file(&f, &pe).expect("损坏基址应诚实降级非 panic");
+    assert_eq!(dlls.len(), 1);
+    assert_eq!(dlls[0].dll, "a.dll");
+    assert!(dlls[0].funcs.is_empty());
+}
+
+/// 重定位块游标走到 u32::MAX 边界：余量判定诚实止步（旧代码 cur+8 溢出）。
+#[test]
+fn relocations_cursor_top_of_space_honest_stop() {
+    let pe = PeInfo {
+        machine: 0x8664,
+        image_base: 0x1400_0000,
+        entry_rva: 0x1000,
+        timestamp: 0,
+        checksum: 0,
+        sections: vec![SectionInfo {
+            name: ".rdata".to_string(),
+            rva: 0xFFFF_F000,
+            vsize: 0x1000,
+            raw_size: 0x1000,
+            raw_ptr: 0x600,
+            characteristics: 0x4000_0040,
+        }],
+        directories: {
+            let mut d = vec![(0u32, 0u32); 16];
+            d[DIRECTORY_RELOC] = (0xFFFF_FFF0, 16);
+            d
+        },
+    };
+    let mut f = vec![0u8; 0x1600];
+    let w32 =
+        |f: &mut Vec<u8>, off: usize, v: u32| f[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    // 块 1 @0xFFFF_FFF0（raw 0x15F0）：仅头（BlockSize 8，零条目）
+    w32(&mut f, 0x15F0, 0x3000);
+    w32(&mut f, 0x15F4, 8);
+    // 块游标推进到 0xFFFF_FFF8：end-cur = 7 < 8 → 诚实停（旧代码 cur+8 溢出 panic）
+    let table = pe::parse_relocations_file(&f, &pe).expect("边界内应可解析");
+    assert_eq!(table.blocks.len(), 1);
+    assert_eq!(table.blocks[0].page_rva, 0x3000);
+    assert!(table.blocks[0].offsets.is_empty());
+}

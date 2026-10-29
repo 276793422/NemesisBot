@@ -188,6 +188,13 @@ fn scan_anchor(
                 r.note = "str_ref 锚缺 text".into();
                 return r;
             };
+            // 空 text 与缺 text 同类（BUG-20261029-156）：save 期校验只保护
+            // 本方写入，load 侧不校验——手改/旧版 profile 空串会一路到这里，
+            // windows(0) 直接 panic。与缺 pattern/value/imports 注记分支对称。
+            if text.is_empty() {
+                r.note = "str_ref 锚 text 为空".into();
+                return r;
+            }
             let needle = text.as_bytes();
             let mut hits = Vec::new();
             for sec in &img.pe.sections {
@@ -199,7 +206,9 @@ fn scan_anchor(
                 };
                 for (off, w) in blob.windows(needle.len()).enumerate() {
                     if w == needle {
-                        hits.push(sec.rva + off as u32);
+                        // 命中 RVA 走 saturating（BUG-20261029-154 同族：损坏
+                        // PE 节基址近顶 + 节内偏移可溢出）
+                        hits.push(sec.rva.saturating_add(off as u32));
                     }
                 }
             }
@@ -277,7 +286,8 @@ fn scan_exec(img: &ImageMap, bytes: &[u8], mask: &[u8]) -> Vec<u32> {
                 .zip(mask)
                 .all(|((&b, &p), &m)| b & m == p & m)
             {
-                hits.push(sec.rva + off as u32);
+                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                hits.push(sec.rva.saturating_add(off as u32));
             }
         }
     }

@@ -87,7 +87,7 @@ pub fn recover(arch: Arch, image: &ImageMap, seeds: &[u32], text_range: (u32, u3
             truncated: insns.len() >= MAX_INSNS_PER_FUNC,
         };
         for insn in &insns {
-            let next = insn.rva + insn.len;
+            let next = insn.rva.saturating_add(insn.len); // saturating 防溢出（BUG-20261029-154 同族）
             // 撞已识别函数体：本函数在此截断（重叠让位，先到先得）
             if set.contains(next) {
                 break;
@@ -175,12 +175,13 @@ pub fn nopsled_seed_rvas(image: &ImageMap) -> Vec<u32> {
                 continue;
             }
             if run >= 4 {
-                out.push(sec.rva + (i - run) as u32);
+                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                out.push(sec.rva.saturating_add((i - run) as u32));
             }
             run = 0;
         }
         if run >= 4 {
-            out.push(sec.rva + (body.len() - run) as u32);
+            out.push(sec.rva.saturating_add((body.len() - run) as u32));
         }
     }
     out.sort_unstable();

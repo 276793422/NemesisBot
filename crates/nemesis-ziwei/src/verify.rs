@@ -760,7 +760,10 @@ fn extract_version_resource_win(exe_path: &Path) -> Option<BTreeMap<String, Stri
             ) != 0
                 && s_len > 0
             {
-                let w = std::slice::from_raw_parts(s_ptr as *const u16, s_len as usize);
+                // Win32 契约：VerQueryValueW 的 pulLen 是**字节**数
+                // （BUG-20261029-155：此前直接当 u16 元素数用——from_raw_parts
+                // 读 2× 字节数，堆越界读正式 UB；平时靠 NUL 提前截断掩盖）。
+                let w = std::slice::from_raw_parts(s_ptr as *const u16, s_len as usize / 2);
                 let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
                 let value = String::from_utf16_lossy(&w[..end]);
                 if !value.is_empty() {

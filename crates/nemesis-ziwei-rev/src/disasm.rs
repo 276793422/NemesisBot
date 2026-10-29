@@ -204,7 +204,13 @@ pub fn leading_nop_bytes(arch: Arch, bytes: &[u8], rva: u32, max: usize) -> usiz
         if off >= end {
             break;
         }
-        let insns = decode_block(arch, &bytes[off..end], rva + off as u32, 1);
+        let insns = decode_block(
+            arch,
+            &bytes[off..end],
+            // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+            rva.saturating_add(off as u32),
+            1,
+        );
         match insns.first() {
             Some(i) if i.is_nop() => {
                 total += i.len as usize;

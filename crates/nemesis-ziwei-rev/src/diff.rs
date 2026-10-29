@@ -41,7 +41,8 @@ pub fn page_diff(before: &[u8], after: &[u8], base_rva: u32, page: u32) -> Vec<D
         }
         if changed > 0 {
             pages.push(DiffPage {
-                rva: base_rva + i as u32,
+                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                rva: base_rva.saturating_add(i as u32),
                 ranges,
                 bytes_changed: changed,
             });
