@@ -456,6 +456,36 @@ fn path_contains_boundary() {
     }
 }
 
+/// BUG-20261029-173 回归锁：target 含多字节字符且字节总长超过 root 时，
+/// 旧实现 `t[..r.len()]` 字节切片会切在多字节字符中间 → str 切片 panic
+/// （`fs.open` 带模型输出的 CJK 绝对路径即可触发，WS handler 任务崩）。
+/// 修复 = `str::get(..r.len())` 边界安全切片，非边界诚实返回 false。
+#[test]
+fn path_contains_multibyte_target_no_panic() {
+    if cfg!(windows) {
+        // root 5 字节；target "C:/中" 6 字节（C/: 3 + 中 3）——t[..5]
+        // 落在中文字符第二字节 → 修复前 panic，修复后 false。
+        let root = Path::new("C:/ws");
+        assert!(!path_contains(root, Path::new("C:/中")));
+        // 边界对齐形态（root_len 恰是 target 字符起点）：前缀不等 → false，
+        // 不 panic（修复前后都应 false，钉住判定语义本身）。
+        assert!(!path_contains(root, Path::new("C:/ab中")));
+        // 前缀相等且后续多字节：正常 containment 命中。
+        assert!(path_contains(
+            Path::new("C:/ws"),
+            Path::new("C:/ws/中文/文档.md")
+        ));
+        // root 自身含多字节（用户名形态）+ target 前缀不等：同样不 panic。
+        let root_cn = Path::new("C:/usrs/张三");
+        assert!(!path_contains(root_cn, Path::new("C:/usrs/李四/文件.md")));
+    } else {
+        // Unix 臂 starts_with 天然边界安全：语义同验。
+        let root = Path::new("/ws");
+        assert!(!path_contains(root, Path::new("/ws2/中")));
+        assert!(path_contains(root, Path::new("/ws/中文.md")));
+    }
+}
+
 fn resolve(ws: &TempDir, raw: &str) -> Result<(std::path::PathBuf, bool), String> {
     resolve_click_target(
         ws.path().to_str().unwrap(),

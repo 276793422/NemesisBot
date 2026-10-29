@@ -297,6 +297,46 @@ async fn config_set_field_unknown_key_loud_rejects() {
     assert!(err.contains("unknown config field"), "{err}");
 }
 
+// BUG-20261029-174：set_field 路径中间/末端父节点是 scalar（bool/string/
+// number）时，serde_json IndexMut 会 panic（cannot access key in JSON …）
+// ——WS handler 任务崩，Dashboard attr 编辑器输错路径即可触发。修复 =
+// set_json_path 显式 scalar 检查，loud Err 替代 panic。
+#[tokio::test]
+async fn config_set_field_scalar_parent_node_loud_rejects_no_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let handler = ConfigHandler::new();
+
+    // 末端父节点是 scalar：agents.tool_doc_folding.enabled 是 bool，
+    // 路径多伸一层 → 修复前 panic，修复后 loud Err。
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.tool_doc_folding.enabled.x", "value": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("parent node is not an object"), "{err}");
+
+    // 中间节点是 scalar：再深一层，修复前在中间段 panic，修复后同 Err。
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.tool_doc_folding.enabled.x.y", "value": 1 })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("parent node is not an object"), "{err}");
+
+    // 盘上没有被半写。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
+}
+
 // ---------------------------------------------------------------------------
 // 数组下标路径（model_list.<i>.<field>）：set_json_path / json_path_get 必须
 // 对称支持数字段（此前 get 对数组数字段返回 None → round-trip 误报

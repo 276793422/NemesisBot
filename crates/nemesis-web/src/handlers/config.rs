@@ -369,6 +369,15 @@ fn set_json_path(
             current = &mut current[idx];
             continue;
         }
+        // BUG-20261029-174：父节点是 scalar（bool/string/number）时，
+        // serde_json IndexMut 对非 object 键访问直接 panic——路径拼错/
+        // 类型撞上（如 `…enabled.x`）会崩掉 WS handler 任务。显式检查，
+        // loud Err 替代 panic（Null 保留 auto-vivify 语义）。
+        if !current.is_object() && !current.is_null() {
+            return Err(format!(
+                "config field `{path}`: parent node is not an object"
+            ));
+        }
         if i == last {
             current[part] = value;
             return Ok(());
