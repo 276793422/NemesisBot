@@ -525,6 +525,19 @@ async fn delete_by_id_rewrite_fails_on_readonly_file() {
         return;
     }
 
+    // Unix 注入点升级（BUG-20261029-183 原子重写的连带）：rewrite 经
+    // write_file_atomic（同目录 temp + rename），POSIX rename 替换只读目标
+    // 只看目录写权限不看文件位——Linux runner 非 root 实证文件位注入失效
+    // （delete Ok 假红）。目录摘写位让 create temp 步 EACCES。Windows
+    // rename（REPLACE_EXISTING）覆盖只读目标被拒，文件位注入继续有效。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut dperms = std::fs::metadata(dir.path()).unwrap().permissions();
+        dperms.set_mode(dperms.mode() & !0o222);
+        std::fs::set_permissions(dir.path(), dperms).unwrap();
+    }
+
     // Deleting ep1 leaves ep2 → rewrite path → write fails on readonly file.
     let err = store.delete_by_id(&ep1.id).await.unwrap_err();
     assert!(err.contains("Failed to rewrite session file"), "got: {err}");
@@ -532,6 +545,15 @@ async fn delete_by_id_rewrite_fails_on_readonly_file() {
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_readonly(false);
     std::fs::set_permissions(&path, perms).unwrap();
+
+    // 目录写位就地恢复，TempDir Drop 才能正常清场。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut dperms = std::fs::metadata(dir.path()).unwrap().permissions();
+        dperms.set_mode(dperms.mode() | 0o200);
+        std::fs::set_permissions(dir.path(), dperms).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -564,6 +586,19 @@ async fn cleanup_rewrite_fails_on_readonly_file() {
         return;
     }
 
+    // Unix 注入点升级（BUG-20261029-183 原子重写的连带）：rewrite 经
+    // write_file_atomic（同目录 temp + rename），POSIX rename 替换只读目标
+    // 只看目录写权限不看文件位——Linux runner 非 root 实证文件位注入失效
+    // （cleanup Ok 假红）。目录摘写位让 create temp 步 EACCES。Windows
+    // rename（REPLACE_EXISTING）覆盖只读目标被拒，文件位注入继续有效。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut dperms = std::fs::metadata(dir.path()).unwrap().permissions();
+        dperms.set_mode(dperms.mode() & !0o222);
+        std::fs::set_permissions(dir.path(), dperms).unwrap();
+    }
+
     // cleanup(1) → old removed, keep remains → rewrite path → write fails.
     let err = store.cleanup(1).await.unwrap_err();
     assert!(err.contains("Failed to rewrite session file"), "got: {err}");
@@ -571,6 +606,15 @@ async fn cleanup_rewrite_fails_on_readonly_file() {
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_readonly(false);
     std::fs::set_permissions(&path, perms).unwrap();
+
+    // 目录写位就地恢复，TempDir Drop 才能正常清场。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut dperms = std::fs::metadata(dir.path()).unwrap().permissions();
+        dperms.set_mode(dperms.mode() | 0o200);
+        std::fs::set_permissions(dir.path(), dperms).unwrap();
+    }
 }
 
 #[tokio::test]
