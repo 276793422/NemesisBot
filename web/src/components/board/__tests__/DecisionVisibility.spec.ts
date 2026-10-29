@@ -89,6 +89,10 @@ describe('boardMeta 决策助手', () => {
     expect(stopKindLabel('fail_streak')).toBe('连续失败熔断')
     expect(stopKindLabel('plan_exhausted')).toBe('拆解重试耗尽')
     expect(stopKindLabel('no_match')).toBe('无匹配节点')
+    // BUG-20261029-170 回填三类（EscalateHuman verdict 分型 + 必需检查闸）：
+    expect(stopKindLabel('unsure')).toBe('单轮评审不确定')
+    expect(stopKindLabel('redispatch_budget')).toBe('重派预算耗尽')
+    expect(stopKindLabel('required_checks')).toBe('必需检查未满足')
     expect(stopKindLabel('unknown_kind')).toBe('停车待处理')
     expect(stopKindLabel('')).toBe('停车待处理')
     expect(stopKindLabel(null)).toBe('停车待处理')

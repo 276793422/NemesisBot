@@ -192,7 +192,7 @@ fn test_archive_never_touches_other_issues_files() {
 
 #[test]
 fn test_stop_kind_label_covers_catalog_and_falls_back() {
-    // 12 个 stop_kind 全目录 + 未知兜底。
+    // 13 个 stop_kind 全目录 + 未知兜底。
     assert_eq!(stop_kind_label("unsure_streak"), "连续不确定");
     assert_eq!(stop_kind_label("fail_streak"), "连续失败熔断");
     assert_eq!(stop_kind_label("budget"), "预算耗尽");
@@ -208,4 +208,44 @@ fn test_stop_kind_label_covers_catalog_and_falls_back() {
     assert_eq!(stop_kind_label("llm_unavailable"), "LLM 不可用");
     assert_eq!(stop_kind_label(""), "停车待处理");
     assert_eq!(stop_kind_label("whatever_new"), "停车待处理");
+}
+
+/// BUG-20261029-170 红证+回归锁：`stop_kind_label` 词表必须覆盖**生产写入
+/// 面**的全部 stop_kind 值——board_review.rs EscalateHuman 臂的 `unsure` /
+/// `redispatch_budget`（verdict 诚实分型，注释明示刻意区别于 unsure_streak /
+/// budget）与必需检查契约闸的 `required_checks` 此前词表缺席，三类高频
+/// 停车（转人工停车场常客）的 needs_user 徽标/详情页全部落兜底「停车待
+/// 处理」，语义丢失；模块注释声称的枚举稳定词表（供 Forge Reflect 远期
+/// 消费）与生产漂移。本测试钉住生产值域 ⊆ 词表，防再漂移。
+#[test]
+fn test_stop_kind_label_covers_production_kinds() {
+    const PRODUCTION_KINDS: [(&str, &str); 16] = [
+        ("unsure_streak", "连续不确定"),
+        ("fail_streak", "连续失败熔断"),
+        ("budget", "预算耗尽"),
+        ("retry_exhausted", "重试耗尽"),
+        ("worker_loop", "worker 循环异常"),
+        ("capability_fail", "能力不足"),
+        ("infra", "基础设施故障"),
+        ("defect_gate", "缺陷闸拦截"),
+        ("parent_unresolved", "父单收口未决"),
+        ("project_unresolved", "项目收口未决"),
+        ("no_match", "无匹配节点"),
+        ("plan_exhausted", "拆解重试耗尽"),
+        ("llm_unavailable", "LLM 不可用"),
+        // EscalateHuman 臂 verdict 分型（board_review.rs 停车漏斗）：
+        ("unsure", "单轮评审不确定"),
+        ("redispatch_budget", "重派预算耗尽"),
+        // 必需检查契约闸（2026-10-22 拍板项 B）：
+        ("required_checks", "必需检查未满足"),
+    ];
+    for (kind, label) in PRODUCTION_KINDS {
+        assert_eq!(
+            stop_kind_label(kind),
+            label,
+            "stop_kind {kind} 必须有专属标签（不得落兜底）"
+        );
+    }
+    // 真未知值兜底语义保留（防御网不拆）。
+    assert_eq!(stop_kind_label("something_new"), "停车待处理");
 }

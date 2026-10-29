@@ -14,7 +14,9 @@
 //! `stop_kind` 枚举稳定（供 Forge Reflect 远期消费，§9.4）：`unsure_streak`
 //! `fail_streak` `budget` `retry_exhausted` `worker_loop` `capability_fail`
 //! `infra` `defect_gate` `parent_unresolved` `project_unresolved` `no_match`
-//! `plan_exhausted` `llm_unavailable`。
+//! `plan_exhausted` `llm_unavailable` `unsure` `redispatch_budget`
+//! `required_checks`（后三者为 BUG-20261029-170 回填：EscalateHuman 臂
+//! verdict 分型与必需检查契约闸一直在写这三个值，词表缺席致徽标落兜底）。
 //!
 //! `suggested_action` 枚举：`manual_check`（真机走查才需要人）/ `retry`
 //! （环境修好后原入口重试）/ `redispatch`（换条件重派 worker）。
@@ -113,7 +115,9 @@ pub fn archive_handoff(workspace: &Path, issue_number: &str) -> Result<Option<Pa
 }
 
 /// stop_kind → 人话标签（决策面板/徽标 tooltip 用；前端只渲染不翻译，
-/// 单一真相源在后端——13 种停车类型 + 未知兜底）。
+/// 单一真相源在后端——16 种停车类型 + 未知兜底；词表与生产写入面的一致
+/// 性由 tests::test_stop_kind_label_covers_production_kinds 钉住，
+/// BUG-20261029-170：新停车路径引入新 stop_kind 必须同步补本表）。
 pub fn stop_kind_label(stop_kind: &str) -> &'static str {
     match stop_kind {
         "unsure_streak" => "连续不确定",
@@ -129,6 +133,13 @@ pub fn stop_kind_label(stop_kind: &str) -> &'static str {
         "no_match" => "无匹配节点",
         "plan_exhausted" => "拆解重试耗尽",
         "llm_unavailable" => "LLM 不可用",
+        // BUG-20261029-170 回填（生产写入面在册、词表缺席三类）：
+        // EscalateHuman 臂 verdict 诚实分型——单轮 UNSURE ≠ streak 闸、
+        // 评审重派预算耗尽 ≠ token 预算（board_review.rs 停车漏斗）。
+        "unsure" => "单轮评审不确定",
+        "redispatch_budget" => "重派预算耗尽",
+        // 必需检查契约闸（2026-10-22 拍板项 B：零证据不放行）。
+        "required_checks" => "必需检查未满足",
         _ => "停车待处理",
     }
 }

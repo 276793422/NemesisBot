@@ -188,6 +188,11 @@ export const STOP_KIND_LABEL: Record<string, string> = {
   no_match: '无匹配节点',
   plan_exhausted: '拆解重试耗尽',
   llm_unavailable: 'LLM 不可用',
+  // BUG-20261029-170 回填（与后端 stop_kind_label 同步——EscalateHuman
+  // verdict 分型与必需检查契约闸的生产值，此前落兜底语义丢失）。
+  unsure: '单轮评审不确定',
+  redispatch_budget: '重派预算耗尽',
+  required_checks: '必需检查未满足',
 }
 
 export function stopKindLabel(stopKind: string | undefined | null): string {
