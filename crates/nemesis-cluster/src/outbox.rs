@@ -440,10 +440,18 @@ impl TransferOutbox {
 
     /// D5 兜底拉取（master → worker 的 transfer_pull 落地处）：全设备目录
     /// 找该任务执行记录，找到即入队 + 踢循环。返回 wire 状态（queued /
-    /// no_archive，诚实回答）。
+    /// no_archive / dead / over_limit，诚实回答）。
     pub fn request_pull(&self, task_id: &str) -> &'static str {
         if task_id.is_empty() {
             return "no_archive";
+        }
+        // BUG-20261030-201：停车条目诚实报——dead/over_limit 不会被推送
+        // 循环拾取，回 "queued" 会让 master sweep 每轮空拉（master 对
+        // "queued" 无停车闸，只有非 queued 才落 no_archive_seen 停拉）。
+        // 手动重放（翻回 pending）后档案到达收件箱，由收件箱重灌腿恢复
+        // （该腿不依赖 seen）——语义闭环。
+        if let Some(state) = self.parked_state(task_id) {
+            return state;
         }
         let Ok(devices) = std::fs::read_dir(&self.logs_root) else {
             return "no_archive";
@@ -474,6 +482,19 @@ impl TransferOutbox {
             }
         }
         "no_archive"
+    }
+
+    /// 条目停车态探针（BUG-20261030-201）：dead/over_limit → Some(态词)；
+    /// 无条目 / 在途态（pending/pushing）→ None。entry.json 缺失或损坏 =
+    /// None（走原路径——不因坏条目误报停车，enqueue 会诚实报错或入队）。
+    fn parked_state(&self, task_id: &str) -> Option<&'static str> {
+        let raw = std::fs::read_to_string(self.entry_dir(task_id).join("entry.json")).ok()?;
+        let entry: OutboxEntry = serde_json::from_str(&raw).ok()?;
+        match entry.state.as_str() {
+            "dead" => Some("dead"),
+            "over_limit" => Some("over_limit"),
+            _ => None,
+        }
     }
 
     // -- 启动清扫（崩溃兜底）------------------------------------------------

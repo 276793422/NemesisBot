@@ -780,3 +780,33 @@ fn residual_age_gate_classifies_dir_names() {
     let multibyte = format!("{}{}", "中".repeat(8), "_task");
     assert!(residual_dir_older_than(&multibyte, now, 24 * 3600));
 }
+
+/// BUG-20261030-201：request_pull 对停车条目（dead/over_limit）诚实报
+/// 停车态——不谎报 "queued"（master sweep 对 queued 无停车闸，谎报 =
+/// 每轮空拉无限循环）；翻回 pending（手动重放）后恢复 queued 语义。
+#[test]
+fn request_pull_reports_parked_entries_honestly() {
+    let ws = temp_ws("pull_parked");
+    make_task_records(&ws, "node-m", "task-parked", "rescue-me");
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    assert_eq!(ob.request_pull("task-parked"), "queued");
+    park_entry(&ws, "task-parked", "dead");
+    assert_eq!(ob.request_pull("task-parked"), "dead");
+    park_entry(&ws, "task-parked", "over_limit");
+    assert_eq!(ob.request_pull("task-parked"), "over_limit");
+    park_entry(&ws, "task-parked", "pending");
+    assert_eq!(ob.request_pull("task-parked"), "queued");
+}
+
+/// 直接改写 entry.json 的 state 字段（模拟死信停车/手动重放翻状态）。
+fn park_entry(ws: &Path, task_id: &str, state: &str) {
+    let p = outbox_dir(ws).join(task_id).join("entry.json");
+    let raw = std::fs::read_to_string(&p).unwrap();
+    let mut entry: OutboxEntry = serde_json::from_str(&raw).unwrap();
+    entry.state = state.to_string();
+    std::fs::write(&p, serde_json::to_string(&entry).unwrap()).unwrap();
+}

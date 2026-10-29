@@ -62,6 +62,8 @@ pub const TRANSFER_KIND_AGENT_HOME: &str = "agent_home";
 /// 速率限制 30 req/10s 下有效吞吐 ~3 MiB/s，2 GiB 极限载荷 ~11 分钟——
 /// 可接受，正常执行记录是 KB~MB 级）。
 pub const DEFAULT_CHUNK_BYTES: usize = 1024 * 1024;
+/// begin manifest 文件条目上限（BUG-20261030-203；推导见 validate_manifest）。
+const MAX_MANIFEST_FILES: usize = 100_000;
 
 /// chunk 大小环境变量覆盖（UAT「调小块大小」用，免重编；钳到
 /// 4 KiB..8 MiB——太小拖死速率限制，太大逼近帧上限）。
@@ -264,8 +266,10 @@ pub struct TransferPull {
 /// transfer_pull 回复。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferPullReply {
-    /// queued = worker 已（重新）入队并触发推送；no_archive = worker 本地
-    /// 无该任务执行记录（诚实回答，master 侧记缺失）。
+    /// queued = worker 已（重新）入队并触发推送；dead/over_limit = 条目
+    /// 停车（不会被推送循环拾取——BUG-20261030-201 诚实态词，master 落
+    /// no_archive_seen 停拉，手动重放后由收件箱重灌腿恢复）；no_archive =
+    /// worker 本地无该任务执行记录（诚实回答，master 侧记缺失）。
     pub status: String,
 }
 
@@ -555,12 +559,14 @@ impl TransferSink {
 
     /// 接线落地回调（档案投影）。只在装配期调用一次。
     pub fn set_on_landed(&self, cb: LandedCallback) {
-        *self.on_landed.lock().unwrap() = Some(cb);
+        // 恢复式（BUG-20261030-202）：回调 panic 毒化过锁后，装配期重接线
+        // 仍可用——对齐 outbox 同仓先例。
+        *self.on_landed.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);
     }
 
     /// 接线超限通知回调（决策流卡片）。
     pub fn set_on_overlimit(&self, cb: OverlimitCallback) {
-        *self.on_overlimit.lock().unwrap() = Some(cb);
+        *self.on_overlimit.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);
     }
 
     /// 去重快照（测试/诊断用）。
@@ -862,7 +868,14 @@ impl TransferSink {
             );
         }
         // 6. 落地回调（档案投影接线；失败不影响 ACK——数据已安全落地）。
-        if let Some(cb) = self.on_landed.lock().unwrap().as_ref() {
+        //    锁内 clone、锁外调用（BUG-20261030-202）：回调慢/panic/重入
+        //    都不持锁——持锁调回调会让回调内 set_* 重入死锁、panic 毒化锁。
+        let cb = self
+            .on_landed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(cb) = cb.as_ref() {
             cb(&begin.task_id, &landed);
         }
         Ok(done_reply)
@@ -876,7 +889,13 @@ impl TransferSink {
             limit = req.limit,
             "[Transfer] worker 报告传输超限（档案未回传）"
         );
-        if let Some(cb) = self.on_overlimit.lock().unwrap().as_ref() {
+        // 锁内 clone、锁外调用（BUG-20261030-202，理由见 begin 落地回调处）。
+        let cb = self
+            .on_overlimit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(cb) = cb.as_ref() {
             cb(req);
         }
     }
@@ -903,10 +922,21 @@ pub fn sanitize_transfer_id(id: &str) -> String {
     nemesis_utils::sanitize::sanitize_path_segment(id)
 }
 
-/// begin 载荷校验：全部路径过围栏 + 总量/块计划一致。
+/// begin 载荷校验：全部路径过围栏 + 总量/块计划一致 + 条数闸。
 fn validate_manifest(req: &TransferBegin) -> Result<(), String> {
     if req.transfer_id.is_empty() || req.task_id.is_empty() {
         return Err("transfer_id/task_id 不能为空".into());
+    }
+    // BUG-20261030-203：files 条数闸——病态海量小文件的 begin JSON 可超
+    // 16MiB 传输帧上限（直连 TCP 与桥接 ws 同为 MAX_FRAME_SIZE），到传输
+    // 层才被拒时错误不可诊断（"帧过大"，无结构化指引）。上限推导：16MiB
+    // ÷ ~160B/条 ≈ 10 万条安全余量；真实项目档案（源码树 + 执行记录）
+    // 5 万条已极端。超闸 = 诚实拒绝 + 打包建议。
+    if req.files.len() > MAX_MANIFEST_FILES {
+        return Err(format!(
+            "manifest 文件条目 {} 超上限 {MAX_MANIFEST_FILES}——病态海量小文件目录请先归档为单文件再传",
+            req.files.len()
+        ));
     }
     if req.chunk_size == 0 {
         return Err("chunk_size 必须为正".into());
