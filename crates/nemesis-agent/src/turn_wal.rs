@@ -155,7 +155,14 @@ impl TurnWal {
         self.append_record(rec);
     }
 
-    /// 追加一行（内部：轮转检查 → 序列化 → 写 → flush）。
+    /// 追加一行（内部：锁 → 轮转检查 → 写 → flush）。
+    ///
+    /// 轮转与写共用同一把文件锁（BUG-20261030-204）：此前轮转判定+rename
+    /// 在锁外做，与并发写者（同一 loop 的并发 turn 任务，D-4 信号量放行）
+    /// 竞态——①guard=None 窗口进来的写者被 `if let Some` 静默跳过（admitted
+    /// 行无 warn 消失 = 恢复链盲区）；②rename 被瞬时句柄挡住（Windows
+    /// AV/索引器是常态）时 guard 永久停在 None，此后**所有**行静默丢弃且
+    /// M2 degraded 报告永不触发。锁内轮转 + 失败重开兜底双修。
     fn append_record(&self, rec: WalRecord) {
         let line = match serde_json::to_string(&rec) {
             Ok(l) => l,
@@ -164,13 +171,13 @@ impl TurnWal {
                 return;
             }
         };
-        if let Err(e) = self.maybe_rotate(line.len() + 1) {
-            tracing::warn!("[TurnWal] 轮转失败（本行仍尝试写入）: {e}");
-        }
         let mut guard = match self.file.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
+        if let Err(e) = self.rotate_locked(&mut guard, line.len() + 1) {
+            tracing::warn!("[TurnWal] 轮转失败（本行仍尝试写入）: {e}");
+        }
         if let Some(f) = guard.as_mut() {
             if let Err(e) = f
                 .write_all(line.as_bytes())
@@ -195,36 +202,55 @@ impl TurnWal {
         }
     }
 
-    /// 触顶轮转：`wal.jsonl` → `wal.jsonl.old`（覆盖上一代），重开句柄。
-    /// 单代保留——最旧一代丢弃（诚实取舍：恢复窗口只保最新两代文件）。
-    fn maybe_rotate(&self, incoming: usize) -> std::io::Result<()> {
+    /// 触顶轮转（锁内版，`guard` 必须是已持有的文件锁）：`wal.jsonl` →
+    /// `wal.jsonl.old`（覆盖上一代），重开句柄。单代保留——最旧一代丢弃
+    /// （诚实取舍：恢复窗口只保最新两代文件）。
+    ///
+    /// 轮转失败不杀 WAL（BUG-20261030-204）：重开原文件尽力续写——老代码
+    /// 失败路径 guard 留 None，此后所有行被静默丢弃（写路径根本不走到
+    /// M2 degraded 报告的 write 失败分支，永久死亡不可观测）。
+    fn rotate_locked(
+        &self,
+        guard: &mut Option<std::fs::File>,
+        incoming: usize,
+    ) -> std::io::Result<()> {
         let cur = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         if cur + incoming as u64 <= self.max_bytes {
             return Ok(());
         }
-        // 关句柄 → 换名 → 重开。
-        {
-            let mut guard = match self.file.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            *guard = None;
+        // 关句柄 → 换名 → 重开；任一步失败都尽力重开原文件续写。
+        *guard = None;
+        let reopened = (|| {
+            if self.old_path.exists() {
+                let _ = std::fs::remove_file(&self.old_path);
+            }
+            std::fs::rename(&self.path, &self.old_path)?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+        })();
+        match reopened {
+            Ok(f) => {
+                *guard = Some(f);
+                tracing::info!(
+                    "[TurnWal] WAL 触顶轮转（{} → {}）",
+                    self.path.display(),
+                    self.old_path.display()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                if let Ok(f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                {
+                    *guard = Some(f);
+                }
+                Err(e)
+            }
         }
-        if self.old_path.exists() {
-            let _ = std::fs::remove_file(&self.old_path);
-        }
-        std::fs::rename(&self.path, &self.old_path)?;
-        let f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        *self.file.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
-        tracing::info!(
-            "[TurnWal] WAL 触顶轮转（{} → {}）",
-            self.path.display(),
-            self.old_path.display()
-        );
-        Ok(())
     }
 
     /// 读取两代文件（.old 在前），按 call_id 分组归并，返回全部记录
@@ -337,7 +363,16 @@ impl TurnWal {
             };
             if let Err(e) = std::fs::write(&self.path, body) {
                 tracing::warn!("[TurnWal] 恢复期 drain 重写失败: {e}");
-            } else if let Ok(f) = std::fs::OpenOptions::new().append(true).open(&self.path) {
+            }
+            // 兜底重开（BUG-20261030-204 同族）：写败/重开败任一发生都不许
+            // guard 停在 None——否则此后所有 append 被 `if let Some` 静默
+            // 跳过，WAL 无 warn 永久死亡。
+            if guard.is_none()
+                && let Ok(f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+            {
                 *guard = Some(f);
             }
         }
