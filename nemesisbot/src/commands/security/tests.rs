@@ -2397,6 +2397,54 @@ mod wave_a_approvals {
         );
     }
 
+    // BUG-20261029-176 回归锁：CLI clear 与「总是允许」写入侧
+    // （persist_auto_allow_rule 的 RMW，锁序 RULES_WRITE_LOCK →
+    // config_write_lock）互斥——旧实现不持锁，并发 RMW 插在计数读与清空
+    // 写之间会把已清规则复活（last-write-wins 丢清空）而 CLI 仍打印
+    // Cleared N；WSAPI approvals_clear 同场景持锁（写纪律漂移）。本锁钉住：
+    // config 写锁被持有时 clear 必须阻塞，释放后才落盘空表。
+    #[test]
+    fn approvals_clear_serialized_against_config_write_lock() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_rules(
+            tmp.path(),
+            r#"[{"op":"exec","pattern":"a","action":"allow"}]"#,
+        );
+        let rules_file = approvals_path(tmp.path());
+
+        // 后台线程持 config 写锁（模拟 gateway persist 临界区），主线程
+        // 放行前一直持有。
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _g = nemesis_config::config_write_lock();
+            locked_tx.send(()).expect("持锁信号");
+            release_rx.recv().expect("放行信号");
+        });
+        locked_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("holder 必须先取得锁");
+
+        // clear 在另一线程跑：锁被占 → 必须阻塞（未完成 = 未落盘）。
+        let home = tmp.path().to_path_buf();
+        let clear = std::thread::spawn(move || {
+            cmd_approvals_clear(&home).expect("clear 应成功");
+            std::fs::read_to_string(&rules_file).expect("读清空后规则表")
+        });
+        // 观察窗口：持锁的 clear 不可能在此窗口内完成；不持锁的旧实现
+        // 会立即完成（= 漂移复发，本断言红）。
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !clear.is_finished(),
+            "clear 在 config 写锁被持有时完成了——写锁纪律丢失（BUG-20261029-176 复发）"
+        );
+
+        release_tx.send(()).expect("放行");
+        holder.join().expect("holder 退出");
+        let content = clear.join().expect("clear 释放后必须能完成");
+        assert_eq!(content, "[]\n", "释放锁后 clear 落盘空表");
+    }
+
     #[tokio::test]
     async fn run_dispatch_approvals_list_and_clear() {
         let tmp = tempfile::TempDir::new().unwrap();

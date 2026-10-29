@@ -396,8 +396,14 @@ fn cmd_approvals_list(home: &std::path::Path) -> Result<()> {
 }
 
 /// F3: 清空「总是允许」规则表（写回空表，文件保留；运行中 gateway 的
-/// HotReloader 经 mtime 感知）。
+/// HotReloader 经 mtime 感知）。与「总是允许」写入侧（persist_auto_allow_rule
+/// 的 RMW）互斥：全程持 config 家族写串行锁——计数读与清空写之间若插入
+/// 并发 RMW，旧实现会把已清规则复活（last-write-wins 丢清空）而 CLI 仍
+/// 打印 Cleared N。WSAPI approvals_clear 同锁（同类横扫四期，2026-10-13）。
 fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
+    // BUG-20261029-176：旧实现不持锁，与 WSAPI 同名命令及 persist 侧
+    // 「双写者互斥」不变量漂移——锁先于计数读与写盘（临界区覆盖全程）。
+    let _cfg_serial = nemesis_config::config_write_lock();
     let path =
         nemesis_path::resolve_approval_rules_path_in_workspace(&common::workspace_path(home));
     let removed = if path.exists() {
