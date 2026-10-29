@@ -473,10 +473,18 @@ fn alternating_nudge(tool: &str, count: u32) -> String {
 ///   exits. A non-zero exit IS a failure even though it's `Ok`, so without this
 ///   case the most common loop shape — repeated failing builds — would look like
 ///   a stream of successes and the guards would never fire.
+/// - `Command timed out ...` — `ExecTool` timeout-kill, also `Ok(_)`. Same
+///   logic as the non-zero-exit case: a hung-command loop (interactive prompt
+///   wait, long test suite) must count as repeated failures. This matches
+///   [`crate::loop_tools::exec_output_passed`] (the exec-shape truth source):
+///   all three exec failure forms (`Exit code:` / `Command timed out` / `Err`)
+///   are recognized, keeping the guard / WAL / observer / Forge classifications
+///   on the same scale.
 pub fn tool_result_indicates_error(result: &str) -> bool {
     result.starts_with("Error:")
         || result.starts_with("Tool error:")
         || result.starts_with("Exit code:")
+        || result.starts_with("Command timed out")
 }
 
 /// Build a stable signature for a tool failure. Keys on `(tool, first

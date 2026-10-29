@@ -848,7 +848,11 @@ impl AgentLoop {
                 (r, tool_start.elapsed().as_millis() as u64)
             };
             let tool_duration = std::time::Duration::from_millis(tool_duration_ms);
-            let tool_success = !result.starts_with("Error:") && !result.starts_with("Tool error:");
+            // 同刻度判定（BUG-20261029-167）：observer/capture 的成败分类与
+            // turn_guard/WAL 共用同一 helper——ExecTool 的 `Ok("Exit code: N")`
+            // 与 `Ok("Command timed out …")` 都是失败，不共用会把失败循环记成
+            // 成功流。
+            let tool_success = !crate::turn_guard::tool_result_indicates_error(&result);
 
             // Emit tool call observer event.
             self.emit_observer_sync(crate::loop_executor::ObserverEvent::ToolCall {

@@ -1241,8 +1241,13 @@ impl AgentLoop {
                         tool_name: tool_call.name.clone(),
                         input_summary: trunc(&tool_call.arguments),
                         output_summary: trunc(&result),
-                        success: !result.contains("SECURITY BLOCKED")
-                            && !result.contains("Tool error:"),
+                        // 同刻度判定（BUG-20261029-167）：与 WAL ok 判定同形
+                        //（⛔ 前缀族 + tool_result_indicates_error）——
+                        // contains 形态漏 `Error:`/`Exit code:`/
+                        // `Command timed out` 三种失败，还会把成功结果中途
+                        // 引用 "Tool error:" 字样（如读日志）误判失败。
+                        success: !result.starts_with('⛔')
+                            && !crate::turn_guard::tool_result_indicates_error(&result),
                         duration_ms: tool_start.elapsed().as_millis() as u64,
                         timestamp: chrono::Local::now().to_rfc3339(),
                         session_key: format!("{}:{}", context.channel, context.chat_id),
@@ -1262,8 +1267,10 @@ impl AgentLoop {
                             timestamp: chrono::Local::now().to_rfc3339(),
                             data: serde_json::json!({
                                 "tool": tool_call.name,
-                                "ok": !result.contains("SECURITY BLOCKED")
-                                    && !result.contains("Tool error:"),
+                                // 同刻度判定（BUG-20261029-167）：与上方
+                                // Experience.success 同形。
+                                "ok": !result.starts_with('⛔')
+                                    && !crate::turn_guard::tool_result_indicates_error(&result),
                                 "duration_ms": tool_start.elapsed().as_millis() as u64,
                             }),
                         })

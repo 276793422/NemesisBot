@@ -203,6 +203,13 @@ fn indicates_error_detects_exit_code_prefix() {
     assert!(tool_result_indicates_error(
         "Exit code: 101\nstdout: \nstderr: error[E0432]: x"
     ));
+    // ExecTool timeout-kill format (`Ok("Command timed out …")` — the third
+    // exec failure shape per `loop_tools::exec_output_passed`). Missing here,
+    // a hung-command loop (interactive prompt wait, long test suite) looks
+    // like a stream of successes to the guards / WAL / observer / Forge.
+    assert!(tool_result_indicates_error(
+        "Command timed out after 30 seconds. Partial output:\nstderr (tail):\nerror: test hung"
+    ));
     // Genuine success.
     assert!(!tool_result_indicates_error("compilation successful"));
     assert!(!tool_result_indicates_error("File edited: /a/b.rs"));
