@@ -131,7 +131,7 @@ describe('P2：receive assistant 到场 → 占位即时消失', () => {
 })
 
 describe('P1a：sync 补拉 tool 条目转回工具事件 + assistant flush 挂载', () => {
-  it('补拉窗口的 tool 对 + assistant 行 → 工具卡挂到回复消息上', async () => {
+  it('补拉窗口的 tool 对 + assistant 行 → work 块挂到回复消息上', async () => {
     prepareSession()
     let syncN = 0
     requestMock.mockImplementation((_mod: string, cmd: string) => {
@@ -157,16 +157,19 @@ describe('P1a：sync 补拉 tool 条目转回工具事件 + assistant flush 挂�
     await flushPromises()
     expect(w.find('.typing-indicator').exists()).toBe(true)
 
-    // 轮询 tick：sync 补回 tool 对 + assistant → 卡挂到回复上、占位消失。
+    // 轮询 tick：sync 补回 tool 对 + assistant → work 块挂到回复、占位消失。
     await vi.advanceTimersByTimeAsync(4000)
     await flushPromises()
     expect(w.text()).toContain('recovered!')
     expect(w.find('.typing-indicator').exists()).toBe(false)
-    // 消息级工具卡存在（flush 挂载），pending 区已清空（不再重复渲染）。
-    const msgCards = w.findAll('.message .tool-card')
-    expect(msgCards.length).toBeGreaterThanOrEqual(1)
-    // 完成态卡渲染 args_preview + 耗时（ToolCallCard 契约）。
-    expect(msgCards[0].text()).toContain('ls')
+    // 消息级 work 块存在（flush 挂载），pending 缓冲已清空（不再重复渲染）。
+    const { useChatStore } = await import('../../stores/chat')
+    expect(useChatStore().pendingWork).toBeNull()
+    const block = w.find('.message .wt-block')
+    expect(block.exists()).toBe(true)
+    // 落地块默认折叠——点开验证 args_preview（ToolCallCard 时代同契约）。
+    await block.find('.wt-header').trigger('click')
+    expect(w.find('.message .wt-block .wt-body').text()).toContain('ls')
     w.unmount()
   })
 })
@@ -176,6 +179,17 @@ describe('P1c：全量重载后 primeSeqBaseline 回放尾部工具流程', () =
     prepareSession()
     requestMock.mockImplementation((_mod: string, cmd: string) => {
       if (cmd === 'inbox_status') return Promise.resolve({ available: true, busy: true })
+      if (cmd === 'work_current') {
+        // detectPendingTurn 起轮即拉活累加器（权威 > 环回放重建）：turn 仍在
+        // 跑，t2 在快照里——真实后端形态，null 会诚实清掉回放重建的残段。
+        return Promise.resolve({
+          work: {
+            started_at_ms: 1,
+            ended_at_ms: 2,
+            rounds: [{ text: '', tools: [{ tool: 'exec', call_id: 't2', ok: false, duration_ms: 0, running: true }] }],
+          },
+        })
+      }
       if (cmd === 'sync') {
         // primeSeqBaseline（after=0 全量）：倒数第二条 assistant 之后 =
         // 旧轮 assistant → T1 对 → a1（最后一轮回复）→ T2（进行中）。
@@ -204,16 +218,19 @@ describe('P1c：全量重载后 primeSeqBaseline 回放尾部工具流程', () =
     await flushPromises()
     expect(w.find('.typing-indicator').exists()).toBe(true)
 
-    // 回放后：T1 挂在 a1 消息上（不再裸奔），T2 在 pending 区（占位旁）。
+    // 回放后：T1 挂在 a1 消息上（不再裸奔），T2 在 live 块（占位旁）。
     const a1 = w.findAll('.message.assistant').find(d => d.text().includes('a1 done'))
     expect(a1).toBeTruthy()
-    expect(a1!.findAll('.tool-card').length).toBe(1)
-    expect(a1!.find('.tool-card').text()).toContain('main.rs')
-    // pending 区：T2（callId t2）直接渲染（<3 张卡不折叠），且未误挂消息。
-    const allCards = w.findAll('.tool-card')
-    expect(allCards.length).toBe(2) // a1 挂 1 张（main.rs）+ pending 区 1 张
-    const pendingCards = allCards.filter(d => d.text().includes('exec'))
-    expect(pendingCards.length).toBe(1)
+    expect(a1!.findAll('.wt-block:not(.live)').length).toBe(1)
+    // 落地块默认折叠——点开验证 main.rs。
+    await a1!.find('.wt-block .wt-header').trigger('click')
+    expect(a1!.find('.wt-block .wt-body').text()).toContain('main.rs')
+    // pending 区：T2（callId t2）在 live 块渲染，且未误挂消息。
+    const { useChatStore } = await import('../../stores/chat')
+    const pendingTools = useChatStore().pendingWork?.rounds.flatMap(r => r.tools) ?? []
+    expect(pendingTools.map(t => t.call_id)).toEqual(['t2'])
+    const liveBlock = w.find('.wt-block.live')
+    expect(liveBlock.exists()).toBe(true)
     w.unmount()
   })
 })
@@ -487,7 +504,7 @@ describe('P8：SSE chat.activity 落后端防抖全量刷新', () => {
       },
     })
     await flushPromises()
-    expect(w.findAll('.tool-card').length).toBeGreaterThanOrEqual(1)
+    expect(w.find('.wt-block.live').exists()).toBe(true)
 
     // 对应 chat.activity（seq=9）到达：游标已追平 → 短路，不刷新不重拉。
     fireActivity({ session_id: 's1', seq: 9, kind: 'tool' })
@@ -523,8 +540,8 @@ describe('P8：SSE chat.activity 落后端防抖全量刷新', () => {
     fireActivity({ session_id: 's1', seq: 7, kind: 'tool' })
     await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
-    // 增量通道生效：工具卡补进来，但 history_request（全量）未增加。
-    expect(w.findAll('.tool-card').length).toBeGreaterThanOrEqual(1)
+    // 增量通道生效：工具进 live work 块，但 history_request（全量）未增加。
+    expect(w.find('.wt-block.live').exists()).toBe(true)
     expect(countHistoryRequests()).toBe(1)
     w.unmount()
   })

@@ -201,6 +201,7 @@ impl AgentLoop {
                 deliverables: &[],
                 checkpoint_turn: None,
                 steer: false,
+                work: None,
             },
         );
         if !log_existed {

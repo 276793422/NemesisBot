@@ -847,7 +847,7 @@ pub fn build_agent_loop(
     // 纯观察者（不改写/不拦截），事件由 gateway 建、web pump 消费。
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx),
+            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
         ));
     }
     // F1（devtool-upgrade 阶段 4）：事件发送端注入 loop——/plan /build 切换
@@ -2623,7 +2623,7 @@ pub fn build_cluster_agent_loop(
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx),
+            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
@@ -3490,7 +3490,7 @@ pub fn build_agent_loop_from_spec(
     agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx),
+            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());

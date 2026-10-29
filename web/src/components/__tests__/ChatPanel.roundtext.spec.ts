@@ -2,13 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 
-// R1（2026-09-21）：中间轮正文（AgentEvent::RoundText）前端链路回归钉。
-// 背景：LLM 循环里带工具调用的中间轮，其正文（模型过程叙述）此前只进
-// history——前端只见工具卡与最终回复。修复后：
-// - 实时：RoundText tool_event 帧 → pendingRoundTexts 缓冲，pending 区
-//   展开渲染（只有叙述、没有工具卡的轮次也要出 pending 区）；
-// - 收尾：assistant 回复落地时 flush 折叠挂载到该消息（「过程 · N 段」
-//   折叠条，点击展开回看）；
+// R1（2026-09-21，2026-10-30 随 work 时间线改造更新）：中间轮正文
+// （AgentEvent::RoundText）前端链路回归钉。背景：LLM 循环里带工具调用的
+// 中间轮，其正文（模型过程叙述）此前只进 history——前端只见工具卡与最终
+// 回复。修复后归入 work 时间线（叙述开轮 + 工具批次交错）：
+// - 实时：RoundText tool_event 帧 → ingestWorkRoundText 开轮 → pendingWork
+//   缓冲 → live 块展开渲染（只有叙述、没有工具的轮次也要出 pending 区）；
+// - 收尾：assistant 回复落地时 flush 折叠挂载到该消息（WorkTimelineBlock
+//   默认收起成「用时 X」胶囊头，点击展开回看）；
 // - 回放：chat.sync 补拉的 kind=tool / RoundText 条目 → 同一转换 →
 //   assistant 行落地时同轮挂载（切页/重连不丢）。
 
@@ -110,8 +111,8 @@ beforeEach(() => {
   vi.mocked(onMessage).mockClear()
 })
 
-describe('R1：实时 RoundText → pending 区展开渲染', () => {
-  it('RoundText 帧进缓冲并在 pending 区显示（无需工具卡/streaming 在场）', async () => {
+describe('R1：实时 RoundText → live 块展开渲染', () => {
+  it('RoundText 帧进缓冲并在 live 块显示（无需工具/streaming 在场）', async () => {
     prepareSession()
     const w = mount(ChatPanel)
     await flushPromises()
@@ -126,12 +127,13 @@ describe('R1：实时 RoundText → pending 区展开渲染', () => {
     await flushPromises()
 
     const chat = useChatStore()
-    expect(chat.pendingRoundTexts.map(r => r.content)).toEqual([
+    // 每条叙述开一轮（ingestWorkRoundText 单轮语义）。
+    expect(chat.pendingWork?.rounds.map(r => r.text)).toEqual([
       '第一步：先看配置。',
       '第二步：改完再验证。',
     ])
-    // 只有叙述、没有工具卡的轮次也要出 pending 区（外层条件含 RoundText）。
-    const liveTexts = w.findAll('.round-text')
+    // 只有叙述、没有工具的轮次也要出 live 块（外层条件含 pendingWork）。
+    const liveTexts = w.findAll('.wt-round-text')
     expect(liveTexts.length).toBe(2)
     expect(w.text()).toContain('第一步：先看配置。')
     w.unmount()
@@ -152,14 +154,14 @@ describe('R1：实时 RoundText → pending 区展开渲染', () => {
     })
     await flushPromises()
     const chat = useChatStore()
-    expect(chat.pendingRoundTexts.length).toBe(0)
-    expect(w.findAll('.round-text').length).toBe(0)
+    expect(chat.pendingWork).toBeNull()
+    expect(w.findAll('.wt-round-text').length).toBe(0)
     w.unmount()
   })
 })
 
 describe('R1：回复落地 → 折叠挂载，点击展开回看', () => {
-  it('assistant 落地时 flush 挂载 roundTexts，默认折叠为「过程 · N 段」', async () => {
+  it('assistant 落地时 flush 挂载 work，默认折叠为「用时」胶囊头', async () => {
     prepareSession()
     const w = mount(ChatPanel)
     await flushPromises()
@@ -179,23 +181,23 @@ describe('R1：回复落地 → 折叠挂载，点击展开回看', () => {
     await flushPromises()
 
     const chat = useChatStore()
-    expect(chat.pendingRoundTexts.length).toBe(0)
+    expect(chat.pendingWork).toBeNull()
     const last = chat.messages[chat.messages.length - 1]
     expect(last.role).toBe('assistant')
-    expect(last.roundTexts?.map(r => r.content)).toEqual(['第一步。', '第二步。'])
+    expect(last.work?.rounds.map(r => r.text)).toEqual(['第一步。', '第二步。'])
 
-    // 默认折叠：计数条存在、正文不渲染；pending 区的展开正文已随 flush 消失。
-    const toggles = w.findAll('.round-text-toggle')
-    expect(toggles.length).toBe(1)
-    expect(toggles[0].text()).toContain('过程 · 2 段')
-    expect(w.find('.round-text-body').exists()).toBe(false)
+    // 默认折叠：胶囊头存在、正文不渲染；live 块已随 flush 卸载。
+    const blocks = w.findAll('.wt-block:not(.live)')
+    expect(blocks.length).toBe(1)
+    expect(blocks[0].find('.wt-header').text()).toContain('用时')
+    expect(blocks[0].find('.wt-body').exists()).toBe(false)
 
     // 点击展开 → 正文可见；再点收起。
-    await toggles[0].trigger('click')
-    expect(w.find('.round-text-body').exists()).toBe(true)
+    await blocks[0].find('.wt-header').trigger('click')
+    expect(w.find('.wt-block:not(.live) .wt-body').exists()).toBe(true)
     expect(w.text()).toContain('第一步。')
-    await toggles[0].trigger('click')
-    expect(w.find('.round-text-body').exists()).toBe(false)
+    await blocks[0].find('.wt-header').trigger('click')
+    expect(w.find('.wt-block:not(.live) .wt-body').exists()).toBe(false)
     w.unmount()
   })
 })
@@ -235,8 +237,10 @@ describe('R1：sync 补拉 RoundText 条目 → assistant 行落地时同轮挂�
     const chat = useChatStore()
     const last = chat.messages[chat.messages.length - 1]
     expect(last.content).toBe('recovered!')
-    expect(last.roundTexts?.map(r => r.content)).toEqual(['重放的第一步。', '重放的第二步。'])
-    expect(w.text()).toContain('过程 · 2 段')
+    expect(last.work?.rounds.map(r => r.text)).toEqual(['重放的第一步。', '重放的第二步。'])
+    const block = w.find('.wt-block:not(.live)')
+    expect(block.exists()).toBe(true)
+    expect(block.find('.wt-header').text()).toContain('用时')
     w.unmount()
   })
 })

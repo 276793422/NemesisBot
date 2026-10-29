@@ -46,75 +46,108 @@ describe('chat store todos', () => {
   })
 })
 
-// M1b（2026-09-05）：工具调用事件收集——upsert 去重（断线重连幂等）、
-// flush 取走挂载、reset/replaceMessages 清 pending 防误挂下一轮。
+// 2026-10-30（ChatPanel 长任务时间线改造）：work 时间线单一缓冲——摄取
+// （ingestWork*，分组规则与后端 WorkRecorder 同构）、flush 取走挂载、
+// adoptWorkSnapshot 活查询接管、reset/replaceMessages 清 pending。
 
-import type { ToolEvent } from '../chat'
+import type { WorkTimeline } from '../chat'
 
-function started(callId: string, tool = 'exec'): ToolEvent {
-  return { callId, tool, state: 'running', argsPreview: '{"cmd":"ls"}' }
+function snap(rounds: WorkTimeline['rounds']): WorkTimeline {
+  return { started_at_ms: 1, ended_at_ms: 2, rounds }
 }
 
-describe('chat store tool events (M1b)', () => {
-  it('starts empty', () => {
-    const store = useChatStore()
-    expect(store.pendingToolEvents).toEqual([])
+describe('chat store work timeline (2026-10-30)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
   })
 
-  it('appendToolEvent upserts by callId (Started→Finished merges in place)', () => {
+  it('starts null (直答零开销)', () => {
     const store = useChatStore()
-    store.appendToolEvent(started('c1'))
-    store.appendToolEvent(started('c2', 'read_file'))
-    expect(store.pendingToolEvents).toHaveLength(2)
-    store.appendToolEvent({
-      callId: 'c1',
-      tool: 'exec',
-      state: 'ok',
-      durationMs: 1200,
-      resultPreview: 'file-a\nfile-b',
+    expect(store.pendingWork).toBeNull()
+    expect(store.flushPendingWork()).toBeUndefined()
+  })
+
+  it('ingestWorkRoundText opens a round; tool batch carries the narrative round', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('我先看下配置')
+    store.ingestWorkToolStart('c1', 'exec', 'ls')
+    store.ingestWorkToolFinish('c1', true, 42, 'ok')
+    expect(store.pendingWork?.rounds).toHaveLength(1)
+    expect(store.pendingWork?.rounds[0].text).toBe('我先看下配置')
+    expect(store.pendingWork?.rounds[0].tools[0]).toMatchObject({
+      call_id: 'c1',
+      ok: true,
+      duration_ms: 42,
+      result_preview: 'ok',
     })
-    expect(store.pendingToolEvents).toHaveLength(2)
-    expect(store.pendingToolEvents[0]).toEqual({
-      callId: 'c1',
-      tool: 'exec',
-      state: 'ok',
-      argsPreview: '{"cmd":"ls"}',
-      durationMs: 1200,
-      resultPreview: 'file-a\nfile-b',
-    })
-    expect(store.pendingToolEvents[1].state).toBe('running')
+    expect(store.pendingWork?.rounds[0].tools[0].running).toBeUndefined()
   })
 
-  it('duplicate Finished push is idempotent (no dup entry)', () => {
+  it('tool without narrative starts a tools-only round (不误挂上一轮)', () => {
     const store = useChatStore()
-    const fin: ToolEvent = { callId: 'c1', tool: 'grep', state: 'ok', durationMs: 5 }
-    store.appendToolEvent(fin)
-    store.appendToolEvent(fin)
-    store.appendToolEvent(fin)
-    expect(store.pendingToolEvents).toHaveLength(1)
+    store.ingestWorkRoundText('第一轮有叙述')
+    store.ingestWorkToolStart('c1', 'exec', '')
+    store.ingestWorkToolFinish('c1', true, 1, '')
+    // 第二轮空正文（不发叙述）→ 新纯工具轮。
+    store.ingestWorkToolStart('c2', 'grep', 'pat')
+    expect(store.pendingWork?.rounds).toHaveLength(2)
+    expect(store.pendingWork?.rounds[1].text).toBe('')
+    expect(store.pendingWork?.rounds[1].tools[0].tool).toBe('grep')
+    expect(store.pendingWork?.rounds[1].tools[0].running).toBe(true)
   })
 
-  it('flushPendingToolEvents takes the events and empties the buffer', () => {
+  it('Started→Finished merges in place by call_id; duplicate Started is idempotent', () => {
     const store = useChatStore()
-    store.appendToolEvent(started('c1'))
-    const flushed = store.flushPendingToolEvents()
-    expect(flushed).toHaveLength(1)
-    expect(flushed[0].callId).toBe('c1')
-    expect(store.pendingToolEvents).toEqual([])
+    store.ingestWorkRoundText('t')
+    store.ingestWorkToolStart('c1', 'exec', 'a=1')
+    store.ingestWorkToolStart('c1', 'exec', 'a=2') // 重复 Started 只刷新 args
+    store.ingestWorkToolFinish('c1', false, 5, 'err')
+    store.ingestWorkToolFinish('c1', false, 5, 'err') // 重复 Finished 不新增
+    const rounds = store.pendingWork?.rounds ?? []
+    expect(rounds).toHaveLength(1)
+    expect(rounds[0].tools).toHaveLength(1)
+    expect(rounds[0].tools[0]).toMatchObject({ ok: false, duration_ms: 5, result_preview: 'err' })
+  })
+
+  it('Finished without Started is honestly ignored', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('t')
+    store.ingestWorkToolFinish('ghost', true, 5, 'r')
+    expect(store.pendingWork?.rounds[0].tools).toHaveLength(0)
+  })
+
+  it('flushPendingWork takes the timeline and empties the buffer', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('t')
+    const w = store.flushPendingWork()
+    expect(w?.rounds).toHaveLength(1)
+    expect(store.pendingWork).toBeNull()
+    expect(store.flushPendingWork()).toBeUndefined()
+  })
+
+  it('adoptWorkSnapshot replaces wholesale (work_current 活查询恢复)', () => {
+    const store = useChatStore()
+    store.adoptWorkSnapshot(snap([{ text: '恢复的叙述', tools: [] }]))
+    expect(store.pendingWork?.rounds[0].text).toBe('恢复的叙述')
+    // null / 空轮 = 清空（无进行中 turn 是事实）。
+    store.adoptWorkSnapshot(null)
+    expect(store.pendingWork).toBeNull()
+    store.adoptWorkSnapshot(snap([]))
+    expect(store.pendingWork).toBeNull()
   })
 
   it('replaceMessages (watchdog resync) clears pending', () => {
     const store = useChatStore()
-    store.appendToolEvent(started('c1'))
+    store.ingestWorkRoundText('t')
     store.replaceMessages([{ role: 'assistant', content: 'recovered', timestamp: 't' }])
-    expect(store.pendingToolEvents).toEqual([])
+    expect(store.pendingWork).toBeNull()
   })
 
   it('reset clears pending', () => {
     const store = useChatStore()
-    store.appendToolEvent(started('c1'))
+    store.ingestWorkRoundText('t')
     store.reset()
-    expect(store.pendingToolEvents).toEqual([])
+    expect(store.pendingWork).toBeNull()
   })
 })
 

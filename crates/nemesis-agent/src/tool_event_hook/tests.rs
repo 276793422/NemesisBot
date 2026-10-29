@@ -32,7 +32,7 @@ fn sample_call(args: &str) -> HookToolCall {
 #[tokio::test]
 async fn started_then_finished_emitted_in_order_with_fields() {
     let (tx, mut rx) = broadcast::channel(16);
-    let hook = ToolEventHook::new(tx);
+    let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
 
     let result = hook
         .around_tool_use(
@@ -86,7 +86,7 @@ async fn started_then_finished_emitted_in_order_with_fields() {
 #[tokio::test]
 async fn tool_error_and_security_block_mark_ok_false() {
     let (tx, mut rx) = broadcast::channel(16);
-    let hook = ToolEventHook::new(tx);
+    let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
 
     hook.around_tool_use(sample_call("{}"), next_returns("Tool error: boom"))
         .await;
@@ -118,7 +118,7 @@ async fn tool_error_and_security_block_mark_ok_false() {
 #[tokio::test]
 async fn previews_truncated_on_char_boundary() {
     let (tx, mut rx) = broadcast::channel(16);
-    let hook = ToolEventHook::new(tx);
+    let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
 
     // 多字节字符 + 超长：截断不得 panic（str-slice 教训）。
     let long_args = "路".repeat(ARGS_PREVIEW_CAP + 50);
@@ -147,7 +147,7 @@ async fn no_subscriber_is_not_an_error() {
     let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
     drop(_rx); // 无订阅者：send 返回 Err，hook 必须照常工作。
 
-    let hook = ToolEventHook::new(tx);
+    let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
     let result = hook
         .around_tool_use(sample_call("{}"), next_returns("fine"))
         .await;
@@ -184,6 +184,6 @@ fn serde_kind_tag_and_chat_id_accessor() {
 #[tokio::test]
 async fn hook_name_is_tool_event() {
     let (tx, _rx) = tokio::sync::broadcast::channel(4);
-    let hook = ToolEventHook::new(tx);
+    let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
     assert_eq!(ToolHook::name(&hook), "tool-event");
 }

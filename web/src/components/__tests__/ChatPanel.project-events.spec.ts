@@ -70,18 +70,18 @@ describe('项目会话 tool_event 不串台 (L6++ G5)', () => {
     // 另一会话（s2）的工具事件 → 丢弃。
     h(started('other-1', 'web:s2', 'read_file'))
     await flushPromises()
-    expect(chat.pendingToolEvents).toHaveLength(0)
+    expect(chat.pendingWork).toBeNull()
 
     // 非当前项目的任意会话 → 丢弃。
     h(started('other-2', 'web:s99', 'grep'))
     await flushPromises()
-    expect(chat.pendingToolEvents).toHaveLength(0)
+    expect(chat.pendingWork).toBeNull()
 
     // 当前项目会话（s1）的事件 → 应用。
     h(started('mine-1', 'web:s1', 'exec'))
     await flushPromises()
-    expect(chat.pendingToolEvents).toHaveLength(1)
-    expect(chat.pendingToolEvents[0].callId).toBe('mine-1')
+    expect(chat.pendingWork?.rounds.flatMap(r => r.tools)).toHaveLength(1)
+    expect(chat.pendingWork?.rounds.flatMap(r => r.tools)[0].call_id).toBe('mine-1')
 
     // 切到 s2 后：ChatPanel watch 触发 chatStore.reset()（pending 清空），
     // 且同一 chat_id=web:s1 的事件反转为丢弃（过滤跟 currentId 走）。
@@ -89,7 +89,7 @@ describe('项目会话 tool_event 不串台 (L6++ G5)', () => {
     await flushPromises()
     h(started('mine-2', 'web:s1', 'exec'))
     await flushPromises()
-    expect(chat.pendingToolEvents).toHaveLength(0)
+    expect(chat.pendingWork).toBeNull()
 
     wrapper.unmount()
   })

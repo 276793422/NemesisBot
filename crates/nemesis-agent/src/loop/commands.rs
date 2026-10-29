@@ -77,6 +77,7 @@ impl AgentLoop {
                     deliverables: &[],
                     checkpoint_turn: None, // E3：system 直调不经 gate/preamble，无 checkpoint 标记
                     steer: false,
+                    work: None,
                 },
             );
             if !log_existed {

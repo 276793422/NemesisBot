@@ -573,6 +573,12 @@ pub struct AgentLoop {
     agent_event_tx: parking_lot::RwLock<
         Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
     >,
+    /// Work 时间线累加器（2026-10-30 ChatPanel 长任务时间线改造）：turn
+    /// 级「叙述+工具」按真实时序收拢，落盘随行（turn.rs 最终回复行）+
+    /// `chat.work_current` 活查询。Arc 与 ToolEventHook 共享同一实例
+    /// （factory 经 [`Self::work_recorder`] 取 clone 注入 hook）；槽空 =
+    /// 喂入静默忽略，未装配路径零开销。
+    work_recorder: crate::work_timeline::WorkRecorder,
     /// Path to config.json — the single source of truth for per-model
     /// `model_tier`. `None` in standalone mode (no config.json to watch). Set
     /// by `agent_factory`; used by `refresh_active_tier` / `check_config_reload`
@@ -915,6 +921,7 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             mode: std::sync::Arc::new(parking_lot::RwLock::new(crate::types::AgentMode::Build)),
             agent_event_tx: parking_lot::RwLock::new(None),
+            work_recorder: crate::work_timeline::WorkRecorder::default(),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
             exclusive_hidden_provider: parking_lot::RwLock::new(None),
@@ -1021,6 +1028,9 @@ impl AgentLoop {
     /// tool_event 通道 WS push），本方法只负责发；agent_event_tx 未装配
     /// （CLI / B 端 worker）为 no-op。
     fn emit_round_text(&self, session_key: &str, chat_id: &str, content: &str) {
+        // Work 时间线喂入（2026-10-30）：与事件发射同点同源——先喂累加器
+        // （落盘真相源，与 tx 在场与否无关），再发实时事件（观察面）。
+        self.work_recorder.push_round_text(session_key, content);
         if let Some(tx) = self.agent_event_tx.read().as_ref() {
             // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
             let _ = tx.send(nemesis_types::agent::AgentEvent::RoundText {
@@ -1029,6 +1039,18 @@ impl AgentLoop {
                 content: content.to_string(),
             });
         }
+    }
+
+    /// Work 时间线累加器共享句柄（factory 注入 ToolEventHook 用）。
+    pub fn work_recorder(&self) -> crate::work_timeline::WorkRecorder {
+        self.work_recorder.clone()
+    }
+
+    /// 执行中 turn 的时间线快照（WSAPI `chat.work_current`，2026-10-30）：
+    /// 只读、不扰动累加。会话不匹配 / 无进行中 turn / 尚无任何中间轮 =
+    /// `None`（前端回落环回放）。落盘形态（finish）见 turn.rs 最终回复行。
+    pub fn current_work_timeline(&self, session_key: &str) -> Option<serde_json::Value> {
+        self.work_recorder.snapshot_json(session_key)
     }
 
     /// SB（2026-09-17）：会话物化事件——`session_key` 的 jsonl 首行落盘后

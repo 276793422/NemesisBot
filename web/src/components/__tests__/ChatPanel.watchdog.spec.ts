@@ -181,8 +181,8 @@ describe('修复①：审批挂起 / 工具未收尾 → watchdog 续期不重�
     await flushPromises()
     expect(countHistoryRequests()).toBe(before)
     expect(chat.streaming).toBe(true)
-    // 工具卡还在（未被重灌冲掉）。
-    expect(w.findAll('.tool-card').length).toBeGreaterThanOrEqual(1)
+    // 工具还在 live work 块（未被重灌冲掉）。
+    expect(w.find('.wt-block.live').exists()).toBe(true)
     w.unmount()
   })
 
@@ -307,12 +307,16 @@ describe('修复③：重灌后从环回放挂回工具卡', () => {
     ])
     await flushPromises()
 
-    // 重灌后回放挂卡：最后的 assistant 消息带 toolEvents，卡片渲染。
+    // 重灌后回放挂 work 块：最后的 assistant 消息带 work 时间线。
     const last = chat.messages[chat.messages.length - 1]
     expect(last.role).toBe('assistant')
-    expect(last.toolEvents).toHaveLength(1)
-    expect(last.toolEvents![0].argsPreview).toContain('echo V7')
-    expect(w.findAll('.message .tool-card').length).toBeGreaterThanOrEqual(1)
+    expect(last.work?.rounds.flatMap(r => r.tools)).toHaveLength(1)
+    expect(last.work?.rounds.flatMap(r => r.tools)[0].args_preview).toContain('echo V7')
+    const block = w.find('.message .wt-block')
+    expect(block.exists()).toBe(true)
+    // 落地块默认折叠——点开验证 args_preview。
+    await block.find('.wt-header').trigger('click')
+    expect(w.find('.message .wt-block .wt-body').text()).toContain('echo V7')
     w.unmount()
   })
 })

@@ -597,6 +597,7 @@ impl AgentLoop {
                 deliverables: &[],
                 checkpoint_turn: None, // 回绝消息不开始 turn，无 checkpoint 标记
                 steer: false,
+                work: None,
             },
         );
         crate::chat_log::append_chat_log_meta(
@@ -612,6 +613,7 @@ impl AgentLoop {
                 deliverables: &[],
                 checkpoint_turn: None,
                 steer: false,
+                work: None,
             },
         );
         if !log_existed {
@@ -1051,6 +1053,7 @@ impl AgentLoop {
                     deliverables: &[],
                     checkpoint_turn: cp_turn,
                     steer: false,
+                    work: None,
                 },
             );
             if !log_existed {
