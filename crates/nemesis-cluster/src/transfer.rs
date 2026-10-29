@@ -424,6 +424,26 @@ pub fn chunk_count(files: &[TransferFileEntry], chunk_size: usize) -> usize {
         .fold(0usize, usize::saturating_add)
 }
 
+/// seq → 计划块长（算术推导，不物化 O(chunks) 计划——begin 路径不得给
+/// 远端声明的尺寸/块数开物化口，F-NEW-2 同款约束）。越界 = None。
+fn planned_chunk_len(files: &[TransferFileEntry], chunk_size: usize, seq: usize) -> Option<usize> {
+    debug_assert!(chunk_size > 0);
+    let mut base = 0usize;
+    for f in files {
+        let n = f.size.div_ceil(chunk_size as u64) as usize;
+        if seq >= base && seq < base.saturating_add(n) {
+            let within = seq - base;
+            return Some(if within + 1 == n {
+                (f.size - within as u64 * chunk_size as u64) as usize
+            } else {
+                chunk_size
+            });
+        }
+        base = base.saturating_add(n);
+    }
+    None
+}
+
 /// base64 编解码薄封装（统一 engine，收发两侧不漂移）。
 pub fn b64_encode(data: &[u8]) -> String {
     B64.encode(data)
@@ -609,7 +629,7 @@ impl TransferSink {
             .unwrap_or(false);
         if resume {
             write_staging_manifest(&st, req);
-            let have = list_received_chunks(&st, req.chunk_count);
+            let have = list_received_chunks(&st, req);
             return TransferBeginReply {
                 status: "ok".into(),
                 have,
@@ -675,9 +695,12 @@ impl TransferSink {
                 manifest.chunk_size
             ));
         }
-        // 块文件名固定宽度：字典序 = 数值序。
+        // 块文件名固定宽度：字典序 = 数值序。原子写（唯一 tmp + rename）：
+        // 裸 fs::write 中途崩溃会留下撕裂半块，被 begin 续传按「存在性」
+        // 当已收永久跳过 → end 组装长度失配死循环（BUG-20261030-198）。
         let path = st.join(format!("chunk_{:06}.bin", req.seq));
-        std::fs::write(&path, &data).map_err(|e| format!("写 staging 块失败: {e}"))?;
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), &data, 0o644)
+            .map_err(|e| format!("写 staging 块失败: {e}"))?;
         Ok(())
     }
 
@@ -925,11 +948,18 @@ fn read_staging_manifest(dir: &Path) -> Option<TransferBegin> {
     serde_json::from_str(&raw).ok()
 }
 
-/// 列出 staging 已收到的合法块序号（0..chunk_count 内）。
-fn list_received_chunks(st: &Path, chunk_count: usize) -> Vec<usize> {
+/// 列出 staging 已收到的合法块序号（0..chunk_count 内）。合法性 = 文件
+/// 在场**且长度与计划一致**——只看存在性会把崩溃撕裂的半块当「已收」，
+/// sender 永久跳过 → end 组装长度失配死循环，直到 staging 被按龄清扫
+/// （BUG-20261030-198；写入侧已改原子写，此处读侧双保险兜住存量/异源
+/// 半块）。长度不符 = 不进 have，sender 重发覆盖自愈。
+fn list_received_chunks(st: &Path, begin: &TransferBegin) -> Vec<usize> {
     let mut have = Vec::new();
-    for seq in 0..chunk_count {
-        if st.join(format!("chunk_{seq:06}.bin")).exists() {
+    for seq in 0..begin.chunk_count {
+        let Ok(meta) = std::fs::metadata(st.join(format!("chunk_{seq:06}.bin"))) else {
+            continue;
+        };
+        if Some(meta.len() as usize) == planned_chunk_len(&begin.files, begin.chunk_size, seq) {
             have.push(seq);
         }
     }

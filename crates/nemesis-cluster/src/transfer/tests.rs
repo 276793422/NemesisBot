@@ -248,6 +248,80 @@ fn resume_skips_already_received_chunks() {
     );
 }
 
+/// BUG-20261030-198：接收端 chunk 写入中途崩溃会留下撕裂半块
+/// （裸 fs::write 非原子）。begin 续传的 have 不得把「长度与计划不符的
+/// 半块」当已收——否则 sender 永久跳过它，end 组装长度失配诚实 Err，
+/// resume 永远信任半块 → 传输死循环直至 staging 被按龄清扫（7 天）。
+/// 长度不符 = 不进 have，sender 忠实重发覆盖自愈。
+#[test]
+fn bug198_torn_chunk_not_reported_in_resume_have() {
+    let root = temp_root("bug198");
+    let src = root.join("src");
+    let payload = vec![9u8; 4096];
+    make_source(&src, &[("data.bin", &payload)]);
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let begin = prepare_begin(&src, "xf-b198", "task-b198", 1024); // 4 块
+
+    // 第一轮：推 0、1 块。
+    assert_eq!(sink.begin(&begin).status, "ok");
+    push_chunk(&sink, &begin, &src, 0);
+    push_chunk(&sink, &begin, &src, 1);
+
+    // 模拟崩溃撕裂：chunk 1 被截成半块（crash mid-fs::write 残留形态）。
+    let st = root
+        .join("ws")
+        .join("cluster")
+        .join("inbox")
+        .join(".staging")
+        .join("xf-b198");
+    let torn = st.join("chunk_000001.bin");
+    let full = std::fs::read(&torn).unwrap();
+    std::fs::write(&torn, &full[..full.len() / 2]).unwrap();
+
+    // 第二轮（重启后续传）：撕裂的 1 不得进 have。
+    let reply = sink.begin(&begin);
+    assert_eq!(reply.status, "ok");
+    assert_eq!(reply.have, vec![0], "长度不符的半块不得进 have");
+    // sender 按 have 忠实重推（半块被重发覆盖）→ end 成功。
+    for seq in 0..begin.chunk_count {
+        if !reply.have.contains(&seq) {
+            push_chunk(&sink, &begin, &src, seq);
+        }
+    }
+    sink.end(&begin.transfer_id)
+        .expect("半块被重发覆盖后 end 应成功");
+    assert_eq!(
+        std::fs::read(
+            sink.inbox_root()
+                .join("task-b198")
+                .join("files")
+                .join("data.bin")
+        )
+        .unwrap(),
+        payload
+    );
+}
+
+/// BUG-20261030-198 配套：seq → 计划块长算术（不物化计划）的边界形态
+/// ——末块短块、空文件不占序号、跨文件序号连续、越界 None。
+#[test]
+fn bug198_planned_chunk_len_arithmetic() {
+    let mk = |path: &str, size: u64| TransferFileEntry {
+        path: path.into(),
+        size,
+        sha256: String::new(),
+    };
+    let files = vec![mk("empty", 0), mk("a", 2500), mk("b", 1024)];
+    // cs=1000：empty→0 块；a→3 块 (1000,1000,500)；b→2 块 (1000,24)。
+    assert_eq!(planned_chunk_len(&files, 1000, 0), Some(1000));
+    assert_eq!(planned_chunk_len(&files, 1000, 1), Some(1000));
+    assert_eq!(planned_chunk_len(&files, 1000, 2), Some(500));
+    assert_eq!(planned_chunk_len(&files, 1000, 3), Some(1000));
+    assert_eq!(planned_chunk_len(&files, 1000, 4), Some(24));
+    assert_eq!(planned_chunk_len(&files, 1000, 5), None);
+    assert_eq!(planned_chunk_len(&files, 1000, usize::MAX), None);
+}
+
 // ---------------------------------------------------------------------------
 // 去重幂等（D3）
 // ---------------------------------------------------------------------------
