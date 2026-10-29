@@ -52,9 +52,20 @@ mod imp {
     /// 诚实注记——脚本里 console.log 一百万行同样是被共享上下文的事故。
     pub(crate) const MAX_CONSOLE_LINES: usize = 200;
 
-    /// console 行缓冲（脚本生命周期内同步收集；行数闸 + 截断标志）。
+    /// 单行字节上限（BUG-20261029-158）：行数闸只数行不数字节——单行可在
+    /// JS 堆内长到内存上限量级，`to_string()` 拷进宿主 Rust 堆时无预算可依
+    /// （JS 堆闸管不到宿主侧拷贝）。超限截断 + 行内诚实标记。
+    pub(crate) const MAX_CONSOLE_LINE_BYTES: usize = 8 * 1024;
+
+    /// console 聚合总字节上限（BUG-20261029-158）：宿主侧缓冲的持久内存
+    /// 预算（200 行 × 8KB 单行闸理论上限 1.6MB 仍偏宽）。总闸先于行数闸
+    /// 之前触发丢弃 + 总注记；32KB < 输出上限 64KB 保证注记可观测。
+    pub(crate) const MAX_CONSOLE_TOTAL_BYTES: usize = 32 * 1024;
+
+    /// console 行缓冲（脚本生命周期内同步收集；行数/字节双闸 + 截断标志）。
     struct ConsoleBuf {
         lines: Vec<String>,
+        bytes: usize,
         truncated: bool,
     }
 
@@ -62,17 +73,42 @@ mod imp {
         fn new() -> std::rc::Rc<std::cell::RefCell<Self>> {
             std::rc::Rc::new(std::cell::RefCell::new(Self {
                 lines: Vec::new(),
+                bytes: 0,
                 truncated: false,
             }))
         }
 
-        /// 单行入缓冲（超限丢弃 + 置截断标志，不炸脚本）。
+        /// 缓冲已饱和（行数或总字节任一顶格）——调用方跳过 join（不再物化
+        /// 大字符串）直接记截断标志。
+        fn saturated(buf: &std::rc::Rc<std::cell::RefCell<Self>>) -> bool {
+            let b = buf.borrow();
+            b.lines.len() >= MAX_CONSOLE_LINES || b.bytes >= MAX_CONSOLE_TOTAL_BYTES
+        }
+
+        fn mark_truncated(buf: &std::rc::Rc<std::cell::RefCell<Self>>) {
+            buf.borrow_mut().truncated = true;
+        }
+
+        /// 单行入缓冲（行数/字节双闸超限丢弃 + 置截断标志，不炸脚本；
+        /// 单行超字节预算就地截断 + 行内标记）。
         fn push(buf: &std::rc::Rc<std::cell::RefCell<Self>>, line: String) {
             let mut b = buf.borrow_mut();
-            if b.lines.len() >= MAX_CONSOLE_LINES {
+            if b.lines.len() >= MAX_CONSOLE_LINES || b.bytes >= MAX_CONSOLE_TOTAL_BYTES {
                 b.truncated = true;
                 return;
             }
+            let mut line = line;
+            if line.len() > MAX_CONSOLE_LINE_BYTES {
+                let mut cut = MAX_CONSOLE_LINE_BYTES;
+                while cut > 0 && !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                line.truncate(cut);
+                line.push_str(&format!(
+                    "…[line truncated at {MAX_CONSOLE_LINE_BYTES} bytes]"
+                ));
+            }
+            b.bytes += line.len();
             b.lines.push(line);
         }
     }
@@ -126,6 +162,12 @@ mod imp {
                     // args 推断到同一 'js（手写 Ctx<'_> / Rest<Value<'_>>
                     // 会被当作两个不相关匿名生命周期而撞 invariance）。
                     rquickjs::function::Func::from(move |ctx, args| -> rquickjs::Result<()> {
+                        // 饱和早退：缓冲顶格后不再 join（大字符串不物化），
+                        // 只记截断标志（BUG-20261029-158 宿主内存放大修复）。
+                        if ConsoleBuf::saturated(&buf) {
+                            ConsoleBuf::mark_truncated(&buf);
+                            return Ok(());
+                        }
                         ConsoleBuf::push(
                             &buf,
                             format!("{prefix}{}", join_console_values(&ctx, args)),
@@ -153,14 +195,19 @@ mod imp {
         pub fn new(timeout_secs: u64, memory_limit_mb: u64) -> Self {
             Self {
                 loop_ref: parking_lot::RwLock::new(None),
-                // 0 = 不限时（诚实语义：配置者显式选了不限；interrupt handler
-                // 仍会在 QuickJS 指令检查点轮询，只是永假）。
+                // 0 = 不限时（诚实语义：配置者显式选了不限）。运行形态是
+                // Option<Instant> deadline（run_script）：`Duration::MAX` 与
+                // `Instant` 相加必溢出 panic（BUG-20261029-157）——checked_add
+                // 返回 None 即「无 deadline」，interrupt handler 轮询永假。
                 timeout: if timeout_secs == 0 {
                     Duration::MAX
                 } else {
                     Duration::from_secs(timeout_secs)
                 },
-                memory_limit_bytes: (memory_limit_mb.max(1) as usize) * 1024 * 1024,
+                // saturating：u64 MB → 字节乘 2^20 的极端配置（手滑多打了
+                // 几位）回绕会让内存闸静默失效，钳到 u64::MAX = 诚实不设上限
+                // （BUG-20261029-157 同族算术）。
+                memory_limit_bytes: (memory_limit_mb.max(1).saturating_mul(1024 * 1024)) as usize,
             }
         }
 
@@ -174,6 +221,13 @@ mod imp {
     #[async_trait::async_trait]
     impl Tool for CodeRunTool {
         fn description(&self) -> String {
+            // 不限时配置诚实显示（Duration::MAX.as_secs() 的 20 位数字对模型
+            // 是噪音；BUG-20261029-157 随手修复）。
+            let budget = if self.timeout == Duration::MAX {
+                "unlimited".to_string()
+            } else {
+                format!("{}s", self.timeout.as_secs())
+            };
             format!(
                 "Run a JavaScript (QuickJS) script in a sandbox and return its completion value. \
 PREFERRED over repeated single tool calls whenever a task needs 3+ tool invocations, loops, or \
@@ -186,12 +240,12 @@ tool result as a string and THROWS on rejection — wrap in try/catch when a fai
 All tool calls go through the full security pipeline (estop / approval / 8 layers), exactly like \
 direct tool use. `console.log/info/warn/error` are captured and appended to the result \
 (first {} lines). The script's final expression value (string recommended) is returned. \
-Budget: wall-clock {}s (infinite loops are interrupted), JS heap {}MB, output capped at {}KB. \
+Budget: wall-clock {} (infinite loops are interrupted), JS heap {}MB, output capped at {}KB. \
 Note: a tool() call that triggers an approval card consumes budget while waiting (the card can \
 outlive the budget) — budget is aligned with the approval-card lifetime by default; the script \
 cannot call code_run itself.",
                 MAX_CONSOLE_LINES,
-                self.timeout.as_secs(),
+                budget,
                 self.memory_limit_bytes / (1024 * 1024),
                 MAX_OUTPUT_BYTES / 1024
             )
@@ -260,8 +314,14 @@ cannot call code_run itself.",
             rquickjs::Runtime::new().map_err(|e| format!("QuickJS runtime init failed: {e}"))?;
         rt.set_memory_limit(memory_limit);
         rt.set_max_stack_size(1024 * 1024);
-        let deadline = Instant::now() + timeout;
-        rt.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
+        // BUG-20261029-157：`Instant::now() + Duration::MAX`（timeout_secs=0
+        // 的「不限时」语义）必溢出 panic（Add for Instant = checked_add
+        // .expect）。checked_add 的 None 恰好就是「deadline 无法表示」——
+        // 即不限时：interrupt handler 轮询永假，invoke_tool 不包 timeout。
+        let deadline: Option<Instant> = Instant::now().checked_add(timeout);
+        rt.set_interrupt_handler(Some(Box::new(move || {
+            deadline.is_some_and(|d| Instant::now() >= d)
+        })));
 
         let ctx = rquickjs::Context::full(&rt)
             .map_err(|e| format!("QuickJS context init failed: {e}"))?;
@@ -331,7 +391,8 @@ cannot call code_run itself.",
                     }
                     if buf.truncated {
                         out.push_str(&format!(
-                            "(+ more console lines truncated at {MAX_CONSOLE_LINES})\n"
+                            "(+ more console output truncated: caps {MAX_CONSOLE_LINES} lines \
+/ {MAX_CONSOLE_TOTAL_BYTES} bytes)\n"
                         ));
                     }
                 }
@@ -345,7 +406,7 @@ cannot call code_run itself.",
         loop_weak: Option<Weak<AgentLoop>>,
         name: &str,
         args_json: &str,
-        deadline: Instant,
+        deadline: Option<Instant>,
         handle: &tokio::runtime::Handle,
     ) -> Result<String, String> {
         // 深度 1 闸：code_run 不能在脚本内调自身（每次嵌套吃一个 blocking
@@ -368,14 +429,16 @@ cannot call code_run itself.",
         // interrupt handler 只在 JS 字节码检查点生效——脚本阻塞在宿主函数里
         // 时不轮询。因此单次 dispatch 吃**剩余预算**：到点 future 被丢弃
         // （dispatch 中断点语义同 estop 中途打断），脚本在下一个 JS 检查点
-        // 收到异常。不限时（Duration::MAX）透传不包 timeout。
-        match deadline.checked_duration_since(Instant::now()) {
+        // 收到异常。不限时（deadline=None）不包 timeout。
+        let Some(d) = deadline else {
+            return finish_invoke(handle.block_on(fut));
+        };
+        match d.checked_duration_since(Instant::now()) {
             None => Err(format!(
                 "tool('{name}') not started: script wall-clock budget already exhausted \
 (note: approval waits consume budget; raise agents.codemode.timeout_secs if approvals \
 routinely exhaust it)"
             )),
-            Some(rem) if rem == Duration::MAX => finish_invoke(handle.block_on(fut)),
             Some(rem) => match handle.block_on(tokio::time::timeout(rem, fut)) {
                 Ok(res) => finish_invoke(res),
                 Err(_) => Err(format!(

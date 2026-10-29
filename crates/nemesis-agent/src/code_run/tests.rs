@@ -567,6 +567,59 @@ fn config_reload_missing_key_falls_back_to_enabled() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261029-157：timeout_secs=0（「不限时」语义）曾因 Instant 溢出 panic
+// ---------------------------------------------------------------------------
+
+/// timeout_secs=0 → Duration::MAX → `Instant::now() + Duration::MAX` 溢出
+/// panic（Add for Instant = checked_add().expect）→ spawn_blocking JoinError
+/// → 工具 Err。文档语义是「不限时、interrupt handler 轮询永假」——脚本必须
+/// 照常执行。修复后 deadline=None（checked_add None 即不限时）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlimited_timeout_zero_secs_runs_script_without_panic() {
+    let tool = CodeRunTool::new(0, 64);
+    let out = run_script_with(&tool, "1+1").await;
+    assert_eq!(
+        out, "2",
+        "timeout_secs=0 必须按「不限时」语义正常执行脚本，不得 panic: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261029-158：console 聚合只有行数闸没有字节闸（宿主侧内存放大）
+// ---------------------------------------------------------------------------
+
+/// 单行 3MB（JS 堆内合法）→ join_console_values 拷进 Rust 堆无字节预算。
+/// 修复后单行 8KB 截断 + 诚实标记；截断前的整行洪水不得出现。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_huge_line_truncated_with_marker() {
+    let (_al, tool) = build_loop();
+    let out = run_script_with(&tool, r#"console.log("C".repeat(3 * 1024 * 1024)); "done""#).await;
+    assert!(out.contains("done"), "完成值仍在: {out}");
+    assert!(
+        out.contains("line truncated"),
+        "单行字节截断必须带诚实标记: {out}"
+    );
+}
+
+/// 总量字节闸：多行累计超总预算 → 后续行丢弃 + 总截断注记（注记在 64KB
+/// 输出闸内可见——总预算 32KB < 输出上限 64KB）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_total_bytes_cap_notes_honestly() {
+    let (_al, tool) = build_loop();
+    // 40 行 × 1KB ≈ 40KB > 32KB 总预算 → 触发丢弃 + 注记。
+    let out = run_script_with(
+        &tool,
+        r#"for (let i = 0; i < 40; i++) { console.log("D".repeat(1024)); } "done""#,
+    )
+    .await;
+    assert!(out.contains("done"), "完成值仍在: {out}");
+    assert!(
+        out.contains("more console output truncated"),
+        "总量字节闸注记必须诚实在场: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // console 聚合（A2 残余）
 // ---------------------------------------------------------------------------
 
@@ -626,7 +679,7 @@ async fn console_line_cap_truncates_honestly() {
         .count();
     assert_eq!(logged, MAX_CONSOLE_LINES, "恰好 200 行入缓冲: {out}");
     assert!(
-        console_part.contains("+ more console lines truncated at"),
+        console_part.contains("more console output truncated"),
         "截断诚实注记在场: {console_part}"
     );
     assert!(
