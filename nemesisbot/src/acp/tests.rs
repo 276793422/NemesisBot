@@ -11,7 +11,7 @@
 #![allow(clippy::await_holding_lock)]
 
 use super::*;
-use tokio::io::{BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 
 // ---------------------------------------------------------------------------
 // 纯函数映射
@@ -287,6 +287,25 @@ async fn start_server(
     (TestClient::new(client_side), created, perm_log)
 }
 
+/// 起一个指定入站帧上限的 duplex server（假工厂；cap 测试专用）。
+async fn start_server_with_cap(script: Vec<FakeAction>, frame_cap: usize) -> TestClient {
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    let (sr, sw) = tokio::io::split(server_side);
+    let factory = Arc::new(FakeFactory {
+        script,
+        created: Arc::new(Mutex::new(Vec::new())),
+        perm_log: Arc::new(Mutex::new(Vec::new())),
+    });
+    tokio::spawn(serve_with_frame_cap(
+        sr,
+        sw,
+        factory,
+        "test-1.0".to_string(),
+        frame_cap,
+    ));
+    TestClient::new(client_side)
+}
+
 #[tokio::test]
 async fn parse_error_yields_minus_32700() {
     let (mut c, _, _) = start_server(vec![]).await;
@@ -294,6 +313,36 @@ async fn parse_error_yields_minus_32700() {
     c.write.flush().await.unwrap();
     let frame = c.recv().await;
     assert_eq!(frame["error"]["code"], -32700);
+}
+
+/// BUG-20261029-160 回归锁：入站帧无长度上限（失控客户端发一条无换行
+/// 超大「行」→ `lines()`/`next_line()` 无限物化直到 OOM）。契约：超限帧
+/// 在 cap 处截断 → 不可解析 → 回 -32700（id 未知 → null）→ **服务继续**
+/// （后续合法帧正常响应），不终止连接。
+#[tokio::test]
+async fn oversized_frame_is_rejected_and_server_survives() {
+    // cap=256：pad 帧 ~330B 超限；后续合法 init_request ~110B 必须放行
+    //（同一 cap 下两者都要成立，「服务存活」才有意义）。
+    let mut c = start_server_with_cap(vec![], 256).await;
+    // >64 字节的合法 initialize 帧——若无 cap 会正常响应 id=1。
+    let padded = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":1,"clientCapabilities":{{"pad":"{}"}}}}}}"#,
+        "x".repeat(200)
+    );
+    assert!(padded.len() > 256);
+    c.write.write_all(padded.as_bytes()).await.unwrap();
+    c.write.write_all(b"\n").await.unwrap();
+    c.write.flush().await.unwrap();
+    let frame = c.recv().await;
+    assert_eq!(
+        frame["error"]["code"], -32700,
+        "超限帧必须回 parse error（id 未知 → null）"
+    );
+    // 服务存活：超限帧之后合法 initialize 正常响应。
+    c.send(&init_request(2)).await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 2, "超限帧后服务必须存活并继续响应");
+    assert!(frame.get("error").is_none(), "合法 initialize 不应报错");
 }
 
 #[tokio::test]

@@ -426,7 +426,9 @@ pub async fn run(
                     .map_err(|e| anyhow::anyhow!("agent task join error: {}", e))?,
             };
             // 排干执行完成前已入缓冲的残余事件（send 先于任务完成，必已入缓冲）。
-            while let Ok(ev) = rx.try_recv() {
+            // drain_residual 穿透 Lagged：环形缓冲被覆盖时游标已推进到最旧
+            // 存活事件，尾部（配对的 tool_end 等）仍可读，不得提前终止。
+            for ev in crate::event_drain::drain_residual(&mut rx) {
                 if let Some(line) = serialize_live_event(&ev) {
                     println!("{}", line);
                 }

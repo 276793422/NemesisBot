@@ -49,12 +49,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// 我们支持的协议版本（ACP v1；版本只随破坏性变更递增）。
 pub const PROTOCOL_VERSION: u16 = 1;
+
+/// 入站帧长度上限：成帧层必须有字节闸——失控客户端发一条无换行的超大
+/// 「行」时，`lines()`/`next_line()` 会无限物化直到 OOM（BUG-20261029-160）。
+/// 64MB 远超合法 ACP 帧（session prompt 随上下文增长）所需。
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // 纯函数映射层（测试对象）
@@ -725,17 +730,24 @@ impl AcpServerCore {
     }
 }
 
-/// 读一行帧 → dispatch，直到 EOF。行解析失败回 -32700（id 未知 → null）。
+/// 读一行帧 → dispatch，直到 EOF。行解析失败回 -32700（id 未知 → null）；
+/// 超限帧（> `frame_cap`，成帧字节闸）同样回 -32700 并**继续服务**。
 async fn read_dispatch_loop(
     reader: impl AsyncRead + Unpin,
     core: Arc<AcpServerCore>,
+    frame_cap: usize,
 ) -> Result<(), String> {
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|e| format!("stdin read failed: {e}"))?
-    {
+    let mut lines = LineReader::new(reader, frame_cap);
+    while let Some((oversized, line)) = lines.next_line().await? {
+        if oversized {
+            core.send(make_error(
+                Value::Null,
+                -32700,
+                "Parse error: frame exceeds size limit",
+            ))
+            .await;
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -750,12 +762,105 @@ async fn read_dispatch_loop(
     Ok(())
 }
 
+/// 带字节上限的行读取器：跨调用持久 pending 缓冲（换行之后的字节保留
+/// 到下次结算——合块多帧不丢），单行物化上限 `cap`，超限转入丢弃模式
+/// （消费至换行、不物化）。
+///
+/// 无效 UTF-8 以 lossy 替换（U+FFFD）——后续解析必失败回 -32700，服务
+/// 存活；旧 `lines()` 形态遇无效 UTF-8 直接终止整个 server（同族脆弱点，
+/// 一并收敛）。
+struct LineReader<R: AsyncRead + Unpin> {
+    reader: R,
+    /// 已从 reader 消费、尚未结算的字节（跨 `next_line` 持久）。
+    pending: Vec<u8>,
+    cap: usize,
+    /// 超限丢弃模式：消费 pending 直到换行为止（只消费不物化）。
+    dropping: bool,
+}
+
+impl<R: AsyncRead + Unpin> LineReader<R> {
+    fn new(reader: R, cap: usize) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+            cap,
+            dropping: false,
+        }
+    }
+
+    /// 结算一行。返回 `Ok(None)` = EOF 且无残余；`Some((oversized, line))`
+    /// = 一行（不含 `\n`，超过 cap 截断）；`Err` = IO 错误。
+    async fn next_line(&mut self) -> Result<Option<(bool, String)>, String> {
+        loop {
+            if self.dropping {
+                // 超限残余：丢到换行为止。
+                if let Some(pos) = self.pending.iter().position(|&b| b == b'\n') {
+                    self.pending.drain(..=pos);
+                    self.dropping = false;
+                } else {
+                    self.pending.clear();
+                }
+            }
+            if let Some(pos) = self.pending.iter().position(|&b| b == b'\n') {
+                let mut line: Vec<u8> = self.pending.drain(..pos).collect();
+                self.pending.remove(0); // 吃掉 '\n'
+                let oversized = line.len() > self.cap;
+                line.truncate(self.cap);
+                return Ok(Some((
+                    oversized,
+                    String::from_utf8_lossy(&line).into_owned(),
+                )));
+            }
+            if self.pending.len() > self.cap {
+                // 无换行累积已超限：截断物化到 cap 即刻结算（服务端持有
+                // 内存封顶 cap + 单个 read chunk），转入丢弃模式消费残余。
+                let mut line = std::mem::take(&mut self.pending);
+                line.truncate(self.cap);
+                self.dropping = true;
+                return Ok(Some((true, String::from_utf8_lossy(&line).into_owned())));
+            }
+            let mut chunk = [0u8; 8192];
+            let n = self
+                .reader
+                .read(&mut chunk)
+                .await
+                .map_err(|e| format!("stdin read failed: {e}"))?;
+            if n == 0 {
+                // EOF：有残余则结算为最后一行（无换行结尾），否则读尽。
+                return if self.pending.is_empty() {
+                    Ok(None)
+                } else {
+                    let oversized = self.pending.len() > self.cap;
+                    let mut line = std::mem::take(&mut self.pending);
+                    line.truncate(self.cap);
+                    Ok(Some((
+                        oversized,
+                        String::from_utf8_lossy(&line).into_owned(),
+                    )))
+                };
+            }
+            self.pending.extend_from_slice(&chunk[..n]);
+        }
+    }
+}
+
 /// 跑 server 直到入站 EOF。transport 泛化（生产 stdio，测试 duplex）。
 pub async fn serve(
     reader: impl AsyncRead + Unpin,
     writer: impl AsyncWrite + Unpin + Send + 'static,
     factory: Arc<dyn SessionFactory>,
     version: String,
+) -> Result<(), String> {
+    serve_with_frame_cap(reader, writer, factory, version, MAX_FRAME_BYTES).await
+}
+
+/// `serve` 的帧上限参数化形态（测试 seam：小 cap 直接测超限拒绝）。
+async fn serve_with_frame_cap(
+    reader: impl AsyncRead + Unpin,
+    writer: impl AsyncWrite + Unpin + Send + 'static,
+    factory: Arc<dyn SessionFactory>,
+    version: String,
+    frame_cap: usize,
 ) -> Result<(), String> {
     let (out_tx, mut out_rx) = mpsc::channel::<Value>(256);
     // 出站写者：一行一帧、逐行 flush。core drop（EOF 且在飞 turn 收尾）后
@@ -783,7 +888,7 @@ pub async fn serve(
         factory,
         version,
     });
-    let result = read_dispatch_loop(reader, Arc::clone(&core)).await;
+    let result = read_dispatch_loop(reader, Arc::clone(&core), frame_cap).await;
     drop(core); // sessions/gates/在飞任务持有的 Arc 归零后通道关闭
     let _ = writer_task.await;
     result
@@ -987,7 +1092,9 @@ impl PromptDriver for LoopDriver {
             // 收尾排干残余工具事件（完成先行发生于 try_recv——最后的
             // tool_end 不丢，编辑器侧不留悬空 in_progress 工具卡；排干后
             // future 结束、sink drop、泵排尽退出，顺序即「update 先于响应」）。
-            while let Ok(ev) = rx.try_recv() {
+            // drain_residual 穿透 Lagged：环形缓冲被覆盖时尾部事件仍可读，
+            // 不在首个 Lagged 处提前终止把配对 tool_end 整体丢弃。
+            for ev in crate::event_drain::drain_residual(&mut rx) {
                 if let Some(u) = map_hook_event(&ev) {
                     let _ = sink.send(u).await;
                 }

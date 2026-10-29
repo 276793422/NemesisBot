@@ -137,6 +137,9 @@ mod estop_follower;
 mod eval_assessor;
 #[cfg(feature = "eval")]
 mod eval_worker;
+/// M1a broadcast 事件收尾排干（Lagged 穿透）——K2 NDJSON 与 ACP update
+/// 泵共用的单一真相源。
+mod event_drain;
 mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。

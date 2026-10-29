@@ -374,6 +374,13 @@ async fn handle_pty_socket(
             let _ = socket
                 .send(Message::Text(format!("pty reader failed: {e}").into()))
                 .await;
+            // 失败臂不得泄漏子进程：child 已注册但 guard Drop 只摘牌不
+            // kill（BUG-20261029-161）——kill_all 够不到已摘牌句柄，shell
+            // 会成为孤儿。与正常路径收尾同形：kill + 裸线程 reap。
+            let _ = child.kill();
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
             return;
         }
     };
@@ -383,21 +390,30 @@ async fn handle_pty_socket(
             let _ = socket
                 .send(Message::Text(format!("pty writer failed: {e}").into()))
                 .await;
+            let _ = child.kill();
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
             return;
         }
     };
     let master = pair.master;
     let mut audit = AuditWriter::open(mgr.workspace.as_deref(), &shell, conn_id);
 
-    // 读泵：PTY master → channel（阻塞 Read 放独立线程）。
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // 读泵：PTY master → channel（阻塞 Read 放独立线程）。有界通道（256
+    // chunk × 8KB ≈ 2MB 上限）+ blocking_send 提供背压：WS 慢消费时读泵
+    // 阻塞 → PTY pipe 满 → shell 输出被 OS 流控；unbounded 形态在 WS 慢/
+    // 挂起时把全部 shell 输出无限堆进宿主内存（BUG-20261029-162）。
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if out_tx.send(buf[..n].to_vec()).is_err() {
+                    // std 线程内 blocking_send 合法；receiver drop（会话
+                    // 结束）→ Err → 线程退出。
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
