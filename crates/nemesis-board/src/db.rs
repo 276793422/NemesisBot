@@ -443,157 +443,137 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     }
 
     if current_version < 1 {
-        conn.execute_batch(SCHEMA_V1)
-            .map_err(|e| format!("Board schema v1 init failed: {e}"))?;
+        migrate_step(&conn, 1, "v1", SCHEMA_V1)?;
         tracing::info!(version = 1, "[BoardStore] Database initialized (v1)");
     }
     if current_version < 2 {
-        conn.execute_batch(SCHEMA_V2)
-            .map_err(|e| format!("Board schema v2 migration failed: {e}"))?;
+        migrate_step(&conn, 2, "v2", SCHEMA_V2)?;
         tracing::info!(
             version = 2,
             "[BoardStore] Database migrated to v2 (issue_dispatch)"
         );
     }
     if current_version < 3 {
-        conn.execute_batch(SCHEMA_V3)
-            .map_err(|e| format!("Board schema v3 migration failed: {e}"))?;
+        migrate_step(&conn, 3, "v3", SCHEMA_V3)?;
         tracing::info!(
             version = 3,
             "[BoardStore] Database migrated to v3 (notification)"
         );
     }
     if current_version < 4 {
-        conn.execute_batch(SCHEMA_V4)
-            .map_err(|e| format!("Board schema v4 migration failed: {e}"))?;
+        migrate_step(&conn, 4, "v4", SCHEMA_V4)?;
         tracing::info!(
             version = 4,
             "[BoardStore] Database migrated to v4 (autopilot)"
         );
     }
     if current_version < 5 {
-        conn.execute_batch(SCHEMA_V5)
-            .map_err(|e| format!("Board schema v5 migration failed: {e}"))?;
+        migrate_step(&conn, 5, "v5", SCHEMA_V5)?;
         tracing::info!(
             version = 5,
             "[BoardStore] Database migrated to v5 (planner: issue 派发需求列 + issue_dependency)"
         );
     }
     if current_version < 6 {
-        conn.execute_batch(SCHEMA_V6)
-            .map_err(|e| format!("Board schema v6 migration failed: {e}"))?;
+        migrate_step(&conn, 6, "v6", SCHEMA_V6)?;
         tracing::info!(
             version = 6,
             "[BoardStore] Database migrated to v6 (swarm M2: channel 三表 + asset)"
         );
     }
     if current_version < 7 {
-        conn.execute_batch(SCHEMA_V7)
-            .map_err(|e| format!("Board schema v7 migration failed: {e}"))?;
+        migrate_step(&conn, 7, "v7", SCHEMA_V7)?;
         tracing::info!(
             version = 7,
             "[BoardStore] Database migrated to v7 (swarm M3: msg_dedup + seq_ledger)"
         );
     }
     if current_version < 8 {
-        conn.execute_batch(SCHEMA_V8)
-            .map_err(|e| format!("Board schema v8 migration failed: {e}"))?;
+        migrate_step(&conn, 8, "v8", SCHEMA_V8)?;
         tracing::info!(
             version = 8,
             "[BoardStore] Database migrated to v8 (swarm M4.5: team_memory)"
         );
     }
     if current_version < 9 {
-        conn.execute_batch(SCHEMA_V9)
-            .map_err(|e| format!("Board schema v9 migration failed: {e}"))?;
+        migrate_step(&conn, 9, "v9", SCHEMA_V9)?;
         tracing::info!(
             version = 9,
             "[BoardStore] Database migrated to v9 (auto-flow D2: autopilot.auto_plan)"
         );
     }
     if current_version < 10 {
-        conn.execute_batch(SCHEMA_V10)
-            .map_err(|e| format!("Board schema v10 migration failed: {e}"))?;
+        migrate_step(&conn, 10, "v10", SCHEMA_V10)?;
         tracing::info!(
             version = 10,
             "[BoardStore] Database migrated to v10 (auto-flow F3: project.acceptance_criteria)"
         );
     }
     if current_version < 11 {
-        conn.execute_batch(SCHEMA_V11)
-            .map_err(|e| format!("Board schema v11 migration failed: {e}"))?;
+        migrate_step(&conn, 11, "v11", SCHEMA_V11)?;
         tracing::info!(
             version = 11,
             "[BoardStore] Database migrated to v11 (P1/A2b: issue.hidden 取消单清理)"
         );
     }
     if current_version < 12 {
-        conn.execute_batch(SCHEMA_V12)
-            .map_err(|e| format!("Board schema v12 migration failed: {e}"))?;
+        migrate_step(&conn, 12, "v12", SCHEMA_V12)?;
         tracing::info!(
             version = 12,
             "[BoardStore] Database migrated to v12 (P2/B1: project.directory 项目档案目录)"
         );
     }
     if current_version < 13 {
-        conn.execute_batch(SCHEMA_V13)
-            .map_err(|e| format!("Board schema v13 migration failed: {e}"))?;
+        migrate_step(&conn, 13, "v13", SCHEMA_V13)?;
         tracing::info!(
             version = 13,
             "[BoardStore] Database migrated to v13 (P4/E8: dispatch_baseline 变更集归属)"
         );
     }
     if current_version < 14 {
-        conn.execute_batch(SCHEMA_V14)
-            .map_err(|e| format!("Board schema v14 migration failed: {e}"))?;
+        migrate_step(&conn, 14, "v14", SCHEMA_V14)?;
         tracing::info!(
             version = 14,
             "[BoardStore] Database migrated to v14 (P5/F2+F3: project.conflict_frozen + pending_merges)"
         );
     }
     if current_version < 15 {
-        conn.execute_batch(SCHEMA_V15)
-            .map_err(|e| format!("Board schema v15 migration failed: {e}"))?;
+        migrate_step(&conn, 15, "v15", SCHEMA_V15)?;
         tracing::info!(
             version = 15,
             "[BoardStore] Database migrated to v15 (UAT U5 F-U5-1: autopilot.acceptance_criteria)"
         );
     }
     if current_version < 16 {
-        conn.execute_batch(SCHEMA_V16)
-            .map_err(|e| format!("Board schema v16 migration failed: {e}"))?;
+        migrate_step(&conn, 16, "v16", SCHEMA_V16)?;
         tracing::info!(
             version = 16,
             "[BoardStore] Database migrated to v16 (P34: worker_fingerprint + fingerprint_counted)"
         );
     }
     if current_version < 17 {
-        conn.execute_batch(SCHEMA_V17)
-            .map_err(|e| format!("Board schema v17 migration failed: {e}"))?;
+        migrate_step(&conn, 17, "v17", SCHEMA_V17)?;
         tracing::info!(
             version = 17,
             "[BoardStore] Database migrated to v17 (profession framework M2: issue.required_profession)"
         );
     }
     if current_version < 18 {
-        conn.execute_batch(SCHEMA_V18)
-            .map_err(|e| format!("Board schema v18 migration failed: {e}"))?;
+        migrate_step(&conn, 18, "v18", SCHEMA_V18)?;
         tracing::info!(
             version = 18,
             "[BoardStore] Database migrated to v18 (NB-122 batch: issue.required_capabilities)"
         );
     }
     if current_version < 19 {
-        conn.execute_batch(SCHEMA_V19)
-            .map_err(|e| format!("Board schema v19 migration failed: {e}"))?;
+        migrate_step(&conn, 19, "v19", SCHEMA_V19)?;
         tracing::info!(
             version = 19,
             "[BoardStore] Database migrated to v19 (G4 delivery evidence: issue.requires_evidence)"
         );
     }
     if current_version < 20 {
-        conn.execute_batch(SCHEMA_V20)
-            .map_err(|e| format!("Board schema v20 migration failed: {e}"))?;
+        migrate_step(&conn, 20, "v20", SCHEMA_V20)?;
         tracing::info!(
             version = 20,
             "[BoardStore] Database migrated to v20 (P6-R1 backend dispatch gate: issue.required_backend)"
@@ -602,6 +582,23 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     set_version(&conn, SCHEMA_VERSION)?;
 
     Ok(conn)
+}
+
+/// 单个迁移步——薄包装补存储身份前缀（原子实现在共享件
+/// `nemesis_utils::sqlite_preflight::migrate_step`，手法⑤，R221 BUG-166；
+/// nemesis-data 同源消费）。
+fn migrate_step(
+    conn: &Connection,
+    version: i32,
+    label: &str,
+    schema_sql: &str,
+) -> Result<(), String> {
+    nemesis_utils::sqlite_preflight::migrate_step(
+        conn,
+        version,
+        &format!("Board schema {label}"),
+        schema_sql,
+    )
 }
 
 fn set_version(conn: &Connection, version: i32) -> Result<(), String> {

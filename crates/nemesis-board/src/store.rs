@@ -504,12 +504,14 @@ impl BoardStore {
         }
         let q = filter.query.as_deref().unwrap_or("").trim().to_string();
         if !q.is_empty() {
+            // R221（BUG-163）：搜索词按字面匹配——`%`/`_` 是 SQL LIKE
+            // 通配符，不转义会把 `parse_json` 搜成 `parseXjson`、`a%b`
+            // 搜成 `ab`（用户面语义错配）。
             sql.push_str(&format!(
-                " AND (number LIKE ?{} OR title LIKE ?{})",
-                args.len() + 1,
-                args.len() + 1
+                " AND (number LIKE ?{n} ESCAPE '\\' OR title LIKE ?{n} ESCAPE '\\')",
+                n = args.len() + 1
             ));
-            args.push(Box::new(format!("%{q}%")));
+            args.push(Box::new(format!("%{}%", escape_like(&q))));
         }
         // P1/A2+A2b 用户面默认排除三旗标（Default false = 全量，既有内部
         // 调用行为不变；WSAPI issue.list 按入参映射，见 handlers/board.rs
@@ -3632,19 +3634,22 @@ impl BoardStore {
             "SELECT id, category, scope, content, source, author, use_count, deprecated, created_at
              FROM team_memory WHERE 1=1",
         );
+        let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         if let Some(s) = scope {
-            sql.push_str(&format!(
-                " AND scope = '{}'",
-                s.trim().to_lowercase().replace('\'', "''")
-            ));
+            // R221（BUG-165）：改参数绑定——旧实现字符串拼 SQL + 手工 `''`
+            // 转义（SQLite 字面量语境虽完整，但与本文件全参数绑定惯例漂移，
+            // 是全 store 唯一的拼接面）。
+            sql.push_str(&format!(" AND scope = ?{}", args.len() + 1));
+            args.push(Box::new(s.trim().to_lowercase()));
         }
         if !include_deprecated {
             sql.push_str(" AND deprecated = 0");
         }
         sql.push_str(" ORDER BY use_count DESC, id DESC");
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let refs: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|b| b.as_ref()).collect();
         let rows = stmt
-            .query_map([], row_to_team_memory)
+            .query_map(refs.as_slice(), row_to_team_memory)
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
@@ -3652,13 +3657,18 @@ impl BoardStore {
 
     /// 关键词检索（scope/content/source LIKE，大小写不敏感；管理 WSAPI 用）。
     pub fn search_team_memory(&self, query: &str) -> Result<Vec<TeamMemoryEntry>, String> {
-        let needle = format!("%{}%", query.trim().to_lowercase().replace('%', ""));
+        // R221（BUG-164）：与 list_issues 同源转义——旧实现 `%` 直接剥除
+        // （含 `%` 的字面条目搜不到、`100%` 退化为 `100` 把 `100x` 也误
+        // 命中），`_` 完全未处理（按单字符通配符解释）。
+        let needle = format!("%{}%", escape_like(query.trim().to_lowercase().as_str()));
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, category, scope, content, source, author, use_count, deprecated, created_at
                  FROM team_memory
-                 WHERE lower(scope) LIKE ?1 OR lower(content) LIKE ?1 OR lower(source) LIKE ?1
+                 WHERE lower(scope) LIKE ?1 ESCAPE '\\'
+                    OR lower(content) LIKE ?1 ESCAPE '\\'
+                    OR lower(source) LIKE ?1 ESCAPE '\\'
                  ORDER BY use_count DESC, id DESC",
             )
             .map_err(|e| e.to_string())?;
@@ -4175,6 +4185,16 @@ fn row_to_notification(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notification
         read: read != 0,
         created_at: row.get("created_at")?,
     })
+}
+
+/// LIKE 通配符转义（R221 起用户搜索词统一入口，配 SQL `ESCAPE '\'`
+/// 子句使用）：`\` → `\\`、`%` → `\%`、`_` → `\_`——不转义时 `%`/`_`
+/// 按 LIKE 通配符解释（字面搜索错配；`\` 必须先转义防二次解义）。
+fn escape_like(needle: &str) -> String {
+    needle
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {

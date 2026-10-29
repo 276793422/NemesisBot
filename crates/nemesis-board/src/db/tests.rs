@@ -622,3 +622,49 @@ fn b10_migration_from_v1_keeps_backup() {
     assert_eq!(bak_title, "存量单", "备份含迁移前存量数据");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// R221 BUG-166：迁移步原子性——步内语句半途失败必须整体回滚且版本戳
+/// 不落（崩溃/磁盘满中段失败后，下轮启动从干净态重试本步，而不是带着
+/// 半套对象撞 "duplicate column name"/"table already exists" 永久毒化）；
+/// 成功步库对象与版本戳原子同步落（中段崩溃后下轮从断点续跑，不从 v1
+/// 重跑全链）。
+#[test]
+fn r221_failed_migration_step_rolls_back_atomically() {
+    let dir = unique_dir("r221-migrate-atomic");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(&path).unwrap();
+
+    // 半途失败批：第 2 条语句撞同名表必败（旧行为：第 1 条已隐式提交）。
+    let bad = "CREATE TABLE r221_probe(a TEXT);\nCREATE TABLE r221_probe(b TEXT);";
+    let err = migrate_step(&conn, 2, "v2(test)", bad).unwrap_err();
+    assert!(err.contains("v2(test)"), "错误信息带步标签: {err}");
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='r221_probe'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0, "失败步的半途语句必须整体回滚（探针表不得残留）");
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 0, "失败步不得写版本戳");
+
+    // 成功步：库对象与版本戳原子同步落。
+    migrate_step(&conn, 1, "v1(test)", "CREATE TABLE r221_ok(a TEXT);").unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 1, "成功步同步落版本戳（中段崩溃后从断点续跑）");
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='r221_ok'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

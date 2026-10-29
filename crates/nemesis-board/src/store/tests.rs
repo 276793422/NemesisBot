@@ -4787,3 +4787,75 @@ fn transition_observer_absent_is_zero_impact() {
     assert_eq!(moved.status.as_str(), "in_progress");
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// R221（2026-10-29 存储层查询语义审计）：LIKE 通配符字面化
+// ---------------------------------------------------------------------------
+
+/// R221 BUG-163：list_issues 搜索词含 %/_ 时按 LIKE 通配符解释——
+/// `parse_json` 误命中 `parseXjson`（`_` = 任意单字符）、`a%b` 误命中
+/// `ab`（`%` = 任意串）。修复后搜索词字面匹配（ESCAPE 转义）。
+#[test]
+fn list_issues_search_treats_like_wildcards_literally() {
+    let (store, dir) = temp_store("r221-like-issues");
+    store.create_issue(new_issue("parse_json helper")).unwrap();
+    store.create_issue(new_issue("parseXjson helper")).unwrap();
+    store.create_issue(new_issue("a%b literal")).unwrap();
+    store.create_issue(new_issue("ab literal")).unwrap();
+
+    let search = |q: &str| {
+        let filter = IssueFilter {
+            query: Some(q.to_string()),
+            ..IssueFilter::default()
+        };
+        store
+            .list_issues(&filter)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.title)
+            .collect::<Vec<_>>()
+    };
+
+    let hits = search("parse_json");
+    assert_eq!(hits.len(), 1, "`_` 必须按字面匹配而非单字符通配: {hits:?}");
+    assert_eq!(hits[0], "parse_json helper");
+
+    let hits = search("a%b");
+    assert_eq!(hits.len(), 1, "`%` 必须按字面匹配而非任意串通配: {hits:?}");
+    assert_eq!(hits[0], "a%b literal");
+
+    cleanup(&dir);
+}
+
+/// R221 BUG-164：search_team_memory 转义不全——`%` 直接剥除（含 `%` 的
+/// 字面条目搜不到，`100%` 退化为 `100` 把 `100x done` 也误命中），`_`
+/// 完全未处理（仍按单字符通配符解释）。修复后与 list_issues 同源
+/// escape_like + ESCAPE 子句。
+#[test]
+fn search_team_memory_escapes_like_wildcards() {
+    let (store, dir) = temp_store("r221-like-memory");
+    store
+        .add_team_memory(new_memory("pitfall", "r221", "foo_bar entry"))
+        .unwrap();
+    store
+        .add_team_memory(new_memory("pitfall", "r221", "fooqbar entry"))
+        .unwrap();
+    store
+        .add_team_memory(new_memory("pitfall", "r221", "100% done"))
+        .unwrap();
+    store
+        .add_team_memory(new_memory("pitfall", "r221", "100x done"))
+        .unwrap();
+
+    // `_` 字面匹配（旧实现 `foo_bar` 命中两条）。
+    let hits = store.search_team_memory("foo_bar").unwrap();
+    assert_eq!(hits.len(), 1, "`_` 必须按字面匹配: {hits:?}");
+    assert_eq!(hits[0].content, "foo_bar entry");
+
+    // `%` 字面匹配：`100%` 只命中含字面 % 的条目。
+    let hits = store.search_team_memory("100%").unwrap();
+    assert_eq!(hits.len(), 1, "`%` 必须按字面匹配: {hits:?}");
+    assert_eq!(hits[0].content, "100% done");
+
+    cleanup(&dir);
+}

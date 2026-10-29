@@ -153,5 +153,41 @@ pub fn set_wal_lenient(conn: &rusqlite::Connection, store_label: &str) {
     }
 }
 
+/// ⑤ 原子迁移步（R221 BUG-166，补齐模块动机第 4 条点名的洞）：单个
+/// 版本步的全部语句 + `user_version` 版本戳在**同一事务**内原子落库。
+///
+/// 旧行为（裸 execute_batch：语句各自隐式提交；版本戳只在链末落一次）
+/// 有两个毒化面：
+/// ① 步内半途失败（磁盘满/崩溃/语句错误）→ 前面语句已提交，库处于半套
+///    对象状态；下轮启动重跑本步 → "duplicate column name" 永久毒化
+///    （只能靠手法③的备份人工恢复）；
+/// ② 任意中段崩溃 → 版本戳未落 → 下轮从原版本重跑全链 → v1
+///    "table already exists" 同样永久毒化。
+/// 现在每步 `BEGIN IMMEDIATE; {sql}; PRAGMA user_version={v}; COMMIT;`：
+/// 失败 = 整体回滚且版本不动（下轮干净重试本步）；成功 = 库对象与版本戳
+/// 同步前进（中段崩溃后下轮从断点续跑；SQLite DDL 可回滚）。
+///
+/// `label` 进错误信息（调用方带存储身份，如 "Board schema v5" /
+/// "Schema v2"）。`schema_sql` 不得含显式事务语句（BEGIN/COMMIT）——
+/// 由本函数统一包事务。返回 Err 时调用方无需清理：事务已回滚、版本戳
+/// 未动，直接终止启动即可（下轮从断点重试）。
+pub fn migrate_step(
+    conn: &rusqlite::Connection,
+    version: i32,
+    label: &str,
+    schema_sql: &str,
+) -> Result<(), String> {
+    let batch =
+        format!("BEGIN IMMEDIATE;\n{schema_sql}\nPRAGMA user_version = {version};\nCOMMIT;");
+    if let Err(e) = conn.execute_batch(&batch) {
+        // execute_batch 首错即停，连接可能停在半开事务里——显式回滚把库
+        // 还原到步前状态。BEGIN 自身失败（如 BUSY 超时）时事务未开，
+        // ROLLBACK 报 "no transaction is active"，忽略即可。
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(format!("{label} migration failed: {e}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

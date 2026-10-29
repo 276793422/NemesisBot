@@ -150,20 +150,18 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         nemesis_utils::sqlite_preflight::backup_before_migrate(&conn, db_path, "[DataStore]");
     }
 
-    // 版本化迁移链：每步只从上一版前进，旧库逐级升级。
+    // 版本化迁移链：每步只从上一版前进，旧库逐级升级；每步原子
+    // （语句 + 版本戳同事务，R221 BUG-166 手法⑤，board 同源）。
     if current_version < 1 {
-        conn.execute_batch(SCHEMA_V1)
-            .map_err(|e| format!("Schema v1 init failed: {e}"))?;
+        nemesis_utils::sqlite_preflight::migrate_step(&conn, 1, "Schema v1", SCHEMA_V1)?;
         tracing::info!("[DataStore] Schema v1 applied");
     }
     if current_version < 2 {
-        conn.execute_batch(SCHEMA_V2)
-            .map_err(|e| format!("Schema v2 migration failed: {e}"))?;
+        nemesis_utils::sqlite_preflight::migrate_step(&conn, 2, "Schema v2", SCHEMA_V2)?;
         tracing::info!("[DataStore] Schema v2 applied (A3: pricing/session/timing columns)");
     }
     if current_version < 3 {
-        conn.execute_batch(SCHEMA_V3)
-            .map_err(|e| format!("Schema v3 migration failed: {e}"))?;
+        nemesis_utils::sqlite_preflight::migrate_step(&conn, 3, "Schema v3", SCHEMA_V3)?;
         tracing::info!("[DataStore] Schema v3 applied (P2B: tool_validation_stats)");
     }
     set_version(&conn, SCHEMA_VERSION)?;
