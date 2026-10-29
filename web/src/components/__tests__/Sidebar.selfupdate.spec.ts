@@ -17,6 +17,8 @@ const wsapiRequest = vi.fn()
 const toastError = vi.fn()
 const toastWarn = vi.fn()
 const confirmMock = vi.fn()
+// 收起态测试的可变开关（useAppStore 工厂在调用时读取；beforeEach 重置）
+let mockCollapsed = false
 
 vi.mock('../../composables/useSSE', () => ({
   on: vi.fn((type: string, handler: (data?: unknown) => void) => {
@@ -48,7 +50,7 @@ vi.mock('vue-router', () => ({
 vi.mock('../../stores/app', () => ({
   useAppStore: () => ({
     connected: true,
-    sidebarCollapsed: false,
+    sidebarCollapsed: mockCollapsed,
     showMobileSidebar: false,
     toggleSidebar: vi.fn(),
   }),
@@ -87,6 +89,7 @@ function statusPayload(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  mockCollapsed = false
   sseHandlers.clear()
   wsapiRequest.mockReset()
   wsapiRequest.mockImplementation((mod: string, cmd: string) => {
@@ -296,6 +299,37 @@ describe('Sidebar 自更新长条（apply 失败反馈面）', () => {
     // 多轮轮询仍无失败信号 → 保持粘滞（真实成功路径由 gateway 重启收口）。
     await vi.advanceTimersByTimeAsync(30000)
     expect(suText(w)).toContain('更新执行中')
+    w.unmount()
+  })
+
+  it('收起态下载中：进度条 DOM 契约不卸载（压缩由 collapsed CSS 承担）', async () => {
+    // 侧栏收起 + 下载进行中并存（BUG-20261030：进度态文本类名不带
+    // nav-label，逃过收起态 display:none 规则，曾溢出 56px 栏压盖主内容）。
+    // 修复 = Sidebar.vue scoped 收起态 CSS 藏两行文本保留 ✕ + 窄轨道；
+    // jsdom 不算样式表，这里钉 DOM 契约——元素照常渲染、类名集合不变
+    // （类名是收起态 CSS 规则的锚点，改名必须同步规则）。
+    mockCollapsed = true
+    wsapiRequest.mockImplementation((mod: string, cmd: string) => {
+      if (mod === 'selfupdate' && cmd === 'status')
+        return Promise.resolve(
+          statusPayload({
+            download: { active: true, phase: 'downloading', downloaded_bytes: 45000000, total_bytes: 12000000 * 10 },
+          }),
+        )
+      if (mod === 'estop' && cmd === 'status') return Promise.resolve({ engaged: false })
+      if (mod === 'security') return Promise.resolve({ injected: false })
+      return Promise.resolve({})
+    })
+    const w = await mounted()
+    expect(w.find('aside.sidebar').classes()).toContain('collapsed')
+    // downloading 态整棵结构照常在 DOM（收起不卸载，视觉压缩交给 CSS）
+    expect(w.find('.su-progress').exists()).toBe(true)
+    expect(w.find('.su-progress-title').exists()).toBe(true)
+    expect(w.find('.su-progress-text').exists()).toBe(true)
+    expect(w.find('.su-progress-track').exists()).toBe(true)
+    expect(w.find('.su-cancel').exists()).toBe(true)
+    // 进行中形态：百分比标签 + 确定宽度填充（有 total_bytes）
+    expect(suText(w)).toContain('%')
     w.unmount()
   })
 })
