@@ -3,24 +3,15 @@
 #[test]
 fn test_constants_values() {
     // Test that constants have expected values
-    assert_eq!(crate::CONFIG_FILE, "config.json");
-    assert_eq!(crate::WORKSPACE_DIR, ".nemesisbot");
-    assert_eq!(crate::IDENTITY_FILE, "IDENTITY.md");
-    assert_eq!(crate::SOUL_FILE, "SOUL.md");
-    assert_eq!(crate::USER_FILE, "USER.md");
-    assert_eq!(crate::RPC_PREFIX, "[rpc:");
+    // （BUG-20261029-184：零消费死常量已删除，仅钉活常量单一真相源值。）
     assert_eq!(crate::CLUSTER_CONTINUATION_PREFIX, "cluster_continuation:");
-    assert_eq!(crate::DEFAULT_MAX_ITERATIONS, 60);
-    assert_eq!(crate::DEFAULT_MAX_CONTEXT_TOKENS, 128_000);
-    assert_eq!(crate::RPC_CLIENT_TIMEOUT_SECS, 3600);
-    assert_eq!(crate::PEER_CHAT_TIMEOUT_SECS, 3540);
+    assert_eq!(
+        crate::constants::SUBAGENT_CONTINUATION_PREFIX,
+        "subagent_continuation:"
+    );
     assert_eq!(crate::RPC_CHANNEL_TIMEOUT_SECS, 86400);
     assert_eq!(crate::BUS_CHANNEL_CAPACITY, 1024);
     assert_eq!(crate::CLEANUP_INTERVAL_SECS, 30);
-    assert_eq!(crate::SCANNER_CONFIG_FILE, "config.scanner.json");
-    assert_eq!(crate::FORGE_DIR, "forge");
-    assert_eq!(crate::CLUSTER_DIR, "cluster");
-    assert_eq!(crate::SKILLS_DIR, "Skills");
 }
 
 #[test]
