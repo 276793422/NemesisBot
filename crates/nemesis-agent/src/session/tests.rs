@@ -1975,7 +1975,7 @@ fn test_cleared_session_does_not_resurrect_via_rebuild() {
     let _ = store.save(&key);
 
     // The clear sequence.
-    crate::chat_log::clear_chat_log(&key);
+    crate::chat_log::clear_chat_log(&key).unwrap();
     store.clear_session(&key);
 
     let after = store.get_or_create(&key);

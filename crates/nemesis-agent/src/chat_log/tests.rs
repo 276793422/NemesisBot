@@ -84,7 +84,7 @@ fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
     crate::chat_log::write_session_meta(&key, "title to keep");
 
     // clear: jsonl emptied, meta survives
-    crate::chat_log::clear_chat_log(&key);
+    crate::chat_log::clear_chat_log(&key).unwrap();
     let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 10, None);
     assert_eq!(rows.len(), 0);
     assert_eq!(
@@ -429,7 +429,7 @@ fn test_clear_chat_log_truncates_both_files() {
     let key = uniq_key("clear");
     append_chat_log(&key, "user", "row1");
     append_boundary_event(&key, "turn_start", "r1");
-    clear_chat_log(&key);
+    clear_chat_log(&key).unwrap();
     let (rows, _, _, _) = read_chat_log(&key, 10, None);
     assert!(rows.is_empty());
     assert!(read_boundary_events(&key).is_empty(), "sidecar truncated");
@@ -439,7 +439,7 @@ fn test_clear_chat_log_truncates_both_files() {
     let key2 = uniq_key("clearblocked");
     let lp = log_path(&key2);
     std::fs::create_dir_all(&lp).unwrap();
-    clear_chat_log(&key2); // warn + return
+    clear_chat_log(&key2).expect_err("dir squatter = 诚实 Err（BUG-20261030-205）"); // warn + Err
     std::fs::remove_dir(&lp).unwrap();
 }
 
@@ -1045,4 +1045,43 @@ fn flattened_name_matches_new_sanitized_mapping() {
         nemesis_utils::sanitize::sanitize_path_segment("agent:main:session:1726"),
         "agent_main_session_1726"
     );
+}
+
+/// BUG-20261030-205 回归锁：fork 复制（write_chat_log_rows）open 失败
+/// 不再无痕——返回 0 + M2 降级登记表有条目（健康面可见）。目录占位点
+/// 位 = 跨平台确定性 open 失败注入（Windows open 目录失败；Unix
+/// O_WRONLY|O_APPEND 对目录 EISDIR）。
+#[test]
+fn test_write_chat_log_rows_open_failure_reports_degraded() {
+    // 并行唯一性不能只靠时钟（Windows tick ~15.6ms）：追加进程内原子序号。
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tag = format!(
+        "opfail{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let key = format!("test:forkcopy:{tag}");
+    let lp = log_path(&key);
+    if let Some(parent) = lp.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::create_dir_all(&lp).unwrap();
+
+    let rows = vec![serde_json::json!({
+        "role": "user",
+        "content": "x",
+        "timestamp": "2026-10-30T00:00:00+08:00"
+    })];
+    assert_eq!(write_chat_log_rows(&key, &rows), 0, "open 失败 = 0 行");
+    // 降级登记表有痕（详情带本测试独有 tag 路径段，避开并行测试噪声）。
+    assert!(
+        nemesis_utils::degraded::snapshot()
+            .iter()
+            .any(|d| d.kind == "chat_log" && d.detail.contains(&tag)),
+        "fork copy open 失败必须进降级登记表"
+    );
+    std::fs::remove_dir(&lp).unwrap();
 }

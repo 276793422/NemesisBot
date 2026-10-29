@@ -209,6 +209,19 @@ pub fn fork_session_opts(
     // but jsonl-first keeps the write order the same as the live append
     // path — durable truth before derived cache).
     let chat_log_lines = chat_log::write_chat_log_rows(&new_key, &rows[..cut]);
+    // BUG-20261030-205：jsonl 落盘失败不再静默成功。旧形态下 open/write
+    // 失败返回 0 被无视，fork 照常建 store 落 meta 返回成功——产出「store
+    // 有历史、jsonl 真相源缺席」的半残 fork（self-heal 一跑历史清零），
+    // 正是本函数 jsonl-first 契约要防的反形态。现按返回值校验：失败 =
+    // 原子回退（回收半残产物 + Err），此刻 store/meta/boundary 尚未落任何
+    // 字节，回退是干净的；源会话全程只读未受影响。
+    if chat_log_lines != rows[..cut].len() {
+        chat_log::delete_chat_log(&new_key);
+        return Err(format!(
+            "fork 落盘失败：新会话 jsonl 仅写入 {chat_log_lines}/{} 行（磁盘满/权限/瞬时句柄占用），fork 已完整回退（源会话未受影响）——请重试",
+            rows[..cut].len()
+        ));
+    }
 
     // 2) store side: mirror the self-heal construction over the SAME rows
     // (single shared mapping — session::projected_messages_from_rows).

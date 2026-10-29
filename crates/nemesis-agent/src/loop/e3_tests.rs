@@ -258,7 +258,7 @@ async fn e3_redo_rejects_refilled_same_count_session() {
 
     // clear + 同数重填：恰好 2 行（= kept_count），内容与被保留的 turn 1
     // 行完全不同。
-    clear_chat_log(&key);
+    clear_chat_log(&key).unwrap();
     e3_append(&key, "user", "fresh q", None);
     e3_append(&key, "assistant", "fresh a", None);
 

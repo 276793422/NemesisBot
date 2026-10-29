@@ -282,7 +282,9 @@ impl AgentLoop {
     /// 条目 + 磁盘 json，下一回合 get_or_create 重建空会话）。key 保留，
     /// 会话继续可用。实例按回合从 store 重建，无驻留内存态需要清。
     pub async fn clear_session(&self, session_key: &str) -> Result<String, String> {
-        crate::chat_log::clear_chat_log(session_key);
+        // BUG-20261030-205：jsonl 清空失败诚实报错（旧形态 warn-only 后
+        // 照样回「✓ 已清空」，jsonl 残留 + store 先清 = self-heal 复活）。
+        crate::chat_log::clear_chat_log(session_key)?;
         if let Some(ref store) = self.session_store {
             store.clear_session(session_key);
         }

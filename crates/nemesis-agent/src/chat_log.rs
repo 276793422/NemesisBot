@@ -501,6 +501,21 @@ pub fn chat_log_exists(session_key: &str) -> bool {
 /// the fork's jsonl side: the fork dialog counts turns ON these rows, so the
 /// copy must be exactly the rows the user picked, not a re-derived
 /// projection. Returns the number of lines written.
+/// 测试钩子登记表（BUG-20261030-205 回归锁）：登记的 key 下次进入
+/// [`write_chat_log_rows`] 时模拟 open 失败（消费一次即摘除）。仅测试
+/// 编译；key 定向而非全局开关——fork 测试并行跑，全局开关会串扰。
+#[cfg(test)]
+static TEST_FAIL_OPEN_KEYS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// 武装一次 fork 复制 open 失败注入（见 [`TEST_FAIL_OPEN_KEYS`]）。
+#[cfg(test)]
+pub(crate) fn arm_test_fail_open(key: &str) {
+    TEST_FAIL_OPEN_KEYS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(key.to_string());
+}
+
 pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     if rows.is_empty() {
         return 0;
@@ -509,27 +524,82 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     if let Some(parent) = target.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // 测试钩子（BUG-20261030-205 回归锁）：定向模拟 open 失败（消费一次
+    // 即摘除）。key 定向而非全局开关——fork 测试并行跑，全局开关会串扰
+    // 其他用例的正常写入。
+    #[cfg(test)]
+    {
+        let mut armed = TEST_FAIL_OPEN_KEYS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(pos) = armed.iter().position(|k| k == new_key) {
+            armed.swap_remove(pos);
+            tracing::warn!(
+                "[chat_log] (test hook) simulated fork copy open failure: {}",
+                target.display()
+            );
+            return 0;
+        }
+    }
     let mut written = 0usize;
     let mut written_rows: Vec<&Value> = Vec::new();
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
-        // R100（BUG-20261025-25）：整批先拼成一个缓冲再**单次** write_all
-        // （同 write_chat_entry 的行原子性理由；批写还把 fork 复制从每行
-        // 两次系统调用收敛成一次）。序列化失败的行跳过；write_all 失败 =
-        // 整批未落盘（记账按 0 处理，不许多记）。
-        let mut buf = String::new();
-        for v in rows {
-            let Ok(line) = serde_json::to_string(v) else {
-                continue;
-            };
-            buf.push_str(&line);
-            buf.push('\n');
-            written += 1;
-            written_rows.push(v);
+    // BUG-20261030-205：fork 复制的落盘失败不再无痕——open/write 失败与
+    // write_chat_entry 同款 warn + M2 降级登记（健康面可见）；fork 侧据
+    // 返回值诚实 Err 并原子回退（session_fork::fork_session_opts）。
+    let mut f = match OpenOptions::new().create(true).append(true).open(&target) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(
+                "[chat_log] fork copy open failed {}: {}",
+                target.display(),
+                e
+            );
+            nemesis_utils::degraded::report(
+                "chat_log",
+                format!("fork copy open failed: {} ({e})", target.display()),
+            );
+            return 0;
         }
-        if buf.is_empty() || f.write_all(buf.as_bytes()).is_err() {
-            written = 0;
-            written_rows.clear();
-        }
+    };
+    // R100（BUG-20261025-25）：整批先拼成一个缓冲再**单次** write_all
+    // （同 write_chat_entry 的行原子性理由；批写还把 fork 复制从每行
+    // 两次系统调用收敛成一次）。序列化失败的行跳过；write_all 失败 =
+    // 整批未落盘（记账按 0 处理，不许多记）。
+    let mut buf = String::new();
+    for v in rows {
+        let Ok(line) = serde_json::to_string(v) else {
+            continue;
+        };
+        buf.push_str(&line);
+        buf.push('\n');
+        written += 1;
+        written_rows.push(v);
+    }
+    if buf.is_empty() {
+        // 全部行序列化失败——rows 来自 read_chat_log 的合法 JSON，实际
+        // 不可达；防御臂保持与写失败同等的可观测性（BUG-20261030-205）。
+        written = 0;
+        written_rows.clear();
+        tracing::warn!(
+            "[chat_log] fork copy {}: 全部行序列化失败",
+            target.display()
+        );
+        nemesis_utils::degraded::report(
+            "chat_log",
+            format!("fork copy rows serialize failed: {}", target.display()),
+        );
+    } else if let Err(e) = f.write_all(buf.as_bytes()) {
+        written = 0;
+        written_rows.clear();
+        tracing::warn!(
+            "[chat_log] fork copy write failed {}: {}",
+            target.display(),
+            e
+        );
+        nemesis_utils::degraded::report(
+            "chat_log",
+            format!("fork copy write failed: {} ({e})", target.display()),
+        );
     }
     // T6（扩展计划 D5）：fork 记账（落新会话账本，sha-only——复制的行在
     // 源会话仍完整存在，正文不入账）。只记真正写出的行（序列化 + writeln
@@ -580,17 +650,27 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
     let tmp = path.with_extension("jsonl.rewinding");
     let mut written = 0usize;
     {
-        let Ok(mut f) = OpenOptions::new()
+        let mut f = match OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&tmp)
-        else {
-            tracing::warn!(
-                "[chat_log] Failed to open tmp {} for truncate",
-                tmp.display()
-            );
-            return 0;
+        {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(
+                    "[chat_log] Failed to open tmp {} for truncate: {}",
+                    tmp.display(),
+                    e
+                );
+                // BUG-20261030-205：手术面写失败进降级登记表（健康面可见），
+                // 不再只有日志行。rewind 侧已按返回值诚实 commit_failed。
+                nemesis_utils::degraded::report(
+                    "chat_log",
+                    format!("truncate tmp open failed: {} ({e})", tmp.display()),
+                );
+                return 0;
+            }
         };
         for v in kept {
             let Ok(line) = serde_json::to_string(v) else {
@@ -609,7 +689,11 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
             path.display(),
             e
         );
-        let _ = fs::remove_file(&tmp);
+        nemesis_utils::degraded::report(
+            "chat_log",
+            format!("truncate rename failed: {} ({e})", path.display()),
+        );
+        let _ = nemesis_utils::fsutil::remove_file_retry(&tmp);
         return 0;
     }
     // T6：rename 生效后才记账（截断真正发生）。原行按序与 kept 序列化串
@@ -836,7 +920,13 @@ pub fn delete_chat_log(session_key: &str) {
 /// Clear (truncate) a session's chat log, keeping the file. Used by session
 /// management "clear" — empties history but the session id stays usable.
 /// Also truncates the boundary-events sidecar (same lifecycle).
-pub fn clear_chat_log(session_key: &str) {
+///
+/// BUG-20261030-205：返回 `Result`——主日志写失败不再静默成功。旧形态
+/// warn-only，两个消费方（WSAPI `sessions.clear` / `/clear` slash）都无
+/// 条件报「已清空」，而 jsonl 残留 + store 先清 = 下次 self-heal 把「已清」
+/// 内容复活（正是 jsonl-first 纪律注释里描述要防的形态）。boundary 侧车
+/// 写失败仍是 warn 降级（主日志成功 = 操作成立，账本差集已入账）。
+pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
     let path = log_path(session_key);
     // T6（扩展计划 D5）：清空即全删——清空前取原始行，成功后全额按
     // truncate 语义入账（被清内容全文可从账本找回，与 rewind 同一保障）。
@@ -850,7 +940,11 @@ pub fn clear_chat_log(session_key: &str) {
         .unwrap_or_default();
     if let Err(e) = fs::write(&path, "") {
         tracing::warn!("[chat_log] Failed to clear {}: {}", path.display(), e);
-        return;
+        nemesis_utils::degraded::report(
+            "chat_log",
+            format!("clear write failed: {} ({e})", path.display()),
+        );
+        return Err(format!("清空会话日志失败 ({}): {e}", path.display()));
     }
     ledger_truncate_diff(session_key, &raw_lines, &[]);
     let bpath = boundary_path(session_key);
@@ -858,7 +952,12 @@ pub fn clear_chat_log(session_key: &str) {
         && let Err(e) = fs::write(&bpath, "")
     {
         tracing::warn!("[chat_log] Failed to clear {}: {}", bpath.display(), e);
+        nemesis_utils::degraded::report(
+            "chat_log",
+            format!("clear boundary write failed: {} ({e})", bpath.display()),
+        );
     }
+    Ok(())
 }
 
 /// Path for the sidecar title meta file (`{safe_key}.meta.json`, next to the

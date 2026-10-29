@@ -726,7 +726,8 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     // jsonl would let `rebuild_from_chat_log` resurrect the
     // content the user just asked to clear. jsonl-first keeps the
     // rebuild path unable to revive cleared data.
-    nemesis_agent::chat_log::clear_chat_log(session_key);
+    nemesis_agent::chat_log::clear_chat_log(session_key)
+        .map_err(|e| format!("清空会话失败: {e}"))?;
     let guard = ctx.state.agent_loop.read();
     if let Some(al) = guard.as_ref()
         && let Some(store) = al.session_store()

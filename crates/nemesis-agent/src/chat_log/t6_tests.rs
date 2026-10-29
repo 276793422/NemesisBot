@@ -114,7 +114,7 @@ fn clear_chat_log_records_all_deleted_rows() {
     append_chat_log(&k, "user", "清空前的问题一");
     append_chat_log(&k, "assistant", "清空前的回答一");
 
-    clear_chat_log(&k);
+    clear_chat_log(&k).unwrap();
     assert!(!chat_log_exists(&k) || std::fs::read_to_string(log_path(&k)).unwrap() == "");
 
     let path = ledger_path(&k);

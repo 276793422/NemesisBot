@@ -128,7 +128,7 @@ fn clear_chat_log_warns_when_boundary_sidecar_is_a_directory() {
     let _ = std::fs::remove_dir_all(&sidecar_dir);
     std::fs::create_dir_all(&sidecar_dir).unwrap();
 
-    clear_chat_log(&k); // 必须不 panic；warn 分支执行
+    let _ = clear_chat_log(&k); // 必须不 panic；warn 分支执行
 
     // 清理副作用
     let _ = std::fs::remove_dir_all(&sidecar_dir);

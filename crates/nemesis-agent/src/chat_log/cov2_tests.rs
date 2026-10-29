@@ -207,7 +207,7 @@ fn clear_chat_log_warns_when_boundary_write_denied() {
     assert!(bpath.exists());
 
     let _handle = lock_shared_read_only(&bpath);
-    clear_chat_log(&key); // 主日志写成功；bpath 写失败走 warn 臂。
+    let _ = clear_chat_log(&key); // 主日志写成功（bpath 写失败走 warn 臂，不影响 Ok）。
 
     drop(_handle);
     let (page, _, _, _) = read_chat_log(&key, 10, None);
