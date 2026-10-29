@@ -12,6 +12,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use crate::r#loop::FileChange;
+use crate::work_timeline::WorkTimeline;
 
 /// N5（2026-10-13 机会项）：交付物条目单一真相源在 `nemesis_types::agent`
 /// （`AgentEvent::DeliverablesRegistered` 载荷与本字段共用同一 serde 形态，
@@ -60,6 +61,11 @@ pub struct ChatLogMeta<'a> {
     /// 回复残留、只删掉 steer 尾巴。`false` 不写（缺字段 = 旧行/普通行，
     /// 一律按轮边界处理，与旧行为逐字节一致）。
     pub steer: bool,
+    /// Work 时间线（2026-10-30 ChatPanel 长任务时间线改造）：本 turn 的
+    /// 「中间轮叙述+工具调用」交错时间线（`work_timeline::WorkTimeline`），
+    /// assistant 最终回复行随行落盘（`"work"` 键）。`None` 不写——直答
+    /// （无中间轮）与旧条目读侧不受影响（与 file_changes 同一宽容读契约）。
+    pub work: Option<&'a WorkTimeline>,
 }
 
 /// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
@@ -77,6 +83,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.checkpoint_turn,
         None,
         meta.steer,
+        meta.work,
     );
 }
 
@@ -166,6 +173,7 @@ pub fn append_chat_log_with_model_and_node(
         None,
         source_node,
         false,
+        None,
     );
 }
 
@@ -196,6 +204,7 @@ pub fn append_chat_log_full(
         None,
         None,
         false,
+        None,
     );
 }
 
@@ -227,6 +236,7 @@ pub fn append_chat_log_full_with_images(
         None,
         None,
         false,
+        None,
     );
 }
 
@@ -236,6 +246,8 @@ pub fn append_chat_log_full_with_images(
 /// `deliverables` non-empty → extra `"deliverables"` array field (N5).
 /// `checkpoint_turn` Some → extra `"checkpoint_turn"` numeric field (E3).
 /// `steer` true → extra `"steer": true` field (BUG-20261025-19 轮边界标记).
+/// `work` Some → extra `"work"` object field（2026-10-30 Work 时间线，turn
+/// 中间过程交错随行；直答/旧条目缺字段读侧宽容）.
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
@@ -250,6 +262,7 @@ fn write_chat_entry(
     checkpoint_turn: Option<usize>,
     source_node: Option<&str>,
     steer: bool,
+    work: Option<&WorkTimeline>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -311,6 +324,12 @@ fn write_chat_entry(
     // 旧行/普通行，一律按轮边界处理）。
     if steer {
         entry["steer"] = serde_json::Value::Bool(true);
+    }
+    // Work 时间线（2026-10-30 ChatPanel 长任务时间线改造）：本 turn 中间
+    // 过程交错时间线（work_timeline::WorkTimeline serde 形态）。缺字段 =
+    // 直答/旧条目，读侧宽容（与 file_changes 同纪律）。
+    if let Some(w) = work {
+        entry["work"] = serde_json::to_value(w).unwrap_or(Value::Null);
     }
     // R100（BUG-20261025-25）：整行（含换行）先序列化成 String 再**单次**
     // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的
@@ -1819,3 +1838,8 @@ mod r100_concurrent_append_tests;
 // 回归锁（warn 不可进程内断言，BUG-43 同族诚实边界）。
 #[cfg(test)]
 mod r44_tests;
+
+// Work 时间线（2026-10-30 ChatPanel 长任务时间线改造）：assistant 行
+// `"work"` 键写入形状（有中间轮才带 / 直答不带 / serde 形态与前端镜像）。
+#[cfg(test)]
+mod work_tests;

@@ -31,9 +31,9 @@ import TodoPanel from './chat/TodoPanel.vue'
 import ShareModal from './ShareModal.vue'
 // 角色目录与客户端委派（2026-09-28）：委派弹窗（roles.list + chat.spawn）。
 import DelegateDialog from './DelegateDialog.vue'
-// M1b (2026-09-05): 工具调用卡片（M1a AgentEvent 通道的实时渲染）。
-import ToolCallCard from './chat/ToolCallCard.vue'
-import type { ToolEvent } from '../stores/chat'
+// 2026-10-30 Work 时间线：长任务「叙述+工具」交错折叠块（落地态+live 态
+// 共用），取代旧 ToolCallCard 卡片组 + roundTexts 折叠条。
+import WorkTimelineBlock from './chat/WorkTimelineBlock.vue'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
 import { escapeHtml, renderMarkdownHtml } from '../utils/markdown'
@@ -318,20 +318,6 @@ function applySendMode(text: string): string {
   return text
 }
 
-// --- M1b: 工具卡片「已运行 N 个工具」折叠状态 ---
-// key = 组内首个 callId（稳定唯一）；>=3 个默认折叠，点击展开/收起。
-const toolGroupExpanded = ref<Record<string, boolean>>({})
-
-function toolGroupCollapsed(evs: ToolEvent[]): boolean {
-  const key = evs[0]?.callId ?? ''
-  return toolGroupExpanded.value[key] ?? evs.length >= 3
-}
-
-function toggleToolGroup(evs: ToolEvent[]) {
-  const key = evs[0]?.callId ?? ''
-  toolGroupExpanded.value[key] = !toolGroupCollapsed(evs)
-}
-
 // --- M5: 会话级 context/cost 常驻条 ---
 // context% 来自 chat.context_status（与压缩压力同口径的尾部 token 估算）；
 // cost 来自 logs.session_usage（request_logs 按 session_key 聚合）。
@@ -562,33 +548,29 @@ async function onFileLinkClick(ev: MouseEvent) {
 
 // P1（2026-09-21）：tool_event 载荷 → store 状态的唯一转换。实时 push
 // （handleWSMessage）与 chat.sync 回放（syncMissedChat / primeSeqBaseline）
-// 共用——回放端语义与实时端完全一致，修「补拉/回放路径工具事件丢失」
-// 时不出现第二份转换逻辑漂移。appendToolEvent 按 callId upsert 幂等。
+// 共用——回放端语义与实时端完全一致，不出现第二份转换逻辑漂移。
+// 2026-10-30：转换目标从平行缓冲（pendingToolEvents/pendingRoundTexts）
+// 换成 work 时间线单一缓冲（ingestWork*，分组规则与后端 WorkRecorder
+// 同构）；ingestWorkTool* 按 call_id 幂等。
 function applyToolEventPayload(ev: any) {
   const p = ev?.data ?? {}
   if (ev?.kind === 'ToolStarted') {
-    chatStore.appendToolEvent({
-      callId: p.call_id,
-      tool: p.tool,
-      state: 'running',
-      argsPreview: p.args_preview,
-    })
+    chatStore.ingestWorkToolStart(p.call_id, p.tool, p.args_preview)
   } else if (ev?.kind === 'ToolFinished') {
-    chatStore.appendToolEvent({
-      callId: p.call_id,
-      tool: p.tool,
-      state: p.ok ? 'ok' : 'error',
-      durationMs: p.duration_ms,
-      resultPreview: p.result_preview,
-    })
+    chatStore.ingestWorkToolFinish(
+      p.call_id,
+      p.ok === true,
+      typeof p.duration_ms === 'number' ? p.duration_ms : 0,
+      p.result_preview,
+    )
   } else if (ev?.kind === 'ModeChanged') {
     // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
     // 徽标实时刷新。会话过滤由调用方完成。
     if (p.mode === 'plan' || p.mode === 'build') chatStore.setAgentMode(p.mode)
   } else if (ev?.kind === 'RoundText') {
-    // R1（2026-09-21）：中间轮正文（模型每轮过程叙述）——执行中 pending
-    // 区展开显示，最终回复落地时 flush 折叠挂载到该消息。
-    if (typeof p.content === 'string' && p.content) chatStore.appendRoundText(p.content)
+    // 中间轮正文（模型每轮过程叙述）——live 折叠块内展开显示，最终回复
+    // 落地时 flush 挂载到该消息。
+    if (typeof p.content === 'string' && p.content) chatStore.ingestWorkRoundText(p.content)
   }
 }
 
@@ -682,17 +664,10 @@ function handleWSMessage(data: any) {
           incomingContent != null &&
           last.content === incomingContent
         if (!isDuplicateRecovery) {
-          // M1b：assistant 响应落地时，把本轮累积的工具事件挂载到该消息
-          // （收集自 M1a push 通道；flush 即取走，避免误挂下一轮）。
-          // R1：中间轮正文同轮收尾——折叠挂载（roundTextsOpen 缺省收起）。
-          const toolEvents =
-            incomingRole === 'assistant' && chatStore.pendingToolEvents.length
-              ? chatStore.flushPendingToolEvents()
-              : undefined
-          const roundTexts =
-            incomingRole === 'assistant' && chatStore.pendingRoundTexts.length
-              ? chatStore.flushPendingRoundTexts()
-              : undefined
+          // 2026-10-30：assistant 响应落地时，把本 turn 活时间线挂载到该
+          // 消息（实时 push + work_current 恢复共用同一缓冲；flush 即取走，
+          // 避免误挂下一轮）。直答（无中间轮）= undefined 不占字段。
+          const work = incomingRole === 'assistant' ? chatStore.flushPendingWork() : undefined
           // N5：交付物同轮收尾——登记 push 先于回复帧（后端落盘后发布），
           // flush 挂载到本条 assistant 消息（空缓冲 = undefined 不占字段）。
           const deliverables =
@@ -709,8 +684,7 @@ function handleWSMessage(data: any) {
             // A1：环 seq 随消息存档——历史响应 last_seq 到达后据此剔除
             // 「先于快照渲染」的重复 assistant 帧。
             seq: typeof data.data?.seq === 'number' ? data.data.seq : undefined,
-            toolEvents,
-            roundTexts,
+            work,
             deliverables,
           })
         }
@@ -890,21 +864,22 @@ async function replayToolsFromRing() {
         continue
       }
       if (ev.role === 'assistant') {
-        // 该 assistant 行已由 chat_log 历史渲染——把此前累积的工具事件
-        // 挂回列表中对应位置的 assistant（回放段第 j 个 assistant ↔
-        // 列表倒数第 k-j 个）；列表 assistant 数不足（窗口滑出）时兜底
-        // 挂到最后一条。R1：中间轮正文同位挂载（重灌后折叠块不丢）。
-        if (chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length) {
+        // 该 assistant 行已由 chat_log 历史渲染——把此前摄取的时间线挂回
+        // 列表中对应位置的 assistant（回放段第 j 个 assistant ↔ 列表倒数
+        // 第 k-j 个）；列表 assistant 数不足（窗口滑出）时兜底挂到最后一条。
+        // 历史行已带 work 键（后端 2026-10-30 落盘）时保留行内完整版，
+        // 不被窗口有限的回放重建覆盖。
+        const w = chatStore.flushPendingWork()
+        if (w || chatStore.pendingDeliverables.length) {
           const assistants = chatStore.messages.filter((m: any) => m.role === 'assistant')
           const k = replayAssistants.length
           const target =
             assistants[assistants.length - (k - seen)] ?? assistants[assistants.length - 1]
           if (target) {
-            if (chatStore.pendingToolEvents.length) {
-              target.toolEvents = chatStore.flushPendingToolEvents()
-            }
-            if (chatStore.pendingRoundTexts.length) {
-              target.roundTexts = chatStore.flushPendingRoundTexts()
+            // 历史行已带 work 键（后端 2026-10-30 落盘）时保留行内完整版，
+            // 不被窗口有限的回放重建覆盖。
+            if (w && !target.work) {
+              target.work = w
             }
             // N5：环回放不携带交付物（未落环），但缓冲可能持有「push 已到、
             // 回复帧已由历史/回放渲染」场景的交付物——同位挂载防误挂下轮。
@@ -970,17 +945,9 @@ async function syncMissedChat() {
         if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
         continue
       }
-      // P1a：assistant 行落地时挂载本轮累积的工具事件（与 receive 分支
-      // 同语义；此前补拉路径 addMessage 无 flush——重连补进的回复永远
-      // 裸奔，内存 pending 工具事件挂不上）。R1：中间轮正文同轮收尾。
-      const toolEvents =
-        ev.role === 'assistant' && chatStore.pendingToolEvents.length
-          ? chatStore.flushPendingToolEvents()
-          : undefined
-      const roundTexts =
-        ev.role === 'assistant' && chatStore.pendingRoundTexts.length
-          ? chatStore.flushPendingRoundTexts()
-          : undefined
+      // 2026-10-30：assistant 行落地时挂载本 turn 活时间线（与 receive
+      // 分支同语义；此前补拉路径无 flush——重连补进的回复永远裸奔）。
+      const work = ev.role === 'assistant' ? chatStore.flushPendingWork() : undefined
       // N5：补拉路径的交付物同轮收尾——环内 chat 行不带 deliverables（未
       // 落环），但登记 push 已实时到达、回复帧丢失走补拉的场景下，缓冲里
       // 的交付物挂到补拉恢复的回复上（与 toolEvents 同语义）。
@@ -999,8 +966,7 @@ async function syncMissedChat() {
         sourceNode: ev.source_node,
         // A1：环 seq 存档（与 receive 分支同字段——历史快照到货后剔除用）。
         seq: typeof ev.seq === 'number' ? ev.seq : undefined,
-        toolEvents,
-        roundTexts,
+        work,
         deliverables,
       })
       if (ev.role === 'assistant') gotAssistant = true
@@ -1176,7 +1142,7 @@ function onWatchdog() {
   // 轮次活跃迹象 → 续期不重灌:审批挂起(全局单例 pendingApprovals,含
   // 其他会话的挂起——多等一个周期无害)或本轮工具事件未 flush(回复未到
   // 即未收尾,含 running/finished 残留——它们都要等回复到场才挂载清空)。
-  if (pendingApprovals.length > 0 || chatStore.pendingToolEvents.length > 0) {
+  if (pendingApprovals.length > 0 || chatStore.pendingWork !== null) {
     watchdogActiveExtends++
     if (watchdogActiveExtends <= MAX_WATCHDOG_ACTIVE_EXTENDS) {
       armWatchdog()
@@ -1470,6 +1436,7 @@ function handleHistoryResponse(data: any) {
         sourceNode: m.source_node,
         imageCount: Array.isArray(m.images) ? m.images.length : undefined,
         deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
+        work: m.work ?? undefined,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
@@ -1514,6 +1481,7 @@ function handleHistoryResponse(data: any) {
           sourceNode: m.source_node,
           imageCount: Array.isArray(m.images) ? m.images.length : undefined,
           deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
+          work: m.work ?? undefined,
         })),
       )
       chatStore.setBusy(effectiveSid.value, false)
@@ -1578,6 +1546,9 @@ function handleHistoryResponse(data: any) {
       sourceNode: m.source_node,
       imageCount: Array.isArray(m.images) ? m.images.length : undefined,
       deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
+      // Work 时间线（2026-10-30）：已完成任务的过程折叠块数据源——历史行
+      // `"work"` 键整行透传（后端整行透传链已验证，前端零转换）。
+      work: m.work ?? undefined,
     }))
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
     chatStore.prependHistory(
@@ -1776,6 +1747,27 @@ function detectPendingTurn() {
     pendingTurnTimer = window.setInterval(() => {
       void pollPendingTurn()
     }, PENDING_TURN_POLL_MS)
+    // 2026-10-30：起轮即拉一次 work_current——切走再切回的全量恢复不等待
+    // 首个 4s 轮询节拍（长任务中途切回立见完整过程视图）。
+    void refreshWorkCurrent(sid)
+  }
+}
+
+/** Work 时间线活查询（2026-10-30 ChatPanel 长任务时间线改造）：chat.work_current
+ *  整体快照 → adoptWorkSnapshot 接管 pending 缓冲。执行中 turn 的过程视图
+ *  数据源（后端活累加器无环 200 条滑窗限制），切走再切回/刷新页面的恢复
+ *  通道。三道闸：会话围栏（响应期间切走丢弃）、turn 仍悬置（回复已落地则
+ *  快照作废——迟到快照不得复活成 live 块盖在最终回复下面）、后端不可用/
+ *  旧版无命令静默（回落环回放兜底）。 */
+async function refreshWorkCurrent(sid: string | null) {
+  if (!sid) return
+  try {
+    const res = await request('chat', 'work_current', { session_id: sid })
+    if (effectiveSid.value !== sid) return
+    if (!pendingTurn.value && !streaming.value) return
+    chatStore.adoptWorkSnapshot(res?.work ?? null)
+  } catch {
+    /* 旧网关无 work_current / 网络抖动——静默，环回放兜底 */
   }
 }
 
@@ -1803,7 +1795,9 @@ async function pollPendingTurn() {
   // 重拉走 L2 增量补拉（chat.sync after_seq，append 语义）而不是
   // loadHistory——后者是 prepend 翻页通道，重拉全量会重复插行。assistant
   // 行落盘后 sync 返回该事件 append 到尾部，syncMissedChat 内部的
-  // detectPendingTurn 停轮清占位。
+  // detectPendingTurn 停轮清占位。同拍刷新 work 时间线快照（活累加器
+  // 全量，叙述轮推进可见）。
+  await refreshWorkCurrent(effectiveSid.value)
   await syncMissedChat()
   if (!busy) {
     pendingTurnDeadPolls += 1
@@ -2739,41 +2733,9 @@ onUnmounted(() => {
       <div v-for="(msg, idx) in chatStore.messages" :key="idx" class="message" :class="msg.role">
         <div class="message-avatar">{{ getAvatar(msg.role) }}</div>
         <div class="message-content">
-          <!-- M1b: 本条消息关联的工具调用卡片（>=3 个默认折叠为计数条）。 -->
-          <template v-if="msg.toolEvents && msg.toolEvents.length">
-            <button
-              v-if="msg.toolEvents.length >= 3"
-              class="tool-group-toggle"
-              type="button"
-              @click="toggleToolGroup(msg.toolEvents)"
-            >
-              <span class="tool-group-icon">⚒</span>
-              已运行 {{ msg.toolEvents.length }} 个工具
-              <span class="tool-group-caret">{{ toolGroupCollapsed(msg.toolEvents) ? '▸' : '▾' }}</span>
-            </button>
-            <div
-              v-if="msg.toolEvents.length < 3 || !toolGroupCollapsed(msg.toolEvents)"
-              class="tool-cards"
-            >
-              <ToolCallCard v-for="ev in msg.toolEvents" :key="ev.callId" :event="ev" />
-            </div>
-          </template>
-          <!-- R1: 本条消息关联的中间轮正文（多步任务的每轮过程叙述）。
-               最终回复已落地 → 默认折叠为计数条，点击展开回看。 -->
-          <template v-if="msg.roundTexts && msg.roundTexts.length">
-            <button
-              class="round-text-toggle"
-              type="button"
-              @click="msg.roundTextsOpen = !msg.roundTextsOpen"
-            >
-              <span class="tool-group-icon">💬</span>
-              过程 · {{ msg.roundTexts.length }} 段
-              <span class="tool-group-caret">{{ msg.roundTextsOpen ? '▾' : '▸' }}</span>
-            </button>
-            <div v-if="msg.roundTextsOpen" class="round-text-body">
-              <div v-for="(rt, ri) in msg.roundTexts" :key="ri" class="round-text">{{ rt.content }}</div>
-            </div>
-          </template>
+          <!-- 2026-10-30 Work 时间线：本 turn 的「叙述+工具」交错过程折叠块
+               （历史行 work 键 / 实时 flush 挂载双路；默认收起，点开回看）。 -->
+          <WorkTimelineBlock v-if="msg.work" :work="msg.work" />
           <div class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <div v-else class="message-text">{{ msg.content }}</div>
@@ -2827,45 +2789,22 @@ onUnmounted(() => {
       <!-- Typing indicator -->
       <!-- pendingTurn：切页恢复的「处理中」占位——历史尾部悬空 user 行时复用
            同款 typing-indicator（AI 仍在处理，assistant 行落盘后自动补上）。
-           P8：工具卡区与 typing 气泡解耦（外层条件并入 pendingToolEvents）——
-           多端场景下本端未发起轮次（另一端在跑工具）也能实时看到工具卡，
-           否则实时 tool_event 只进 store 不渲染，直到回复落地才闪现。 -->
+           2026-10-30：过程可见面 = WorkTimelineBlock live 态（实时 push 与
+           work_current 恢复共用 pendingWork 缓冲；新内容到达 grown 事件贴底）。 -->
       <div
-        v-if="streaming || pendingTurn || chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length || chatStore.pendingDeliverables.length"
+        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.pendingDeliverables.length"
         class="message assistant"
       >
         <div class="message-avatar">NB</div>
         <div class="message-content">
-          <!-- R1: 进行中轮次的中间正文（模型每轮过程叙述，实时展开显示；
-               回复落地时 flush 折叠挂载到该回复消息）。 -->
-          <template v-if="chatStore.pendingRoundTexts.length">
-            <div class="round-text-body">
-              <div
-                v-for="(rt, ri) in chatStore.pendingRoundTexts"
-                :key="ri"
-                class="round-text"
-              >{{ rt.content }}</div>
-            </div>
-          </template>
-          <!-- M1b: 进行中轮次的工具卡片（响应落地前实时可见）。 -->
-          <template v-if="chatStore.pendingToolEvents.length">
-            <button
-              v-if="chatStore.pendingToolEvents.length >= 3"
-              class="tool-group-toggle"
-              type="button"
-              @click="toggleToolGroup(chatStore.pendingToolEvents)"
-            >
-              <span class="tool-group-icon">⚒</span>
-              已运行 {{ chatStore.pendingToolEvents.length }} 个工具
-              <span class="tool-group-caret">{{ toolGroupCollapsed(chatStore.pendingToolEvents) ? '▸' : '▾' }}</span>
-            </button>
-            <div
-              v-if="chatStore.pendingToolEvents.length < 3 || !toolGroupCollapsed(chatStore.pendingToolEvents)"
-              class="tool-cards"
-            >
-              <ToolCallCard v-for="ev in chatStore.pendingToolEvents" :key="ev.callId" :event="ev" />
-            </div>
-          </template>
+          <!-- live 态时间线：执行中展开实时滚动；回复落地时随缓冲 flush
+               卸载，由落地消息上的折叠块接棒。 -->
+          <WorkTimelineBlock
+            v-if="chatStore.pendingWork"
+            :work="chatStore.pendingWork"
+            live
+            @grown="scrollToBottomIfNear()"
+          />
           <!-- N5: 登记已到、回复帧未到的交付物（push 先于回复帧的窗口期
                实时可见；回复落地时 flush 挂载，与 toolCards 同语义）。 -->
           <div v-if="chatStore.pendingDeliverables.length" class="deliverables">
@@ -3685,77 +3624,8 @@ onUnmounted(() => {
   cursor: wait;
 }
 
-/* M1b: 工具调用卡片组（消息上方 / typing 指示上方） */
-.tool-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-.tool-group-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin-bottom: 6px;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-elev, rgba(128, 128, 128, 0.06));
-  color: var(--text-muted);
-  font-size: var(--text-xs, 12px);
-  cursor: pointer;
-}
-.tool-group-toggle:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-.tool-group-icon {
-  font-size: 11px;
-}
-.tool-group-caret {
-  font-size: 10px;
-}
-
-/* R1（2026-09-21）：中间轮正文（模型每轮过程叙述）——折叠条复用
-   tool-group 同款胶囊风格；正文块浅字缩进，段间细分隔线。 */
-.round-text-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin-bottom: 6px;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-elev, rgba(128, 128, 128, 0.06));
-  color: var(--text-muted);
-  font-size: var(--text-xs, 12px);
-  cursor: pointer;
-}
-.round-text-toggle:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-.round-text-body {
-  margin-bottom: 6px;
-  padding: 6px 10px;
-  border-left: 2px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.round-text {
-  color: var(--text-muted);
-  font-size: var(--text-sm, 13px);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.round-text + .round-text {
-  padding-top: 6px;
-  border-top: 1px dashed var(--border);
-}
+/* 2026-10-30：旧 tool-cards、tool-group、round-text 系样式随模板拆除——
+   过程折叠块样式已随 WorkTimelineBlock.vue 组件内聚（scoped）。 */
 
 /* BUG 2026-09-21 ①：占位区限流重试进度文案（pendingTurn 态，切回会话后
    与实时帧同口径的过程可见面）。 */

@@ -37,6 +37,7 @@ impl ModuleHandler for ChatHandler {
             "sync",
             "queue_status",
             "spawn",
+            "work_current",
         ]
     }
 
@@ -143,6 +144,19 @@ impl ModuleHandler for ChatHandler {
                 "session_id": session_id,
                 "session_key": session_key,
                 "mode": mode.as_str(),
+            })));
+        }
+        // Work 时间线活查询（2026-10-30 ChatPanel 长任务时间线改造）：进行中
+        // turn 的「叙述+工具」交错时间线整体快照（直查 loop 内活累加器，无
+        // 环 200 条滑窗限制）——切走再切回 / 刷新页面时经 detectPendingTurn
+        // 拉取，全量恢复执行中任务的过程视图。无进行中 turn / 尚无中间轮 /
+        // 会话不匹配 = work:null（前端回落环回放）。
+        if cmd == "work_current" {
+            let work = agent_loop.current_work_timeline(&session_key);
+            return Ok(Some(serde_json::json!({
+                "session_id": session_id,
+                "session_key": session_key,
+                "work": work,
             })));
         }
         // P4（能力扩展 WS8）：steer/followUp 队列可观测——`chat.queue_status`

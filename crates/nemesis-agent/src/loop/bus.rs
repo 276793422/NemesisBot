@@ -147,6 +147,7 @@ impl AgentLoop {
             config,
             outbound_tx: Some(outbound_tx),
             registry: Some(registry),
+            work_recorder: crate::work_timeline::WorkRecorder::default(),
             state_manager: None,
             session_store: Some(session_store),
             chat_seq_lookup: parking_lot::RwLock::new(None),

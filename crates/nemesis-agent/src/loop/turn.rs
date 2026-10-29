@@ -474,6 +474,11 @@ impl AgentLoop {
                 );
             }
         }
+        // Work 时间线（2026-10-30 ChatPanel 长任务时间线改造）：turn 终局
+        // 取走累加器（直答无中间轮 = None → 行不带 work 键）。错误收尾的
+        // turn 也走到这里（最终行 = 错误通知）——部分时间线随行落盘，重载
+        // 后错误前的执行过程可辨（比"中断即全丢"多恢复一步）。
+        let work_timeline = self.work_recorder.finish();
         crate::chat_log::append_chat_log_meta(
             session_key,
             "assistant",
@@ -487,6 +492,7 @@ impl AgentLoop {
                 deliverables: &turn_deliverables,
                 checkpoint_turn: None, // E3：标记只在 user 行（turn 开始锚）
                 steer: false,
+                work: work_timeline.as_ref(),
             },
         );
 

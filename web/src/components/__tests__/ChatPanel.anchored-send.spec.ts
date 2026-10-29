@@ -111,10 +111,10 @@ describe('ChatPanel 无会话锚发送链（2026-09-26 BUG 回归）', () => {
     expect(useSessionStore().currentId).toBeNull()
     toolFrame('s-backend', 'c-b1')
     await flushPromises()
-    const evs = useChatStore().pendingToolEvents
-    expect(evs.length).toBe(1)
-    expect(evs[0].callId).toBe('c-b1')
-    expect(evs[0].tool).toBe('exec')
+    const tools = useChatStore().pendingWork?.rounds.flatMap(r => r.tools) ?? []
+    expect(tools.length).toBe(1)
+    expect(tools[0].call_id).toBe('c-b1')
+    expect(tools[0].tool).toBe('exec')
     w.unmount()
   })
 
@@ -123,11 +123,12 @@ describe('ChatPanel 无会话锚发送链（2026-09-26 BUG 回归）', () => {
     const w = await mountPanel()
     toolFrame('s2', 'c-other') // 异会话 → 丢弃
     await flushPromises()
-    expect(useChatStore().pendingToolEvents.length).toBe(0)
+    expect(useChatStore().pendingWork).toBeNull()
     toolFrame('s1', 'c-mine') // 同会话 → 接受
     await flushPromises()
-    expect(useChatStore().pendingToolEvents.length).toBe(1)
-    expect(useChatStore().pendingToolEvents[0].callId).toBe('c-mine')
+    const tools = useChatStore().pendingWork?.rounds.flatMap(r => r.tools) ?? []
+    expect(tools.length).toBe(1)
+    expect(tools[0].call_id).toBe('c-mine')
     w.unmount()
   })
 
@@ -139,11 +140,11 @@ describe('ChatPanel 无会话锚发送链（2026-09-26 BUG 回归）', () => {
     // 锚定完成（s-new），同域工具帧实时进 pending
     toolFrame('s-new', 'c-live')
     await flushPromises()
-    const evs = useChatStore().pendingToolEvents
-    expect(evs.length).toBe(1)
-    expect(evs[0].callId).toBe('c-live')
-    // 进行中反馈：typing 或工具卡区可见
-    expect(w.find('.typing-indicator').exists() || w.find('.tool-cards').exists()).toBe(true)
+    const tools = useChatStore().pendingWork?.rounds.flatMap(r => r.tools) ?? []
+    expect(tools.length).toBe(1)
+    expect(tools[0].call_id).toBe('c-live')
+    // 进行中反馈：typing 或 live work 块可见
+    expect(w.find('.typing-indicator').exists() || w.find('.wt-block.live').exists()).toBe(true)
     w.unmount()
   })
 })

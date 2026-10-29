@@ -111,6 +111,10 @@ impl AgentLoop {
 
         // 本 turn 可变状态收拢（§4.1 TurnState：12 跨轮局部变量；P2-4）。
         // 字段语义见类型定义处注释。
+        // Work 时间线（2026-10-30）：turn 开始重置累加器——上一 turn 的
+        // 残余（中断/续行未消费）就此丢弃；喂入点在 emit_round_text 与
+        // ToolEventHook（同点同源），取走在 turn.rs 最终回复落盘。
+        self.work_recorder.begin(&context.session_key);
         let mut st = TurnState {
             turns_used: 0,
             validation_failures: 0,

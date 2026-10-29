@@ -51,6 +51,7 @@ fn append_meta_writes_all_optional_fields() {
         steer: false,
         deliverables: &[],
         checkpoint_turn: Some(7),
+        work: None,
     };
     append_chat_log_meta(&key, "assistant", "done", &meta);
 

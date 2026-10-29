@@ -148,7 +148,7 @@ describe('ChatPanel 在飞响应的会话围栏（2026-09-24）', () => {
     await flushPromises()
 
     expect(chatStore.messages).toHaveLength(0)
-    expect(chatStore.pendingToolEvents).toHaveLength(0)
+    expect(chatStore.pendingWork).toBeNull()
     w.unmount()
   })
 })

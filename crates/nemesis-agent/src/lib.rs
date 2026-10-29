@@ -101,6 +101,9 @@ pub mod turn_guard;
 pub mod turn_wal;
 pub mod types;
 pub mod user_profile;
+/// Work 时间线（ChatPanel 长任务时间线改造）：turn 级「叙述+工具」累加器，
+/// 落盘随行 + `chat.work_current` 活查询（2026-10-30）。
+pub mod work_timeline;
 pub mod workspace_instructions;
 /// WS9/P22：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
 pub mod workspace_lease;

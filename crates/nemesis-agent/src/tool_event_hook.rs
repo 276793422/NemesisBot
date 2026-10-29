@@ -42,13 +42,19 @@ fn truncate_chars(s: &str, cap: usize) -> String {
 }
 
 /// 把工具调度事件发布到 broadcast 通道的观察 hook。
+/// 同时喂 Work 时间线累加器（2026-10-30，与 tx 发射同点同源——落盘真相源
+/// 与实时观察面同一发射点，无第二份转换逻辑；recorder 未 begin = 忽略）。
 pub struct ToolEventHook {
     tx: broadcast::Sender<AgentEvent>,
+    work: crate::work_timeline::WorkRecorder,
 }
 
 impl ToolEventHook {
-    pub fn new(tx: broadcast::Sender<AgentEvent>) -> Self {
-        Self { tx }
+    pub fn new(
+        tx: broadcast::Sender<AgentEvent>,
+        work: crate::work_timeline::WorkRecorder,
+    ) -> Self {
+        Self { tx, work }
     }
 }
 
@@ -76,6 +82,12 @@ impl ToolHook for ToolEventHook {
         let tool = call.name.clone();
 
         // 无订阅者时 send 返回 Err——观察者通道空转是常态，静默忽略。
+        self.work.tool_started(
+            &session_key,
+            &call_id,
+            &tool,
+            &truncate_chars(&call.arguments, ARGS_PREVIEW_CAP),
+        );
         let _ = self.tx.send(AgentEvent::ToolStarted {
             session_key: session_key.clone(),
             chat_id: chat_id.clone(),
@@ -94,6 +106,13 @@ impl ToolHook for ToolEventHook {
         // （拒绝不是成功，旧 contains 启发式把 ⛔ ESTOP 拒绝标成了 ok）。
         let ok = crate::checks_capture::classify_result(&tool, &result).unwrap_or(false);
 
+        self.work.tool_finished(
+            &session_key,
+            &call_id,
+            ok,
+            duration_ms,
+            &truncate_chars(&result, RESULT_PREVIEW_CAP),
+        );
         let _ = self.tx.send(AgentEvent::ToolFinished {
             session_key,
             chat_id,
