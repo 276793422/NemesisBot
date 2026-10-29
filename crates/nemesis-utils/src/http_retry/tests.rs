@@ -781,19 +781,25 @@ async fn test_sleep_with_cancel_sleep_completes_fast() {
 // or connection errors, with linear backoff (1s, 2s between tries).
 // These tests stand up a real MockServer and exercise the function
 // end-to-end against the reqwest client.
+// 本段随 do_request_with_retry_reqwest 挂 http feature 门控（BUG 2026-10-30）：
+// 无 feature 时整段 cfg 掉（reqwest 走 dev-deps 仍可编译，函数本身缺席）。
 // ============================================================
 
+#[cfg(feature = "http")]
 use wiremock::matchers::{method, path};
+#[cfg(feature = "http")]
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Build a fresh reqwest client. A short timeout is NOT used here because the
 /// retry path has real sleeps; we rely on the mock responding instantly.
+#[cfg(feature = "http")]
 fn retry_client() -> reqwest::Client {
     reqwest::Client::builder()
         .build()
         .expect("failed to build reqwest client")
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_succeeds_first_try() {
     let server = MockServer::start().await;
@@ -819,6 +825,7 @@ async fn test_reqwest_retry_succeeds_first_try() {
     server.verify().await;
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_then_success_after_503() {
     let server = MockServer::start().await;
@@ -852,6 +859,7 @@ async fn test_reqwest_retry_then_success_after_503() {
     assert_eq!(body, "ok");
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_then_success_after_429() {
     let server = MockServer::start().await;
@@ -882,6 +890,7 @@ async fn test_reqwest_retry_then_success_after_429() {
     assert_eq!(resp.status().as_u16(), 200);
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_all_attempts_fail_returns_last_response() {
     let server = MockServer::start().await;
@@ -907,6 +916,7 @@ async fn test_reqwest_retry_all_attempts_fail_returns_last_response() {
     assert_eq!(resp.status().as_u16(), 503);
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_non_retryable_status_not_retried() {
     let server = MockServer::start().await;
@@ -937,6 +947,7 @@ async fn test_reqwest_retry_non_retryable_status_not_retried() {
     server.verify().await;
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_non_retryable_400_not_retried() {
     let server = MockServer::start().await;
@@ -963,6 +974,7 @@ async fn test_reqwest_retry_non_retryable_400_not_retried() {
     server.verify().await;
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_connection_error_then_success() {
     let server = MockServer::start().await;
@@ -1000,6 +1012,7 @@ async fn test_reqwest_retry_connection_error_then_success() {
     assert_eq!(body, "back up");
 }
 
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_clonable_body_retries() {
     let server = MockServer::start().await;
@@ -1038,6 +1051,7 @@ async fn test_reqwest_retry_clonable_body_retries() {
 
 /// 流式 body（wrap_stream(bytes_stream())）不可 clone：Request::try_clone()
 /// 返回 None → 不发任何请求直接返回 None（last_resp 仍为初始 None）。
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_non_cloneable_streaming_body_returns_none() {
     let server = MockServer::start().await;
@@ -1070,6 +1084,7 @@ async fn test_reqwest_retry_non_cloneable_streaming_body_returns_none() {
 /// 绑一个临时端口后立刻释放 → 所有尝试都拿到 connection refused（Err 臂，
 /// 含最后一次的 `return Some(Err(e))`）。真实退避 sleep 共 ~3s（1s+2s），
 /// 与既有 503 重试测试同量级。
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn test_reqwest_retry_connection_error_returns_err_after_retries() {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

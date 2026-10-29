@@ -10,7 +10,10 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
-reqwest = { workspace = true }
+# guest 交叉构建守卫（BUG 2026-10-30）：reqwest（→rustls→ring 含 C 源码）改为可选依赖——
+# 只有启用 `http` feature 的消费方才把 reqwest 拉进依赖图；nemesis-guest（musl 静态 ELF，
+# 交叉构建本机无 musl C 工具链）保持零 feature 纯 Rust 依赖树。
+reqwest = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 # llm_error_class（T2a 下沉）：错误文本分类的正则模式（与 providers 侧同源 workspace 版本）。
 regex = { workspace = true }
@@ -22,10 +25,16 @@ rusqlite = { workspace = true, optional = true }
 
 [features]
 sqlite-preflight = ["dep:rusqlite"]
+# 同 sqlite-preflight 模式：只有启用 `http` 的消费方才把 reqwest（含 ring C 代码）
+# 拉进依赖图，未启用方零成本。
+http = ["dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+# dev-deps 不进消费方依赖图：llm_error_class 测试（真实 reqwest 连接失败钉 Display 形态）
+# 与 http_retry 的 reqwest 测试在无 `http` feature 时照常编译运行。
+reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 # wait_ready 测试的 start_paused 虚拟时钟（full 不含 test-util）。
 tokio = { workspace = true, features = ["test-util"] }

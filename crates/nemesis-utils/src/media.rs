@@ -1,4 +1,8 @@
 //! Media type detection, audio checks, filename sanitization, and file download utilities.
+// http 门控（BUG 2026-10-30）：模块核心是 reqwest 下载（download_file*）——未启用
+// `http` feature 的消费方（nemesis-guest musl 交叉构建）整个模块不编译。
+// detect_media_type 等纯函数当前零外部消费者，随模门控；将来有消费者再拆。
+#![cfg(feature = "http")]
 
 use std::collections::HashMap;
 use std::time::Duration;

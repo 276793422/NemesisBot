@@ -28,6 +28,9 @@ REM   3. sha256 manifest printed for each artifact
 REM   4. Host smoke: one v2 exec roundtrip through the host-native binary
 REM      (musl ELFs cannot execute on Windows - runtime parity is asserted by
 REM      build-guest.sh on Linux hosts)
+REM   5. Dependency-graph purity (BUG 2026-10-30): musl graph must not contain
+REM      C-code crates (ring / aws-lc-sys / libsqlite3-sys) - guest stays pure
+REM      Rust, keep nemesis-utils "http" feature off in the guest tree
 REM
 REM Exit: 0 = all green; 1 = any red light (build failures abort immediately)
 
@@ -67,6 +70,26 @@ for %%t in (%TARGETS%) do (
         echo   ok: %%t installed
     )
 )
+
+REM ============================================
+REM Step 1.5: musl dependency-graph purity tripwire (BUG 2026-10-30)
+REM ============================================
+REM Guest must stay pure Rust: any C-code crate (ring / aws-lc-sys / libsqlite3-sys)
+REM in the musl graph turns the cross build into a C-toolchain build and dies on
+REM machines without a musl cross gcc. `cargo tree -i X` exits 0 when X IS in the
+REM graph (metadata-only, no compilation) - so errorlevel 0 here = tripwire fired.
+echo.
+echo ===== musl dependency purity (C-dep tripwire) =====
+for %%p in (ring aws-lc-sys libsqlite3-sys) do (
+    cargo tree -p %PKG% --target x86_64-unknown-linux-musl -i %%p >nul 2>&1
+    if not errorlevel 1 (
+        echo !! guest musl graph contains C-code dep: %%p
+        echo    guest must stay pure Rust - do not enable nemesis-utils "http" feature
+        echo    or add C-backed crates to the guest dependency tree
+        exit /b 1
+    )
+)
+echo ok: no C-code dep ^(ring/aws-lc-sys/libsqlite3-sys^) in musl graph
 
 REM ============================================
 REM Step 2: host build + stdio smoke (cross-platform behavior baseline)
