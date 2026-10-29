@@ -690,6 +690,69 @@ async fn gate_timeout_removes_own_pending_entry() {
     assert!(!pending.resolve("perm-0", None));
 }
 
+/// BUG-20261029-177 回归锁：两个 session 的 gate 共享 server 级登记表，
+/// rpc_id 必须全局唯一。旧实现 per-gate 计数——两个 session 的首个审批
+/// 都铸 "perm-0"，后者 register 顶掉前者 oneshot sender（前者未经裁决即
+/// Denied），其失败清理臂 resolve(perm-0, None) 再误摘后者的条目把后者
+/// 也杀掉；用户对 A 卡的裁决还可能路由进 B 的在飞请求（审批语义被打破）。
+#[tokio::test]
+async fn concurrent_session_gates_do_not_collide_on_pending_registry() {
+    let (tx, mut rx) = mpsc::channel::<Value>(16);
+    let pending = Arc::new(PendingPermissions::new());
+    let gate_a = PermissionGate::new("s-a".to_string(), tx.clone(), Arc::clone(&pending));
+    let gate_b = PermissionGate::new("s-b".to_string(), tx, Arc::clone(&pending));
+
+    let fa = tokio::spawn(async move {
+        gate_a
+            .request("exec", "a", "HIGH", "why", Duration::from_secs(10))
+            .await
+    });
+    let fb = tokio::spawn(async move {
+        gate_b
+            .request("write_file", "b", "HIGH", "why", Duration::from_secs(10))
+            .await
+    });
+
+    // 读满两帧 = 两个 gate 都已 register——此刻两帧 id 必须互异。
+    let mut frames: Vec<(String, bool)> = Vec::new();
+    for _ in 0..2 {
+        let frame = rx.recv().await.expect("request frame");
+        let id = frame["id"].as_str().expect("rpc id 是字符串").to_string();
+        let is_write = frame["params"]["toolCall"]["title"].as_str() == Some("write_file");
+        frames.push((id, is_write));
+    }
+    assert_ne!(
+        frames[0].0, frames[1].0,
+        "两个 session 的并发审批 rpc_id 撞车——共享登记表互相覆盖"
+    );
+
+    // 各回各的裁决（a 拒、b 准）：路由必须按 id 精确命中在飞请求。
+    for (id, is_write) in &frames {
+        let option = if *is_write {
+            "allow_once"
+        } else {
+            "reject_once"
+        };
+        assert!(
+            pending.resolve(
+                id,
+                Some(&json!({"outcome": {"outcome": "selected", "optionId": option}})),
+            ),
+            "裁决必须命中在飞请求（id={id}）"
+        );
+    }
+    assert_eq!(
+        fa.await.unwrap(),
+        PermissionOutcome::Denied,
+        "exec 卡：reject_once 路由回 A"
+    );
+    assert_eq!(
+        fb.await.unwrap(),
+        PermissionOutcome::Allowed,
+        "write 卡：allow_once 路由回 B（旧实现被 A 的清理臂误杀成 Denied）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Coverage 追加（2026-09-24）：版本协商失配 / mcpServers 忽略 / 工厂失败 /
 // prompt 缺参与空块 / cancel 静默 / 空行跳过 / EOF 收尾 / 生产装配

@@ -12,9 +12,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 进程级开关：`security.sanitize_child_env`（默认开）。装配期由
-/// security_setup 按配置同步；三处 spawn 点（agent loop 的 exec/run_checks
-/// 共用闸 + nemesis-tools shell/async_shell）直接查本静态——免逐工具穿
-/// config（工具结构体无 config 通路）。
+/// security_setup 按配置同步；全部 LLM 驱动 exec 类 spawn 点（agent loop
+/// 的 exec/run_checks 共用闸 + nemesis-tools shell/async_shell +
+/// run_script/exec_async/git + background_start 平台 shell 等）直接查本
+/// 静态——免逐工具穿 config（工具结构体无 config 通路）。**覆盖面靠
+/// 家族清点维护，不数固定个数**（BUG-20261029-178：曾因「三处」计数
+/// 口径漂移漏接 4 个同族 spawn 点；新增 spawn 点必须显式接闸）。
 static CHILD_ENV_SANITIZE_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// 装配期同步开关（security_setup.rs 构造期调用）。

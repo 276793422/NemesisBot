@@ -516,3 +516,36 @@ async fn background_kill_ladder_terminates_stubborn_job_end_to_end() {
     assert_eq!(result["killed"].as_bool(), Some(true));
     assert_eq!(result["success"].as_bool(), Some(false));
 }
+
+/// BUG-20261029-178 回归锁：background_start 的平台 shell 与 ExecTool
+/// 「同语义」（本模块注释原文），语义含 T4 环境凭据剥离——此前漏接。
+/// 敏感探针变量必须剥、非敏感探针必须可见（探针管道自证）。
+#[tokio::test]
+async fn build_platform_shell_strips_sensitive_env() {
+    nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(true);
+    unsafe { std::env::set_var("NB_BUG178_PROBE_KEY", "sensitive-marker") };
+    unsafe { std::env::set_var("NB_BUG178_PROBE_PLAIN", "plain-marker") };
+    #[cfg(windows)]
+    let mut c =
+        build_platform_shell("echo SENS=%NB_BUG178_PROBE_KEY% PLAIN=%NB_BUG178_PROBE_PLAIN%");
+    #[cfg(not(windows))]
+    let mut c = build_platform_shell("echo SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN");
+    c.stdout(std::process::Stdio::piped());
+    let out = c
+        .spawn()
+        .expect("spawn ok")
+        .wait_with_output()
+        .await
+        .expect("wait ok");
+    unsafe { std::env::remove_var("NB_BUG178_PROBE_KEY") };
+    unsafe { std::env::remove_var("NB_BUG178_PROBE_PLAIN") };
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        text.contains("PLAIN=plain-marker"),
+        "非敏感变量必须原样可见（探针管道自证）: {text}"
+    );
+    assert!(
+        !text.contains("sensitive-marker"),
+        "敏感变量必须被 T4 剥离，不得进入后台命令环境: {text}"
+    );
+}

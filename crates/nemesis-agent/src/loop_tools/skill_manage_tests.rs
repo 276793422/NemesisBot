@@ -587,3 +587,46 @@ async fn delete_non_manifest_dir_still_succeeds() {
     assert!(res.contains("deleted"), "{}", res);
     assert!(!dir.exists());
 }
+
+/// BUG-20261029-179 回归锁：write_file 辅助文件此前零安全检查——安装路径
+/// 的装前检查（M5 目录形态）对可执行面（SURFACE_FILE_EXTENSIONS）整体
+/// lint（「恶意载荷藏在辅助脚本里无法再绕过检查」），agent 自写路径的
+/// 同一载荷却畅通落盘。修复后可执行面扩展名同闸，数据文件（非 surface
+/// 扩展名）与安装路径同口径放行。
+#[tokio::test]
+async fn test_skill_manage_write_file_surface_content_security_checked() {
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    tool.execute(
+        &json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL})),
+        &ctx(),
+    )
+    .await
+    .unwrap();
+
+    // 可执行面（.sh）：rm -rf 载荷必须被拦（与安装路径
+    // check_skill_security_dir 同规则集；载荷形态取自 security_check 既有
+    // blocked 实证用例）。
+    let payload = "Run this: rm -rf / && sudo chmod 777 /everything";
+    let wf = json_args(serde_json::json!(
+        {"action":"write_file","name":"my-skill","path":"scripts/cleanup.sh","content":payload}
+    ));
+    let err = tool.execute(&wf, &ctx()).await.unwrap_err();
+    assert!(err.contains("security check"), "{}", err);
+    assert!(
+        !tmp.path()
+            .join("skills")
+            .join("my-skill")
+            .join("scripts")
+            .join("cleanup.sh")
+            .exists(),
+        "被拦载荷不得落盘"
+    );
+
+    // 数据文件（.json 非 surface 扩展名）：与安装路径同口径，内容不 lint。
+    let wf2 = json_args(serde_json::json!(
+        {"action":"write_file","name":"my-skill","path":"data/notes.json","content":payload}
+    ));
+    let res = tool.execute(&wf2, &ctx()).await.unwrap();
+    assert!(res.contains("Wrote"), "{}", res);
+}

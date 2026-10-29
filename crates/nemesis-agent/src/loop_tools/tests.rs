@@ -5078,3 +5078,158 @@ async fn workflow_create_tool_surfaces_lint_warnings_in_hints() {
     assert!(warning_hints[0].contains("max_tokens=200"));
     assert!(warning_hints.iter().any(|h| h.contains("run_now")));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261029-178 回归锁——T4 环境凭据剥离闸的覆盖面（R235 工具面一致性
+// 审计）：exec/run_checks 经 make_piped_shell_command 接闸，但同族 LLM 驱动
+// exec 类 spawn 点 run_script / exec_async / git（background_start 见
+// background_registry/tests.rs）此前漏接——「单一泄漏闸」名不副实，脚本里
+// printenv 即可读出 agent 进程继承的凭据（T4 当初封堵的正是这条通道）。
+// 行为级验证：敏感探针变量必须对子进程不可见；非敏感探针变量必须原样可见
+// （证明探针管道本身工作，剥除不是全局误伤）。
+// ---------------------------------------------------------------------------
+
+/// 探针变量守卫：构造期置位 + 开关钉 true，Drop 期撤销（测试 panic 也不
+/// 残留进程级环境）。变量名带 KEY（命中黑名单）/ 不带（对照组）。
+struct EnvProbeGuard;
+impl EnvProbeGuard {
+    fn set() -> Self {
+        nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(true);
+        unsafe { std::env::set_var("NB_BUG178_PROBE_KEY", "sensitive-marker") };
+        unsafe { std::env::set_var("NB_BUG178_PROBE_PLAIN", "plain-marker") };
+        Self
+    }
+}
+impl Drop for EnvProbeGuard {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NB_BUG178_PROBE_KEY") };
+        unsafe { std::env::remove_var("NB_BUG178_PROBE_PLAIN") };
+    }
+}
+
+#[tokio::test]
+async fn run_script_strips_sensitive_env_from_child() {
+    let _probe = EnvProbeGuard::set();
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
+    // 平台解释器惯例同 run_script_returns_structured_output（Windows 上
+    // 裸 bash 会命中 System32 的 WSL 空壳）。
+    #[cfg(windows)]
+    let args = r#"{"interpreter":"cmd","flag":"/C","script":"echo SENS=%NB_BUG178_PROBE_KEY% PLAIN=%NB_BUG178_PROBE_PLAIN%"}"#;
+    #[cfg(not(windows))]
+    let args = r#"{"interpreter":"bash","flag":"-c","script":"echo SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN"}"#;
+    let result = tool
+        .execute(args, &script_ctx())
+        .await
+        .expect("spawn should succeed");
+    assert!(
+        result.contains("PLAIN=plain-marker"),
+        "非敏感变量必须原样可见（探针管道自证）: {result}"
+    );
+    assert!(
+        !result.contains("sensitive-marker"),
+        "敏感变量必须被 T4 剥离，不得进入子进程环境: {result}"
+    );
+}
+
+#[tokio::test]
+async fn exec_async_strips_sensitive_env_from_child() {
+    let _probe = EnvProbeGuard::set();
+    let tmp = TempDir::new().unwrap();
+    let out_path = tmp.path().join("bug178_async_probe.txt");
+    let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
+    // exec_async 不读输出 ≠ 不漏——子进程命令可自行把环境落盘（T4 威胁
+    // 模型内的标准走法），故用重定向文件做行为探针。
+    #[cfg(windows)]
+    let command =
+        "echo SENS=%NB_BUG178_PROBE_KEY% PLAIN=%NB_BUG178_PROBE_PLAIN% > bug178_async_probe.txt";
+    #[cfg(not(windows))]
+    let command =
+        "echo SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN > bug178_async_probe.txt";
+    let args = serde_json::json!({
+        "command": command,
+        "working_dir": tmp.path().to_string_lossy(),
+        "wait_seconds": 3,
+    })
+    .to_string();
+    tool.execute(&args, &script_ctx())
+        .await
+        .expect("async start should succeed");
+    // 异步子进程落盘需要一点时间；轮询上限 ~5s。
+    let mut content = String::new();
+    for _ in 0..25 {
+        if let Ok(c) = std::fs::read_to_string(&out_path) {
+            content = c;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(
+        content.contains("PLAIN=plain-marker"),
+        "非敏感变量必须原样可见（探针管道自证）: {content:?}"
+    );
+    assert!(
+        !content.contains("sensitive-marker"),
+        "敏感变量必须被 T4 剥离，不得经子进程落盘: {content:?}"
+    );
+}
+
+#[tokio::test]
+async fn git_tool_commit_hook_does_not_see_sensitive_env() {
+    let tmp = TempDir::new().unwrap();
+    let git = |args: &[&str]| -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("git should be spawnable")
+    };
+    match git(&["init", "-q"]) {
+        o if o.status.success() => {}
+        // Git binary missing / init failed: skip rather than fail（同既有
+        // GitTool fresh-repo 用例惯例）。
+        _ => {
+            eprintln!("skipping: git init failed in tempdir");
+            return;
+        }
+    }
+    for [k, v] in [["user.name", "t"], ["user.email", "t@example.com"]] {
+        let _ = git(&["config", k, v]);
+    }
+    // pre-commit 钩子（cwd = 工作树根）：把可见环境写进探针文件。仓库
+    // 内容模型可控 → 钩子是 git 链路上的任意代码执行点，必须同受 T4 闸。
+    let hook = tmp.path().join(".git").join("hooks").join("pre-commit");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\necho \"SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN\" > hook_env.txt\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
+    assert!(
+        git(&["add", "a.txt"]).status.success(),
+        "git add must succeed"
+    );
+
+    let _probe = EnvProbeGuard::set();
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+    tool.execute(
+        r#"{"action":"commit","message":"bug178 probe"}"#,
+        &script_ctx(),
+    )
+    .await
+    .expect("commit with passing hook must succeed");
+    let content = std::fs::read_to_string(tmp.path().join("hook_env.txt"))
+        .expect("pre-commit hook must have run");
+    assert!(
+        content.contains("PLAIN=plain-marker"),
+        "非敏感变量必须可见（钩子管道自证）: {content:?}"
+    );
+    assert!(
+        !content.contains("sensitive-marker"),
+        "git 子进程链（钩子）不得看到敏感环境变量: {content:?}"
+    );
+}

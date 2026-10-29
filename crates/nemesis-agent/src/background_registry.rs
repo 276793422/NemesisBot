@@ -477,20 +477,28 @@ pub(crate) fn spawn_pump(
 ///   服务形态运行时尤其如此；cc_hooks 同款旗标）。
 pub(crate) fn build_platform_shell(command: &str) -> tokio::process::Command {
     #[cfg(target_os = "windows")]
-    {
+    let mut c = {
         let mut c = tokio::process::Command::new("cmd");
         c.raw_arg(format!("/C {}", command));
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         c
-    }
+    };
     #[cfg(not(target_os = "windows"))]
-    {
+    let mut c = {
         let mut c = tokio::process::Command::new("sh");
         c.arg("-c").arg(command);
         // tokio Command 自带 process_group（镜像 std API），无需 CommandExt。
         c.process_group(0);
         c
+    };
+    // T4 环境凭据剥离（BUG-20261029-178）：本函数自注释「与 ExecTool /
+    // AsyncExecTool 同语义」——语义含 T4 剥离，此前漏接（后台命令与前台
+    // exec 同为 LLM 驱动 spawn，echo 环境即可读凭据）。
+    let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
+    if stripped > 0 {
+        debug!("[Background] env sanitized: {stripped} vars stripped");
     }
+    c
 }
 
 /// 停止阶梯第一段：优雅停。

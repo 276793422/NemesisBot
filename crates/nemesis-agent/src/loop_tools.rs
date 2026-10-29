@@ -1715,7 +1715,10 @@ async fn read_shell_output(
 /// T4（扩展计划 D2a）：spawn 前剥继承环境中的凭据类变量（*KEY*/TOKEN/
 /// SECRET/PASSWORD/CREDENTIAL/NEMESISBOT_*）——`exec` 里 echo 环境变量
 /// 即可读出 agent 进程凭据的缺口在此封堵；`security.sanitize_child_env`
-/// 可关（默认开）。ExecTool 与 run_checks 共用本函数 = 单一泄漏闸。
+/// 可关（默认开）。本函数是 exec/run_checks 的接闸点；T4 是**家族闸**
+/// 不是单一闸——所有 LLM 驱动 exec 类 spawn 点（run_script/exec_async/
+/// git/background_start 等）各自接同一闸（BUG-20261029-178：新 spawn 点
+/// 必须显式接闸，覆盖率靠家族清点不靠单一入口）。
 fn make_piped_shell_command(command: &str) -> tokio::process::Command {
     #[cfg(target_os = "windows")]
     {
@@ -2358,6 +2361,13 @@ impl Tool for RunScriptTool {
         cmd.arg(script)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
+        // T4 环境凭据剥离（BUG-20261029-178）：run_script 与 exec 同为 LLM
+        // 驱动的 exec 类 spawn——脚本里 printenv 即可读出 agent 进程继承的
+        // 凭据，同闸必须同源（`security.sanitize_child_env` 总开关）。
+        let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut cmd);
+        if stripped > 0 {
+            debug!("[Tools] env sanitized: {stripped} vars stripped");
+        }
         // 树杀前提（2026-10-15，Unix；同 make_piped_shell_command）：子进程
         // 自成一进程组（pgid == pid），超时收尸的 tree_kill 才能一锅端
         // 脚本派生的工作进程。
@@ -2563,6 +2573,12 @@ impl Tool for AsyncExecTool {
                 if let Some(f) = console_creation_flags() {
                     c.creation_flags(f);
                 }
+            }
+            // T4 环境凭据剥离（BUG-20261029-178）：exec_async 不读输出 ≠
+            // 不漏——子进程命令可自行把环境落盘/外传，同闸必须同源。
+            let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
+            if stripped > 0 {
+                debug!("[Tools] env sanitized: {stripped} vars stripped");
             }
             if ShellOutputCapture::is_restricted() {
                 c.stdin(std::process::Stdio::null())
@@ -5492,6 +5508,20 @@ impl SkillManageTool {
             .ok_or_else(|| "'content' is required for write_file".to_string())?;
         let overwrite = v["overwrite"].as_bool().unwrap_or(false);
         let target = resolve_within(skill_dir, path)?;
+        // 装前安全检查同闸（BUG-20261029-179）：安装路径（M5 目录形态）
+        // 对可执行面（SURFACE_FILE_EXTENSIONS）整体 lint——设计原文「恶意
+        // 载荷藏在辅助脚本里无法再绕过检查」；agent 自写路径（write_file）
+        // 此前零检查，同一载荷即可绕过。扩展名判定与安装路径同源（单一
+        // 真相源），数据文件（非 surface 扩展名）与安装路径同口径放行。
+        if nemesis_skills::lint::is_surface_file(&target) {
+            let check = nemesis_skills::security_check::check_skill_security(content, name, "");
+            if check.blocked {
+                return Err(format!(
+                    "file content blocked by security check: {}",
+                    check.block_reason
+                ));
+            }
+        }
         if target.exists() && !overwrite {
             return Err(format!(
                 "file already exists at {}. Set overwrite=true.",
@@ -6497,6 +6527,12 @@ impl GitTool {
     fn run_git(&self, args: &[&str]) -> Result<GitOutput, String> {
         let mut c = std::process::Command::new("git");
         c.current_dir(&self.workspace).args(args);
+        // T4 环境凭据剥离（BUG-20261029-178）：git 子进程链会经钩子执行
+        // 任意仓库脚本（模型可控内容），钩子进程不得看到继承的凭据变量。
+        let stripped = nemesis_utils::env_sanitize::sanitize_command(&mut c);
+        if stripped > 0 {
+            debug!("[Tools] env sanitized: {stripped} vars stripped");
+        }
         #[cfg(target_os = "windows")]
         {
             if let Some(f) = console_creation_flags() {

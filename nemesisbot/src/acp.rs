@@ -241,11 +241,26 @@ pub enum PermissionOutcome {
 #[derive(Default)]
 pub struct PendingPermissions {
     inner: Mutex<HashMap<String, oneshot::Sender<PermissionOutcome>>>,
+    /// 全局 rpc_id 计数（BUG-20261029-177）：id 铸造收编到登记表本体——
+    /// per-gate 计数在共享登记表上撞车（两个 session 的首个审批同为
+    /// "perm-0"，insert 互相覆盖 oneshot sender）。
+    next_id: AtomicU64,
 }
 
 impl PendingPermissions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 铸造全局唯一 rpc_id。id 由登记表统一发放：铸造器与登记表同体，
+    /// 结构上杜绝跨 gate 撞车（BUG-20261029-177：旧实现每 gate 各自从
+    /// "perm-0" 起计数，两个 session 的并发审批在共享登记表上互相覆盖——
+    /// 前者的 oneshot sender 被 insert 顶掉 = 未经裁决即 Denied，其失败
+    /// 清理臂再误摘后者的条目；用户对 A 卡的裁决也可能路由进 B 的在飞
+    /// 请求）。同会话审批被 turn_lock 串行化不受影响；跨 session 并发
+    /// （ACP 进程多 session 是协议常规形态）必撞。
+    pub fn mint_id(&self) -> String {
+        format!("perm-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
     // 同上：security off 时仅 PermissionGate::request 与测试使用。
@@ -284,7 +299,6 @@ impl PendingPermissions {
 #[allow(dead_code)]
 pub struct PermissionGate {
     session_id: String,
-    next_id: AtomicU64,
     outbound: mpsc::Sender<Value>,
     pending: Arc<PendingPermissions>,
 }
@@ -297,7 +311,6 @@ impl PermissionGate {
     ) -> Self {
         Self {
             session_id,
-            next_id: AtomicU64::new(0),
             outbound,
             pending,
         }
@@ -314,7 +327,7 @@ impl PermissionGate {
         reason: &str,
         timeout: Duration,
     ) -> PermissionOutcome {
-        let rpc_id = format!("perm-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let rpc_id = self.pending.mint_id();
         let rx = self.pending.register(&rpc_id);
         let params = json!({
             "sessionId": self.session_id,
