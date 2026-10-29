@@ -61,15 +61,25 @@ fn extract_usage(u: &serde_json::Value) -> UsageInfo {
 /// 块内全部 data: 行载荷（按行保序）。SSE 规范 `data` 字段名后的空格
 /// 可选——两种形态都识别；此前只认 `"data: "` 带空格形态，无空格上游
 /// （合规服务存在）事件全被跳过 → 流式回复静默变空。
-fn data_payloads(block: &str) -> Vec<&str> {
-    block
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            line.strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-        })
-        .collect()
+/// SSE 事件块的 data 载荷：块内全部 `data:` 行按 SSE 规范拼接为单一载荷
+/// （每行值后接换行；单行形态与逐行解析字节等价）。逐行独立解析会把按行
+/// 拆分发送的 JSON（pretty-print SSE 形态）拆成多个不完整载荷——from_str
+/// 失败 continue **静默丢内容**；anthropic/codex lane 同位逻辑本就是拼接
+/// 语义，本函数收口三 lane 一致。返回 None = 无 data 行（心跳/注释块）。
+/// 用 `for data in data_payload(&block)` 消费（Option IntoIterator 惯用法）。
+fn data_payload(block: &str) -> Option<String> {
+    let mut data = String::new();
+    for line in block.lines() {
+        let line = line.trim();
+        if let Some(rest) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            data.push_str(rest);
+            data.push('\n');
+        }
+    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 /// HTTP provider configuration.
@@ -604,7 +614,7 @@ impl HttpProvider {
                     let block = buffer[..pos].to_string();
                     buffer = buffer[pos + sep..].to_string();
 
-                    for data in data_payloads(&block) {
+                    for data in data_payload(&block).into_iter() {
                         if data.trim() == "[DONE]" {
                             if finish_emitted {
                                 // 正常收尾（OpenAI 语义 finish → [DONE]）：终态
@@ -661,7 +671,7 @@ impl HttpProvider {
                             return;
                         }
 
-                        let parsed: serde_json::Value = match serde_json::from_str(data) {
+                        let parsed: serde_json::Value = match serde_json::from_str(&data) {
                             Ok(v) => v,
                             Err(_) => continue,
                         };

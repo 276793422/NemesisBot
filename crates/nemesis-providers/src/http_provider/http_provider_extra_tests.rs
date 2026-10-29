@@ -719,6 +719,49 @@ async fn test_chat_stream_success_content_done() {
     assert!(got_usage);
 }
 
+/// BUG-20261029-191 红证：SSE 事件块内多行 `data:` 行按规范拼接为单一载荷
+/// （W3C SSE；anthropic/codex lane 同语义）。此前逐行独立解析会把按行拆分
+/// 发送的 JSON（pretty-print SSE 形态）拆成多个不完整载荷——from_str 失败
+/// continue 静默丢全部内容。
+#[tokio::test]
+async fn test_chat_stream_multiline_data_event_content_survives() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // 第一个事件的 JSON 按行拆分（3 行 data:）；第二个事件单行正常形态对照。
+    let sse_body = concat!(
+        "data: {\n",
+        "data: \"choices\":[{\"delta\":{\"content\":\"Split\"}}]\n",
+        "data: }\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut received_content = String::new();
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => received_content.push_str(&chunk.delta),
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(
+        received_content, "Split",
+        "multi-line data event content must survive (BUG-20261029-191)"
+    );
+}
+
 #[tokio::test]
 async fn test_chat_stream_done_without_prior_content() {
     let server = MockServer::start().await;

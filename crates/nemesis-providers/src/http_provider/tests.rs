@@ -4,31 +4,57 @@ use super::*;
 /// 只认 `"data: "` 带空格形态，无空格上游（`data:{...}`，合规服务存在）
 /// 事件全被跳过 → 流式回复静默变空。anthropic lane 双臂 / codex lane
 /// strip_prefix 单臂早已兼容，本 lane 是唯一缺口。
+/// BUG-20261029-191 起多行 `data:` 行按规范拼接为单一载荷（每行值后接
+/// 换行，serde_json 容忍）；旧行为逐行独立解析会把按行拆分的 JSON 拆碎。
 #[test]
-fn data_payloads_recognizes_both_space_forms() {
+fn data_payload_recognizes_both_space_forms() {
     // 带空格（主流形态）。
-    assert_eq!(data_payloads("data: {\"a\":1}"), vec![r#"{"a":1}"#]);
-    // 无空格（规范允许；回归目标形态）。
-    assert_eq!(data_payloads("data:{\"a\":1}"), vec![r#"{"a":1}"#]);
-    // 混排：两种形态同块共存，按行保序。
     assert_eq!(
-        data_payloads("data: {\"i\":0}\ndata:{\"i\":1}"),
-        vec![r#"{"i":0}"#, r#"{"i":1}"#]
+        data_payload("data: {\"a\":1}"),
+        Some(r#"{"a":1}"#.to_string() + "\n")
+    );
+    // 无空格（规范允许；回归目标形态）。
+    assert_eq!(
+        data_payload("data:{\"a\":1}"),
+        Some(r#"{"a":1}"#.to_string() + "\n")
+    );
+    // 混排：两种形态同块共存，按行保序拼接为单一载荷。
+    assert_eq!(
+        data_payload("data: {\"i\":0}\ndata:{\"i\":1}"),
+        Some("{\"i\":0}\n{\"i\":1}\n".to_string())
     );
     // [DONE] 无空格形态同样可达 trim 判定。
-    assert_eq!(data_payloads("data:[DONE]"), vec!["[DONE]"]);
+    assert_eq!(data_payload("data:[DONE]"), Some("[DONE]\n".to_string()));
 }
 
 #[test]
-fn data_payloads_ignores_non_data_lines() {
+fn data_payload_ignores_non_data_lines() {
     // event:/id:/注释行/空行不产载荷；行尾 CRLF 由 trim 消化。
-    assert!(data_payloads("event: message\nid: 1\n: keep-alive\n\n").is_empty());
     assert_eq!(
-        data_payloads("event: delta\r\ndata: {\"x\":1}\r\n"),
-        vec![r#"{"x":1}"#]
+        data_payload("event: message\nid: 1\n: keep-alive\n\n"),
+        None
+    );
+    assert_eq!(
+        data_payload("event: delta\r\ndata: {\"x\":1}\r\n"),
+        Some(r#"{"x":1}"#.to_string() + "\n")
     );
     // 多空格形态：strip 掉一个约定空格后交下游 serde（容忍前导空白）。
-    assert_eq!(data_payloads("data:  {\"a\":1}"), vec![r#" {"a":1}"#]);
+    assert_eq!(
+        data_payload("data:  {\"a\":1}"),
+        Some(r#" {"a":1}"#.to_string() + "\n")
+    );
+}
+
+/// BUG-20261029-191 功能钉：按行拆分发送的 JSON（pretty-print SSE 形态）
+/// 拼接后可完整解析——旧行为逐行独立解析，每行 from_str 失败 continue
+/// 静默丢全部内容。
+#[test]
+fn data_payload_joins_multiline_json() {
+    let block = "data: {\ndata: \"choices\":[{\"delta\":{\"content\":\"hi\"}}]\ndata: }";
+    let payload = data_payload(block).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&payload).expect("multi-line data must reassemble into valid JSON");
+    assert_eq!(parsed["choices"][0]["delta"]["content"], "hi");
 }
 
 #[test]
