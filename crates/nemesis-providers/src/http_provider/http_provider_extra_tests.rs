@@ -1886,3 +1886,85 @@ async fn test_chat_stream_trailing_usage_after_tool_calls() {
     let usage = resp.usage.expect("usage captured after tool_calls finish");
     assert_eq!(usage.total_tokens, 16);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261029-153 回归锁：非流式 200 body 读传输失败 ≠ Format
+// ---------------------------------------------------------------------------
+
+/// BUG-20261029-153：非流式 200 响应 body 读取传输失败（连接中途断开）必须
+/// 诚实上抛 transport_error（Unknown + "connect error" 前缀，可重试），而非
+/// 旧 resp.json() 一步混合传输/解析两类错误伪装 Format（不可重试，fallback
+/// 链/轮转直接终止）。可读的坏 JSON 仍走 from_str→Format（应用层），见既有
+/// malformed-json 测试——本测只锁传输失败这一族。
+#[tokio::test]
+async fn test_chat_body_read_error_is_retriable_connect_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            // 必须先读掉整个请求再 close：Windows 下带未读数据 close 会发
+            // RST（把客户端尚未读取的响应头一起冲掉），错误就会在 send()
+            // 面前浮现而非 body 读路径——新旧代码在 send() 都映射
+            // transport_error，红证区分度归零（实测踩坑）。读完 → 写半截
+            // 响应 → drop = 干净 FIN，EOF 落在 Content-Length 中途。
+            drain_request(&mut sock);
+            use std::io::Write;
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n{\"choices\":[{\"message\":{\"content\":\"par",
+            );
+        }
+    });
+
+    let provider = HttpProvider::new(basic_config(format!("http://{}", addr)));
+    let err = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match &err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(
+                message.starts_with("connect error"),
+                "body read error must map to honest connect error, got: {message}"
+            );
+            assert!(message.contains("gpt-4"), "model in message: {message}");
+        }
+        other => panic!("expected Unknown connect error, got {:?}", other),
+    }
+    assert!(
+        err.is_retriable(),
+        "fallback chain must keep rotating on body-read transport failure"
+    );
+}
+
+/// 读满请求（头 + Content-Length 声明的 body 字节），使 close 成为干净 FIN。
+fn drain_request(sock: &mut std::net::TcpStream) {
+    use std::io::Read;
+    let mut acc = Vec::new();
+    let mut buf = [0u8; 1024];
+    let header_end = loop {
+        match sock.read(&mut buf) {
+            Ok(0) | Err(_) => break acc.len(),
+            Ok(n) => {
+                acc.extend_from_slice(&buf[..n]);
+                if let Some(p) = acc.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break p + 4;
+                }
+            }
+        }
+    };
+    let content_len: usize = std::str::from_utf8(&acc[..header_end])
+        .ok()
+        .and_then(|h| {
+            h.to_ascii_lowercase().lines().find_map(|l| {
+                l.strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse().ok())
+            })
+        })
+        .unwrap_or(0);
+    while acc.len() < header_end + content_len {
+        match sock.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => acc.extend_from_slice(&buf[..n]),
+        }
+    }
+}

@@ -121,7 +121,12 @@ impl LLMProvider for GitHubCopilotProvider {
             ));
         }
 
-        let content: String = resp.text().await.unwrap_or_default();
+        // body 读传输失败诚实上抛（BUG-20261029-153 同族）：unwrap_or_default
+        // 会把断连伪装成「空内容 + 成功」假成功（finish_reason=stop、零报错）
+        // ——比伪装 Format 更糟，agent 拿到空回复无从重试。
+        let content: String = resp.text().await.map_err(|e| {
+            crate::failover::transport_error("github-copilot", &self.config.default_model, &e)
+        })?;
 
         Ok(LLMResponse {
             content,

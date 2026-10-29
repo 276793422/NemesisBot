@@ -85,7 +85,26 @@ pub async fn generate_image(
         })?;
 
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
+    // body 读传输失败诚实报（BUG-20261029-153 同族）：unwrap_or_default 会把
+    // 200 路径断连伪装成「图像响应非 JSON」误导诊断（去查根本不存在的格式
+    // 问题）、非 200 路径详情丢失。读失败按连接中断/超时报，状态码非成功
+    // 时一并保留（诊断不丢现场）。
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            let reason = if e.is_timeout() {
+                "超时"
+            } else {
+                "连接中断"
+            };
+            if status.is_success() {
+                return Err(format!("图像响应 body 读取失败（{reason}）: {e}"));
+            }
+            return Err(format!(
+                "图像端点 HTTP {status}，body 读取失败（{reason}）: {e}"
+            ));
+        }
+    };
     if !status.is_success() {
         // 4xx 额度/参数、5xx 上游——原文尾部截断透传（契约降级纪律的输入）。
         let chars: Vec<char> = text.chars().collect();

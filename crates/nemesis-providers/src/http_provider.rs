@@ -379,7 +379,23 @@ impl HttpProvider {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if content_type.contains("application/json") {
-                let body = resp.text().await.unwrap_or_default();
+                // body 读传输失败诚实上抛（BUG-20261029-153 同族）：空串会让
+                // 下方 from_str 落 Format("non-SSE JSON body") 伪装应用层错误，
+                // fallback 链不轮转。unwrap_or_default 只留给 4xx 路径（状态码
+                // 本身已定类）。
+                let body = match resp.text().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(crate::failover::transport_error(
+                                &provider_name,
+                                &model,
+                                &e,
+                            )))
+                            .await;
+                        return;
+                    }
+                };
                 let parsed: serde_json::Value = match serde_json::from_str(&body) {
                     Ok(v) => v,
                     Err(e) => {
@@ -932,10 +948,14 @@ impl LLMProvider for HttpProvider {
             ));
         }
 
-        let raw_response_text = resp.text().await.map_err(|e| FailoverError::Format {
-            provider: self.config.name.clone(),
-            message: e.to_string(),
-        })?;
+        // 200 后 body 读传输失败（连接中途断开等）≠ 格式错误：真超时→Timeout，
+        // 其余→Unknown + "connect error" 前缀（可重试，与 send 路径同判——
+        // BUG-20261029-153：此前归 Format 不可重试，fallback 链在 body 断连
+        // 时直接终止不轮转）。下方 from_str 的解析错误才是 Format（应用层）。
+        let raw_response_text = resp
+            .text()
+            .await
+            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw_response_text).map_err(|e| FailoverError::Format {
                 provider: self.config.name.clone(),

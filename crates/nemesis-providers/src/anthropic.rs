@@ -483,7 +483,16 @@ impl AnthropicProvider {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if content_type.contains("application/json") {
-                let raw = resp.text().await.unwrap_or_default();
+                // body 读传输失败诚实上抛（BUG-20261029-153 同族）：空串会让
+                // 下方 from_str 落 Format 伪装应用层错误，fallback 链不轮转。
+                // unwrap_or_default 只留给 4xx 路径（状态码本身已定类）。
+                let raw = match resp.text().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
+                        return;
+                    }
+                };
                 match serde_json::from_str::<serde_json::Value>(&raw) {
                     Ok(v)
                         if v.get("content")
@@ -1133,10 +1142,24 @@ impl LLMProvider for AnthropicProvider {
             }
         }
 
-        let data: serde_json::Value = resp.json().await.map_err(|e| FailoverError::Format {
-            provider: "anthropic".to_string(),
-            message: e.to_string(),
-        })?;
+        // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
+        // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
+        // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
+        // （可重试，与 send/SSE 读路径同判）；解析失败→Format 带 body 摘要
+        //（应用层，不可重试）。
+        let raw = resp
+            .text()
+            .await
+            .map_err(|e| transport_error("anthropic", model, &e))?;
+        let data: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
+                provider: "anthropic".to_string(),
+                message: format!(
+                    "invalid JSON body: {} | body: {}",
+                    e,
+                    raw.chars().take(200).collect::<String>()
+                ),
+            })?;
 
         Ok(parse_response(&data))
     }

@@ -1886,3 +1886,80 @@ async fn test_v1_suffixed_base_hits_v1_messages_not_v1_v1() {
         .expect("带 /v1 尾缀的 base 必须归一后命中 /v1/messages，而非 /v1/v1/messages");
     assert_eq!(resp.content, "ok");
 }
+
+/// BUG-20261029-153（anthropic lane 同族）：200 后 body 读传输失败（连接
+/// 中途断开）→ transport_error（Unknown + "connect error" 前缀，可重试），
+/// 而非旧 resp.json() 伪装 Format 不可重试。可读的坏 JSON 仍走
+/// from_str→Format，见 test_w4c_anth_chat_invalid_json_maps_format。
+#[tokio::test]
+async fn test_anth_chat_body_read_error_is_retriable_connect_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            // 先读掉整个请求再 close：Windows 下带未读数据 close 发 RST
+            // 会把客户端未读的响应头一起冲掉，错误浮现在 send() 而非
+            // body 读——新旧代码在 send() 都映射 transport_error，红证
+            // 无区分度（实测踩坑）。读完 → 写半截响应 → 干净 FIN。
+            drain_request(&mut sock);
+            use std::io::Write;
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n{\"content\":[{\"type\":\"text\",\"text\":\"par",
+            );
+        }
+    });
+
+    let provider = AnthropicProvider::new(anth_config(&format!("http://{}", addr)));
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match &err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(
+                message.starts_with("connect error"),
+                "body read error must map to honest connect error, got: {message}"
+            );
+        }
+        other => panic!("expected Unknown connect error, got {:?}", other),
+    }
+    assert!(
+        err.is_retriable(),
+        "fallback chain must keep rotating on body-read transport failure"
+    );
+}
+
+/// 读满请求（头 + Content-Length 声明的 body 字节），使 close 成为干净 FIN。
+/// （与 http_provider_extra_tests::drain_request 同构；两 mod 无共享测试
+/// util，按既有惯例各自成套。）
+fn drain_request(sock: &mut std::net::TcpStream) {
+    use std::io::Read;
+    let mut acc = Vec::new();
+    let mut buf = [0u8; 1024];
+    let header_end = loop {
+        match sock.read(&mut buf) {
+            Ok(0) | Err(_) => break acc.len(),
+            Ok(n) => {
+                acc.extend_from_slice(&buf[..n]);
+                if let Some(p) = acc.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break p + 4;
+                }
+            }
+        }
+    };
+    let content_len: usize = std::str::from_utf8(&acc[..header_end])
+        .ok()
+        .and_then(|h| {
+            h.to_ascii_lowercase().lines().find_map(|l| {
+                l.strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse().ok())
+            })
+        })
+        .unwrap_or(0);
+    while acc.len() < header_end + content_len {
+        match sock.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => acc.extend_from_slice(&buf[..n]),
+        }
+    }
+}

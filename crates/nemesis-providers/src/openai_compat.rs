@@ -349,10 +349,24 @@ impl LLMProvider for OpenAICompatProvider {
             ));
         }
 
-        let data: serde_json::Value = resp.json().await.map_err(|e| FailoverError::Format {
-            provider: self.config.name.clone(),
-            message: e.to_string(),
-        })?;
+        // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
+        // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
+        // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
+        // （可重试，与 send 路径同判）；解析失败→Format 带 body 摘要
+        //（应用层，不可重试）。
+        let raw = resp
+            .text()
+            .await
+            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
+        let data: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
+                provider: self.config.name.clone(),
+                message: format!(
+                    "invalid JSON body: {} | body: {}",
+                    e,
+                    raw.chars().take(200).collect::<String>()
+                ),
+            })?;
 
         Ok(parse_response(&data))
     }
