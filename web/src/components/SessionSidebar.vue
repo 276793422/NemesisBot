@@ -446,7 +446,8 @@ async function newChatIn(projectId: string) {
 
 async function del(id: string) {
   closeMenus()
-  if (!confirm('删除这个会话？历史不可恢复。')) return
+  // 2026-10-30：默认移入回收站（90 天 TTL，日志页可恢复），不再是硬删除。
+  if (!confirm('删除这个会话？将移入回收站，90 天后自动清除；可在 日志 → 回收站 恢复。')) return
   unpinIfDeleted(id)
   await sessionStore.remove(id)
 }
@@ -607,6 +608,76 @@ async function detachSession(s: SessionEntry) {
 }
 
 // ---------------------------------------------------------------------------
+// 批量管理（2026-10-30 回收站）：多选模式——顶部功能区「☑ 批量」进入，
+// 行点击改为勾选/取消（不再切换会话），底部浮动工具条 全选 / 删除所选(N) /
+// 取消。删除 = 逐条顺序调 sessions.delete（默认移入回收站；每条过各自的
+// history gate），单条失败不中断批次，完成后刷新 + toast 汇总（拍板③：
+// 批量删除 = 批量进回收站，真删除去 日志 → 回收站）。
+// ---------------------------------------------------------------------------
+const batchMode = ref(false)
+const batchSelected = ref<Set<string>>(new Set())
+const batchBusy = ref(false)
+
+function toggleBatchMode() {
+  closeMenus()
+  batchMode.value = !batchMode.value
+  batchSelected.value = new Set()
+}
+
+function toggleBatchSelect(id: string) {
+  const next = new Set(batchSelected.value)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+  batchSelected.value = next
+}
+
+/** 全选本组（组头按钮；对话组=对话区全部，含孤儿组独立全选）。 */
+function batchSelectGroup(grp: GroupRow) {
+  const next = new Set(batchSelected.value)
+  for (const s of grp.items) next.add(s.id)
+  batchSelected.value = next
+}
+
+function batchSelectAll() {
+  const next = new Set<string>()
+  for (const grp of displayGroups.value) {
+    for (const s of grp.items) next.add(s.id)
+  }
+  batchSelected.value = next
+}
+
+async function batchDeleteSelected() {
+  const ids = [...batchSelected.value]
+  if (ids.length === 0) return
+  if (!confirm(`将 ${ids.length} 个会话移入回收站，90 天后自动清除；可在 日志 → 回收站 恢复。`)) return
+  batchBusy.value = true
+  const failed: string[] = []
+  try {
+    // 逐条顺序（无批量 WSAPI；每条各自过 history gate 与 cron 级联）。
+    // source=batch：回收站条目来源徽标「批量删除」的依据（2026-10-30
+    // 浏览器 E2E T4 根修——此前批量删除误记单个删除）。
+    for (const id of ids) {
+      const ok = await sessionStore.remove(id, 'batch')
+      if (ok) unpinIfDeleted(id)
+      else failed.push(id)
+    }
+  } finally {
+    batchBusy.value = false
+    batchSelected.value = new Set()
+    batchMode.value = false
+    await sessionStore.fetchList(true)
+  }
+  if (failed.length > 0) {
+    toast.error(`删除完成：成功 ${ids.length - failed.length} 个，失败 ${failed.length} 个（${failed.join('、')}）`)
+  } else {
+    toast.success(`已将 ${ids.length} 个会话移入回收站`)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 会话信息（行菜单）：sessions.list 已回填的静态信息只读展示——归属/
 // 时间/消息数/用量/模型/fork 血缘。零额外请求（消息数即 list 的
 // messageCount；逐轮明细在 Dashboard 日志视图）。
@@ -690,6 +761,14 @@ function relTime(ts: string): string {
           @click="fileTree.toggle()"
           title="工作区文件树"
         >📁 工作区</button>
+        <!-- 批量管理（2026-10-30）：多选 + 批量进回收站 -->
+        <button
+          class="fn-btn"
+          :class="{ on: batchMode }"
+          data-test="batch-toggle"
+          @click="toggleBatchMode"
+          title="批量管理：多选会话，批量移入回收站"
+        >☑ 批量</button>
       </div>
     </div>
 
@@ -707,6 +786,13 @@ function relTime(ts: string): string {
         <div v-if="grp.key === '__chat'" class="section-bar">
           <span class="section-label">对话</span>
           <span class="section-spacer" />
+          <button
+            v-if="batchMode"
+            class="sort-toggle"
+            data-test="batch-select-chat"
+            @click.stop="batchSelectGroup(grp)"
+            :title="`全选本组（${grp.items.length}）`"
+          >全选</button>
           <button
             class="sort-toggle"
             @click.stop="cycleSort"
@@ -737,14 +823,24 @@ function relTime(ts: string): string {
             <span class="group-count">({{ grp.items.length }})</span>
           </template>
           <span class="group-spacer" />
-          <span v-if="!grp.header.orphan" class="group-actions" @click.stop>
+          <!-- 批量模式下孤儿组也开放「全选本组」（孤儿会话同样可批量进回收站） -->
+          <span v-if="!grp.header.orphan || batchMode" class="group-actions" @click.stop>
             <button
-              v-if="grp.header.available"
+              v-if="batchMode"
               class="add-in-group"
-              @click="newChatIn(grp.key)"
-              :title="`在「${grp.header.name}」新建会话`"
-            >＋</button>
-            <button class="group-more" @click="toggleGroupMenu(grp.key)" title="项目菜单">⋯</button>
+              data-test="batch-select-group"
+              @click="batchSelectGroup(grp)"
+              :title="`全选本组（${grp.items.length}）`"
+            >全选</button>
+            <template v-if="!batchMode">
+              <button
+                v-if="grp.header.available"
+                class="add-in-group"
+                @click="newChatIn(grp.key)"
+                :title="`在「${grp.header.name}」新建会话`"
+              >＋</button>
+              <button class="group-more" @click="toggleGroupMenu(grp.key)" title="项目菜单">⋯</button>
+            </template>
           </span>
           <div v-if="menu?.kind === 'group' && menu.key === grp.key" class="group-menu" @click.stop>
             <button v-if="grp.header.available" class="menu-item" @click="newChatIn(grp.key)">＋ 新建会话</button>
@@ -765,12 +861,18 @@ function relTime(ts: string): string {
             :key="s.id"
             class="session-item"
             :data-session-id="s.id"
-            :class="{ active: s.id === currentId, orphaned: grp.header?.orphan, snoozed: isSnoozed(s), branched: s.lineageDepth > 0 }"
+            :class="{ active: s.id === currentId, orphaned: grp.header?.orphan, snoozed: isSnoozed(s), branched: s.lineageDepth > 0, batching: batchMode, picked: batchMode && batchSelected.has(s.id) }"
             :title="isSnoozed(s) ? snoozeTip(s) : undefined"
             :style="s.lineageDepth > 0 ? { paddingLeft: `${10 + s.lineageDepth * 10}px`, '--depth': s.lineageDepth } : undefined"
-            @click="select(s.id)"
+            @click="batchMode ? toggleBatchSelect(s.id) : select(s.id)"
           >
             <div class="session-title">
+              <!-- 批量管理（2026-10-30）：多选勾选框（行点击=勾选切换） -->
+              <span
+                v-if="batchMode"
+                class="batch-check"
+                data-test="batch-check"
+              >{{ batchSelected.has(s.id) ? '☑' : '☐' }}</span>
               <!-- M6: pinned 会话标题前缀标记（置顶行的视觉识别） -->
               <span v-if="isPinned(s.id)" class="pin-flag" title="已置顶">📌</span>
               <!-- 2026-10-20：分支会话标记（⑂ 弱化色前缀，取代旧 fork-line 的 ↳ 行首） -->
@@ -810,7 +912,7 @@ function relTime(ts: string): string {
             <div v-if="usage(s)" class="session-usage">{{ usage(s) }}</div>
             <div class="session-meta">
               <span>{{ relTime(s.lastTime || s.startTime) }}</span>
-              <button class="row-more" @click.stop="toggleRowMenu(s.id)" title="会话菜单">⋯</button>
+              <button v-if="!batchMode" class="row-more" @click.stop="toggleRowMenu(s.id)" title="会话菜单">⋯</button>
             </div>
             <div v-if="menu?.kind === 'row' && menu.key === s.id" class="group-menu row-menu" @click.stop>
               <button class="menu-item" @click="showInfo(s)">ℹ 会话信息</button>
@@ -840,6 +942,18 @@ function relTime(ts: string): string {
           class="section-empty"
         >暂无会话，点上方「＋ 新建对话」开始</div>
       </template>
+    </div>
+
+    <!-- 批量管理浮动工具条（2026-10-30）：吸底常驻——全选 / 删除所选(N) / 取消 -->
+    <div v-if="batchMode" class="batch-toolbar" data-test="batch-toolbar">
+      <button class="batch-btn" data-test="batch-select-all" :disabled="batchBusy" @click="batchSelectAll">全选</button>
+      <button
+        class="batch-btn danger"
+        data-test="batch-delete"
+        :disabled="batchBusy || batchSelected.size === 0"
+        @click="batchDeleteSelected"
+      >{{ batchBusy ? '删除中…' : `删除所选(${batchSelected.size})` }}</button>
+      <button class="batch-btn" data-test="batch-cancel" :disabled="batchBusy" @click="toggleBatchMode">取消</button>
     </div>
 
     <!-- 会话信息只读弹窗（行菜单） -->
@@ -1037,6 +1151,55 @@ function relTime(ts: string): string {
 .session-item.snoozed:hover,
 .session-item.snoozed.active {
   opacity: 1;
+}
+/* 批量管理（2026-10-30）：勾选行高亮 + 勾选框 */
+.session-item.batching .batch-check {
+  display: inline;
+}
+.batch-check {
+  display: none;
+  margin-right: 4px;
+  color: var(--accent);
+  font-size: 13px;
+}
+.session-item.picked {
+  background: var(--accent-muted);
+  border-left-color: var(--accent);
+}
+/* 批量管理浮动工具条：吸底常驻（侧栏 flex 列尾） */
+.batch-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.batch-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.batch-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-primary);
+}
+.batch-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.batch-btn.danger {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.batch-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
 }
 .session-title {
   font-size: 13px;

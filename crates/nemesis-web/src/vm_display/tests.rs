@@ -35,7 +35,7 @@ async fn frame_over_cap_rejected() {
 /// 连接中断（对端关流）→ read_frame Err（EOF），泵任务自然退出。
 #[tokio::test]
 async fn frame_read_eof_on_close() {
-    let (mut client, mut server) = tokio::io::duplex(64);
+    let (client, mut server) = tokio::io::duplex(64);
     drop(client); // 对端关闭
     let r = read_frame(&mut server, MAX_UPSTREAM_FRAME).await;
     assert!(r.is_err(), "对端关闭后 read_frame 应 Err");

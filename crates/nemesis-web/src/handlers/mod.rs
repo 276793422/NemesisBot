@@ -170,6 +170,11 @@ mod sessions_share_tests;
 #[cfg(test)]
 mod sessions_snooze_tests;
 
+// 会话回收站（2026-10-30）：delete 默认回收站形态 + hard 旧语义 +
+// trash 四命令守卫与全链（home 单例重定向，production() 寻址动态落 tempdir）。
+#[cfg(test)]
+mod sessions_trash_tests;
+
 // L6++ G4（2026-09-08）：projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]

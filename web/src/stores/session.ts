@@ -189,9 +189,11 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function remove(session_id: string) {
+  /** 删除会话（2026-10-30 起默认移入回收站）。返回成败——批量管理逐条
+   *  汇总需要；单条调用方忽略返回值不受影响。 */
+  async function remove(session_id: string, source?: 'single' | 'batch'): Promise<boolean> {
     try {
-      const res = await api.delete(session_id)
+      const res = await api.delete(session_id, undefined, source)
       // 2026-08-25: the backend disables cron jobs bound to the deleted
       // session (they would otherwise fire on — and resurrect — it).
       // Surface that visibly, or the user just wonders why the job stopped.
@@ -208,8 +210,10 @@ export const useSessionStore = defineStore('session', () => {
       if (currentId.value === session_id) {
         currentId.value = sessions.value[0]?.id ?? null
       }
+      return true
     } catch {
       // caller may surface a toast
+      return false
     }
   }
 

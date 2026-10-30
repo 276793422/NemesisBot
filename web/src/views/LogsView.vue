@@ -6,6 +6,9 @@ import SessionExplorer from '../components/logs/SessionExplorer.vue'
 import SecurityAudit from '../components/logs/SecurityAudit.vue'
 import IntegrityChain from '../components/logs/IntegrityChain.vue'
 import HistorySearch from '../components/logs/HistorySearch.vue'
+// 会话回收站（2026-10-30）：sessions.delete 默认落站后的恢复/清除面。
+// 自拉数据（挂载即拉取——v-else-if 链下切页签即重挂=切页签即刷新）。
+import TrashPanel from '../components/logs/TrashPanel.vue'
 // 行动账本（2026-10-14 AI 原生行动代理）：connectors.receipts 只读视图，
 // 自拉数据（挂载即拉取，进入页签触发）。
 import ActionLedger from '../components/logs/ActionLedger.vue'
@@ -33,9 +36,13 @@ const chainVerifyResult = ref<{ valid: boolean; first_broken_index: number | nul
 const counts = computed(() => ({
   events: 0,
   sessions: sessions.value.length + requests.value.length + tasks.value.length,
+  trash: trashCount.value,
   audit: auditEntries.value.length,
   chain: chainSegments.value.length,
 }))
+
+// 回收站条目数（TrashPanel 挂载拉取后上报；页签角标用）。
+const trashCount = ref(0)
 
 async function loadSessionsTab() {
   loadingTab.value = 'sessions'
@@ -150,6 +157,7 @@ async function onLocate(sessionKey: string) {
           v-else-if="activeTab === 'search'"
           @locate="onLocate"
         />
+        <TrashPanel v-else-if="activeTab === 'trash'" @counted="trashCount = $event" />
         <SecurityAudit
           v-else-if="activeTab === 'audit'"
           :entries="auditEntries"

@@ -203,6 +203,11 @@ fn registry_anchor_commands_present() {
     assert!(cmds_of(&reg, "canvas").contains(&"close"));
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
+    // 会话回收站（2026-10-30）：列表/恢复/单条清除/清空四命令锚点。
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_list"));
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_restore"));
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_purge"));
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_purge_all"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));
     assert!(cmds_of(&reg, "projects").contains(&"create"));
     // 角色目录（2026-09-28）：roles.list + chat.spawn 锚点。

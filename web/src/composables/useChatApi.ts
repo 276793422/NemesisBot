@@ -181,9 +181,57 @@ export function useChatApi() {
 
     /** `paused_cron_jobs` (2026-08-25): cron jobs that were bound to the
      * deleted session get disabled by the backend so they can't fire on —
-     * and resurrect — a deleted conversation. */
-    delete: async (session_id: string): Promise<{ deleted: string; paused_cron_jobs?: { id: string; name: string }[] }> =>
-      await request('sessions', 'delete', { session_id }),
+     * and resurrect — a deleted conversation.
+     * 回收站（2026-10-30）：默认移入 `<workspace>/logs/trash/sessions/`
+     * （90 天 TTL，日志页「回收站」可恢复）；`hard:true` 是 API 层逃生口，
+     * 前端 UI 不暴露。 */
+    delete: async (
+      session_id: string,
+      hard?: boolean,
+      source?: 'single' | 'batch',
+    ): Promise<{
+      deleted: string
+      trashed?: boolean
+      trash_entry?: string
+      paused_cron_jobs?: { id: string; name: string }[]
+    }> => {
+      const data: Record<string, unknown> = { session_id }
+      if (hard) data.hard = hard
+      if (source) data.source = source
+      return await request('sessions', 'delete', data)
+    },
+
+    // -----------------------------------------------------------------
+    // 会话回收站（2026-10-30）：sessions.trash_* 四命令。
+    // -----------------------------------------------------------------
+
+    /** 条目列表（新→旧；孤儿条目 orphan:true、title 为诚实投影）。 */
+    trashList: (): Promise<{
+      entries: {
+        entry: string
+        original_session_key: string
+        display_id: string
+        title: string | null
+        deleted_at_ms: number
+        message_count: number
+        bytes: number
+        source: string
+        orphan: boolean
+      }[]
+    }> => request('sessions', 'trash_list'),
+
+    /** 恢复。同 id 冲突 → 结构化 `{conflict:true, suggested_sid}`（条目不
+     *  消耗）；带 `new_sid` 改名恢复（拍板②）。 */
+    trashRestore: (entry: string, new_sid?: string): Promise<Record<string, unknown>> =>
+      request('sessions', 'trash_restore', new_sid ? { entry, new_sid } : { entry }),
+
+    /** 彻底删除单条（不可逆）。 */
+    trashPurge: (entry: string): Promise<{ purged: string }> =>
+      request('sessions', 'trash_purge', { entry }),
+
+    /** 清空回收站（不可逆）。 */
+    trashPurgeAll: (): Promise<{ purged: number }> =>
+      request('sessions', 'trash_purge_all'),
 
     clear: async (session_id: string): Promise<{ cleared: string }> =>
       await request('sessions', 'clear', { session_id }),

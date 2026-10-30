@@ -11,6 +11,8 @@ const emit = defineEmits<{
 const tabs = [
   { id: 'events',   label: '实时事件流', icon: '📡' },
   { id: 'sessions', label: '会话浏览器', icon: '💬' },
+  // 会话回收站（2026-10-30）：sessions.delete 默认落站，90 天 TTL，可恢复。
+  { id: 'trash',    label: '回收站',    icon: '🗑️' },
   { id: 'search',   label: '会话检索',   icon: '🔍' },
   { id: 'audit',    label: '安全审计',   icon: '🔒' },
   { id: 'chain',    label: '审计链',     icon: '🔗' },

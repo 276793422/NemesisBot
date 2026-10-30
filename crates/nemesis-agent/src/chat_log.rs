@@ -494,7 +494,9 @@ pub fn read_boundary_events(session_key: &str) -> Vec<Value> {
 }
 
 /// Resolve the JSONL file path for a session key.
-fn log_path(session_key: &str) -> PathBuf {
+/// `pub(crate)`：[`crate::chat_trash`] 的回收站 move/restore 按同键寻址
+/// 同一三件套（路径真相源仍是本模块）。
+pub(crate) fn log_path(session_key: &str) -> PathBuf {
     // SAN-01/SAN-05：白名单消毒（单一真相源
     // `nemesis_utils::sanitize::sanitize_path_segment`）。旧 `replace(':')`
     // 对 B 端复合键 `{node}/{chat}` 会拆出嵌套目录（F-U4-4 同根因）；对
@@ -982,7 +984,7 @@ pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
 /// Path for the sidecar title meta file (`{safe_key}.meta.json`, next to the
 /// `.jsonl`). Stores a user-editable conversation title for multi-session
 /// management without touching the lazy-created SessionStore.
-fn meta_path(session_key: &str) -> PathBuf {
+pub(crate) fn meta_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     default_path_manager()
         .sessions_log_dir()
@@ -1638,7 +1640,7 @@ mod tests;
 /// A separate file fixes all of them at the storage layer. Deliberately NOT
 /// inside `session_logs/`: that dir is scanned for `*.jsonl` as sessions —
 /// a sidecar there would appear as a phantom session.
-fn boundary_path(session_key: &str) -> PathBuf {
+pub(crate) fn boundary_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     default_path_manager()
         .boundary_events_dir()

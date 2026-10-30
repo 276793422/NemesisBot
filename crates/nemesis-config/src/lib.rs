@@ -210,9 +210,10 @@ pub struct Config {
     /// [`HealthFlagConfig`]。
     #[serde(default)]
     pub health: Option<HealthFlagConfig>,
-    /// 日志五族 TTL 清扫（M7/M8；None = 全默认——session_logs 30d /
-    /// boundary 30d / request_logs 14d / terminal 7d / event_ledger 30d；
-    /// 0 = 该族关闭清扫）。见 [`LogsTtlConfig`]。
+    /// 日志六族 TTL 清扫（M7/M8 + 回收站 2026-10-30；None = 全默认——
+    /// session_logs 30d / boundary 30d / request_logs 14d / terminal 7d /
+    /// event_ledger 30d / trash 90d；0 = 该族关闭清扫）。见
+    /// [`LogsTtlConfig`]。
     #[serde(default)]
     pub logs: Option<LogsTtlConfig>,
     /// checkpoint gc（M6；None = 全默认——**enabled=false 总闸关**，删错 =
@@ -511,6 +512,9 @@ pub struct LogsTtlConfig {
     /// op==append**——truncate/fork 行携带 chat_log 的唯一旁证正文，
     /// 末行非 append 保留）。默认 30。
     pub event_ledger: u64,
+    /// 会话回收站（`logs/trash/sessions/`，整目录清扫，目录 mtime ≈ 删除
+    /// 时刻）。默认 **90**（拍板①：30 天太短）。
+    pub trash: u64,
 }
 
 impl Default for LogsTtlConfig {
@@ -521,6 +525,7 @@ impl Default for LogsTtlConfig {
             request_logs: 14,
             terminal: 7,
             event_ledger: 30,
+            trash: 90,
         }
     }
 }
