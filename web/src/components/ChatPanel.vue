@@ -687,6 +687,12 @@ function handleWSMessage(data: any) {
             work,
             deliverables,
           })
+        } else {
+          // R263（BUG-20261030-208）横向同类：watchdog 已从磁盘恢复同尾消息
+          // （时间线/交付物已随行渲染），迟到 live 帧跳过挂载——但缓冲必须
+          // 同步排空（内容与磁盘行重复，丢弃即可），否则残留混进下一 turn。
+          chatStore.flushPendingWork()
+          chatStore.flushPendingDeliverables()
         }
         // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
         // 完成信号——不关 streaming、不清 watchdog（本地发送态保持到
@@ -719,10 +725,22 @@ function handleWSMessage(data: any) {
         // Legacy chat history reply uses cmd 'history' (data shape is the same).
         handleHistoryResponse(data.data)
       } else if (data.cmd === 'error') {
+        // R263（BUG-20261030-208）：错误帧同样终结 turn——本 turn 已积累的
+        // 时间线/交付物 flush 挂到错误消息上（与上方 assistant 分支同构）。
+        // 后端错误轮也 finalize 落盘 work 键（turn.rs 恒 finalize），重载后
+        // 错误行同样带时间线——live 挂载与之对齐。不清的话：live 块永挂
+        // （模板 v-if 含 pendingWork），且下一同会话 turn 的事件混进同一
+        // 缓冲、下一回复落地时整包误挂到新消息（视图级跨轮污染）。
+        const work = chatStore.flushPendingWork()
+        const deliverables = chatStore.pendingDeliverables.length
+          ? chatStore.flushPendingDeliverables()
+          : undefined
         chatStore.addMessage({
           role: 'error',
           content: data.data.content || data.data,
           timestamp: data.timestamp,
+          work,
+          deliverables,
         })
         chatStore.setBusy(effectiveSid.value, false)
         // B2：错误帧同样终结在飞轮次（后端拒绝/装配失败等）。
@@ -1805,6 +1823,11 @@ async function pollPendingTurn() {
       // B2：轮次已死（重启/异常）——登记一并清账，悬空 user 行保留展示
       // （诚实停轮，与 steer 悬空形态一致）。
       chatStore.clearInflightTurn(effectiveSid.value)
+      // R263（BUG-20261030-208）横向同类：死轮的时间线/交付物缓冲一并撤下
+      // ——后端已重启，不会有 assistant 帧来 flush（live 块无可挂载），
+      // 残留只会永挂输入区上方。
+      chatStore.adoptWorkSnapshot(null)
+      chatStore.flushPendingDeliverables()
       stopPendingTurnPolling()
     }
   } else {

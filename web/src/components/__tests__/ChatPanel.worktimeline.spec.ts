@@ -316,4 +316,93 @@ describe('ChatPanel work 时间线（2026-10-30）', () => {
     expect(live.text()).toContain('切回前的叙述')
     wrapper.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // BUG-20261030-208（R263）：错误帧 / 重复恢复帧不清 work/交付物缓冲——
+  // live 块永挂 + 下一 turn 事件混进同一缓冲 + 下一回复落地整包误挂。
+  // -------------------------------------------------------------------------
+
+  function errorFrame(content: string): any {
+    return { type: 'message', module: 'chat', cmd: 'error', data: { content }, timestamp: 't2' }
+  }
+
+  function deliverablesPush(files: any[]): any {
+    return { type: 'push', cmd: 'deliverables', data: { chat_id: 'web:s1', files } }
+  }
+
+  it('BUG-208：错误帧终结 turn——时间线/交付物 flush 挂到错误消息，live 块撤下', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    h(roundText('准备执行'))
+    h(started('c1'))
+    h(deliverablesPush([{ path: 'out/report.md', title: '报告', note: '' }]))
+    h(errorFrame('模型调用失败'))
+    await flushPromises()
+
+    // 缓冲已排空（live 块 v-if 含 pendingWork → 撤下）。
+    expect(chat.pendingWork).toBeNull()
+    expect(chat.pendingDeliverables).toHaveLength(0)
+    // 错误消息挂载时间线与交付物（与后端错误行落盘 work 键的重载语义对齐；
+    // 模板 work/deliverables 块 role-agnostic，error 角色照常渲染）。
+    expect(chat.messages).toHaveLength(1)
+    expect(chat.messages[0].role).toBe('error')
+    expect(chat.messages[0].work?.rounds[0].text).toBe('准备执行')
+    expect(chat.messages[0].deliverables).toHaveLength(1)
+    const blocks = wrapper.findAll('.wt-block')
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].classes()).not.toContain('live')
+    wrapper.unmount()
+  })
+
+  it('BUG-208：错误帧后下一 turn 事件不混包——新回复只带自己的时间线', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    // 第一轮：事件积累后错误终结。
+    h(started('c1'))
+    h(errorFrame('挂了'))
+    await flushPromises()
+    // 第二轮：新事件 + 正常回复。
+    h(roundText('第二轮重来'))
+    h(started('c2', 'grep'))
+    h(finished('c2', 'grep'))
+    h(assistantReply('这回成了'))
+    await flushPromises()
+
+    expect(chat.pendingWork).toBeNull()
+    expect(chat.messages).toHaveLength(2)
+    expect(chat.messages[0].role).toBe('error')
+    expect(chat.messages[0].work?.rounds.flatMap(r => r.tools).map(t => t.call_id)).toEqual(['c1'])
+    // 新回复时间线只含第二轮事件（修复前：混包含 c1）。
+    expect(chat.messages[1].work?.rounds[0].text).toBe('第二轮重来')
+    expect(chat.messages[1].work?.rounds.flatMap(r => r.tools).map(t => t.call_id)).toEqual(['c2'])
+    wrapper.unmount()
+  })
+
+  it('BUG-208 横向：重复恢复帧（watchdog 已落同尾消息）跳过挂载但排空缓冲', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    // watchdog 已从磁盘恢复同尾 assistant 消息（视图已有回复）。
+    chat.addMessage({ role: 'assistant', content: '已恢复的回复', timestamp: 't0' })
+    // 迟到的实时事件仍在摄取（缓冲非空）。
+    h(started('c1'))
+    h(finished('c1'))
+    await flushPromises()
+    expect(chat.pendingWork).not.toBeNull()
+
+    // 迟到 live 帧与尾部同文 → isDuplicateRecovery 跳过挂载，但缓冲排空
+    // （时间线已随磁盘行渲染，live 缓冲与磁盘行重复，留着只会混入下轮）。
+    h(assistantReply('已恢复的回复'))
+    await flushPromises()
+
+    expect(chat.messages).toHaveLength(1) // 不重复插行
+    expect(chat.pendingWork).toBeNull()
+    expect(chat.pendingDeliverables).toHaveLength(0)
+    wrapper.unmount()
+  })
 })
