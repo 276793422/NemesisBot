@@ -149,7 +149,16 @@ impl SentInRoundTracker {
 /// 释放，不留「永久 busy、会话从此全拒」的死会话（clear_session_busy 的
 /// 注释记录过这类事故形态）。只负责释放；排队消息的排空是 async，由
 /// under_history_gate 在 drop 后显式做。
-struct SessionBusyGuard<'a> {
+///
+/// R294（BUG-20261031-235）扩展为共用守卫：turn 任务体（process_admitted /
+/// 维护泵臂 / process_user_dispatch）同款事故形态——任务体任何一点 panic
+/// 跳过尾巴显式 release，会话从此永久 busy 直到 agent 重启。守卫在任务体
+/// 头部构造；正常路径在**原释放点**（drain 之前）显式 drop（= 旧的
+/// release_session），panic 路径由展开 Drop 兜底。守卫必须在 drain 前
+/// 结束：drain 重注入的队首消息要能通过 gate 的 busy 判定拿到会话，
+/// 守卫若跨 drain 存活，会在新 turn 拿到会话后把它误释放（并发不变量
+/// 破坏）。
+pub(crate) struct SessionBusyGuard<'a> {
     loop_ref: &'a AgentLoop,
     session_key: String,
 }
@@ -157,6 +166,15 @@ struct SessionBusyGuard<'a> {
 impl Drop for SessionBusyGuard<'_> {
     fn drop(&mut self) {
         self.loop_ref.release_session(&self.session_key);
+    }
+}
+
+impl<'a> SessionBusyGuard<'a> {
+    pub(crate) fn new(loop_ref: &'a AgentLoop, session_key: &str) -> Self {
+        Self {
+            loop_ref,
+            session_key: session_key.to_string(),
+        }
     }
 }
 
@@ -888,6 +906,10 @@ impl AgentLoop {
                         self.concurrent_mode == ConcurrentMode::Steer,
                     ) {
                         crate::inbox::EnqueueOutcome::QueuedForNextTurn => {
+                            // R294（BUG-20261031-236）：入队后复查 busy——
+                            // 回合可能恰在本闸 busy 判定与入队之间完成
+                            // （竞态孤儿），就地 kick 排空，防无限期滞留。
+                            self.kick_orphaned_queue_if_idle(&session_key);
                             info!(
                                 "[AgentLoop] Session busy — message queued for next turn: session_key={}",
                                 session_key
@@ -898,6 +920,7 @@ impl AgentLoop {
                             };
                         }
                         crate::inbox::EnqueueOutcome::QueuedForNextStep => {
+                            self.kick_orphaned_queue_if_idle(&session_key);
                             info!(
                                 "[AgentLoop] Session busy — steer message queued for in-turn injection: session_key={}",
                                 session_key
@@ -963,6 +986,48 @@ impl AgentLoop {
         })
     }
 
+    /// R294（BUG-20261031-236）：busy 判定与入队之间的竞态孤儿封口。闸的
+    /// busy 分支里 try_acquire 失败与 enqueue_for_mode 之间是纯同步区间，
+    /// 但多线程 runtime 上运行中回合的尾巴（release + drain）在另一个
+    /// worker 并行——若它完整落在该区间内，消息入队时已无在途回合：drain
+    /// 只挂在回合/维护/历史闸尾巴，队列无人排空，消息滞留到该会话下一条
+    /// 消息到来（相对新消息顺序倒挂），无下一条则无限期滞留。入队成功后
+    /// 复查 busy：已空闲 = 输掉竞态——就地走 drain 同款排空（transfer +
+    /// claim head + reinject 重注入，泵随后按正常闸门重新准入；生产三处
+    /// 接线 adapters/loop_manager/projects manager reinject_tx 恒 Some）。
+    /// 未接线（standalone/测试）诚实留痕跳过——消息仍由下一回合尾巴排空，
+    /// 与修复前行为一致，不回退。
+    fn kick_orphaned_queue_if_idle(&self, session_key: &str) {
+        if self.is_session_busy(session_key) {
+            return; // 正常路径：在途回合的尾巴负责排空
+        }
+        let tx = self.reinject_tx.read().clone();
+        let Some(tx) = tx else {
+            warn!(
+                "[AgentLoop] busy-race orphaned queue but reinject_tx unset (standalone/test) — left for next turn tail, session_key={}",
+                session_key
+            );
+            return;
+        };
+        warn!(
+            "[AgentLoop] busy-race: turn finished between busy check and enqueue — kicking orphaned queue, session_key={}",
+            session_key
+        );
+        self.inbox.transfer_next_step_to_next_turn(session_key);
+        if let Some(head) = self.inbox.claim_next_turn_head(session_key) {
+            let mut inbound = head.msg.clone();
+            inbound.session_key = session_key.to_string();
+            if let Err(e) = tx.try_send(inbound) {
+                // 与 drain 的重注入失败语义一致：响亮留痕后丢弃（1024
+                // 容量 vs inbox 8/会话下通道满不可达）。
+                warn!(
+                    "[AgentLoop] orphan kick re-inject failed (session_key={}, err={}) — message dropped",
+                    session_key, e
+                );
+            }
+        }
+    }
+
     /// Ungated tail: system (non-continuation) + history-request handling
     /// (V5: extracted verbatim from the pre-split monolith's early returns).
     pub(crate) async fn process_ungated(
@@ -1002,6 +1067,14 @@ impl AgentLoop {
             cancel_token,
             cp_turn,
         } = admission;
+
+        // R294（BUG-20261031-235）：busy 释放 RAII 化。回合体任何一点
+        // panic（provider 响应解析/预处理/落盘/封印——工具执行已被
+        // tool_dispatch 的 catch_unwind 单独包住，其余部分没有）展开时
+        // 跳过尾巴 release，会话从此永久 busy：Reject 全拒、Queue/Steer
+        // 排队到满，直到 agent 重启。守卫 drop 即释放；正常路径在原释放
+        // 点显式 drop（= 旧 release_session），panic 路径由展开 Drop 兜底。
+        let _busy_guard = SessionBusyGuard::new(self, &session_key);
 
         // F2（2026-09-27）：空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
         // 号不是内容，busy 态的两条消费路径（回合内 claim / 迟到 transfer）
@@ -1175,7 +1248,10 @@ impl AgentLoop {
 
         // Clean up cancellation token and release session.
         self.remove_cancel_token(&session_key);
-        self.release_session(&session_key);
+        // release 经守卫 Drop（与旧显式 release_session 等价；panic 展开
+        // 路径由守卫兜底，见上方 BUG-20261031-235 注）。必须在 drain 之前
+        // ——重注入的队首要能通过 gate 的 busy 判定拿到会话。
+        drop(_busy_guard);
         // P20（2026-09-25 能力扩展）：turn 收尾封印——本 turn 声明过的每个
         // 变更路径读现盘内容哈希，作为「变更后指纹」记进该 turn 的
         // checkpoint（rewind 冲突预检的比对基线）。无 store / 无 turn
