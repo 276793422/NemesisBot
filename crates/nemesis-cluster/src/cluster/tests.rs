@@ -10425,3 +10425,51 @@ fn test_set_build_hash_reflects_local_registry_entry() {
     );
     cluster.stop();
 }
+
+// -------------------------------------------------------------------------
+// BUG-20261030-209 回归锁：cluster.start() 必须接线 TaskManager 后台清理
+// 循环。此前生产从未调用 task_manager.start()（旧 &mut self 签名无法经
+// Arc<TaskManager> 调用），2h 终态清理与 pending/running 安全网兜底双双
+// 失效——终态任务（含完整 payload+result）在 tasks.db 无限累积。
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_bug209_start_wires_task_manager_cleanup_loop() {
+    let mut cluster = Cluster::new(make_config());
+    let tm = Arc::new(TaskManager::with_store_and_interval(
+        Arc::new(crate::task_manager::InMemoryTaskStore::new()),
+        std::time::Duration::from_millis(50),
+    ));
+    // 回拨 3h 的终态任务：清理循环一旦在跑，首个 tick 即删除。
+    let three_hours_ago = (chrono::Local::now() - chrono::Duration::hours(3)).to_rfc3339();
+    tm.submit(Task {
+        id: "bug209-cluster-old-done".to_string(),
+        status: TaskStatus::Completed,
+        action: "peer_chat".to_string(),
+        peer_id: "peer-a".to_string(),
+        payload: serde_json::json!({"content": "x"}),
+        result: Some(serde_json::json!("done")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "c1".to_string(),
+        created_at: three_hours_ago.clone(),
+        completed_at: Some(three_hours_ago),
+    })
+    .unwrap();
+    cluster.set_task_manager_for_test(tm.clone());
+
+    cluster.start();
+    // 至多等 ~2s（40×50ms）：任务被清理循环删除即接线成立。
+    let mut cleaned = false;
+    for _ in 0..40 {
+        if tm.get_task("bug209-cluster-old-done").is_none() {
+            cleaned = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    cluster.stop();
+    assert!(
+        cleaned,
+        "terminal task must be cleaned by the loop wired in cluster.start()"
+    );
+}

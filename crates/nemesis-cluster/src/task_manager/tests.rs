@@ -333,7 +333,7 @@ fn test_cleanup_pending_timeout() {
 #[test]
 fn test_task_manager_with_custom_store() {
     let store = Arc::new(InMemoryTaskStore::new());
-    let mut tm = TaskManager::with_store(store);
+    let tm = TaskManager::with_store(store);
 
     let task = tm.create_task("action", serde_json::json!({}), "rpc", "ch");
     assert!(tm.get_task(&task.id).is_some());
@@ -558,35 +558,35 @@ fn test_in_memory_store_list_all() {
 
 #[tokio::test]
 async fn test_start_stop_lifecycle() {
-    let mut tm = TaskManager::with_store_and_interval(
+    let tm = TaskManager::with_store_and_interval(
         Arc::new(InMemoryTaskStore::new()),
         std::time::Duration::from_millis(100),
     );
     tm.start();
-    assert!(tm.stop_tx.is_some());
+    assert!(tm.stop_tx.lock().is_some());
     tm.stop();
-    assert!(tm.stop_tx.is_none());
+    assert!(tm.stop_tx.lock().is_none());
 }
 
 #[test]
 fn test_start_without_runtime_is_noop() {
-    let mut tm = TaskManager::new();
+    let tm = TaskManager::new();
     tm.start();
     // Should not panic, stop_tx stays None
-    assert!(tm.stop_tx.is_none());
+    assert!(tm.stop_tx.lock().is_none());
 }
 
 #[test]
 fn test_start_idempotent() {
-    let mut tm = TaskManager::new();
+    let tm = TaskManager::new();
     tm.start();
     tm.start(); // second call should be no-op
-    assert!(tm.stop_tx.is_none()); // still None because no runtime
+    assert!(tm.stop_tx.lock().is_none()); // still None because no runtime
 }
 
 #[test]
 fn test_stop_without_start_is_noop() {
-    let mut tm = TaskManager::new();
+    let tm = TaskManager::new();
     tm.stop(); // should not panic
 }
 
@@ -1004,23 +1004,23 @@ fn test_cleanup_timeout_does_not_fire_callback_on_lost_race() {
 #[tokio::test]
 async fn test_start_idempotent_v2() {
     // Test that calling start() twice is a no-op when a runtime is present
-    let mut tm = TaskManager::with_store_and_interval(
+    let tm = TaskManager::with_store_and_interval(
         Arc::new(InMemoryTaskStore::new()),
         std::time::Duration::from_secs(600), // long interval so cleanup doesn't fire during test
     );
     tm.start();
-    assert!(tm.stop_tx.is_some());
+    assert!(tm.stop_tx.lock().is_some());
 
     // Second start should be a no-op (stop_tx still Some, not replaced)
     tm.start();
     assert!(
-        tm.stop_tx.is_some(),
+        tm.stop_tx.lock().is_some(),
         "stop_tx should still be Some after second start()"
     );
 
     // Stop should work correctly (only one background task was spawned)
     tm.stop();
-    assert!(tm.stop_tx.is_none());
+    assert!(tm.stop_tx.lock().is_none());
 }
 
 #[test]
@@ -1079,7 +1079,7 @@ async fn test_w3b_start_cleanup_loop_processes_tasks_between_ticks() {
     // task (25h) must be failed and an old Completed task (3h) deleted by the
     // loop's interval ticks — not by a direct cleanup_completed() call.
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
-    let mut tm =
+    let tm =
         TaskManager::with_store_and_interval(store.clone(), std::time::Duration::from_millis(20));
 
     let stale = Task {
@@ -1166,14 +1166,14 @@ async fn test_w3b_start_cleanup_loop_processes_tasks_between_ticks() {
 #[tokio::test]
 async fn test_s4_cleanup_loop_stop_arm_runs() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
-    let mut tm = TaskManager::with_store_and_interval(store, std::time::Duration::from_millis(50));
+    let tm = TaskManager::with_store_and_interval(store, std::time::Duration::from_millis(50));
 
     tm.start();
-    assert!(tm.stop_tx.is_some(), "loop must be started");
+    assert!(tm.stop_tx.lock().is_some(), "loop must be started");
     tokio::time::sleep(std::time::Duration::from_millis(80)).await; // ≥1 tick
 
     tm.stop();
-    assert!(tm.stop_tx.is_none());
+    assert!(tm.stop_tx.lock().is_none());
     // Give the spawned task time to process the stop signal before the
     // runtime is torn down at test end.
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -1394,4 +1394,53 @@ fn test_cleanup_running_timeout() {
     assert_eq!(recent.status, TaskStatus::Running);
 
     assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+}
+
+// -------------------------------------------------------------------------
+// BUG-20261030-209 回归锁：清理循环经 start() 起跑后必须删除超 2h 终态
+// 任务；同时锁 start/stop 的 `&self` 签名——生产装配点持有
+// `Arc<TaskManager>`，旧 `&mut self` 签名让它无法从 Arc 调用，清理循环
+// 因此在生产从未接线（终态任务含完整 payload+result 在 tasks.db 无限累积）。
+// -------------------------------------------------------------------------
+
+fn bug209_old_terminal_task(id: &str) -> Task {
+    let three_hours_ago = (chrono::Local::now() - chrono::Duration::hours(3)).to_rfc3339();
+    Task {
+        id: id.to_string(),
+        status: TaskStatus::Completed,
+        action: "peer_chat".to_string(),
+        peer_id: "peer-a".to_string(),
+        payload: serde_json::json!({"content": "x"}),
+        result: Some(serde_json::json!("done")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "c1".to_string(),
+        created_at: three_hours_ago.clone(),
+        completed_at: Some(three_hours_ago),
+    }
+}
+
+#[tokio::test]
+async fn test_bug209_cleanup_loop_deletes_old_terminal_task_via_start() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let tm = Arc::new(TaskManager::with_store_and_interval(
+        store,
+        std::time::Duration::from_millis(50),
+    ));
+    tm.submit(bug209_old_terminal_task("bug209-tm-old-done"))
+        .unwrap();
+
+    tm.start(); // &self：经 Arc 直接调用（签名回归锁）
+    let mut cleaned = false;
+    for _ in 0..40 {
+        if tm.get_task("bug209-tm-old-done").is_none() {
+            cleaned = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tm.stop();
+    assert!(
+        cleaned,
+        "loop started via start() must delete terminal tasks older than 2h"
+    );
 }
