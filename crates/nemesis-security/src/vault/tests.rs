@@ -532,3 +532,60 @@ fn migrate_conflict_suffix_never_overwrites() {
     assert_eq!(store.get("dup__2").unwrap(), "sk-new-value");
     cleanup(&dir);
 }
+
+// --- already_vault 残留清扫臂在场守卫（vault 缺席绝不删 creds 明文） ---
+
+#[test]
+fn migrate_vault_residue_cleanup_skipped_when_vault_missing_alias() {
+    // 损坏态现场：config 指 vault:ghost 但 vault 无该条目（vault.enc 丢失/
+    // 重置），creds 仍留同名明文 = 最后一份可恢复副本。清扫臂必须在场验证，
+    // 绝不能销毁副本（config 的 vault:ghost 引用将无处解析且明文已灭）。
+    let (dir, mut store) = migrate_store("cleanup-guard");
+    let mut config = serde_json::json!({
+        "model_list": [
+            { "model_name": "m1", "model": "openai/m1", "api_key": "vault:ghost" }
+        ]
+    });
+    let mut creds = Some(nemesis_config::credentials::CredentialsFile {
+        keys: [("ghost".to_string(), "sk-last-copy".to_string())]
+            .into_iter()
+            .collect(),
+    });
+
+    let report = migrate_model_keys_to_vault(&mut config, &mut store, creds.as_mut()).unwrap();
+
+    assert_eq!(report.already_vault, 1);
+    assert!(!report.creds_changed, "vault 缺席不得动 creds");
+    assert!(report.yaml_aliases_removed.is_empty(), "不得记移除");
+    let creds = creds.as_ref().unwrap();
+    assert!(creds.keys.contains_key("ghost"), "明文副本必须保留");
+    assert!(report.is_noop(), "无迁移无断引 = 幂等重跑面");
+    cleanup(&dir);
+}
+
+#[test]
+fn migrate_vault_residue_cleanup_fires_when_vault_has_alias() {
+    // 既有语义回归锁（BUG-20261028-119 收敛路径）：vault 真在场时残留
+    // 清扫照常 fires——守卫只拦损坏态，不拦正常收敛。
+    let (dir, mut store) = migrate_store("cleanup-fires");
+    store.set("legacy", "sk-legacy-real", "model", "").unwrap();
+    let mut config = serde_json::json!({
+        "model_list": [
+            { "model_name": "m1", "model": "openai/m1", "api_key": "vault:legacy" }
+        ]
+    });
+    let mut creds = Some(nemesis_config::credentials::CredentialsFile {
+        keys: [("legacy".to_string(), "sk-legacy-real".to_string())]
+            .into_iter()
+            .collect(),
+    });
+
+    let report = migrate_model_keys_to_vault(&mut config, &mut store, creds.as_mut()).unwrap();
+
+    assert_eq!(report.already_vault, 1);
+    assert!(report.creds_changed, "vault 在场 = 残留明文清扫照常");
+    assert_eq!(report.yaml_aliases_removed, vec!["legacy".to_string()]);
+    let creds = creds.as_ref().unwrap();
+    assert!(!creds.keys.contains_key("legacy"), "明文彻底离盘");
+    cleanup(&dir);
+}
