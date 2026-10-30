@@ -126,6 +126,18 @@ fn manager() -> Option<&'static Arc<PtySessionManager>> {
     PTY_MANAGER.get()
 }
 
+/// 宿主侧急停杀链（BUG-20261031-234）：estop 触发时由 gateway 侧 watcher
+/// （post_agent.rs，与 vm-display 同款纪律）调用。会话任务的自醒（select
+/// 循环内 estop watch）在 `socket.send().await`（客户端 TCP 背压——网络
+/// 挂起/浏览器休眠是常态）期间不被轮询，stalled client 会话的自醒杀
+/// 不掉——模块头安全声明「急停触发 → 全部 PTY 会话立即 kill」必须有
+/// 宿主侧兜底直杀。
+pub fn kill_all_for_estop() {
+    if let Some(mgr) = manager() {
+        mgr.kill_all();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 配置解析 + shell 选择
 // ---------------------------------------------------------------------------
