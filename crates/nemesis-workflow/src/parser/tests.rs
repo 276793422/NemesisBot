@@ -368,3 +368,118 @@ fn test_shipped_workflow_templates_parse_and_validate() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261030-211 回归锁：composite（parallel/loop）内禁止 human_review 子节点
+// ---------------------------------------------------------------------------
+
+fn make_node_with_config(
+    id: &str,
+    node_type: &str,
+    config: HashMap<String, serde_json::Value>,
+) -> NodeDef {
+    NodeDef {
+        id: id.to_string(),
+        node_type: node_type.to_string(),
+        config,
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    }
+}
+
+#[test]
+fn test_validate_rejects_human_review_inside_parallel() {
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "review", "node_type": "human_review", "config": { "message": "审批" } },
+        ]),
+    );
+    let wf = make_workflow(
+        "wf",
+        vec![
+            make_node_with_config("par", "parallel", config),
+            make_node("t", "delay"),
+        ],
+    );
+    let err = validate(&wf).unwrap_err();
+    assert!(
+        err.contains("human_review"),
+        "错误须点名 human_review：{err}"
+    );
+    assert!(err.contains("par"), "错误须点名 composite 节点 id：{err}");
+}
+
+#[test]
+fn test_validate_rejects_human_review_inside_loop() {
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "review", "node_type": "human_review", "config": {} },
+        ]),
+    );
+    let wf = make_workflow("wf", vec![make_node_with_config("lp", "loop", config)]);
+    let err = validate(&wf).unwrap_err();
+    assert!(
+        err.contains("loop") || err.contains("human_review"),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_human_review_nested_composite() {
+    // 嵌套：parallel → parallel → human_review，递归走查必须命中。
+    let inner = serde_json::json!([
+        { "id": "deep", "node_type": "parallel",
+          "config": { "nodes": [ { "id": "r2", "node_type": "human_review", "config": {} } ] } },
+    ]);
+    let mut config = HashMap::new();
+    config.insert("nodes".to_string(), inner);
+    let wf = make_workflow(
+        "wf",
+        vec![make_node_with_config("outer", "parallel", config)],
+    );
+    let err = validate(&wf).unwrap_err();
+    assert!(err.contains("human_review"), "{err}");
+}
+
+#[test]
+fn test_validate_rejects_human_review_legacy_type_key() {
+    // get_config_node_list 兼容 legacy `type` 键，走查须同款识别。
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([ { "id": "r", "type": "human_review", "config": {} } ]),
+    );
+    let wf = make_workflow("wf", vec![make_node_with_config("par", "parallel", config)]);
+    assert!(validate(&wf).is_err());
+}
+
+#[test]
+fn test_validate_allows_plain_children_in_composite() {
+    // 非 human_review 子节点照常放行（回归保护：不能一刀切禁 composite 子节点）。
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "a", "node_type": "llm", "config": { "prompt": "x" } },
+            { "id": "b", "node_type": "delay", "config": { "seconds": 0 } },
+        ]),
+    );
+    let wf = make_workflow("wf", vec![make_node_with_config("par", "parallel", config)]);
+    assert!(validate(&wf).is_ok());
+}
+
+#[test]
+fn test_validate_allows_top_level_human_review() {
+    // 顶层 human_review 是 Waiting 语义的正主，必须照常放行。
+    let wf = make_workflow(
+        "wf",
+        vec![make_node("review", "human_review"), make_node("t", "delay")],
+    );
+    assert!(validate(&wf).is_ok());
+}

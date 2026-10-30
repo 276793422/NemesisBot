@@ -972,6 +972,26 @@ impl NodeExecutor for ParallelNodeExecutor {
                             key,
                             serde_json::json!({ "error": result.error, "output": result.output }),
                         );
+                    } else if matches!(
+                        result.state,
+                        ExecutionState::Waiting | ExecutionState::Cancelled
+                    ) {
+                        // 运行期兜底（BUG-20261030-211）：暂停类子状态不得被
+                        // 当成功吞掉。注册期 validate 已拒绝 human_review 复合
+                        // 子节点；此臂防程序化构造（绕过 validate 的直接
+                        // schedule 路径）与子工作流停在审批的 sub_workflow
+                        // 分支——诚实失败，绝不静默放行。
+                        let msg = format!(
+                            "parallel 分支 {key} 返回 {} 状态：暂停类节点不支持在 composite 内（审批落地前 workflow 不得继续）",
+                            result.state
+                        );
+                        if first_error.is_none() {
+                            first_error = Some(msg.clone());
+                        }
+                        merged.insert(
+                            key,
+                            serde_json::json!({ "error": msg, "state": result.state }),
+                        );
                     } else {
                         merged.insert(key, result.output);
                     }
@@ -1486,6 +1506,19 @@ impl NodeExecutor for LoopNodeExecutor {
                             loop_error = result.error.clone().or_else(|| {
                                 Some(format!("loop iteration {} node {} failed", i, child_def.id))
                             });
+                            iteration_failed = true;
+                            break;
+                        }
+                        if matches!(
+                            result.state,
+                            ExecutionState::Waiting | ExecutionState::Cancelled
+                        ) {
+                            // 运行期兜底（BUG-20261030-211）：同 parallel——
+                            // 暂停类子状态诚实失败，绝不静默当成功继续迭代。
+                            loop_error = Some(format!(
+                                "loop iteration {} node {} 返回 {} 状态：暂停类节点不支持在 composite 内（审批落地前 workflow 不得继续）",
+                                i, child_def.id, result.state
+                            ));
                             iteration_failed = true;
                             break;
                         }

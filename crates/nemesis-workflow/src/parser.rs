@@ -87,6 +87,22 @@ pub fn validate(wf: &Workflow) -> Result<(), String> {
         }
     }
 
+    // Reject pausing nodes (human_review) inside composite blocks
+    // (parallel/loop). Composite executors key success off
+    // `state != Failed`, so a child stuck in Waiting would be swallowed as
+    // a completed branch — the workflow would finish without the human
+    // approval that must gate downstream nodes (the 缺陷 9 invariant:
+    // downstream never runs before review resolves). Composite children
+    // also have no per-child checkpointing, so propagating Waiting would
+    // re-execute every child (side effects doubled) on resume — the honest
+    // form is rejection here, before anything runs.
+    for n in &wf.nodes {
+        if matches!(n.node_type.as_str(), "parallel" | "loop") {
+            let config_value = serde_json::to_value(&n.config).unwrap_or(serde_json::Value::Null);
+            reject_pausing_composite_children(&wf.name, &n.id, &config_value)?;
+        }
+    }
+
     // Check for cycles using topological sort
     if let Err(e) = topological_sort(&wf.nodes, &wf.edges) {
         return Err(format!("workflow {:?}: {}", wf.name, e));
@@ -102,6 +118,49 @@ pub fn validate(wf: &Workflow) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+/// Walk a composite node's config for `human_review` children (recursive, so
+/// nested parallel/loop blocks are covered) and reject the first one found.
+/// Child shape mirrors `get_config_node_list`: `nodes` / `branches` arrays of
+/// node objects with `node_type` (or legacy `type`).
+fn reject_pausing_composite_children(
+    workflow_name: &str,
+    composite_id: &str,
+    config: &serde_json::Value,
+) -> Result<(), String> {
+    for key in &["nodes", "branches"] {
+        let Some(arr) = config.get(*key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for child in arr {
+            let Some(obj) = child.as_object() else {
+                continue;
+            };
+            let child_type = obj
+                .get("node_type")
+                .or_else(|| obj.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let child_id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("(无 id)");
+            if child_type == "human_review" {
+                return Err(format!(
+                    "workflow {:?}: composite 节点 {:?} 的 {} 子节点 {:?} 是 human_review——\
+                     审批暂停类节点不支持放在 parallel/loop 内（子节点 Waiting 会被当成功吞掉，\
+                     审批永远不发生）。请把它移到顶层作为独立节点",
+                    workflow_name, composite_id, key, child_id
+                ));
+            }
+            if matches!(child_type, "parallel" | "loop") {
+                let child_config = obj
+                    .get("config")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                reject_pausing_composite_children(workflow_name, composite_id, &child_config)?;
+            }
+        }
+    }
     Ok(())
 }
 

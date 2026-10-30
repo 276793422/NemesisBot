@@ -5635,3 +5635,145 @@ async fn bug88_http_node_response_body_capped_at_1mb() {
         body.chars().count()
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261030-211 回归锁：composite 子节点返回 Waiting/Cancelled 必须诚实
+// 失败，不得当成功吞掉（缺陷 9 不变量：审批落地前下游不得抢跑）
+// ---------------------------------------------------------------------------
+
+/// 返回指定状态的 stub 执行器（模拟停在审批的子节点 / 被取消的子工作流）。
+struct StatefulExec {
+    state: ExecutionState,
+}
+
+#[async_trait]
+impl NodeExecutor for StatefulExec {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({ "status": "waiting_for_review" }),
+            error: None,
+            state: self.state,
+            started_at: Local::now(),
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+fn registry_with_stateful(state: ExecutionState) -> Arc<NodeExecutorRegistry> {
+    let registry = Arc::new(NodeExecutorRegistry::new());
+    registry.register("pausing", Arc::new(StatefulExec { state }));
+    NodeExecutorRegistry::install_composite_executors(&registry);
+    registry
+}
+
+#[tokio::test]
+async fn test_parallel_child_waiting_is_honest_failure() {
+    let registry = registry_with_stateful(ExecutionState::Waiting);
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "review", "node_type": "pausing", "config": {} },
+        ]),
+    );
+    let node = make_node("par", "parallel", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        result.state,
+        ExecutionState::Failed,
+        "Waiting 子节点必须让 parallel 诚实 Failed，不得当成功"
+    );
+    let err = result.error.unwrap_or_default();
+    assert!(
+        err.to_lowercase().contains("waiting"),
+        "错误须点名子状态：{err}"
+    );
+    assert!(err.contains("review") || err.contains("branch_0"), "{err}");
+}
+
+#[tokio::test]
+async fn test_parallel_child_cancelled_is_honest_failure() {
+    let registry = registry_with_stateful(ExecutionState::Cancelled);
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "branches".to_string(),
+        serde_json::json!([ { "id": "c1", "node_type": "pausing", "config": {} } ]),
+    );
+    let node = make_node("par", "parallel", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("cancelled")
+    );
+}
+
+#[tokio::test]
+async fn test_loop_child_waiting_is_honest_failure() {
+    let registry = registry_with_stateful(ExecutionState::Waiting);
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(3));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([ { "id": "review", "node_type": "pausing", "config": {} } ]),
+    );
+    let node = make_node("lp", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        result.state,
+        ExecutionState::Failed,
+        "Waiting 子节点必须让 loop 诚实 Failed 并停止迭代"
+    );
+    let err = result.error.unwrap_or_default();
+    assert!(err.to_lowercase().contains("waiting"), "{err}");
+    // 迭代必须立即停止（iteration 0 就失败，不烧满 max_iterations）。
+    assert_eq!(
+        result.output["iterations"],
+        serde_json::json!(0),
+        "Waiting 命中后不得继续迭代"
+    );
+}
+
+#[tokio::test]
+async fn test_parallel_completed_child_still_succeeds() {
+    // 对照组：Completed 子节点照常成功（回归保护，防一刀切）。
+    let registry = registry_with_stateful(ExecutionState::Completed);
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([ { "id": "ok", "node_type": "pausing", "config": {} } ]),
+    );
+    let node = make_node("par", "parallel", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+}
