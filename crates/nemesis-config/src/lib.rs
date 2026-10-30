@@ -3479,7 +3479,7 @@ pub struct WebToolsConfig {
     pub perplexity: PerplexityConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BraveConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -3489,6 +3489,23 @@ pub struct BraveConfig {
     pub max_results: i64,
 }
 
+impl Default for BraveConfig {
+    /// 手写收敛（BUG-20261031-226 同批）：`max_results` 字段级缺省 5，
+    /// derive 给 0——enabled 缺省关使分歧平时不可达，用户开启后保存的
+    /// 0 会被 agent_factory `.max(1)` 钳成 1 条结果（模板语义 5）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            max_results: default_max_results(),
+        }
+    }
+}
+
+// 注意：DuckDuckGoConfig 刻意**不**收敛双路径（BUG-20261031-226 排除项）——
+// 键缺席（derive false）与出厂模板的显式 `{enabled: false}` 一致；键在场但
+// enabled 缺席（字段级 true）表示用户主动配置该段=想启用。两路各服务各自
+// 人群，任何收敛方向都会翻转其中一路的产品默认行为。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DuckDuckGoConfig {
     #[serde(default = "default_true")]
@@ -3497,7 +3514,7 @@ pub struct DuckDuckGoConfig {
     pub max_results: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerplexityConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -3505,6 +3522,17 @@ pub struct PerplexityConfig {
     pub api_key: String,
     #[serde(default = "default_max_results")]
     pub max_results: i64,
+}
+
+impl Default for PerplexityConfig {
+    /// 手写收敛（BUG-20261031-226 同批，BraveConfig 同理）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            max_results: default_max_results(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -3521,7 +3549,7 @@ pub struct ExecConfig {
     pub custom_deny_patterns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -3529,12 +3557,41 @@ pub struct HeartbeatConfig {
     pub interval: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl Default for HeartbeatConfig {
+    /// 手写而非 derive（serde 双路径纪律，WebChannelConfig 同款——
+    /// BUG-20261031-226）：`heartbeat` 顶层键整段缺席时 serde 走结构体
+    /// `Default::default()`，字段级缺省函数不经过。derive 的
+    /// {enabled:false, interval:0} 与字段级缺省/出厂模板/default_config()
+    /// 的 {true, 30} 相反——migrate 骨架（openclaw_config.rs 无 heartbeat
+    /// 段）与手精简 config 的心跳服务被静默关闭（bot_service.rs 装配闸
+    /// 直接读 enabled）。两条构造路径必须收敛同值。
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: default_heartbeat_interval_minutes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevicesConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub monitor_usb: bool,
+}
+
+impl Default for DevicesConfig {
+    /// 手写收敛（BUG-20261031-226 同批）：`monitor_usb` 字段级缺省 true，
+    /// derive 给 false——devices 服务缺省关使分歧暂不可达，但用户经
+    /// Dashboard 开启 enabled 保存的是内存结构体（缺席键场景=derive 值），
+    /// monitor_usb:false 会落盘，与模板 monitor_usb:true 相反。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            monitor_usb: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

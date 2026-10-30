@@ -2598,8 +2598,10 @@ mod r9_subprocess {
 // `name.is_empty()` 时改走 get_effective_llm(Some(&cfg)) 取 agents.defaults.llm
 // 作为探测目标。唯一入口是 CLI 传空字符串参数；子进程 + MockAiServer 全链
 // 驱动（七题脚本沿用 r9_subprocess 形态，本模块内自带一份避免跨界借用）。
-// 空名同时意味着 update_model_entry 匹配不到任何条目 → wrote=false →
-// tier 不落盘（734-739 的写回短路边），一并断言。
+// 空名的写回语义由 BUG-20261030-218 翻转：写回目标 = 实际被探测的
+// llm_ref（空名时 = 生效默认模型别名），update_model_entry 三匹配命中
+// 真实条目 → wrote=true → tier 落盘到默认模型条目（734-739 写回路径），
+// 一并断言。
 // ===========================================================================
 
 // 整 mod Windows 形态（1/1 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
@@ -2643,7 +2645,7 @@ mod r10_subprocess {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
-    async fn r10_probe_with_empty_name_resolves_effective_llm_and_skips_tier_persist() {
+    async fn r10_probe_with_empty_name_resolves_effective_llm_and_persists_tier() {
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
         std::fs::write(ws.config_path(), "{}").unwrap();
@@ -2694,17 +2696,20 @@ mod r10_subprocess {
         assert!(probe.stdout_contains("能力探针报告"));
         assert_eq!(mock.remaining(), 0, "七题脚本必须恰好耗尽");
 
-        // wrote=false：空名匹配不到任何 model_list 条目 → tier 不落盘。
+        // BUG-20261030-218 语义：写回目标 = llm_ref（空名时 = 生效默认模型
+        // 别名 r10p/empty-name）→ update_model_entry 命中该条目 → tier 落盘。
+        // 本测试旧形态（skips_tier_persist，断言不写回）钉的是 218 修复前的
+        // 旧行为——当时空名永不命中、8 次探针结果静默丢失，正是 218 修的缺陷。
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
         let entry = after["model_list"]
             .as_array()
             .and_then(|a| a.first())
             .expect("add 留下的条目必须在");
-        assert_ne!(
+        assert_eq!(
             entry["model_tier"].as_str(),
             Some("big"),
-            "空名 probe 不得把 tier 写回（update_model_entry 匹配不到空名条目），实际：{entry}"
+            "空名 probe 探测的是默认模型条目，tier 必须写回实际被探测条目（BUG-20261030-218），实际：{entry}"
         );
     }
 }

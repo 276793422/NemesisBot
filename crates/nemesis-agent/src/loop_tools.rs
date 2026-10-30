@@ -7556,7 +7556,7 @@ fn cli_detail(command: &str) -> Result<String, String> {
   add -n <名称> -m <消息>       添加任务
             --every <秒>         间隔执行
             --cron <表达式>      Cron 表达式执行
-            --deliver            投递响应到通道
+            --deliver            存储兼容旗标（不抑制投递；响应恒投递，去向由 --channel/--to 决定）
             --to <接收者>        指定接收者
             --channel <通道>     指定通道
   remove <id>                   删除任务

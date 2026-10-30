@@ -25,6 +25,10 @@ pub struct CronPayload {
     pub kind: String,
     pub message: String,
     pub command: Option<String>,
+    /// Envelope field kept for store round-trip compat; not part of the declared
+    /// schema and not consulted by the fire path — delivery is unconditional
+    /// (documented verdict in nemesis-agent loop_tools cron tool). Honest-text
+    /// pass BUG-20261031-230: CLI/reference help must not claim it suppresses.
     pub deliver: bool,
     pub channel: Option<String>,
     pub to: Option<String>,
@@ -883,11 +887,20 @@ impl CronService {
         // 最终 (message, enabled) 组合判定（与上方死排程闸同构）：改空启用
         // 中作业的 message、或翻正休眠空 message 作业，都是空转僵尸，loud
         // 拒绝。校验在任何变更应用前，Err = 无副作用。
+        // 保留前缀内部作业豁免（BUG-20261031-228）：board-ap:/memory-dreaming:
+        // 作业 message 恒空但 on_job 在 message 判空**之前**按名分派拦截
+        // （add_job_internal 旁路同一理由）——无豁免时 autopilot 启动同步/
+        // 规则更新（arm_autopilot_job_with → patch_job）与 dreaming 配置
+        // 跟随全被本闸拒绝，排程更新永不生效。改名进保留命名空间在上方
+        // 保留前缀检查已 loud 拒绝，豁免不会被用户作业借道。
         let final_message = patch
             .message
             .clone()
             .unwrap_or_else(|| job.payload.message.clone());
-        if final_enabled && final_message.trim().is_empty() {
+        if final_enabled
+            && reserved_prefix_hit(&job.name).is_none()
+            && final_message.trim().is_empty()
+        {
             return Err(format!(
                 "patch 后 message 为空白，拒绝空转更新: {job_id} \
                  （启用的任务每次触发都不会投递任何内容；请给出消息文本）"
@@ -980,8 +993,12 @@ impl CronService {
         // BUG-20261030-222：空 message 闸延伸到 toggle 翻正方向（同死排程
         // 闸家族）——休眠空 message 作业翻正 = 空转僵尸，loud 拒绝。校验
         // 在任何变更应用前，Err = 无副作用（toggle 非幂等，拒绝后保持原
-        // 状态）。
-        if enabling && job.payload.message.trim().is_empty() {
+        // 状态）。保留前缀内部作业豁免（BUG-20261031-228，同 patch_job）：
+        // 内部作业 message 恒空但 on_job 按名分派先行，闸只管用户作业。
+        if enabling
+            && reserved_prefix_hit(&job.name).is_none()
+            && job.payload.message.trim().is_empty()
+        {
             return Err(format!(
                 "message 为空白，拒绝启用空转任务: {job_id} \
                  （启用的任务每次触发都不会投递任何内容；请先 patch 补上消息文本）"
@@ -1036,8 +1053,13 @@ impl CronService {
         }
         // BUG-20261030-222：空 message 闸延伸到启用路径（同死排程闸家族）
         // ——休眠空 message 作业启用 = 空转僵尸，loud 拒绝。校验在任何变
-        // 更应用前，Err = 无副作用。禁用方向不设闸。
-        if enabled && job.payload.message.trim().is_empty() {
+        // 更应用前，Err = 无副作用。禁用方向不设闸。保留前缀内部作业豁免
+        // （BUG-20261031-228，同 patch_job/toggle_job）：内部作业 message
+        // 恒空但 on_job 按名分派先行，闸只管用户作业。
+        if enabled
+            && reserved_prefix_hit(&job.name).is_none()
+            && job.payload.message.trim().is_empty()
+        {
             return Err(format!(
                 "message 为空白，拒绝启用空转任务: {job_id} \
                  （启用的任务每次触发都不会投递任何内容；请先 patch 补上消息文本）"

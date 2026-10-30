@@ -27,7 +27,7 @@ pub enum CronAction {
         /// Cron expression
         #[arg(short, long)]
         cron: Option<String>,
-        /// Deliver response to channel
+        /// Store round-trip compat flag; firing always delivers (not a suppression switch)
         #[arg(short, long)]
         deliver: bool,
         /// Recipient for delivery
