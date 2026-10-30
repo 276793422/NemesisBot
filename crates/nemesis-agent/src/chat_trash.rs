@@ -267,8 +267,26 @@ pub fn trash_chat_log_in(
         .unwrap_or_default()
         .as_millis() as u64;
     let name = entry_dir_name(session_key, now_ms);
-    let entry = loc.trash_root().join(&name);
-    std::fs::create_dir_all(&entry).map_err(|e| format!("创建回收站目录失败: {e}"))?;
+    // 同毫秒双删撞名防覆盖：ms 前缀在快机上不够区分（两次连续删除可落同一
+    // 毫秒），create_dir 原子占位 + `-2`/`-3` 换槽位。绝不复用已有目录——
+    // 复用会让第二次 move 覆掉第一删的 chat.jsonl（真丢件）。恢复链以
+    // trash.json 清单为权威，条目名后缀只影响孤儿反推的展示，无损。
+    std::fs::create_dir_all(loc.trash_root()).map_err(|e| format!("创建回收站根目录失败: {e}"))?;
+    let entry = {
+        let mut n = 1u32;
+        loop {
+            let candidate = if n == 1 {
+                loc.trash_root().join(&name)
+            } else {
+                loc.trash_root().join(format!("{name}-{n}"))
+            };
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+                Err(e) => return Err(format!("创建回收站目录失败: {e}")),
+            }
+        }
+    };
 
     let mut bytes = 0u64;
     for (from, to) in [
