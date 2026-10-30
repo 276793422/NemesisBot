@@ -119,6 +119,10 @@ impl nemesis_agent::r#loop::Tool for SelfupdateApplyTool {
                 "allow_downgrade": {
                     "type": "boolean",
                     "description": "Allow switching to an OLDER commit than the current one (default false; updates refuse downgrade without this)."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Force re-download and re-install even when already at the latest version (repair path for a corrupted local install; freshness gates are bypassed but signature verification, estop and locks still apply; default false)."
                 }
             },
             "required": []
@@ -126,18 +130,19 @@ impl nemesis_agent::r#loop::Tool for SelfupdateApplyTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let allow_downgrade = serde_json::from_str::<serde_json::Value>(args)
-            .unwrap_or(serde_json::json!({}))
+        let args = serde_json::from_str::<serde_json::Value>(args).unwrap_or(serde_json::json!({}));
+        let allow_downgrade = args
             .get("allow_downgrade")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let mgr = nemesis_web::handlers::selfupdate::manager().ok_or_else(|| {
             "selfupdate 编排器未装配（gateway 装配未完成或构建未带 selfupdate feature）".to_string()
         })?;
         let (version, commit) = identity();
         tokio::spawn(async move {
-            match mgr.apply(version, commit, allow_downgrade).await {
+            match mgr.apply(version, commit, allow_downgrade, force).await {
                 Ok(msg) => tracing::info!("[SelfUpdate] agent-tool apply: {msg}"),
                 Err(e) => tracing::warn!("[SelfUpdate] agent-tool apply 失败：{e}"),
             }

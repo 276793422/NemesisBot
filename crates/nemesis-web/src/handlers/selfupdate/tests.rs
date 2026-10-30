@@ -74,9 +74,17 @@ fn make_ctx() -> RequestContext {
 fn module_and_command_manifest() {
     assert_eq!(SelfupdateHandler.module_name(), "selfupdate");
     // 2026-10-21 两段式：新增 download / cancel_download（下载与安装分离）。
+    // 2026-10-30 完整性检查：integrity（只读比对已验签基线）。
     assert_eq!(
         SelfupdateHandler.commands(),
-        &["check", "download", "apply", "status", "cancel_download"]
+        &[
+            "check",
+            "download",
+            "apply",
+            "status",
+            "cancel_download",
+            "integrity"
+        ]
     );
 }
 

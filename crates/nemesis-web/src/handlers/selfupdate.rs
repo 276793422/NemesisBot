@@ -1,5 +1,13 @@
 //! L9 selfupdate WSAPI — `selfupdate.check` / `selfupdate.download` /
-//! `selfupdate.apply` / `selfupdate.status` / `selfupdate.cancel_download`。
+//! `selfupdate.apply` / `selfupdate.status` / `selfupdate.cancel_download` /
+//! `selfupdate.integrity`。
+//!
+//! download/apply 的 data 可带 `force: true`（2026-10-30 强制更新）：只豁免
+//! 新鲜度闸（同版重下重装、存量 pending 重拉）；estop / 单飞锁 / 跨进程
+//! 安装锁 / journal 闸 / sha256 / v4 验签**全部照常**——force 是「重装当前
+//! 版本」的意志，不是安全旁路。`selfupdate.integrity` = 完整性检查（对
+//! applied_manifest.json 已验签基线逐一比对活 exe 与 plugins/ 的 sha256；
+//! 只读不处置，修复路径 = 强制更新）。
 //!
 //! manager 槽（`set_manager`，gateway run_runtime 装配点注入）与启动身份
 //! 槽（`set_boot_identity`：version + 短 commit + workspace）都是静态槽
@@ -98,7 +106,14 @@ impl ModuleHandler for SelfupdateHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["check", "download", "apply", "status", "cancel_download"]
+        &[
+            "check",
+            "download",
+            "apply",
+            "status",
+            "cancel_download",
+            "integrity",
+        ]
     }
 
     async fn handle_cmd(
@@ -128,8 +143,15 @@ impl ModuleHandler for SelfupdateHandler {
             }
             // 两段式第一步：只下载 + 落盘 + sha 校验。受理即回（后台任务），
             // 进度走 SSE `selfupdate-progress` + status 轮询；重复调用幂等
-            // （同目标已在下/已就绪直接返回成功）。
+            // （同目标已在下/已就绪直接返回成功）。data.force=true（强制
+            // 更新）跳过「pending 已就绪」幂等早退——存量 pending 可能就是
+            // 残包，强制更新必须重拉。
             "download" => {
+                let force = data
+                    .as_ref()
+                    .and_then(|d| d.get("force"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 #[cfg(feature = "selfupdate")]
                 {
                     let mgr = manager().ok_or_else(|| {
@@ -139,7 +161,7 @@ impl ModuleHandler for SelfupdateHandler {
                         .map(|b| b.commit.clone())
                         .unwrap_or_default();
                     tokio::spawn(async move {
-                        match mgr.download(&commit).await {
+                        match mgr.download(&commit, force).await {
                             Ok(msg) => tracing::info!("[SelfUpdate] {msg}"),
                             Err(e) => tracing::warn!("[SelfUpdate] download 失败：{e}"),
                         }
@@ -151,6 +173,7 @@ impl ModuleHandler for SelfupdateHandler {
                 }
                 #[cfg(not(feature = "selfupdate"))]
                 {
+                    let _ = force;
                     Err("selfupdate 通道未编译（构建未带 selfupdate feature）；\
                          请手动下载 Release 包替换"
                         .to_string())
@@ -166,6 +189,11 @@ impl ModuleHandler for SelfupdateHandler {
                     .and_then(|d| d.get("allow_downgrade"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let force = data
+                    .as_ref()
+                    .and_then(|d| d.get("force"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 #[cfg(feature = "selfupdate")]
                 {
                     let mgr = manager().ok_or_else(|| {
@@ -175,7 +203,7 @@ impl ModuleHandler for SelfupdateHandler {
                         .map(|b| (b.version.clone(), b.commit.clone()))
                         .unwrap_or_default();
                     tokio::spawn(async move {
-                        match mgr.apply(&version, &commit, allow_downgrade).await {
+                        match mgr.apply(&version, &commit, allow_downgrade, force).await {
                             Ok(msg) => tracing::info!("[SelfUpdate] {msg}"),
                             Err(e) => tracing::warn!("[SelfUpdate] apply 失败：{e}"),
                         }
@@ -188,7 +216,7 @@ impl ModuleHandler for SelfupdateHandler {
                 }
                 #[cfg(not(feature = "selfupdate"))]
                 {
-                    let _ = allow_downgrade;
+                    let _ = (allow_downgrade, force);
                     Err("selfupdate 通道未编译（构建未带 selfupdate feature）；\
                          请手动下载 Release 包替换"
                         .to_string())
@@ -278,6 +306,25 @@ impl ModuleHandler for SelfupdateHandler {
                         "accepted": true,
                         "note": "取消请求已受理：下载中止后 updates/ 将被清空"
                     })))
+                }
+                #[cfg(not(feature = "selfupdate"))]
+                {
+                    Err("selfupdate 通道未编译（构建未带 selfupdate feature）".to_string())
+                }
+            }
+            // 完整性检查（2026-10-30）：活 exe + plugins/ 平面文件逐一对
+            // applied_manifest.json 已验签基线做 sha256 比对。只读不处置——
+            // 修复路径 = 强制更新（download/apply 带 force）。同步返回
+            //（本地哈希，秒级；无网络依赖）。
+            "integrity" => {
+                #[cfg(feature = "selfupdate")]
+                {
+                    let mgr = manager().ok_or_else(|| {
+                        "selfupdate 子系统未装配（gateway 装配未完成）".to_string()
+                    })?;
+                    let report = mgr.integrity_snapshot();
+                    let v = serde_json::to_value(&report).map_err(|e| e.to_string())?;
+                    Ok(Some(v))
                 }
                 #[cfg(not(feature = "selfupdate"))]
                 {

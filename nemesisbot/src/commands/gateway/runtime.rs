@@ -1075,7 +1075,10 @@ pub(crate) async fn run_runtime(
                         trigger_global_shutdown();
                         shutdown_svc_internal.shutdown();
                     }
-                    nemesis_web::internal::InternalCommand::SelfUpdateApply { allow_downgrade } => {
+                    nemesis_web::internal::InternalCommand::SelfUpdateApply {
+                        allow_downgrade,
+                        force,
+                    } => {
                         // L9：CLI `nemesisbot selfupdate apply` 经 /api/internal
                         // 落到这里——受理后 spawn 九步编排（pending 下载 +
                         // v4 验签 + staging 全程分钟级，不能占住监听）。成功路径 apply
@@ -1086,7 +1089,7 @@ pub(crate) async fn run_runtime(
                             let version = crate::common::VERSION_INFO.version;
                             let commit = crate::common::VERSION_INFO.git_commit;
                             tokio::spawn(async move {
-                                match mgr.apply(version, commit, allow_downgrade).await {
+                                match mgr.apply(version, commit, allow_downgrade, force).await {
                                     Ok(msg) => info!("[Gateway] selfupdate apply: {msg}"),
                                     Err(e) => warn!("[Gateway] selfupdate apply 失败：{e}"),
                                 }
@@ -1098,7 +1101,7 @@ pub(crate) async fn run_runtime(
                         }
                         #[cfg(not(feature = "selfupdate"))]
                         {
-                            let _ = allow_downgrade;
+                            let _ = (allow_downgrade, force);
                             warn!("[Gateway] selfupdate apply：构建未带 selfupdate feature，忽略");
                         }
                     }

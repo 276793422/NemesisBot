@@ -10,6 +10,10 @@ import { on as onSSE, off as offSSE } from '../composables/useSSE'
 // 数据源 = selfupdate.status（10s 轮询）+ selfupdate.check（手动）+
 // SSE selfupdate-progress。状态机与操作语义照抄 Sidebar 自更新长条（同源
 // 同命令，两处零耦合）。
+// 2026-10-30 增量：①程序完整性卡（selfupdate.integrity 只读比对上次成功
+// 更新的已验签清单基线——本地包损坏的发现面）；②强制更新（本地包残了不用
+// 手动去云端下载：下载(force)→就绪自动接安装(force) 的自动接力编排，
+// 跳过同版等新鲜度检查，签名验真与安全闸照常）。
 
 const { request } = useWSAPI()
 
@@ -47,6 +51,102 @@ const baseline = ref(true)
 const wired = ref(true)
 const platformOk = ref(true)
 const journalPhase = ref<string | null>(null)
+
+// ── 程序完整性（2026-10-30）──
+// 只读比对上次成功更新的已验签清单基线；不进 10s 轮询（全量哈希不必周期跑
+// ——进页自检 + 手动按钮）。verdict 枚举与后端 IntegrityVerdict 同构。
+interface IntegrityFileReport {
+  name: string
+  verdict: 'ok' | 'mismatch' | 'missing' | 'unreadable'
+  expected_sha256: string
+  actual_sha256: string
+}
+interface IntegrityReport {
+  verdict: 'ok' | 'mismatch' | 'no_baseline' | 'baseline_error'
+  baseline_commit: string
+  baseline_sequence: number
+  files: IntegrityFileReport[]
+  extra_files: string[]
+  note: string
+}
+const integrity = ref<IntegrityReport | null>(null)
+const integrityLoading = ref(false)
+
+async function loadIntegrity() {
+  if (integrityLoading.value) return
+  integrityLoading.value = true
+  try {
+    const r: any = await request('selfupdate', 'integrity', {}, 30000)
+    if (r && r.verdict) integrity.value = r
+  } catch (e: any) {
+    useToast().error(`完整性检查失败：${e?.message ?? e}`)
+  } finally {
+    integrityLoading.value = false
+  }
+}
+
+const integrityBadge = computed(() => {
+  const v = integrity.value?.verdict
+  if (v === 'ok')
+    return { cls: 'ok', label: '完整', title: 'exe 与插件文件与上次成功更新的已验签基线一致' }
+  if (v === 'mismatch')
+    return { cls: 'warn', label: '与基线不一致', title: '检测到文件损坏或被改动——可用强制更新修复' }
+  if (v === 'baseline_error')
+    return { cls: 'warn', label: '基线异常', title: '基线清单自身损坏或被篡改——可用强制更新重建' }
+  return {
+    cls: 'muted',
+    label: '无基线',
+    title: '本机没有已验签基线（手工安装目录或从未走通道更新），无法比对',
+  }
+})
+
+function fileVerdictLabel(v: IntegrityFileReport['verdict']) {
+  switch (v) {
+    case 'ok':
+      return '一致'
+    case 'mismatch':
+      return '不一致'
+    case 'missing':
+      return '缺失'
+    default:
+      return '读取失败'
+  }
+}
+
+function shortSha(s: string) {
+  return s ? s.slice(0, 16) + '…' : '—'
+}
+
+// ── 强制更新（2026-10-30）──
+// 一键编排：download(force) → 就绪自动接 apply(force)。forceApplySent 防
+// SSE ready 帧与轮询 refresh 双触发；apply 失败红条出现即退出编排（后续
+// 走红条的豁免重试 = 手动意志）。
+const forceFlow = ref(false)
+const forceApplySent = ref(false)
+
+async function startForceUpdate() {
+  const ok = window.confirm(
+    '确定强制更新？将重新下载云端最新包并直接安装——本地已是最新版本也会重装（用于修复本地程序损坏）。' +
+      '跳过「已是最新」等新鲜度检查，但签名验真、SHA-256 复验与安全闸照常执行，更新完成后自动重启。',
+  )
+  if (!ok) return
+  forceFlow.value = true
+  forceApplySent.value = false
+  try {
+    await request('selfupdate', 'download', { force: true }, 8000)
+    st.value = 'downloading'
+    applyProgress(0, null)
+  } catch (e: any) {
+    forceFlow.value = false
+    useToast().error(`强制更新受理失败：${e?.message ?? e}`)
+  }
+}
+
+async function autoApplyForForce() {
+  if (!forceFlow.value || forceApplySent.value) return
+  forceApplySent.value = true
+  await applyRequest({ force: true })
+}
 
 function fmtMb(n: number) {
   return (n / (1024 * 1024)).toFixed(1) + 'MB'
@@ -112,6 +212,7 @@ async function refresh() {
   const applyErr = resp.last_apply_error
   lastApplyError.value = applyErr && applyErr.message ? applyErr.message : ''
   applyErrDowngrade.value = !!(applyErr && applyErr.downgrade_denied)
+  if (lastApplyError.value) forceFlow.value = false // 受理失败红条 = 编排退出（豁免重试走手动）
   // 操作区状态机（侧栏 refreshSelfupdate 同构）。
   if (!resp.wired || !resp.platform_supported || resp.journal_phase) {
     st.value = 'hidden'
@@ -124,6 +225,7 @@ async function refresh() {
   if (resp.pending && resp.pending.release_tag) {
     st.value = 'ready'
     pendingTag.value = resp.pending.release_tag
+    void autoApplyForForce() // 强制更新编排：就绪即自动接安装
     return
   }
   if (resp.download && resp.download.active) {
@@ -137,6 +239,7 @@ async function refresh() {
     st.value = 'idle'
     return
   }
+  forceFlow.value = false // 回到无事务稳态 = 编排收口（成功重启后页面全新加载）
   st.value = 'hidden'
 }
 
@@ -221,6 +324,7 @@ function onProgress(d: any) {
       useToast().warn('更新包下载失败，已清理，可重新下载')
     }
     refresh() // 收口态以 status 快照为准
+    void autoApplyForForce() // 强制更新编排：SSE ready 帧与轮询双入口，同一守卫
     return
   }
   st.value = 'downloading'
@@ -231,6 +335,7 @@ let timer: number | null = null
 
 onMounted(() => {
   refresh()
+  loadIntegrity()
   timer = window.setInterval(refresh, 10000)
   onSSE('selfupdate-progress', onProgress)
 })
@@ -272,6 +377,51 @@ onUnmounted(() => {
             <button data-test="check-btn" class="btn btn-secondary" :disabled="checking" @click="checkNow">
               {{ checking ? '检查中…' : '检查更新' }}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 程序完整性检查卡（只读比对上次成功更新的已验签清单基线；
+           本地包损坏的发现面——修复走下方强制更新） -->
+      <div class="card">
+        <div class="card-header">
+          <h3>程序完整性</h3>
+          <span v-if="integrity" data-test="integrity-badge" class="badge" :class="`badge-${integrityBadge.cls}`" :title="integrityBadge.title">{{ integrityBadge.label }}</span>
+        </div>
+        <div class="card-body">
+          <div v-if="integrityLoading && !integrity" data-test="integrity-loading" class="empty-state">
+            <p>正在检查完整性…（逐文件 SHA-256 比对已验签基线）</p>
+          </div>
+          <template v-else-if="integrity">
+            <div data-test="integrity-note" class="note" :class="integrity.verdict === 'ok' ? '' : 'warn-note'">{{ integrity.note }}</div>
+            <table v-if="integrity.files.length" data-test="integrity-table" class="integrity-table">
+              <thead>
+                <tr><th>文件</th><th>判定</th><th>基线摘要</th><th>实际摘要</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="f in integrity.files" :key="f.name" :data-test="`integrity-file-${f.name}`">
+                  <td class="mono">{{ f.name }}</td>
+                  <td :class="f.verdict === 'ok' ? 'vd-ok' : 'vd-bad'">{{ fileVerdictLabel(f.verdict) }}</td>
+                  <td class="mono" :title="f.expected_sha256">{{ shortSha(f.expected_sha256) }}</td>
+                  <td class="mono" :class="{ 'vd-bad': f.verdict === 'mismatch' }" :title="f.actual_sha256">{{ shortSha(f.actual_sha256) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="integrity.extra_files.length" data-test="integrity-extras" class="cmp-sub" style="margin-top: var(--space-2);">
+              盘上另有 {{ integrity.extra_files.length }} 个非包内文件（用户自装插件，更新不会删除）：{{ integrity.extra_files.join('、') }}
+            </div>
+            <div class="integrity-actions">
+              <button data-test="integrity-refresh" class="btn btn-secondary btn-sm" :disabled="integrityLoading" @click="loadIntegrity">
+                {{ integrityLoading ? '检查中…' : '重新检查' }}
+              </button>
+              <button v-if="integrity.verdict === 'mismatch' || integrity.verdict === 'baseline_error'" data-test="integrity-force-btn" class="btn btn-primary btn-sm" @click="startForceUpdate">
+                强制更新修复
+              </button>
+            </div>
+          </template>
+          <div v-else class="empty-state">
+            <p>尚未检查——对 exe 与 plugins 做只读 SHA-256 比对（基线 = 上次成功更新的已验签清单）。</p>
+            <button data-test="integrity-refresh" class="btn btn-secondary btn-sm" :disabled="integrityLoading" @click="loadIntegrity">重新检查</button>
           </div>
         </div>
       </div>
@@ -330,11 +480,11 @@ onUnmounted(() => {
               <button data-test="dl-cancel" class="btn btn-secondary" @click="cancelDownload">取消</button>
             </div>
 
-            <!-- ready：待确认安装 -->
+            <!-- ready：待确认安装（强制更新编排中显示自动接力提示） -->
             <div v-else-if="st === 'ready'" data-test="op-ready" class="op-row">
               <div class="op-text">
                 <div class="op-title">更新包已就绪（{{ pendingTag }}，已通过 SHA-256 复验）</div>
-                <div class="op-sub">点击开始更新，确认后将校验签名并自动重启</div>
+                <div class="op-sub">{{ forceFlow && !forceApplySent ? '强制更新编排中：即将自动开始安装…' : '点击开始更新，确认后将校验签名并自动重启' }}</div>
               </div>
               <button data-test="apply-btn" class="btn btn-primary" @click="startApply">开始更新</button>
             </div>
@@ -350,6 +500,17 @@ onUnmounted(() => {
             <!-- hidden：无可用操作 -->
             <div v-else data-test="op-none" class="empty-state">
               <p>{{ badge.cls === 'ok' ? '当前已是最新版本，无需更新。' : '暂无可用更新操作——点上方【检查更新】查询云端版本。' }}</p>
+            </div>
+
+            <!-- 强制更新（2026-10-30）：跳过新鲜度检查的重装修复通道——本地
+                 已是最新也重装，签名验真/SHA-256 复验/estop 等安全闸照常 -->
+            <div v-if="st !== 'applying'" data-test="force-row" class="force-row">
+              <div class="op-text">
+                <div class="op-sub">本地程序损坏或文件被改动时，不用手动去云端重新下载——强制更新重新下载云端最新包并直接安装（已是最新也会重装；签名验真与安全闸照常）。</div>
+              </div>
+              <button data-test="force-btn" class="btn btn-secondary" :disabled="forceFlow || st === 'downloading'" @click="startForceUpdate">
+                {{ forceFlow ? '编排中…' : '强制更新' }}
+              </button>
             </div>
           </template>
         </div>
@@ -454,5 +615,44 @@ onUnmounted(() => {
   border-radius: 3px;
   background: var(--primary);
   transition: width 0.3s ease;
+}
+.force-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+}
+.integrity-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.integrity-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+}
+.integrity-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.integrity-table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.vd-ok {
+  color: var(--success);
+}
+.vd-bad {
+  color: var(--danger);
 }
 </style>

@@ -60,6 +60,22 @@ function statusPayload(over: Record<string, unknown> = {}) {
   }
 }
 
+// 与后端 IntegrityReport 投影同构（selfupdate.rs integrity_snapshot）。
+function integrityPayload(over: Record<string, unknown> = {}) {
+  return {
+    verdict: 'ok',
+    baseline_commit: 'b'.repeat(40),
+    baseline_sequence: 3,
+    files: [
+      { name: 'nemesisbot.exe', verdict: 'ok', expected_sha256: 'a'.repeat(64), actual_sha256: 'a'.repeat(64) },
+      { name: 'plugins/myplug.dll', verdict: 'ok', expected_sha256: 'b'.repeat(64), actual_sha256: 'b'.repeat(64) },
+    ],
+    extra_files: [],
+    note: '全部文件与已验签基线一致。',
+    ...over,
+  }
+}
+
 beforeEach(() => {
   sseHandlers.clear()
   wsapiRequest.mockReset()
@@ -416,5 +432,183 @@ describe('UpdateView SSE 与生命周期', () => {
     expect(offSSE).toHaveBeenCalledWith('selfupdate-progress', sseHandlers.get('selfupdate-progress'))
     // 卸载后推进时钟不炸（定时器已清）
     await vi.advanceTimersByTimeAsync(60000)
+  })
+})
+
+describe('UpdateView 程序完整性卡（2026-10-30）', () => {
+  it('integrity 未返回（空响应）：尚未检查空态 + 唯一重新检查按钮', async () => {
+    const w = await mounted()
+    expect(w.find('[data-test="integrity-badge"]').exists()).toBe(false)
+    expect(w.find('[data-test="integrity-loading"]').exists()).toBe(false)
+    expect(w.text()).toContain('尚未检查')
+    expect(w.findAll('[data-test="integrity-refresh"]').length).toBe(1)
+    w.unmount()
+  })
+
+  it('integrity ok：徽标完整 + 文件表渲染 + 无修复按钮', async () => {
+    const w = await mounted((m, c) => {
+      if (m === 'selfupdate' && c === 'status') return Promise.resolve(statusPayload())
+      if (m === 'selfupdate' && c === 'integrity') return Promise.resolve(integrityPayload())
+      return Promise.resolve({})
+    })
+    expect(wsapiRequest).toHaveBeenCalledWith('selfupdate', 'integrity', {}, 30000)
+    expect(w.find('[data-test="integrity-badge"]').text()).toBe('完整')
+    expect(w.find('[data-test="integrity-table"]').exists()).toBe(true)
+    expect(w.find('[data-test="integrity-file-nemesisbot.exe"]').exists()).toBe(true)
+    expect(w.find('[data-test="integrity-force-btn"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('mismatch：徽标不一致 + 实际摘要呈现（短码）+ 强制更新修复按钮在场', async () => {
+    const w = await mounted((m, c) => {
+      if (m === 'selfupdate' && c === 'status') return Promise.resolve(statusPayload())
+      if (m === 'selfupdate' && c === 'integrity')
+        return Promise.resolve(
+          integrityPayload({
+            verdict: 'mismatch',
+            note: '检测到 1 个文件与基线不一致——可用强制更新修复。',
+            files: [
+              { name: 'nemesisbot.exe', verdict: 'ok', expected_sha256: 'a'.repeat(64), actual_sha256: 'a'.repeat(64) },
+              { name: 'plugins/myplug.dll', verdict: 'mismatch', expected_sha256: 'b'.repeat(64), actual_sha256: 'f'.repeat(64) },
+            ],
+          }),
+        )
+      return Promise.resolve({})
+    })
+    expect(w.find('[data-test="integrity-badge"]').text()).toBe('与基线不一致')
+    const row = w.find('[data-test="integrity-file-plugins/myplug.dll"]')
+    expect(row.text()).toContain('不一致')
+    // 实际摘要短码 = 16 位 + 省略号（title 挂全量）
+    expect(row.text()).toContain('f'.repeat(16) + '…')
+    expect(w.find('[data-test="integrity-force-btn"]').text()).toBe('强制更新修复')
+    w.unmount()
+  })
+
+  it('no_baseline：徽标无基线 + 无表无修复按钮；extra_files 信息行（用户自装插件）', async () => {
+    const w = await mounted((m, c) => {
+      if (m === 'selfupdate' && c === 'status') return Promise.resolve(statusPayload())
+      if (m === 'selfupdate' && c === 'integrity')
+        return Promise.resolve(
+          integrityPayload({
+            verdict: 'no_baseline',
+            note: '本机没有已验签基线（手工安装目录或从未走通道更新），无法比对。',
+            files: [],
+            extra_files: ['plugins/user_extra.dll'],
+          }),
+        )
+      return Promise.resolve({})
+    })
+    expect(w.find('[data-test="integrity-badge"]').text()).toBe('无基线')
+    expect(w.find('[data-test="integrity-table"]').exists()).toBe(false)
+    expect(w.find('[data-test="integrity-extras"]').text()).toContain('user_extra.dll')
+    expect(w.find('[data-test="integrity-extras"]').text()).toContain('不会删除')
+    expect(w.find('[data-test="integrity-force-btn"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('重新检查按钮：转发 selfupdate.integrity（30s 预算）+ 进行中禁用', async () => {
+    let resolveIntegrity: (v: unknown) => void = () => {}
+    const w = await mounted((m, c) => {
+      if (m === 'selfupdate' && c === 'status') return Promise.resolve(statusPayload())
+      if (m === 'selfupdate' && c === 'integrity')
+        return new Promise((res) => {
+          resolveIntegrity = res
+        })
+      return Promise.resolve({})
+    })
+    // 首轮仍在 loading → 显示 loading 态
+    expect(w.find('[data-test="integrity-loading"]').exists()).toBe(true)
+    resolveIntegrity(integrityPayload())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(w.find('[data-test="integrity-badge"]').text()).toBe('完整')
+    // 重新检查：按钮点击转发 integrity（同命令；挂载已有一次 → 共 2 次）
+    const before = wsapiRequest.mock.calls.filter((c) => c[1] === 'integrity').length
+    await w.find('[data-test="integrity-refresh"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('selfupdate', 'integrity', {}, 30000)
+    expect(wsapiRequest.mock.calls.filter((c) => c[1] === 'integrity').length).toBe(before + 1)
+    w.unmount()
+  })
+})
+
+describe('UpdateView 强制更新编排（2026-10-30）', () => {
+  it('确认框 → download(force) → SSE ready → status pending → 自动 apply(force) → applying；双入口只发一次', async () => {
+    const w = await mounted()
+    confirmMock.mockReturnValue(true)
+    await w.find('[data-test="force-btn"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(String(confirmMock.mock.calls[0][0])).toContain('强制更新')
+    expect(String(confirmMock.mock.calls[0][0])).toContain('签名验真')
+    expect(wsapiRequest).toHaveBeenCalledWith('selfupdate', 'download', { force: true }, 8000)
+    expect(w.find('[data-test="op-downloading"]').exists()).toBe(true)
+
+    // SSE ready 帧（status 已切 pending 就绪）→ 自动接力 apply(force)
+    wsapiRequest.mockImplementation((mod: string, cmd: string) => {
+      if (mod === 'selfupdate' && cmd === 'status')
+        return Promise.resolve(statusPayload({ pending: { release_tag: 'v1.2.3' } }))
+      return Promise.resolve({})
+    })
+    sseHandlers.get('selfupdate-progress')!({ phase: 'ready', downloaded_bytes: 200 * 1024 * 1024 })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(wsapiRequest).toHaveBeenCalledWith('selfupdate', 'apply', { force: true }, 8000)
+    expect(w.find('[data-test="op-applying"]').exists()).toBe(true)
+    // 双入口守卫：后续轮询（refresh 的 pending 臂同样会调 autoApplyForForce）不再重复发 apply
+    const applyCalls = wsapiRequest.mock.calls.filter((c) => c[1] === 'apply').length
+    expect(applyCalls).toBe(1)
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(wsapiRequest.mock.calls.filter((c) => c[1] === 'apply').length).toBe(1)
+    w.unmount()
+  })
+
+  it('确认框取消：不发起强制下载，状态机未动', async () => {
+    const w = await mounted()
+    confirmMock.mockReturnValue(false)
+    await w.find('[data-test="force-btn"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).not.toHaveBeenCalledWith('selfupdate', 'download', { force: true }, 8000)
+    expect(w.find('[data-test="op-idle"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('强制下载受理失败：error toast + 编排退出（force 按钮恢复可点）', async () => {
+    const w = await mounted((m, c) => {
+      if (m === 'selfupdate' && c === 'status') return Promise.resolve(statusPayload())
+      if (m === 'selfupdate' && c === 'download') return Promise.reject(new Error('网络不可达'))
+      return Promise.resolve({})
+    })
+    confirmMock.mockReturnValue(true)
+    await w.find('[data-test="force-btn"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(toastError).toHaveBeenCalledTimes(1)
+    expect(toastError.mock.calls[0][0]).toContain('强制更新受理失败')
+    expect(toastError.mock.calls[0][0]).toContain('网络不可达')
+    expect((w.find('[data-test="force-btn"]').element as HTMLButtonElement).disabled).toBe(false)
+    w.unmount()
+  })
+
+  it('apply 受理失败红条出现 → 编排退出（后续轮询不自动重发 force apply）', async () => {
+    const w = await mounted((m, c) => {
+      if (m === 'selfupdate' && c === 'status')
+        return Promise.resolve(
+          statusPayload({
+            pending: { release_tag: 'v1.2.3' },
+            last_apply_error: { message: '签名验签未通过', downgrade_denied: false, at_ms: 1 },
+          }),
+        )
+      return Promise.resolve({})
+    })
+    confirmMock.mockReturnValue(true)
+    // ready 态下走强制编排（forceFlow=true、pending 在场 → refresh 已可能触发
+    // autoApplyForForce；这里直接点 force-btn 走 download(force) 语义不变）。
+    await w.find('[data-test="force-btn"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    // 红条在场 = lastApplyError → forceFlow 已退出；后续轮询不重复发 apply
+    expect(w.find('[data-test="apply-error"]').exists()).toBe(true)
+    const applyCount = wsapiRequest.mock.calls.filter((c) => c[1] === 'apply').length
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(wsapiRequest.mock.calls.filter((c) => c[1] === 'apply').length).toBe(applyCount)
+    w.unmount()
   })
 })

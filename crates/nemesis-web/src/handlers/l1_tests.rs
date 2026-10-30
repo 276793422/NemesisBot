@@ -242,7 +242,6 @@ fn registry_anchor_commands_present() {
     }
     if cfg!(feature = "security") {
         assert!(cmds_of(&reg, "security").contains(&"config.get"));
-        assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
         // Full Access 编辑器放行开关(2026-09-20)。
         assert!(cmds_of(&reg, "editor").contains(&"get"));
         assert!(cmds_of(&reg, "editor").contains(&"set"));
@@ -251,6 +250,13 @@ fn registry_anchor_commands_present() {
         assert!(cmds_of(&reg, "vault").contains(&"set"));
         // L7c（2026-10-13）：解锁测试命令。
         assert!(cmds_of(&reg, "vault").contains(&"unlock"));
+    }
+    // scanner 2026-09-28 从 security 拆分（细粒度化）：handler 模块在
+    // handlers/mod.rs 随 `scanner` feature 单独门控（security 只含本体+
+    // editor+vault），锚点闸必须与 cfg 对齐——security-on/scanner-off 构建
+    // 下模块缺席，挂在 security 闸里恒红（2026-10-30 全量跑批实录）。
+    if cfg!(feature = "scanner") {
+        assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
     }
     if cfg!(feature = "sandbox") {
         assert!(cmds_of(&reg, "sandbox").contains(&"commit"));

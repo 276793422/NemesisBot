@@ -1251,14 +1251,18 @@ pub async fn handle_api_internal(
                 .get("allow_downgrade")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            tx.send(crate::internal::InternalCommand::SelfUpdateApply { allow_downgrade })
-                .await
-                .map_err(|_| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "send failed"})),
-                    )
-                })?;
+            let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            tx.send(crate::internal::InternalCommand::SelfUpdateApply {
+                allow_downgrade,
+                force,
+            })
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "send failed"})),
+                )
+            })?;
         }
         _ => {
             return Err((
