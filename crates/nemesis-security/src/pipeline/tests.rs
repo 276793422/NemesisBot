@@ -109,6 +109,65 @@ fn test_credential_in_args_blocked() {
     assert!(err.unwrap().summary.contains("credential"));
 }
 
+// BUG-20261030-210 红证（管线级）：Layer 4 凭据扫描此前只扫 args 顶层
+// string 值——嵌套载荷（multiedit edits[].new_text、headers 对象、数组）
+// 整体跳过；credential 模式集中 ~20 条（EC/DSA/PGP 私钥头、SendGrid、
+// Slack webhook、npm token、裸 Bearer、…）DLP 无对应规则 → 嵌套位置
+// 双层全漏。L1 注入与 L5 DLP 均递归提取文本，L4 同样必须递归。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_credential_nested_multiedit_new_text_blocked() {
+    let plugin = make_plugin();
+    // SendGrid 键形态样本用分段拼接构造：完整字面量会触发 GitHub push
+    // protection（合成占位串，非真实密钥）；运行时拼接结果与原字面量
+    // 逐字节一致，凭据扫描器检测语义不变（BUG-20261030-210 回归测试）。
+    let sg_key = format!(
+        "SG Key: SG.{}.{}",
+        "abcdefghijklmnopqrstuv",
+        "wxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc"
+    );
+    let inv = ToolInvocation {
+        tool_name: "multiedit".to_string(),
+        args: serde_json::json!({
+            "edits": [
+                {
+                    "path": "/tmp/config.py",
+                    "old_text": "placeholder",
+                    "new_text": sg_key
+                }
+            ]
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    assert!(err.unwrap().summary.contains("credential"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_credential_nested_object_blocked() {
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "write_file".to_string(),
+        args: serde_json::json!({
+            "path": "/tmp/deploy.json",
+            "config": {
+                "endpoint": "https://hooks.example.com",
+                "headers": {
+                    "Authorization": "Bearer abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
+                }
+            }
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    assert!(err.unwrap().summary.contains("credential"));
+}
+
 #[test]
 fn test_ssrf_blocked() {
     // Disable DLP so the IP address in the URL isn't caught by DLP first
