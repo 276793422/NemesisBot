@@ -13,6 +13,11 @@ fn sensitive_names_match_blacklist_patterns() {
     assert!(is_sensitive_env_name("GITHUB_TOKEN"));
     assert!(is_sensitive_env_name("AWS_SECRET_ACCESS_KEY"));
     assert!(is_sensitive_env_name("DB_PASSWORD"));
+    // BUG-20261030-215：PASSWD 是 PASSWORD 的标准变体拼写，漏词时
+    // MYSQL_PASSWD 等凭据变量既不被 spawn 前剥除、也不被 shell_bleed
+    // 泄漏检测识别（两道防线同源词表同漏）。
+    assert!(is_sensitive_env_name("MYSQL_PASSWD"));
+    assert!(is_sensitive_env_name("ftp_passwd"));
     assert!(is_sensitive_env_name("GOOGLE_CREDENTIALS"));
     assert!(is_sensitive_env_name("NEMESISBOT_ROLE"));
     assert!(is_sensitive_env_name("NEMESISBOT_EXECUTOR_PIPE"));

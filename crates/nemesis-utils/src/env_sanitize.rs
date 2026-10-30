@@ -49,7 +49,11 @@ const WHITELIST: &[&str] = &[
 ];
 
 /// 黑名单子串（大小写不敏感）：变量名含任一即剥。
-const BLACKLIST_SUBSTRINGS: &[&str] = &["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
+/// `PASSWD` 是 PASSWORD 的标准变体拼写（MYSQL_PASSWD / FTP_PASSWD /
+/// ORACLE_PASSWD 等真实工具变量名——BUG-20261030-215：漏词导致这些凭据
+/// 既不被 spawn 前剥除、也不被 shell_bleed 泄漏检测识别，两道防线同漏）。
+const BLACKLIST_SUBSTRINGS: &[&str] =
+    &["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"];
 
 /// 变量名是否敏感（应剥）。大小写不敏感；白名单优先。
 pub fn is_sensitive_env_name(name: &str) -> bool {
