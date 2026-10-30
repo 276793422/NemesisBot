@@ -647,17 +647,18 @@ impl SlotProvider for BareSlotProvider {
 }
 
 /// make_state 的 AppState 是无人共享的新 Arc——就地把 streaming_provider
-/// 注入（harness 保持单构造点）。返回同型 Arc<BareSlotProvider> 观测句柄
-/// （与注入的 trait object 同一实例）。
-fn with_streaming(
+/// 注入（harness 保持单构造点）。返回同型 Arc<P> 观测句柄（与注入的
+/// trait object 同一实例）。泛型参数兼容无 `chat_stream` 覆写的
+/// BareNoStreamProvider（BUG-a 观测点）。
+fn with_streaming<P: SlotProvider + 'static>(
     state: Arc<AppState>,
-    provider: Arc<BareSlotProvider>,
-) -> (Arc<AppState>, Arc<BareSlotProvider>) {
+    provider: Arc<P>,
+) -> (Arc<AppState>, Arc<P>) {
     let mut inner = match Arc::try_unwrap(state) {
         Ok(v) => v,
         Err(_) => panic!("test state must have no other owners"),
     };
-    inner.streaming_provider = Some(provider.clone());
+    inner.streaming_provider = Some(provider.clone() as Arc<dyn SlotProvider>);
     (Arc::new(inner), provider)
 }
 
@@ -1113,4 +1114,291 @@ async fn bare_chat_options_merge_caller_params_and_master_card() {
     assert_eq!(seen[1].options.max_tokens, Some(1024));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-a（2026-10-30）：无 chat_stream lane 的 provider → 流式回落非流式
+// ---------------------------------------------------------------------------
+
+/// 无 `chat_stream` 覆写的槽 provider：stream 请求踩 LLMProvider trait
+/// 缺省实现（首帧 Unknown "streaming ... not implemented ..."）——此前
+/// 裸转发直接 502，修复后应回落非流式合成 SSE。
+struct BareNoStreamProvider {
+    seen: Mutex<Vec<BareSeen>>,
+    reply: Option<SlotLlmResponse>,
+    error: Option<SlotError>,
+}
+
+impl BareNoStreamProvider {
+    fn seen(&self) -> Vec<BareSeen> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl SlotProvider for BareNoStreamProvider {
+    async fn chat(
+        &self,
+        messages: &[SlotMessage],
+        tools: &[SlotToolDefinition],
+        model: &str,
+        options: &SlotChatOptions,
+    ) -> Result<SlotLlmResponse, SlotError> {
+        self.seen.lock().unwrap().push(BareSeen {
+            model: model.to_string(),
+            messages: messages.to_vec(),
+            tools: tools.len(),
+            options: options.clone(),
+        });
+        if let Some(e) = &self.error {
+            return Err(e.clone());
+        }
+        self.reply.clone().ok_or_else(|| SlotError::Format {
+            provider: "bare-nostream-test".to_string(),
+            message: "no scripted reply".to_string(),
+        })
+    }
+
+    // 刻意不覆写 chat_stream / stream_preferred：踩 trait 缺省实现。
+
+    fn name(&self) -> &str {
+        "bare-nostream-test"
+    }
+
+    fn default_model(&self) -> &str {
+        "test-model"
+    }
+}
+
+fn nostream_with_reply(p: SlotLlmResponse) -> Arc<BareNoStreamProvider> {
+    Arc::new(BareNoStreamProvider {
+        seen: Mutex::new(Vec::new()),
+        reply: Some(p),
+        error: None,
+    })
+}
+
+#[tokio::test]
+async fn bare_stream_falls_back_to_non_stream_when_lane_missing() {
+    let state = script_state(vec![]);
+    let provider = nostream_with_reply(slot_reply(
+        "FALLBACK_REPLY",
+        vec![slot_tool_call("call_fb", "exec", "{\"cmd\":\"ls\"}")],
+    ));
+    let (state, provider) = with_streaming(state, provider);
+
+    let resp = api_chat_completions(&state, &body(&bare_request(true))).await;
+    let (status, headers, text) = resp_text(resp).await;
+    // 回落 = 200 SSE（此前 502 "streaming ... not implemented"）。
+    assert_eq!(status, 200, "{text}");
+    assert!(
+        headers
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .starts_with("text/event-stream"),
+        "回落后仍必须是 SSE"
+    );
+    assert_eq!(
+        headers
+            .get("x-nemesis-execution-model")
+            .and_then(|h| h.to_str().ok()),
+        Some("test-model")
+    );
+    // 全量 content 单 delta 帧 + tool_calls delta 帧。
+    assert!(text.contains("\"content\":\"FALLBACK_REPLY\""), "{text}");
+    assert!(text.contains("\"name\":\"exec\""), "{text}");
+    assert!(text.contains("\"id\":\"call_fb\""), "{text}");
+    // 终帧 finish_reason/usage + [DONE]。
+    assert!(text.contains("\"finish_reason\":\"tool_calls\""), "{text}");
+    assert!(text.contains("\"total_tokens\":18"), "{text}");
+    assert!(text.contains("data: [DONE]"), "{text}");
+    // 走的是非流式 chat()（seen 恰 1 次、带 tools）。
+    let seen = provider.seen();
+    assert_eq!(seen.len(), 1, "应恰好一次非流式 chat() 调用");
+    assert_eq!(seen[0].tools, 1);
+    // 消息保真：文本原样到达 provider。
+    assert_eq!(seen[0].messages[0].role, "user",);
+}
+
+#[tokio::test]
+async fn bare_stream_fallback_upstream_error_is_honest_json() {
+    let state = script_state(vec![]);
+    let provider = Arc::new(BareNoStreamProvider {
+        seen: Mutex::new(Vec::new()),
+        reply: None,
+        error: Some(SlotError::Unknown {
+            provider: "upstream".to_string(),
+            message: "connect error (model test-model): connection refused".to_string(),
+        }),
+    });
+    let (state, provider) = with_streaming(state, provider);
+
+    // 回落后的 chat() 失败 = 真实上游错误，诚实 JSON 上报（不是 SSE）。
+    let (status, _, v) =
+        resp_parts(api_chat_completions(&state, &body(&bare_request(true))).await).await;
+    assert_eq!(status, 502);
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("connect error"),
+        "{v}"
+    );
+    // 回落确实跑过（chat() 被调 1 次）——不是把流式失败直接透传。
+    assert_eq!(provider.seen().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-b（2026-10-30）：OpenAI image_url 多模态 parts 归一（不再静默清空）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn normalize_content_string_passthrough() {
+    let v = serde_json::json!("hello");
+    let out = normalize_openai_content(&v).unwrap();
+    assert_eq!(out, SlotMessageContent::Text("hello".to_string()));
+}
+
+#[test]
+fn normalize_content_text_and_image_data_uri() {
+    let v = serde_json::json!([
+        { "type": "text", "text": "say OK" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+    ]);
+    let out = normalize_openai_content(&v).unwrap();
+    let SlotMessageContent::Parts(parts) = out else {
+        panic!("expected parts, got {out:?}");
+    };
+    assert_eq!(parts.len(), 2);
+    assert_eq!(
+        parts[0],
+        nemesis_providers::types::ContentPart::Text {
+            text: "say OK".to_string()
+        }
+    );
+    assert_eq!(
+        parts[1],
+        nemesis_providers::types::ContentPart::Image {
+            image: nemesis_providers::types::ImageSource::Base64 {
+                media_type: "image/png".to_string(),
+                data: "iVBORw0KGgo=".to_string(),
+            },
+            detail: None,
+        }
+    );
+}
+
+#[test]
+fn normalize_content_image_url_http_and_detail() {
+    let v = serde_json::json!([
+        {
+            "type": "image_url",
+            "image_url": { "url": "https://example.com/a.png", "detail": "high" }
+        }
+    ]);
+    let out = normalize_openai_content(&v).unwrap();
+    let SlotMessageContent::Parts(parts) = out else {
+        panic!("expected parts, got {out:?}");
+    };
+    assert_eq!(
+        parts[0],
+        nemesis_providers::types::ContentPart::Image {
+            image: nemesis_providers::types::ImageSource::Url(
+                "https://example.com/a.png".to_string()
+            ),
+            detail: Some(nemesis_providers::types::ImageDetail::High),
+        }
+    );
+}
+
+#[test]
+fn normalize_content_unknown_part_is_err_not_silent() {
+    let v = serde_json::json!([
+        { "type": "text", "text": "keep me" },
+        { "type": "audio", "audio": { "data": "xx" } }
+    ]);
+    assert!(normalize_openai_content(&v).is_err());
+}
+
+#[test]
+fn to_provider_message_malformed_parts_falls_back_to_text_not_empty() {
+    // 畸形 part（缺 text 字段）→ 兜底退化为纯文本（text() 拼接），
+    // 绝不清空整条消息（修复前 unwrap_or_default 落空串）。
+    let m = OpenAiMessage {
+        role: "user".to_string(),
+        content: Some(serde_json::json!([
+            { "type": "text", "text": "line one" },
+            { "type": "image_url" }
+        ])),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+    };
+    let out = m.to_provider_message();
+    assert_eq!(
+        out.content,
+        SlotMessageContent::Text("line one".to_string())
+    );
+}
+
+#[test]
+fn to_provider_message_openai_image_parts_map_to_internal_image() {
+    // OpenAI wire 形态 image_url parts → 内部 Text + Image(Base64)——
+    // 修复前整个 Vec 反序列化失败 → 整条消息清空（BUG-b）。
+    let m = OpenAiMessage {
+        role: "user".to_string(),
+        content: Some(serde_json::json!([
+            { "type": "text", "text": "say OK" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+        ])),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+    };
+    let out = m.to_provider_message();
+    let SlotMessageContent::Parts(parts) = out.content else {
+        panic!("expected parts, got {:?}", out.content);
+    };
+    assert_eq!(parts.len(), 2, "text 与 image part 都必须在场");
+}
+
+#[tokio::test]
+async fn bare_multimodal_request_reaches_provider_with_both_parts() {
+    // 端到端（裸 lane 非流式）：image_url 请求 → provider 收到
+    // Parts([Text, Image])，不再静默清空。
+    let state = script_state(vec![]);
+    let provider = slot_with_reply(BareSlotProvider::new(), slot_reply("ok", vec![]));
+    let (state, bare) = with_streaming(state, provider);
+
+    let mut req = bare_request(false);
+    req["messages"] = serde_json::json!([
+        {
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "say OK" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+            ]
+        }
+    ]);
+    let resp = api_chat_completions(&state, &body(&req)).await;
+    assert_eq!(resp.status(), 200);
+
+    let seen = bare.seen();
+    assert_eq!(seen.len(), 1);
+    let SlotMessageContent::Parts(parts) = &seen[0].messages[0].content else {
+        panic!("expected parts, got {:?}", seen[0].messages[0].content);
+    };
+    assert_eq!(parts.len(), 2);
+    assert_eq!(
+        parts[0],
+        nemesis_providers::types::ContentPart::Text {
+            text: "say OK".to_string()
+        }
+    );
+    assert!(matches!(
+        parts[1],
+        nemesis_providers::types::ContentPart::Image {
+            image: nemesis_providers::types::ImageSource::Base64 { .. },
+            ..
+        }
+    ));
 }

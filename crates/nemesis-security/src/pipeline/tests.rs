@@ -122,8 +122,7 @@ async fn test_credential_nested_multiedit_new_text_blocked() {
     // 逐字节一致，凭据扫描器检测语义不变（BUG-20261030-210 回归测试）。
     let sg_key = format!(
         "SG Key: SG.{}.{}",
-        "abcdefghijklmnopqrstuv",
-        "wxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc"
+        "abcdefghijklmnopqrstuv", "wxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc"
     );
     let inv = ToolInvocation {
         tool_name: "multiedit".to_string(),
