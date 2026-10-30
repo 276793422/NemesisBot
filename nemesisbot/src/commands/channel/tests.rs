@@ -1410,6 +1410,95 @@ fn test_run_disable_unknown_and_no_config() {
 }
 
 // -------------------------------------------------------------------------
+// BUG-20261030-216 / BUG-20261030-217 回归
+// -------------------------------------------------------------------------
+
+// BUG-20261030-216 回归：非 ASCII auth_token 的 setup 预览必须走 char
+// boundary 安全切片——此前裸 &token[..4.min(len)]，多字节字符中间切 →
+// CLI panic（「密码12345678」16 字节，[..4] 落在「码」内部）。EOF 驱动
+// 保留现有值，token 预览打印执行即触发红证路径。
+#[test]
+fn test_run_websocket_setup_non_ascii_token_no_panic() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "websocket": {
+                    "enabled": false,
+                    "host": "127.0.0.1",
+                    "port": 49001,
+                    "path": "/ws",
+                    "auth_token": "密码12345678"
+                }
+            }
+        }),
+    );
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Setup,
+        },
+        false,
+    )
+    .expect("非 ASCII token 的 setup 全程不得 panic");
+    // EOF 保留现有 token；不因修复引入值漂移
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["websocket"]["auth_token"],
+        serde_json::json!("密码12345678")
+    );
+}
+
+// BUG-20261030-217 回归：config 存在但 channels 键整体缺席时 Enable 必须
+// 自动建路径写盘——此前手搓 pointer_mut 两分支都不命中，配置未写入却打印
+// "Channel enabled"（假成功）。
+#[test]
+fn test_run_enable_creates_channels_key_when_absent() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "agents": { "defaults": { "llm": "x/y" } } }),
+    );
+    run(
+        ChannelAction::Enable {
+            name: "telegram".into(),
+        },
+        false,
+    )
+    .unwrap();
+    let cfg = read_main_cfg(&th.home);
+    assert_eq!(
+        cfg["channels"]["telegram"]["enabled"],
+        serde_json::json!(true),
+        "channels 键缺席时 Enable 必须落盘成功"
+    );
+    // 既有顶层键不得被重建路径破坏
+    assert_eq!(cfg["agents"]["defaults"]["llm"], serde_json::json!("x/y"));
+}
+
+// Disable 语义钉住：channels 键缺席 = 语义 no-op（频道本就未启用），
+// 不得物化 {enabled:false} 假条目。
+#[test]
+fn test_run_disable_when_channels_absent_is_noop() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({}));
+    run(ChannelAction::Disable { name: "web".into() }, false).unwrap();
+    let cfg = read_main_cfg(&th.home);
+    assert!(
+        cfg.get("channels").is_none(),
+        "Disable 对缺席频道不得物化假条目"
+    );
+}
+
+// -------------------------------------------------------------------------
 // Status（web / websocket / 默认 / 未配置 / 无 config）
 // -------------------------------------------------------------------------
 

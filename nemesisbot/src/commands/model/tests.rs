@@ -2035,7 +2035,7 @@ fn test_s11b_format_probe_report_direct() {
         ],
         vision_probe: Some(true),
     };
-    let s = super::format_probe_report("glm-4.7", &report);
+    let s = super::format_probe_report("glm-4.7", &report, true);
     assert!(s.contains("能力探针报告: glm-4.7"));
     assert!(s.contains("format=0.85"), "总分保留两位小数：{s}");
     assert!(s.contains("selection=0.71"));
@@ -2044,6 +2044,14 @@ fn test_s11b_format_probe_report_direct() {
     assert!(s.contains("grep"));
     assert!(s.contains("tier=normal"), "tier 结论行：{s}");
     assert!(s.contains("vision=支持"), "T10 第 8 题视觉探针结论行：{s}");
+    assert!(s.contains("已写入 config.json"), "wrote=true 分支：{s}");
+    // BUG-20261030-218：wrote=false 必须如实标注未写入，不得谎称已写入
+    let s_not = super::format_probe_report("glm-4.7", &report, false);
+    assert!(s_not.contains("未写入"), "wrote=false 诚实分支：{s_not}");
+    assert!(
+        !s_not.contains("已写入 config.json"),
+        "wrote=false 不得出现已写入字样：{s_not}"
+    );
     // 空任务表也能格式化
     let empty = ProbeReport {
         format_score: 0.0,
@@ -2053,9 +2061,26 @@ fn test_s11b_format_probe_report_direct() {
         per_task: vec![],
         vision_probe: None,
     };
-    let s2 = super::format_probe_report("m", &empty);
+    let s2 = super::format_probe_report("m", &empty, true);
     assert!(s2.contains("tier=mini"));
     assert!(s2.contains("vision=未定"), "未定分支：{s2}");
+}
+
+// BUG-20261030-218 配套：update_model_entry 对空串 name 永不命中（full/
+// alias/suffix 三匹配都不可能匹配空串）——run_probe 写回必须用解析后的
+// llm_ref 而非原始 name，否则 `probe ""` 的探针结果静默丢失。
+#[test]
+fn test_update_model_entry_empty_name_never_matches() {
+    use crate::commands::model::update_model_entry_for_test;
+    let mut config = serde_json::json!({
+        "model_list": [{ "model": "zhipu/glm-4.7", "model_name": "glm-4.7" }]
+    });
+    assert!(
+        !update_model_entry_for_test(&mut config, "", |_| {}),
+        "空 name 不得命中任何条目（写回错位的红证基础）"
+    );
+    // 对照：解析后的 llm_ref（别名）命中
+    assert!(update_model_entry_for_test(&mut config, "glm-4.7", |_| {}));
 }
 
 // ===========================================================================
@@ -2773,6 +2798,62 @@ mod wave_a {
         .unwrap_err();
         assert!(err.to_string().contains("模型名不能为空"));
         assert!(reopen_custom(&th.home).is_empty(), "失败路径不得落条目");
+    }
+
+    // BUG-20261030-219 回归：基础价含 NaN/inf 必须 loud 拒绝且不落条目
+    // （clap f64 解析接受 "NaN"/"inf" 字面量；阶梯价 parse_price_tiers 已有
+    // is_finite 校验，基础价此前无——同函数族口径对齐）。
+    #[tokio::test]
+    async fn prices_add_rejects_non_finite_base_prices() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        for (label, input, output) in [
+            ("NaN input", f64::NAN, 2.0),
+            ("inf input", f64::INFINITY, 2.0),
+            ("NaN output", 1.0, f64::NAN),
+            ("neg-inf output", 1.0, f64::NEG_INFINITY),
+        ] {
+            let err = super::super::run_prices(
+                PricesAction::Add {
+                    model: "acme/bad".into(),
+                    input,
+                    output,
+                    cache_read: 0.0,
+                    cache_creation: 0.0,
+                    display: None,
+                    price_tiers: Vec::new(),
+                },
+                &th.home,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("有限数值"),
+                "{label} 必须 loud 拒绝：{err}"
+            );
+        }
+        // cache 价维度同样受校验（好 in/out + 坏 cache_read）
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/bad2".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: f64::NAN,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: Vec::new(),
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("有限数值"), "坏 cache_read：{err}");
+        assert!(
+            reopen_custom(&th.home).is_empty(),
+            "全部失败路径不得落任何条目"
+        );
     }
 
     #[tokio::test]

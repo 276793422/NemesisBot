@@ -152,34 +152,17 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 return Ok(());
             }
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
-                let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
-                // Set channels.<name>.enabled = true
-                if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", name)) {
-                    let obj = ch.as_object_mut().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "config.json 中 channels.{} 不是 JSON 对象（配置已损坏），\
-                             拒绝覆盖以免丢失数据；请手工修正该条目后重试",
-                            name
-                        )
-                    })?;
-                    obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                } else if let Some(channels) = cfg
-                    .as_object_mut()
-                    .and_then(|o| o.get_mut("channels"))
-                    .and_then(|v| v.as_object_mut())
-                {
-                    channels.insert(name.clone(), serde_json::json!({"enabled": true}));
-                }
-                // REL-002：统一原子写入（主 config 含 API key，0600）。
-                nemesis_utils::write_file_atomic(
-                    &cfg_path.to_string_lossy(),
-                    serde_json::to_string_pretty(&cfg)
-                        .unwrap_or_default()
-                        .as_bytes(),
-                    0o600,
-                )
-                .map_err(anyhow::Error::msg)?;
+                // 统一走 set_channel_config_value（BUG-20261030-217）：此前手搓
+                // pointer_mut 逻辑只覆盖「条目在」「channels 对象在但条目缺」
+                // 两臂——config.json 存在但 **channels 键整体缺席**时两分支都
+                // 不命中，配置未写入却打印 "Channel enabled"（假成功）。helper
+                // 三臂全接（含缺席自动建路径）+ 损坏形态 loud 拒绝 + 原子写。
+                set_channel_config_value(
+                    &cfg_path,
+                    &name,
+                    "enabled",
+                    serde_json::Value::Bool(true),
+                )?;
             }
             println!("Channel '{}' enabled.", name);
             println!("Restart gateway for changes to take effect.");
@@ -203,12 +186,14 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     })?;
                     obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                 }
-                // REL-002：统一原子写入（主 config 含 API key，0600）。
+                // REL-002：统一原子写入（主 config 含 API key，0600）。序列化
+                // 失败 loud 报错而非 unwrap_or_default 静默写空文件（model-4
+                // 同款纪律；Value 序列化当前不可达失败，保底不写空）。
+                let body = serde_json::to_string_pretty(&cfg)
+                    .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
                 nemesis_utils::write_file_atomic(
                     &cfg_path.to_string_lossy(),
-                    serde_json::to_string_pretty(&cfg)
-                        .unwrap_or_default()
-                        .as_bytes(),
+                    body.as_bytes(),
                     0o600,
                 )
                 .map_err(anyhow::Error::msg)?;
@@ -570,7 +555,9 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         if token.is_empty() {
                             "none"
                         } else {
-                            &token[..4.min(token.len())]
+                            // BUG-20261030-216：token 预览必须走 char boundary 安全切片——
+                            // 裸 &token[..4] 在多字节字符中间切会 panic（如中文 token「密码…」第 4 字节落「码」内部）。
+                            &token[..nemesis_types::utils::floor_char_boundary(&token, 4)]
                         }
                     );
                     io::stdout().flush().ok();
@@ -596,24 +583,16 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         set_channel_config(&cfg_path, "websocket", "auth_token", &token)?;
                     }
 
-                    // Enable the websocket channel
-                    if let Ok(data) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                    {
-                        if let Some(ws) = cfg.pointer_mut("/channels/websocket")
-                            && let Some(obj) = ws.as_object_mut()
-                        {
-                            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                        }
-                        // REL-002：统一原子写入。
-                        let _ = nemesis_utils::write_file_atomic(
-                            &cfg_path.to_string_lossy(),
-                            serde_json::to_string_pretty(&cfg)
-                                .unwrap_or_default()
-                                .as_bytes(),
-                            0o600,
-                        );
-                    }
+                    // Enable the websocket channel（BUG-20261030-217 同修：统一走
+                    // set_channel_config_value，写失败 loud 上抛——此前读/解析
+                    // 失败静默跳过、`let _ =` 吞写失败，值已存而 enabled 未开
+                    // 仍打印 "configured and enabled"）。
+                    set_channel_config_value(
+                        &cfg_path,
+                        "websocket",
+                        "enabled",
+                        serde_json::Value::Bool(true),
+                    )?;
 
                     // Sync to Web channel question
                     print!("  Sync to Web channel? (Y/n): ");
@@ -771,24 +750,14 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     }
                     set_channel_config(&cfg_path, "external", "chat_id", &chat_id)?;
 
-                    // Enable the external channel
-                    if let Ok(data) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                    {
-                        if let Some(ext) = cfg.pointer_mut("/channels/external")
-                            && let Some(obj) = ext.as_object_mut()
-                        {
-                            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                        }
-                        // REL-002：统一原子写入。
-                        let _ = nemesis_utils::write_file_atomic(
-                            &cfg_path.to_string_lossy(),
-                            serde_json::to_string_pretty(&cfg)
-                                .unwrap_or_default()
-                                .as_bytes(),
-                            0o600,
-                        );
-                    }
+                    // Enable the external channel（BUG-20261030-217 同修：同
+                    // websocket setup，吞错写盘改为 loud 上抛）。
+                    set_channel_config_value(
+                        &cfg_path,
+                        "external",
+                        "enabled",
+                        serde_json::Value::Bool(true),
+                    )?;
 
                     println!("External channel configured and enabled.");
                     println!(
@@ -1001,15 +970,12 @@ fn set_channel_config_value(
         }
     }
 
-    // REL-002：统一原子写入（主 config 含 API key，0600）。
-    nemesis_utils::write_file_atomic(
-        &cfg_path.to_string_lossy(),
-        serde_json::to_string_pretty(&cfg)
-            .unwrap_or_default()
-            .as_bytes(),
-        0o600,
-    )
-    .map_err(anyhow::Error::msg)?;
+    // REL-002：统一原子写入（主 config 含 API key，0600）。序列化失败 loud
+    // 报错而非 unwrap_or_default 静默写空文件（model-4 同款纪律）。
+    let body = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
+    nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), body.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -1054,15 +1020,12 @@ fn remove_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -
         obj.remove(key);
     }
 
-    // REL-002：统一原子写入（主 config 含 API key，0600）。
-    nemesis_utils::write_file_atomic(
-        &cfg_path.to_string_lossy(),
-        serde_json::to_string_pretty(&cfg)
-            .unwrap_or_default()
-            .as_bytes(),
-        0o600,
-    )
-    .map_err(anyhow::Error::msg)?;
+    // REL-002：统一原子写入（主 config 含 API key，0600）。序列化失败 loud
+    // 报错而非 unwrap_or_default 静默写空文件（model-4 同款纪律）。
+    let body = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
+    nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), body.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
