@@ -462,7 +462,20 @@ impl AgentLoop {
                 .take_while(|t| t.role != "user")
                 .filter(|t| t.role == "assistant")
                 .map(|t| t.content.clone())
-                .filter(|c| !c.trim().is_empty() && c.as_str() != final_response.as_str())
+                .filter(|c| {
+                    !c.trim().is_empty()
+                        && c.as_str() != final_response.as_str()
+                        // BUG-20261031-237：终局错误的 history 形态（裸
+                        // `Error: {raw}`，recovery.rs 三处 add_assistant_message
+                        // 是全仓唯一来源）在用户可见终局为改写形态（可行动提示
+                        // `Error: {hint}（原始错误：{raw}）`/ vision 兜底提示
+                        // 追加）时与 final_response 恒不等——上方等值过滤失
+                        // 效，冲刷 + 主路径 = 同一失败双份落盘。裸错误行由主
+                        // 路径的改写形态代表，冲刷跳过。诚实边界：模型中间
+                        // 正文恰以 "Error:" 开头时不再冲刷（仍在 session
+                        // store，不丢上下文）。
+                        && !c.starts_with("Error:")
+                })
                 .collect();
             let model_badge = self.current_display_model();
             for text in flushed.into_iter().rev() {
@@ -819,3 +832,8 @@ impl AgentLoop {
             .await
     }
 }
+
+// BUG-20261031-237：异常收尾冲刷去重回归（终局错误行禁双份落盘）。
+#[cfg(test)]
+#[path = "turn_flush_dedup_tests.rs"]
+mod turn_flush_dedup_tests;
