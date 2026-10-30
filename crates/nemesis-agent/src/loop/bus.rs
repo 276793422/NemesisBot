@@ -215,6 +215,7 @@ impl AgentLoop {
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
+            gc_inflight_trees: parking_lot::Mutex::new(std::collections::HashSet::new()),
             hooks: HooksState {
                 tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
                 llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),

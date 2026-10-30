@@ -1176,3 +1176,91 @@ async fn rewind_rejects_while_continuation_executing_then_releases() {
         .expect("guard 释放后 rewind 应放行");
     delete_chat_log(&key);
 }
+
+// —— BUG-20261030-221：gc 在途窗口 × redo 前向恢复 ——
+
+/// 生产同款 gc 装配（弱引用读 loop 栈，agent_factory 同构）的 git 形态三轮
+/// 摆法。keep_turns=1：回退（restore_turn=3）截断后索引剩 turn1/turn2 →
+/// turn1 必掉窗 → 重建式 gc 真跑（truncate_from_scoped 尾部内联触发）。
+#[allow(clippy::type_complexity)]
+async fn stage_gc_three_turns_git(
+    tag: &str,
+) -> (std::sync::Arc<AgentLoop>, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    // 真实主仓（gc 重建的 alternates 判定要打开 root/.git 的 odb——空目录
+    // 会令重建诚实放弃零破坏，测不到清对象面）。
+    git2::Repository::init(&root).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+
+    let al = std::sync::Arc::new(AgentLoop::new(Box::new(E3NoopProvider), e3_config()));
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(None, root.clone()));
+    assert_eq!(store.backend(), crate::checkpoint::CheckpointBackend::Git);
+    let weak = std::sync::Arc::downgrade(&al);
+    store.set_gc(
+        nemesis_config::CheckpointGcConfig {
+            enabled: true,
+            keep_turns: 1,
+            keep_days: 0,
+        },
+        Arc::new(move || {
+            weak.upgrade()
+                .map(|l| l.undo_stack_tree_refs())
+                .unwrap_or_default()
+        }),
+    );
+    al.set_checkpoint_store(store);
+    let key = e3_uniq_key(tag);
+    delete_chat_log(&key);
+
+    let cp = al.attached_checkpoint().unwrap();
+    for (turn, next) in [(1usize, "v2"), (2, "v3"), (3, "v4")] {
+        cp.begin_for_session(turn, "t", Some(&key));
+        std::fs::write(root.join("code.txt"), next).unwrap();
+        e3_append(&key, "user", &format!("turn {turn} q"), Some(turn));
+        e3_append(&key, "assistant", &format!("turn {turn} a"), None);
+    }
+    (al, key, dir)
+}
+
+/// BUG-20261030-221 回归锁：gc 启用（keep_turns=1）时回退，forward_tree
+/// 采集于 truncate 之前、压栈在 jsonl 提交之后——修复前 truncate 内联 gc
+/// 跑在压栈之前，此刻 forward_tree 既不在索引（本会话 turn ≥ 锚的条目刚
+/// 被截）也不在栈（条目未压），重建式 gc 把它的对象当孤儿清掉，redo 的
+/// 文件前向恢复必炸「tree 查找失败」（行回填了、文件停在回退态，redo 语
+/// 义破半）。修复后采集即在途注册（gc 保留集经 undo_stack_tree_refs 看到
+/// 它），redo 完整恢复到 undo 时刻实时树。
+#[tokio::test]
+async fn gc_enabled_rewind_forward_tree_survives_inline_gc_for_redo() {
+    let (al, key, dir) = stage_gc_three_turns_git("gc221").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    // 回退 turn 2 的提问行之后（restore_turn=3）：文件回 turn 3 begin 树
+    // （v3），截断触发内联 gc（turn1 掉窗清对象）。
+    let out = al.rewind_to_message(&key, 2, false).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert_eq!(out["file_restore"], "applied", "{out}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
+
+    // redo：行回填 + 文件前向恢复到 undo 时刻实时树（v4——不在任何 begin
+    // 树，只在 forward_tree 里）。
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(
+        out["file_restore"], "applied",
+        "forward_tree 必须在内联 gc 中存活: {out}"
+    );
+    assert!(
+        out["file_restore_note"].is_null(),
+        "不得有前向恢复失败注记: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "v4",
+        "redo 恢复到实时树（含最后 turn 变更）"
+    );
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 6, "行回填（保留 4 + 回填 2 = 原始全长）");
+
+    delete_chat_log(&key);
+}
