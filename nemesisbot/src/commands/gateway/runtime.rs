@@ -745,9 +745,15 @@ pub(crate) async fn run_runtime(
                 let auto_mgr = mgr.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    // 下载代理调用时读盘（config.proxy.json selfupdate 段——
+                    // 保存即对下次检查生效）。
+                    let proxy = nemesis_config::proxy_file::load_selfupdate_proxy(
+                        &auto_mgr.workspace.join("config"),
+                    );
                     match nemesis_web::selfupdate::check(
                         crate::common::VERSION_INFO.version,
                         crate::common::VERSION_INFO.git_commit,
+                        proxy.as_deref(),
                     )
                     .await
                     {

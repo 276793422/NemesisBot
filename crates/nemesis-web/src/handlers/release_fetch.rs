@@ -52,15 +52,33 @@ pub fn set_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
 /// `total_timeout` = 整体墙钟上限；None = 不设（大包流式落盘用——300MB 包
 /// × 慢链路会撞固定墙钟假超时，连接停滞由 `download_to_file` 的 per-chunk
 /// 空闲超时兜底）。
-fn fetch_client(total_timeout: Option<std::time::Duration>) -> reqwest::Client {
+///
+/// `proxy` = 下载代理（2026-10-31 批C：更新页独立下载代理）。Some → 只走
+/// 该代理（`ClientBuilder::proxy()` 本身即关 auto_sys_proxy 的系统探测——
+/// 「就这个代理」语义要脆）；解析失败 = **诚实 Err 上抛**（此前
+/// `.unwrap_or_default()` 静默直连是隐患：配置了代理却无声走系统默认）。
+/// None → 保持系统默认。
+fn fetch_client(
+    total_timeout: Option<std::time::Duration>,
+    proxy: Option<&str>,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(FETCH_CONNECT_TIMEOUT)
         .user_agent(FETCH_UA);
+    if let Some(p) = proxy {
+        let proxied =
+            reqwest::Proxy::all(p).map_err(|e| format!("下载代理地址无效（{p}）：{e}"))?;
+        // builder.proxy() 自带 auto_sys_proxy=false（reqwest client.rs:1414）
+        // ——显式代理 = 「就这个代理」，环境变量/系统代理探测一并关掉。
+        builder = builder.proxy(proxied);
+    }
     if let Some(t) = total_timeout {
         builder = builder.timeout(t);
     }
-    builder.build().unwrap_or_default()
+    builder
+        .build()
+        .map_err(|e| format!("下载 client 构建失败：{e}"))
 }
 
 /// 按 SSRF 闸验证过的 IP 集钉死 DNS 的下载 client（防 rebinding TOCTOU——
@@ -93,26 +111,38 @@ fn pinned_fetch_client(
 /// 重定向循环（≤[`FETCH_MAX_HOPS`] 跳；重定向降级到非 https 拒绝）。
 /// 返回最终成功响应（body 未读）——`fetch_bytes` 整包读内存、
 /// `download_to_file` 流式落盘分别消费。
+///
+/// 代理与 SSRF 闸的语义（2026-10-31 批C）：闸**每跳照常跑**——闸做的是
+/// URL 级校验（目标是否在允许面内），代理不改变「请求打向哪」的裁决；
+/// 拦截照旧诚实 Err。但闸解析出的 IP **不再用于钉定连接**（resolve 条目
+/// 作用在本进程到目标的直连上；代理生效时连接由代理侧建立、DNS 也由
+/// 代理侧解析，钉定条目根本不适用）。
 async fn fetch_response(
     url: &str,
     total_timeout: Option<std::time::Duration>,
+    proxy: Option<&str>,
 ) -> Result<reqwest::Response, String> {
     if !url.starts_with("https://") {
         return Err("仅支持 https:// 地址".to_string());
     }
     #[cfg(feature = "security")]
     let guard = SSRF_GUARD_SLOT.read().clone();
-    let base = fetch_client(total_timeout);
+    let base = fetch_client(total_timeout, proxy)?;
     let mut current = reqwest::Url::parse(url).map_err(|e| format!("URL 解析失败：{e}"))?;
     for _hop in 0..=FETCH_MAX_HOPS {
         #[cfg(feature = "security")]
         let client = match &guard {
             Some(g) => match g.resolve_and_validate_collect(current.as_str()) {
                 // Ok(空集) = 闸放行但未给出可钉 IP（allowlist 域名等）→ 共享池。
-                Ok(ips) if ips.is_empty() => base.clone(),
-                Ok(ips) => pinned_fetch_client(current.as_str(), &ips, total_timeout)
-                    .unwrap_or_else(|| base.clone()),
+                // 代理生效：IP 结果丢弃（钉定对代理连接不适用，见 fn 注记）。
                 Err(e) => return Err(format!("SSRF 闸拦截：{e}")),
+                Ok(ips) => match proxy {
+                    Some(_) => base.clone(),
+                    None if ips.is_empty() => base.clone(),
+                    #[cfg(feature = "security")]
+                    None => pinned_fetch_client(current.as_str(), &ips, total_timeout)
+                        .unwrap_or_else(|| base.clone()),
+                },
             },
             None => base.clone(),
         };
@@ -151,8 +181,12 @@ async fn fetch_response(
 /// 渠道下载：https-only + 每跳独立过 SSRF 闸（拦 = 诚实失败）+ 手动重定向
 /// 循环（≤[`FETCH_MAX_HOPS`] 跳；重定向降级到非 https 拒绝）+ 流式
 /// `max_bytes` 上限。
-pub(crate) async fn fetch_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
-    let resp = fetch_response(url, Some(FETCH_TOTAL_TIMEOUT)).await?;
+pub(crate) async fn fetch_bytes(
+    url: &str,
+    max_bytes: usize,
+    proxy: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let resp = fetch_response(url, Some(FETCH_TOTAL_TIMEOUT), proxy).await?;
     read_capped(resp, max_bytes).await
 }
 
@@ -195,8 +229,9 @@ pub(crate) async fn download_to_file(
     dest: &std::path::Path,
     max_bytes: usize,
     on_progress: impl Fn(u64, Option<u64>) -> bool + Send + Sync,
+    proxy: Option<&str>,
 ) -> Result<u64, String> {
-    let resp = fetch_response(url, None).await?;
+    let resp = fetch_response(url, None, proxy).await?;
     if let Some(len) = resp.content_length()
         && len as usize > max_bytes
     {
@@ -377,9 +412,9 @@ pub(crate) fn parse_release_list(api: &serde_json::Value) -> Result<Vec<ReleaseM
     all(feature = "selfupdate", not(target_os = "windows")),
     allow(dead_code)
 )]
-pub(crate) async fn fetch_release_list() -> Result<Vec<ReleaseMeta>, String> {
+pub(crate) async fn fetch_release_list(proxy: Option<&str>) -> Result<Vec<ReleaseMeta>, String> {
     // 元信息很小，25MB 上限同口径防异常。
-    let api_bytes = fetch_bytes(RELEASE_LIST_API, 25 * 1024 * 1024).await?;
+    let api_bytes = fetch_bytes(RELEASE_LIST_API, 25 * 1024 * 1024, proxy).await?;
     let api: serde_json::Value = serde_json::from_slice(&api_bytes)
         .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
     parse_release_list(&api)
@@ -411,8 +446,11 @@ pub(crate) fn resolve_release_for_asset<'a>(
     all(feature = "selfupdate", not(target_os = "windows")),
     allow(dead_code)
 )]
-pub(crate) async fn fetch_release_for_asset(asset_name: &str) -> Result<ReleaseMeta, String> {
-    let list = fetch_release_list().await?;
+pub(crate) async fn fetch_release_for_asset(
+    asset_name: &str,
+    proxy: Option<&str>,
+) -> Result<ReleaseMeta, String> {
+    let list = fetch_release_list(proxy).await?;
     if let Some(resolved) = resolve_release_for_asset(&list, asset_name) {
         return Ok(resolved.clone());
     }
@@ -432,13 +470,14 @@ pub(crate) async fn fetch_release_for_asset(asset_name: &str) -> Result<ReleaseM
 pub(crate) async fn fetch_release_asset(
     asset_name: &str,
     max_bytes: usize,
+    proxy: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     const NOT_FOUND_SUFFIX: &str = "附件（CI 尚未产出该包）";
-    let meta = fetch_release_for_asset(asset_name).await?;
+    let meta = fetch_release_for_asset(asset_name, proxy).await?;
     let url = meta
         .asset_url(asset_name)
         .ok_or_else(|| format!("近期 Release 均未找到 {asset_name}{NOT_FOUND_SUFFIX}"))?;
-    fetch_bytes(url, max_bytes).await
+    fetch_bytes(url, max_bytes, proxy).await
 }
 
 /// 带退避重试的目录树删除（nemesis-cluster::fsutil 同款模式——Windows 上

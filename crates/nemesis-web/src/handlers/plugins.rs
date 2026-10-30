@@ -82,6 +82,7 @@ impl PluginsHandler {
         let bytes = release_fetch::fetch_release_asset(
             DEVKIT_ZIP_NAME,
             release_fetch::RELEASE_ASSET_MAX_BYTES,
+            None,
         )
         .await?;
         std::fs::create_dir_all(&base).map_err(|e| format!("创建目录失败：{e}"))?;

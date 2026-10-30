@@ -129,6 +129,10 @@ pub mod tasks;
 // 角色目录 WSAPI（2026-09-28 角色目录与分档供给）：roles.list——委派卡
 // 角色下拉数据源（目录全量 + tier 分档可见性，与 dispatch 闸同源裁决）。
 pub mod roles;
+// 独立代理配置 WSAPI（2026-10-31 代理设置三项改造）：proxy.get/save——
+// `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
+// （独立文件不依赖任何子系统）。
+pub mod proxy;
 pub mod tools;
 pub mod upload;
 // Vault（凭据 vault）管理面（S3c，2026-10-09）：vault.list/set/remove/
@@ -328,6 +332,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     // QUIC 中继独立 WSAPI（2026-10-23 解耦；零 Cluster 类型依赖，恒注册）。
     router.register(Arc::new(quic::QuicHandler::new()));
+    // 独立代理配置（config.proxy.json；恒注册，无 feature 闸）。
+    router.register(Arc::new(proxy::ProxyHandler));
     router.register(Arc::new(logs::LogsHandler));
     router.register(Arc::new(agent::AgentHandler));
     #[cfg(feature = "voice")]

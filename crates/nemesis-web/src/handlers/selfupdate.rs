@@ -120,17 +120,24 @@ impl ModuleHandler for SelfupdateHandler {
         &self,
         cmd: &str,
         data: Option<serde_json::Value>,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
             // 只读检查：Release 最新产物 vs 当前 commit 身份。网络失败诚实报。
             // 成功结果缓存进 manager（status 面供 Dashboard 免重查）；返回值
-            // 合并本地待装包态（pending 非空 = ready_to_apply）。
+            // 合并本地待装包态（pending 非空 = ready_to_apply）。下载代理
+            // 调用时读盘（config.proxy.json selfupdate 段——保存即对下次
+            // 检查生效，免重启）。
             "check" => {
                 let ident = boot_identity()
                     .map(|b| (b.version.clone(), b.commit.clone()))
                     .unwrap_or_default();
-                let c = crate::selfupdate::check(&ident.0, &ident.1).await?;
+                let proxy = ctx.workspace.as_deref().and_then(|ws| {
+                    nemesis_config::proxy_file::load_selfupdate_proxy(
+                        &std::path::Path::new(ws).join("config"),
+                    )
+                });
+                let c = crate::selfupdate::check(&ident.0, &ident.1, proxy.as_deref()).await?;
                 let mut v = serde_json::to_value(&c).map_err(|e| e.to_string())?;
                 #[cfg(feature = "selfupdate")]
                 if let Some(mgr) = manager() {

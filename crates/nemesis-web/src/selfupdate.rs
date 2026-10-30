@@ -1019,7 +1019,14 @@ pub struct UpdateCheck {
     pub current_commit_known: bool,
 }
 
-pub async fn check(current_version: &str, current_commit: &str) -> Result<UpdateCheck, String> {
+/// 检查更新（只读，全平台可用；不下载主包）。`proxy` = 检查链路的下载
+/// 代理（`config.proxy.json` selfupdate 段，调用时读盘——保存即对下次
+/// 检查/下载生效，免重启；None = 直连）。
+pub async fn check(
+    current_version: &str,
+    current_commit: &str,
+    proxy: Option<&str>,
+) -> Result<UpdateCheck, String> {
     // Android 走 APK 发行形态，主包通道整体不适用（诚实拒绝而非假装查询）。
     if TARGET_ASSET.is_empty() {
         return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
@@ -1027,7 +1034,7 @@ pub async fn check(current_version: &str, current_commit: &str) -> Result<Update
     // 同源解析：与 apply 的下载对象一致（首个含主包资产的 release），消除旧
     // 实现「check 读列表第一条 / apply 下载首个含资产的」双路径分裂——最新
     // 条目尚未产出资产时，展示与安装可能跨版本错位。
-    let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await?;
+    let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET, proxy).await?;
     let asset_present = meta.has_asset(TARGET_ASSET);
     let latest_commit = meta.body_commit().unwrap_or_default();
     let current_known = !current_commit.is_empty();
@@ -2020,8 +2027,13 @@ impl SelfUpdateManager {
         if TARGET_ASSET.is_empty() {
             return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
         }
-        // 同源解析（check / 早闸 / 下载同一对象）。
-        let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await?;
+        // 同源解析（check / 早闸 / 下载同一对象）。下载代理调用时读盘
+        //（selfupdate 段热生效语义：下载是逐次操作，保存即对下次生效）。
+        let proxy =
+            nemesis_config::proxy_file::load_selfupdate_proxy(&self.workspace.join("config"));
+        let meta =
+            crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET, proxy.as_deref())
+                .await?;
         if !meta.has_asset(TARGET_ASSET) {
             return Err(format!(
                 "最新 Release（{}）尚未产出 {TARGET_ASSET} 附件（CI 尚未产出该包）",
@@ -2095,6 +2107,7 @@ impl SelfUpdateManager {
                 }
                 true
             },
+            proxy.as_deref(),
         )
         .await
         .map_err(|e| format!("下载 {TARGET_ASSET} 失败：{e}"))?;
@@ -2220,8 +2233,10 @@ impl SelfUpdateManager {
         //    作废重下；已最新 → 清空拒绝（force 豁免此臂——强制更新的意志是
         //    重装，同版照装）。列表拉取失败 → 诚实 warn 按 pending 继续不给
         //    断网用户装不了已下载更新的死锁——身份权威始终是包内签名清单，
-        //    此处只是新鲜度对账。
-        match crate::handlers::release_fetch::fetch_release_list().await {
+        //    此处只是新鲜度对账。对账拉取同样走下载代理（调用时读盘）。
+        let proxy =
+            nemesis_config::proxy_file::load_selfupdate_proxy(&self.workspace.join("config"));
+        match crate::handlers::release_fetch::fetch_release_list(proxy.as_deref()).await {
             Ok(list) => {
                 let latest =
                     crate::handlers::release_fetch::resolve_release_for_asset(&list, TARGET_ASSET)
