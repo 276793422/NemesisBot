@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use chrono::Local;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::{
     Message,
@@ -113,6 +112,26 @@ pub struct WebSocketChannelConfig {
 struct ActiveConnection {
     send_tx: tokio::sync::mpsc::UnboundedSender<String>,
     client_id: String,
+}
+
+/// 连接 ID 序号（BUG-20261031-232）：进程内单调，同纳秒两次生成也唯一。
+static CLIENT_ID_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 生成连接 ID（BUG-20261031-232）：`client_<纳秒>_<序号>`。
+///
+/// 此前为秒级时间戳（`as_secs`），同一秒内的断开重连（网络抖动/代理
+/// 瞬断的自动重连是常态）生成相同 ID——而出站归属校验（BUG-20261030-192）、
+/// reader 断开清理都以 client_id 为连接身份依据，碰撞 = 身份混淆：
+/// 旧连接的迟到回复被当作新连接的合法回复投递（串台防线失效）。
+/// 纳秒 + 单调序号双保险，格式前缀 `client_` 保持不变（消费方全为
+/// opaque 字符串比对，无解析方）。
+fn generate_client_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let seq = CLIENT_ID_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("client_{nanos}_{seq:04}")
 }
 
 // ---------------------------------------------------------------------------
@@ -294,13 +313,7 @@ impl Channel for WebSocketChannel {
                         // Create send-queue
                         let (send_tx, mut send_rx) =
                             tokio::sync::mpsc::unbounded_channel::<String>();
-                        let client_id = format!(
-                            "client_{}",
-                            SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs()
-                        );
+                        let client_id = generate_client_id();
 
                         // Store active connection
                         {
@@ -472,21 +485,21 @@ impl Channel for WebSocketChannel {
         // - 有前缀且 id 匹配当前连接 → 直发；
         // - 有前缀且 id 不匹配 → 死目标软失败（C4 同款：一次性 WARN + 后续
         //   debug + Ok，正文已由 agent 落 chat_log）。
-        if let Some(target_id) = msg.chat_id.strip_prefix("websocket:") {
-            let mismatch = {
-                let guard = self.active_conn.lock();
-                matches!(&*guard, Some(conn) if conn.client_id != target_id)
-            };
-            if mismatch {
-                self.note_dead_target(target_id, &msg.chat_id);
-                return Ok(());
-            }
-        }
-
+        // BUG-20261031-232：校验与投递必须**同一临界区**——此前是两次独立
+        // 加锁，多线程 runtime 下 accept 循环的 latest-wins 接管（断线清理
+        // 置 None → 新连接换槽）可插在两段之间，旧连接的回复恰好落进新
+        // 客户端 socket（192 要防的串台本体在微秒窗口复现）。note_dead_target
+        // 只碰独立的 dead_targets 锁，持 active_conn 锁调用无重入。
         let json = {
             let guard = self.active_conn.lock();
             match guard.as_ref() {
                 Some(conn) => {
+                    if let Some(target_id) = msg.chat_id.strip_prefix("websocket:")
+                        && conn.client_id != target_id
+                    {
+                        self.note_dead_target(target_id, &msg.chat_id);
+                        return Ok(());
+                    }
                     let server_msg = ServerMessage::message("assistant", msg.content.clone());
                     let json = serde_json::to_string(&server_msg)
                         .map_err(|e| NemesisError::Channel(format!("serialize failed: {e}")))?;

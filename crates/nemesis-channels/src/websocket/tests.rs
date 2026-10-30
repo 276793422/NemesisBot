@@ -1761,3 +1761,130 @@ async fn bug192_send_non_prefixed_chat_id_delivers() {
         .expect("non-prefixed chat_id (sync mirror) must keep direct-send semantics");
     assert!(delivered.contains("mirrored"));
 }
+
+// ===========================================================================
+// BUG-20261031-232 (R291): websocket 单槽连接身份与归属校验的地基缺陷。
+// ①client_id 秒级时间戳——同秒断开重连（网络抖动自动重连）生成相同 ID，
+//   而 192 出站归属校验与 reader 断开清理都以它为身份依据（碰撞 = 旧连
+//   接迟到回复被当作新连接合法回复投递）；②send() 归属校验与投递是两次
+//   独立加锁——多线程 runtime 下 latest-wins 接管可插在两段之间（192 要
+//   防的串台本体在微秒窗口复现）。修复 = 纳秒+单调序号生成 + 校验并入
+//   投递临界区。
+// ===========================================================================
+
+/// 生成器唯一性（纯单元）：连续大量调用全唯一（秒级粒度在同秒内恒碰撞，
+/// 纳秒+序号后不可能）；前缀 `client_` 保持（消费方全为 opaque 比对）。
+#[test]
+fn bug232_generate_client_id_unique_across_calls() {
+    let first = generate_client_id();
+    assert!(
+        first.starts_with("client_"),
+        "prefix must be stable: {first}"
+    );
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(first);
+    for _ in 0..1000 {
+        let id = generate_client_id();
+        assert!(id.starts_with("client_"), "prefix must be stable: {id}");
+        assert!(
+            seen.insert(id),
+            "client id must be globally unique (same-second reconnects used to collide)"
+        );
+    }
+}
+
+/// 真连接红绿证：A 连接 → 取 welcome 帧 client id → 断开等清理 → B 连接
+/// （同秒内，现码秒级粒度必然撞）→ 取 id → 断言不同。修复后由纳秒+序号
+/// 保证恒不同。
+#[tokio::test]
+async fn bug232_same_second_reconnect_ids_differ() {
+    use tokio_tungstenite::connect_async;
+
+    async fn read_welcome_client_id(
+        port: u16,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let (ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+            .await
+            .expect("client must connect");
+        let mut ws = ws;
+        // 首帧 = welcome（system message，content 带 Client ID: <id>）
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("welcome frame must arrive within 5s")
+            .expect("stream open")
+            .expect("no ws error");
+        let text = match first {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t.to_string(),
+            other => panic!("expected text welcome frame, got: {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("welcome must be json");
+        let content = v["content"].as_str().expect("welcome content");
+        let id = content
+            .rsplit("Client ID: ")
+            .next()
+            .expect("welcome must carry client id")
+            .trim()
+            .to_string();
+        assert!(id.starts_with("client_"), "unexpected id form: {id}");
+        ws
+    }
+
+    let port = find_free_port();
+    let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // A 连接并取 id
+    let mut ws_a = read_welcome_client_id(port).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let id_a = {
+        let guard = ch.active_conn.lock();
+        guard
+            .as_ref()
+            .expect("A must be registered")
+            .client_id
+            .clone()
+    };
+
+    // A 断开 → 等单槽清理（单客户端闸要求 None 才放行 B）
+    ws_a.close(None).await.ok();
+    drop(ws_a);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if ch.active_conn.lock().is_none() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "active conn must be cleared after A disconnects"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // B 立即连接（与 A 同秒——现码秒级时间戳在此必然生成相同 ID）
+    let _ws_b = read_welcome_client_id(port).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let id_b = {
+        let guard = ch.active_conn.lock();
+        guard
+            .as_ref()
+            .expect("B must be registered")
+            .client_id
+            .clone()
+    };
+
+    assert_ne!(
+        id_a, id_b,
+        "same-second reconnect must not reuse the previous client id (ownership-check identity basis)"
+    );
+
+    ch.stop().await.unwrap();
+}
