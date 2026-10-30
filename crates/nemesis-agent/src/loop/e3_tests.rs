@@ -861,6 +861,75 @@ async fn e3_gate_releases_session_after_inner_error() {
     delete_chat_log(&key);
 }
 
+// —— BUG-20261031-231：重写窗口内 busy 回绝留痕跳过 ——
+
+/// 回归锁：rewind/redo 的会话 jsonl 重写窗口（快照读取 → 截断写回）内，
+/// busy 分支的 D-2 回绝留痕（user 行 + 回执行）必须跳过落盘——此刻追加
+/// 的行会被截断按陈旧快照整文件重写静默吞掉（不在 undo 条目里，redo
+/// 无法恢复）。窗口外留痕行为不变（负对照臂）。AgentLoop::new 默认
+/// Reject 模式，busy 分支直达 persist_busy_refusal。
+#[tokio::test]
+async fn e3_busy_refusal_rows_skipped_inside_rewrite_window() {
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    // 预设形态键（agent: 前缀）——route_message 对预设键原样采纳，
+    // gate_inbound 的 busy 分支才会命中本会话。
+    let key = format!(
+        "agent:main:session:e3rwrefusal{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+    append_chat_log(&key, "user", "q1");
+    append_chat_log(&key, "assistant", "a1");
+
+    // 占住会话（等价 rewind 持闸期间的 busy 态）。
+    assert!(al.try_acquire_session(&key));
+
+    let msg = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "late-user".to_string(),
+        chat_id: "late-chat".to_string(),
+        content: "迟到消息".to_string(),
+        media: Vec::new(),
+        session_key: key.clone(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+
+    // 窗口内：瞬态回执照发，但留痕两行必须跳过。
+    let guard = crate::chat_log::history_rewrite_begin(&key);
+    match al.gate_inbound(&msg) {
+        super::admission::GateOutcome::Immediate { response, .. } => {
+            assert_eq!(response, super::bus::BUSY_MESSAGE, "瞬态回执照发");
+        }
+        other => panic!("期望 Immediate busy 回执，得到 {other:?}"),
+    }
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(
+        total, 2,
+        "重写窗口内回绝留痕必须跳过（旧行为落 2 行、随后被截断吞掉）"
+    );
+    drop(guard);
+
+    // 负对照：窗口外 D-2 留痕照常（user + 回执 = +2 行）。
+    match al.gate_inbound(&msg) {
+        super::admission::GateOutcome::Immediate { response, .. } => {
+            assert_eq!(response, super::bus::BUSY_MESSAGE, "{response}");
+        }
+        _ => panic!("期望 Immediate busy 回执"),
+    }
+    let (rows, total2, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total2, 4, "窗口外留痕不变（D-2 契约保持）");
+    assert_eq!(rows[2]["role"], "user");
+    assert_eq!(rows[3]["role"], "assistant");
+
+    al.release_session(&key);
+    delete_chat_log(&key);
+}
+
 /// steer 注入行追加（BUG-20261025-19 写入形态：role=user + `"steer": true`
 /// 标记、无 checkpoint_turn——run_loop 注入路径同构）。
 fn e3_append_steer(key: &str, content: &str) {

@@ -537,6 +537,68 @@ pub(crate) fn arm_test_fail_open(key: &str) {
         .push(key.to_string());
 }
 
+// —— 会话 jsonl 重写窗口登记表（BUG-20261031-231）——
+//
+// rewind/redo 的截断以「进闸时刻的快照」整文件重写本会话 jsonl——窗口内
+// 经绕闸路径落盘的新行（busy 分支的 D-2 回绝留痕、snooze 到期唤醒行）会被
+// 截断静默吞掉（不在 undo 条目里，redo 无法恢复）。登记表让**重写方**
+// （rewind/redo 机体入口）宣告窗口、**绕闸追加方**在窗口内诚实跳过落盘，
+// 消灭「写了就被吞」的静默丢失面。会话闸（under_history_gate）只覆盖 turn
+// 生命周期与续行在途；busy 回绝与 web 侧 sweeper 天然在闸外，是本登记表
+// 的两个消费方。
+//
+// 进程级注册表（键 = 会话键）：单 gateway 单进程内天然互斥可见；多实例
+// --local 各自独立进程、无共享文件，跨进程无同步需求。
+
+static REWRITE_INFLIGHT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn rewrite_inflight_registry() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    REWRITE_INFLIGHT.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 重写窗口 RAII 守卫：持有期间 [`history_rewrite_active`] 对该会话为真。
+/// 构造即登记；drop 撤销（panic 展开也保证撤销，不留假窗口）。
+pub struct HistoryRewriteGuard {
+    key: String,
+}
+
+impl HistoryRewriteGuard {
+    fn register(key: &str) -> Self {
+        rewrite_inflight_registry()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key.to_string());
+        Self {
+            key: key.to_string(),
+        }
+    }
+}
+
+impl Drop for HistoryRewriteGuard {
+    fn drop(&mut self) {
+        rewrite_inflight_registry()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// 登记一次会话 jsonl 重写窗口（rewind/redo 机体入口调用，守卫持至函数
+/// 退出，覆盖全部早退路径）。
+pub fn history_rewrite_begin(key: &str) -> HistoryRewriteGuard {
+    HistoryRewriteGuard::register(key)
+}
+
+/// 该会话是否正处于 jsonl 重写窗口（绕闸追加方调用：真 = 跳过本次落盘，
+/// 瞬态回执/标记保留等既有语义不变）。
+pub fn history_rewrite_active(key: &str) -> bool {
+    rewrite_inflight_registry()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(key)
+}
+
 pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     if rows.is_empty() {
         return 0;

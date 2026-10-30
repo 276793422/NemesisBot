@@ -581,6 +581,17 @@ impl AgentLoop {
         session_key: &str,
         bounce: &str,
     ) {
+        // BUG-20261031-231：会话 jsonl 重写窗口（rewind/redo 机体以进闸
+        // 时刻的快照整文件重写）内跳过落盘——此刻追加的留痕行会被截断
+        // 静默吞掉（不在 undo 条目里，redo 无法恢复）。刻意取舍：瞬态
+        // 回执照发（调用方不变），留痕的持久化让位于重写一致性；warn 保
+        // 审计可见。窗口外 D-2 行为完全不变。
+        if crate::chat_log::history_rewrite_active(session_key) {
+            warn!(
+                "[AgentLoop] 会话 jsonl 重写窗口进行中，忙时回绝留痕跳过（避免被截断吞行）: session_key={session_key}"
+            );
+            return;
+        }
         let log_existed = Self::session_log_exists_before_append(session_key);
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());

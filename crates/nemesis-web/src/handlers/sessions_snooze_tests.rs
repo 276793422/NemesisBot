@@ -324,6 +324,38 @@ async fn b11_wake_recovery_line_lands_in_chat_sync_bucket() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
+/// BUG-20261031-231 回归锁：rewind/redo 的会话 jsonl 重写窗口内，到期
+/// 唤醒 sweeper 必须整条目跳过（标记保留，下轮重试）——旧行为先摘标记
+/// 再落唤醒行，行被窗口内截断吞掉后唤醒留痕永久丢失。
+#[tokio::test]
+async fn b11_wake_skips_entries_inside_rewrite_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+    let key = seed_session(&home, "rw1");
+    nemesis_agent::chat_log::write_session_snooze(&key, "2020-01-01T00:00:00+08:00", Some("窗口"));
+
+    let rewrite = nemesis_agent::chat_log::history_rewrite_begin(&key);
+    assert_eq!(wake_due_sessions(), 0, "重写窗口内不得唤醒/摘标记");
+    let meta = nemesis_agent::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(
+        meta.snoozed_until.as_deref(),
+        Some("2020-01-01T00:00:00+08:00"),
+        "标记保留（下轮重试）"
+    );
+    drop(rewrite);
+
+    assert_eq!(wake_due_sessions(), 1, "窗口释放后正常唤醒");
+    let meta = nemesis_agent::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(meta.snoozed_until, None);
+    let (msgs, _, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 50, None);
+    let last = msgs.last().expect("恢复行应落盘");
+    assert_eq!(last["role"], "system");
+    assert!(last["content"].as_str().unwrap_or("").contains("⏰"));
+
+    nemesis_agent::chat_log::delete_chat_log(&key);
+}
+
 #[test]
 fn b11_parse_snooze_until_units() {
     // 相对秒。

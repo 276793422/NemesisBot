@@ -314,6 +314,11 @@ impl AgentLoop {
         report_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
+        // BUG-20261031-231：jsonl 重写窗口登记（守卫持至函数退出，含全部
+        // 早退路径）。本函数以进闸时刻的快照整文件重写会话 jsonl——窗口内
+        // 绕闸追加（busy 回绝留痕 / snooze 唤醒行）会被截断静默吞掉；登记
+        // 后追加方检查在旗诚实跳过，消灭「写了就被吞」面。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         // 文件恢复锚：cut 起第一个带 checkpoint_turn 标记的行（第一个仍在
         // 的 checkpoint turn）——恢复到它 begin 之前 = index 所在 turn 完成
         // 时的文件态。None = 之后没有 checkpoint turn（或全是无标记旧行）。
@@ -647,6 +652,10 @@ impl AgentLoop {
         session_key: &str,
         force: bool,
     ) -> Result<serde_json::Value, String> {
+        // BUG-20261031-231：重写窗口登记（同 rewind_from_cut）——redo 的
+        // 截断写回同样以整文件重写落盘，守卫 1 读取与截断之间的绕闸追加
+        // （busy 回绝留痕 / snooze 唤醒行）会被静默吞掉。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         let entry = {
             let mut stacks = self.rewind_undo_stacks.lock();
             stacks.get_mut(session_key).and_then(|s| s.pop_back())

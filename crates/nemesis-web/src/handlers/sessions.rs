@@ -929,6 +929,13 @@ pub(crate) fn wake_due_sessions() -> usize {
             continue;
         }
         let session_key = format!("agent:main:session:{sid}");
+        // BUG-20261031-231：会话 jsonl 重写窗口（rewind/redo）进行中 →
+        // 本轮整条目跳过（标记保留，10s 后下轮重试——窗口通常亚秒级）。
+        // 必须先于摘标记：旧序「摘标记 → 落唤醒行」在窗口内行被截断吞掉
+        // = 标记已摘、留痕永久丢失。
+        if nemesis_agent::chat_log::history_rewrite_active(&session_key) {
+            continue;
+        }
         let Some((_, note)) = nemesis_agent::chat_log::clear_session_snooze(&session_key) else {
             continue; // 已被并发方摘掉
         };
