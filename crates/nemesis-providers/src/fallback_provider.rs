@@ -223,10 +223,12 @@ impl FallbackProvider {
 
         for (i, entry) in self.chain.iter().enumerate() {
             let provider_name = entry.provider.name();
-            let effective_model = if model.is_empty() {
-                &entry.model
-            } else {
+            // BUG-20261031-225：每级恒用本级装配模型名（entry.model），级名
+            // 缺失才退调用方请求名——详见 chat() 内同款注记。
+            let effective_model = if entry.model.is_empty() {
                 model
+            } else {
+                &entry.model
             };
 
             match entry
@@ -358,10 +360,11 @@ impl FallbackProvider {
 
         for entry in &self.chain {
             let provider_name = entry.provider.name();
-            let effective_model = if model.is_empty() {
-                &entry.model
-            } else {
+            // BUG-20261031-225：同 chat() 同款——entry.model 优先。
+            let effective_model = if entry.model.is_empty() {
                 model
+            } else {
+                &entry.model
             };
 
             if !self.cooldown.is_available(provider_name) {
@@ -482,10 +485,18 @@ impl LLMProvider for FallbackProvider {
                 continue;
             }
 
-            let effective_model = if model.is_empty() {
-                &entry.model
-            } else {
+            // BUG-20261031-225 根修：每级恒用**本级装配模型名**（entry.model），
+            // 级名缺失才退调用方请求名。旧语义（调用方非空名覆盖所有级）在
+            // 生产装配形态下恒错：agent_factory fallback_to 链每级带自己的
+            // resolve 模型名，而 ProviderAdapter 对 loop 的调用恒传非空主模
+            // 型别名 → 备用 provider 的 api_base 收到主模型名 → 真实上游
+            // 400 model not exist（不可重试）→ 跨模型故障转移从未生效过。
+            // mock 测试不模拟 400，错误语义被 W4c 测试钉住未暴露。主级
+            // entry.model == 调用方名（装配契约：primary_model），字节不变。
+            let effective_model = if entry.model.is_empty() {
                 model
+            } else {
+                &entry.model
             };
 
             match entry
