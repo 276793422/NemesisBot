@@ -76,6 +76,18 @@ pub struct SessionMgr {
     // Chat sessions (persistent, Go-style)
     chat_sessions: Mutex<HashMap<String, ChatSession>>,
     storage_path: Option<PathBuf>,
+    /// 同键并发保存串行闸（BUG-20261030-213）：快照与落盘必须在同一把闸内
+    /// 完成——快照在状态锁内、落盘在锁外的旧形态下，两线程同键并发保存时
+    /// 旧快照的 rename 可能晚于新快照落盘（last-rename-wins = 已完成保存的
+    /// 消息在重启后丢失）。BUG-20261025-51 修了撕裂写（唯一临时名），本闸
+    /// 补齐「rename 序 ≠ 快照序」的残余竞态。状态锁不在闸内（mutation 路径
+    /// 不被落盘阻塞），闸只串行化逐次保存的「快照→rename」对。
+    save_gate: Mutex<()>,
+    /// 测试钩子（仅 test 构建）：快照→落盘之间注入**一次性**停顿（首个
+    /// 保存消费后归零，后续保存不受影响），确定性复现并发保存交错
+    /// （release 构建不存在此字段）。
+    #[cfg(test)]
+    save_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl SessionMgr {
@@ -87,6 +99,9 @@ impl SessionMgr {
             session_counter: AtomicU64::new(0),
             chat_sessions: Mutex::new(HashMap::new()),
             storage_path: None,
+            save_gate: Mutex::new(()),
+            #[cfg(test)]
+            save_delay_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -315,6 +330,11 @@ impl SessionMgr {
             None => return Ok(()),
         };
 
+        // BUG-20261030-213：闸在快照前取、持到函数尾——「快照→rename」对
+        // 整体串行化，rename 序 = 快照序（旧形态两把锁夹缝里的交错见字段
+        // 注释）。锁序恒为 save_gate → chat_sessions，无反向路径，无死锁。
+        let _save_gate = self.save_gate.lock();
+
         // Snapshot under lock, then perform slow file I/O after unlock.
         let (snapshot, session_path) = {
             let sessions = self.chat_sessions.lock();
@@ -333,10 +353,22 @@ impl SessionMgr {
             let path = storage.join(format!("{}.json", filename));
             (snap, path)
         };
-        // Lock is released here; all I/O below is lock-free.
+        // 状态锁已释放；落盘前的停顿（测试钩子）不持状态锁。
 
         let data =
             serde_json::to_string_pretty(&snapshot).map_err(|e| format!("serialize: {}", e))?;
+
+        // 测试钩子：确定性制造「快照后、落盘前」的并发窗口（仅 test
+        // 构建；一次性——首个保存消费后归零，不影响并发方的保存时序）。
+        #[cfg(test)]
+        {
+            let d = self
+                .save_delay_ms
+                .swap(0, std::sync::atomic::Ordering::SeqCst);
+            if d > 0 {
+                std::thread::sleep(Duration::from_millis(d));
+            }
+        }
 
         // BUG-20261025-51：落盘委托 REL-002 权威 helper（唯一临时名
         // `.tmp-{pid}-{seq}-{nanos}`）。旧手搓固定 `{key}.json.tmp` 在同键
