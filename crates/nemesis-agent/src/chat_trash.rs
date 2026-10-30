@@ -319,7 +319,15 @@ pub fn trash_chat_log_in(
         serde_json::to_string_pretty(&manifest).map_err(|e| format!("清单序列化失败: {e}"))?;
     std::fs::write(entry.join("trash.json"), raw).map_err(|e| format!("清单写入失败: {e}"))?;
 
-    Ok(Some(name))
+    // 返回实际占位条目名：同毫秒双删时第二删落在 `name-2` 槽位，返回循环前
+    // 的 `name` 会让调用方拿到第一删的名字——按名 purge/restore 会误指前删
+    //（CI Linux 快机同毫秒实证，Windows 慢盘天然跨毫秒测不出来）。
+    Ok(Some(
+        entry
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(name),
+    ))
 }
 
 // ---------------------------------------------------------------------------
