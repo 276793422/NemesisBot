@@ -624,6 +624,17 @@ onUnmounted(() => {
   if (_wsHandler) removeMessageHandler(_wsHandler)
   if (_saveTimer) clearTimeout(_saveTimer)
   if (_rtTimer) clearTimeout(_rtTimer)
+  // BUG-20261101-265：声纹注册中途切页——残留 interval 会带着闭包跑满 30s
+  // 注册窗口、后端注册会话变 orphan，重挂载后立即重注册撞「already
+  // running」报错卡死（ChatPanel voiceDictation 卸载停会话同款先例）。
+  // 切页即视为放弃：清 timer + 取消后端注册会话。
+  if (_registerTimer) {
+    clearInterval(_registerTimer)
+    _registerTimer = null
+    speakerRegistering.value = false
+    speakerRegisterElapsed.value = 0
+    request('voice', 'speaker_register_cancel').catch(() => {})
+  }
 })
 </script>
 
