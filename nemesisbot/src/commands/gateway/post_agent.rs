@@ -470,11 +470,22 @@ pub(crate) async fn init_post_agent(
             // Otherwise the adapter is created but idle — can be started from Dashboard.
             // ASM-08 复核（2026-09-16）：装配自检失败（关键件未接线=代码回归）
             // 启动即炸（D5 裁决）；运行时故障维持 warn 降级。
-            if cluster_should_start && let Err(e) = adapter.first_start() {
-                if e.contains("ASM-08") {
-                    return Err(anyhow::anyhow!("[Gateway] Cluster loop {}", e));
+            // BUG-20261031-248：first_start 内含 rpc_cache 磁盘扫描 + 韧性
+            // 删除退避重试（最坏 4.4s），spawn_blocking 包裹防阻塞 gateway
+            // 装配期的 tokio worker（LOW-5 同款纪律）。
+            if cluster_should_start {
+                let adapter_for_start = Arc::clone(&adapter);
+                let started = tokio::task::spawn_blocking(move || adapter_for_start.first_start())
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("[Gateway] Cluster first_start task join failed: {e}")
+                    })?;
+                if let Err(e) = started {
+                    if e.contains("ASM-08") {
+                        return Err(anyhow::anyhow!("[Gateway] Cluster loop {}", e));
+                    }
+                    warn!("[Gateway] Cluster adapter first start failed: {}", e);
                 }
-                warn!("[Gateway] Cluster adapter first start failed: {}", e);
             }
             cluster_adapter = Some(adapter);
             // CD4（2026-09-17）：master 重启后从看板在途派发行重建
