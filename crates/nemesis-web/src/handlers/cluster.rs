@@ -2412,20 +2412,23 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let (default_udp, default_tcp) = Self::read_cluster_ports(ctx);
-        let udp_port = data
-            .get("udp_port")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(default_udp as u64) as u16;
-        let tcp_port = data
-            .get("tcp_port")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(default_tcp as u64) as u16;
+        // 端口校验在 u64 域先做再 cast（config_save 同款习语）：先 `as u16`
+        // 会把 65537 回绕成 1、70000 回绕成 4464，恰好绕过 `== 0` 闸——
+        // 文案承诺 1-65535 但实现只拦 wrap-to-zero（BUG-20261031-256）。
+        // 在场但非 u64（负数/小数/字符串）= 拒绝而非静默回落默认端口。
+        let parse_port = |key: &str, default: u16| -> Result<u64, String> {
+            match data.get(key) {
+                None => Ok(default as u64),
+                Some(v) => v
+                    .as_u64()
+                    .filter(|p| (1..=65535).contains(p))
+                    .ok_or_else(|| "端口范围无效 (1-65535)".to_string()),
+            }
+        };
+        let udp_port = parse_port("udp_port", default_udp)?;
+        let tcp_port = parse_port("tcp_port", default_tcp)?;
 
-        if udp_port == 0 || tcp_port == 0 {
-            return Err("端口范围无效 (1-65535)".to_string());
-        }
-
-        add_platform_firewall_rules(udp_port, tcp_port)
+        add_platform_firewall_rules(udp_port as u16, tcp_port as u16)
     }
 
     /// Read cluster ports from config file, fallback to defaults.
@@ -2445,14 +2448,21 @@ impl ClusterHandler {
             Err(_) => return (default_udp, default_tcp),
         };
 
+        // 防御闸：手改 config 超 u16 域时回默认端口而非回绕成小端口
+        // （类型化装载对超界值本就解析失败，此处兜底净态；0 保持透传，
+        // 由 add_rules 的范围闸如实报错）。
         let udp = cfg
             .get("port")
             .and_then(|v| v.as_u64())
-            .unwrap_or(default_udp as u64) as u16;
+            .filter(|p| *p <= u16::MAX as u64)
+            .map(|p| p as u16)
+            .unwrap_or(default_udp);
         let tcp = cfg
             .get("rpc_port")
             .and_then(|v| v.as_u64())
-            .unwrap_or(default_tcp as u64) as u16;
+            .filter(|p| *p <= u16::MAX as u64)
+            .map(|p| p as u16)
+            .unwrap_or(default_tcp);
         (udp, tcp)
     }
 }

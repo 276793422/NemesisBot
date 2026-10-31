@@ -201,6 +201,15 @@ async fn agt_firewall_add_rules_rejects_invalid_ports_before_netsh() {
     for ports in [
         serde_json::json!({ "udp_port": 0 }),
         serde_json::json!({ "udp_port": 11949, "tcp_port": 0 }),
+        // wrap 值：旧实现先 `as u16` 后 `== 0`——65537 回绕成 1、70000 回绕成
+        // 4464，恰好绕闸直通 netsh 加错端口规则（BUG-20261031-256 回归锁）。
+        serde_json::json!({ "udp_port": 65537 }),
+        serde_json::json!({ "udp_port": 11949, "tcp_port": 70000 }),
+        serde_json::json!({ "udp_port": 65536 }),
+        // 在场但非 u64（负数/字符串）：拒绝而非静默回落默认端口。
+        serde_json::json!({ "udp_port": -1 }),
+        serde_json::json!({ "udp_port": "abc" }),
+        serde_json::json!({ "udp_port": 11949, "tcp_port": 1.5 }),
     ] {
         let err = h
             .handle_cmd("firewall.add_rules", Some(ports), &ctx)
