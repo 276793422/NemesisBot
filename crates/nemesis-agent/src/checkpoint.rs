@@ -2201,5 +2201,5 @@ mod gc_tests;
 // BUG-20261031：影子库常驻 git2::Repository 持有扫描目标项目 pack 句柄
 // （Windows mmap 锁 → 项目无法删除）复现/回归锁（Windows-only 语义在
 // 文件内自挂 cfg(windows)）。
-#[cfg(all(test, feature = "checkpoint-git"))]
+#[cfg(all(test, windows, feature = "checkpoint-git"))]
 mod pack_lock_tests;
