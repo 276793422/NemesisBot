@@ -739,9 +739,23 @@ impl AgentLoop {
             };
             let (agent_id, session_key) = self.route_message(msg);
             self.set_mode_with_event(want, &session_key, &msg.chat_id);
+            // B4（2026-10-31 项目 home 收编）：回执写明实际放行目录绝对路径
+            // （项目会话 = home/plans，主会话 = workspace/plans）——切 plan
+            // 即知计划产物落哪，不用等一次拒绝回灌。
             let response = match want {
-                crate::types::AgentMode::Plan => "✓ 已切换到 Plan 模式：文件修改类工具已停用（plans/ 目录写放行）。请以文本形式呈现计划；完成规划后用 /build 切回。".to_string(),
-                crate::types::AgentMode::Build => "✓ 已切换回 Build 模式：全量工具恢复。".to_string(),
+                crate::types::AgentMode::Plan => {
+                    let plans = self
+                        .plan_products_dir()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_else(|| "<未配置>".to_string());
+                    format!(
+                        "✓ 已切换到 Plan 模式：文件修改类工具已停用（计划产物仅可写：{plans}）。\
+                         请以文本形式呈现计划；完成规划后用 /build 切回。"
+                    )
+                }
+                crate::types::AgentMode::Build => {
+                    "✓ 已切换回 Build 模式：全量工具恢复。".to_string()
+                }
             };
             return GateOutcome::Immediate { agent_id, response };
         }

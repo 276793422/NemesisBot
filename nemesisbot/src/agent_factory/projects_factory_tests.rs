@@ -866,3 +866,126 @@ async fn assert_governance_wired(agent_loop: &Arc<nemesis_agent::r#loop::AgentLo
         "独占供给器必须在位（未注册工具名按快照独占拦截），实际: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B2/B5（2026-10-31 项目 home 收编）：agent home 物化 + 数据面落位
+// ---------------------------------------------------------------------------
+
+/// spec.agent_home 在场：三子目录物化 + plan 产物根钉 home/plans +
+/// checkpoint 影子库随迁 home/checkpoints（git 形态影子库构造期急切
+/// 初始化，断言随 checkpoint-git feature 进出）。绕开全局 agents 管理
+/// 器直接覆写 spec 字段——from_project 查询走进程级 MANAGER_SLOT，测试
+/// 进程内 install 会与「未装配诚实报错」类测试互踩（槽无卸载 API）；
+/// 查询臂本身是 8 行 find_map，由 gateway boot seed 时序保证（先 sync
+/// 后建 loop）+ 编译期覆盖。
+#[tokio::test]
+async fn agent_home_spec_materializes_and_routes_data_to_home() {
+    let home = unique_home("b2home");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(project_dir.join(".git")).unwrap();
+    std::fs::write(project_dir.join("f.txt"), "hello").unwrap();
+    // 专用 agent home 子目录（不与 bot home 重合——证明路径确实按给定
+    // 根派生，而非回落 workspace/其他锚点）。
+    let agent_home = home.join("agent_home_nb");
+
+    let shared = shared_for(&home);
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+
+    let mut spec = super::AgentLoopSpec::from_project(&entry_for("p_b2home001", &project_dir));
+    spec.agent_home = Some(agent_home.clone());
+    let loop_arc = super::build_agent_loop_from_spec(
+        &shared,
+        &spec,
+        main_loop.session_store().cloned().unwrap(),
+    )
+    .expect("project loop builds with agent home");
+
+    // B2：三子目录物化。
+    for sub in ["memory", "plans", "checkpoints"] {
+        assert!(
+            agent_home.join(sub).is_dir(),
+            "agent home 子目录必须物化: {}",
+            agent_home.join(sub).display()
+        );
+    }
+    // B4：plan 产物根钉 home/plans（项目目录 plans/ 不再是产物根——
+    // 用户拍板⑥：计划产物绝不能落团队可见的项目目录）。
+    assert_eq!(
+        loop_arc.plan_products_dir().as_deref(),
+        Some(agent_home.join("plans").as_path()),
+        "plan 产物根必须落 agent home/plans"
+    );
+
+    // B5：checkpoint 影子库随迁 agent home/checkpoints。
+    #[cfg(feature = "checkpoint-git")]
+    {
+        let store = loop_arc.checkpoint_store().expect("checkpoint store wired");
+        assert_eq!(
+            store.backend(),
+            CheckpointBackend::Git,
+            "带 .git 的项目在 home 形态下仍选 git 影子库后端"
+        );
+        let shadow = agent_home.join("checkpoints").join("repo.git");
+        assert!(
+            shadow.is_dir(),
+            "影子库必须落 agent home: {}",
+            shadow.display()
+        );
+        // turn 记录落同一 cp_dir（dir 挂载正确的直接证据）。
+        store.begin(1, "turn one");
+        let entries = dir_names(&agent_home.join("checkpoints"));
+        assert!(
+            entries.iter().any(|n| n.ends_with(".json")),
+            "turn 记录必须落 agent home/checkpoints: {entries:?}"
+        );
+        // 主 workspace 旧位置零污染（B5 语义：旧项目 rewind 回档失效不
+        // 迁移，但新位置必须真正接管）。
+        assert!(
+            !project_checkpoint_dir(&shared.workspace_dir(), "p_b2home001").exists(),
+            "主 workspace 旧 project_checkpoints 位置必须零污染"
+        );
+    }
+
+    // 项目目录零污染（人类域交付物不受 Bot 域数据面侵蚀）。
+    let mut remaining = dir_names(&project_dir);
+    remaining.sort();
+    assert_eq!(
+        remaining,
+        vec![".git", "f.txt"],
+        "project dir must stay untouched"
+    );
+
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
+}
+
+/// 记忆选域闸（B1 姊妹函数 [`super::memory_manager_for_data_dir`]）：
+/// 总开关关（shared.memory_manager None）→ 项目域不旁路恒 None（拍板②
+/// 「旧数据不管」语义：增强内存不开就谁都没有）；开关开 → manager 在位
+/// （构造走 with_config_dir，data_dir 由调用方传 home 派生目录——目录
+/// 锚定无公开观测面，由 B2 循环测试的物化断言 + 代码字面 join 双保险）。
+#[cfg(feature = "memory")]
+#[test]
+fn memory_data_dir_gate_disabled_is_none_enabled_is_some() {
+    let home = unique_home("b2mem");
+    // 总开关关：项目域不旁路。
+    let shared_off = shared_for(&home);
+    assert!(
+        super::memory_manager_for_data_dir(&shared_off, &home.join("memory").join("memory_vector"))
+            .is_none(),
+        "增强内存总开关关 → 项目域必须不旁路（恒 None）"
+    );
+    // 总开关开：项目域 manager 在位。
+    let shared_on = Arc::new(SharedResources {
+        memory_manager: Some(Arc::new(nemesis_memory::manager::MemoryManager::new(
+            &nemesis_memory::manager::Config::new(home.join("memory").join("memory_vector")),
+        ))),
+        ..Default::default()
+    });
+    assert!(
+        super::memory_manager_for_data_dir(&shared_on, &home.join("memory").join("memory_vector"))
+            .is_some(),
+        "增强内存总开关开 → 项目域 manager 必须在位"
+    );
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
+}

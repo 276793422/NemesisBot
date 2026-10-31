@@ -367,6 +367,111 @@ fn plan_mode_write_allowed_unit_cases() {
 }
 
 // ---------------------------------------------------------------------------
+// B4（2026-10-31 项目 home 收编）：项目形态 plan 产物根迁移
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plan_products_root_overrides_plans_dir_for_project_sessions() {
+    // 项目会话语义（拍板⑥）：产物根 = <agent_home>/plans；项目目录内的
+    // plans（含相对路径解析落点）一律不放行——高危禁写。
+    let project_dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let al = f1_loop();
+    al.set_workspace_root(project_dir.path().to_path_buf());
+    al.set_plan_products_root(home.path().join("plans"));
+
+    // home/plans 绝对路径 → 放行。
+    assert!(al.plan_mode_write_allowed(
+        "write_file",
+        &format!(
+            r#"{{"path": {}}}"#,
+            serde_json::to_string(&home.path().join("plans").join("p.md")).unwrap()
+        )
+    ));
+    // home/plans 深层新文件 → 放行（最长存在祖先）。
+    assert!(al.plan_mode_write_allowed(
+        "write_file",
+        &format!(
+            r#"{{"path": {}}}"#,
+            serde_json::to_string(&home.path().join("plans").join("a/b/p.md")).unwrap()
+        )
+    ));
+    // home 根内但 plans 外 → 拒（例外只认产物目录子树）。
+    assert!(!al.plan_mode_write_allowed(
+        "write_file",
+        &format!(
+            r#"{{"path": {}}}"#,
+            serde_json::to_string(&home.path().join("notes.md")).unwrap()
+        )
+    ));
+    // 项目目录 plans/ 绝对路径 → 拒（旧放行点被 B4 收紧）。
+    assert!(!al.plan_mode_write_allowed(
+        "write_file",
+        &format!(
+            r#"{{"path": {}}}"#,
+            serde_json::to_string(&project_dir.path().join("plans").join("p.md")).unwrap()
+        )
+    ));
+    // 相对路径 plans/x.md（解析仍 join workspace_root=项目目录）→ 拒；
+    // 模型必须写绝对路径。
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": "plans/x.md"}"#));
+    // `..` 逃逸（home/plans/../evil 落 home 根）→ 拒。
+    assert!(!al.plan_mode_write_allowed(
+        "write_file",
+        &format!(
+            r#"{{"path": {}}}"#,
+            serde_json::to_string(&home.path().join("plans").join("..").join("evil.md")).unwrap()
+        )
+    ));
+}
+
+#[test]
+fn plan_products_dir_falls_back_to_workspace_plans_without_override() {
+    // 主会话回归钉：不注入 plan_products_root → 回落 workspace_root/plans
+    // （旧行为逐字节一致）。
+    let dir = tempfile::tempdir().unwrap();
+    let al = f1_loop();
+    al.set_workspace_root(dir.path().to_path_buf());
+    assert_eq!(
+        al.plan_products_dir().unwrap(),
+        dir.path().join("plans"),
+        "无 override 回落 workspace/plans"
+    );
+    assert!(al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#));
+}
+
+#[tokio::test]
+async fn plan_rejection_message_names_actual_products_dir() {
+    // 拒绝文案动态携带实际放行目录绝对路径——模型据此自纠（项目形态 =
+    // home/plans，主形态 = workspace/plans）。
+    let project_dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let mut al = f1_loop();
+    al.register_tool("exec".to_string(), Box::new(EchoTool));
+    al.set_workspace_root(project_dir.path().to_path_buf());
+    al.set_plan_products_root(home.path().join("plans"));
+    al.set_mode_with_event(
+        crate::types::AgentMode::Plan,
+        "agent:main:session:f1",
+        "web:f1",
+    );
+
+    let tc = ToolCallInfo {
+        id: "c1".to_string(),
+        name: "exec".to_string(),
+        arguments: r#"{"command": "ls"}"#.to_string(),
+    };
+    let out = al
+        .handle_tool_call(&tc, &RequestContext::new("web", "c", "u", "s"))
+        .await;
+    let expected = home.path().join("plans").to_string_lossy().to_string();
+    assert!(
+        out.contains("Plan mode") && out.contains(&expected),
+        "拒绝文案必须带实际放行目录绝对路径，实际: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // ⑥ slash 切换 + ModeChanged 事件
 // ---------------------------------------------------------------------------
 

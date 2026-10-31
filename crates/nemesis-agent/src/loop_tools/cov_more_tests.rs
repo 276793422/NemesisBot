@@ -88,6 +88,7 @@ fn resolve_tool_path_with_and_without_boundary() {
         Some(&WorkspaceBoundary {
             root: dir.path().to_path_buf(),
             restrict: true,
+            extra_roots: Vec::new(),
         }),
     )
     .unwrap();
@@ -102,6 +103,7 @@ fn resolve_tool_path_with_and_without_boundary() {
         Some(&WorkspaceBoundary {
             root: dir.path().to_path_buf(),
             restrict: true,
+            extra_roots: Vec::new(),
         }),
     )
     .unwrap_err();
@@ -116,6 +118,7 @@ fn resolve_tool_path_with_and_without_boundary() {
         Some(&WorkspaceBoundary {
             root: dir.path().to_path_buf(),
             restrict: false,
+            extra_roots: Vec::new(),
         }),
     )
     .unwrap();

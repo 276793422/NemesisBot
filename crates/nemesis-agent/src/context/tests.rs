@@ -1070,3 +1070,125 @@ fn user_profile_section_renders_after_persona_before_tools() {
     // 空渲染 = 零字节（调用方空检查的前提）。
     assert!(crate::user_profile::render_section(&Default::default()).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// B3（2026-10-31 项目 home 收编）：bootstrap 渲染双根覆盖
+// ---------------------------------------------------------------------------
+
+/// 段提取：`## <filename>\n\n<content>` 形态里数某文件段出现的次数。
+fn count_section(prompt: &str, filename: &str, marker: &str) -> usize {
+    prompt
+        .split(&format!("## {filename}\n\n"))
+        .skip(1)
+        .filter(|seg| seg.starts_with(marker))
+        .count()
+}
+
+#[test]
+fn bootstrap_roots_override_none_equals_explicit_single_root() {
+    // override=None 回归钉：None 分支渲染 == 显式单根 override 渲染
+    // （bootstrap_roots() 的 None 臂 = vec![workspace]，与旧单根实现同构
+    // ——None 等价性是对显式单根的真实对照，不是新代码自比）。
+    let ws = TempDir::new().unwrap();
+    std::fs::write(ws.path().join("IDENTITY.md"), "i-am-identity").unwrap();
+    std::fs::write(ws.path().join("SOUL.md"), "i-am-soul").unwrap();
+
+    let mut explicit = ContextBuilder::new(ws.path());
+    explicit.set_bootstrap_roots(vec![ws.path().to_path_buf()]);
+    assert_eq!(
+        ContextBuilder::new(ws.path()).build_system_prompt(false),
+        explicit.build_system_prompt(false),
+        "None override 与显式单根 override 渲染逐字节一致"
+    );
+}
+
+#[test]
+fn bootstrap_roots_home_only_renders_home_section() {
+    // home 有 + 项目目录无 → 仅 home 段。
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    std::fs::write(home.path().join("USER.md"), "home-user-pref").unwrap();
+
+    let mut b = ContextBuilder::new(project.path());
+    b.set_bootstrap_roots(vec![home.path().to_path_buf()]);
+    let prompt = b.build_system_prompt(false);
+    assert_eq!(
+        count_section(&prompt, "USER.md", "home-user-pref"),
+        1,
+        "home 段必须渲染: {prompt}"
+    );
+    assert!(
+        !prompt.contains("## AGENT.md") && !prompt.contains("## IDENTITY.md"),
+        "缺席文件不得产出空段: {prompt}"
+    );
+}
+
+#[test]
+fn bootstrap_roots_both_rendered_home_first_project_second() {
+    // 两边都有 → home 段在前、项目目录段在后（拍板④顺序）。
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    std::fs::write(project.path().join("IDENTITY.md"), "project-identity").unwrap();
+    std::fs::write(home.path().join("IDENTITY.md"), "home-identity").unwrap();
+    std::fs::write(project.path().join("SOUL.md"), "project-soul").unwrap();
+
+    let mut b = ContextBuilder::new(project.path());
+    b.set_bootstrap_roots(vec![
+        home.path().to_path_buf(),
+        project.path().to_path_buf(),
+    ]);
+    let prompt = b.build_system_prompt(false);
+
+    assert_eq!(count_section(&prompt, "IDENTITY.md", "home-identity"), 1);
+    assert_eq!(count_section(&prompt, "IDENTITY.md", "project-identity"), 1);
+    assert_eq!(
+        count_section(&prompt, "SOUL.md", "project-soul"),
+        1,
+        "同名/异名文件两段都渲染，不合并不去重"
+    );
+    // 顺序：home-identity 段在 project-identity 段之前。
+    let home_pos = prompt.find("home-identity").unwrap();
+    let project_pos = prompt.find("project-identity").unwrap();
+    assert!(
+        home_pos < project_pos,
+        "home 段必须在项目目录段之前（拍板④）"
+    );
+}
+
+#[test]
+fn bootstrap_roots_override_scoped_to_bootstrap_files_only() {
+    // override 只作用于 bootstrap 六文件：workspace 字段其余消费点
+    // （此处钉 workspace 路径显示）仍锚 self.workspace。
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    std::fs::write(home.path().join("IDENTITY.md"), "home-identity").unwrap();
+
+    let mut b = ContextBuilder::new(project.path());
+    b.set_bootstrap_roots(vec![home.path().to_path_buf()]);
+    let prompt = b.build_system_prompt(false);
+    assert!(
+        prompt.contains(&project.path().to_string_lossy().to_string()),
+        "workspace 显示段仍锚 self.workspace（prompt_root 不随 override 走）: {prompt}"
+    );
+}
+
+#[test]
+fn bootstrap_roots_skip_heartbeat_mode_multi_root() {
+    // heartbeat（skip_bootstrap=true）路径同样按序多根渲染。
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    std::fs::write(home.path().join("USER.md"), "hb-home-user").unwrap();
+    std::fs::write(project.path().join("USER.md"), "hb-project-user").unwrap();
+
+    let mut b = ContextBuilder::new(project.path());
+    b.set_bootstrap_roots(vec![
+        home.path().to_path_buf(),
+        project.path().to_path_buf(),
+    ]);
+    let hb = b.load_bootstrap_files(true);
+    assert_eq!(count_section(&hb, "USER.md", "hb-home-user"), 1);
+    assert_eq!(count_section(&hb, "USER.md", "hb-project-user"), 1);
+    let home_pos = hb.find("hb-home-user").unwrap();
+    let project_pos = hb.find("hb-project-user").unwrap();
+    assert!(home_pos < project_pos, "heartbeat 路径顺序同 home 在前");
+}

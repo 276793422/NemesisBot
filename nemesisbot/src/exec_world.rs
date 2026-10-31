@@ -162,6 +162,21 @@ pub fn build_executor_channel(
     workspace_dir: &Path,
     config_handle: ConfigHandle,
 ) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
+    build_executor_channel_with_extra_roots(home, workspace_dir, config_handle, Vec::new())
+}
+
+/// B1（2026-10-31 项目 home 收编）：围栏第二根透传形态。`extra_roots` 写进
+/// per-call 子进程 env `NEMESISBOT_EXECUTOR_EXTRA_ROOTS`（`exec_worker` 侧
+/// 解析合并进子进程围栏）——exec 分离开关两侧（主进程/子进程）围栏同根，
+/// 不传 = 单根旧行为（主 loop/工作流引擎零变化）。项目 loop 传
+/// `[<agent_home>]`（拍板⑤）；**不传 gateway home**（过度放行）。
+#[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
+pub fn build_executor_channel_with_extra_roots(
+    home: &Path,
+    workspace_dir: &Path,
+    config_handle: ConfigHandle,
+    extra_roots: Vec<std::path::PathBuf>,
+) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
     let enabled = config_handle
         .read()
         .executor
@@ -486,6 +501,7 @@ pub fn build_executor_channel(
             let channel = nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
                 .with_start_exe(start_exe)
                 .with_home(home.to_path_buf())
+                .with_extra_roots(extra_roots.clone())
                 .with_strict_gate(strict_gate)
                 .with_lease_child((lease_child_now)());
             // D3：DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
@@ -532,6 +548,7 @@ pub fn build_executor_channel(
     );
     let channel = nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
         .with_home(home.to_path_buf())
+        .with_extra_roots(extra_roots)
         .with_strict_gate(strict_gate)
         .with_lease_child((lease_child_now)())
         // P24：Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，

@@ -559,8 +559,23 @@ impl AgentLoop {
                 "[AgentLoop] Plan mode: write-class tool {} refused.",
                 tool_call.name
             );
-            return "Plan mode: file modifications are denied. Present your plan as text, or ask the user to switch with /build. (Exception: write_file under <workspace>/plans/ is allowed for saving the plan itself.)"
-                .to_string();
+            // B4（2026-10-31 项目 home 收编）：拒绝文案动态携带实际放行目录
+            // 绝对路径——模型据此知道计划产物该写哪（项目会话 = home/plans，
+            // 主会话 = workspace/plans）；无放行锚点（standalone）= 诚实说明
+            // 无例外。
+            let plans_hint = match self.plan_products_dir() {
+                Some(dir) => format!(
+                    "(Exception: write_file under {} is allowed for saving the plan itself.)",
+                    dir.display()
+                ),
+                None => "(Exception: no plan products directory is configured in this \
+                         session — file writes are fully denied.)"
+                    .to_string(),
+            };
+            return format!(
+                "Plan mode: file modifications are denied. Present your plan as text, \
+                 or ask the user to switch with /build. {plans_hint}"
+            );
         }
 
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
@@ -1390,16 +1405,37 @@ impl AgentLoop {
         Some(out)
     }
 
+    /// B4（2026-10-31 项目 home 收编）：plan 模式产物目录单一真相源——
+    /// `plan_products_root` 槽优先（项目 loop = `<agent_home>/plans`），
+    /// 回落 `workspace_root/plans`（主会话旧行为）。放行判定、拒绝文案、
+    /// /plan 切换回执三处同读本函数。`workspace_root` 未注入 → None
+    /// （无放行锚点）。pub：装配方（nemesisbot 工厂测试）断言产物根落位。
+    pub fn plan_products_dir(&self) -> Option<std::path::PathBuf> {
+        let root = self.workspace_root.read().clone()?;
+        Some(
+            self.plan_products_root
+                .read()
+                .clone()
+                .unwrap_or_else(|| root.join("plans")),
+        )
+    }
+
     /// F1：Plan 模式分发端唯一写放行——`write_file` 且目标路径落在
-    /// `<workspace>/plans/` 前缀内。路径解析与 [`crate::loop_tools::validate_workspace_path`]
+    /// plans 目录前缀内（B4：项目会话 = `<agent_home>/plans`，主会话 =
+    /// `<workspace>/plans/`）。路径解析与 [`crate::loop_tools::validate_workspace_path`]
     /// 同构（相对路径 join 工作区根 + 双侧 `canonicalize_for_compare` 防
     /// 8.3 短名/大小写失配；目标不存在按最长存在祖先解析）。workspace_root
     /// 未注入（standalone）→ 无放行锚点，一律拦截（诚实从严）。
+    /// 项目会话语义：相对路径仍 join workspace_root（=项目目录）解析——
+    /// 解析结果不落 home/plans 即拒，模型必须写绝对路径。
     pub(crate) fn plan_mode_write_allowed(&self, tool_name: &str, arguments: &str) -> bool {
         if tool_name != "write_file" {
             return false;
         }
         let Some(root) = self.workspace_root.read().clone() else {
+            return false;
+        };
+        let Some(plans_dir) = self.plan_products_dir() else {
             return false;
         };
         let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
@@ -1414,7 +1450,6 @@ impl AgentLoop {
         } else {
             root.join(target)
         };
-        let plans_dir = root.join("plans");
         let resolved = nemesis_path::paths::canonicalize_for_compare(&candidate);
         let plans_canon = nemesis_path::paths::canonicalize_for_compare(&plans_dir);
         resolved.starts_with(&plans_canon)

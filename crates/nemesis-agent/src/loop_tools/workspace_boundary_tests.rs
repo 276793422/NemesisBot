@@ -52,6 +52,7 @@ fn boundary(root: &Path, restrict: bool) -> WorkspaceBoundary {
     WorkspaceBoundary {
         root: root.to_path_buf(),
         restrict,
+        extra_roots: Vec::new(),
     }
 }
 
@@ -441,4 +442,114 @@ async fn register_shared_tools_inserts_bounded_read_tools() {
     assert!(err.contains("access denied"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&other);
+}
+
+// ---------------------------------------------------------------------------
+// B1（2026-10-31 项目 home 收编）：围栏第二根白名单矩阵
+// ---------------------------------------------------------------------------
+
+fn boundary_with_extra(root: &Path, extra: &Path) -> WorkspaceBoundary {
+    WorkspaceBoundary {
+        root: root.to_path_buf(),
+        restrict: true,
+        extra_roots: vec![extra.to_path_buf()],
+    }
+}
+
+#[test]
+fn extra_root_inside_absolute_ok() {
+    // 第二根（项目 agent home）内绝对路径放行——B1 的核心语义。
+    let root = temp_dir("x1_main");
+    let home = temp_dir("x1_home");
+    let target = home.join("IDENTITY.md");
+    std::fs::write(&target, "persona").unwrap();
+    let out = validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap();
+    assert_eq!(out, target);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn extra_root_deep_new_file_ok() {
+    // 第二根内尚不存在的新文件（write_file 语义）：最长存在祖先解析
+    // 必须判界内，不因 ENOENT 误拒。
+    let root = temp_dir("x2_main");
+    let home = temp_dir("x2_home");
+    let target = home.join("plans").join("new.md");
+    assert!(validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).is_ok());
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn outside_both_roots_denied() {
+    // 第二根之外仍是拒绝——B1 放大的只有白名单子树。
+    let root = temp_dir("x3_main");
+    let home = temp_dir("x3_home");
+    let other = temp_dir("x3_other");
+    let target = other.join("secret.txt");
+    let err =
+        validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    assert!(err.contains("outside the workspace"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[test]
+fn relative_path_still_anchors_main_root() {
+    // 相对路径仍 join 主根（现状不变）：主根下的 plans/ 与第二根无关。
+    let root = temp_dir("x4_main");
+    let home = temp_dir("x4_home");
+    let out = validate_workspace_path("plans/todo.md", &boundary_with_extra(&root, &home)).unwrap();
+    assert_eq!(out, root.join("plans").join("todo.md"));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn traversal_escape_denied_with_extra_root() {
+    // `..` 穿越逃逸在双根形态下同样拒绝。
+    let root = temp_dir("x5_main");
+    let home = temp_dir("x5_home");
+    let target = root.join("..").join("outside.txt");
+    let err =
+        validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[cfg(unix)]
+#[test]
+fn extra_root_symlink_escape_denied() {
+    // 第二根内的 symlink 指向界外 → 解析后拒绝（canonicalize 防护对
+    // 每个根同样生效，不是被表面路径骗过）。
+    use std::os::unix::fs::symlink;
+    let root = temp_dir("x6_main");
+    let home = temp_dir("x6_home");
+    let outside = temp_dir("x6_out");
+    symlink(&outside, home.join("escape")).unwrap();
+    let target = home.join("escape").join("x.txt");
+    let err =
+        validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[tokio::test]
+async fn write_file_into_extra_root_allowed_end_to_end() {
+    // 工具级端到端：带第二根的围栏注册出的 write_file 可写 home 子树。
+    let root = temp_dir("x7_main");
+    let home = temp_dir("x7_home");
+    let target = home.join("plans").join("p.md");
+    let args = serde_json::json!({"path": ps(&target), "content": "plan"}).to_string();
+    let tool = super::WriteFileTool::with_boundary(Arc::new(boundary_with_extra(&root, &home)));
+    tool.execute(&args, &ctx()).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "plan");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&home);
 }

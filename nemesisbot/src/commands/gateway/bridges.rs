@@ -39,7 +39,17 @@ pub(crate) fn plugin_ui_library_exists() -> bool {
 /// 外层闸），见 scripts/customize/features.toml memory 条目注记。
 #[cfg(all(feature = "memory", feature = "security"))]
 pub(crate) struct GatewayMemoryGate {
-    approval: Arc<dyn nemesis_security::auditor::ApprovalManager>,
+    source: GatewayApprovalSource,
+}
+
+/// 审批 manager 来源：装配期已持有时用 `Direct`（主/集群 loop——它们的构建
+/// 点在 runtime 审批装配之后或按任务惰性构建）；构建点先于填槽时用 `Slot`
+/// （boot 期项目 loop——2026-10-31 真机实测：`ProjectLoops starting` 07:10:58.499
+/// 早于 `Approval manager wired` .669 约 170ms，构建期急读必空 = 闸静默缺席）。
+#[cfg(all(feature = "memory", feature = "security"))]
+enum GatewayApprovalSource {
+    Direct(Arc<dyn nemesis_security::auditor::ApprovalManager>),
+    Slot(nemesis_agent::loop_tools::ApprovalManagerSlot),
 }
 
 #[cfg(all(feature = "memory", feature = "security"))]
@@ -47,7 +57,19 @@ impl GatewayMemoryGate {
     // pub(crate)（ASM-02）：cluster loop 装配点（agent_factory）复用同一闸
     // ——审批闸此前只接主 loop，集群 loop 的 memory_store/forget 缺省放行。
     pub(crate) fn new(approval: Arc<dyn nemesis_security::auditor::ApprovalManager>) -> Self {
-        Self { approval }
+        Self {
+            source: GatewayApprovalSource::Direct(approval),
+        }
+    }
+
+    /// 槽版（延迟解析）：approve 时点才读槽。boot 期构建的 loop（项目 loop
+    /// start_all 形态）构建期槽尚空，急读 = 闸静默缺席；延迟到调用时点槽已
+    /// 填齐。槽仍空（审批装配缺席/失败）= deny（fail-closed）——闸已显式
+    /// 挂上却无应答者，放行即静默绕过审批语义。
+    pub(crate) fn from_slot(slot: nemesis_agent::loop_tools::ApprovalManagerSlot) -> Self {
+        Self {
+            source: GatewayApprovalSource::Slot(slot),
+        }
     }
 
     /// Request interactive approval. Returns true only if explicitly approved.
@@ -65,7 +87,19 @@ impl GatewayMemoryGate {
             );
             return true;
         }
-        let am = self.approval.clone();
+        let am = match &self.source {
+            GatewayApprovalSource::Direct(a) => a.clone(),
+            GatewayApprovalSource::Slot(slot) => match slot.read().clone() {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(
+                        "[MemoryGate] {} denied: approval manager 槽为空（审批装配缺席？）",
+                        operation
+                    );
+                    return false;
+                }
+            },
+        };
         let operation = operation.to_string();
         let preview = preview.to_string();
         let req_id = uuid::Uuid::new_v4().to_string();

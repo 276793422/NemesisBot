@@ -795,6 +795,11 @@ pub struct AgentLoop {
     ///
     /// `None` = 无界形态（resolve 按原样透传）。
     workspace_boundary: parking_lot::RwLock<Option<Arc<crate::loop_tools::WorkspaceBoundary>>>,
+    /// B4（2026-10-31 项目 home 收编）：plan 模式产物根。`Some(dir)` =
+    /// 项目会话放行 `<agent_home>/plans`（拍板⑥：项目目录/plans 是高危
+    /// 禁写，计划产物只落 Bot 域 home）；`None` = 回落
+    /// `workspace_root/plans`（主会话旧行为，逐字节不变）。
+    plan_products_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// P8（集群无人值守硬化 A2）：per-session token 预算账本（累计 + soft
     /// 一次性闩）。类型与 seed 防双计语义见 [`crate::token_budget`]；接线
     /// 全在 loop/token_budget.rs（计划 §冲突面登记：预算域改动不进
@@ -977,6 +982,7 @@ impl AgentLoop {
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
             workspace_boundary: parking_lot::RwLock::new(None),
+            plan_products_root: parking_lot::RwLock::new(None),
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
@@ -994,6 +1000,14 @@ impl AgentLoop {
     /// loop 构造后注入，与工具表同一 `Arc` 实例——单一真相源）。
     pub fn set_workspace_boundary(&self, boundary: Arc<crate::loop_tools::WorkspaceBoundary>) {
         *self.workspace_boundary.write() = Some(boundary);
+    }
+
+    /// B4（2026-10-31 项目 home 收编）：装配侧注入 plan 模式产物根
+    /// （项目 loop = `<agent_home>/plans`；主/集群/headless 不注入 = 回落
+    /// workspace_root/plans 旧行为）。`plan_mode_write_allowed` 与拒绝
+    /// 文案、/plan 切换回执同读本槽——单一真相源。
+    pub fn set_plan_products_root(&self, root: std::path::PathBuf) {
+        *self.plan_products_root.write() = Some(root);
     }
 
     /// M5 测试观察口（生产路径只写不读快照——dispatch 处局部克隆）。

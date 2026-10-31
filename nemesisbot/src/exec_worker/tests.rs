@@ -1177,3 +1177,31 @@ mod wave_r10_stdio_subprocess {
         drop(err_handle);
     }
 }
+
+// ---------------------------------------------------------------------------
+// B1（2026-10-31 项目 home 收编）：围栏第二根 env 解析
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_extra_roots_env_roundtrip() {
+    // 与 ExecutorChannel::env_pairs 的 join_paths 序列化互逆（同一分隔符
+    // 语义；Windows `;` / Unix `:`——两侧都走 std 同源函数，不硬编码）。
+    let roots = vec![std::path::PathBuf::from("/ws/agents/a1/home")];
+    let joined = std::env::join_paths(&roots).unwrap();
+    assert_eq!(parse_extra_roots_env(Some(joined)), roots);
+}
+
+#[test]
+fn parse_extra_roots_env_unset_is_empty() {
+    assert!(parse_extra_roots_env(None).is_empty(), "未设 = 单根旧行为");
+}
+
+#[test]
+fn parse_extra_roots_env_multi() {
+    let roots = vec![
+        std::path::PathBuf::from("/a"),
+        std::path::PathBuf::from("/b"),
+    ];
+    let joined = std::env::join_paths(&roots).unwrap();
+    assert_eq!(parse_extra_roots_env(Some(joined)), roots);
+}

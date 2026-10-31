@@ -209,6 +209,7 @@ fn gate_and_write_boundary_rejects_out_of_workspace_files() {
     let boundary = crate::loop_tools::WorkspaceBoundary {
         root: ws.path().to_path_buf(),
         restrict: true,
+        extra_roots: Vec::new(),
     };
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -251,6 +252,7 @@ fn gate_and_write_boundary_resolves_relative_paths_against_root() {
     let boundary = crate::loop_tools::WorkspaceBoundary {
         root: ws.path().to_path_buf(),
         restrict: true,
+        extra_roots: Vec::new(),
     };
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

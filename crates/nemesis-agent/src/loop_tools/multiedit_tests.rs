@@ -272,6 +272,7 @@ async fn boundary_rejects_outside_path_and_aborts_batch() {
     let tool = MultiEditTool::with_boundary(std::sync::Arc::new(WorkspaceBoundary {
         root: root.clone(),
         restrict: true,
+        extra_roots: Vec::new(),
     }));
     let err = tool
         .execute(

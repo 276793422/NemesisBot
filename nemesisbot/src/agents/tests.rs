@@ -464,6 +464,52 @@ fn project_mirror_sync_is_idempotent() {
 }
 
 #[test]
+fn remove_project_mirror_targets_only_matching_project() {
+    // projects.remove 联动契约：按 project_id 定向摘镜像（其余 kind 与
+    // 其他项目记录不动）；幂等（二次摘=0 条）；main/selfbuilt 不误伤。
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let proj1 = dir.path().join("proj1");
+    let proj2 = dir.path().join("proj2");
+    std::fs::create_dir_all(&proj1).unwrap();
+    std::fs::create_dir_all(&proj2).unwrap();
+    mgr.ensure_main_agent().unwrap();
+    mgr.sync_project_agents(&[("p1".into(), "甲".into(), proj1)])
+        .unwrap();
+    mgr.sync_project_agents(&[("p2".into(), "乙".into(), proj2)])
+        .unwrap();
+    let own = mgr.create_agent(selfbuilt_params("self")).unwrap();
+
+    let removed = mgr.remove_project_mirror("p1").unwrap();
+    assert_eq!(removed, 1, "恰好摘 p1 一条镜像");
+    let left = mgr.list().unwrap();
+    assert!(
+        left.iter().all(|r| r.project_id.as_deref() != Some("p1")),
+        "p1 镜像必须消失: {left:?}"
+    );
+    assert!(
+        left.iter()
+            .any(|r| r.kind == agent_kind::PROJECT && r.project_id.as_deref() == Some("p2")),
+        "p2 镜像必须保留"
+    );
+    assert!(
+        left.iter().any(|r| r.kind == agent_kind::MAIN),
+        "main 不误伤"
+    );
+    assert!(
+        left.iter().any(|r| r.agent_id == own.agent_id),
+        "selfbuilt 不误伤"
+    );
+
+    // 幂等：二次摘 = 0 条不报错。
+    assert_eq!(
+        mgr.remove_project_mirror("p1").unwrap(),
+        0,
+        "二次摘必须幂等"
+    );
+}
+
+#[test]
 fn three_kinds_coexist_without_cross_talk() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = setup(dir.path());

@@ -345,6 +345,10 @@ pub struct WorkspaceBoundary {
     pub root: PathBuf,
     /// 是否启用限制。
     pub restrict: bool,
+    /// 附加放行根（B1 项目 home，2026-10-31）：目标落任一根内即放行。
+    /// 项目会话 = `[agent_home]`（Bot 可自改的数据域，围栏第二根）；
+    /// 其余形态 = 空（行为与单根版逐字节一致）。
+    pub extra_roots: Vec<PathBuf>,
 }
 
 /// 校验 `path` 是否落在边界内，返回归一后的路径供后续 IO 使用。
@@ -368,13 +372,20 @@ pub fn validate_workspace_path(
     let resolved = canonicalize_for_compare(&canonical);
     let ws = canonicalize_for_compare(&boundary.root);
     if resolved.starts_with(&ws) {
-        Ok(canonical)
-    } else {
-        Err(format!(
-            "access denied: path '{}' is outside the workspace",
-            path
-        ))
+        return Ok(canonical);
     }
+    // 附加放行根（B1）：与主根同一套 canonicalize 防护（symlink escape /
+    // 8.3 短名 / 最长存在祖先），任一根命中即放行。
+    for extra in &boundary.extra_roots {
+        let extra_canon = canonicalize_for_compare(extra);
+        if resolved.starts_with(&extra_canon) {
+            return Ok(canonical);
+        }
+    }
+    Err(format!(
+        "access denied: path '{}' is outside the workspace",
+        path
+    ))
 }
 
 /// A tool that writes content to a file on disk.

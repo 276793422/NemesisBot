@@ -178,12 +178,25 @@ fn emit_error_response(error: &str) {
     let _ = out.flush();
 }
 
+/// B1（2026-10-31 项目 home 收编）：解析透传的围栏第二根 env（未设/空 =
+/// 空 vec = 单根旧行为；`split_paths` 平台原生分隔符，与
+/// `ExecutorChannel::env_pairs` 的 `join_paths` 序列化同源互逆）。
+fn parse_extra_roots_env(v: Option<std::ffi::OsString>) -> Vec<std::path::PathBuf> {
+    v.map(|v| std::env::split_paths(&v).collect())
+        .unwrap_or_default()
+}
+
 /// 工具循环（原 run() 主体）：注册共享工具集 + 选传输层。
 async fn run_loop(workspace: &str) -> Result<()> {
     // Same registry the gateway builds — zero drift between local and remote
     // tool impls. Minimal config: only `workspace`; everything else None →
     // STAY tools (memory/cron/cluster_rpc/...) register as inert stubs that the
     // gateway never invokes (it only sends MOVE tool names over the wire).
+    // B1（2026-10-31 项目 home 收编）：围栏第二根从 env 透传
+    // （`NEMESISBOT_EXECUTOR_EXTRA_ROOTS`）——项目会话开 executor 分离时，
+    // 子进程围栏与主进程同根（第二根 = 项目 agent home），开关两侧行为
+    // 不分裂。未设 = 单根旧行为（主 loop/工作流引擎字节不变）。
+    let extra_roots = parse_extra_roots_env(std::env::var_os("NEMESISBOT_EXECUTOR_EXTRA_ROOTS"));
     let cfg = SharedToolConfig {
         workspace: Some(workspace.to_string()),
         // A5（2026-09-04）：子进程侧同样设界——executor 工作区即边界根
@@ -193,6 +206,7 @@ async fn run_loop(workspace: &str) -> Result<()> {
             nemesis_agent::loop_tools::WorkspaceBoundary {
                 root: std::path::PathBuf::from(workspace),
                 restrict: true,
+                extra_roots,
             },
         )),
         // WS9/P22：executor 侧租约——gateway 在 spawn 前经

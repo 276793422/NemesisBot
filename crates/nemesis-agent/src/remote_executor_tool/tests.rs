@@ -762,3 +762,41 @@ async fn persistent_route_resolve_none_skips_executor_and_falls_back() {
         "实体未就绪 = 常驻执行体一次都不被触碰"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B1（2026-10-31 项目 home 收编）：围栏第二根 env 透传
+// ---------------------------------------------------------------------------
+
+#[test]
+fn env_pairs_writes_extra_roots_when_set() {
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false))
+        .with_extra_roots(vec![
+            PathBuf::from("/ws/agents/a1/home"),
+            PathBuf::from("/other"),
+        ]);
+    let pairs = ch.env_pairs();
+    let got = pairs
+        .iter()
+        .find(|(k, _)| k == "NEMESISBOT_EXECUTOR_EXTRA_ROOTS")
+        .expect("extra roots env 必须在场");
+    let parsed: Vec<_> = std::env::split_paths(&got.1).collect();
+    assert_eq!(
+        parsed,
+        vec![PathBuf::from("/ws/agents/a1/home"), PathBuf::from("/other")],
+        "join_paths/split_paths 往返必须无损: {:?}",
+        got.1
+    );
+}
+
+#[test]
+fn env_pairs_omits_extra_roots_when_empty() {
+    // 空 = 不设 env——子进程缺省空 vec，单根行为与旧版逐字节一致。
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false));
+    let pairs = ch.env_pairs();
+    assert!(
+        !pairs
+            .iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_EXTRA_ROOTS"),
+        "空第二根不得写 env"
+    );
+}
