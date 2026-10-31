@@ -485,6 +485,27 @@ impl AgentManager {
         Ok(created)
     }
 
+    /// 项目镜像记录定向清理（projects.remove 联动）：按 project_id 摘
+    /// kind=project 记录，返回摘除条数。镜像记录是注册表条目的投影——
+    /// 条目摘除后投影若留着，agents.list 会出现指向已删项目的幽灵记录，
+    /// 盘上 home 也成了无人认领的孤儿（B2 home 收编后镜像带 home_path，
+    /// 孤儿有物理目录）。home 目录按 [`Self::remove`] 同语义**保留在盘**
+    /// （解除注册 ≠ 删文件）。boot 期刻意**不做**全量对账：registry 是
+    /// lenient 读（损坏=空列表），以空集对账会误删全部镜像（脚枪不造；
+    /// remove 时点清理已足够，历史孤儿无害）。
+    pub fn remove_project_mirror(&self, project_id: &str) -> Result<usize, String> {
+        let mut removed = 0;
+        for record in self.store.list_all()? {
+            if record.kind == agent_kind::PROJECT
+                && record.project_id.as_deref() == Some(project_id)
+            {
+                self.store.remove(&record.agent_id)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// 启动 sweep：收敛卡在 `provisioning` 的半创建记录。重物化成功 →
     /// `active`；失败 → `failed` 终态（调用方 WARN 留痕）。P6-R2 起同批
     /// 收敛 `migrating` 残留（cluster 启用形态）：墓碑在场 = 迁移成功

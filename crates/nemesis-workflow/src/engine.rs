@@ -1909,6 +1909,14 @@ impl WorkflowEngine {
 
         // Copy results from context into execution
         execution.node_results = wf_ctx.get_all_node_results();
+        // BUG-20261031-239：变量同样回写——workflow.variables（YAML
+        // `variables:` 段）只在上方 seeding 进 wf_ctx，execution.variables
+        // 始终空；resume（resume_execution_node）与 cancel（cancel_execution
+        // 的终态 checkpoint）都从 execution.variables 重建 wf_ctx，human_review
+        // 挂起后进程内 resume 的下游节点读 `{{var}}` 全部落空（模板残留 /
+        // 条件边按不成立跳过）。对齐 resume 路径与 checkpoint 恢复路径
+        // （restore_incomplete_executions）的既有回写惯例。
+        execution.variables = wf_ctx.get_all_variables();
 
         // Persist final state
         self.persist_execution(&execution).await;

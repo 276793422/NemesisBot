@@ -559,3 +559,27 @@ fn s12b_fully_parenthesized_expression_recurses_into_inner() {
     // 嵌套括号包裹的完整表达式同样先剥壳再求值
     assert!(evaluate("(( true ))", &vars).unwrap());
 }
+
+/// BUG-20261031-240 红证：find_operator 双形态越界 panic。
+/// 形态一：条件表达式里连续重复逻辑算子（`or  or` / 双空格形态）使
+/// split_logical 产出空串 part → find_operator 对空 expr 走 `chars[0]`
+/// （循环上界 saturating_sub 后 +1 恒 ≥1）→ 索引越界 panic。
+/// 形态二：find_operator 返回 char 下标，eval_comparison 按字节下标切片
+/// ——多字节字符在算子前时切点落在字符中间（not a char boundary panic /
+/// 错误拆分）。中文条件是本仓库常态写法。
+#[test]
+fn test_doubled_logical_operator_does_not_panic() {
+    let vars = HashMap::new();
+    // 修复前：panic（index out of bounds）；修复后：诚实 Err 或布尔结果，
+    // 不允许 panic。
+    let _ = evaluate("a == 1 or  or b == 2", &vars);
+    let _ = evaluate("a == 1 and  and b == 2", &vars);
+    let _ = evaluate("or or a == 1", &vars);
+    // 形态二：修复前 panic（byte index 5 is not a char boundary）；
+    // 修复后按字节下标正确拆分求值（中文两侧字符串相等性按整词比较）。
+    assert_eq!(evaluate("状态 == 状态", &vars), Ok(true));
+    assert_eq!(evaluate("状态 != ok", &vars), Ok(true));
+    assert_eq!(evaluate("状态 == ok", &vars), Ok(false));
+    // find_operator 对非 ASCII 前缀返回字节下标（切片直接可用）
+    assert_eq!(find_operator("状态 == ok", "=="), Some(7));
+}

@@ -188,6 +188,9 @@ pub async fn pair_with_peer(
         // 回滚：恢复写前内容；原本无文件则删除半成品。
         // REL-002：回滚恢复也走原子写入（撕裂的回滚=最需要原子性的场景）。
         // LOW-5：删除走韧性包装（半成品刚落盘即删，AV 瞬时句柄同理）。
+        // BUG-20261031-248：韧性删除的退避重试（80ms 递增，最坏 4.4s）不得
+        // 阻塞调用方 tokio worker——同纪律先例（continuation/task_result
+        // store 的 LOW-5 点位）均为 spawn_blocking 包裹，此处为漏网点补齐。
         let rollback = if let Some(content) = &pre_content {
             nemesis_utils::write_file_atomic(
                 &peers_path.to_string_lossy(),
@@ -196,7 +199,10 @@ pub async fn pair_with_peer(
             )
             .is_err()
         } else {
-            !crate::fsutil::remove_file_resilient(peers_path)
+            let p = peers_path.to_path_buf();
+            !tokio::task::spawn_blocking(move || crate::fsutil::remove_file_resilient(&p))
+                .await
+                .unwrap_or(false)
         };
         return Err(PairError::AssertFailed {
             detail: if rollback {

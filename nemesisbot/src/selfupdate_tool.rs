@@ -69,7 +69,13 @@ impl nemesis_agent::r#loop::Tool for SelfupdateCheckTool {
         let _ = serde_json::from_str::<serde_json::Value>(args)
             .or_else(|_| serde_json::from_str::<serde_json::Value>("{}"));
         let (version, commit) = identity();
-        let c = nemesis_web::selfupdate::check(version, commit).await?;
+        // 下载代理调用时读盘（config.proxy.json selfupdate 段）。agent 工具
+        // 面的 RequestContext 无 workspace 字段——走 manager 槽的 workspace
+        //（与 apply 工具同源；槽空 = 未装配的极早窗口，直连诚实降级）。
+        let proxy = nemesis_web::handlers::selfupdate::manager().and_then(|m| {
+            nemesis_config::proxy_file::load_selfupdate_proxy(&m.workspace.join("config"))
+        });
+        let c = nemesis_web::selfupdate::check(version, commit, proxy.as_deref()).await?;
         let summary = if !c.asset_present {
             format!(
                 "No usable artifact yet: target asset '{}' is absent from the latest release.",

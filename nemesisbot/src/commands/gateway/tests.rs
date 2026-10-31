@@ -104,6 +104,41 @@ async fn memory_gate_denies_on_timeout_or_error() {
     assert!(!g.approve_forget("y").await);
 }
 
+// 槽版闸（from_slot，2026-10-31 项目 loop boot 时序修复）：空槽 fail-closed
+// deny，绝不静默放行。
+#[cfg(all(feature = "memory", feature = "security"))]
+#[tokio::test]
+async fn memory_gate_slot_empty_denies_fail_closed() {
+    let slot: nemesis_agent::loop_tools::ApprovalManagerSlot =
+        std::sync::Arc::new(parking_lot::RwLock::new(None));
+    let g = GatewayMemoryGate::from_slot(slot);
+    assert!(
+        !g.approve_store("x").await,
+        "empty slot (approval assembly absent) must deny, never silently allow"
+    );
+    assert!(!g.approve_forget("y").await);
+}
+
+// 槽版闸延迟解析：构建期槽空（boot 期项目 loop 先于 runtime 审批装配），
+// 调用时点槽已填 → 正常走审批流。锁死「构建时序不绑架闸在场」语义。
+#[cfg(all(feature = "memory", feature = "security"))]
+#[tokio::test]
+async fn memory_gate_slot_resolves_lazily_after_late_fill() {
+    let slot: nemesis_agent::loop_tools::ApprovalManagerSlot =
+        std::sync::Arc::new(parking_lot::RwLock::new(None));
+    let g = GatewayMemoryGate::from_slot(slot.clone());
+    // 构建后、调用前填槽（= gateway runtime 审批装配晚于项目 loop 构建）。
+    let am: std::sync::Arc<dyn nemesis_security::auditor::ApprovalManager> =
+        std::sync::Arc::new(MockApproval {
+            decision: Ok(nemesis_security::auditor::ApprovalVerdict::approved()),
+        });
+    *slot.write() = Some(am);
+    assert!(
+        g.approve_store("late-filled slot").await,
+        "gate constructed before slot fill must still resolve at approve time"
+    );
+}
+
 #[test]
 fn test_parse_host_port_ipv6_like() {
     // With rfind(':'), last colon is used

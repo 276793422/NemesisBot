@@ -97,6 +97,22 @@ fn get_plugin_data_dir_null_inputs_return_negative() {
     assert!(n < 0);
 }
 
+/// BUG-20261031-243：漏斗 helper 必须对 null src 诚实返回 -1，绝不解引用。
+/// 旧代码 libc_strlen 的 null→0 守卫把 0 长度放行到 copy_nonoverlapping(
+/// null, buf, 1)——从空指针读 1 字节 = UB（Windows 实测 ACCESS_VIOLATION
+/// 崩测试进程，即本测试在旧代码下的红证形态）。OnceLock 未 set 时
+/// host_get_workspace_dir / host_get_plugin_config_dir 会把 null src 传
+/// 进来。直调 helper 不碰 statics，无需 VTABLE_LOCK。
+#[test]
+fn write_cstr_to_buf_null_src_returns_param_error() {
+    let mut buf = [0 as c_char; 16];
+    let rc = write_cstr_to_buf(std::ptr::null(), buf.as_mut_ptr(), buf.len());
+    assert_eq!(
+        rc, -1,
+        "null src must return -1 (param invalid), never dereference"
+    );
+}
+
 #[test]
 fn get_plugin_data_dir_valid_writes_path() {
     let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());

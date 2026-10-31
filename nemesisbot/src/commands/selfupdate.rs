@@ -42,7 +42,10 @@ pub enum SelfupdateCommand {
 
 pub async fn run(cmd: SelfupdateCommand, local: bool) -> Result<()> {
     match cmd {
-        SelfupdateCommand::Check => run_check().await,
+        SelfupdateCommand::Check => {
+            let home = common::resolve_home(local);
+            run_check(&common::workspace_path(&home)).await
+        }
         SelfupdateCommand::Apply {
             allow_downgrade,
             force,
@@ -57,7 +60,7 @@ pub async fn run(cmd: SelfupdateCommand, local: bool) -> Result<()> {
     }
 }
 
-async fn run_check() -> Result<()> {
+async fn run_check(workspace: &Path) -> Result<()> {
     let version = common::VERSION_INFO.version;
     let commit = common::VERSION_INFO.git_commit;
     if commit.is_empty() {
@@ -65,7 +68,10 @@ async fn run_check() -> Result<()> {
     } else {
         println!("Current build: {version} (commit {commit})");
     }
-    let c = nemesis_web::selfupdate::check(version, commit)
+    // 下载代理调用时读盘（config.proxy.json selfupdate 段——保存即生效，
+    // CLI 一次性进程与 gateway 同语义）。
+    let proxy = nemesis_config::proxy_file::load_selfupdate_proxy(&workspace.join("config"));
+    let c = nemesis_web::selfupdate::check(version, commit, proxy.as_deref())
         .await
         .map_err(anyhow::Error::msg)
         .context("查询 Release 元数据失败")?;

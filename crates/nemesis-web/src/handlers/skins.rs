@@ -216,7 +216,7 @@ impl SkinsHandler {
                     .to_string()
             })?;
         let bytes =
-            crate::handlers::release_fetch::fetch_bytes(url, SKIN_PACKAGE_MAX_BYTES).await?;
+            crate::handlers::release_fetch::fetch_bytes(url, SKIN_PACKAGE_MAX_BYTES, None).await?;
         let outcome = install_bytes(&dir, &bytes, overwrite)?;
         Ok(Some(serde_json::to_value(outcome).unwrap_or(json!({}))))
     }
@@ -318,6 +318,7 @@ async fn install_from_release(dir: &str, overwrite: bool) -> Result<Option<Value
     let zip_bytes = crate::handlers::release_fetch::fetch_release_asset(
         RELEASE_ZIP_NAME,
         SKIN_PACKAGE_MAX_BYTES,
+        None,
     )
     .await?;
     install_zip_entries(dir, &zip_bytes, overwrite)

@@ -205,6 +205,14 @@ pub struct ContextBuilder {
     /// 入口形态变体（pro 体系专属）：缺省 Interactive——gateway 主链路
     /// 渲染字节与历史一致（golden 不变）；headless/ACP 由各自入口显式设置。
     entrance: crate::prompt::Entrance,
+    /// B3（2026-10-31 项目 home 收编）：bootstrap 渲染专用双根覆盖。
+    /// `Some(roots)` 时 [`Self::load_bootstrap_files`] 按序渲染 roots
+    /// （替代只作用于 BOOTSTRAP_FILES 六文件；`workspace` 字段其余消费点
+    /// ——记忆模板/skills 目录/workspace 显示——零变化）。同名文件多根
+    /// 各渲染一段，不合并不去重（拍板④：单一文件拆两份的字面语义）。
+    /// `None` = 现状（渲染 `self.workspace`），主 loop/headless/acp/集群
+    /// 逐字节不变。
+    bootstrap_roots_override: Option<Vec<PathBuf>>,
 }
 
 /// Information about a loaded skill.
@@ -276,6 +284,24 @@ impl ContextBuilder {
             tool_definitions: Vec::new(),
             prompt_system: crate::prompt::PromptSystem::Classic,
             entrance: crate::prompt::Entrance::Interactive,
+            bootstrap_roots_override: None,
+        }
+    }
+
+    /// B3：设置 bootstrap 渲染根序列（项目 home → 项目目录；按序全渲染，
+    /// 不去重）。只影响 [`Self::load_bootstrap_files`]；`None`（缺省）=
+    /// 渲染 `self.workspace`（旧行为逐字节一致）。
+    pub fn set_bootstrap_roots(&mut self, roots: Vec<PathBuf>) -> &mut Self {
+        self.bootstrap_roots_override = Some(roots);
+        self
+    }
+
+    /// B3：bootstrap 渲染根序列单一真相源——override 在场按序返回，缺席
+    /// = `[self.workspace]`（与旧行为同形）。
+    fn bootstrap_roots(&self) -> Vec<&Path> {
+        match &self.bootstrap_roots_override {
+            Some(roots) => roots.iter().map(|p| p.as_path()).collect(),
+            None => vec![self.workspace.as_path()],
         }
     }
 
@@ -610,17 +636,24 @@ impl ContextBuilder {
     ///
     /// If `skip_bootstrap` is true, only loads config files without triggering
     /// initialization logic (used for heartbeat requests).
+    ///
+    /// B3：渲染根 = [`Self::bootstrap_roots`]（override 在场按序多根，缺席
+    /// = 单根 `self.workspace`）。多根时每根独立走完 BOOTSTRAP_FILES 序
+    /// （同名文件各渲染一段）；BOOTSTRAP.md 初始化模式锚 `self.workspace`
+    /// （workspace 级 init 概念，不随 override 走）。
     pub fn load_bootstrap_files(&self, skip_bootstrap: bool) -> String {
         let mut result = String::new();
 
         if skip_bootstrap {
             // Heartbeat mode: only load config files, do not trigger initialization
-            for filename in BOOTSTRAP_FILES {
-                if let Some(content) = self.read_workspace_file(filename) {
-                    if content.trim().is_empty() {
-                        continue;
+            for root in self.bootstrap_roots() {
+                for filename in BOOTSTRAP_FILES {
+                    if let Some(content) = Self::read_file_in_dir(root, filename) {
+                        if content.trim().is_empty() {
+                            continue;
+                        }
+                        result.push_str(&format!("## {}\n\n{}\n\n", filename, content));
                     }
-                    result.push_str(&format!("## {}\n\n{}\n\n", filename, content));
                 }
             }
             return result;
@@ -641,14 +674,16 @@ impl ContextBuilder {
         }
 
         // BOOTSTRAP.md does not exist: normal mode
-        for filename in BOOTSTRAP_FILES {
-            if let Some(content) = self.read_workspace_file(filename) {
-                // 空文件不注入（如 persona-gen 未产出 EXPERTISE.md），
-                // 避免空标题段污染 prompt 且破坏前缀缓存语义。
-                if content.trim().is_empty() {
-                    continue;
+        for root in self.bootstrap_roots() {
+            for filename in BOOTSTRAP_FILES {
+                if let Some(content) = Self::read_file_in_dir(root, filename) {
+                    // 空文件不注入（如 persona-gen 未产出 EXPERTISE.md），
+                    // 避免空标题段污染 prompt 且破坏前缀缓存语义。
+                    if content.trim().is_empty() {
+                        continue;
+                    }
+                    result.push_str(&format!("## {}\n\n{}\n\n", filename, content));
                 }
-                result.push_str(&format!("## {}\n\n{}\n\n", filename, content));
             }
         }
 
@@ -661,6 +696,22 @@ impl ContextBuilder {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 debug!("[ContextBuilder] Loaded workspace file: {}", filename);
+                Some(content)
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// B3：读指定根下的 bootstrap 文件（目录缺席/文件不存在 = None；与
+    /// [`Self::read_workspace_file`] 同语义，根参数化）。
+    fn read_file_in_dir(dir: &Path, filename: &str) -> Option<String> {
+        match std::fs::read_to_string(dir.join(filename)) {
+            Ok(content) => {
+                debug!(
+                    "[ContextBuilder] Loaded bootstrap file from {}: {}",
+                    dir.display(),
+                    filename
+                );
                 Some(content)
             }
             Err(_) => None,

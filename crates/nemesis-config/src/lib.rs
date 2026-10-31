@@ -14,6 +14,7 @@ pub mod hot_reload;
 pub mod plugin_wasm;
 pub mod plugins_native;
 pub mod provider_resolver;
+pub mod proxy_file;
 pub mod store;
 pub mod vault_ref;
 
@@ -5960,6 +5961,11 @@ mod plugins_native_tests;
 // 迁移 / RMW 语义。
 #[cfg(test)]
 mod plugin_wasm_tests;
+
+// 独立代理配置（proxy_file）：纯读不落盘 / RMW 段互不覆盖 / 损坏重建 /
+// 前缀校验 / env 注入清单配对。
+#[cfg(test)]
+mod proxy_file_tests;
 
 // HotReloader force_reload 语义（写方自刷新，绕过 mtime 检测）测试。
 #[cfg(test)]

@@ -1029,7 +1029,13 @@ async fn test_delete_file_nonexistent() {
         .execute(&serde_json::json!({"path": dir.path().join("nonexistent.txt").to_string_lossy()}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("failed"));
+    // BUG-20261031-238 修复后：操作面「删不存在文件」由前置存在性检查
+    // 诚实报 not found（retry 变体把 NotFound 吞成成功，不能放它报成功）。
+    assert!(
+        result.for_llm.contains("not found"),
+        "got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -1368,4 +1374,89 @@ async fn spill_locator_readable_under_workspace_restriction() {
         result.for_llm
     );
     assert!(result.for_llm.contains("FULL oversized tool result"));
+}
+
+// -------------------------------------------------------------------------
+// BUG-20261031-238：delete_dir/delete_file 裸单发删除 vs Windows 瞬时句柄。
+// Defender 实时扫描 / 索引服务会短暂持有刚写完文件的句柄，单发
+// remove_dir_all/remove_file 在窗口内必失败（os error 5/32）——全仓韧性
+// 纪律（nemesis_utils::fsutil）要求操作面删除走退避重试。测试用受控句柄
+// 复现：子线程持句柄 200ms 后释放，删除调用必须在重试窗口内成功。
+// Windows 形态（句柄 share-mode 语义）；Linux unlink 打开文件合法，前提
+// 不成立，cfg(windows) 编译期消失。
+// -------------------------------------------------------------------------
+
+/// 子线程持有文件句柄 `hold_ms` 毫秒后释放（模拟 AV/索引器瞬时句柄）。
+/// share_mode = FILE_SHARE_READ（无 FILE_SHARE_DELETE 位——与 std 默认
+/// 三Share 位全开不同，与原生进程/AO 扫描器的持句形态一致），持有期内
+/// 删除必失败（sharing violation）。返回前确认句柄已打开（channel 握手），
+/// 删除调用因此在持有窗口内发起。
+#[cfg(windows)]
+fn hold_file_briefly(path: &Path, hold_ms: u64) -> std::thread::JoinHandle<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    let path = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .expect("hold: open victim file");
+        tx.send(()).expect("hold: signal opened");
+        std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+        drop(f);
+    });
+    rx.recv().expect("hold: wait for opened signal");
+    handle
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn delete_dir_survives_transient_handle_hold() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = DeleteDirTool::new(&ws, false);
+
+    let victim = dir.path().join("victim");
+    std::fs::create_dir_all(&victim).unwrap();
+    let data = victim.join("data.txt");
+    std::fs::write(&data, "held briefly").unwrap();
+
+    let holder = hold_file_briefly(&data, 200);
+
+    let result = tool
+        .execute(&serde_json::json!({"path": victim.to_string_lossy()}))
+        .await;
+    holder.join().expect("hold thread");
+    assert!(
+        !result.is_error,
+        "delete_dir must ride out transient handle holds (fsutil retry), got: {}",
+        result.for_llm
+    );
+    assert!(!victim.exists(), "directory should be gone after retry");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn delete_file_survives_transient_handle_hold() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = DeleteFileTool::new(&ws, false);
+
+    let data = dir.path().join("data.txt");
+    std::fs::write(&data, "held briefly").unwrap();
+
+    let holder = hold_file_briefly(&data, 200);
+
+    let result = tool
+        .execute(&serde_json::json!({"path": data.to_string_lossy()}))
+        .await;
+    holder.join().expect("hold thread");
+    assert!(
+        !result.is_error,
+        "delete_file must ride out transient handle holds (fsutil retry), got: {}",
+        result.for_llm
+    );
+    assert!(!data.exists(), "file should be gone after retry");
 }

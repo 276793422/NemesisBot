@@ -172,6 +172,25 @@ impl ProjectLoopManager {
                 return Ok(());
             }
         }
+        // B2 时序返工（2026-10-31 项目 home 收编真机 E2E）：loop 构建前
+        // 同步本条项目镜像记录——运行期 projects.create 此前从不走 boot
+        // seed 的批量 sync，记录缺位使 from_project 拿不到 home_path，
+        // home 面（围栏第二根/记忆隔离/plan 产物根/checkpoint 随迁）整体
+        // 静默降级。sync 对已知 project_id 幂等（boot 已建 = no-op）；
+        // manager 缺席或 sync 失败 = warn + 照建 loop（诚实降级不拒建，
+        // 与 from_project 缺位语义一致）。
+        if let Some(mgr) = crate::agents::manager()
+            && let Err(e) = mgr.sync_project_agents(&[(
+                entry.id.clone(),
+                entry.name.clone(),
+                entry.path.clone(),
+            )])
+        {
+            warn!(
+                id = %entry.id,
+                "[ProjectLoops] 项目 agent 镜像同步失败（home 面降级单根）: {e}"
+            );
+        }
         let agent_loop = crate::agent_factory::build_project_agent_loop(
             &self.shared,
             entry,
@@ -887,6 +906,18 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
         let entry = registry::remove_project(&self.registry_path, project_id)
             .map_err(|e| format!("{e:#}"))?;
         self.stop_project(project_id);
+        // agents 镜像记录随注册表摘除同步清理（投影不活过真相源条目；
+        // B2 后镜像带 home_path，孤儿=幽灵记录+无主 home 目录）。清理失败
+        // warn 降级不阻塞摘除——孤儿镜像是卫生问题，remove 的用户语义
+        // （解除分组）已由 registry 摘除达成。home 目录保留在盘。
+        if let Some(mgr) = crate::agents::manager()
+            && let Err(e) = mgr.remove_project_mirror(project_id)
+        {
+            warn!(
+                id = %project_id,
+                "[ProjectLoops] 项目 agent 镜像记录清理失败（孤儿镜像残留 agents.list）: {e}"
+            );
+        }
         Ok(nemesis_web::handlers::projects::ProjectInfo {
             running: false,
             id: entry.id,

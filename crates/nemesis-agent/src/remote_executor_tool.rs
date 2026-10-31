@@ -179,6 +179,11 @@ pub struct ExecutorChannel {
     /// `None` = 未注入（测试/裸构造/trim 构建）= 现状字节不变。盒 wrap
     /// （`start_exe`）在场时本 hook 不抢（Sandboxie 更强，结构性防线）。
     pub dacl_spawn: Option<DaclSpawnHook>,
+    /// B1（2026-10-31 项目 home 收编）：围栏第二根（项目 agent home）。
+    /// `env_pairs()` 写 `NEMESISBOT_EXECUTOR_EXTRA_ROOTS`，子进程侧
+    /// `exec_worker` 解析合并进子进程围栏——exec 分离开关两侧围栏同根。
+    /// 空 = 单根旧行为（主 loop / 工作流引擎零变化）。
+    pub extra_roots: Vec<PathBuf>,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -207,8 +212,15 @@ impl ExecutorChannel {
             lease_child: false,
             userland_fallback: None,
             dacl_spawn: None,
+            extra_roots: Vec::new(),
             timeout: Duration::from_secs(24 * 3600),
         }
+    }
+
+    /// B1：设置围栏第二根（项目 loop 装配侧注入；空 = 单根旧行为）。
+    pub fn with_extra_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.extra_roots = roots;
+        self
     }
 
     /// Set the app home (child reads `executor.allow_network` from its
@@ -290,6 +302,21 @@ impl ExecutorChannel {
                 "NEMESISBOT_EXECUTOR_HOME".to_string(),
                 home.to_string_lossy().into_owned(),
             ));
+        }
+        // B1：围栏第二根透传（平台原生路径分隔符 join；空 = 不设 env——
+        // 子进程缺省空 vec，单根行为与旧版逐字节一致）。join 失败（路径
+        // 含平台分隔符，如 Windows `;`）= 子进程围栏降级单根（拒绝方向，
+        // 不放大可写集），warn 留痕不静默。
+        if !self.extra_roots.is_empty() {
+            match std::env::join_paths(&self.extra_roots) {
+                Ok(joined) => env.push((
+                    "NEMESISBOT_EXECUTOR_EXTRA_ROOTS".to_string(),
+                    joined.to_string_lossy().into_owned(),
+                )),
+                Err(e) => {
+                    tracing::warn!("[Executor] extra_roots env 编码失败（子进程围栏降级单根）: {e}")
+                }
+            }
         }
         env
     }

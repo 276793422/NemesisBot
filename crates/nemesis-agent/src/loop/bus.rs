@@ -274,6 +274,7 @@ impl AgentLoop {
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
             workspace_boundary: parking_lot::RwLock::new(None),
+            plan_products_root: parking_lot::RwLock::new(None),
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
@@ -752,9 +753,14 @@ impl AgentLoop {
                 let this = self.clone();
                 let m = msg.clone();
                 self.spawn_turn_task(async move {
+                    // R294（BUG-20261031-235）：panic 兜底守卫——
+                    // handle_maintenance（LLM 摘要，分钟级）panic 展开时
+                    // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
+                    // 显式 drop（= 原 release_session）。
+                    let _busy_guard = super::admission::SessionBusyGuard::new(&this, &session_key);
                     this.finish_message(&m, receipt, None, false).await;
                     let response = this.handle_maintenance(kind, &session_key).await;
-                    this.release_session(&session_key);
+                    drop(_busy_guard);
                     // 排队消息排空（2026-09-28 真模型验证发现）：
                     // 分钟级维护期间排队的消息此前在维护尾巴
                     // 永久滞留 next_turn——与 admitted 尾部共用

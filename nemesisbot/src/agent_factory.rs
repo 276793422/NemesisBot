@@ -1605,6 +1605,7 @@ fn build_shared_tool_config(
         workspace_boundary: Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
             root: workspace_dir.clone(),
             restrict: cfg.agents.defaults.restrict_to_workspace,
+            extra_roots: Vec::new(),
         })),
         // H1 (2026-09-05): todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 M1a ToolEventHook 共用同一 sender；gateway 建、
@@ -2842,6 +2843,7 @@ pub fn build_cluster_agent_loop(
     tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
         root: shared.workspace_dir(),
         restrict: true,
+        extra_roots: Vec::new(),
     }));
     // M5（2026-10-27 整改）：集群 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
@@ -3143,6 +3145,11 @@ pub struct AgentLoopSpec {
     /// 落 agent home browser-profile/）。None = env 回落语义（主/项目形态
     /// 恒 None 零变化；selfbuilt 由 AgentLoopManager 按 agent home 赋值）。
     pub browser_profile: Option<std::path::PathBuf>,
+    /// B2（2026-10-31 项目 home 收编）：项目 agent home 目录（agents 表
+    /// `home_path`，Bot 域数据根）。Some = 围栏第二根 + 记忆/plan/checkpoint
+    /// 落 home；None = 全部缺席（主/记录形态零变化；项目形态记录缺位时
+    /// 也为 None——agents 记录是增强面，缺位 warn 降级不拒建 loop）。
+    pub agent_home: Option<std::path::PathBuf>,
 }
 
 impl AgentLoopSpec {
@@ -3153,6 +3160,28 @@ impl AgentLoopSpec {
         // sync_project_agents 物化，exec_root=项目目录。字段先克隆进
         // 'static 闭包（借用不能跨出工厂函数）。
         let project_id = project.id.clone();
+        // B2（2026-10-31 项目 home 收编）：项目镜像记录现查一次拿 home_path。
+        // 时序保证：sync_project_agents 先于项目 loop 构建——gateway boot
+        // 在 agents seed（install_manager + 批量 sync）之后才 start_all
+        // （真机 E2E 返工：此前 start_all 先于 seed，boot 期查询恒落空）；
+        // 运行期 projects.create 走 spawn_project 内置 per-entry sync。
+        // 记录缺位（seed warn 降级 / tasks.db 打不开）= None，装配侧
+        // warn + home 面全部缺席（围栏单根 / 记忆剥离 / plan 落项目目录
+        // 旧行为），不拒建 loop。
+        let agent_home = crate::agents::manager().and_then(|mgr| {
+            mgr.list().ok()?.into_iter().find_map(|rec| {
+                let matched = rec.kind == nemesis_taskstore::agents::kind::PROJECT
+                    && rec.project_id.as_deref() == Some(project_id.as_str());
+                if !matched {
+                    return None;
+                }
+                if rec.home_path.is_empty() {
+                    None
+                } else {
+                    Some(std::path::PathBuf::from(rec.home_path))
+                }
+            })
+        });
         Self {
             exec_root: project.path.clone(),
             display_name: project.name.clone(),
@@ -3171,6 +3200,7 @@ impl AgentLoopSpec {
             persona_dir: None,
             // G2：项目 loop 共享形态（浏览器 profile 不 per-project）。
             browser_profile: None,
+            agent_home,
         }
     }
 
@@ -3207,6 +3237,9 @@ impl AgentLoopSpec {
             // 由 AgentLoopManager 按 agent home 赋值（nemesis-path 单一
             // 派生式 `resolve_agent_browser_profile_in_workspace`）。
             browser_profile: None,
+            // B2：记录形态（selfbuilt/main）不设第二根——selfbuilt 的 home
+            // 就是 exec_root（两根重合无意义），main 无 home 语义。
+            agent_home: None,
         }
     }
 }
@@ -3272,10 +3305,25 @@ fn memory_manager_for_namespace(
     if namespace.is_empty() {
         return None;
     }
+    memory_manager_for_data_dir(
+        shared,
+        &namespaced_memory_data_dir(&shared.workspace_dir(), namespace),
+    )
+}
+
+/// B2（2026-10-31 项目 home 收编）：显式 data_dir 选域（namespace 链路的
+/// 姊妹函数——namespace 的唯一历史用途就是拼 data_dir，项目形态 data_dir
+/// 落 agent home，不经 workspace 拼路径）。总开关关 = None（全域一致关闭，
+/// 项目域不旁路）；目录由调用方（build 侧物化）保证在场。
+#[cfg(feature = "memory")]
+fn memory_manager_for_data_dir(
+    shared: &SharedResources,
+    data_dir: &std::path::Path,
+) -> Option<Arc<nemesis_memory::manager::MemoryManager>> {
     shared.memory_manager.as_ref()?;
     Some(Arc::new(
         nemesis_memory::manager::MemoryManager::with_config_dir(
-            &namespaced_memory_data_dir(&shared.workspace_dir(), namespace),
+            data_dir,
             &shared.workspace_dir().join("config"),
         ),
     ))
@@ -3300,6 +3348,23 @@ pub fn build_agent_loop_from_spec(
         anyhow::bail!("执行根目录不存在或不可用: {}", spec.exec_root.display());
     }
     let project_dir = spec.exec_root.clone();
+
+    // B2（2026-10-31 项目 home 收编）：项目 agent home 物化（memory/plans/
+    // checkpoints 子目录 ensure）。None = 非项目形态（主/记录）零变化。
+    // 物化失败与「执行根目录不存在」同姿态——诚实报错（manager 侧 warn +
+    // skip 不炸 gateway）：home 数据面写不进去的 loop 装了也是哑的。
+    let agent_home = match spec.agent_home.clone() {
+        Some(home) => {
+            for sub in ["memory", "plans", "checkpoints"] {
+                let dir = home.join(sub);
+                std::fs::create_dir_all(&dir).map_err(|e| {
+                    anyhow::anyhow!("agent home 子目录物化失败: {} ({})", dir.display(), e)
+                })?;
+            }
+            Some(home)
+        }
+        None => None,
+    };
 
     // 1. config.json + 模型解析：与主 loop 同源（同一 config.json 唯一真相源）。
     //    模型热切（BUG 2026-09-21 修订）：spawn 后不再"重启才生效"——
@@ -3369,6 +3434,13 @@ pub fn build_agent_loop_from_spec(
         // 回落空身份（软引用语义，不因人格目录缺席拒绝装配）。
         let prompt_root = spec.persona_dir.as_deref().unwrap_or(project_dir.as_path());
         let mut context_builder = nemesis_agent::context::ContextBuilder::new(prompt_root);
+        // B3（2026-10-31 项目 home 收编）：人格顺序拼接 home → 项目目录
+        // （拍板④：单一文件拆两份，两段都渲染、不合并不去重）。override
+        // 只作用于 bootstrap 六文件——prompt_root/记忆模板/skills 目录/
+        // workspace 显示等其余段零变化。
+        if let Some(ref home) = agent_home {
+            context_builder.set_bootstrap_roots(vec![home.clone(), project_dir.clone()]);
+        }
         context_builder.set_prompt_system(prompt_system);
         context_builder.build_system_prompt(false)
     };
@@ -3513,6 +3585,13 @@ pub fn build_agent_loop_from_spec(
     // H5：指令链（AGENTS.md/CLAUDE.md）根锚项目目录——项目可带自己的指令
     // 文件，与主 workspace 互不影响。
     agent_loop.set_workspace_root(project_dir.clone());
+    // B4（2026-10-31 项目 home 收编）：plan 模式产物根 = `<agent_home>/
+    // plans`（拍板⑥：项目目录/plans 高危禁写，计划产物只落 Bot 域 home）。
+    // home 缺席（记录缺位降级形态）= 不注入，回落 workspace_root/plans
+    // 旧行为。
+    if let Some(ref home) = agent_home {
+        agent_loop.set_plan_products_root(home.join("plans"));
+    }
     // N7（2026-10-13）：指令信任档解析——注册表条目受信（缺省）= verbatim
     // （主循环行为）；未受信按 config projects.instruction_trust 全局策略
     // 降级（annotate=横幅 / isolated=整段跳过）。运行中 `projects.trust`
@@ -3654,9 +3733,13 @@ pub fn build_agent_loop_from_spec(
     tool_config.workspace = Some(project_dir.to_string_lossy().to_string());
     // A5 纵深防御：围栏锚项目目录且强制 restrict=true（项目模式不跟随全局
     // restrict_to_workspace 开关——项目会话写入绝不越出项目目录）。
+    // B1（2026-10-31 项目 home 收编）：第二根 = 项目 agent home（拍板⑤：
+    // home 必须放行——人格/记忆/plan 产物是 Bot 域数据根）；None = 单根
+    // 旧行为（记录缺位降级形态）。
     tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
         root: project_dir.clone(),
         restrict: true,
+        extra_roots: agent_home.iter().cloned().collect(),
     }));
     // M5（2026-10-27 整改）：项目 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
@@ -3678,11 +3761,18 @@ pub fn build_agent_loop_from_spec(
     // 挂本域 manager（jsonl 与向量库都落自己域），主 corpus 不可见。增强
     // 内存总开关关（shared.memory_manager=None）= 全域一致关闭，自建域
     // 不旁路。选域决策单一真相源 = [`memory_manager_for_namespace`]。
+    // B2（2026-10-31 项目 home 收编）：项目 home 在场 = 记忆数据落
+    // `<home>/memory/memory_vector`（拍板③：项目记忆与会话记忆隔离），
+    // 与主会话/自建域互不可见；config 仍用主 ws（既有语义）。
     tool_config.memory_executor = {
         #[cfg(feature = "memory")]
         {
-            memory_manager_for_namespace(shared, &spec.memory_namespace)
-                .map(|mgr| Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
+            let mgr = if let Some(ref home) = agent_home {
+                memory_manager_for_data_dir(shared, &home.join("memory").join("memory_vector"))
+            } else {
+                memory_manager_for_namespace(shared, &spec.memory_namespace)
+            };
+            mgr.map(|mgr| Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
         }
         #[cfg(not(feature = "memory"))]
         {
@@ -3693,11 +3783,13 @@ pub fn build_agent_loop_from_spec(
     // executor 分离通道锚项目目录（项目会话的 exec/MOVE 工具经子进程在项目
     // cwd 执行；enabled/sandbox 开关与主 loop 同源 config）。P3 T7：常驻
     // 路由按 spec 的解析闭包挂接（项目=kind+project_id 记录匹配；记录缺
-    // 席时调用时诚实回落 per-call）。
-    let executor_channel = crate::exec_world::build_executor_channel(
+    // 席时调用时诚实回落 per-call）。B1：围栏第二根（项目 agent home）
+    // 透传 per-call 子进程 env——开关两侧围栏同根。
+    let executor_channel = crate::exec_world::build_executor_channel_with_extra_roots(
         &shared.home,
         &project_dir,
         shared.config_store.handle(),
+        agent_home.iter().cloned().collect(),
     )?;
     let persistent_route = spec
         .persistent_resolve
@@ -3710,6 +3802,33 @@ pub fn build_agent_loop_from_spec(
         executor_channel.as_ref(),
         persistent_route.as_ref(),
     );
+
+    // 与主 loop 同源（agent_factory 上方主装配 :1142-1150 同款）：把注册期
+    // 构造的 executor stash 进 loop——set_memory_approval_gate 读的就是这个
+    // 槽，缺 stash = 挂闸静默 no-op（真机 E2E 2026-10-31 撞见：项目会话
+    // memory_store 零审批直写，闸调用看着在场实际空转）。
+    #[cfg(feature = "memory")]
+    if let Some(ref exec) = tool_config.memory_executor {
+        agent_loop.set_memory_executor(exec.clone());
+    }
+
+    // memory 审批闸与主 loop 同源（真机 E2E 2026-10-31 撞见的不对称：主
+    // loop 在 runtime 装配挂 GatewayMemoryGate，项目 loop 此前从不挂——
+    // 项目会话 memory_store/memory_forget 零审批直写，违背「项目会话不
+    // 是安全旁路」）。
+    //
+    // 时序（2026-10-31 真机日志实锤，推翻本注释初版「构建点在填槽之后」）：
+    // boot 期项目 loop 由 post_agent start_all 构建（ProjectLoops starting
+    // .499），而 approval_slot 在 runtime 审批装配才填（Approval manager
+    // wired .669，晚约 170ms）——构建期急读必空。故挂槽版闸（from_slot）：
+    // approve 时点才解析 manager，调用时槽早已填齐；槽真空（审批装配缺席）
+    // = deny fail-closed（闸内 WARN 揪出），绝不静默放行。
+    #[cfg(all(feature = "memory", feature = "security"))]
+    if shared.security_plugin.is_some() {
+        agent_loop.set_memory_approval_gate(Arc::new(
+            crate::commands::gateway::GatewayMemoryGate::from_slot(shared.approval_slot.clone()),
+        ));
+    }
 
     // G1：tool_policy 双闸输入（current_hidden_tools 单点合并 → 供给闸 +
     // dispatch 闸同源生效）。deny/hidden 折算保留（黑名单无增量工具问题，
@@ -3731,8 +3850,15 @@ pub fn build_agent_loop_from_spec(
     // logs/project_checkpoints/{pid}/（R7：不污染用户项目目录——项目带 .git
     // 时 CheckpointStore 默认影子位置从 root 派生会落进项目目录，必须
     // new_with_shadow 显式指定；root=项目目录仅作 .git 后端探测锚）。
+    // B5（2026-10-31 项目 home 收编）：项目 home 在场 = 影子库迁
+    // `<home>/checkpoints/`（Bot 域数据根）；拍板②旧数据不迁移——存量
+    // 项目 rewind/fork 回档失效（可接受）。None = 主 ws 旧路径（记录缺位
+    // 降级形态连续性保留）。
     {
-        let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), &spec.checkpoint_key);
+        let cp_dir = match agent_home.as_ref() {
+            Some(home) => home.join("checkpoints"),
+            None => project_checkpoint_dir(&shared.workspace_dir(), &spec.checkpoint_key),
+        };
         if let Some(parent) = cp_dir.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

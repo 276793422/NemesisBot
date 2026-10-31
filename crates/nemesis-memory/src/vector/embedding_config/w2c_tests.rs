@@ -327,3 +327,103 @@ fn download_file_parent_create_failure_errors() {
     let err = download_file(&format!("http://127.0.0.1:{}/f", port), &dest).unwrap_err();
     assert!(err.contains("failed to create parent dir"), "got: {err}");
 }
+
+// ============================================================
+// BUG-20261031-241：零字节残骸重下 + 空响应体诚实报错 + 原子落盘
+// （对齐 nemesis-voice model.rs 同族先例 BUG-20261029-146）
+// ============================================================
+
+/// 红证（download_model_files 层）：0 字节 model.onnx/tokenizer.json 是
+/// 中断下载的残骸——旧代码「存在即跳过」永远不会重下（本地 http server
+/// 一个请求都收不到，文件保持 0 字节），插件 init 必败且重装无效。
+#[test]
+fn download_model_files_redownloads_zero_byte_debris() {
+    let port = spawn_http_server(vec![
+        ("200 OK", "MODEL-BYTES-FRESH"),
+        ("200 OK", "TOKENIZER-BYTES-FRESH"),
+    ]);
+    let ws = tempfile::tempdir().unwrap();
+    let config_dir = ws.path().join("config");
+    std::fs::create_dir(&config_dir).unwrap();
+
+    // 预置中断下载残骸：0 字节的 model.onnx + tokenizer.json。
+    let data_dir = embedding_data_dir(&config_dir).join("test-model");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("model.onnx"), b"").unwrap();
+    std::fs::write(data_dir.join("tokenizer.json"), b"").unwrap();
+
+    let mut cfg = base_config("medium");
+    set_model_urls(
+        &mut cfg,
+        &format!("http://127.0.0.1:{}/model.onnx", port),
+        &format!("http://127.0.0.1:{}/tokenizer.json", port),
+    );
+
+    let (dir, dim) = download_model_files(&mut cfg, &config_dir).unwrap();
+    assert_eq!(dim, 384);
+    let data_dir = std::path::Path::new(&dir);
+    // 旧代码：exists 短路 → 残骸原样保留（0 字节）→ 本断言红。
+    assert_eq!(
+        std::fs::read(data_dir.join("model.onnx")).unwrap(),
+        b"MODEL-BYTES-FRESH"
+    );
+    assert_eq!(
+        std::fs::read(data_dir.join("tokenizer.json")).unwrap(),
+        b"TOKENIZER-BYTES-FRESH"
+    );
+}
+
+/// 红证（download_file 层）：0 字节 dest 不再当已下载跳过——必须发起
+/// 请求（死端口 → 诚实 Err）；旧代码 dest.exists() 直接 Ok 不碰网络。
+#[test]
+fn download_file_zero_byte_dest_is_redownloaded_not_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("debris.bin");
+    std::fs::write(&dest, b"").unwrap();
+
+    let dead = find_dead_port();
+    let url = format!("http://127.0.0.1:{}/never", dead);
+    let err = download_file(&url, &dest).unwrap_err();
+    assert!(
+        err.contains("download request failed"),
+        "zero-byte dest must be re-downloaded, got: {err}"
+    );
+}
+
+/// 空响应体（200 + 0 字节）诚实报错，不落 0 字节终文件。
+/// 旧代码：写入 0 字节文件并 Ok（把残骸合法化）。
+#[test]
+fn download_file_empty_body_errors_without_materializing_file() {
+    let port = spawn_http_server(vec![("200 OK", "")]);
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.bin");
+
+    let err = download_file(&format!("http://127.0.0.1:{}/f", port), &dest).unwrap_err();
+    assert!(err.contains("empty"), "got: {err}");
+    assert!(!dest.exists(), "empty body must not materialize a file");
+}
+
+/// resolve_model_files 对 0 字节残骸不再报 Model found——诚实
+/// 「模型文件未安装」，引导用户重装而不是把晦涩的插件 init 错误抛给上层。
+#[test]
+fn resolve_model_files_zero_byte_model_is_not_installed() {
+    let ws = tempfile::tempdir().unwrap();
+    let cfg_dir = ws.path().join("config");
+    std::fs::create_dir(&cfg_dir).unwrap();
+    let data_dir = embedding_data_dir(&cfg_dir).join("test-model");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("model.onnx"), b"").unwrap();
+
+    let mut cfg = base_config("medium");
+    {
+        let mc = cfg.models.get_mut("medium").unwrap();
+        mc.name = "test-model".into();
+        mc.dimension = 384;
+    }
+
+    let err = resolve_model_files(&cfg, &cfg_dir).unwrap_err();
+    assert!(
+        err.contains("模型文件未安装"),
+        "zero-byte debris must not resolve as installed, got: {err}"
+    );
+}

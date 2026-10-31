@@ -503,6 +503,71 @@ async fn remove_project_retains_session_binding_contract() {
     );
 }
 
+/// remove 联动清理 agents 镜像记录（2026-10-31 真机 E2E 发现的孤儿投影）：
+/// registry 摘除后 kind=project 镜像必须同步摘除——否则 agents.list 出现
+/// 指向已删项目的幽灵记录，盘上 home 成无主目录。会话绑定刻意保留（上一
+/// 契约），两层语义互不越界。
+#[cfg(windows)] // Windows-form（进程级单例重定向依赖 crate::tests 沙箱 home）
+#[tokio::test]
+async fn remove_project_cleans_agent_mirror_record() {
+    use nemesis_web::handlers::projects::ProjectsBridge as _;
+    let _serial = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = crate::tests::singleton_test_home();
+    let main_ws = home.join("workspace");
+    std::fs::create_dir_all(&main_ws).unwrap();
+    let project_dir = home.join("proj_mirrorgone");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let mgr = manager_for(&home);
+
+    // 装临时 agents manager（全局槽可替换形态——本测试窗口内 remove 联动
+    // 才有落点；槽内残留对其他测试无害：无消费者读它，spawn 路径 sync 走
+    // 临时 db 属 warn 降级面）。
+    let agents_ws = main_ws.clone();
+    let db = nemesis_taskstore::TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &agents_ws,
+    ))
+    .expect("tasks db open");
+    crate::agents::install_manager(std::sync::Arc::new(crate::agents::AgentManager::from_db(
+        agents_ws, db,
+    )));
+
+    let entry = registry::create_project(
+        mgr.registry_path(),
+        &main_ws,
+        "镜像清理",
+        project_dir.to_str().unwrap(),
+        4,
+    )
+    .expect("create project");
+
+    // 前置：镜像在案（spawn_project 内置 per-entry sync；loop spawn 失败
+    // 也不影响本契约——镜像清理独立于 loop 生命周期）。
+    let _ = mgr.spawn_project(&entry);
+    let agents = crate::agents::manager().expect("agents manager installed");
+    assert!(
+        agents
+            .list()
+            .unwrap()
+            .iter()
+            .any(|r| r.kind == nemesis_taskstore::agents::kind::PROJECT
+                && r.project_id.as_deref() == Some(entry.id.as_str())),
+        "remove 前：项目镜像记录必须在案"
+    );
+
+    // remove：镜像随注册表摘除联动清理。
+    mgr.remove(&entry.id).expect("remove ok");
+    assert!(
+        agents
+            .list()
+            .unwrap()
+            .iter()
+            .all(|r| r.project_id.as_deref() != Some(entry.id.as_str())),
+        "remove 后：项目镜像记录必须同步摘除（孤儿投影=幽灵记录+无主 home）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // reload_providers（BUG 2026-09-21）：模型热切联动到在跑项目 loop
 // ---------------------------------------------------------------------------

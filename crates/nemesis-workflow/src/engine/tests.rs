@@ -5056,3 +5056,88 @@ nodes:
         "赢家必须是字典序最后者（z-dup.yaml，2 节点形态）——排序契约"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261031-239 红证：workflow YAML variables 在进程内 resume 中丢失
+// ---------------------------------------------------------------------------
+
+/// 捕获执行器：把 execute 时刻 wf_ctx 里的 workflow 变量 `greeting` 记下来。
+struct VarCaptureExecutor {
+    observed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl crate::nodes::NodeExecutor for VarCaptureExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _context: &HashMap<String, serde_json::Value>,
+        wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        self.observed
+            .lock()
+            .unwrap()
+            .push(wf_ctx.get_var_str("greeting").unwrap_or_default());
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: Local::now(),
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+/// BUG-20261031-239：workflow.variables（YAML `variables:` 段）只在 run_async
+/// 开头 seeding 进 wf_ctx，执行记录的 variables 字段从不回写；human_review
+/// 挂起后进程内 resume 用 execution.variables 重建 wf_ctx——YAML 变量不在
+/// 其中，下游节点读到的 `greeting` 是空。对齐面：resume 路径自身回写
+/// variables（resume_execution_node 尾部）、checkpoint 恢复路径回写
+/// （restore_incomplete_executions），唯独 run_async 漏了。
+#[tokio::test]
+async fn test_workflow_variables_survive_in_process_resume() {
+    let engine = WorkflowEngine::new();
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    engine.register_node_executor(
+        "var_cap",
+        Arc::new(VarCaptureExecutor {
+            observed: observed.clone(),
+        }),
+    );
+    let mut wf = make_workflow(
+        "var_resume_wf",
+        vec![
+            make_node("review", "human_review", vec![]),
+            make_node("after", "var_cap", vec!["review"]),
+        ],
+    );
+    wf.variables
+        .insert("greeting".to_string(), "hello".to_string());
+    engine.register_workflow(wf).unwrap();
+
+    // 生产路径跑到 Waiting（human_review 挂起）。
+    let exec = engine
+        .run("var_resume_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(exec.state, ExecutionState::Waiting);
+
+    let resumed = engine
+        .resume_execution(
+            &exec.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.state, ExecutionState::Completed);
+
+    let seen = observed.lock().unwrap();
+    assert_eq!(
+        seen.last().map(String::as_str),
+        Some("hello"),
+        "resume 后下游节点必须还能读到 workflow YAML 变量（observed={:?}）",
+        *seen
+    );
+}

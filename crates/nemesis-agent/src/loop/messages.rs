@@ -764,8 +764,18 @@ impl AgentLoop {
             // F1（devtool-upgrade 阶段 4）：模式进快照——Plan 时模型当轮就
             // 能读到「不许改文件」，与供给/分发双闸互补（提醒是软约束）。
             let mode_now = self.mode();
+            // B4：plan 放行目录动态写入（单一真相源 plan_products_dir——
+            // 项目会话 = <agent_home>/plans，主会话 = <workspace>/plans）。
+            // 静态旧文案「plans/」会把项目会话的模型引向已禁写的项目目录
+            // plans/，必吃一次拒绝回灌才能自纠。
+            let plan_dir_line = self
+                .plan_products_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "plans/".to_string());
             let mode_line = match mode_now {
-                crate::types::AgentMode::Plan => "plan（PLAN mode: do not modify files. Present your plan as text; write_file under plans/ is the only write allowed. User can switch back with /build.）".to_string(),
+                crate::types::AgentMode::Plan => format!(
+                    "plan（PLAN mode: do not modify files. Present your plan as text; write_file under {plan_dir_line} is the only write allowed. User can switch back with /build.）"
+                ),
                 crate::types::AgentMode::Build => "build（正常全量工具）".to_string(),
             };
             // 语音 realtime P1（W4 L2）：语音对话模式提示词。热态经

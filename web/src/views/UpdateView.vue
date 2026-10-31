@@ -117,6 +117,45 @@ function shortSha(s: string) {
   return s ? s.slice(0, 16) + '…' : '—'
 }
 
+// ── 下载代理（2026-10-31 代理设置三项改造批C：config.proxy.json selfupdate
+// 段）──仅更新检查/下载链路使用；后端调用时读盘——保存即对下次检查/下载
+// 生效，免重启。
+const downloadProxy = ref('')
+const proxySaving = ref(false)
+const proxyPath = ref('')
+const proxyFileExists = ref(false)
+const proxyParseError = ref<string | null>(null)
+
+async function loadProxy() {
+  try {
+    const resp: any = await request('proxy', 'get', {}, 8000)
+    proxyPath.value = resp?.path ?? ''
+    proxyFileExists.value = !!resp?.file_exists
+    proxyParseError.value = resp?.parse_error ?? null
+    downloadProxy.value = resp?.selfupdate?.proxy ?? ''
+  } catch {
+    // 代理配置读取失败不打断页面主体（输入框留空 = 清除独立代理，不影响其他配置）
+  }
+}
+
+async function saveProxy() {
+  if (proxySaving.value) return
+  const val = downloadProxy.value.trim()
+  if (val && !/^(https?|socks|socks5|socks5h):\/\//.test(val)) {
+    useToast().error('代理必须以 http:// https:// socks:// socks5:// socks5h:// 开头（留空 = 清除）')
+    return
+  }
+  proxySaving.value = true
+  try {
+    await request('proxy', 'save', { selfupdate: { proxy: val } }, 8000)
+    useToast().success('下载代理已保存，下次检查/下载即生效')
+    await loadProxy()
+  } catch (e: any) {
+    useToast().error(`保存失败：${e?.message ?? e}`)
+  }
+  proxySaving.value = false
+}
+
 // ── 强制更新（2026-10-30）──
 // 一键编排：download(force) → 就绪自动接 apply(force)。forceApplySent 防
 // SSE ready 帧与轮询 refresh 双触发；apply 失败红条出现即退出编排（后续
@@ -336,6 +375,7 @@ let timer: number | null = null
 onMounted(() => {
   refresh()
   loadIntegrity()
+  loadProxy()
   timer = window.setInterval(refresh, 10000)
   onSSE('selfupdate-progress', onProgress)
 })
@@ -377,6 +417,36 @@ onUnmounted(() => {
             <button data-test="check-btn" class="btn btn-secondary" :disabled="checking" @click="checkNow">
               {{ checking ? '检查中…' : '检查更新' }}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 下载代理（2026-10-31 批C）：仅更新检查/下载链路的独立代理——
+           调用时读盘，保存即对下次检查/下载生效（免重启） -->
+      <div class="card">
+        <div class="card-header">
+          <h3>下载代理</h3>
+          <button data-test="proxy-save" class="btn btn-primary btn-sm" :disabled="proxySaving" @click="saveProxy">
+            {{ proxySaving ? '保存中…' : '保存' }}
+          </button>
+        </div>
+        <div class="card-body">
+          <div class="op-sub" style="margin: 0 0 var(--space-2);">
+            仅用于更新检查与更新包下载链路（GitHub 直连失败时在此配代理）；保存即生效，无需重启。留空 = 清除独立代理（网关的环境变量代理仍会生效）。
+          </div>
+          <div v-if="proxyParseError" data-test="proxy-parse-error" class="badge badge-warn" style="margin-bottom: var(--space-2);">
+            配置文件解析失败：{{ proxyParseError }}（保存将以空配置重建）
+          </div>
+          <input
+            v-model="downloadProxy"
+            data-test="proxy-input"
+            class="form-input"
+            style="width: 100%; max-width: 480px;"
+            placeholder="http://host:port 或 socks5://host:port，留空 = 清除"
+            @keyup.enter="saveProxy"
+          />
+          <div class="op-sub" style="margin-top: var(--space-2);">
+            {{ proxyPath || 'config.proxy.json（工作区 config 目录）' }}{{ proxyFileExists ? '' : '——尚未创建，首次保存自动生成' }}
           </div>
         </div>
       </div>

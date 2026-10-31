@@ -69,7 +69,7 @@ fn base_executor_env(
     home: &std::path::Path,
     agent_id: &str,
 ) -> Vec<(String, String)> {
-    vec![
+    let mut env = vec![
         ("NEMESISBOT_ROLE".to_string(), "executor".to_string()),
         (
             "NEMESISBOT_EXECUTOR_WORKSPACE".to_string(),
@@ -91,7 +91,26 @@ fn base_executor_env(
             "NEMESISBOT_BROWSER_PROFILE".to_string(),
             home.join("browser-profile").to_string_lossy().into_owned(),
         ),
-    ]
+    ];
+    // B1（2026-10-31 项目 home 收编）：隔离根与 exec_root 分离时（项目
+    // 镜像形态：exec_root=项目目录、home=agents home），home 作为围栏第二
+    // 根透传（`NEMESISBOT_EXECUTOR_EXTRA_ROOTS`）——子进程侧 exec_worker
+    // 解析合并，写 home 与主进程围栏行为一致（拍板⑤）。两根重合
+    // （selfbuilt）= 不设 env，零变化；main 形态 home 本就在 workspace 内
+    // （透传是冗余白名单项，不放大可写集）。join 失败（路径含平台分隔
+    // 符）= 子进程围栏降级单根（拒绝方向），warn 留痕不静默。
+    if home != exec_root {
+        match std::env::join_paths([home]) {
+            Ok(joined) => env.push((
+                "NEMESISBOT_EXECUTOR_EXTRA_ROOTS".to_string(),
+                joined.to_string_lossy().into_owned(),
+            )),
+            Err(e) => tracing::warn!(
+                "[Agents] executor extra_root env 编码失败（子进程围栏降级单根）: {e}"
+            ),
+        }
+    }
+    env
 }
 
 /// 优雅关停等待（sleep/watchdog：EOF 信号 → 进程自行退出 → 超时 kill）。

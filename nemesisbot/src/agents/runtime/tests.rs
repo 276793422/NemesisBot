@@ -117,19 +117,33 @@ fn executor_allow_network_follows_config_disk_state() {
 }
 
 /// P3 ①/④ spawn 基础 env 装配点钉死：stdio 与盒两条 spawn 路径共用的
-/// 6 键集合——角色、双根（T7：WORKSPACE=exec_root 工具 cwd 锚 / HOME=
+/// 7 键集合——角色、双根（T7：WORKSPACE=exec_root 工具 cwd 锚 / HOME=
 /// agent home 隔离根，两根分离是 main/project 形态的正确语义）、agent id、
 /// 常驻标记、浏览器身份目录（T6：值恒 = home/browser-profile，与
-/// nemesis-path `resolve_agent_browser_profile_in_workspace` 同一布局；
-/// 路径专属键 PIPE/SANDBOX_BACKEND 由调用方追加，不在本装配点）。
+/// nemesis-path `resolve_agent_browser_profile_in_workspace` 同一布局）、
+/// 围栏第二根（B1：home≠exec_root 时透传 home，子进程围栏与主进程同源；
+/// 两根重合不写=6 键，selfbuilt 旧行为逐键一致）；路径专属键
+/// PIPE/SANDBOX_BACKEND 由调用方追加，不在本装配点。
 #[test]
 fn base_executor_env_keys_pinned() {
-    let exec_root = PathBuf::from(r"C:\tmp\workspace-root");
-    let home = PathBuf::from(r"C:\tmp\agent-home");
+    // fixture 路径必须随平台：装配点的 EXTRA_ROOTS 走 `env::join_paths`，
+    // 它拒收含平台分隔符的段（Linux 分隔符是 `:`）——Windows 字面量在
+    // Linux 上编码失败 → 按 fail-closed 设计丢第 7 键 → 钉死断言 6≠7 假红
+    //（2026-10-31 ET Linux 全量实录）。两平台各用合法路径，7 键钉死共通。
+    let exec_root = PathBuf::from(if cfg!(windows) {
+        r"C:\tmp\workspace-root"
+    } else {
+        "/tmp/workspace-root"
+    });
+    let home = PathBuf::from(if cfg!(windows) {
+        r"C:\tmp\agent-home"
+    } else {
+        "/tmp/agent-home"
+    });
     let agent_id = "ag-42";
     let env = super::base_executor_env(&exec_root, &home, agent_id);
 
-    assert_eq!(env.len(), 6, "装配点键集合变化必须显式更新本测试");
+    assert_eq!(env.len(), 7, "装配点键集合变化必须显式更新本测试");
     let get = |k: &str| {
         env.iter()
             .find(|(key, _)| key == k)
@@ -152,6 +166,25 @@ fn base_executor_env_keys_pinned() {
     assert_eq!(
         get("NEMESISBOT_BROWSER_PROFILE"),
         home.join("browser-profile").to_string_lossy()
+    );
+    assert_eq!(
+        get("NEMESISBOT_EXECUTOR_EXTRA_ROOTS"),
+        home.to_string_lossy(),
+        "B1：home≠exec_root → 围栏第二根透传 home"
+    );
+
+    // 两根重合（selfbuilt）：不写第二根键，键集合回落 6 键旧行为。
+    let env_same = super::base_executor_env(&exec_root, &exec_root, agent_id);
+    assert_eq!(
+        env_same.len(),
+        6,
+        "两根重合不写第二根键（selfbuilt 旧行为）"
+    );
+    assert!(
+        !env_same
+            .iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_EXTRA_ROOTS"),
+        "重合形态必须缺第二根键"
     );
 }
 

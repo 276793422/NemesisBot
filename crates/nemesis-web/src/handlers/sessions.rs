@@ -662,7 +662,17 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
-                let out = nemesis_agent::chat_trash::trash_restore(&entry, new_sid.as_deref())?;
+                // BUG-20261031-248：trash_restore 内部 move_file_retry 带
+                // 100ms×5 退避重试，spawn_blocking 包裹防阻塞 tokio worker
+                // （LOW-5 同款纪律，与 nemesis-cluster 内 4 处先例对齐）。
+                let out = {
+                    let entry = entry.clone();
+                    tokio::task::spawn_blocking(move || {
+                        nemesis_agent::chat_trash::trash_restore(&entry, new_sid.as_deref())
+                    })
+                    .await
+                    .map_err(|e| format!("trash_restore task join failed: {e}"))??
+                };
                 // 恢复成功（非 conflict）→ 项目归属重挂：meta 快照里的
                 // project_id 仍注册则 bind 回去；已移除/未注册 = 摘除陈旧
                 // sidecar 字段（会话落未分组，不进孤儿灰组）。
@@ -754,7 +764,21 @@ async fn delete_session_body(
         // 缺席（从未物化）= Ok(None)，删除即完成（trashed:false）。
         // source 由调用方声明（单删 single / 批量循环 batch——回收站列表
         // 来源徽标的依据；展示性字段，未知值由 dispatch 层落 single）。
-        trash_entry = nemesis_agent::chat_trash::trash_chat_log(session_key, source)?;
+        // 移入回收站（guard 作用域外——trash 不持 store 锁）。三件套全
+        // 缺席（从未物化）= Ok(None)，删除即完成（trashed:false）。
+        // source 由调用方声明（单删 single / 批量循环 batch——回收站列表
+        // 来源徽标的依据；展示性字段，未知值由 dispatch 层落 single）。
+        // BUG-20261031-248：trash_chat_log 内部 move_file_retry 带
+        // 100ms×5 退避重试，spawn_blocking 包裹防阻塞 tokio worker。
+        trash_entry = {
+            let key = session_key.to_string();
+            let src = source.to_string();
+            tokio::task::spawn_blocking(move || {
+                nemesis_agent::chat_trash::trash_chat_log(&key, &src)
+            })
+            .await
+            .map_err(|e| format!("trash_chat_log task join failed: {e}"))?
+        }?;
     }
     // 方言 SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
     // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。

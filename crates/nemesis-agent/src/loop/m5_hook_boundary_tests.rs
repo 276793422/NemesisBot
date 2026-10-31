@@ -50,6 +50,7 @@ fn ws_boundary(root: std::path::PathBuf) -> WorkspaceBoundary {
     WorkspaceBoundary {
         root,
         restrict: true,
+        extra_roots: Vec::new(),
     }
 }
 
