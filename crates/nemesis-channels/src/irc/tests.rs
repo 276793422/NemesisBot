@@ -41,6 +41,26 @@ async fn test_irc_channel_lifecycle() {
 }
 
 #[test]
+fn test_irc_reconnect_backoff_floors_zero() {
+    // 0 值退避会让 sleep(0) 退化成紧循环 hammer 服务器（对齐 mqtt
+    // reconnect_delay 下限 1 惯例）；装配层负值钳 0 后也落到此兜底。
+    let config = IRCConfig {
+        server: "irc.libera.chat:6697".to_string(),
+        nick: "NemesisBot".to_string(),
+        channel: "#nemesisbot".to_string(),
+        reconnect_backoff_secs: 0,
+        max_reconnect_backoff_secs: 0,
+        ..Default::default()
+    };
+    let ch = IRCChannel::new(config, test_sender()).unwrap();
+    assert_eq!(
+        ch.config.reconnect_backoff_secs, 1,
+        "0 值退避必须抬到下限 1s"
+    );
+    assert_eq!(ch.config.max_reconnect_backoff_secs, 1);
+}
+
+#[test]
 fn test_ensure_hash_prefix() {
     assert_eq!(ensure_hash_prefix("test"), "#test");
     assert_eq!(ensure_hash_prefix("#test"), "#test");

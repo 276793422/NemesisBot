@@ -509,3 +509,39 @@ fn test_cm_bridge_delivers_message_published_right_after_wiring() {
         handle.await.unwrap(); // 桥已退出，不挂
     });
 }
+
+/// 负值时间配置装配冒烟（feature 门控三通道齐才编译）：irc 负退避/负上限
+/// 经装配层 `.max(0)` 钳制后照常装配启用——负值不得让装配 panic/拒绝启用
+///（值级正确性由通道侧锁兜底：irc floor 0→1（nemesis-channels）+ bluesky
+/// 0→10 + onebot 0=关既有语义）。
+#[cfg(all(
+    feature = "channels-irc",
+    feature = "channels-bluesky",
+    feature = "channels-onebot"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn init_web_negative_time_configs_smoke() {
+    let th = ctx_env();
+    write_bare_config(&th.home);
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
+        .await
+        .expect("assemble ok")
+        .expect("非 relay 必返 Some");
+    let cluster: ClusterWiring = init_cluster(&ctx).await.expect("cluster disabled 廉价路径");
+
+    ctx.cfg.channels.irc.enabled = true;
+    ctx.cfg.channels.irc.server = "irc.libera.chat:6697".into();
+    ctx.cfg.channels.irc.nick = "bot".into();
+    ctx.cfg.channels.irc.channel = "#t".into();
+    ctx.cfg.channels.irc.reconnect_backoff_secs = -5;
+    ctx.cfg.channels.irc.max_reconnect_backoff_secs = -5;
+
+    let w = init_web(&ctx, &cluster)
+        .await
+        .expect("负值退避装配不得失败");
+    assert!(
+        w.enabled_channels.contains(&"irc".to_string()),
+        "负值配置下 irc 仍必须启用: {:?}",
+        w.enabled_channels
+    );
+}

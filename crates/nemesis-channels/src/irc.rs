@@ -103,13 +103,23 @@ impl IRCChannel {
         }
 
         let channel = ensure_hash_prefix(&config.channel);
+        // 重连退避下限 1s（对齐 mqtt reconnect_delay 惯例）：0 会让 sleep(0)
+        // 退化成紧循环 hammer 服务器；装配层已把负配置钳 0（as 转译负数会
+        // 回绕成巨型 u64 = 永不重连），此处兜住 0 值形态。
+        let reconnect_backoff_secs = config.reconnect_backoff_secs.max(1);
+        let max_reconnect_backoff_secs = config.max_reconnect_backoff_secs.max(1);
 
         Ok(Self {
             base: Arc::new(BaseChannel::with_allow_list(
                 "irc",
                 config.allow_from.clone(),
             )),
-            config: IRCConfig { channel, ..config },
+            config: IRCConfig {
+                channel,
+                reconnect_backoff_secs,
+                max_reconnect_backoff_secs,
+                ..config
+            },
             running: Arc::new(parking_lot::RwLock::new(false)),
             bus_sender,
             writer: parking_lot::Mutex::new(None),

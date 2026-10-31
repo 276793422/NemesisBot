@@ -772,8 +772,14 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     },
                     channel: cfg.channels.irc.channel.clone(),
                     allow_from: cfg.channels.irc.allow_from.clone(),
-                    reconnect_backoff_secs: cfg.channels.irc.reconnect_backoff_secs as u64,
-                    max_reconnect_backoff_secs: cfg.channels.irc.max_reconnect_backoff_secs as u64,
+                    // 钳负值为 0（as 转译负数会回绕成巨型 u64 = 永不重连；
+                    // mqtt 同款）。0 由通道侧抬到下限 1s。
+                    reconnect_backoff_secs: cfg.channels.irc.reconnect_backoff_secs.max(0) as u64,
+                    max_reconnect_backoff_secs: cfg
+                        .channels
+                        .irc
+                        .max_reconnect_backoff_secs
+                        .max(0) as u64,
                 })
             } else {
                 None
@@ -818,7 +824,9 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     } else {
                         Some(cfg.channels.bluesky.did.clone())
                     },
-                    poll_interval: cfg.channels.bluesky.poll_interval as u64,
+                    // 钳负值为 0（as 回绕成巨型 u64 = 永不轮询）；0 由通道
+                    // 侧抬到默认 10s。
+                    poll_interval: cfg.channels.bluesky.poll_interval.max(0) as u64,
                     allow_from: cfg.channels.bluesky.allow_from.clone(),
                 })
             } else {
@@ -855,7 +863,9 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                             "channels.onebot.access_token",
                         ))
                     },
-                    reconnect_interval: cfg.channels.onebot.reconnect_interval as u64,
+                    // 钳负值为 0（as 回绕成巨型 u64 = 永不重连的假关）；通道
+                    // 侧语义 0 = 关闭自动重连，负值配置视为同义。
+                    reconnect_interval: cfg.channels.onebot.reconnect_interval.max(0) as u64,
                     group_trigger_prefix: cfg.channels.onebot.group_trigger_prefix.clone(),
                     allow_from: cfg.channels.onebot.allow_from.clone(),
                 })
