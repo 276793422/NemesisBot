@@ -73,10 +73,10 @@ fn pack_files(root: &Path) -> Vec<PathBuf> {
         let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         entries.sort();
         for p in entries {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if ext == "pack" || ext == "idx" {
-                    out.push(p);
-                }
+            if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && (ext == "pack" || ext == "idx")
+            {
+                out.push(p);
             }
         }
     }
