@@ -49,6 +49,18 @@ pub async fn run(action: PersonaAction, _home: &str, workspace: &str) -> Result<
 // Local commands (synchronous)
 // ---------------------------------------------------------------------------
 
+/// persona id 路径安全闸——复用 R35 技能 slug 验证器单一真相源（拒路径
+/// 分隔符/`..`/`:`/Windows 保留名/尾点尾空格）。CLI install/remove 对
+/// `personas/{id}` 是裸 `join`（web 面同路径有 `resolve_path` 兜底，CLI
+/// 此前无任何闸）：远端树里合法存在的 `..\x.md` 文件名（git/Linux 允许
+/// `\`）经 `is_agent_file` 放行（只查 `.md`/含 `/`/跳过表），会让
+/// create_dir_all + 六个固定名文件写出工作区。必须在触碰文件系统与网络
+/// 之前拒绝。
+fn validate_persona_id(id: &str) -> Result<()> {
+    nemesis_skills::types::validate_skill_identifier(id)
+        .map_err(|e| anyhow::anyhow!("人格 id '{}' 非法：{}", id, e))
+}
+
 fn cmd_current(workspace: &std::path::Path) -> Result<()> {
     // Read active persona
     let active_path = workspace.join("personas/_active.json");
@@ -173,6 +185,7 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
     if name == "default" {
         anyhow::bail!("不能删除默认人格。");
     }
+    validate_persona_id(name)?;
     let dir = workspace.join(format!("personas/{}", name));
     if !dir.exists() {
         anyhow::bail!("人格 '{}' 不存在。", name);
@@ -245,6 +258,9 @@ fn cmd_search(workspace: &std::path::Path, query: Option<&str>) -> Result<()> {
 }
 
 fn cmd_install(workspace: &std::path::Path, id: &str) -> Result<()> {
+    // slug 闸先行（对齐 skills installer「校验必须在任何网络语句之前」）。
+    validate_persona_id(id)?;
+
     // Check not already installed
     let persona_dir = workspace.join(format!("personas/{}", id));
     if persona_dir.exists() {

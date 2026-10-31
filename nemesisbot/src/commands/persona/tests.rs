@@ -631,3 +631,68 @@ mod r10_lead_in {
         assert!(!ws.path().join("personas").join(id).exists());
     }
 }
+
+// ===========================================================================
+// BUG-20261031-259：CLI persona install/remove 的 id 路径安全闸。
+//
+// CLI 对 `personas/{id}` 是裸 join（web 面同路径有 resolve_path 兜底，CLI
+// 从未有闸）：远端树里合法存在的 `..\x.md` 文件名（git/Linux 允许 `\`）
+// 经 is_agent_file 放行后，install 的 create_dir_all + 六个固定名文件会
+// 写出工作区，remove 会删掉工作区外目录。闸 = 复用 R35 技能 slug 验证器
+// 单一真相源，在触碰文件系统与网络之前拒绝（离线可测，不属文件头豁免域）。
+// ===========================================================================
+
+mod id_gate {
+    use super::super::*;
+
+    /// 穿越/分隔符/保留名/尾点/空串形态必须在任何 IO 与网络语句之前拒绝。
+    #[test]
+    fn install_rejects_hostile_ids_before_fs_or_net() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        for hostile in ["../evil", "..\\evil", "a/b", "con", "foo.", "x:y", "..", ""] {
+            let err = cmd_install(ws, hostile).expect_err(hostile);
+            assert!(
+                err.to_string().contains("非法"),
+                "hostile={hostile} err: {err:#}"
+            );
+            assert!(
+                !ws.join("personas").exists(),
+                "hostile={hostile} 不得创建 personas 目录"
+            );
+        }
+    }
+
+    /// remove 穿越名：拒绝且工作区外邻居目录完好（修前 `personas/../<名>`
+    /// 直通 remove_dir_all 会删掉它）。
+    #[test]
+    fn remove_rejects_traversal_name_and_spares_outside_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // 工作区外的邻居目录（穿越目标）——名字带 pid 保并行唯一。
+        let outside = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join(format!("nb_persona_gate_probe_{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), "x").unwrap();
+
+        let err = cmd_remove(ws, "../nb_persona_gate_probe").expect_err("穿越名必须 Err");
+        assert!(err.to_string().contains("非法"), "err: {err:#}");
+        assert!(outside.join("keep.txt").exists(), "工作区外目录必须完好");
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// 合法 id 不受闸影响（happy path 共存回归锁）。
+    #[test]
+    fn remove_valid_id_still_works_past_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        let pdir = ws.join("personas/extra");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(pdir.join("IDENTITY.md"), "x").unwrap();
+        cmd_remove(ws, "extra").expect("合法 id 过闸正常删除");
+        assert!(!pdir.exists());
+    }
+}
