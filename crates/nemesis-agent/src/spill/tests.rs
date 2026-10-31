@@ -516,3 +516,28 @@ fn retention_sweep_warns_and_continues_on_locked_files() {
     drop(hold);
     drop(hold2);
 }
+
+// ── BUG-20261101-271：retention_days 巨值乘算溢出 ──
+// typed config 字段 spill_retention_days 是无上限 i64，as u64 后 `days *
+// 86400` 溢出（debug panic / release 回绕小值 → cutoff 变「现在」 → 新鲜
+// spill 文件被误判过期全删）。修复 = saturating_mul 封顶 = 巨值语义正确落
+// 「什么都不删」。
+#[test]
+fn cleanup_expired_huge_retention_days_keeps_fresh_files() {
+    let root = temp_root("huge_retention");
+    let sess = root.join("s1");
+    std::fs::create_dir_all(&sess).unwrap();
+    std::fs::write(sess.join("turn.md"), "x").unwrap();
+
+    // 远超可乘域的巨值：不 panic、零删除、文件保留。
+    let deleted = cleanup_expired(&root, u64::MAX / 2);
+    assert_eq!(deleted, 0);
+    assert!(sess.join("turn.md").exists());
+
+    // typed i64::MAX as u64（config 手写极限实际可到值）同样不 panic。
+    let deleted2 = cleanup_expired(&root, i64::MAX as u64);
+    assert_eq!(deleted2, 0);
+    assert!(sess.join("turn.md").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}

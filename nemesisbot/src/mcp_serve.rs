@@ -443,7 +443,13 @@ fn collect_markdown_files(dir: &Path, depth: usize, out: &mut Vec<std::path::Pat
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for ent in entries.flatten() {
+    let mut kids: Vec<_> = entries.flatten().collect();
+    // 确定性走查序（2026-11-01）：≤200 截断发生在收集过程中（提前
+    // return），哪些文件参与轻量检索依赖遍历序，而 read_dir 顺序是平台
+    // 实现细节（NTFS 字典序 vs ext4 哈希序）——每层按文件名排序，同一
+    // 记忆库跨平台截断出同一子集。
+    kids.sort_by_key(|e| e.file_name());
+    for ent in kids {
         let path = ent.path();
         if path.is_dir() {
             collect_markdown_files(&path, depth + 1, out);

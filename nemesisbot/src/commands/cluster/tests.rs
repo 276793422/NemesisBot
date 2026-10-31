@@ -4018,3 +4018,44 @@ mod wave_r10 {
         );
     }
 } // mod wave_r10
+
+// ── BUG-20261101-270：默认节点名多字节主机名切片 panic ──
+// node_id = "node-{hostname}-{uuid}"，hostname 来自环境变量可含中文
+// （Linux HOSTNAME 支持 UTF-8，每汉字 3 字节）。裸 &s[..16] 在第 16 字节
+// 落入汉字内部时 panic（byte index is not a char boundary）。修复 =
+// default_node_display_name 先 floor_char_boundary 再切。
+#[test]
+fn default_node_display_name_multibyte_hostname_does_not_panic() {
+    // 4 个汉字 = 12 字节，加 "node-" 5 字节前缀后第 16 字节落在第 4 汉字
+    // 内部（5+11=16，第 4 汉字占 14..17 字节）——裸切片必 panic 的形态。
+    let node_id = format!("node-{}-{}", "仓库服务器集群", uuid::Uuid::new_v4());
+    assert!(node_id.len() > 16);
+    let name = default_node_display_name(&node_id);
+    assert!(name.starts_with("Bot node-"), "{name}");
+    // 截断点落在 char 边界（floor 后不会拆开任何汉字）。
+    let cut = nemesis_types::utils::floor_char_boundary(&node_id, 16);
+    assert!(node_id.is_char_boundary(cut));
+    assert_eq!(name, format!("Bot {}", &node_id[..cut]));
+    // 剥掉 "Bot " 前缀后仍是合法 UTF-8 字符串且无 U+FFFD 替换符（不是
+    // from_utf8_lossy 那种半个字符被换成替换符的产物）。
+    let sliced = name.trim_start_matches("Bot ");
+    assert!(!sliced.contains('\u{FFFD}'), "{sliced}");
+}
+
+#[test]
+fn default_node_display_name_ascii_hostname_unchanged() {
+    // 纯 ASCII 主机名：行为与旧实现一致（16.min(len) 整截）。
+    let node_id = format!("node-{}-{}", "host01", uuid::Uuid::new_v4());
+    assert!(node_id.len() > 16);
+    assert_eq!(
+        default_node_display_name(&node_id),
+        format!("Bot {}", &node_id[..16])
+    );
+}
+
+#[test]
+fn default_node_display_name_short_node_id_kept_whole() {
+    // 短于 16 字节：全量保留（floor_char_boundary 对 len 内的请求原样返回）。
+    let node_id = "node-x";
+    assert_eq!(default_node_display_name(node_id), format!("Bot {node_id}"));
+}

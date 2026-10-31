@@ -1060,3 +1060,33 @@ async fn apply_takeovers_gate_and_rebuild_semantics() {
     assert_eq!(super::apply_takeovers(&l2, &manager, true), 1);
     assert_eq!(super::takeover_switch_state("tt_apply_probe"), Some(true));
 }
+
+// ── BUG-20261101-271：plugins.wasm.limits.call_timeout_secs 巨值乘算溢出 ──
+// config.json 手写 u64::MAX → 旧实现 `n * 1000` debug panic（gateway 装配
+// 崩）/ release 回绕可构造小值使「巨值=不收紧」语义翻转。修复 = checked_mul
+// 失败跳过收紧用默认。
+#[test]
+fn read_runtime_config_call_timeout_secs_overflow_uses_defaults() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":true,"limits":{"call_timeout_secs":18446744073709551615}}}}"#,
+    )
+    .unwrap();
+    let out = read_runtime_config(tmp.path());
+    assert!(out.enabled);
+    // 不 panic 不回绕：溢出值 → 放弃收紧 → 保持默认 30s。
+    assert_eq!(out.limits.timeout_ms, 30_000);
+}
+
+#[test]
+fn read_runtime_config_call_timeout_secs_normal_tighten_applies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"plugins":{"wasm":{"limits":{"call_timeout_secs":5}}}}"#,
+    )
+    .unwrap();
+    let out = read_runtime_config(tmp.path());
+    assert_eq!(out.limits.timeout_ms, 5_000);
+}

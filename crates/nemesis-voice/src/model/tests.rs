@@ -1484,3 +1484,93 @@ fn model_source_installed_false_for_unknown_source_or_empty_files() {
     cfg.models.sources[0].category = "stt".to_string();
     assert!(!model_source_installed(&cfg, "tts", "empty"));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-269：sanitize_model_local 路径围栏——模型清单 `local` 来自
+// 本地配置 JSON（可被工作区写工具篡改），裸 join = 把远端下载字节写到
+// 任意路径的围栏逃逸链。三消费点（check/download/ensure 返回）同闸。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sanitize_model_local_accepts_relative_rejects_escape() {
+    // 合法：普通相对路径 + 子目录 + 正斜杠
+    assert!(sanitize_model_local("model.onnx").is_some());
+    assert!(sanitize_model_local("dict/a.txt").is_some());
+    // 反斜杠归一为 '/' 后合法（Windows 习惯输入兼容）
+    assert_eq!(
+        sanitize_model_local("dict\\a.txt"),
+        Some(PathBuf::from("dict/a.txt"))
+    );
+    // 非法：绝对 / 盘符（含 `C:name` 盘符相对形态）/ 根前缀 / `..` / `.` / 空
+    assert!(sanitize_model_local("/etc/passwd").is_none());
+    assert!(sanitize_model_local("C:\\Windows\\evil.dll").is_none());
+    assert!(sanitize_model_local("C:evil.dll").is_none());
+    assert!(sanitize_model_local("../outside.bin").is_none());
+    assert!(sanitize_model_local("sub/../../outside.bin").is_none());
+    assert!(sanitize_model_local("./x").is_none());
+    assert!(sanitize_model_local("").is_none());
+}
+
+#[test]
+fn check_model_files_treats_unsafe_local_as_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 非法条目（`..` 穿越形态）不得参与存在性探测——即使它指向的真路径
+    // 存在，也必须视作缺失走下载臂诚实报错。
+    let files: Vec<(&str, &str)> = vec![("../../outside/evil.bin", "e")];
+    assert!(
+        !check_model_files(tmp.path(), &files),
+        "unsafe local must be treated as missing (no outside probe)"
+    );
+    // 合法条目照常探测
+    std::fs::create_dir_all(tmp.path().join("dict")).unwrap();
+    std::fs::write(tmp.path().join("dict").join("a.txt"), b"x").unwrap();
+    let ok_files: Vec<(&str, &str)> = vec![("dict/a.txt", "a")];
+    assert!(check_model_files(tmp.path(), &ok_files));
+}
+
+#[test]
+fn download_model_files_rejects_unsafe_local_without_writing() {
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("EVIL"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("stt").join("m");
+
+        // 恶意清单：`..` 穿越形态——下载必须在任何落盘前诚实 bail。
+        let f = files("../../escaped.bin", "whatever");
+        let target_check = target.clone();
+        let err =
+            run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+                .await
+                .expect_err("unsafe local must bail, not write");
+        assert!(
+            err.to_string().contains("unsafe local path"),
+            "honest error naming the fence: {err}"
+        );
+        // 零落盘：target 树内不得出现 escaped.bin（sanitize 在 join 前拒绝，
+        // 下载循环无任何先行副作用）。
+        fn find_escaped(dir: &Path) -> bool {
+            let mut hit = false;
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        hit |= find_escaped(&p);
+                    } else {
+                        hit |= p.file_name().is_some_and(|n| n == "escaped.bin");
+                    }
+                }
+            }
+            hit
+        }
+        assert!(
+            !find_escaped(&target_check),
+            "no byte may land anywhere under the model dir"
+        );
+    });
+}
