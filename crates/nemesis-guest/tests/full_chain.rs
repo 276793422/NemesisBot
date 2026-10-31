@@ -627,3 +627,70 @@ fn tcp_hash_tree_paths_filter_and_bulk_delete() {
         "错误应带回路径原文: {resp}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-272 定点臂：delete_dir 走 fsutil 韧性删除（async retry 包装，
+// NotFound 视为成功）——嵌套树删除 + 越界拒绝照旧。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tcp_delete_dir_removes_nested_tree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ws = dir.path();
+    std::fs::create_dir_all(ws.join("doomed").join("inner")).expect("mkdir");
+    std::fs::write(ws.join("doomed/inner/f.txt"), b"x").expect("write");
+    let (_g, addr) = spawn_listen(ws);
+
+    let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+
+    let call = |stream: &mut std::net::TcpStream,
+                reader: &mut BufReader<std::net::TcpStream>,
+                id: &str,
+                tool: &str,
+                args: serde_json::Value|
+     -> serde_json::Value {
+        let line =
+            build_v2_request_line(tool, &args.to_string(), &serde_json::json!({}), id).unwrap();
+        stream.write_all(line.as_bytes()).expect("write request");
+        let mut resp = String::new();
+        reader.read_line(&mut resp).expect("read response");
+        serde_json::from_str(resp.trim()).expect("parse response")
+    };
+
+    let resp = call(
+        &mut stream,
+        &mut reader,
+        "c-dd-1",
+        "delete_dir",
+        serde_json::json!({"path": "doomed"}),
+    );
+    assert_eq!(resp["ok"], true, "{resp}");
+    assert!(
+        !ws.join("doomed").exists(),
+        "嵌套树应整体消失（韧性删除接线）"
+    );
+
+    // 同路径再删 = metadata 闸诚实报不存在（delete_dir 前置检查语义不变）。
+    let resp = call(
+        &mut stream,
+        &mut reader,
+        "c-dd-2",
+        "delete_dir",
+        serde_json::json!({"path": "doomed"}),
+    );
+    assert_eq!(resp["ok"], false, "已删目录再删应诚实报错: {resp}");
+
+    // 越界拒绝照旧（resolve_in_workspace 闸与删除实现正交）。
+    let resp = call(
+        &mut stream,
+        &mut reader,
+        "c-dd-3",
+        "delete_dir",
+        serde_json::json!({"path": "../outside"}),
+    );
+    assert_eq!(resp["ok"], false, "越界路径应拒绝: {resp}");
+}

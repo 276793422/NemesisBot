@@ -775,7 +775,7 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
             if src_dir.exists() {
                 let dst_dir = archive_dir.join(dir_name);
                 if dst_dir.exists() {
-                    std::fs::remove_dir_all(&dst_dir)
+                    nemesis_utils::fsutil::remove_dir_all_retry(&dst_dir)
                         .map_err(|e| format!("archive: failed to clean {}: {}", dir_name, e))?;
                 }
                 copy_dir_recursive(&src_dir, &dst_dir)
@@ -792,13 +792,13 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
     for &file in &all_files {
         let dst = resolve_path(workspace, file)?;
         if dst.exists() {
-            let _ = std::fs::remove_file(&dst);
+            nemesis_utils::fsutil::remove_file_resilient(&dst);
         }
     }
     for &dir_name in PERSONA_ARCHIVE_DIRS {
         let dst_dir = resolve_path(workspace, dir_name)?;
         if dst_dir.exists() {
-            std::fs::remove_dir_all(&dst_dir)
+            nemesis_utils::fsutil::remove_dir_all_retry(&dst_dir)
                 .map_err(|e| format!("clean: failed to remove {}: {}", dir_name, e))?;
         }
     }
@@ -1147,7 +1147,7 @@ impl PersonaHandler {
         if !dir.exists() {
             return Err(format!("persona '{}' not found", name));
         }
-        std::fs::remove_dir_all(&dir)
+        nemesis_utils::fsutil::remove_dir_all_retry(&dir)
             .map_err(|e| format!("failed to remove persona '{}': {}", name, e))?;
 
         Ok(Some(serde_json::json!({"removed": true, "name": name})))
