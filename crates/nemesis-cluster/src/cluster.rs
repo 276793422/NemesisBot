@@ -339,6 +339,17 @@ impl Cluster {
             })
             .unwrap_or(node_id);
 
+        // BUG-20261101-263：本节点 id 手改含 `:`/`/` 时，本端发出的
+        // announce/续行 marker 同样携带坏身份（对端闸会拒收我们）且 B 端
+        // session_key 复合键被切坏。构造器不可 fail——loud WARN 把配置
+        // 错误显性化（修复 = 手改 peers.toml id 为合法字符集后重启）。
+        if !crate::cluster_config::is_valid_node_identity(&node_id) {
+            tracing::warn!(
+                node_id = %node_id,
+                "[Cluster] 本节点 id 含非法字符（合法集：字母/数字/._-；含 ':' 或 '/' 会切坏 session_key 与续行 marker 协议）——请手改 peers.toml [node].id"
+            );
+        }
+
         // Persist runtime-generated node_id to peers.toml [node].id so it
         // remains stable across restarts. No-op if user has already set one.
         if let Err(e) = crate::cluster_config::ensure_node_id(&peers_path, &node_id) {
@@ -630,6 +641,11 @@ impl Cluster {
         let mut seeded = 0usize;
         for pc in state.discovered {
             if pc.id.trim().is_empty() || pc.id == self.node_id {
+                continue;
+            }
+            // BUG-20261101-263：旧版 state.toml 可能存过未过身份闸的 id
+            // （闸先于本函数存在）——坏 id 不种回注册表，与 announce 闸同源。
+            if !crate::cluster_config::is_valid_node_identity(&pc.id) {
                 continue;
             }
             if self.removed_peers.read().contains(&pc.id) {
@@ -1872,6 +1888,18 @@ impl Cluster {
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
+        // BUG-20261101-263：身份字符集闸（G14 同族——畸形 announce 不入册）。
+        // 含 `:`/`/` 的 id 会把下游复合键协议（session_key 的 `/` 分隔、
+        // `__ASYNC__` marker 的 `:` 分隔、连接池键）切坏——段截断/会话串台。
+        // 正常生成形态不落此闸（见 is_valid_node_identity 注释）。
+        if !crate::cluster_config::is_valid_node_identity(node_id) {
+            tracing::warn!(
+                "[Cluster] Ignoring announce with malformed node_id {:?} (charset gate)",
+                node_id
+            );
+            return false;
+        }
+
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
             return false;

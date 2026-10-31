@@ -368,6 +368,30 @@ pub fn sanitize_peer_key(peer_id: &str) -> String {
     peer_id.replace(['.', ':'], "_")
 }
 
+/// 节点身份字符集闸（BUG-20261101-263 单一真相源）。
+///
+/// node_id 不只是显示串——它被拼进多个**带分隔符的 wire 复合键**：
+/// - `cluster_rpc:{source_node_id}/{chat_id}`（B 端会话键，`/` 分隔，
+///   peer_chat_handler）——id 含 `/` 即跨节点会话串台（两个不同
+///   (node, chat) 对折叠进同一 session_key，对话历史互相污染）；
+/// - `__ASYNC__:{task_id}:{target_id}[:{name}]`（集群续行 marker，`:` 分隔，
+///   loop.rs/tool_batch 按段数解析）——id 含 `:` 即 target 段截断，
+///   续行快照存错 peer_id，A 端重启恢复轮询问错人；
+/// - 连接池键 `{node_id}:{address}`、注册表/黑名单键。
+///
+/// 生成形态（`node-{hostname}-{uuid}`，hostname 转小写 + Windows 计算机名
+/// 字符集）与历史 Go 节点 id 全部落在 `[A-Za-z0-9._-]` 内——闸不误伤；
+/// 含 `:`/`/`/空白/控制字符的 id 只来自手改配置或畸形 announce，按
+/// G14 同族纪律在入册/配对口 loud 拒收。
+pub fn is_valid_node_identity(id: &str) -> bool {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 128 {
+        return false;
+    }
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
 /// Append a peer as a `[peers.{sanitized_id}]` subtable to peers.toml.
 ///
 /// This is the **canonical write path** for peers — used by both CLI

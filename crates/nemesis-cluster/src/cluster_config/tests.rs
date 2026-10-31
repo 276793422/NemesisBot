@@ -1290,3 +1290,38 @@ fn test_node_capabilities_roundtrip_and_default() {
     let bare = load_static_config(&p3).unwrap();
     assert!(bare.node.capabilities.is_empty());
 }
+
+// -- BUG-20261101-263：节点身份字符集闸（wire 复合键协议保真）---------------
+
+#[test]
+fn test_is_valid_node_identity_accepts_generated_forms() {
+    // 生成形态：node-{hostname}-{uuid}（hostname 转小写，可含下划线）
+    assert!(is_valid_node_identity(
+        "node-laptop-3f2a9c1e-8b4d-4c2a-9e1f-7a6b5d4c3b2a"
+    ));
+    assert!(is_valid_node_identity("node-my_host-abc123"));
+    assert!(is_valid_node_identity("Node-A.01"));
+    assert!(is_valid_node_identity("peer_1"));
+    assert!(is_valid_node_identity("a")); // 单字符合法
+    // trim 后非空即合法（入参允许首尾空白）
+    assert!(is_valid_node_identity("  node-x  "));
+}
+
+#[test]
+fn test_is_valid_node_identity_rejects_delimiter_and_bad_forms() {
+    // `/` 切坏 session_key（cluster_rpc:{node}/{chat}）——跨节点会话串台
+    assert!(!is_valid_node_identity("node/a"));
+    assert!(!is_valid_node_identity("a/b/c"));
+    // `:` 切坏 __ASYNC__ marker 与连接池键——续行恢复问错人
+    assert!(!is_valid_node_identity("laptop:1"));
+    assert!(!is_valid_node_identity("host:21949"));
+    // 空白/控制字符
+    assert!(!is_valid_node_identity("node x"));
+    assert!(!is_valid_node_identity("node\nx"));
+    // 空 / 全空白 / 超长
+    assert!(!is_valid_node_identity(""));
+    assert!(!is_valid_node_identity("   "));
+    assert!(!is_valid_node_identity(&"x".repeat(129)));
+    // 边界：恰 128 合法
+    assert!(is_valid_node_identity(&"x".repeat(128)));
+}

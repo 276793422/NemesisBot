@@ -46,6 +46,9 @@ pub enum PairError {
     BadAddress(String),
     /// 对端响应缺 node_id 或为空（不可能用于表键）。
     MissingIdentity,
+    /// 对端 node_id 含非法字符（BUG-20261101-263：`:`/`/` 会切坏下游
+    /// session_key / 续行 marker 复合键协议——不落盘，同零写入纪律）。
+    BadIdentity(String),
     /// 写后回读断言失败：已回滚本次写入。
     AssertFailed { detail: String },
     /// 本地文件 IO 错误。
@@ -68,6 +71,10 @@ impl std::fmt::Display for PairError {
                     "对端 get_info 响应缺少 node_id，无法配对；未写入任何配置"
                 )
             }
+            PairError::BadIdentity(id) => write!(
+                f,
+                "对端 node_id「{id}」含非法字符（合法集：字母/数字/._-；':' 与 '/' 会切坏集群复合键协议）；未写入任何配置"
+            ),
             PairError::AssertFailed { detail } => {
                 write!(f, "写后回读断言失败（已回滚）：{}", detail)
             }
@@ -138,6 +145,12 @@ pub async fn pair_with_peer(
         .to_string();
     if peer_id.is_empty() {
         return Err(PairError::MissingIdentity);
+    }
+    // BUG-20261101-263：身份字符集闸（写盘前，零写入纪律）——对端真实 id
+    // 直接落 peers.toml 表键并成为派发目标，坏字符 id 会把下游
+    // session_key（`/` 分隔）与 `__ASYNC__` marker（`:` 分隔）切坏。
+    if !crate::cluster_config::is_valid_node_identity(&peer_id) {
+        return Err(PairError::BadIdentity(peer_id));
     }
     let name = payload
         .get("name")

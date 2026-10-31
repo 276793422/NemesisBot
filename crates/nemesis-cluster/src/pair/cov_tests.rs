@@ -212,6 +212,28 @@ async fn pair_missing_identity_errors_without_write() {
     assert!(!path.exists(), "零写入");
 }
 
+/// BUG-20261101-263：对端真实 id 含非法字符（`:`/`/`）→ BadIdentity，
+/// 写盘前拒绝（零写入纪律）——坏 id 落 peers.toml 表键会切坏下游
+/// session_key 与续行 marker 复合键协议。
+#[tokio::test]
+async fn pair_bad_identity_charset_errors_without_write() {
+    for bad_id in ["laptop:1", "bad/id"] {
+        let port = spawn_fake_server(FakeReply::Payload(serde_json::json!({
+            "node_id": bad_id,
+            "name": "BadIdPeer"
+        })));
+        let (_dir, path) = fresh_peers_path("bad-id");
+        let err = pair_with_peer(&path, None, &format!("127.0.0.1:{port}"))
+            .await
+            .unwrap_err();
+        match &err {
+            PairError::BadIdentity(got) => assert_eq!(got, bad_id, "错误应携带原始 id"),
+            other => panic!("期望 BadIdentity({bad_id})，got: {other:?}"),
+        }
+        assert!(!path.exists(), "零写入：{bad_id}");
+    }
+}
+
 /// 对端回错误响应（WireMessage.error 非空）→ probe 报 remote error →
 /// 双候选 Unreachable（第二候选拒连），零写入。
 #[tokio::test]

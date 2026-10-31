@@ -3747,6 +3747,46 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
     assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Worker);
 }
 
+/// BUG-20261101-263：身份字符集闸——畸形 announce（id 含 `:`/`/`）在入册口
+/// loud 拒收（G14 同族），零注册。坏 id 会切坏下游复合键协议（session_key
+/// 的 `/` 分隔、`__ASYNC__` marker 的 `:` 分隔、连接池键）。
+#[test]
+fn test_discovered_node_malformed_id_charset_gate_rejected() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    for bad_id in ["bad:id", "bad/id", "bad id", ""] {
+        let changed = cluster.handle_discovered_node_ex(
+            bad_id,
+            "malformed-peer",
+            vec!["127.0.0.1".to_string()],
+            21949,
+            "worker",
+            "development",
+            Vec::new(),
+            Vec::new(),
+            "agent",
+            Vec::new(),
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            "",
+        );
+        assert!(
+            !changed,
+            "malformed id {:?} must be rejected at registration gate",
+            bad_id
+        );
+        assert!(
+            cluster.registry.get(bad_id).is_none(),
+            "rejected id {:?} must not enter registry",
+            bad_id
+        );
+    }
+}
+
 #[test]
 fn test_cluster_peer_resolver_uses_stored_addresses() {
     let cluster = Cluster::new(make_config());
