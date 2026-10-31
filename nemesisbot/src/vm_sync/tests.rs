@@ -511,6 +511,92 @@ fn extract_tar_to_host_rejects_traversal_entry() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261101-262：tar 条目读走 read_entry_capped 单一真相源
+// （extract_tar_to_host_with_caps 可注入小 cap 钉行为）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extract_tar_to_host_entry_cap_rejects_oversize() {
+    let tar_bytes = build_tar(&[("big.bin", Some(&[0u8; 32]), None)]);
+    let tmp = tempfile::tempdir().unwrap();
+    let err = super::extract_tar_to_host_with_caps(&tar_bytes, tmp.path(), 16).unwrap_err();
+    assert!(err.contains("上限"), "超 cap 条目应诚实报错，实际: {err}");
+    assert!(
+        !tmp.path().join("big.bin").exists(),
+        "超 cap 条目不得落半份文件"
+    );
+}
+
+#[test]
+fn extract_tar_to_host_entry_cap_allows_within_cap() {
+    let tar_bytes = build_tar(&[
+        ("ok.txt", Some(b"within cap"), None),
+        ("sub/deep.txt", Some(b"also ok"), None),
+    ]);
+    let tmp = tempfile::tempdir().unwrap();
+    super::extract_tar_to_host_with_caps(&tar_bytes, tmp.path(), 64).expect("cap 内应成功");
+    assert_eq!(
+        std::fs::read(tmp.path().join("ok.txt")).unwrap(),
+        b"within cap"
+    );
+    assert_eq!(
+        std::fs::read(tmp.path().join("sub/deep.txt")).unwrap(),
+        b"also ok"
+    );
+}
+
+#[test]
+fn extract_tar_to_host_default_cap_constant_present() {
+    // 生产包装必须带 256MB 条目上限（对齐 selfupdate 先例）——防有人把
+    // 包装改成 cap=0 / usize::MAX 等无防御形态（哨兵断言）。
+    assert_eq!(
+        super::PULL_ENTRY_MAX_BYTES,
+        256 * 1024 * 1024,
+        "PULL_ENTRY_MAX_BYTES 应保持 256MB 先例值"
+    );
+    assert!(super::PULL_TOTAL_MAX_BYTES > 0);
+    assert!(super::PULL_CHUNK_MAX_BYTES > 0);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-262：pull wire 闸纯函数（chunk 计数 / 单块与总量预算）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_pull_chunk_count_rejects_zero_and_oversize() {
+    // chunks=0：非空清单的诚实 tar 至少 1 条目，0 = wire 谎报。
+    let err = super::validate_pull_chunk_count(0).unwrap_err();
+    assert!(err.contains("chunks=0"), "实际: {err}");
+    // 超镜像上限（guest MAX_TOTAL_CHUNKS=200_000）。
+    let err = super::validate_pull_chunk_count(200_001).unwrap_err();
+    assert!(err.contains("超上限"), "实际: {err}");
+    // 边界内放行。
+    super::validate_pull_chunk_count(1).unwrap();
+    super::validate_pull_chunk_count(200_000).unwrap();
+}
+
+#[test]
+fn check_pull_chunk_budget_rejects_single_and_total() {
+    // 单块超 8MiB 镜像（guest BULK_CHUNK_MAX_BYTES）。
+    let err = super::check_pull_chunk_budget(0, super::PULL_CHUNK_MAX_BYTES + 1).unwrap_err();
+    assert!(err.contains("单块"), "实际: {err}");
+    // 累计超 2GiB：多块各不超限、合计越界。
+    let err = super::check_pull_chunk_budget(
+        super::PULL_TOTAL_MAX_BYTES as usize,
+        super::PULL_CHUNK_MAX_BYTES,
+    )
+    .unwrap_err();
+    assert!(err.contains("累计"), "实际: {err}");
+    // 边界内放行（恰抵上限）。
+    super::check_pull_chunk_budget(
+        super::PULL_TOTAL_MAX_BYTES as usize - super::PULL_CHUNK_MAX_BYTES,
+        super::PULL_CHUNK_MAX_BYTES,
+    )
+    .unwrap();
+    super::check_pull_chunk_budget(0, super::PULL_CHUNK_MAX_BYTES).unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // 组件 symlink 闸（2026-10-20 复查批；与 guest 侧 extract_tar_safe 同族）
 // ---------------------------------------------------------------------------
 

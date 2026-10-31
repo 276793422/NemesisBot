@@ -54,6 +54,28 @@ const SUSPECT_FULL_RESYNC_THRESHOLD: usize = 20_000;
 /// 定点查询/删除的单次路径分块（guest 单帧 8MiB 收块闸下的保守档）。
 const VM_QUERY_CHUNK: usize = 5_000;
 
+// ---------------------------------------------------------------------------
+// 拉回方向（guest→host）宿主侧防御闸（BUG-20261101-262）
+//
+// [`pull_files_to_host`] 的 `chunks` 头/单块字节/总 payload 全部来自 VM 侧
+// wire 声明——本函数自己的注释曾主张「chunk 分次传输天然有界」，但分次
+// 传输只约束单帧形状，不约束帧数×帧大小的总量：谎报 chunks 数（或单块
+// 塞超额数据）即可让宿主 `buf` 无界增长直至 OOM。与 BUG-20261029 zip 撒谎
+// size 同族——当时只修了 `with_capacity` 预分配面，累积面漏网。
+//
+// 块数/单块上限镜像 guest `bulk.rs` 协议常数（`MAX_TOTAL_CHUNKS` /
+// `BULK_CHUNK_MAX_BYTES`，guest 侧自闸不构成宿主防御——契约常数跨信任
+// 边界镜像，与本仓其它协议镜像同款）；总 payload 上限按工作副本排除
+// 构建产物（target/node_modules 不进）后的合理量级取 2 GiB，超限与
+// [`MAX_SYNC_FILES`] 同哲学：诚实报错停车，不静默截断半棵树。
+const PULL_CHUNK_COUNT_MAX: u64 = 200_000;
+const PULL_CHUNK_MAX_BYTES: usize = 8 * 1024 * 1024;
+const PULL_TOTAL_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// 单 tar 条目解包内存上限（对齐 selfupdate 256MB 条目先例）——
+/// [`extract_tar_to_host`] 曾裸 `read_to_end`，违反 zip_util
+/// `read_entry_capped` 单一真相源纪律（2026-10-29 建立）。
+const PULL_ENTRY_MAX_BYTES: usize = 256 * 1024 * 1024;
+
 /// 默认排除表（非 git 项目 + git 项目顶滤共用；双向生效的「表」侧）。
 /// `.browser-profile/` 是 P5-R1 guest 内 chromium 的 user-data-dir（登录态
 /// 常驻的锚，overlay 承载跨睡眠/重启）——cookies/缓存不进项目工作副本
@@ -1895,6 +1917,38 @@ pub async fn commit_project(
     Ok(Some(report))
 }
 
+/// wire 声明的 chunk 计数闸（BUG-20261101-262）：0（非空清单的诚实 tar
+/// 至少含 1 条目）与超镜像上限（guest `MAX_TOTAL_CHUNKS`）都诚实拒。
+fn validate_pull_chunk_count(chunks: u64) -> Result<(), String> {
+    if chunks == 0 {
+        return Err("bulk_read 声明 chunks=0（非空清单不可能）".to_string());
+    }
+    if chunks > PULL_CHUNK_COUNT_MAX {
+        return Err(format!(
+            "bulk_read 声明 chunks={chunks} 超上限 {PULL_CHUNK_COUNT_MAX}（wire 谎报？）"
+        ));
+    }
+    Ok(())
+}
+
+/// 单块/累计 payload 预算闸（BUG-20261101-262）：extend 前调用，单块超
+/// guest `BULK_CHUNK_MAX_BYTES` 镜像或累计超 [`PULL_TOTAL_MAX_BYTES`] 都
+/// 诚实拒收——不先收进 `buf` 再判（判定在分配累积面之前）。
+fn check_pull_chunk_budget(buf_len: usize, chunk_len: usize) -> Result<(), String> {
+    if chunk_len > PULL_CHUNK_MAX_BYTES {
+        return Err(format!(
+            "单块 {chunk_len} 字节超上限 {PULL_CHUNK_MAX_BYTES}"
+        ));
+    }
+    let total = buf_len as u64 + chunk_len as u64;
+    if total > PULL_TOTAL_MAX_BYTES {
+        return Err(format!(
+            "拉回 payload 累计 {total} 字节超总量上限 {PULL_TOTAL_MAX_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
 /// VM→宿主 定点回传（commit 闸；bulk_read 打包 → 分块拉取组装 → tar
 /// 解包落盘）。返回 payload 字节数。
 async fn pull_files_to_host(
@@ -1932,7 +1986,15 @@ async fn pull_files_to_host(
     // head 声明来自 VM 侧 wire，谎报/损坏值 `with_capacity` 即成无中生有的
     // 巨额分配（u64::MAX 直接 capacity overflow abort）。本路径对路径已做
     // fail-closed 防御（safe_rel/symlink 闸），size 头没有理由盲信——按实
-    // 到 chunk 增长，payload 总量由 chunk 分次传输天然有界。
+    // 到 chunk 增长。
+    //
+    // 「分次传输天然有界」不成立（BUG-20261101-262）：chunk 循环的帧数与
+    // 单帧大小同样来自 VM 侧 wire，分次只约束单帧形状、不约束总量——
+    // 谎报 chunks 数即可让宿主 buf 无界增长直至 OOM。guest 自限
+    // （MAX_TOTAL_CHUNKS/BULK_CHUNK_MAX_BYTES）活在 guest 进程内，不是
+    // 宿主防御。以下闸按上列 PULL_* 常数诚实拒收（与 MAX_SYNC_FILES
+    // 同哲学：超限停车报错，不静默截断半棵树）。
+    validate_pull_chunk_count(chunks)?;
     let mut buf = Vec::new();
     for seq in 0..chunks {
         let args = serde_json::json!({ "transfer": transfer, "seq": seq });
@@ -1948,6 +2010,8 @@ async fn pull_files_to_host(
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data)
             .map_err(|e| format!("bulk_read_chunk {seq} base64 解码失败: {e}"))?;
+        check_pull_chunk_budget(buf.len(), bytes.len())
+            .map_err(|e| format!("bulk_read_chunk {seq}: {e}"))?;
         buf.extend_from_slice(&bytes);
     }
     let root = project_path.to_path_buf();
@@ -1993,6 +2057,19 @@ fn ensure_no_symlink_components_host(root: &Path, rel: &str) -> Result<(), Strin
 }
 
 pub(crate) fn extract_tar_to_host(bytes: &[u8], root: &Path) -> Result<(), String> {
+    extract_tar_to_host_with_caps(bytes, root, PULL_ENTRY_MAX_BYTES)
+}
+
+/// [`extract_tar_to_host`] 的可注入条目上限变体（测试用小 cap 钉行为；
+/// 生产包装传 [`PULL_ENTRY_MAX_BYTES`]）。条目读走
+/// `nemesis_utils::zip_util::read_entry_capped` 单一真相源（16KB 分块
+/// 流式、超 cap 即拒——解压炸弹在撑爆内存前被拦），不再裸 `read_to_end`
+/// （BUG-20261101-262 straggler）。
+pub(crate) fn extract_tar_to_host_with_caps(
+    bytes: &[u8],
+    root: &Path,
+    entry_cap: usize,
+) -> Result<(), String> {
     let mut ar = tar::Archive::new(bytes);
     let entries = ar.entries().map_err(|e| format!("tar 遍历失败: {e}"))?;
     for ent in entries {
@@ -2012,8 +2089,7 @@ pub(crate) fn extract_tar_to_host(bytes: &[u8], root: &Path) -> Result<(), Strin
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败（{rel}）: {e}"))?;
         }
-        let mut content = Vec::new();
-        ent.read_to_end(&mut content)
+        let content = nemesis_utils::zip_util::read_entry_capped(&mut ent, entry_cap)
             .map_err(|e| format!("读条目 {rel} 失败: {e}"))?;
         std::fs::write(&dst, &content).map_err(|e| format!("写宿主文件 {rel} 失败: {e}"))?;
         #[cfg(unix)]
