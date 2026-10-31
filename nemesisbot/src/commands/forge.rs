@@ -294,6 +294,16 @@ fn cmd_status(
     Ok(())
 }
 
+/// 主 config.json 改写统一走 REL-002 原子写入。旧形态是裸 `fs::write` +
+/// `to_string_pretty(&cfg).unwrap_or_default()`——序列化失败会被翻译成
+/// 「写空串清空整个 config」，半截写则是截断 config（集群禁用级杀伤面，
+/// BUG-251 同源）。Value 序列化实际不会失败，但失败路径不该是清空。
+fn write_config_atomic(cfg_path: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
+    let s = serde_json::to_string_pretty(cfg)?;
+    nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), s.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)
+}
+
 fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result<()> {
     // Enable in main config, preserving existing forge fields
     if cfg_path.exists() {
@@ -308,10 +318,7 @@ fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result
             } else {
                 obj.insert("forge".to_string(), serde_json::json!({"enabled": true}));
             }
-            std::fs::write(
-                cfg_path,
-                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-            )?;
+            write_config_atomic(cfg_path, &cfg)?;
         }
     }
 
@@ -366,10 +373,7 @@ fn cmd_disable(cfg_path: &std::path::Path) -> Result<()> {
             } else {
                 obj.insert("forge".to_string(), serde_json::json!({"enabled": false}));
             }
-            std::fs::write(
-                cfg_path,
-                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-            )?;
+            write_config_atomic(cfg_path, &cfg)?;
         }
     }
     println!("Forge module disabled. Restart gateway to apply.");

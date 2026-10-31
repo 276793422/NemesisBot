@@ -8094,3 +8094,36 @@ fn test_migrate_legacy_max_tool_iterations_absent_file_is_noop() {
     migrate_legacy_max_tool_iterations(&cfg);
     assert!(!cfg.exists());
 }
+
+#[test]
+fn test_migrate_legacy_max_tool_iterations_write_is_atomic() {
+    // BUG-20261031-257：迁移改写主 config.json 走 REL-002 统一原子写入
+    //（截断的主 config 是集群禁用级杀伤面，BUG-251 同源）——证据 = 无
+    // .tmp-* 残留 + 改写后文件完整可解析。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents":{"defaults":{"max_tool_iterations":20}},"model_list":[{"model":"m1"}]}"#,
+    )
+    .unwrap();
+
+    migrate_legacy_max_tool_iterations(&cfg);
+
+    let residue: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
+    assert!(
+        residue.is_empty(),
+        "原子写不得残留 .tmp-* 文件: {residue:?}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap())
+        .expect("迁移写盘后 config.json 必须完整可解析");
+    assert_eq!(
+        v["agents"]["defaults"]["max_tool_iterations"],
+        serde_json::json!(0)
+    );
+    assert_eq!(v["model_list"][0]["model"], serde_json::json!("m1"));
+}

@@ -2144,6 +2144,56 @@ fn r10_fresh_enable_writes_default_config_empty_registry_then_disable_roundtrip(
 }
 
 // -------------------------------------------------------------------------
+// BUG-20261031-257：forge enable/disable 改写主 config.json 必须走 REL-002
+// 原子写入——旧形态裸 fs::write + to_string_pretty().unwrap_or_default()
+//（序列化失败被翻译成「写空串清空整个 config」）。原子写证据 = 无 .tmp-*
+// 残留 + 文件全程可解析；helper 失败路径 = 诚实报错（rename 标签）非静默。
+// -------------------------------------------------------------------------
+
+#[test]
+fn enable_disable_config_write_is_atomic_and_lossless() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    let cfg_path = home.join("config.json");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        &cfg_path,
+        r#"{"agents":{"defaults":{"llm":"bug257"}},"model_list":[{"model":"m1"}]}"#,
+    )
+    .unwrap();
+    let forge_dir = home.join("workspace").join("forge");
+
+    cmd_enable(&cfg_path, &forge_dir).unwrap();
+    cmd_disable(&cfg_path).unwrap();
+
+    let no_tmp_residue = |dir: &std::path::Path| {
+        let residue: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+            .collect();
+        assert!(
+            residue.is_empty(),
+            "原子写不得残留 .tmp-* 文件: {residue:?}"
+        );
+    };
+    no_tmp_residue(&home);
+
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap())
+        .expect("enable/disable 后 config.json 必须完整可解析");
+    assert_eq!(cfg["forge"]["enabled"], false);
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "bug257");
+    assert_eq!(cfg["model_list"][0]["model"], "m1");
+
+    // helper 失败路径：rename 失败（目标被目录占位）→ 诚实报错非静默。
+    let blocked = tmp.path().join("blocked.json");
+    std::fs::create_dir(&blocked).unwrap();
+    let err = write_config_atomic(&blocked, &serde_json::json!({ "a": 1 }))
+        .expect_err("rename 到目录占位必须失败");
+    assert!(err.to_string().contains("rename"), "err: {err}");
+}
+
+// -------------------------------------------------------------------------
 // R18 围栏接线钉：cmd_test / Optimize 的 name 必须过 valid_skill_dir_name
 //（穿越 + 盘符相对形态在触碰文件系统前 loud 拒绝）。
 // -------------------------------------------------------------------------

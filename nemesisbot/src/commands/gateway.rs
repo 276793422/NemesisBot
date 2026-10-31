@@ -165,7 +165,11 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
     v["agents"]["defaults"]["max_tool_iterations"] = serde_json::json!(0);
     let write = serde_json::to_string_pretty(&v)
         .map_err(|e| e.to_string())
-        .and_then(|s| std::fs::write(config_file, s).map_err(|e| e.to_string()));
+        // REL-002：主 config.json 改写走统一原子写入——迁移虽一次性，但截断
+        // 的主 config 是集群禁用级杀伤面（BUG-251 同源），不走裸 fs::write。
+        .and_then(|s| {
+            nemesis_utils::write_file_atomic(&config_file.to_string_lossy(), s.as_bytes(), 0o600)
+        });
     match write {
         Ok(()) => tracing::warn!(
             "[Config] 已迁移旧模板值 agents.defaults.max_tool_iterations: 20 → 0（不限）。\
