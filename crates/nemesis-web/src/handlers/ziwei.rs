@@ -4,7 +4,8 @@
 //! - 会话/资产面：`ziwei.list` / `show` / `attach` / `detach` / `invoke` /
 //!   `status` / `remove` / `refresh`
 //! - 配置期向导：`ziwei.setup.select_target` / `snapshot` / `analyze` /
-//!   `diff_window` / `candidates` / `annotate` / `define_struct` / `commit`
+//!   `diff_window` / `candidates` / `annotate` / `define_struct` /
+//!   `define_tool` / `commit` / `abort` / `status`
 //!
 //! 双闸（对齐 terminal 双闸模式）：
 //! 1. cargo feature `ziwei`（关 = 本 handler 整体不注册，命令 unknown）；
@@ -177,7 +178,10 @@ impl ModuleHandler for ZiweiHandler {
             "setup.candidates",
             "setup.annotate",
             "setup.define_struct",
+            "setup.define_tool",
             "setup.commit",
+            "setup.abort",
+            "setup.status",
         ]
     }
 
@@ -537,6 +541,12 @@ impl ModuleHandler for ZiweiHandler {
                     nemesis_ziwei::setup::global().define_struct(&Self::workspace(ctx)?, obj)?,
                 ))
             }
+            "setup.define_tool" => {
+                let obj = data.as_ref().ok_or("缺 data")?;
+                Ok(Some(
+                    nemesis_ziwei::setup::global().define_tool(&Self::workspace(ctx)?, obj)?,
+                ))
+            }
             "setup.commit" => {
                 let ws = Self::workspace(ctx)?;
                 let mut out = nemesis_ziwei::setup::global().commit(&ws)?;
@@ -548,6 +558,14 @@ impl ModuleHandler for ZiweiHandler {
                 }
                 Ok(Some(out))
             }
+            "setup.abort" => Ok(Some(
+                nemesis_ziwei::setup::global()
+                    .abort(&Self::workspace(ctx)?)
+                    .await?,
+            )),
+            // 无草稿 = Ok(None)（响应 null）——前端 wizOpen 以 `st ?? null`
+            // 消费，作「无未收尾草稿」诚实态。
+            "setup.status" => Ok(nemesis_ziwei::setup::global().status(&Self::workspace(ctx)?)),
             _ => Err(format!("unknown command: ziwei.{cmd}")),
         }
     }

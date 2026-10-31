@@ -246,7 +246,10 @@ fn l1_command_list_complete() {
         "setup.candidates",
         "setup.annotate",
         "setup.define_struct",
+        "setup.define_tool",
         "setup.commit",
+        "setup.abort",
+        "setup.status",
     ];
     assert_eq!(ZiweiHandler.commands(), expected);
 }
@@ -316,4 +319,91 @@ async fn estop_engaged_blocks_active_face() {
         !err.contains("急停"),
         "释放后 attach 不应再被急停闸拦截: {err}"
     );
+}
+
+// ── setup 三命令漏接回归（前端 ZiweiView 向导调 setup.status /
+//    setup.define_tool / setup.setup.abort，handler 此前从未实现——
+//    草稿恢复/自定义工具/作废草稿三功能整体失效）──
+
+/// setup.status 无草稿：Ok(None)（响应 null）——前端 wizOpen 以 `st ?? null`
+/// 消费为「无未收尾草稿」。
+#[tokio::test]
+async fn setup_status_no_draft_returns_none() {
+    let (ctx, dir) = make_ctx();
+    write_config(&dir, true);
+    let out = call("setup.status", &ctx, None).await.unwrap();
+    assert!(out.is_none(), "无草稿应返回 None，got {out:?}");
+}
+
+/// setup.status 磁盘兜底：内存态丢、draft 目录在 → resumed 形态
+/// （前端按 st.profile_id 恢复到标注步——钉该契约）。
+#[tokio::test]
+async fn setup_status_disk_fallback_resumed_shape() {
+    let (ctx, dir) = make_ctx();
+    write_config(&dir, true);
+    let draft_root = dir
+        .path()
+        .join("ziwei")
+        .join("drafts")
+        .join("zw-pro-dTEST1");
+    std::fs::create_dir_all(&draft_root).unwrap();
+    std::fs::write(
+        draft_root.join("draft.json"),
+        serde_json::to_vec(&sample_profile_for_test()).unwrap(),
+    )
+    .unwrap();
+    let out = call("setup.status", &ctx, None).await.unwrap().unwrap();
+    assert_eq!(out["profile_id"], "zw-pro-dTEST1");
+    assert_eq!(out["resumed"], true);
+}
+
+/// setup.abort 磁盘草稿：aborted 响应契约（前端「✓ 已作废 {aborted}」）
+/// + draft 目录清理。
+#[tokio::test]
+async fn setup_abort_disk_draft_cleans_dir() {
+    let (ctx, dir) = make_ctx();
+    write_config(&dir, true);
+    let draft_root = dir
+        .path()
+        .join("ziwei")
+        .join("drafts")
+        .join("zw-pro-dTEST2");
+    std::fs::create_dir_all(&draft_root).unwrap();
+    std::fs::write(
+        draft_root.join("draft.json"),
+        serde_json::to_vec(&sample_profile_for_test()).unwrap(),
+    )
+    .unwrap();
+    let out = call("setup.abort", &ctx, None).await.unwrap().unwrap();
+    assert_eq!(out["aborted"], "zw-pro-dTEST2");
+    assert!(!draft_root.exists(), "draft 目录应被清理");
+}
+
+/// setup.abort 无草稿：诚实报「无活跃向导」。
+#[tokio::test]
+async fn setup_abort_no_draft_errors() {
+    let (ctx, dir) = make_ctx();
+    write_config(&dir, true);
+    let err = call("setup.abort", &ctx, None).await.unwrap_err();
+    assert!(err.contains("无活跃向导"), "got: {err}");
+}
+
+/// setup.define_tool 无草稿：require_info 诚实报（参数契约由底层解析，
+/// handler 臂只负责透传 data 对象）。
+#[tokio::test]
+async fn setup_define_tool_no_draft_errors() {
+    let (ctx, dir) = make_ctx();
+    write_config(&dir, true);
+    let err = call(
+        "setup.define_tool",
+        &ctx,
+        Some(serde_json::json!({
+            "tool_name": "t",
+            "description": "d",
+            "action": { "primitive": "poll_report", "addr": "struct:X", "mode": "on_change" },
+        })),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("无活跃配置向导"), "got: {err}");
 }
