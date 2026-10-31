@@ -587,6 +587,10 @@ impl FeishuChannel {
                         let (mut write, mut read) = ws_stream.split();
                         let mut ping_interval_timer =
                             tokio::time::interval(std::time::Duration::from_secs(ping_interval));
+                        // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的 ping
+                        // 逐个补发——对端被 ping 洪泛。Delay 从当前时刻重排。
+                        ping_interval_timer
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         ping_interval_timer.tick().await; // skip first tick
 
                         loop {

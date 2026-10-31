@@ -577,6 +577,9 @@ impl EmailChannel {
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(config.poll_interval));
+            // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的 tick 逐个补发
+            // ——IMAP 服务器被密集轮询。Delay 从当前时刻重排。
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut rx = rx;
 
             loop {

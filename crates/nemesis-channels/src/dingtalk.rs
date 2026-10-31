@@ -492,6 +492,13 @@ impl DingTalkChannel {
                                     );
                                     let mut poll_interval =
                                         tokio::time::interval(std::time::Duration::from_secs(1));
+                                    // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的
+                                    // tick 逐个补发——1s 轮询挂 2h 即对钉钉网关密集补发
+                                    // 上万次 HTTP POST（配额打爆/封禁）。Delay 从当前
+                                    // 时刻重排。
+                                    poll_interval.set_missed_tick_behavior(
+                                        tokio::time::MissedTickBehavior::Delay,
+                                    );
 
                                     loop {
                                         tokio::select! {

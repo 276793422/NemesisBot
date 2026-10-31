@@ -196,6 +196,10 @@ impl WhatsAppChannel {
             let mut cancel_rx = cancel_rx;
             let url = format!("{base_url}/receive");
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的 tick 逐个补发
+            // ——bridge 被密集轮询（重建的 backoff interval 同）。Delay 从当前
+            // 时刻重排。
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut backoff = INITIAL_BACKOFF;
             let mut consecutive_errors = 0u32;
 
@@ -282,6 +286,9 @@ impl WhatsAppChannel {
                                 warn!(status = %resp.status(), "[WhatsAppChannel] bridge poll returned error");
                                 if consecutive_errors > 3 {
                                     interval = tokio::time::interval(backoff);
+                                    interval.set_missed_tick_behavior(
+                                        tokio::time::MissedTickBehavior::Delay,
+                                    );
                                     backoff = (backoff * 2).min(MAX_BACKOFF);
                                     interval.tick().await; // skip first tick
                                 }
@@ -291,6 +298,9 @@ impl WhatsAppChannel {
                                 warn!(error = %e, "[WhatsAppChannel] bridge poll failed");
                                 if consecutive_errors > 3 {
                                     interval = tokio::time::interval(backoff);
+                                    interval.set_missed_tick_behavior(
+                                        tokio::time::MissedTickBehavior::Delay,
+                                    );
                                     backoff = (backoff * 2).min(MAX_BACKOFF);
                                     interval.tick().await; // skip first tick
                                 }

@@ -454,6 +454,11 @@ impl DiscordChannel {
                                 let mut ticker = tokio::time::interval(
                                     std::time::Duration::from_millis(interval),
                                 );
+                                // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的
+                                // 心跳逐个补发——网关被心跳洪泛。Delay 从当前时刻重排。
+                                ticker.set_missed_tick_behavior(
+                                    tokio::time::MissedTickBehavior::Delay,
+                                );
                                 ticker.tick().await; // skip first tick
                                 loop {
                                     if !*hb_running.read() {

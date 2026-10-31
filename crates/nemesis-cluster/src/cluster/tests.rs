@@ -10513,3 +10513,39 @@ async fn test_bug209_start_wires_task_manager_cleanup_loop() {
         "terminal task must be cleaned by the loop wired in cluster.start()"
     );
 }
+
+/// BUG-20261101-264：interval 错过 tick 语义钉子——修复在 13 处外部轮询
+/// loop 上把默认 Burst 改成 Delay（挂起恢复后 Burst 对每个错过的 tick 立即
+/// 补发 = 洪泛对端；Delay 从当前时刻重排）。本测试钉死修复所依赖的 tokio
+/// 语义，防「tokio 默认行为变更」或「修复被重构掉」静默回退。
+#[tokio::test(start_paused = true)]
+async fn interval_missed_tick_delay_reanchors_after_gap() {
+    // 默认 Burst：错过 3 个 slot（100/200/300ms）→ 全部立即补发。
+    let mut burst = tokio::time::interval(std::time::Duration::from_millis(100));
+    burst.tick().await; // t=0 初始 tick
+    tokio::time::advance(std::time::Duration::from_millis(350)).await;
+    burst.tick().await; // 100ms slot
+    burst.tick().await; // 200ms slot
+    let t0 = tokio::time::Instant::now();
+    burst.tick().await; // 300ms slot
+    assert_eq!(
+        tokio::time::Instant::now() - t0,
+        std::time::Duration::ZERO,
+        "Burst：错过的 tick 逐个立即补发（外部轮询洪泛面）"
+    );
+
+    // Delay（修复采用）：同样的缺口只塌缩成一次立即补发，下一 tick 从
+    // 当前时刻重排（+100ms），不再突发。
+    let mut delay = tokio::time::interval(std::time::Duration::from_millis(100));
+    delay.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    delay.tick().await; // t=0 初始 tick
+    tokio::time::advance(std::time::Duration::from_millis(350)).await;
+    delay.tick().await; // 塌缩补发 tick（立即返回，t=350）
+    let t0 = tokio::time::Instant::now();
+    delay.tick().await; // 重排后的下一 tick
+    assert_eq!(
+        tokio::time::Instant::now() - t0,
+        std::time::Duration::from_millis(100),
+        "Delay：下一 tick 从当前时刻重排，无突发"
+    );
+}

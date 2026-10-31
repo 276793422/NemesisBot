@@ -1429,6 +1429,10 @@ impl Cluster {
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(120));
+            // BUG-20261101-264：interval 默认 Burst——进程挂起（VM pause/容器
+            // 冻结）恢复后对每个错过的 tick 立即补发一轮恢复查询，对端被 RPC
+            // 洪泛。Delay = 错过即从当前时刻重排（同 ：1509 广播循环先例）。
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // P6b：首 tick 即时（tokio interval 语义），且绕过 2 分钟年龄闸
             // ——重启后立即发起恢复查询，不用白等一个周期。后续 tick 恢复
             // 常规年龄闸（避免把刚派发的任务误查）。
@@ -1640,6 +1644,10 @@ impl Cluster {
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(interval_duration);
+            // BUG-20261101-264：默认 Burst 会在挂起恢复后把错过的 announce/
+            // 同步 tick 逐个补发（UDP 洪泛对端）——Delay 从当前时刻重排
+            // （同 ：1509 先例）。
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = stop_rx.recv() => {

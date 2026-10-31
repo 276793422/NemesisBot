@@ -143,6 +143,10 @@ impl OAuthProviderConfig {
         // Poll for 15 minutes
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval as u64));
+        // BUG-20261101-264：默认 Burst 会在挂起恢复后把错过的 tick 逐个补发
+        // ——token 端点被密集轮询（OAuth 服务器对此限流/锁流）。Delay 从
+        // 当前时刻重排。
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             if std::time::Instant::now() >= deadline {

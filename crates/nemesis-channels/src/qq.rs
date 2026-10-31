@@ -408,6 +408,10 @@ impl QQChannel {
                         let (mut write, mut read) = ws_stream.split();
                         let mut heartbeat_interval =
                             tokio::time::interval(std::time::Duration::from_secs(45));
+                        // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的心跳
+                        // 逐个补发——对端被心跳洪泛。Delay 从当前时刻重排。
+                        heartbeat_interval
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         heartbeat_interval.tick().await; // skip first tick
 
                         loop {

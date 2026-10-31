@@ -649,6 +649,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
             let node_id_h = self.node_id.clone();
             Some(tokio::spawn(async move {
                 let mut interval = tokio::time::interval(hb_interval);
+                // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的心跳逐个
+                // 补发，发送通道满时 try_send 失败直接 break——心跳任务被一次
+                // 突发误杀。Delay = 错过即从当前时刻重排。
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     interval.tick().await;
                     if closed_h.load(Ordering::SeqCst) {
