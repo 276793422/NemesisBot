@@ -554,8 +554,11 @@ fn extract_tar_to_host_default_cap_constant_present() {
         256 * 1024 * 1024,
         "PULL_ENTRY_MAX_BYTES 应保持 256MB 先例值"
     );
-    assert!(super::PULL_TOTAL_MAX_BYTES > 0);
-    assert!(super::PULL_CHUNK_MAX_BYTES > 0);
+    // 哨兵断言走 const 块：对 `const` 断言在编译期验证（零运行时成本，
+    // 违约直接编译失败），也满足 clippy 1.95 `assertions_on_constants`
+    //（-D warnings，CI 44a5e913 inline 实录两红）。
+    const _: () = assert!(super::PULL_TOTAL_MAX_BYTES > 0);
+    const _: () = assert!(super::PULL_CHUNK_MAX_BYTES > 0);
 }
 
 // ---------------------------------------------------------------------------
