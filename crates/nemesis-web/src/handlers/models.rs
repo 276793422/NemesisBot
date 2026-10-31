@@ -1705,7 +1705,7 @@ fn ref_owner(entries: &[(String, String)], ref_value: &str) -> Option<String> {
 fn read_raw_model_entries(
     home: &str,
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    let raw = std::fs::read_to_string(config_path(home)).ok()?;
+    let raw = nemesis_utils::fsutil::read_config_string(config_path(home)).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let arr = v.get("model_list")?.as_array()?;
     let mut map = std::collections::HashMap::new();

@@ -637,7 +637,7 @@ pub(crate) async fn init_post_agent(
                     // （executor.enabled=true 才装配）。vm 总闸开而载体缺席 =
                     // VM 档不可达（管理面/切档可用，工具执行诚实 Unavailable
                     // 回落 per-call）——装配期提醒，不静默。
-                    let exec_cfg = std::fs::read_to_string(&vm_config_path)
+                    let exec_cfg = nemesis_utils::fsutil::read_config_string(&vm_config_path)
                         .ok()
                         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                         .and_then(|v| v.get("executor").cloned());

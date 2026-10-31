@@ -41,7 +41,7 @@ pub fn find_openclaw_config(openclaw_home: &Path) -> Result<String, String> {
 
 /// Load an OpenClaw config file and convert keys to snake_case.
 pub fn load_openclaw_config(config_path: &Path) -> Result<HashMap<String, Value>, String> {
-    let data = std::fs::read_to_string(config_path)
+    let data = nemesis_utils::fsutil::read_config_string(config_path)
         .map_err(|e| format!("reading OpenClaw config: {}", e))?;
     let raw: Value =
         serde_json::from_str(&data).map_err(|e| format!("parsing OpenClaw config: {}", e))?;

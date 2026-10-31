@@ -283,7 +283,7 @@ fn migrate_model_keys(
     // Raw JSON round-trip（非 typed）：未类型化 extras（tier/protocol/stream/
     // …）按字节保真，迁移只动 api_key 一个字段——与 nemesis-web
     // update_raw_config 同语义。
-    let raw = std::fs::read_to_string(config_path)
+    let raw = nemesis_utils::fsutil::read_config_string(config_path)
         .map_err(|e| anyhow::anyhow!("读取 config.json 失败: {e}"))?;
     let mut config: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("解析 config.json 失败: {e}"))?;

@@ -84,7 +84,7 @@ pub fn validate_proxy_value(value: &str, is_no_proxy: bool) -> Result<(), String
 /// 走，不阻断启动）。
 pub fn load(config_dir: &Path) -> Result<Option<ProxyFileConfig>, String> {
     let path = proxy_config_path(config_dir);
-    let content = match std::fs::read_to_string(&path) {
+    let content = match nemesis_utils::fsutil::read_config_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),

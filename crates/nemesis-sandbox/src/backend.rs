@@ -427,7 +427,7 @@ pub fn select_windows_backend(
 /// `Other(原文)`——调用方据此 warn，与 [`read_executor_strict`] 同款
 /// 原始 JSON 读取模式：nemesis-sandbox 不依赖 nemesis-config）。
 pub fn read_executor_backend(home: &Path) -> ExecutorBackendChoice {
-    let raw = match std::fs::read_to_string(home.join("config.json")) {
+    let raw = match nemesis_utils::fsutil::read_config_string(home.join("config.json")) {
         Ok(s) => s,
         Err(_) => return ExecutorBackendChoice::Auto,
     };
@@ -453,7 +453,7 @@ pub fn read_executor_backend(home: &Path) -> ExecutorBackendChoice {
 /// 用户态沙盒用它决定 bwrap 是否加 `--unshare-net`（landlock 不碰网络，
 /// 只影响 Partial 缺口文案）。
 pub fn read_executor_allow_network(home: &Path) -> bool {
-    let raw = match std::fs::read_to_string(home.join("config.json")) {
+    let raw = match nemesis_utils::fsutil::read_config_string(home.join("config.json")) {
         Ok(s) => s,
         Err(_) => return false,
     };
@@ -472,7 +472,7 @@ pub fn read_executor_allow_network(home: &Path) -> bool {
 /// 语义）。executor 子进程（`exec_worker` 的 `engage`）用它决定「无后端 /
 /// 自装失败」时是降级 warn 继续还是拒绝执行（fail-closed）。
 pub fn read_executor_strict(home: &Path) -> bool {
-    let raw = match std::fs::read_to_string(home.join("config.json")) {
+    let raw = match nemesis_utils::fsutil::read_config_string(home.join("config.json")) {
         Ok(s) => s,
         Err(_) => return false,
     };

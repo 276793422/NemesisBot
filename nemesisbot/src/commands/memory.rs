@@ -152,7 +152,7 @@ fn cmd_status(home: &Path) -> Result<()> {
 
     // 2. Sub-switch
     let sub_enabled = if em_cfg_path.exists() {
-        match std::fs::read_to_string(&em_cfg_path) {
+        match nemesis_utils::fsutil::read_config_string(&em_cfg_path) {
             Ok(content) => match serde_json::from_str::<Value>(&content) {
                 Ok(cfg) => {
                     let enabled = cfg
@@ -232,7 +232,7 @@ fn read_main_switch(cfg_path: &Path) -> bool {
     if !cfg_path.exists() {
         return false;
     }
-    std::fs::read_to_string(cfg_path)
+    nemesis_utils::fsutil::read_config_string(cfg_path)
         .ok()
         .and_then(|content| serde_json::from_str::<Value>(&content).ok())
         .and_then(|v| {
@@ -249,7 +249,7 @@ fn set_main_switch(cfg_path: &Path, enabled: bool) -> Result<()> {
         bail!("Config file not found: {}", cfg_path.display());
     }
 
-    let content = std::fs::read_to_string(cfg_path)
+    let content = nemesis_utils::fsutil::read_config_string(cfg_path)
         .with_context(|| format!("reading {}", cfg_path.display()))?;
 
     let mut cfg: Value = serde_json::from_str(&content)

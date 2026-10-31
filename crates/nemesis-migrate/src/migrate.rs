@@ -454,7 +454,7 @@ fn execute_config_migration(src_config_path: &str, dst_config_path: &str) -> Res
 
     // If destination config exists, merge
     if Path::new(dst_config_path).exists() {
-        let existing_content = fs::read_to_string(dst_config_path)
+        let existing_content = nemesis_utils::fsutil::read_config_string(dst_config_path)
             .map_err(|e| format!("loading existing NemesisBot config: {}", e))?;
         let mut existing: serde_json::Value = serde_json::from_str(&existing_content)
             .map_err(|e| format!("parsing existing NemesisBot config: {}", e))?;

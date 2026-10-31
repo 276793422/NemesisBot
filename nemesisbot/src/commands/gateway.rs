@@ -148,7 +148,7 @@ mod scenario_tests;
 /// 只改内存会立刻被热读盖回；落盘后热读/typed 双面一致（config.json 唯一
 /// 真相源纪律）。失败（只读盘等）= 按原值运行 + WARN，不阻塞启动。
 pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) {
-    let Ok(content) = std::fs::read_to_string(config_file) else {
+    let Ok(content) = nemesis_utils::fsutil::read_config_string(config_file) else {
         return; // 无 config（onboard 前只跑 embedded 默认）——无事可迁
     };
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) else {

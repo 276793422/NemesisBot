@@ -235,7 +235,7 @@ pub fn load_static_config(path: &Path) -> Result<StaticConfig, ConfigError> {
             format!("config file not found: {}", path.display()),
         )));
     }
-    let content = std::fs::read_to_string(path)?;
+    let content = nemesis_utils::fsutil::read_config_string(path)?;
     let config: StaticConfig = toml::from_str(&content)?;
     Ok(config)
 }
@@ -258,7 +258,7 @@ pub fn save_static_config(path: &Path, config: &StaticConfig) -> Result<(), Conf
     // Peer-preserving write: replace only the [node] table when the file
     // already exists and parses as a TOML table. Any read/parse failure
     // (missing or corrupt file) falls back to serializing `config` fresh.
-    let parsed = std::fs::read_to_string(path)
+    let parsed = nemesis_utils::fsutil::read_config_string(path)
         .ok()
         .and_then(|content| content.parse::<toml::Value>().ok())
         .filter(|doc| doc.is_table());
@@ -290,7 +290,7 @@ pub fn save_static_config(path: &Path, config: &StaticConfig) -> Result<(), Conf
 /// 供 discovery announce 对异端口 peer 定向单播使用。
 /// 文件缺失/不可解析时返回空 vec（退化为纯广播，行为同旧版）。
 pub fn load_peer_udp_endpoints(path: &Path) -> Vec<String> {
-    let content = match std::fs::read_to_string(path) {
+    let content = match nemesis_utils::fsutil::read_config_string(path) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
@@ -314,7 +314,7 @@ pub fn load_dynamic_state(path: &Path) -> Result<DynamicState, ConfigError> {
     if !path.exists() {
         return Ok(DynamicState::default());
     }
-    let content = std::fs::read_to_string(path)?;
+    let content = nemesis_utils::fsutil::read_config_string(path)?;
     let state: DynamicState = toml::from_str(&content)?;
     Ok(state)
 }
@@ -499,7 +499,7 @@ pub fn append_peer_to_file_with_name(
 
     // Load existing content or start with an empty table
     let mut doc: toml::Value = if path.exists() {
-        let content = std::fs::read_to_string(path)?;
+        let content = nemesis_utils::fsutil::read_config_string(path)?;
         match content.parse::<toml::Value>() {
             Ok(v) => v,
             Err(_) => {
@@ -592,7 +592,7 @@ pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigErr
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(path)?;
+    let content = nemesis_utils::fsutil::read_config_string(path)?;
     let mut doc: toml::Value = match content.parse::<toml::Value>() {
         Ok(v) => v,
         Err(e) => {
@@ -685,7 +685,7 @@ pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
 
     // Load existing content or start with an empty table
     let mut doc: toml::Value = if path.exists() {
-        let content = std::fs::read_to_string(path)?;
+        let content = nemesis_utils::fsutil::read_config_string(path)?;
         match content.parse::<toml::Value>() {
             Ok(v) => v,
             Err(_) => toml::Value::Table(toml::value::Table::new()),

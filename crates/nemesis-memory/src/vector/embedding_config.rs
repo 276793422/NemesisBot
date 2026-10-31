@@ -258,7 +258,7 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
         }
     }
 
-    match std::fs::read_to_string(&path) {
+    match nemesis_utils::fsutil::read_config_string(&path) {
         Ok(content) => match serde_json::from_str::<EmbeddingConfig>(&content) {
             Ok(config) => {
                 info!(

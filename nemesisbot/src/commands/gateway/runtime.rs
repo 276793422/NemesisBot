@@ -1250,7 +1250,7 @@ pub(crate) async fn run_runtime(
                         let _cfg_serial = nemesis_config::config_write_lock();
                         // Write config.json cluster.enabled = true
                         let cfg_path = home_for_start.join("config.json");
-                        if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                        if let Ok(content) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                             && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
                         {
                             if cfg.get("cluster").is_none() {
@@ -1275,7 +1275,8 @@ pub(crate) async fn run_runtime(
                             nemesis_path::resolve_cluster_config_path_in_workspace(
                                 &common::workspace_path(&home_for_start),
                             );
-                        if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                        if let Ok(content) =
+                            nemesis_utils::fsutil::read_config_string(&cluster_cfg_path)
                             && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
                             && let Some(obj) = cfg.as_object_mut()
                         {
@@ -1309,7 +1310,8 @@ pub(crate) async fn run_runtime(
                             nemesis_path::resolve_cluster_config_path_in_workspace(
                                 &common::workspace_path(&home_for_stop),
                             );
-                        if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                        if let Ok(content) =
+                            nemesis_utils::fsutil::read_config_string(&cluster_cfg_path)
                             && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
                             && let Some(obj) = cfg.as_object_mut()
                         {
@@ -1325,7 +1327,7 @@ pub(crate) async fn run_runtime(
                         }
                         // Write config.json cluster.enabled = false
                         let cfg_path = home_for_stop.join("config.json");
-                        if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                        if let Ok(content) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                             && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
                             && let Some(obj) =
                                 cfg.get_mut("cluster").and_then(|c| c.as_object_mut())

@@ -389,7 +389,7 @@ impl AgentRuntimeSupervisor {
     /// 档关闭（enabled=false / 键缺失 / 文件缺失 / 解析失败——全部归「不可
     /// 用」，不猜不兜底）。
     fn persistent_settings(&self) -> Option<ExecutorPersistentConfig> {
-        let raw = std::fs::read_to_string(&self.config_path).ok()?;
+        let raw = nemesis_utils::fsutil::read_config_string(&self.config_path).ok()?;
         let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
         let cfg: ExecutorPersistentConfig =
             serde_json::from_value(v.get("executor")?.get("persistent")?.clone()).ok()?;

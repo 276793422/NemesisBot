@@ -188,7 +188,7 @@ fn cmd_status(
 
     // Check if forge is enabled in main config
     let enabled = if cfg_path.exists() {
-        let data = std::fs::read_to_string(cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
         let cfg: serde_json::Value = serde_json::from_str(&data)?;
         cfg.get("forge")
             .and_then(|f| f.get("enabled"))
@@ -307,7 +307,7 @@ fn write_config_atomic(cfg_path: &std::path::Path, cfg: &serde_json::Value) -> R
 fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result<()> {
     // Enable in main config, preserving existing forge fields
     if cfg_path.exists() {
-        let data = std::fs::read_to_string(cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
         let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
         if let Some(obj) = cfg.as_object_mut() {
             if let Some(existing) = obj.get_mut("forge") {
@@ -362,7 +362,7 @@ fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result
 
 fn cmd_disable(cfg_path: &std::path::Path) -> Result<()> {
     if cfg_path.exists() {
-        let data = std::fs::read_to_string(cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
         let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
         if let Some(obj) = cfg.as_object_mut() {
             // Preserve all existing forge fields, only set enabled = false
@@ -388,7 +388,7 @@ fn cmd_reflect(
 ) -> Result<()> {
     // Check if forge is enabled in main config
     if cfg_path.exists()
-        && let Ok(data) = std::fs::read_to_string(cfg_path)
+        && let Ok(data) = nemesis_utils::fsutil::read_config_string(cfg_path)
         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
     {
         let enabled = cfg

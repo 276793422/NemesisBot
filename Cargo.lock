@@ -4099,6 +4099,7 @@ dependencies = [
  "async-trait",
  "nemesis-config",
  "nemesis-types",
+ "nemesis-utils",
  "reqwest",
  "serde",
  "serde_json",
@@ -4167,6 +4168,7 @@ name = "nemesis-path"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "nemesis-utils",
  "parking_lot",
  "serde",
  "serde_json",

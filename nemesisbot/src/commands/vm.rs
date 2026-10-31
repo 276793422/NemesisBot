@@ -256,7 +256,7 @@ async fn build_image(
 /// 非 VM 档 / 冲突）不是传输错误）。
 async fn sync_via_gateway(home: &std::path::Path, cmd: &str, project: &str) -> Result<()> {
     let config_path = home.join("config.json");
-    let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| {
+    let cfg_str = nemesis_utils::fsutil::read_config_string(&config_path).map_err(|e| {
         anyhow::anyhow!(
             "无法读取 {}：{}。若 gateway 以 --local 启动，请用：nemesisbot --local vm commit {project}",
             config_path.display(),

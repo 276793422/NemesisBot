@@ -131,7 +131,7 @@ fn resolve_path(path: &str, workspace: &std::path::Path) -> String {
 /// Read or create the logging section of config.json.
 fn read_logging_config(cfg_path: &std::path::Path) -> Result<serde_json::Value> {
     if cfg_path.exists() {
-        let data = std::fs::read_to_string(cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
         let cfg: serde_json::Value = serde_json::from_str(&data)?;
         Ok(cfg
             .get("logging")
@@ -163,7 +163,7 @@ fn default_logging_config() -> serde_json::Value {
 /// Persist the logging section back into config.json.
 fn write_logging_config(cfg_path: &std::path::Path, logging: &serde_json::Value) -> Result<()> {
     let mut cfg: serde_json::Value = if cfg_path.exists() {
-        let data = std::fs::read_to_string(cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
         serde_json::from_str(&data)?
     } else {
         serde_json::json!({})

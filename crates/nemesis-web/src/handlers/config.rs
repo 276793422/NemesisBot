@@ -120,7 +120,8 @@ pub(crate) fn update_config<T>(
 /// 的读半边；单独 pub(crate) 供只读面（attribute editor）复用。
 pub(crate) fn read_raw_config(home: &str) -> Result<serde_json::Value, String> {
     let path = config_path(home);
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read config.json: {e}"))?;
+    let raw = nemesis_utils::fsutil::read_config_string(&path)
+        .map_err(|e| format!("read config.json: {e}"))?;
     serde_json::from_str(&raw).map_err(|e| format!("invalid config.json: {e}"))
 }
 
@@ -166,7 +167,7 @@ pub(crate) fn update_raw_config_seeded<T>(
     f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,
 ) -> Result<T, String> {
     let _serial = nemesis_config::config_write_lock();
-    let mut cfg = match std::fs::read_to_string(config_path(home)) {
+    let mut cfg = match nemesis_utils::fsutil::read_config_string(config_path(home)) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("invalid config.json: {e}"))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(e) => return Err(format!("read config.json: {e}")),
@@ -187,8 +188,8 @@ pub(crate) fn update_json_file<T>(
 ) -> Result<T, String> {
     let _serial = nemesis_config::config_write_lock();
     let mut v = if path.exists() {
-        let s =
-            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let s = nemesis_utils::fsutil::read_config_string(path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
         serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display()))?
     } else {
         serde_json::json!({})

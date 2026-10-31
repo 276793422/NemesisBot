@@ -192,7 +192,7 @@ pub fn roaming_plugin_present() -> bool {
 /// 形参口径）。文件缺席 / 无 relay 段 / 非对象 = `{}`（空节——插件侧宽容
 /// 解析落默认档）。gateway assemble 与 CLI `quic relay` 两入口同源。
 pub fn relay_init_json(quic_config_path: &Path) -> String {
-    let relay_section = std::fs::read_to_string(quic_config_path)
+    let relay_section = nemesis_utils::fsutil::read_config_string(quic_config_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("relay").cloned())

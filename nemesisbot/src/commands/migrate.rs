@@ -115,9 +115,10 @@ fn write_migrated_config(cfg_path: &Path, incoming: &serde_json::Value) -> Resul
     let mut merged = incoming.clone();
     let mut merged_with_existing = false;
     if cfg_path.exists() {
-        let existing_content = std::fs::read_to_string(cfg_path).map_err(|e| {
-            anyhow::anyhow!("reading existing config {}: {}", cfg_path.display(), e)
-        })?;
+        let existing_content =
+            nemesis_utils::fsutil::read_config_string(cfg_path).map_err(|e| {
+                anyhow::anyhow!("reading existing config {}: {}", cfg_path.display(), e)
+            })?;
         match serde_json::from_str::<serde_json::Value>(&existing_content) {
             Ok(mut existing) => {
                 // BUG-20261025-69：merge_config 契约是「只并入既有结构，不补建

@@ -167,7 +167,7 @@ async fn gateway_internal(
     body: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let config_path = home.join("config.json");
-    let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| {
+    let cfg_str = nemesis_utils::fsutil::read_config_string(&config_path).map_err(|e| {
         anyhow::anyhow!(
             "读取 {} 失败: {e}（--local 启动的 gateway 需 `nemesisbot --local ziwei ...`）",
             config_path.display()

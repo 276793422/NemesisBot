@@ -35,7 +35,7 @@ pub fn run(local: bool) -> Result<()> {
 
     // Model info
     if cfg_path.exists() {
-        let data = std::fs::read_to_string(&cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
         if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
             // Default model
             if let Some(model) = cfg.get("default_model").and_then(|v| v.as_str()) {

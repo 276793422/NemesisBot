@@ -12,7 +12,7 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. 读 auth_token（/api/internal 要 X-Auth-Token，否则 401）
     let config_path = home.join("config.json");
-    let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| {
+    let cfg_str = nemesis_utils::fsutil::read_config_string(&config_path).map_err(|e| {
         format!(
             "Cannot read config.json at {}: {}.\n\
              If the gateway was started with --local, run: nemesisbot --local estop",

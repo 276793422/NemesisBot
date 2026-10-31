@@ -907,7 +907,7 @@ impl VmSupervisor {
     /// typed 配置段现读（`None` = 缺席/损坏——不问 enabled；web 面渲染
     /// 总开关状态需要看到 `enabled=false` 的段本身）。
     pub(crate) fn vm_config(&self) -> Option<ExecutorVmConfig> {
-        let raw = std::fs::read_to_string(&self.config_path).ok()?;
+        let raw = nemesis_utils::fsutil::read_config_string(&self.config_path).ok()?;
         let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
         serde_json::from_value(v.get("executor")?.get("vm")?.clone()).ok()
     }
@@ -921,7 +921,7 @@ impl VmSupervisor {
     /// `executor.strict` 裸读（fail-closed 闸：要求加速但本机不可用 → 拒绝
     /// 而非降级，对齐 U11 语义）。
     fn executor_strict(&self) -> bool {
-        std::fs::read_to_string(&self.config_path)
+        nemesis_utils::fsutil::read_config_string(&self.config_path)
             .ok()
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
             .and_then(|v| {

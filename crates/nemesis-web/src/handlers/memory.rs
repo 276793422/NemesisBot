@@ -309,7 +309,7 @@ fn read_main_switch(home: &str) -> bool {
     if !cfg_path.exists() {
         return false;
     }
-    std::fs::read_to_string(&cfg_path)
+    nemesis_utils::fsutil::read_config_string(&cfg_path)
         .ok()
         .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
         .and_then(|v| {
@@ -335,8 +335,8 @@ fn set_main_switch_inner(home: &str, enabled: bool) -> Result<(), String> {
     if !cfg_path.exists() {
         return Err(format!("config.json not found at {}", cfg_path.display()));
     }
-    let content =
-        std::fs::read_to_string(&cfg_path).map_err(|e| format!("failed to read config: {}", e))?;
+    let content = nemesis_utils::fsutil::read_config_string(&cfg_path)
+        .map_err(|e| format!("failed to read config: {}", e))?;
     let mut cfg: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("failed to parse config: {}", e))?;
     if cfg.get("memory").is_none() {
@@ -659,7 +659,8 @@ impl MemoryHandler {
 
         // Read raw config file content
         let emb_path = config_dir.join("config.enhanced_memory.json");
-        let embedding_config_content = std::fs::read_to_string(&emb_path).unwrap_or_default();
+        let embedding_config_content =
+            nemesis_utils::fsutil::read_config_string(&emb_path).unwrap_or_default();
 
         Ok(Some(serde_json::json!({
             "main_enabled": main_enabled,

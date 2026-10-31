@@ -22,7 +22,7 @@ pub enum ConfigError {
 
 /// Load cluster configuration from a JSON file.
 pub fn load_config(path: &Path) -> Result<ClusterConfig, ConfigError> {
-    let content = std::fs::read_to_string(path)?;
+    let content = nemesis_utils::fsutil::read_config_string(path)?;
     let config: ClusterConfig = serde_json::from_str(&content)?;
     Ok(config)
 }
@@ -166,7 +166,7 @@ pub fn load_app_config(workspace: &Path) -> AppConfig {
     // 委托 nemesis-path 唯一拼接点。
     let config_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     if config_path.exists() {
-        match std::fs::read_to_string(&config_path) {
+        match nemesis_utils::fsutil::read_config_string(&config_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(cfg) => cfg,
                 Err(e) => {

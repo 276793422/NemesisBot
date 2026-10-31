@@ -353,7 +353,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return OFF,
         };
-        let v = std::fs::read_to_string(&path)
+        let v = nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         let Some(v) = v else {
@@ -388,7 +388,7 @@ impl AgentLoop {
         let mut merged: Vec<String> = self.extra_hidden_tools.read().clone();
         let config_list = match self.config_path.read().clone() {
             Some(p) => {
-                let v = std::fs::read_to_string(&p)
+                let v = nemesis_utils::fsutil::read_config_string(&p)
                     .ok()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
                 v.and_then(|v| {
@@ -420,7 +420,7 @@ impl AgentLoop {
     /// false（行为零变化面）。运行时改键下一轮生效。
     pub(crate) fn current_mcp_lazy_supply(&self) -> bool {
         match self.config_path.read().clone() {
-            Some(p) => std::fs::read_to_string(&p)
+            Some(p) => nemesis_utils::fsutil::read_config_string(&p)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| {
@@ -441,7 +441,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return Vec::new(),
         };
-        let v = std::fs::read_to_string(&path)
+        let v = nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         v.and_then(|v| {
@@ -467,7 +467,7 @@ impl AgentLoop {
     pub(crate) fn current_executor_tool_timeout(&self) -> Option<std::time::Duration> {
         const DEFAULT_SECS: u64 = 1800;
         let secs = match self.config_path.read().clone() {
-            Some(p) => std::fs::read_to_string(&p)
+            Some(p) => nemesis_utils::fsutil::read_config_string(&p)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| {

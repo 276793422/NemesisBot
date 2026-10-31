@@ -683,7 +683,7 @@ fn ensure_voice_config(config_dir: &std::path::Path) -> PathBuf {
 #[cfg(target_os = "windows")]
 fn read_voice_config(config_dir: &std::path::Path) -> serde_json::Value {
     let path = ensure_voice_config(config_dir);
-    std::fs::read_to_string(&path)
+    nemesis_utils::fsutil::read_config_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::from_str(DEFAULT_VOICE_CONFIG).unwrap_or_default())
@@ -704,7 +704,7 @@ fn ensure_chat_config(config_dir: &std::path::Path) -> PathBuf {
 #[cfg(target_os = "windows")]
 fn read_chat_config(config_dir: &std::path::Path) -> serde_json::Value {
     let path = ensure_chat_config(config_dir);
-    std::fs::read_to_string(&path)
+    nemesis_utils::fsutil::read_config_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::from_str(DEFAULT_CHAT_CONFIG).unwrap_or_default())
@@ -722,7 +722,7 @@ fn voiceprint_path(config_dir: &std::path::Path) -> PathBuf {
 #[cfg(target_os = "windows")]
 fn read_voiceprint_config(config_dir: &std::path::Path) -> serde_json::Value {
     let path = voiceprint_path(config_dir);
-    std::fs::read_to_string(&path)
+    nemesis_utils::fsutil::read_config_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| {
@@ -1501,7 +1501,7 @@ impl VoiceHandler {
         if !config_path.exists() {
             return Err("config.toml not found. Run setup first.".to_string());
         }
-        let content = std::fs::read_to_string(&config_path)
+        let content = nemesis_utils::fsutil::read_config_string(&config_path)
             .map_err(|e| format!("failed to read config: {}", e))?;
         let cfg = nemesis_voice::AppConfig::load(&config_path).map_err(|e| e.to_string())?;
 
@@ -1549,7 +1549,7 @@ impl VoiceHandler {
                 "content": "",
             })));
         }
-        let content = std::fs::read_to_string(&config_path)
+        let content = nemesis_utils::fsutil::read_config_string(&config_path)
             .map_err(|e| format!("failed to read config: {}", e))?;
         Ok(Some(serde_json::json!({
             "exists": true,

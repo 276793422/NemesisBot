@@ -723,7 +723,7 @@ impl Cluster {
             return;
         }
 
-        let data = match std::fs::read_to_string(&cfg_path) {
+        let data = match nemesis_utils::fsutil::read_config_string(&cfg_path) {
             Ok(d) => d,
             Err(e) => {
                 tracing::warn!(path = %cfg_path.display(), error = %e, "[Cluster] Failed to read cluster config for token");
@@ -867,7 +867,7 @@ impl Cluster {
             return String::new();
         }
 
-        let raw = match std::fs::read_to_string(&cfg_path) {
+        let raw = match nemesis_utils::fsutil::read_config_string(&cfg_path) {
             Ok(data) => serde_json::from_str::<serde_json::Value>(&data)
                 .ok()
                 .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))

@@ -77,7 +77,7 @@ impl McpManager {
         if !self.config_path.exists() {
             return Ok(());
         }
-        let data = std::fs::read_to_string(&self.config_path)
+        let data = nemesis_utils::fsutil::read_config_string(&self.config_path)
             .map_err(|e| format!("Failed to read MCP config: {}", e))?;
         self.config = serde_json::from_str(&data)
             .map_err(|e| format!("Failed to parse MCP config: {}", e))?;

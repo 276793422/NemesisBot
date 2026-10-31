@@ -189,7 +189,7 @@ fn read_auth_token(workspace: &Path) -> Result<String> {
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow::anyhow!("无法从 workspace 反推 home：{}", workspace.display()))?;
     let cfg_path = common::config_path(&home);
-    let data = std::fs::read_to_string(&cfg_path)
+    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)
         .with_context(|| format!("读取 {}", cfg_path.display()))?;
     let cfg: serde_json::Value =
         serde_json::from_str(&data).with_context(|| format!("解析 {}", cfg_path.display()))?;

@@ -122,7 +122,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
             println!("{}", "-".repeat(30));
 
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
                 for ch in KNOWN_CHANNELS {
                     let enabled = cfg
@@ -174,7 +174,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 return Ok(());
             }
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                 if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", name)) {
                     let obj = ch.as_object_mut().ok_or_else(|| {
@@ -204,7 +204,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
             println!("  {} Channel Status", name);
             println!("  {}", "=".repeat(30));
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
                 if let Some(ch) = cfg.get("channels").and_then(|c| c.get(&name)) {
                     let enabled = ch.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -352,7 +352,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     println!("  Web Channel Status");
                     println!("  ==================");
                     if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
+                        let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                         let cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(web) = cfg.get("channels").and_then(|c| c.get("web")) {
                             let enabled = web
@@ -415,7 +415,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     println!("  Web Channel Configuration");
                     println!("  =========================");
                     if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
+                        let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                         let cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(web) = cfg.get("channels").and_then(|c| c.get("web")) {
                             let enabled = web.get("enabled").and_then(|v| v.as_bool());
@@ -639,7 +639,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 WebSocketAction::Config => {
                     println!("WebSocket Channel Configuration");
                     if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
+                        let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                         let cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(ws) = cfg.get("channels").and_then(|c| c.get("websocket")) {
                             println!("{}", serde_json::to_string_pretty(ws).unwrap_or_default());
@@ -781,7 +781,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 ExternalAction::Config => {
                     println!("External Channel Configuration");
                     if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
+                        let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                         let cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(ext) = cfg.get("channels").and_then(|c| c.get("external")) {
                             println!("{}", serde_json::to_string_pretty(ext).unwrap_or_default());
@@ -931,7 +931,7 @@ fn set_channel_config_value(
     if !cfg_path.exists() {
         anyhow::bail!("Config file not found: {}", cfg_path.display());
     }
-    let data = std::fs::read_to_string(cfg_path)?;
+    let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
     // Ensure the path channels.<channel> exists as an object
@@ -996,7 +996,7 @@ fn get_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -> O
     if !cfg_path.exists() {
         return None;
     }
-    let data = std::fs::read_to_string(cfg_path).ok()?;
+    let data = nemesis_utils::fsutil::read_config_string(cfg_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
     let v = cfg.get("channels")?.get(channel)?.get(key)?;
     Some(match v {
@@ -1011,7 +1011,7 @@ fn remove_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -
     if !cfg_path.exists() {
         return Ok(());
     }
-    let data = std::fs::read_to_string(cfg_path)?;
+    let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
     if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", channel))

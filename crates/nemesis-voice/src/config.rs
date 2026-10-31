@@ -229,7 +229,7 @@ pub struct ModelFile {
 
 impl AppConfig {
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
+        let content = nemesis_utils::fsutil::read_config_string(path)
             .with_context(|| format!("Failed to read config: {}", path.display()))?;
         let mut config: AppConfig =
             toml::from_str(&content).with_context(|| "Failed to parse config.toml")?;

@@ -67,7 +67,7 @@ fn signature_gate_mode(config_dir: &Path) -> SignatureGateMode {
     if crate::verify_policy::ROOT_ANCHOR.is_none() {
         return SignatureGateMode::Dormant;
     }
-    let value = std::fs::read_to_string(config_dir.join("config.security.json"))
+    let value = nemesis_utils::fsutil::read_config_string(config_dir.join("config.security.json"))
         .ok()
         .and_then(|raw| {
             crate::verify_policy::parse_signature_verify_value(&raw)

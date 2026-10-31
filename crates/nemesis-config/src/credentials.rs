@@ -153,7 +153,7 @@ pub fn global_credentials_path() -> Option<PathBuf> {
 /// Unix but does not fail.
 pub fn load_credentials_file(path: &Path) -> Result<CredentialsFile> {
     warn_if_permissions_loose(path);
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    let content = nemesis_utils::fsutil::read_config_string(path).map_err(|e| {
         ConfigError::Validation(format!(
             "credentials file '{}' cannot be read ({}). If api_key references use 'yaml:<alias>', \
              create the file (shape: keys: {{ alias: value }}) or run `nemesisbot credentials import`",
@@ -392,7 +392,7 @@ pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportR
     // Raw JSON round-trip（非 typed）：与 nemesis-web update_raw_config 同
     // 语义——未类型化 extras（tier/protocol/stream/…）按字节保真，迁移只
     // 动 api_key 一个字段。
-    let raw = std::fs::read_to_string(config_path).map_err(|e| {
+    let raw = nemesis_utils::fsutil::read_config_string(config_path).map_err(|e| {
         ConfigError::Validation(format!(
             "cannot read config '{}': {}",
             config_path.display(),

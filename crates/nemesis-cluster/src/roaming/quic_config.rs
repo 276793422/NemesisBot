@@ -48,7 +48,7 @@ pub struct QuicConfig {
 ///
 /// 任何解析失败（缺文件 / 坏 JSON / 缺段 / 字段类型不符）逐字段落默认。
 pub fn resolved_quic(quic_config_path: &Path) -> QuicConfig {
-    let raw = std::fs::read_to_string(quic_config_path).ok();
+    let raw = nemesis_utils::fsutil::read_config_string(quic_config_path).ok();
     let cfg = raw
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
@@ -86,7 +86,7 @@ pub fn ensure_quic_config(cluster_config_path: &Path, quic_config_path: &Path) -
     if quic_config_path.exists() {
         return false;
     }
-    let raw = std::fs::read_to_string(cluster_config_path).ok();
+    let raw = nemesis_utils::fsutil::read_config_string(cluster_config_path).ok();
     let Some(cfg) = raw
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())

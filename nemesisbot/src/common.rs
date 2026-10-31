@@ -444,7 +444,7 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
 
     // Read from config file if it exists
     if config_path.exists()
-        && let Ok(data) = std::fs::read_to_string(config_path)
+        && let Ok(data) = nemesis_utils::fsutil::read_config_string(config_path)
         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
         && let Some(logging) = cfg.get("logging").and_then(|v| v.get("general"))
     {

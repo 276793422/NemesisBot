@@ -1198,7 +1198,7 @@ impl GatewayCtx {
                 &common::workspace_path(&home),
             );
             if skills_config_path.exists() {
-                match std::fs::read_to_string(&skills_config_path) {
+                match nemesis_utils::fsutil::read_config_string(&skills_config_path) {
                     Ok(content) => {
                         match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(
                             &content,

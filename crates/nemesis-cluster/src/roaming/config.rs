@@ -98,7 +98,7 @@ pub struct RoamingOverlayConfig {
 ///
 /// 任何解析失败（缺文件 / 坏 JSON / 缺段 / 字段类型不符）落默认。
 pub fn resolved_roaming(config_path: &Path) -> RoamingOverlayConfig {
-    let raw = std::fs::read_to_string(config_path).ok();
+    let raw = nemesis_utils::fsutil::read_config_string(config_path).ok();
     let cfg = raw
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());

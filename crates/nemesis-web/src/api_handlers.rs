@@ -305,7 +305,7 @@ pub async fn handle_api_config(
     };
 
     let config_path = PathBuf::from(&home).join("config.json");
-    let data = match std::fs::read_to_string(&config_path) {
+    let data = match nemesis_utils::fsutil::read_config_string(&config_path) {
         Ok(d) => d,
         Err(_) => {
             tracing::debug!(path = %config_path.display(), "[WebServer] Config file not found");
@@ -367,7 +367,7 @@ pub async fn handle_api_models(
     };
 
     let config_path = PathBuf::from(&home).join("config.json");
-    let data = match std::fs::read_to_string(&config_path) {
+    let data = match nemesis_utils::fsutil::read_config_string(&config_path) {
         Ok(d) => d,
         Err(_) => {
             return Ok(Json(serde_json::json!({
@@ -542,7 +542,7 @@ fn load_scanner_status(workspace: &str) -> serde_json::Value {
     let scanner_config_path =
         nemesis_path::resolve_scanner_config_path_in_workspace(std::path::Path::new(workspace));
 
-    let data = match std::fs::read_to_string(&scanner_config_path) {
+    let data = match nemesis_utils::fsutil::read_config_string(&scanner_config_path) {
         Ok(d) => d,
         Err(_) => {
             return serde_json::json!({

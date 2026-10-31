@@ -170,7 +170,7 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
 /// Load or create registry config from skills config file.
 fn load_registry_config(skills_cfg: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
     if skills_cfg.exists()
-        && let Ok(data) = std::fs::read_to_string(skills_cfg)
+        && let Ok(data) = nemesis_utils::fsutil::read_config_string(skills_cfg)
         && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
     {
         return config;

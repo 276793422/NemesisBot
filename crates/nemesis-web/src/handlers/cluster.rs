@@ -306,7 +306,7 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
     let _cfg_serial = nemesis_config::config_write_lock();
     let path = cluster_config_path(workspace);
     let mut cfg: serde_json::Value = if path.exists() {
-        let content = std::fs::read_to_string(&path)
+        let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| format!("failed to read cluster config: {}", e))?;
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
     } else {
@@ -349,7 +349,7 @@ fn cluster_gate_payload(
     let main_enabled = home
         .map(|h| {
             let path = Path::new(h).join("config.json");
-            std::fs::read_to_string(path)
+            nemesis_utils::fsutil::read_config_string(path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| {
@@ -632,7 +632,7 @@ impl ClusterHandler {
         // Fallback: read from config files (no Cluster runtime)
         let config_path = cluster_config_path(workspace);
         let config = if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)
+            let content = nemesis_utils::fsutil::read_config_string(&config_path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
             serde_json::from_str::<serde_json::Value>(&content).ok()
         } else {
@@ -644,7 +644,8 @@ impl ClusterHandler {
         let mut node_role: Option<String> = None;
         let mut node_name: Option<String> = None;
         if peers_path.exists() {
-            let content = std::fs::read_to_string(&peers_path).unwrap_or_default();
+            let content =
+                nemesis_utils::fsutil::read_config_string(&peers_path).unwrap_or_default();
             peers_count = content
                 .lines()
                 .filter(|l| l.starts_with("[peers.") && l.ends_with(']'))
@@ -914,7 +915,7 @@ impl ClusterHandler {
             .to_string();
         // RPC 鉴权 token 与集群运行时同源（config.cluster.json `token` 字段，
         // 见 Cluster::load_rpc_auth_token）。
-        let token = std::fs::read_to_string(cluster_config_path(workspace))
+        let token = nemesis_utils::fsutil::read_config_string(cluster_config_path(workspace))
             .ok()
             .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
             .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
@@ -1817,7 +1818,7 @@ impl ClusterHandler {
         // token（UDP 发现层凭据）不回显明文——读入即脱敏（凭据回显脱敏批次，
         // 2026-09-25；vault 方案 0.4.7 遗留），计算字段随后叠加不受影响。
         let masked: serde_json::Value = if path.exists() {
-            let content = std::fs::read_to_string(&path)
+            let content = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
             let parsed: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|e| format!("invalid cluster config: {}", e))?;
@@ -1830,7 +1831,7 @@ impl ClusterHandler {
         if let Ok(home) = require_home(ctx) {
             let main_cfg_path = PathBuf::from(home).join("config.json");
             let master_enabled = if main_cfg_path.exists() {
-                std::fs::read_to_string(&main_cfg_path)
+                nemesis_utils::fsutil::read_config_string(&main_cfg_path)
                     .ok()
                     .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
                     .and_then(|v| {
@@ -1979,7 +1980,7 @@ impl ClusterHandler {
         let _cfg_serial = nemesis_config::config_write_lock();
         let path = cluster_config_path(workspace);
         let mut cfg: serde_json::Value = if path.exists() {
-            let content = std::fs::read_to_string(&path)
+            let content = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
             serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
         } else {
@@ -2084,7 +2085,7 @@ impl ClusterHandler {
         if !path.exists() {
             return Ok(Some(serde_json::json!({ "peers": [] })));
         }
-        let content = std::fs::read_to_string(&path)
+        let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| format!("failed to read peers.toml: {}", e))?;
 
         Ok(Some(serde_json::json!({
@@ -2254,7 +2255,7 @@ impl ClusterHandler {
     ) -> Result<nemesis_types::capability::ModelTier, String> {
         let home = require_home(ctx)?;
         let cfg_path = Path::new(home).join("config.json");
-        let cfg_text = std::fs::read_to_string(&cfg_path)
+        let cfg_text = nemesis_utils::fsutil::read_config_string(&cfg_path)
             .map_err(|e| format!("读取 config.json 失败: {}", e))?;
         let cfg: serde_json::Value =
             serde_json::from_str(&cfg_text).map_err(|e| format!("解析 config.json 失败: {}", e))?;
@@ -2440,7 +2441,7 @@ impl ClusterHandler {
             return (default_udp, default_tcp);
         };
         let path = cluster_config_path(workspace);
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = nemesis_utils::fsutil::read_config_string(&path) else {
             return (default_udp, default_tcp);
         };
         let cfg: serde_json::Value = match serde_json::from_str(&content) {

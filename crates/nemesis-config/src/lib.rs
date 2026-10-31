@@ -4842,7 +4842,7 @@ pub fn set_embedded_defaults_from_fs(config_dir: &Path) -> Result<()> {
 pub fn load_config(config_path: &Path) -> Result<Config> {
     info!("[Config] Loading config from: {:?}", config_path);
     if config_path.exists() {
-        let content = std::fs::read_to_string(config_path).map_err(|e| {
+        let content = nemesis_utils::fsutil::read_config_string(config_path).map_err(|e| {
             error!(
                 "[Config] Failed to read config file {:?}: {}",
                 config_path, e
@@ -5410,7 +5410,7 @@ impl Config {
 pub fn load_mcp_config(path: &Path) -> Result<McpConfig> {
     info!("[Config] Loading MCP config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = nemesis_utils::fsutil::read_config_string(path).map_err(|e| {
             error!("[Config] Failed to read MCP config: {}", e);
             e
         })?;
@@ -5468,7 +5468,7 @@ pub fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
 pub fn load_security_config(path: &Path) -> Result<SecurityConfig> {
     info!("[Config] Loading security config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = nemesis_utils::fsutil::read_config_string(path).map_err(|e| {
             error!("[Config] Failed to read security config: {}", e);
             e
         })?;
@@ -5522,7 +5522,7 @@ pub fn save_security_config(path: &Path, cfg: &SecurityConfig) -> Result<()> {
 pub fn load_scanner_config(path: &Path) -> Result<ScannerFullConfig> {
     info!("[Config] Loading scanner config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = nemesis_utils::fsutil::read_config_string(path).map_err(|e| {
             error!("[Config] Failed to read scanner config: {}", e);
             e
         })?;
@@ -5576,7 +5576,7 @@ pub fn save_scanner_config(path: &Path, cfg: &ScannerFullConfig) -> Result<()> {
 pub fn load_skills_config(path: &Path) -> Result<SkillsFullConfig> {
     info!("[Config] Loading skills config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = nemesis_utils::fsutil::read_config_string(path).map_err(|e| {
             error!("[Config] Failed to read skills config: {}", e);
             e
         })?;
@@ -5841,7 +5841,7 @@ pub struct ConfigLoader;
 impl ConfigLoader {
     /// Load config from a file path.
     pub fn load_from_file(path: &Path) -> Result<Config> {
-        let content = std::fs::read_to_string(path)?;
+        let content = nemesis_utils::fsutil::read_config_string(path)?;
         let config: Config = serde_json::from_str(&content)?;
         Ok(config)
     }

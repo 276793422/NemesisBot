@@ -249,7 +249,7 @@ fn op_rules<'a>(
 /// Read the security config raw（真相源即磁盘文件；缺失时给最小骨架）。
 fn read_rules_config(security_cfg: &std::path::Path) -> Result<serde_json::Value> {
     if security_cfg.exists() {
-        let data = std::fs::read_to_string(security_cfg)?;
+        let data = nemesis_utils::fsutil::read_config_string(security_cfg)?;
         Ok(serde_json::from_str(&data)?)
     } else {
         Ok(default_security_config())
@@ -933,7 +933,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             println!("===============");
 
             let enabled = if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
                 cfg.get("security")
                     .and_then(|s| s.get("enabled"))
@@ -983,7 +983,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
 
             // Show policy settings from main config
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
                 let restrict = cfg
                     .get("agents")
@@ -996,7 +996,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
 
             // Show scanner status
             if security_cfg.exists() {
-                if let Ok(data) = std::fs::read_to_string(&security_cfg)
+                if let Ok(data) = nemesis_utils::fsutil::read_config_string(&security_cfg)
                     && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 {
                     if let Some(engines) = cfg.get("enabled").and_then(|v| v.as_array()) {
@@ -1066,7 +1066,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
         }
         SecurityAction::Enable => {
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                 if let Some(obj) = cfg.as_object_mut() {
                     if let Some(sec) = obj.get_mut("security").and_then(|v| v.as_object_mut()) {
@@ -1118,7 +1118,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             println!("WARNING: Disabling security removes all safety checks.");
             println!("This allows the bot to access the entire system.");
             if cfg_path.exists() {
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                 if let Some(obj) = cfg.as_object_mut() {
                     if let Some(sec) = obj.get_mut("security").and_then(|v| v.as_object_mut()) {
@@ -1166,7 +1166,10 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 println!("Security Configuration");
                 println!("======================");
                 if security_cfg.exists() {
-                    println!("{}", std::fs::read_to_string(&security_cfg)?);
+                    println!(
+                        "{}",
+                        nemesis_utils::fsutil::read_config_string(&security_cfg)?
+                    );
                 } else {
                     println!("  Using default configuration.");
                 }

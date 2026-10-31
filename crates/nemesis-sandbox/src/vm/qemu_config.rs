@@ -265,7 +265,7 @@ pub fn resolve_matrix(
     let Some(path) = workspace_cfg else {
         return (Ok(embedded_matrix().clone()), MatrixSource::Embedded);
     };
-    match std::fs::read_to_string(path) {
+    match nemesis_utils::fsutil::read_config_string(path) {
         Ok(text) => {
             let r = parse_matrix(&text);
             (r, MatrixSource::WorkspaceFile)

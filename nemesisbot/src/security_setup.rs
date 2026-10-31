@@ -106,7 +106,7 @@ pub(crate) async fn build_security_plugin(
     // the engine always ran every rule with action=block, with no way to
     // configure a rule whitelist or low-confidence / inbound actions.
     let sec_json: Option<serde_json::Value> = if sec_config_path.exists() {
-        std::fs::read_to_string(&sec_config_path)
+        nemesis_utils::fsutil::read_config_string(&sec_config_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
     } else {
@@ -505,7 +505,7 @@ pub(crate) fn load_security_rules(
         return;
     }
 
-    let data = match std::fs::read_to_string(config_path) {
+    let data = match nemesis_utils::fsutil::read_config_string(config_path) {
         Ok(d) => d,
         Err(e) => {
             warn!("[Security] Failed to read security config: {}", e);
@@ -691,7 +691,7 @@ pub(crate) fn load_security_rules(
 pub(crate) fn load_scanner_full_config(
     config_path: &std::path::Path,
 ) -> Option<nemesis_security::scanner::ScannerFullConfig> {
-    let data = std::fs::read_to_string(config_path).ok()?;
+    let data = nemesis_utils::fsutil::read_config_string(config_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&data).ok()?;
 
     let enabled: Vec<String> = json

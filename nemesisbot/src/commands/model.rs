@@ -263,7 +263,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 ),
             };
 
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
             // Validate model identifier format: must be vendor/model
@@ -562,7 +562,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 println!("  No configuration found. Run 'nemesisbot onboard default' first.");
                 return Ok(());
             }
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let cfg: serde_json::Value = serde_json::from_str(&data)?;
 
             // Check agents.defaults.llm first (like Go's GetEffectiveLLM), then fall back to default_model
@@ -681,7 +681,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
             // Check if this model is the current default via agents.defaults.llm
@@ -767,7 +767,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 println!("No configuration found.");
                 return Ok(());
             }
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let cfg: serde_json::Value = serde_json::from_str(&data)?;
             // Check agents.defaults.llm first (like Go's GetEffectiveLLM), then fall back to default_model
             let default_model = cfg
@@ -792,7 +792,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         tier
                     )
                 })?;
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let updated = update_model_entry(&mut cfg, &name, |e| {
                 e["model_tier"] = serde_json::Value::String(parsed.to_string());
@@ -825,7 +825,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     effort
                 );
             }
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             // "off" clears the field (absent = send nothing); a tier writes it.
             let value = if e == "off" {
@@ -859,7 +859,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 .ok_or_else(|| {
                     anyhow::anyhow!("Invalid size '{}'. Examples: 30B, 9b, 70, 120B", size)
                 })?;
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let resolved = nemesis_types::capability::tier_from_size_b(size_b);
             let updated = update_model_entry(&mut cfg, &name, |e| {
@@ -880,7 +880,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let updated = update_model_entry(&mut cfg, &name, |e| {
                 e["real_name"] = serde_json::Value::String(real_name.clone());
@@ -923,7 +923,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     },
                 )?
             };
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let updated = update_model_entry(&mut cfg, &name, |e| {
                 e["stream"] = serde_json::Value::String(normalized.clone());
@@ -964,7 +964,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 })?
             };
             let cleared = value == 0;
-            let data = std::fs::read_to_string(&cfg_path)?;
+            let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let updated = update_model_entry(&mut cfg, &name, |e| {
                 if cleared {
@@ -1027,7 +1027,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             // 条目没有这些形状——诚实拒绝，不烧 8 次注定失败的 LLM 调用。
             {
                 let cfg: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(&cfg_path)?)
+                    serde_json::from_str(&nemesis_utils::fsutil::read_config_string(&cfg_path)?)
                         .unwrap_or(serde_json::Value::Null);
                 let proto = cfg
                     .get("model_list")
@@ -1060,7 +1060,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             println!("{}", format_probe_report(&name, &report.0, report.1));
             // N1：生效 context_window + 来源标记——fallback 命中自然引导
             // 用户显式配置（catalog 未收录的小众模型手动钉死）。
-            let probe_cfg = std::fs::read_to_string(&cfg_path)
+            let probe_cfg = nemesis_utils::fsutil::read_config_string(&cfg_path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
             let probe_pricing =
@@ -1441,7 +1441,7 @@ async fn run_probe(
         .map_err(|e| anyhow::anyhow!("Probe failed: {}", e))?;
 
     // Persist the detected tier.
-    let data = std::fs::read_to_string(&cfg_path)?;
+    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
     let mut cfg_val: serde_json::Value = serde_json::from_str(&data)?;
     // BUG-20261030-218：写回查找目标 = 实际被探测的 llm_ref，不是原始 name。
     // `probe ""`（探默认模型）时 name 为空串，update_model_entry 的

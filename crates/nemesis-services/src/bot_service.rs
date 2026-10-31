@@ -1107,7 +1107,7 @@ impl BotService {
         }
 
         // Read and parse the config file
-        let config_content = std::fs::read_to_string(&self.config.config_path)
+        let config_content = nemesis_utils::fsutil::read_config_string(&self.config.config_path)
             .map_err(|e| format!("failed to read config file: {}", e))?;
 
         let config_file: ConfigFile = serde_json::from_str(&config_content)

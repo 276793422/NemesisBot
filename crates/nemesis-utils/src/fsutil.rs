@@ -91,5 +91,22 @@ pub fn remove_file_retry(file: impl AsRef<Path>) -> std::io::Result<()> {
     }
 }
 
+/// 读取配置文件文本并剥离前导 UTF-8 BOM（`\u{FEFF}`）。
+///
+/// Windows 记事本「带 BOM 的 UTF-8」保存形态：serde_json / toml 解析器都
+/// 不认 BOM，报 `expected value at line 1 column 1` 一类无从定位的错误；
+/// cluster 的 peers.toml 更会走「解析失败→全新序列化覆盖写」把用户手工
+/// 维护的 `[peers.X]` 静态表整个冲掉。所有「用户可手工编辑的 JSON/TOML
+/// 配置」读取点一律走本函数，不走裸 `read_to_string`。非 BOM 文件字节
+/// 不变（`strip_prefix` 不命中时原 String 原样返回，零拷贝）。skills 域
+/// 远程响应同款处理先例：`nemesis-skills/src/modelscope_registry.rs`。
+pub fn read_config_string(path: impl AsRef<Path>) -> std::io::Result<String> {
+    let content = std::fs::read_to_string(path)?;
+    Ok(content
+        .strip_prefix('\u{feff}')
+        .map(str::to_string)
+        .unwrap_or(content))
+}
+
 #[cfg(test)]
 mod tests;

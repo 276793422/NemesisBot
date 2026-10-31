@@ -275,7 +275,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists() {
                 println!("  Config: {} [found]", cfg_path.display());
-                if let Ok(data) = std::fs::read_to_string(&cfg_path)
+                if let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                     && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 {
                     // 系统参数从 config.cluster.json 读
@@ -329,7 +329,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             println!("Cluster Configuration");
             println!("======================");
             if cfg_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&cfg_path)
+                if let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                     && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 {
                     // Read current values for display
@@ -630,11 +630,12 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let peers_path = common::cluster_dir(&home).join("peers.toml");
             // RPC 鉴权 token 与集群运行时同源（config.cluster.json `token` 字段，
             // 见 Cluster::load_rpc_auth_token）——同一把钥匙才解得开对端 AEAD 帧。
-            let token = std::fs::read_to_string(common::cluster_config_path(&home))
-                .ok()
-                .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
-                .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
-                .filter(|t| !t.is_empty());
+            let token =
+                nemesis_utils::fsutil::read_config_string(common::cluster_config_path(&home))
+                    .ok()
+                    .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+                    .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
+                    .filter(|t| !t.is_empty());
 
             let outcome =
                 nemesis_cluster::pair::pair_with_peer(&peers_path, token.as_deref(), &address)
@@ -679,7 +680,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if save {
                     let cfg_path = common::cluster_config_path(&home);
                     if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
+                        let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                         let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(obj) = cfg.as_object_mut() {
                             obj.insert(
@@ -709,7 +710,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             TokenAction::Show { full } => {
                 let cfg_path = common::cluster_config_path(&home);
                 if cfg_path.exists() {
-                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                     let cfg: serde_json::Value = serde_json::from_str(&data)?;
                     match cfg.get("token").and_then(|v| v.as_str()) {
                         Some(t) => {
@@ -753,7 +754,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 };
                 let cfg_path = common::cluster_config_path(&home);
                 if cfg_path.exists() {
-                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut() {
                         obj.insert(
@@ -778,7 +779,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             TokenAction::Verify { token } => {
                 let cfg_path = common::cluster_config_path(&home);
                 if cfg_path.exists() {
-                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                     let cfg: serde_json::Value = serde_json::from_str(&data)?;
                     match cfg.get("token").and_then(|v| v.as_str()) {
                         Some(saved) => {
@@ -797,7 +798,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             TokenAction::Revoke => {
                 let cfg_path = common::cluster_config_path(&home);
                 if cfg_path.exists() {
-                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut() {
                         obj.remove("token");
@@ -1037,7 +1038,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         ClusterAction::Start => {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists()
-                && let Ok(data) = std::fs::read_to_string(&cfg_path)
+                && let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                 && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 && cfg
                     .get("enabled")
@@ -1053,7 +1054,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         ClusterAction::Stop => {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists()
-                && let Ok(data) = std::fs::read_to_string(&cfg_path)
+                && let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                 && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 && !cfg
                     .get("enabled")
@@ -1324,7 +1325,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             // 集群本体闸链诚实检查（与 gateway cluster_should_start 同源两道闸：
             // config.json cluster.enabled × config.cluster.json 顶层 enabled）。
             // 闸未开时叠加层装配整个被跳过——只重启永远不生效，别说「重启后生效」。
-            let main_enabled = std::fs::read_to_string(common::config_path(home))
+            let main_enabled = nemesis_utils::fsutil::read_config_string(common::config_path(home))
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| {
@@ -1826,7 +1827,7 @@ fn update_cluster_config(
     if !cfg_path.exists() {
         anyhow::bail!("Cluster not initialized. Run 'nemesisbot cluster init' first.");
     }
-    let data = std::fs::read_to_string(&cfg_path)?;
+    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(key.to_string(), value.into());
@@ -1850,7 +1851,7 @@ fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<(
     if !cfg_path.exists() {
         return Ok(());
     }
-    let data = std::fs::read_to_string(&cfg_path)?;
+    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(
@@ -1874,7 +1875,7 @@ fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<(
 /// `None`（由调用方决定缺省语义：enable 视 false、disable 视 true）。
 fn cluster_flag(home: &std::path::Path, key: &str) -> Option<bool> {
     let cfg_path = common::cluster_config_path(home);
-    let data = std::fs::read_to_string(&cfg_path).ok()?;
+    let data = nemesis_utils::fsutil::read_config_string(&cfg_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
     cfg.get(key).and_then(|v| v.as_bool())
 }
@@ -1884,7 +1885,7 @@ fn cluster_flag(home: &std::path::Path, key: &str) -> Option<bool> {
 /// `unwrap_or("")` 的空 = 无鉴权语义一致。
 fn read_cluster_token(home: &std::path::Path) -> String {
     let cfg_path = common::cluster_config_path(home);
-    std::fs::read_to_string(&cfg_path)
+    nemesis_utils::fsutil::read_config_string(&cfg_path)
         .ok()
         .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
         .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
@@ -1907,7 +1908,7 @@ fn ensure_cluster_token(home: &std::path::Path) -> Result<Option<String>> {
 /// 读主开关（config.json 的 `cluster.enabled`）；文件/键缺失返回 `None`。
 fn main_cluster_flag(home: &std::path::Path) -> Option<bool> {
     let cfg_path = common::config_path(home);
-    let data = std::fs::read_to_string(&cfg_path).ok()?;
+    let data = nemesis_utils::fsutil::read_config_string(&cfg_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
     cfg.get("cluster")
         .and_then(|c| c.get("enabled"))

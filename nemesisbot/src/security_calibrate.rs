@@ -248,7 +248,7 @@ pub async fn run_calibrate(
         ..Default::default()
     };
     let sec_config_path = crate::common::security_config_path(home);
-    let sec_json = std::fs::read_to_string(&sec_config_path)
+    let sec_json = nemesis_utils::fsutil::read_config_string(&sec_config_path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     if let Some(ref v) = sec_json {

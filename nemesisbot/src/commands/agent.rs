@@ -407,7 +407,7 @@ pub async fn run(
                 }
 
                 // Validate the model against configured models
-                let data = std::fs::read_to_string(&cfg_path)?;
+                let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                 let typed_cfg: nemesis_config::Config = serde_json::from_str(&data)
                     .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
 
@@ -475,7 +475,7 @@ pub async fn run(
                 }
                 let cfg_path = common::config_path(&home);
                 if cfg_path.exists() {
-                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut()
                         && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())

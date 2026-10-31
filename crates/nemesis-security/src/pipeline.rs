@@ -24,7 +24,6 @@ use crate::ssrf::Guard as SsrfGuard;
 use crate::types::*;
 
 use parking_lot::RwLock;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Depth-first credential scan over every string leaf of a tool-args JSON
@@ -552,7 +551,7 @@ impl SecurityPlugin {
                 if !config_path.exists() {
                     return Err(format!("config file not found: {}", p));
                 }
-                let data = fs::read_to_string(config_path)
+                let data = nemesis_utils::fsutil::read_config_string(config_path)
                     .map_err(|e| format!("failed to read config: {}", e))?;
                 let new_config: serde_json::Value = serde_json::from_str(&data)
                     .map_err(|e| format!("failed to parse config JSON: {}", e))?;

@@ -723,7 +723,7 @@ impl MinimalConfig {
 
 /// Try to load a minimal config to resolve workspace path.
 fn load_config_for_workspace(config_path: &Path) -> Option<MinimalConfig> {
-    let data = std::fs::read_to_string(config_path).ok()?;
+    let data = nemesis_utils::fsutil::read_config_string(config_path).ok()?;
     serde_json::from_str::<MinimalConfig>(&data).ok()
 }
 

@@ -139,7 +139,7 @@ fn default_true() -> bool {
 pub fn load_enabled(config_dir: &Path, id: NativePluginId) -> bool {
     let path = plugins_native_config_path(config_dir);
     migrate_legacy_file(&path);
-    let Ok(content) = std::fs::read_to_string(&path) else {
+    let Ok(content) = nemesis_utils::fsutil::read_config_string(&path) else {
         return true;
     };
     let Ok(file) = serde_json::from_str::<SwitchFile>(&content) else {
@@ -160,7 +160,7 @@ pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Resu
     let _serial = crate::config_write_lock();
     let path = plugins_native_config_path(config_dir);
     migrate_legacy_file(&path);
-    let mut file = std::fs::read_to_string(&path)
+    let mut file = nemesis_utils::fsutil::read_config_string(&path)
         .ok()
         .and_then(|c| serde_json::from_str::<SwitchFile>(&c).ok())
         .unwrap_or_default();

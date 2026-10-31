@@ -992,7 +992,7 @@ fn status(paths: &nemesis_sandbox::SandboxPaths, home: &std::path::Path) -> Resu
     // 可用性探针 + workspace SID + standing 根 ACE 只读观测（**零副作用**
     // ——状态查询不打标；根达标 = 至少完整铺过一次，非全树计数）。CLI 进程
     // 不装配 executor 通道，这里只是配置面 + 探针的诚实呈现。
-    let acl = std::fs::read_to_string(home.join("config.json"))
+    let acl = nemesis_utils::fsutil::read_config_string(home.join("config.json"))
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .and_then(|v| v.get("executor").cloned())

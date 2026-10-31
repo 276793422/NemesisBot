@@ -488,7 +488,7 @@ fn default_learning_llm_budget() -> u32 {
 /// If the file does not exist or cannot be read, returns the default config.
 /// If the file contains partial JSON, missing fields use defaults.
 pub fn load_forge_config(path: &Path) -> ForgeConfig {
-    match std::fs::read_to_string(path) {
+    match nemesis_utils::fsutil::read_config_string(path) {
         Ok(data) => {
             let mut config = ForgeConfig::default();
             match serde_json::from_str::<ForgeConfig>(&data) {

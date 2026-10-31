@@ -900,7 +900,7 @@ pub fn read_runtime_config(home: &std::path::Path) -> PluginRuntimeConfig {
         limits: defaults.clone(),
         takeover: true,
     };
-    let Ok(raw) = std::fs::read_to_string(common::config_path(home)) else {
+    let Ok(raw) = nemesis_utils::fsutil::read_config_string(common::config_path(home)) else {
         return out;
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {

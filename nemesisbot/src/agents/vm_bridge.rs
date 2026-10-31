@@ -692,8 +692,8 @@ fn update_vm_config(home: &Path, vm: &nemesis_config::ExecutorVmConfig) -> Resul
     // CLI / no-store fallback: read-merge-write config.json（typed 解析保
     // 护 executor 段其余键，不整段覆盖）。
     let config_path = home.join("config.json");
-    let raw =
-        std::fs::read_to_string(&config_path).map_err(|e| format!("read config.json: {e}"))?;
+    let raw = nemesis_utils::fsutil::read_config_string(&config_path)
+        .map_err(|e| format!("read config.json: {e}"))?;
     let mut val: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))?;
     let existing = val.get("executor").and_then(|v| {

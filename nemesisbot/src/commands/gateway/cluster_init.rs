@@ -687,7 +687,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         loop {
                             ticker.tick().await;
-                            if let Ok(raw) = std::fs::read_to_string(&cfg_path)
+                            if let Ok(raw) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                                 && let Ok(live) =
                                     serde_json::from_str::<nemesis_config::Config>(&raw)
                                 && let Some(b) = live.board

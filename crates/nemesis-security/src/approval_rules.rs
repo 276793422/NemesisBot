@@ -217,7 +217,7 @@ pub fn resolve_rules_path_in_workspace(workspace: &Path) -> std::path::PathBuf {
 /// 热载加载函数（HotReloader `load` 签名）：文件缺失 → 空表；解析失败 →
 /// 空表 + warn（HotReloader 从不 surface 加载错误，坏文件不炸网关）。
 pub fn load_rules(path: &Path) -> Vec<ApprovalRule> {
-    let raw = match std::fs::read_to_string(path) {
+    let raw = match nemesis_utils::fsutil::read_config_string(path) {
         Ok(raw) => raw,
         Err(_) => return Vec::new(), // 缺失 = 从未写过，常态
     };

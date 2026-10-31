@@ -112,7 +112,7 @@ pub fn remove(config_dir: &Path, slug: &str) -> Result<(), String> {
 /// 读开关文件；缺席/损坏 = 空 + WARN（fail-closed）。
 fn read_switch_file(config_dir: &Path) -> SwitchFile {
     let path = plugin_wasm_config_path(config_dir);
-    let Ok(content) = std::fs::read_to_string(&path) else {
+    let Ok(content) = nemesis_utils::fsutil::read_config_string(&path) else {
         return SwitchFile::default();
     };
     match serde_json::from_str::<SwitchFile>(&content) {
@@ -161,7 +161,7 @@ fn migrate_legacy_instances(config_dir: &Path, file: &mut SwitchFile) -> bool {
     for name in names {
         let legacy_path = legacy_dir.join(&name);
         let slug = name.trim_end_matches(".json").to_string();
-        let Ok(content) = std::fs::read_to_string(&legacy_path) else {
+        let Ok(content) = nemesis_utils::fsutil::read_config_string(&legacy_path) else {
             continue;
         };
         let legacy = serde_json::from_str::<LegacyInstanceFile>(&content).unwrap_or_default();

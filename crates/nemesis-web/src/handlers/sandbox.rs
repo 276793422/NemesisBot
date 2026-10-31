@@ -102,8 +102,8 @@ fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
     }
     // CLI / no-store fallback: read-merge-write config.json field by field.
     let config_path = home.join("config.json");
-    let raw =
-        std::fs::read_to_string(&config_path).map_err(|e| format!("read config.json: {e}"))?;
+    let raw = nemesis_utils::fsutil::read_config_string(&config_path)
+        .map_err(|e| format!("read config.json: {e}"))?;
     let mut val: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))?;
     // Read the existing executor section FIRST (immutable borrow), before the
@@ -146,7 +146,7 @@ fn current_executor(home: &std::path::Path) -> nemesis_config::ExecutorSeparatio
         let c = handle.read();
         return c.executor.clone().unwrap_or_default();
     }
-    let Ok(raw) = std::fs::read_to_string(home.join("config.json")) else {
+    let Ok(raw) = nemesis_utils::fsutil::read_config_string(home.join("config.json")) else {
         return Default::default();
     };
     serde_json::from_str::<serde_json::Value>(&raw)

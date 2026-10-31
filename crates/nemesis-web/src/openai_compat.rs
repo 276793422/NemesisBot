@@ -588,7 +588,9 @@ fn bare_chat_options(state: &AppState, model: &str, req: &OpenAiChatRequest) -> 
     let Some(home) = state.home.as_deref() else {
         return options;
     };
-    let Ok(raw) = std::fs::read_to_string(std::path::Path::new(home).join("config.json")) else {
+    let Ok(raw) =
+        nemesis_utils::fsutil::read_config_string(std::path::Path::new(home).join("config.json"))
+    else {
         return options;
     };
     let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -632,7 +634,9 @@ async fn bare_forward(state: &AppState, req: OpenAiChatRequest) -> Response {
     // 协议守卫（belt-and-suspenders——set_default 已拒 images-openai，
     // 这里防手工改 config 后热切绕过）：裸 lane 是 chat 通道。
     if let Some(home) = state.home.as_deref()
-        && let Ok(raw) = std::fs::read_to_string(std::path::Path::new(home).join("config.json"))
+        && let Ok(raw) = nemesis_utils::fsutil::read_config_string(
+            std::path::Path::new(home).join("config.json"),
+        )
         && let Ok(cfg) = serde_json::from_str::<nemesis_config::Config>(&raw)
         && let Ok(res) = nemesis_config::resolve_model_config(&cfg, &execution_model)
         && res.protocol == "images-openai"

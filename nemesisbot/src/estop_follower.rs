@@ -60,7 +60,7 @@ pub struct FollowerTarget {
 /// 返回 None = 无 gateway 可跟（state 文件缺失 / 形态无效 / web_port=0）。
 pub fn discover(home: &Path) -> Option<FollowerTarget> {
     let config_path = crate::common::config_path(home);
-    let cfg_str = std::fs::read_to_string(config_path).ok()?;
+    let cfg_str = nemesis_utils::fsutil::read_config_string(config_path).ok()?;
     let cfg: Value = serde_json::from_str(&cfg_str).ok()?;
     let auth_token = cfg["channels"]["web"]["auth_token"]
         .as_str()

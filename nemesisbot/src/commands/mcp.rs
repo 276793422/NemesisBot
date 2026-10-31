@@ -104,7 +104,7 @@ fn find_server(mcp_cfg_path: &std::path::Path, name: &str) -> Result<Option<serd
     if !mcp_cfg_path.exists() {
         return Ok(None);
     }
-    let data = std::fs::read_to_string(mcp_cfg_path)?;
+    let data = nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?;
     let cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
         for s in servers {
@@ -394,8 +394,9 @@ fn sync_mcp_master_switch(config_json_path: &std::path::Path, enabled: bool) -> 
         return Ok(());
     }
 
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(config_json_path)?)?;
+    let mut cfg: serde_json::Value = serde_json::from_str(
+        &nemesis_utils::fsutil::read_config_string(config_json_path)?,
+    )?;
     if cfg
         .get("mcp")
         .and_then(|m| m.get("enabled"))
@@ -424,7 +425,7 @@ fn sync_mcp_master_switch(config_json_path: &std::path::Path, enabled: bool) -> 
 
 fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
     // Check if MCP is explicitly disabled (even if config file doesn't exist yet)
-    if let Ok(data) = std::fs::read_to_string(mcp_cfg_path)
+    if let Ok(data) = nemesis_utils::fsutil::read_config_string(mcp_cfg_path)
         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
         && cfg.get("enabled").and_then(|v| v.as_bool()) == Some(false)
     {
@@ -433,7 +434,7 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
     }
 
     if mcp_cfg_path.exists() {
-        let data = std::fs::read_to_string(mcp_cfg_path)?;
+        let data = nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?;
         let cfg: serde_json::Value = serde_json::from_str(&data)?;
 
         let enabled = cfg
@@ -526,7 +527,9 @@ fn cmd_add(
     let _ = std::fs::create_dir_all(dir);
 
     let mut cfg = if mcp_cfg_path.exists() {
-        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(mcp_cfg_path)?)?
+        serde_json::from_str::<serde_json::Value>(&nemesis_utils::fsutil::read_config_string(
+            mcp_cfg_path,
+        )?)?
     } else {
         serde_json::json!({"enabled": true, "servers": []})
     };
@@ -661,7 +664,7 @@ Remove it first: nemesisbot mcp remove {}",
 fn cmd_remove(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     if mcp_cfg_path.exists() {
         let mut cfg: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(mcp_cfg_path)?)?;
+            serde_json::from_str(&nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?)?;
         let mut found = false;
         if let Some(servers) = cfg.get_mut("servers").and_then(|v| v.as_array_mut()) {
             let before = servers.len();

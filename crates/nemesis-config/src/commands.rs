@@ -42,7 +42,7 @@ impl CommandsConfig {
 
 /// `<workspace>/config/config.commands.json`（调用方经 nemesis-path 取路径）。
 pub fn load_commands_config(path: &Path) -> CommandsConfig {
-    match std::fs::read_to_string(path) {
+    match nemesis_utils::fsutil::read_config_string(path) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
             tracing::warn!(
                 "[Commands] config 解析失败（{}），按空表处理: {}",

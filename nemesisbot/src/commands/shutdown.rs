@@ -86,7 +86,7 @@ pub fn run(local: bool) -> Result<()> {
     // （gateway 经 InternalCommand mpsc 走 Ctrl+C 同源的优雅停机），鉴权用
     // config.json 的 channels.web.auth_token（未配置则不发 header——服务端
     // 空 token 可过的既有约定不变）。
-    if let Ok(data) = std::fs::read_to_string(common::config_path(&home))
+    if let Ok(data) = nemesis_utils::fsutil::read_config_string(common::config_path(&home))
         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
     {
         let port = cfg

@@ -287,6 +287,28 @@ fn extra_save_config_local_mode_tilde_workspace() {
     std::env::set_current_dir(original).unwrap();
 }
 
+// BUG-20261031-260：Windows 记事本「带 BOM 的 UTF-8」保存的 config.json——
+// serde_json 拒 BOM（expected value at line 1 column 1），load_config 硬 Err
+// 炸 gateway 启动且错误无从定位。读取面统一走 fsutil::read_config_string
+// 剥前导 BOM 后，带 BOM 配置必须照常加载。
+#[test]
+fn extra_load_config_accepts_utf8_bom() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        format!(
+            "\u{feff}{}",
+            r#"{"agents":{"defaults":{"max_tokens":12345}}}"#
+        ),
+    )
+    .unwrap();
+
+    let config = load_config(&config_path).expect("带 BOM 的 config.json 必须可加载");
+    assert_eq!(config.agents.defaults.max_tokens, 12345);
+}
+
 #[test]
 fn extra_save_config_local_mode_empty_llm_log_dir() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();

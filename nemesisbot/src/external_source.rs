@@ -180,7 +180,7 @@ pub fn spawn(
     cluster: ClusterOwned,
 ) {
     // 无来源配置 = 不装（worker 节点/未用外循环的 master 零波及）。
-    let configured = std::fs::read_to_string(home.join("config.json"))
+    let configured = nemesis_utils::fsutil::read_config_string(home.join("config.json"))
         .ok()
         .and_then(|raw| serde_json::from_str::<nemesis_config::Config>(&raw).ok())
         .and_then(|c| c.board)

@@ -299,7 +299,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return false,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| {
@@ -322,7 +322,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return true,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| {
@@ -341,7 +341,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return true,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| {
@@ -360,7 +360,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return 10,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| {
@@ -381,7 +381,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return default,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| {
@@ -516,7 +516,7 @@ impl AgentLoop {
     /// 默认态「装了即生效」不因读失败翻转。
     pub(crate) fn current_connectors_enabled(&self) -> bool {
         match self.config_path.read().clone() {
-            Some(p) => std::fs::read_to_string(&p)
+            Some(p) => nemesis_utils::fsutil::read_config_string(&p)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| {
@@ -697,7 +697,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return Default::default(),
         };
-        let v = std::fs::read_to_string(&path)
+        let v = nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         let Some(v) = v else {
@@ -938,7 +938,7 @@ impl AgentLoop {
             None => return, // standalone mode — keep the startup tier
         };
         let active = self.active_model.read().clone();
-        let tier = std::fs::read_to_string(&path)
+        let tier = nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_active_tier(&v, &active))
@@ -970,7 +970,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return active,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_display_model(&v, &active))
@@ -992,7 +992,7 @@ impl AgentLoop {
             None => self.active_model.read().clone(),
         };
         let path = self.config_path.read().clone()?;
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| nemesis_types::capability::resolve_reasoning_effort(&v, &active))
@@ -1016,7 +1016,7 @@ impl AgentLoop {
             None => self.active_model.read().clone(),
         };
         let path = self.config_path.read().clone()?;
-        let cfg: serde_json::Value = std::fs::read_to_string(&path)
+        let cfg: serde_json::Value = nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())?;
         // 回退链（2026-10-23 P0）：条目 max_output_tokens > agents.defaults.
@@ -1046,7 +1046,7 @@ impl AgentLoop {
     /// `config.max_turns`。负值照透传（消费侧 <=0 = 不限）。
     pub(crate) fn current_max_tool_iterations(&self) -> Option<i64> {
         let path = self.config_path.read().clone()?;
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| nemesis_types::capability::resolve_max_tool_iterations(&v))
@@ -1061,7 +1061,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_max_output_ceiling(&v))
@@ -1083,7 +1083,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return dflt,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_pre_pause_probe(&v))
@@ -1111,7 +1111,7 @@ impl AgentLoop {
     pub(crate) fn current_context_window_with_source(&self) -> (Option<usize>, &'static str) {
         let active = self.active_model.read().clone();
         let cfg = self.config_path.read().clone().and_then(|path| {
-            std::fs::read_to_string(&path)
+            nemesis_utils::fsutil::read_config_string(&path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         });
@@ -1129,7 +1129,7 @@ impl AgentLoop {
     pub(crate) fn current_compact_trigger(&self, fallback_window: usize) -> super::CompactTrigger {
         let active = self.active_model.read().clone();
         let cfg = self.config_path.read().clone().and_then(|path| {
-            std::fs::read_to_string(&path)
+            nemesis_utils::fsutil::read_config_string(&path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         });
@@ -1151,7 +1151,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return nemesis_types::capability::vision_default_allow(),
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_active_vision(&v, &active))
@@ -1172,7 +1172,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return true,
         };
-        std::fs::read_to_string(&path)
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| nemesis_types::capability::resolve_summarizer_prefix_reuse(&v, &active))
@@ -1237,7 +1237,7 @@ impl AgentLoop {
         // 状态。config 新鲜解析，`agents.codemode` 缺键落 serde 默认
         // （enabled=true）——与 Config 结构体的缺键语义同源。
         #[cfg(all(feature = "codemode", not(target_os = "android")))]
-        if let Ok(s) = std::fs::read_to_string(&path)
+        if let Ok(s) = nemesis_utils::fsutil::read_config_string(&path)
             && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
         {
             let cm = v

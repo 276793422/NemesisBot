@@ -79,7 +79,7 @@ impl ExecutorIsolationPolicy {
 
     /// config.json 现读一个 `executor.<key>` 布尔键。
     fn read_bool(&self, key: &str) -> bool {
-        std::fs::read_to_string(&self.config_path)
+        nemesis_utils::fsutil::read_config_string(&self.config_path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v.get("executor")?.get(key)?.as_bool())

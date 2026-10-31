@@ -523,7 +523,7 @@ pub(crate) struct ModelProviderReloader {
 impl ModelProviderReloader {
     /// 读 raw config.json（读/解析失败 = Err，诚实上抛）。
     fn read_raw(&self) -> Result<serde_json::Value, String> {
-        let s = std::fs::read_to_string(self.home.join("config.json"))
+        let s = nemesis_utils::fsutil::read_config_string(self.home.join("config.json"))
             .map_err(|e| format!("读 config.json 失败: {e}"))?;
         serde_json::from_str(&s).map_err(|e| format!("解析 config.json 失败: {e}"))
     }
@@ -737,10 +737,11 @@ pub fn build_agent_loop(
     // live when the model switches or config.json changes on disk (dashboard
     // add / CLI model set-tier). config.json is the single source of truth —
     // no stale snapshot.
-    let cfg_json: serde_json::Value = std::fs::read_to_string(shared.home.join("config.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(serde_json::Value::Null);
+    let cfg_json: serde_json::Value =
+        nemesis_utils::fsutil::read_config_string(shared.home.join("config.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::Value::Null);
     let resolved_tier = nemesis_types::capability::resolve_active_tier(&cfg_json, &model_name);
     info!(
         "[AgentFactory] Model '{}' capability tier: {}",
@@ -2650,7 +2651,7 @@ pub fn build_cluster_agent_loop(
     // is a dynamic field there), then remember the config path so the loop's
     // check_config_reload re-resolves the tier live when config.json changes
     // on disk (dashboard model add / CLI `model set-tier`) cluster-side too.
-    let cfg_json: serde_json::Value = std::fs::read_to_string(&config_path)
+    let cfg_json: serde_json::Value = nemesis_utils::fsutil::read_config_string(&config_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::Value::Null);
@@ -3456,7 +3457,7 @@ pub fn build_agent_loop_from_spec(
     );
 
     // 3. AgentConfig + tier（与主 loop 同一解析链）。
-    let cfg_json: serde_json::Value = std::fs::read_to_string(&config_path)
+    let cfg_json: serde_json::Value = nemesis_utils::fsutil::read_config_string(&config_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::Value::Null);

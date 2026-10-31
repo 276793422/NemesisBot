@@ -83,7 +83,7 @@ pub fn init_realtime_hot(config_dir: &std::path::Path) {
         let _ = std::fs::create_dir_all(config_dir);
         let _ = std::fs::write(&path, DEFAULT_CHAT_CONFIG);
     }
-    let cfg = std::fs::read_to_string(&path)
+    let cfg = nemesis_utils::fsutil::read_config_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .unwrap_or_else(|| serde_json::from_str(DEFAULT_CHAT_CONFIG).unwrap_or_default());
