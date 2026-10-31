@@ -14,7 +14,7 @@ use async_trait::async_trait;
 
 use super::AgentLoop;
 use crate::r#loop::{LlmMessage, LlmProvider, LlmResponse};
-use crate::loop_tools::{WorkspaceBoundary, resolve_tool_path};
+use crate::loop_tools::{FenceOpFamily, WorkspaceBoundary, resolve_tool_path};
 use crate::types::ChatOptions;
 
 struct NeverProvider;
@@ -51,6 +51,7 @@ fn ws_boundary(root: std::path::PathBuf) -> WorkspaceBoundary {
         root,
         restrict: true,
         extra_roots: Vec::new(),
+        editor_gate: None,
     }
 }
 
@@ -77,8 +78,8 @@ fn set_workspace_boundary_roundtrip_shares_arc() {
 fn hook_resolution_anchors_relative_paths_to_workspace_root_not_cwd() {
     let ws = tempfile::tempdir().unwrap();
     let boundary = ws_boundary(ws.path().to_path_buf());
-    let resolved =
-        resolve_tool_path("sub/a.rs", Some(&boundary)).expect("界内相对路径必须解析成功");
+    let resolved = resolve_tool_path("sub/a.rs", Some(&boundary), FenceOpFamily::WriteDelete)
+        .expect("界内相对路径必须解析成功");
     let expected = ws.path().join("sub").join("a.rs");
     assert_eq!(resolved, expected, "落点必须是工作区根拼接");
     assert_ne!(
@@ -95,8 +96,12 @@ fn hook_resolution_rejects_out_of_workspace_absolute_path() {
     let outside = tempfile::tempdir().unwrap();
     let boundary = ws_boundary(ws.path().to_path_buf());
     let target = outside.path().join("x.rs");
-    let err = resolve_tool_path(&target.to_string_lossy(), Some(&boundary))
-        .expect_err("越界绝对路径必须被拒");
+    let err = resolve_tool_path(
+        &target.to_string_lossy(),
+        Some(&boundary),
+        FenceOpFamily::WriteDelete,
+    )
+    .expect_err("越界绝对路径必须被拒");
     assert!(err.contains("outside the workspace"), "{err}");
 }
 
@@ -104,6 +109,6 @@ fn hook_resolution_rejects_out_of_workspace_absolute_path() {
 /// 形态零行为差）。
 #[test]
 fn hook_resolution_without_boundary_passes_through() {
-    let p = resolve_tool_path("rel/a.rs", None).expect("无界透传");
+    let p = resolve_tool_path("rel/a.rs", None, FenceOpFamily::WriteDelete).expect("无界透传");
     assert_eq!(p, std::path::PathBuf::from("rel/a.rs"));
 }

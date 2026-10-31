@@ -273,6 +273,7 @@ async fn boundary_rejects_outside_path_and_aborts_batch() {
         root: root.clone(),
         restrict: true,
         extra_roots: Vec::new(),
+        editor_gate: None,
     }));
     let err = tool
         .execute(

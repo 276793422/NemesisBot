@@ -210,6 +210,7 @@ fn gate_and_write_boundary_rejects_out_of_workspace_files() {
         root: ws.path().to_path_buf(),
         restrict: true,
         extra_roots: Vec::new(),
+        editor_gate: None,
     };
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -253,6 +254,7 @@ fn gate_and_write_boundary_resolves_relative_paths_against_root() {
         root: ws.path().to_path_buf(),
         restrict: true,
         extra_roots: Vec::new(),
+        editor_gate: None,
     };
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

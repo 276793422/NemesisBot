@@ -353,6 +353,7 @@ impl AgentLoop {
                     crate::loop_tools::resolve_tool_path(
                         &p,
                         self.workspace_boundary.read().as_deref(),
+                        crate::loop_tools::FenceOpFamily::Read,
                     )
                     .ok()
                     .map(|pb| pb.to_string_lossy().into_owned())

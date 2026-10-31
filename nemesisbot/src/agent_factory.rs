@@ -1611,6 +1611,9 @@ fn build_shared_tool_config(
             root: workspace_dir.clone(),
             restrict: cfg.agents.defaults.restrict_to_workspace,
             extra_roots: Vec::new(),
+            // 主会话不接开关闸（用户拍板 2026-11-01 暂不处理）：None = 围栏
+            // 旧行为，editor 开关只管审批层，与本围栏互不感知。
+            editor_gate: None,
         })),
         // H1 (2026-09-05): todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 M1a ToolEventHook 共用同一 sender；gateway 建、
@@ -2845,10 +2848,23 @@ pub fn build_cluster_agent_loop(
     // （执行远端半可信任务）此前跟随全局开关（默认 false）——B 端 file 工具
     // 默认无写围栏。远端任务才是最需要围栏的面，方向必须反转：强制 true，
     // root=shared.workspace_dir()（与 estop/workspace_root 接线同一根）。
+    // 2026-11-01 editor 开关 × 围栏两层不认账修复：集群围栏接上开关闸——
+    // 与 auditor 同一 EditorAccessState（集群 loop 本就共享同一 security
+    // plugin），审批层认开关时围栏同一裁决，两层不再分叉；security 裁剪
+    // 或未装配 = None 旧行为。
+    #[cfg(feature = "security")]
+    let editor_gate = shared
+        .security_plugin
+        .as_ref()
+        .and_then(|p| p.auditor().editor_access())
+        .map(|e| e.fence_gate());
+    #[cfg(not(feature = "security"))]
+    let editor_gate = None::<std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>;
     tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
         root: shared.workspace_dir(),
         restrict: true,
         extra_roots: Vec::new(),
+        editor_gate,
     }));
     // M5（2026-10-27 整改）：集群 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
@@ -3741,10 +3757,23 @@ pub fn build_agent_loop_from_spec(
     // B1（2026-10-31 项目 home 收编）：第二根 = 项目 agent home（拍板⑤：
     // home 必须放行——人格/记忆/plan 产物是 Bot 域数据根）；None = 单根
     // 旧行为（记录缺位降级形态）。
+    // 2026-11-01 editor 开关 × 围栏两层不认账修复（本 BUG 本体装配点）：
+    // 围栏接开关闸——与 auditor 同一 EditorAccessState 的 fence_gate，
+    // Full Access 开 → 界外读族放行，双开 → 界外写删族放行（判定与审批
+    // 层 evaluate 同源）；security 裁剪或未装配 = None 旧行为。
+    #[cfg(feature = "security")]
+    let editor_gate = shared
+        .security_plugin
+        .as_ref()
+        .and_then(|p| p.auditor().editor_access())
+        .map(|e| e.fence_gate());
+    #[cfg(not(feature = "security"))]
+    let editor_gate = None::<std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>;
     tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
         root: project_dir.clone(),
         restrict: true,
         extra_roots: agent_home.iter().cloned().collect(),
+        editor_gate,
     }));
     // M5（2026-10-27 整改）：项目 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {

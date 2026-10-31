@@ -814,6 +814,14 @@ impl SecurityAuditor {
         *self.editor_access.write() = Some(state);
     }
 
+    /// 读取注入的 editor 开关态（未注入 = None）。gateway 装配处经
+    /// [`EditorAccessState::fence_gate`](crate::editor_access::EditorAccessState::fence_gate)
+    /// 把同一 Arc 的围栏闸门递给工具层 WorkspaceBoundary（2026-11-01
+    /// 两层不认账修复：审批层与围栏同一裁决源）。
+    pub fn editor_access(&self) -> Option<Arc<crate::editor_access::EditorAccessState>> {
+        self.editor_access.read().clone()
+    }
+
     /// §2 免打扰运行时态注入（无人值守计划 Part 2，gateway 装配处调用；
     /// 同一 Arc 同时交给 web security handler 读写——单一真相源，editor_access
     /// 同款双注入）。
