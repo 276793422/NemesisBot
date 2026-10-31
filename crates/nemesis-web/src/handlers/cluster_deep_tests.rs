@@ -776,6 +776,81 @@ async fn nodes_refresh_parse_errors_and_address_fallbacks() {
     assert_eq!(result["node"]["address"], "");
 }
 
+#[tokio::test]
+async fn nodes_refresh_rpc_port_rejects_u16_wrap() {
+    // BUG-20261101-266：远端自报 rpc_port 先 u64 域验域再 cast——裸 `as u16`
+    // 会把 65537 回绕成 1、70000 回绕成 4464，恰好穿过 `rpc_port > 0` 闸，
+    // 错端口构造 primary_address 并随 merge 落盘 peers.toml。非法值归 0
+    // （未上报哨兵）→ 回落裸地址；合法端口照常流转（对照）。
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = test_cluster(&dir);
+    let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
+
+    // 65537（裸 cast 会回绕成 1）
+    cluster.set_call_with_context_fn(Box::new(|_p, _a, _pl| {
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "node_id": "r-wrap1",
+            "name": "Wrap1",
+            "addresses": ["10.8.8.8"],
+            "rpc_port": 65537u64,
+        }))
+        .unwrap())
+    }));
+    let result = handler
+        .handle_cmd(
+            "nodes.refresh",
+            Some(serde_json::json!({"node_id":"ph"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["node"]["address"], "10.8.8.8");
+
+    // 70000（裸 cast 会回绕成 4464）
+    cluster.set_call_with_context_fn(Box::new(|_p, _a, _pl| {
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "node_id": "r-wrap2",
+            "name": "Wrap2",
+            "addresses": ["10.8.8.8"],
+            "rpc_port": 70000u64,
+        }))
+        .unwrap())
+    }));
+    let result = handler
+        .handle_cmd(
+            "nodes.refresh",
+            Some(serde_json::json!({"node_id":"ph"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["node"]["address"], "10.8.8.8");
+
+    // 合法端口照常流转（对照）
+    cluster.set_call_with_context_fn(Box::new(|_p, _a, _pl| {
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "node_id": "r-ok",
+            "name": "Ok",
+            "addresses": ["10.8.8.8"],
+            "rpc_port": 45321u64,
+        }))
+        .unwrap())
+    }));
+    let result = handler
+        .handle_cmd(
+            "nodes.refresh",
+            Some(serde_json::json!({"node_id":"ph"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["node"]["address"], "10.8.8.8:45321");
+}
+
 // -----------------------------------------------------------------------
 // nodes.detail / node.update_identity
 // -----------------------------------------------------------------------

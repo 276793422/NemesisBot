@@ -1047,7 +1047,14 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
-        let rpc_port = resp["rpc_port"].as_u64().unwrap_or(0) as u16;
+        // BUG-20261101-266：远端自报端口先在 u64 域验域再 cast（firewall_add_rules
+        // 同款习语）——裸 `as u16` 会把 65537 回绕成 1、70000 回绕成 4464，恰好
+        // 穿过下方 `rpc_port > 0` 闸，错端口随 merge 落盘 peers.toml。非法值
+        // 归 0 = 未上报哨兵，回落裸地址。
+        let rpc_port = resp["rpc_port"]
+            .as_u64()
+            .filter(|p| *p > 0 && *p <= u16::MAX as u64)
+            .unwrap_or(0) as u16;
         let role_str = resp["role"].as_str().unwrap_or("worker");
         let role = NodeRole::from_role_str(role_str);
         let category = resp["category"].as_str().unwrap_or("general").to_string();
