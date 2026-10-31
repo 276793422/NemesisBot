@@ -252,7 +252,12 @@ extern "C" fn host_free_string(ptr: *mut c_char) {
 /// Write a C string (src) into a caller-provided buffer (buf of buf_len bytes).
 /// Returns the number of bytes written (excluding null terminator), or negative on error.
 fn write_cstr_to_buf(src: *const c_char, buf: *mut c_char, buf_len: usize) -> i32 {
-    if buf.is_null() || buf_len == 0 {
+    // BUG-20261031-243：src null 必须在此拦截——OnceLock 未 set 时
+    // host_get_workspace_dir / host_get_plugin_config_dir 会传 null 进来；
+    // libc_strlen 的 null→0 守卫反而把 0 长度放行到 copy_nonoverlapping，
+    // 从空指针读 1 字节 = UB。同文件 host_get_plugin_data_dir 对 ws 指针
+    // 有 null 检查，守卫统一收敛在漏斗单点。
+    if src.is_null() || buf.is_null() || buf_len == 0 {
         return -1;
     }
     let src_len = unsafe { libc_strlen(src) };
