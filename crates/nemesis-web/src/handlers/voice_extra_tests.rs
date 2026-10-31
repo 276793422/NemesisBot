@@ -297,6 +297,8 @@ mod voice_extra_tests {
                 "stt_enabled": true,
                 "tts_enabled": false,
                 "capture_device": "Mic0",
+                "aec_filter_length": 2048,
+                "aec_preprocess": false,
             })),
             &ctx,
         )
@@ -313,6 +315,10 @@ mod voice_extra_tests {
         assert_eq!(r["stt_enabled"], true);
         assert_eq!(r["tts_enabled"], false);
         assert_eq!(r["capture_device"], "Mic0");
+        // BUG-20261031-252：AEC 进阶参数持久化（此前漏接——FE 发送、
+        // STT 启动读取、保存不落盘 = 改了存不上）。
+        assert_eq!(r["aec_filter_length"], 2048);
+        assert_eq!(r["aec_preprocess"], false);
     }
 
     #[tokio::test]

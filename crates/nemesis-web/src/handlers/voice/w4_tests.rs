@@ -138,6 +138,10 @@ async fn w4_voice_config_set_merges_every_documented_field() {
         "speaker_enabled": false,
         "silence_timeout": 4,
         "aec_enabled": true,
+        // BUG-20261031-252：AEC 进阶参数此前不在「documented」清单里
+        // （FE 发送、STT 启动读取、保存漏接）——补齐全量 13 字段。
+        "aec_filter_length": 1024,
+        "aec_preprocess": false,
     });
     let set = ok_val(
         h.handle_cmd("voice_config_set", Some(body), &ctx)
@@ -158,6 +162,8 @@ async fn w4_voice_config_set_merges_every_documented_field() {
     assert_eq!(after["speaker_enabled"], false, "{after}");
     assert_eq!(after["silence_timeout"], 4, "{after}");
     assert_eq!(after["aec_enabled"], true, "{after}");
+    assert_eq!(after["aec_filter_length"], 1024, "{after}");
+    assert_eq!(after["aec_preprocess"], false, "{after}");
 }
 
 // -----------------------------------------------------------------------

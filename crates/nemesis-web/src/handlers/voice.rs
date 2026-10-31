@@ -1583,8 +1583,10 @@ impl VoiceHandler {
         config_dir: &std::path::Path,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 锁在 update_voice_config 内：读（缺失种子）→合并 11 字段→原子写
-        // 全程串行（2026-10-13 闭包事务收口）。
+        // 锁在 update_voice_config 内：读（缺失种子）→合并 13 字段→原子写
+        // 全程串行（2026-10-13 闭包事务收口）。aec_filter_length/aec_preprocess
+        // 为 STT 启动读取的 AEC 进阶参数（BUG-20261031-252：此前持久化块
+        // 漏接——FE 发送、运行期读取、保存不落盘 = 改了存不上）。
         update_voice_config(config_dir, |current| {
             if let Some(obj) = current.as_object_mut() {
                 if let Some(v) = data.get("speaker_id").and_then(|v| v.as_u64()) {
@@ -1619,6 +1621,12 @@ impl VoiceHandler {
                 }
                 if let Some(v) = data.get("aec_enabled") {
                     obj.insert("aec_enabled".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("aec_filter_length").and_then(|v| v.as_i64()) {
+                    obj.insert("aec_filter_length".to_string(), serde_json::json!(v));
+                }
+                if let Some(v) = data.get("aec_preprocess") {
+                    obj.insert("aec_preprocess".to_string(), v.clone());
                 }
             }
             Ok(())

@@ -499,17 +499,22 @@ async fn test_config_save_no_workspace_errors() {
     assert!(err.contains("workspace not configured"));
 }
 
+// BUG-20261031-251：端口校验形状对齐真流量。此前校验臂只识别嵌套
+// `{"cluster":{"discovery_port"}}`——无任何生产调用方发送该形状，
+// ClusterSettings 扁平 `{port, rpc_port}` 恒绕过校验。以下用例全部
+// 采用前端 saveConfig 的真实扁平形状。
+
 #[tokio::test]
-async fn test_config_save_rejects_zero_discovery_port() {
+async fn test_config_save_rejects_zero_port() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"discovery_port": 0}});
+    let data = serde_json::json!({"port": 0});
     let err = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("discovery_port must be between 1 and 65535"));
+    assert!(err.contains("port must be an integer between 1 and 65535"));
 }
 
 #[tokio::test]
@@ -517,12 +522,26 @@ async fn test_config_save_rejects_out_of_range_rpc_port() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"rpc_port": 70000}});
+    let data = serde_json::json!({"rpc_port": 70000});
     let err = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("rpc_port must be between 1 and 65535"));
+    assert!(err.contains("rpc_port must be an integer between 1 and 65535"));
+}
+
+#[tokio::test]
+async fn test_config_save_rejects_negative_port() {
+    // present-but-invalid loud 拒绝：负数 as_u64 = None，不得静默放过落盘。
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let data = serde_json::json!({"port": -5});
+    let err = handler
+        .handle_cmd("config.save", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("port must be an integer between 1 and 65535"));
 }
 
 #[tokio::test]
@@ -530,7 +549,7 @@ async fn test_config_save_rejects_equal_ports() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"discovery_port": 12345, "rpc_port": 12345}});
+    let data = serde_json::json!({"port": 12345, "rpc_port": 12345});
     let err = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
@@ -543,7 +562,30 @@ async fn test_config_save_accepts_valid_distinct_ports() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"discovery_port": 100, "rpc_port": 200}});
+    // 完整前端 saveConfig 载荷形状（ClusterSettings.vue 同款）。
+    let data = serde_json::json!({
+        "enabled": true,
+        "port": 11949,
+        "rpc_port": 21949,
+        "broadcast_interval": 30,
+        "llm_timeout_secs": 7200,
+        "token": "",
+    });
+    let result = handler
+        .handle_cmd("config.save", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["saved"], true);
+}
+
+#[tokio::test]
+async fn test_config_save_absent_ports_skips_validation() {
+    // 部分保存兼容：端口缺席跳过校验，其余键照常落盘。
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let data = serde_json::json!({"broadcast_interval": 60});
     let result = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await

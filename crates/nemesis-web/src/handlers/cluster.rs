@@ -1893,29 +1893,32 @@ impl ClusterHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
 
-        // Phase 2: Config validation
-        if let Some(cluster_cfg) = data.get("cluster") {
-            let discovery_port = cluster_cfg.get("discovery_port").and_then(|v| v.as_u64());
-            let rpc_port = cluster_cfg.get("rpc_port").and_then(|v| v.as_u64());
-
-            // Check ports in valid range (1-65535)
-            if let Some(port) = discovery_port
-                && (port == 0 || port > 65535)
-            {
-                return Err("discovery_port must be between 1 and 65535".to_string());
+        // 端口校验：真流量形状 = 顶层扁平 `port`/`rpc_port`（ClusterSettings
+        // saveConfig 同款，AppConfig 同名 u16 字段解析）。此前这里校验的
+        // 是嵌套 `{"cluster":{"discovery_port"}}`——无任何生产调用方发送
+        // 该形状，校验对真流量恒不生效（BUG-20261031-251）：非法端口带
+        // 成功 toast 落盘 → AppConfig 解析失败 → lenient 回落 default
+        // （enabled=false）→ 集群整体静默禁用。present-but-invalid（负数/
+        // 非整数/0/超 u16）loud 拒绝；缺席跳过（部分保存兼容）。
+        for key in ["port", "rpc_port"] {
+            let ok = match data.get(key) {
+                None => true, // 缺席跳过（部分保存兼容）
+                Some(v) => match v.as_u64() {
+                    // 在场必须合法：负数/非整数 as_u64=None 一并拒绝。
+                    Some(p) => (1..=65535).contains(&p),
+                    None => false,
+                },
+            };
+            if !ok {
+                return Err(format!("{key} must be an integer between 1 and 65535"));
             }
-            if let Some(port) = rpc_port
-                && (port == 0 || port > 65535)
-            {
-                return Err("rpc_port must be between 1 and 65535".to_string());
-            }
-
-            // Check discovery_port != rpc_port
-            if let (Some(dp), Some(rp)) = (discovery_port, rpc_port)
-                && dp == rp
-            {
-                return Err("discovery_port and rpc_port must be different".to_string());
-            }
+        }
+        if let (Some(dp), Some(rp)) = (
+            data.get("port").and_then(|v| v.as_u64()),
+            data.get("rpc_port").and_then(|v| v.as_u64()),
+        ) && dp == rp
+        {
+            return Err("port and rpc_port must be different".to_string());
         }
 
         let path = cluster_config_path(workspace);

@@ -769,17 +769,20 @@ async fn test_config_get_no_home_skips_master_enabled() {
 // config.save — additional validation cases
 // =======================================================================
 
+// BUG-20261031-251：以下 config.save 校验用例全部对齐真流量扁平形状
+// （此前 `{"cluster":{...}}` 嵌套形状无生产调用方，校验恒不生效）。
+
 #[tokio::test]
-async fn test_config_save_discovery_port_above_range() {
+async fn test_config_save_port_above_range() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"discovery_port": 100000}});
+    let data = serde_json::json!({"port": 100000});
     let err = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("discovery_port must be between 1 and 65535"));
+    assert!(err.contains("port must be an integer between 1 and 65535"));
 }
 
 #[tokio::test]
@@ -787,20 +790,20 @@ async fn test_config_save_rpc_port_zero_rejected() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"rpc_port": 0}});
+    let data = serde_json::json!({"rpc_port": 0});
     let err = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("rpc_port must be between 1 and 65535"));
+    assert!(err.contains("rpc_port must be an integer between 1 and 65535"));
 }
 
 #[tokio::test]
-async fn test_config_save_discovery_port_at_max_boundary() {
+async fn test_config_save_port_at_max_boundary() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"discovery_port": 65535, "rpc_port": 1024}});
+    let data = serde_json::json!({"port": 65535, "rpc_port": 1024});
     let result = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
@@ -810,11 +813,11 @@ async fn test_config_save_discovery_port_at_max_boundary() {
 }
 
 #[tokio::test]
-async fn test_config_save_only_rpc_port_no_discovery() {
+async fn test_config_save_only_rpc_port() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"rpc_port": 20000}});
+    let data = serde_json::json!({"rpc_port": 20000});
     let result = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
@@ -824,11 +827,11 @@ async fn test_config_save_only_rpc_port_no_discovery() {
 }
 
 #[tokio::test]
-async fn test_config_save_only_discovery_port_no_rpc() {
+async fn test_config_save_only_port() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let data = serde_json::json!({"cluster": {"discovery_port": 30000}});
+    let data = serde_json::json!({"port": 30000});
     let result = handler
         .handle_cmd("config.save", Some(data), &ctx)
         .await
