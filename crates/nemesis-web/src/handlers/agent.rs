@@ -212,10 +212,15 @@ impl AgentHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // L6++ G4（2026-09-08）：可选 session_id——项目会话的取消落在项目
-        // loop（cancel_all_sessions 作用域 = 该 loop 的会话）；不带 = 主
-        // loop（现状不变）。
-        let agent_loop = match data
+        // L6++ G4（2026-09-08）：可选 session_id——取消落在会话归属的 loop
+        // （resolve_session_loop 单一裁决点：项目会话→项目 loop，其余→主
+        // loop）。2026-10-31 停止按钮修复收窄：带 session_id = 精确取消
+        // 该会话（cancel_session），不再 cancel_all_sessions——loop 内其他
+        // 并发会话不该被误伤（同 loop 令牌表 key 同构：两侧同走
+        // `agent:main:session:{sanitize(sid)}`，server.rs:1858 派生 =
+        // 此处构造）。cancelled 语义 = 0/1（会话有无在跑轮次）；cancelled=0
+        // 供前端 W5 复位判定。不带 session_id = 主 loop 全取消（现状不变）。
+        match data
             .as_ref()
             .and_then(|d| d.get("session_id"))
             .and_then(|v| v.as_str())
@@ -226,20 +231,30 @@ impl AgentHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
-                Some(crate::handlers::projects::resolve_session_loop(
-                    ctx,
-                    &session_key,
-                )?)
+                let agent_loop =
+                    crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
+                let hit = agent_loop.cancel_session(&session_key);
+                tracing::info!(
+                    "[Agent] Cancel request (session-scoped): {} -> {}",
+                    session_key,
+                    hit
+                );
+                Ok(Some(serde_json::json!({ "cancelled": u64::from(hit) })))
             }
-            None => ctx.state.agent_loop.read().clone(),
-        };
-        match agent_loop {
-            Some(al) => {
-                let cancelled = al.cancel_all_sessions();
-                tracing::info!("[Agent] Cancel request: {} session(s) cancelled", cancelled);
-                Ok(Some(serde_json::json!({ "cancelled": cancelled })))
+            None => {
+                let agent_loop = ctx.state.agent_loop.read().clone();
+                match agent_loop {
+                    Some(al) => {
+                        let cancelled = al.cancel_all_sessions();
+                        tracing::info!(
+                            "[Agent] Cancel request: {} session(s) cancelled",
+                            cancelled
+                        );
+                        Ok(Some(serde_json::json!({ "cancelled": cancelled })))
+                    }
+                    None => Err("Agent not running".to_string()),
+                }
             }
-            None => Err("Agent not running".to_string()),
         }
     }
 

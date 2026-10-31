@@ -639,9 +639,11 @@ impl AgentLoop {
     }
     /// 器官 8（§4.2 表行 8）：中间消息落账 + 并行预计算（U5）+ 批次循环，
     /// 自 run_loop.rs 骨架收编（P2-5，与 8a-8e 同居本文件）。出口归一：
-    /// 批内 cancel/estop = push Done + `Continue`（骨架 continue → 下一
-    /// 轮器官 1 顶检再发一次并停轮——双发 Done 现状语义原样，§9① 不顺手
-    /// 改）；8a/8b 快照与 8e escalation/validation 两终局 = `Stop(ev)`
+    /// 批内 cancel/estop = `Stop(ev)` + `terminal_reason` 照记（2026-10-31
+    /// 双发遗留修正——P2 重构时「§9① 不顺手改」的 push Done + Continue
+    /// 旧形态退役：它会让下一轮器官 1 顶检重发一次 Done = 聊天里两条
+    /// 「已取消」；现与 8a/8b/8e 终局同一出口，骨架 push + break 一次到位）；
+    /// 8a/8b 快照与 8e escalation/validation 两终局 = `Stop(ev)`
     /// （骨架 push + break，terminal_reason 照记）；批次正常完毕 =
     /// `Continue` 落回下一轮。原 force_stop/hit_async 两补偿闩随方法化
     /// 退役（闩的存在意义就是批次内 break 出不了外层循环）。
@@ -731,10 +733,12 @@ impl AgentLoop {
                     "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
                     tc.name, st.turns_used
                 );
-                events.push(AgentEvent::Done("已取消".to_string()));
-                // 双发 Done 语义原样（§9①）：批内已发一次，落回
-                // 骨架 Continue → 下一轮器官 1 顶检再发一次并停轮。
-                return TurnFlow::Continue;
+                // 单发 Done（2026-10-31 双发遗留修正）：原形态 push Done +
+                // Continue 落回骨架 → 下一轮器官 1 顶检再发一次并停轮 =
+                // 聊天里出现两条「已取消」。改走 Stop 出口与 8a/8b/8e 终局
+                // 归一（骨架 push + break + 收尾一次到位）。
+                st.terminal_reason = Some("cancelled");
+                return TurnFlow::Stop(AgentEvent::Done("已取消".to_string()));
             }
 
             // 全局急停检查：触发则拒绝后续工具调用并结束当前轮。
@@ -744,12 +748,14 @@ impl AgentLoop {
                     "[AgentLoop] E-stop engaged before tool execution: {}, turns_used={}",
                     tc.name, st.turns_used
                 );
-                events.push(AgentEvent::Done(
+                // 单发 Done（同上双发遗留修正）；estop 臂 cancel_token 未
+                // 触发，finalize_turn 靠 terminal_reason 记 "estop"——
+                // turn_end 边界标记不再谎报 "done"（599 行同款纪律）。
+                st.terminal_reason = Some("estop");
+                return TurnFlow::Stop(AgentEvent::Done(
                     "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
                         .to_string(),
                 ));
-                // 同上：双发 Done 语义原样（§9①）。
-                return TurnFlow::Continue;
             }
 
             // 器官 8 间隙检查（P19 能力扩展 WS8）：批内间隙 peek steer 队列
