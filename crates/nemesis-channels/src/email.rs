@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
-use nemesis_types::channel::OutboundMessage;
+use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
@@ -101,7 +101,8 @@ struct EmailMessageInfo {
 
 /// Email channel using IMAP polling and SMTP sending.
 pub struct EmailChannel {
-    base: BaseChannel,
+    /// Arc 共享进轮询任务（allow-list 检查在 spawn 侧执行，BUG-20261031-244）。
+    base: Arc<BaseChannel>,
     config: EmailConfig,
     running: Arc<parking_lot::RwLock<bool>>,
     seen_uids: Arc<parking_lot::RwLock<HashMap<String, bool>>>,
@@ -111,13 +112,24 @@ pub struct EmailChannel {
     /// shard 深拷贝，start() 交给 IMAP 轮询任务的副本与 send() 读的原表
     /// 分叉，回复线索写入恒不可见（Re: 主题静默落默认值）。
     sender_map: Arc<dashmap::DashMap<String, EmailMessageInfo>>,
+    /// Message bus sender for publishing inbound emails（BUG-20261031-244）。
+    ///
+    /// 与 external/qq/matrix 通道同构：收件必须发布到总线进 agent loop。
+    /// 此前本通道构造器没有 bus 参数，轮询循环收到邮件只标已读即丢弃。
+    bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
     /// Cancellation sender for stopping the polling loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl EmailChannel {
     /// Creates a new `EmailChannel`.
-    pub fn new(config: EmailConfig) -> Result<Self> {
+    ///
+    /// `bus_sender` is used to publish inbound emails read from IMAP
+    /// (parity with external/qq/matrix channels' `(cfg, messageBus)` shape).
+    pub fn new(
+        config: EmailConfig,
+        bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.imap_host.is_empty() || config.smtp_host.is_empty() {
             return Err(NemesisError::Channel(
                 "email imap_host and smtp_host are required".to_string(),
@@ -130,11 +142,15 @@ impl EmailChannel {
         }
 
         Ok(Self {
-            base: BaseChannel::new("email"),
+            base: Arc::new(BaseChannel::with_allow_list(
+                "email",
+                config.allow_from.clone(),
+            )),
             config,
             running: Arc::new(parking_lot::RwLock::new(false)),
             seen_uids: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             sender_map: Arc::new(dashmap::DashMap::new()),
+            bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),
         })
     }
@@ -162,12 +178,11 @@ impl EmailChannel {
         let from = from.trim();
 
         // Try angle brackets
-        if let Some(start) = from.rfind('<') {
-            if let Some(end) = from.rfind('>') {
-                if end > start {
-                    return from[start + 1..end].trim();
-                }
-            }
+        if let Some(start) = from.rfind('<')
+            && let Some(end) = from.rfind('>')
+            && end > start
+        {
+            return from[start + 1..end].trim();
         }
 
         // No angle brackets, check if it looks like an email
@@ -224,15 +239,27 @@ impl EmailChannel {
     /// Builds a full email message for SMTP.
     pub fn build_smtp_message(from: &str, to: &str, subject: &str, body: &str) -> String {
         let date = chrono::Utc::now().to_rfc2822();
+        // BUG-20261031-244 加固臂：RFC 5322 头部值是单行的——from/to/subject
+        // 一旦混入 CR/LF 即构成头部注入（当前数据流经 IMAP 行解析不可达，
+        // 但本函数是 pub 编码单一入口，纵深防御在编码点收敛；body 区由
+        // SMTP dot-stuffing 负责，不受此影响）。CR/LF 直接剥除。
+        let header_safe = |v: &str| {
+            v.chars()
+                .filter(|&c| c != '\r' && c != '\n')
+                .collect::<String>()
+        };
         format!(
-            "From: {from}\r\n\
-             To: {to}\r\n\
-             Subject: {subject}\r\n\
+            "From: {}\r\n\
+             To: {}\r\n\
+             Subject: {}\r\n\
              Date: {date}\r\n\
              MIME-Version: 1.0\r\n\
              Content-Type: text/plain; charset=UTF-8\r\n\
              \r\n\
-             {body}"
+             {body}",
+            header_safe(from),
+            header_safe(to),
+            header_safe(subject)
         )
     }
 
@@ -247,15 +274,14 @@ impl EmailChannel {
 
         for line in responses {
             // Detect literal string marker {N}
-            if line.contains('{') && line.contains('}') {
-                if let Some(start) = line.find('{') {
-                    if let Some(end) = line.find('}') {
-                        if end > start {
-                            in_literal = true;
-                            continue;
-                        }
-                    }
-                }
+            if line.contains('{')
+                && line.contains('}')
+                && let Some(start) = line.find('{')
+                && let Some(end) = line.find('}')
+                && end > start
+            {
+                in_literal = true;
+                continue;
             }
 
             if in_literal {
@@ -360,7 +386,7 @@ impl EmailChannel {
         // For simplicity, we support direct TLS via separate connection
 
         // AUTH LOGIN
-        self.smtp_command(&mut writer, &mut reader, &format!("AUTH LOGIN"))
+        self.smtp_command(&mut writer, &mut reader, "AUTH LOGIN")
             .await?;
 
         // Send username (base64)
@@ -544,6 +570,9 @@ impl EmailChannel {
         let config = self.config.clone();
         let seen_uids = self.seen_uids.clone();
         let sender_map = self.sender_map.clone();
+        // BUG-20261031-244：收件发布面需要 allow-list 与 bus，一并共享进任务。
+        let base = Arc::clone(&self.base);
+        let bus_sender = self.bus_sender.clone();
 
         tokio::spawn(async move {
             let mut interval =
@@ -587,14 +616,22 @@ impl EmailChannel {
                                                 }
                                             }
 
-                                            // FETCH body
+                                            // FETCH body（BUG-20261031-244：失败必须
+                                            // 告警——此前 .ok() 吞错，正文丢失无任何
+                                            // 痕迹；取不到就不发布，避免造出空内容
+                                            // 幻影会话。已入 seen_uids，下轮不会重处理）
                                             let body_cmd = format!("{} (BODY[TEXT])", seq);
-                                            let _body = conn
+                                            let body = match conn
                                                 .send_command_multi(&format!("FETCH {}", body_cmd))
                                                 .await
-                                                .ok()
-                                                .map(|r| parse_email_body_static(&r))
-                                                .unwrap_or_default();
+                                            {
+                                                Ok(r) => parse_email_body_static(&r),
+                                                Err(e) => {
+                                                    warn!(error = %e, seq = %seq,
+                                                        "[EmailChannel] failed to fetch email body");
+                                                    continue;
+                                                }
+                                            };
 
                                             // Extract email address
                                             let sender_email =
@@ -626,6 +663,41 @@ impl EmailChannel {
                                                 ))
                                                 .await;
 
+                                            // BUG-20261031-244：收件必须发布到总线进
+                                            // agent loop——此前整条收件路径到「标已读 +
+                                            // debug 日志」为止，正文取了即丢（_body 未
+                                            // 消费），bus 从未接线（构造器无 bus 参数），
+                                            // allow_from 白名单也零消费：邮件进黑洞，
+                                            // agent 永远看不到。无发件人地址的邮件不发布
+                                            // （回复无处投递，与 sender_map 的写入闸一致）。
+                                            if !sender_email.is_empty() {
+                                                if base.handle_message(&chat_id) {
+                                                    let mut metadata = HashMap::new();
+                                                    metadata.insert(
+                                                        "subject".to_string(),
+                                                        subject.clone(),
+                                                    );
+                                                    let inbound = InboundMessage {
+                                                        channel: base.name().to_string(),
+                                                        sender_id: chat_id.clone(),
+                                                        chat_id: chat_id.clone(),
+                                                        content: body,
+                                                        media: Vec::new(),
+                                                        session_key: chat_id.clone(),
+                                                        correlation_id: String::new(),
+                                                        metadata,
+                                                        voice_playback: None,
+                                                    };
+                                                    if let Err(e) = bus_sender.send(inbound) {
+                                                        warn!(error = %e,
+                                                            "[EmailChannel] failed to publish inbound message");
+                                                    }
+                                                } else {
+                                                    warn!(chat_id = %chat_id,
+                                                        "[EmailChannel] message blocked by allow-list");
+                                                }
+                                            }
+
                                             debug!(
                                                 from = %from,
                                                 subject = %subject,
@@ -640,6 +712,14 @@ impl EmailChannel {
                                 }
                             }
                             let _ = conn.send_command("LOGOUT").await;
+                        } else {
+                            // BUG-20261031-244：连接/认证失败不得静默——此前
+                            // `if let Ok` 吞掉全部失败，IMAP 凭据错/网络断时
+                            // 通道表现为「永远没有新邮件」，零日志可查。
+                            warn!(
+                                host = %config.imap_host,
+                                "[EmailChannel] IMAP connect/auth failed; will retry next poll"
+                            );
                         }
                     }
                 }

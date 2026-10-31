@@ -829,7 +829,7 @@ impl ChannelManager {
         {
             if let Some(ref cfg) = config.email {
                 info!("[ChannelManager] attempting to initialize Email channel");
-                match crate::email::EmailChannel::new(cfg.clone()) {
+                match crate::email::EmailChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
                         info!("[ChannelManager] Email channel enabled successfully");
