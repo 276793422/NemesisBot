@@ -195,14 +195,26 @@ fn eval_comparison(expr: &str) -> Result<bool, String> {
 
 /// Find the index of an operator in an expression, respecting quoted strings
 /// and parentheses.
+///
+/// 返回值是**字节下标**（调用方 `eval_comparison` 直接按字节切片）。
+/// BUG-20261031-240 修复两形态越界：
+/// - 空 expr / 短于算子的 expr 无处可匹配——旧循环上界
+///   `saturating_sub + 1` 恒 ≥1，空 expr 直接 `chars[0]` 索引越界 panic
+///   （`a == 1 or  or b == 2` 的空串 part 即触发）；
+/// - 旧实现返回 char 下标而被调用方按字节下标切片，多字节字符在算子前时
+///   切点落在字符中间（not a char boundary panic / 错误拆分）——现以
+///   `char_indices` 的字节偏移作返回值，ASCII 形态字节=char 下标不变。
 fn find_operator(expr: &str, op: &str) -> Option<usize> {
     let mut depth = 0;
     let mut in_quote = false;
-    let chars: Vec<char> = expr.chars().collect();
+    let chars: Vec<(usize, char)> = expr.char_indices().collect();
     let op_chars: Vec<char> = op.chars().collect();
+    if op_chars.len() > chars.len() {
+        return None;
+    }
 
-    for i in 0..chars.len().saturating_sub(op_chars.len()) + 1 {
-        let ch = chars[i];
+    for (ci, (bi, ch)) in chars.iter().enumerate() {
+        let ch = *ch;
         if ch == '"' {
             in_quote = !in_quote;
             continue;
@@ -214,21 +226,26 @@ fn find_operator(expr: &str, op: &str) -> Option<usize> {
             depth += 1;
         } else if ch == ')' {
             depth -= 1;
-        } else if depth == 0 && i + op_chars.len() <= chars.len() {
-            let slice: String = chars[i..i + op_chars.len()].iter().collect();
-            if slice == *op {
+        } else if depth == 0 && ci + op_chars.len() <= chars.len() {
+            let slice: String = chars[ci..ci + op_chars.len()]
+                .iter()
+                .map(|(_, c)| *c)
+                .collect();
+            if slice == op {
                 // For symbolic operators, return immediately
                 if is_symbolic_operator(op) {
-                    return Some(i);
+                    return Some(*bi);
                 }
                 // For word operators, check word boundaries
-                if i > 0 && !chars[i - 1].is_whitespace() {
+                if ci > 0 && !chars[ci - 1].1.is_whitespace() {
                     continue;
                 }
-                if i + op_chars.len() < chars.len() && !chars[i + op_chars.len()].is_whitespace() {
+                if ci + op_chars.len() < chars.len()
+                    && !chars[ci + op_chars.len()].1.is_whitespace()
+                {
                     continue;
                 }
-                return Some(i);
+                return Some(*bi);
             }
         }
     }
