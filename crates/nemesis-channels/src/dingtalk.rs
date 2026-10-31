@@ -175,7 +175,7 @@ impl DingTalkChannel {
         Ok(Self {
             base: BaseChannel::new("dingtalk"),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             // BUG-20261029-143：必须 Arc 包装——裸 DashMap 经 clone() 交给
             // 流任务的是深拷贝副本，任务侧写入的会话 webhook 对 send()

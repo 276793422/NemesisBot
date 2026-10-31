@@ -111,7 +111,12 @@ pub async fn start(
         real_base: real_base.trim_end_matches('/').to_string(),
         api_key,
         expected_client_key,
-        client: reqwest::Client::builder().build()?,
+        // BUG-20261031-261：上游转发必须带总超时——reqwest 默认无超时，
+        // 云端 LLM 半死（连接建立但响应挂起）时 eval 观察期整个被拖死。
+        // 600s 对齐 provider lane 单请求超时阶梯（LLM 长回复合法形态）。
+        client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()?,
     };
 
     let app = Router::new()

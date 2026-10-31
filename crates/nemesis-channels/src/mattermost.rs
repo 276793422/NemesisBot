@@ -121,7 +121,7 @@ impl MattermostChannel {
         Ok(Self {
             base: BaseChannel::new("mattermost"),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             bot_user_id: Arc::new(parking_lot::RwLock::new(String::new())),
             bot_username: Arc::new(parking_lot::RwLock::new(String::new())),

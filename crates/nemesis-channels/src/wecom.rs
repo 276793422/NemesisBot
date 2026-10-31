@@ -125,7 +125,7 @@ impl WeComChannel {
         Ok(Self {
             base,
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             aes_key,
             bus_sender,
             shutdown_tx: parking_lot::Mutex::new(None),

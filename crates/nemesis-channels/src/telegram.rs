@@ -239,8 +239,8 @@ impl TelegramChannel {
             ));
         }
 
-        let mut client_builder =
-            reqwest::Client::builder().timeout(std::time::Duration::from_secs(35));
+        // BUG-20261031-261：超时值收敛到 base::outbound_http_builder 单一真相源。
+        let mut client_builder = crate::base::outbound_http_builder();
 
         // Apply proxy if configured
         if let Some(ref proxy_url) = config.proxy {

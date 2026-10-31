@@ -389,6 +389,34 @@ impl BaseChannel {
 }
 
 // ---------------------------------------------------------------------------
+// 出站 HTTP client 单一构造点
+// ---------------------------------------------------------------------------
+
+/// 出站 HTTP builder 单一真相源（BUG-20261031-261）：通道出站 client 必须带
+/// 总超时。reqwest 默认无总超时——通道远端半死（TCP 已建立但响应挂起）时
+/// `channel.send()` 永久 pending，而 `ChannelManager` 的 dispatch loop 是
+/// 单任务串行 await，一条通道挂起 = **全部**通道出站停摆且零错误零日志。
+/// 35s 对齐 telegram 先例（消息投递类请求；long-polling 型通道
+/// matrix/signal 的 sync/receive 走各自 120s builder，不经此处）。
+/// 需要 proxy 注入的通道拿 builder 自己续链，无特殊需求直接用
+/// [`outbound_http_client`]。
+// 同上：default 构建形态无消费通道（telegram/whatsapp 在全 feature 下续链）。
+#[allow(dead_code)]
+pub(crate) fn outbound_http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().timeout(std::time::Duration::from_secs(35))
+}
+
+/// [`outbound_http_builder`] 的直用形态（无 proxy 注入需求的通道）。
+// default features（web/webhook/rpc）不编译任何消费通道——全 feature 构建下
+// 11 通道使用，dead_code 只在 default 构建形态出现。
+#[allow(dead_code)]
+pub(crate) fn outbound_http_client() -> Result<reqwest::Client> {
+    outbound_http_builder()
+        .build()
+        .map_err(|e| NemesisError::Channel(format!("HTTP client creation failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

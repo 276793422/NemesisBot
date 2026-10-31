@@ -93,7 +93,7 @@ impl MastodonChannel {
         Ok(Self {
             base: BaseChannel::new("mastodon"),
             config: MastodonConfig { server, ..config },
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             seen_notifications: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
             bus_sender,

@@ -88,7 +88,7 @@ impl WhatsAppChannel {
             ));
         }
 
-        let mut client_builder = reqwest::Client::builder();
+        let mut client_builder = crate::base::outbound_http_builder();
 
         // Apply proxy if configured (bridge may be remote)
         if let Some(ref proxy_url) = config.proxy {

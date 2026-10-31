@@ -105,7 +105,7 @@ impl SlackChannel {
         Ok(Self {
             base: BaseChannel::new("slack"),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             bot_user_id: Arc::new(parking_lot::RwLock::new(String::new())),
             pending_acks: dashmap::DashMap::new(),

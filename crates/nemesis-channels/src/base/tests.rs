@@ -1264,3 +1264,14 @@ async fn bug57_mutual_sync_config_does_not_ping_pong() {
         Some("chan-a")
     );
 }
+
+// BUG-20261031-261：出站 client 单一构造点必须可构造（TLS backend 初始化
+// 成功路径）。超时值本身 reqwest 不暴露 getter，行为由 reqwest 保证；
+// 此处钉的是「构造不 panic + 返回 Result 通道错误形态」这一契约。
+#[test]
+fn outbound_http_client_builds_with_timeout() {
+    let client = outbound_http_client().expect("outbound HTTP client must build");
+    _ = client;
+    // builder 形态（proxy 注入通道用）也必须可链式取用。
+    let _builder = outbound_http_builder();
+}

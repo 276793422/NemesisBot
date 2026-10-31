@@ -156,7 +156,7 @@ impl DiscordChannel {
             ));
         }
 
-        let http = reqwest::Client::new();
+        let http = crate::base::outbound_http_client()?;
 
         Ok(Self {
             base: BaseChannel::new("discord"),

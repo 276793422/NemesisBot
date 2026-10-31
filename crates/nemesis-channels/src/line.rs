@@ -120,7 +120,7 @@ impl LineChannel {
         Ok(Self {
             base: BaseChannel::new("line"),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             reply_tokens: Arc::new(dashmap::DashMap::new()),
             bus_sender,

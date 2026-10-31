@@ -473,7 +473,7 @@ impl WeChatChannel {
         Ok(Self {
             base: BaseChannel::with_allow_list("wechat", config.allow_from.clone()),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             bus_sender,
         })

@@ -170,7 +170,7 @@ impl FeishuChannel {
         Ok(Self {
             base: BaseChannel::new("feishu"),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             bus_sender,

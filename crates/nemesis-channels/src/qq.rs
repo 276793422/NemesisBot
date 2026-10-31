@@ -141,7 +141,7 @@ impl QQChannel {
         Ok(Self {
             base: BaseChannel::new("qq"),
             config,
-            http: reqwest::Client::new(),
+            http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
             processed_ids: parking_lot::RwLock::new(HashMap::new()),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),

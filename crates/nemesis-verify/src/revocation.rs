@@ -87,7 +87,13 @@ pub fn strict_offline() -> bool {
 fn fetch_crl(base_url: &str, root_pub: &VerifyingKey) -> Result<Crl> {
     let url = format!("{}/v1/crl", base_url.trim_end_matches('/'));
     let resp: SignedResponse<Crl> = std::thread::spawn(move || -> Result<SignedResponse<Crl>> {
-        Ok(reqwest::blocking::get(&url)?.json()?)
+        // BUG-20261031-261：blocking::get 用默认 client（无总超时）——CRL
+        // 分发点半死时线程永久挂起，`verify --revocation-url` 卡死无输出。
+        // 30s 对齐分发点拉取类请求（非长轮询）。
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        Ok(client.get(&url).send()?.json()?)
     })
     .join()
     .map_err(|_| anyhow::anyhow!("CRL fetch thread panicked"))??;
@@ -231,7 +237,12 @@ pub fn ocsp_check_single(
     // BUG-20261029-147：同 fetch_crl——独立线程执行 blocking 网络（tokio
     // 上下文安全）；线程 panic = 传输层不可达，与 send Err 同待遇（None）。
     let resp: Option<SignedResponse<OcspResp>> = std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::new();
+        // BUG-20261031-261：同 fetch_crl——无超时 blocking client 会被半死
+        // 响应端点永久挂起；soft-fail 语义下超时与 send Err 同待遇（None）。
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .ok()?;
         client
             .post(&url)
             .json(&req)
