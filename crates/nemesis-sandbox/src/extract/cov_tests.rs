@@ -125,3 +125,57 @@ fn extract_spawn_error_reports_context() {
         "spawn context missing: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-267：fetch_zip_bytes_with_retry 状态码前置闸——404 错误页
+// 不得被当 zip 字节返回。本地 loopback 一 shot TCP mock（无新 dev-dep，
+// 不触 GitHub 网络——沿用本文件「不下载」纪律）。
+// ---------------------------------------------------------------------------
+
+/// Bind 127.0.0.1:0，对每个进来的请求回同一份固定 HTTP 响应，直到 listener
+/// 被 drop（retry 三连正好应答三次）。
+fn spawn_status_mock(status_line: &'static str, body: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            // 只排空请求头（读一次足够——mock 不解析请求内容）。
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "{status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    port
+}
+
+/// HTTP 404 → Err 消息诚实带「HTTP status」，不返回错误页字节。
+#[tokio::test]
+async fn fetch_zip_bytes_retry_rejects_http_error_pages() {
+    let _logs = crate::test_util::capture_logs();
+    let port = spawn_status_mock("HTTP/1.1 404 Not Found", "<html>nope</html>");
+    let err = fetch_zip_bytes_with_retry(&format!("http://127.0.0.1:{port}/7z.zip"))
+        .await
+        .expect_err("404 error page must not pass as zip bytes");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("HTTP status"),
+        "error must carry honest HTTP-status marker: {msg}"
+    );
+}
+
+/// HTTP 200 → Ok(bytes) 原样透传（成功臂对照）。
+#[tokio::test]
+async fn fetch_zip_bytes_retry_passes_success_body() {
+    let _logs = crate::test_util::capture_logs();
+    let port = spawn_status_mock("HTTP/1.1 200 OK", "PK_FAKE_ZIP_BYTES");
+    let bytes = fetch_zip_bytes_with_retry(&format!("http://127.0.0.1:{port}/7z.zip"))
+        .await
+        .expect("200 body must pass through");
+    assert_eq!(&bytes[..], b"PK_FAKE_ZIP_BYTES");
+}

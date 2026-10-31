@@ -652,3 +652,64 @@ async fn t7_photo_download_without_http_returns_none() {
     .await;
     assert!(att.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-267：download_voice_file 状态码前置闸——404/500 错误体不得
+// 被当语音 OGG 落盘送转写。本地 loopback TCP mock（无新 dev-dep）。
+// ---------------------------------------------------------------------------
+
+/// Bind 127.0.0.1:0，对每个进来的请求回同一份固定 HTTP 响应，直到 listener
+/// 被 drop。
+fn spawn_status_mock(status_line: &'static str, body: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "{status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn t7_voice_download_rejects_http_error_pages() {
+    let port = spawn_status_mock("HTTP/1.1 404 Not Found", "<html>nope</html>");
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("voice.ogg");
+    let err = TelegramChannel::download_voice_file(
+        &http,
+        &format!("http://127.0.0.1:{port}/file/bot/x.ogg"),
+        &target,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("404"), "error must carry HTTP status: {err}");
+    // 错误页不得落盘（旧行为：404 HTML 被写成 voice.ogg 送转写）。
+    assert!(!target.exists(), "error body must not be written to disk");
+}
+
+#[tokio::test]
+async fn t7_voice_download_writes_success_body() {
+    let port = spawn_status_mock("HTTP/1.1 200 OK", "OGGDUMMYBYTES");
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("voice.ogg");
+    TelegramChannel::download_voice_file(
+        &http,
+        &format!("http://127.0.0.1:{port}/file/bot/x.ogg"),
+        &target,
+    )
+    .await
+    .expect("200 must download and write");
+    let content = std::fs::read_to_string(&target).unwrap();
+    assert_eq!(content, "OGGDUMMYBYTES");
+}

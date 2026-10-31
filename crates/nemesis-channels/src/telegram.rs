@@ -812,6 +812,22 @@ impl TelegramChannel {
         })
     }
 
+    /// Download the voice file to `local_path` (BUG-20261101-267).
+    ///
+    /// 状态码前置闸：非 2xx 诚实上抛 `HTTP <status>`，不把错误体落盘。
+    async fn download_voice_file(
+        http: &reqwest::Client,
+        url: &str,
+        local_path: &std::path::Path,
+    ) -> std::result::Result<(), String> {
+        let resp = http.get(url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+        std::fs::write(local_path, &bytes).map_err(|e| e.to_string())
+    }
+
     /// Attempts to transcribe a voice message.
     ///
     /// Mirrors Go's voice transcription flow:
@@ -878,23 +894,12 @@ impl TelegramChannel {
         let _ = std::fs::create_dir_all(&temp_dir);
         let local_path = temp_dir.join(format!("{}.ogg", file_id));
 
-        let download_resp = http.get(&download_url).send().await;
-        match download_resp {
-            Ok(resp) => {
-                if let Ok(bytes) = resp.bytes().await {
-                    if let Err(e) = std::fs::write(&local_path, &bytes) {
-                        warn!("[TelegramChannel] voice: failed to write file: {e}");
-                        return Some("[voice (transcription failed)]".to_string());
-                    }
-                } else {
-                    warn!("[TelegramChannel] voice: failed to read download bytes");
-                    return Some("[voice (transcription failed)]".to_string());
-                }
-            }
-            Err(e) => {
-                warn!("[TelegramChannel] voice: download error: {e}");
-                return Some("[voice (transcription failed)]".to_string());
-            }
+        // BUG-20261101-267：下载先查状态码——此前 404/500 的 HTML/JSON
+        // 错误体被当语音 OGG 落盘送转写，日志只见「transcription failed」，
+        // 真实 HTTP 错误被掩盖（signal/image_attach 同款闸此处漏配）。
+        if let Err(e) = Self::download_voice_file(http, &download_url, &local_path).await {
+            warn!("[TelegramChannel] voice: download error: {e}");
+            return Some("[voice (transcription failed)]".to_string());
         }
 
         let path_str = local_path.to_string_lossy().to_string();

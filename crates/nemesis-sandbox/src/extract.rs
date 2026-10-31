@@ -54,6 +54,49 @@ pub async fn resolve_seven_zip(runtime_dir: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Fetch `url` with 3-attempt retry + honest HTTP status gating.
+///
+/// BUG-20261101-267：此前不查状态码——GitHub 404/403 的 HTML 错误页被当
+/// zip 字节落盘，由下游 SHA-256 校验拦下但诊断成 hash mismatch 而非真实
+/// HTTP 错误，且三次重试全打在同一错误页上。error_for_status 让错误状态
+/// 与网络错误同走重试链，错误消息诚实带状态码。
+async fn fetch_zip_bytes_with_retry(url: &str) -> Result<bytes::Bytes> {
+    // Download with a timeout + retry — raw.githubusercontent.com (Fastly CDN)
+    // occasionally resets mid-transfer; a fresh connection usually completes.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("build http client")?;
+    let mut last: Option<anyhow::Error> = None;
+    let mut got: Option<bytes::Bytes> = None;
+    for attempt in 1..=3u32 {
+        match client.get(url).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(r) => match r.bytes().await {
+                    Ok(b) => {
+                        got = Some(b);
+                        break;
+                    }
+                    Err(e) => last = Some(anyhow::anyhow!("read body (attempt {attempt}): {e}")),
+                },
+                Err(e) => last = Some(anyhow::anyhow!("HTTP status (attempt {attempt}): {e}")),
+            },
+            Err(e) => last = Some(anyhow::anyhow!("GET (attempt {attempt}): {e}")),
+        }
+        tracing::warn!(
+            "[sandbox] 7z.zip download attempt {attempt} failed: {:?}; retrying",
+            last.as_ref().map(|e| e.to_string())
+        );
+        if attempt < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+        }
+    }
+    match got {
+        Some(b) => Ok(b),
+        None => Err(last.context("fetch 7z.zip (3 attempts)")?),
+    }
+}
+
 /// Download `7z.zip` + unzip into `runtime_dir` (preserves the archive's `7z/`
 /// subdir → `runtime_dir/7z/7z.exe`). Logs the SHA-256 for audit; integrity is
 /// backstopped by Sandboxie's own signature check on the files it later extracts.
@@ -62,39 +105,7 @@ async fn download_and_unzip_7z(runtime_dir: &Path) -> Result<()> {
         .await
         .with_context(|| format!("create runtime dir {}", runtime_dir.display()))?;
 
-    // Download with a timeout + retry — raw.githubusercontent.com (Fastly CDN)
-    // occasionally resets mid-transfer; a fresh connection usually completes.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .context("build http client")?;
-    let bytes = {
-        let mut last: Option<anyhow::Error> = None;
-        let mut got: Option<bytes::Bytes> = None;
-        for attempt in 1..=3u32 {
-            match client.get(SEVEN_ZIP_ZIP_URL).send().await {
-                Ok(resp) => match resp.bytes().await {
-                    Ok(b) => {
-                        got = Some(b);
-                        break;
-                    }
-                    Err(e) => last = Some(anyhow::anyhow!("read body (attempt {attempt}): {e}")),
-                },
-                Err(e) => last = Some(anyhow::anyhow!("GET (attempt {attempt}): {e}")),
-            }
-            tracing::warn!(
-                "[sandbox] 7z.zip download attempt {attempt} failed: {:?}; retrying",
-                last.as_ref().map(|e| e.to_string())
-            );
-            if attempt < 3 {
-                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
-            }
-        }
-        match got {
-            Some(b) => b,
-            None => return Err(last.context("fetch 7z.zip (3 attempts)")?),
-        }
-    };
+    let bytes = fetch_zip_bytes_with_retry(SEVEN_ZIP_ZIP_URL).await?;
     {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
