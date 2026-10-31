@@ -215,7 +215,8 @@ fn base_drift_detail(head: &str, expected_base: &str) -> String {
 /// 发布主流程。返回值恒为结构化 outcome（`status` = published /
 /// already_published / failed + detail）——发布结果是第一公民结果不是传输
 /// 错误；`Err` 只用于请求形态非法（缺必填参数）。
-async fn publish_task_delivery(
+/// `pub(crate)`：flow 引擎 publish step 与外部入口（web）共用同一实现。
+pub(crate) async fn publish_task_delivery(
     db: &Arc<TaskDb>,
     store: &Arc<BoardStore>,
     agent_loop: &Arc<AgentLoop>,

@@ -54,6 +54,40 @@ pub fn plugin_wasm_config_path(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join("config.plugin.wasm.json")
 }
 
+/// WASM 插件子系统**运行期**总闸（2026-11-01 BUG 修复：宿主壳/总闸开关
+/// 此前只在启动装配期一次性消费——运行中翻关后 WSAPI 面板/guest 命令/
+/// flow 引擎/agent 工具照常生效，刷新 UI 面板仍在）。
+///
+/// 热语义：任一真相源关 = 服务面拒绝，开关改回**即时恢复**（每调用现读，
+/// 无缓存）。真相源两件：
+/// ① `<home>/config.json` 的 `plugins.wasm.enabled`（缺省 true）；home 与
+///    workspace 同级是全局约定（`workspace_root.parent()` = home）。
+/// ② `<config_dir>/config.plugin.native.json` 的 `plugin_wasm.enabled`
+///    （宿主壳闸，缺省 true）。壳的**装载/卸载**仍是启动期一次性
+///    （`NativePluginId::immediate_effect` 语义不变）——本闸只裁已装
+///    子系统对外服务面。
+pub fn runtime_enabled(workspace_root: &Path) -> bool {
+    let config_json = workspace_root
+        .parent()
+        .map(|home| home.join("config.json"))
+        .unwrap_or_else(|| workspace_root.join("config.json"));
+    if let Ok(raw) = std::fs::read_to_string(&config_json)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw)
+    {
+        let on = v
+            .pointer("/plugins/wasm/enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true);
+        if !on {
+            return false;
+        }
+    }
+    crate::plugins_native::load_enabled(
+        &workspace_root.join("config"),
+        crate::plugins_native::NativePluginId::PluginWasm,
+    )
+}
+
 /// 旧实例文件目录（`<config_dir>/plugins/`，仅迁移用）。
 const LEGACY_INSTANCE_DIR: &str = "plugins";
 

@@ -216,3 +216,106 @@ fn assert_no_tmp_residue(dir: &Path) {
         .collect();
     assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
 }
+
+// ==================== 运行期总闸 runtime_enabled（2026-11-01 BUG 修复） ====================
+//
+// 真相源两件：① `<home>/config.json` plugins.wasm.enabled（缺省 true）；
+// ② `<workspace>/config/config.plugin.native.json` plugin_wasm.enabled
+// （宿主壳闸，缺省 true）。任一关 = false；开关改回即时恢复（无缓存）。
+
+/// 造 `<home>/config.json` + `<home>/workspace/config/config.plugin.native.json` 布局。
+fn runtime_gate_home(tag: &str) -> PathBuf {
+    let home = std::env::temp_dir().join(format!(
+        "nb_plugin_wasm_gate_{}_{}",
+        tag,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("workspace/config")).unwrap();
+    home
+}
+
+fn write_native_switch(home: &Path, enabled: bool) {
+    let path = home.join("workspace/config/config.plugin.native.json");
+    std::fs::write(
+        &path,
+        format!(r#"{{"plugins":{{"plugin_wasm":{{"enabled":{enabled}}}}}}}"#),
+    )
+    .unwrap();
+}
+
+#[test]
+fn runtime_gate_defaults_true_when_both_sources_absent() {
+    let home = runtime_gate_home("defaults");
+    let _g = SERIAL.lock().unwrap();
+    assert!(
+        runtime_enabled(&home.join("workspace")),
+        "两真相源缺席 = 双缺省 true"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_master_switch_off_blocks() {
+    let home = runtime_gate_home("master_off");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    assert!(!runtime_enabled(&home.join("workspace")), "总闸关 = 拒绝");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_shell_switch_off_blocks() {
+    let home = runtime_gate_home("shell_off");
+    let _g = SERIAL.lock().unwrap();
+    write_native_switch(&home, false);
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "宿主壳开关关 = 拒绝（用户现场踩的正是这扇门）"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_both_off_and_recovery() {
+    let home = runtime_gate_home("both_off");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    write_native_switch(&home, false);
+    assert!(!runtime_enabled(&home.join("workspace")));
+    // 开关改回 = 即时恢复（无缓存；热语义核心不变量）
+    write_native_switch(&home, true);
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "总闸仍关 = 仍拒绝"
+    );
+    std::fs::write(home.join("config.json"), r#"{"plugins":{}}"#).unwrap();
+    assert!(
+        runtime_enabled(&home.join("workspace")),
+        "双源回开 = 即时恢复"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_malformed_master_falls_to_shell_switch() {
+    let home = runtime_gate_home("malformed");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(home.join("config.json"), "{ not valid !!!").unwrap();
+    // 主配置损坏 = 该源跳过（按缺省 true），宿主壳闸独立裁决
+    assert!(runtime_enabled(&home.join("workspace")));
+    write_native_switch(&home, false);
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "损坏主配置不影响壳闸裁决"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

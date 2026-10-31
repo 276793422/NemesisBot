@@ -100,6 +100,28 @@ macro_rules! export_loop_policy {
     };
 }
 
+/// 面板插件一键导出（2026-10-31 面板扩展批；crate 根调用；工程须有
+/// `wit/plugin.wit` 合同副本）。
+///
+/// 展开顺序：生成 `plugin-panel` world 绑定（`exports::nemesis::plugin::ui`
+/// 与 `nemesis::plugin::host` 导入模块）→ `export!($ty)`。
+/// `runtime_path` 语义同 [`export_tool!`]。面板 guest 实现
+/// `exports::nemesis::plugin::ui::Guest::handle_ui_command(input: String)
+/// -> Result<String, host::HostError>`：入参投影
+/// `{"command":...,"args":{...},"context":{"slug":...}}`，出参为回复 JSON
+/// 串（约定对象；业务失败 `{"error":"..."}` 形态，不 trap）。
+#[macro_export]
+macro_rules! export_ui {
+    ($ty:ident) => {
+        ::nemesis_plugin_sdk::generate!({
+            path: "wit",
+            world: "plugin-panel",
+            runtime_path: "nemesis_plugin_sdk",
+        });
+        ::nemesis_plugin_sdk::__export_impl!($ty);
+    };
+}
+
 /// generate!/export! 的顺序衔接（`export!` 宏由 generate! 展开产物定义到
 /// 调用 crate 根——必须在其后展开）；不对外稳定。片段全程 `ident`（宏链
 /// 逐层转发，`ty` 片段无法再匹配内层 `ident`）。
@@ -156,6 +178,8 @@ pub mod guide {
     pub const OBSERVER_GUEST: &str = "exports::nemesis::plugin::observer::Guest";
     /// 循环策略插件 Guest trait（生成后位于插件 crate）。
     pub const LOOP_POLICY_GUEST: &str = "exports::nemesis::plugin::loop_policy::Guest";
+    /// 面板插件 Guest trait（生成后位于插件 crate）。
+    pub const UI_GUEST: &str = "exports::nemesis::plugin::ui::Guest";
 }
 
 pub mod types {
@@ -194,4 +218,11 @@ pub mod types {
     /// - `validate-args`：入 `{tool, schema, args}`；出
     ///   `valid | fixed{args} | reject{message} | builtin`。
     pub struct LoopPolicyDoc;
+
+    /// 面板单出口（2026-10-31 面板扩展批）：`handle-ui-command`，单
+    /// json-string 进出——入 `{"command":...,"args":{...},
+    /// "context":{"slug":...}}`；出回复 JSON 串（约定对象；业务失败
+    /// `{"error":"..."}` 形态，非 trap）。guest 可经 `host::tool_invoke`
+    /// 执行动作（过宿主安全 8 层与审批）。
+    pub struct PanelDoc;
 }

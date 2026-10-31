@@ -291,6 +291,9 @@ fn registry_anchor_commands_present() {
             "wasm.config.set",
             "wasm.logs",
             "wasm.devkit_download",
+            // 面板通道（2026-10-31 面板扩展批）。
+            "ui.registry",
+            "ui.invoke",
         ] {
             assert!(
                 p.contains(&anchor),

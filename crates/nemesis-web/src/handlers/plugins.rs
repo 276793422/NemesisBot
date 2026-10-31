@@ -412,6 +412,10 @@ impl ModuleHandler for PluginsHandler {
             "wasm.logs",
             #[cfg(feature = "plugins-wasm")]
             "wasm.devkit_download",
+            #[cfg(feature = "plugins-wasm")]
+            "ui.registry",
+            #[cfg(feature = "plugins-wasm")]
+            "ui.invoke",
         ]
     }
 
@@ -432,6 +436,32 @@ impl ModuleHandler for PluginsHandler {
                     return self.devkit_download(&workspace, data).await.map(Some);
                 }
                 return crate::handlers::plugins_wasm::handle(bare, data).await;
+            }
+            #[cfg(not(feature = "plugins-wasm"))]
+            {
+                let _ = (bare, &data);
+                return Err(format!(
+                    "WASM 插件子系统未编译（plugins-wasm feature 关）：plugins.{cmd}"
+                ));
+            }
+        }
+        // 面板通道（2026-10-31 面板扩展批）：`ui.registry` 只读声明投影
+        // 不冻结（Dashboard 渲染【定制】锚点无害）；`ui.invoke` 是动作面
+        // ——estop 生效中 guest 命令转发一律拒绝（看板派发护栏同族）。
+        if let Some(bare) = cmd.strip_prefix("ui.") {
+            #[cfg(feature = "plugins-wasm")]
+            {
+                if bare == "invoke"
+                    && ctx
+                        .state
+                        .estop
+                        .as_ref()
+                        .map(|e| e.is_engaged())
+                        .unwrap_or(false)
+                {
+                    return Err("⛔ 急停（E-STOP）生效中：面板命令被拒绝（先释放急停）".to_string());
+                }
+                return crate::handlers::plugins_wasm::ui_handle(bare, data).await;
             }
             #[cfg(not(feature = "plugins-wasm"))]
             {

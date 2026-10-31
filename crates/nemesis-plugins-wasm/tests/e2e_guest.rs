@@ -748,3 +748,137 @@ async fn hand_copied_unsigned_denied_by_card_stays_out() {
         "开关先落盘（失败保持 true = 重试态）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2026-10-31 面板扩展批：panel-echo 夹具全链（install → enable → invoke_ui
+// 五行为面：echo 往返 / rows 投影 / fail 业务失败 / unknown 回执 / probe
+// 能力探针 + guest 日志 + 审计链）
+// ---------------------------------------------------------------------------
+
+const PANEL_ECHO_TOML: &str = r#"api-version = 1
+slug = "panel-echo"
+kind = "panel"
+name = "Panel Echo"
+version = "0.1.0"
+description = "e2e fixture panel"
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+[[ui.page]]
+route = "echo"
+title = "回显面板"
+
+[[ui.page.views]]
+kind = "table"
+bind = "cmd://rows"
+
+[[ui.page.views.columns]]
+key = "id"
+label = "编号"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "回显"
+command = "echo"
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_install_roundtrip_and_ui_invoke() {
+    let Some(wasm) = fixture_wasm("panel-echo", "panel_echo_plugin") else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let audit_dir = tempfile::tempdir().expect("audit tmp");
+    let logger = nemesis_security::audit_log::AuditLogger::new(
+        nemesis_security::audit_log::AuditLogConfig {
+            audit_log_dir: audit_dir.path().to_path_buf(),
+            enabled: true,
+        },
+    )
+    .expect("audit logger");
+    mgr.set_audit(Arc::new(std::sync::Mutex::new(logger)));
+
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), PANEL_ECHO_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let outcome = installer.install(&src, true).await.expect("install");
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    let reg = installer
+        .set_enabled("panel-echo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+
+    // ① 基线往返：echo 带中文（CABI 串跨界）。
+    let reply = mgr
+        .invoke_ui(
+            "panel-echo",
+            r#"{"command":"echo","args":{"text":"面板你好"}}"#.into(),
+        )
+        .await
+        .expect("echo");
+    assert!(reply.contains("\"ok\":true"), "reply: {reply}");
+    assert!(reply.contains("面板你好"), "reply: {reply}");
+
+    // ② table 数据投影（声明面 cmd://rows 绑定的guest 回执形态）。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"rows"}"#.into())
+        .await
+        .expect("rows");
+    assert!(reply.contains("NB-1"), "reply: {reply}");
+    assert!(reply.contains("样例行"), "reply: {reply}");
+
+    // ③ 业务失败形态（{"error":...} 约定回执，非 trap——宿主照常返回）。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"fail"}"#.into())
+        .await
+        .expect("fail passthrough");
+    assert!(reply.contains("演示性业务失败"), "reply: {reply}");
+
+    // ④ 未知命令 → guest 约定错误回执。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"nope"}"#.into())
+        .await
+        .expect("unknown cmd");
+    assert!(reply.contains("unknown command: nope"), "reply: {reply}");
+
+    // ⑤ 能力面探针：log + now + tool-invoke（独立运行时无接线 = unavailable）。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"probe"}"#.into())
+        .await
+        .expect("probe");
+    assert!(reply.contains("tool-invoke=unavailable"), "reply: {reply}");
+    assert!(reply.contains("\"now\":"), "reply: {reply}");
+    let (lines, _dropped) = reg.logs.snapshot();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.message.contains("panel probe begin")),
+        "log lines: {lines:?}"
+    );
+
+    // 审计链：每次 invoke 落 plugin_ui_invoke allow 事件。
+    let body = audit_body(audit_dir.path());
+    assert!(body.contains("plugin_ui_invoke"), "audit body: {body}");
+    // 开关关 → 真摘除（2026-10-22 纪律：disable = unregister，无「注册但拒
+    // 调用」半态）→ invoke 诚实报 not loaded（动作面随开关冻结）。
+    installer
+        .set_enabled("panel-echo", false)
+        .await
+        .expect("disable");
+    let err = mgr
+        .invoke_ui("panel-echo", r#"{"command":"echo"}"#.into())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not loaded"), "{err}");
+    let _ = ws; // tempdir 生命周期保持到断言结束
+}

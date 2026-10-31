@@ -220,6 +220,8 @@ async fn install_approver_unbound_is_fail_closed() {
         x_secret: vec![],
         wasm_bytes: 1,
         wasm_sha256: "ab".repeat(32),
+        ui_pages: 0,
+        flow_templates: 0,
         limits_ignored: vec![],
         source_dir: "C:\\tmp".into(),
     };
@@ -1059,4 +1061,152 @@ async fn apply_takeovers_gate_and_rebuild_semantics() {
     let l2 = build_loop();
     assert_eq!(super::apply_takeovers(&l2, &manager, true), 1);
     assert_eq!(super::takeover_switch_state("tt_apply_probe"), Some(true));
+}
+
+// ==================== 运行期总闸·执行/供给面（2026-11-01 复查补漏） ====================
+
+#[tokio::test]
+// temp_home 的 std 锁是测试 home 隔离串行（守卫活满用例；同 routes_by_switch
+// 纪律注释——被 await 的 execute 只读 AtomicBool 不取该锁）。
+#[allow(clippy::await_holding_lock)]
+async fn takeover_wrapper_master_gate_routes_to_builtin_and_recovers() {
+    // GAP #2 回归锁：总闸翻关后 active 位不动（翻关无热同步事件），路由
+    // 决策必须并入总闸快照——回内置执行体（可用性丢失语义），绝不是撞
+    // wasm 桥的总闸报错把「无缝回退」变成「工具报错」；翻回开立即恢复
+    // wasm 分支（无缓存）。
+    let (_lock, _dir, home) = temp_home();
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let inner = Arc::new(StubBuiltin {
+        tag: "mg",
+        cred_keys: &[],
+        read_only: true,
+    });
+    let bridge = PluginToolBridge::new(stub_meta("plugin.mg.base"), manager);
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let wrapper = super::TakeoverToolBridge {
+        inner: inner.clone(),
+        bridge,
+        active: active.clone(),
+    };
+    let ctx = nemesis_agent::context::RequestContext::new("test", "c1", "tester", "");
+
+    // 基线：总闸开 + active=true → wasm 桥路径（manager 无插件 = 桥级诚实错）。
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, "{}", &ctx).await;
+    assert!(out.is_err(), "总闸开 + active = wasm 桥路径");
+
+    // 宿主壳开关翻关：active 仍 true → 路由回内置（无缝回退语义）。
+    nemesis_config::plugins_native::set_enabled(
+        &common::workspace_path(&home).join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        false,
+    )
+    .expect("flip shell switch off");
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, "{}", &ctx).await;
+    assert_eq!(
+        out.expect("master-off = builtin fallback"),
+        "builtin:mg",
+        "总闸关必须无缝回内置，不得报桥级错误"
+    );
+
+    // 翻回开 → 下次调用立即回 wasm 分支。
+    nemesis_config::plugins_native::set_enabled(
+        &common::workspace_path(&home).join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        true,
+    )
+    .expect("flip shell switch on");
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, "{}", &ctx).await;
+    assert!(out.is_err(), "总闸回开 = 立即恢复 wasm 桥路径");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn supply_faces_follow_runtime_master_gate() {
+    // GAP #3 回归锁：总闸关 → register_plugin_tools 0 注册 + apply_takeovers
+    // 0 激活且侧表清空（loop 重建即收敛到启动关形态；接管总闸 gate=true
+    // 也压不过子系统总闸）；翻回开 = 下次重建双面恢复。
+    let _serial = TAKEOVER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_lock, dir, home) = temp_home();
+    let plugins_dir = dir.path().join("plugins_wasm");
+    let manager = Arc::new(
+        PluginManager::new_with_dirs(
+            &common::workspace_path(&home),
+            &plugins_dir,
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let build_loop = || {
+        let mut l = nemesis_agent::r#loop::AgentLoop::new(
+            Box::new(NoopLlmProvider),
+            nemesis_agent::types::AgentConfig::default(),
+        );
+        l.register_tool(
+            "tt_gate_probe".to_string(),
+            Box::new(StubBuiltin {
+                tag: "gate",
+                cred_keys: &[],
+                read_only: true,
+            }),
+        );
+        l
+    };
+
+    // 注册 tool 插件（带接管声明——同 apply 测试形态）。
+    manager
+        .register(
+            takeover_plugin_manifest("supplier", &["tt_gate_probe"]),
+            nemesis_plugins_wasm::PluginTrustState::ReviewRequired,
+            1,
+            Some(stub_meta("plugin.supplier.base")),
+            None,
+        )
+        .expect("register");
+
+    // 总闸翻关：双供给面全关。
+    nemesis_config::plugins_native::set_enabled(
+        &common::workspace_path(&home).join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        false,
+    )
+    .expect("flip shell switch off");
+    let mut l = build_loop();
+    assert_eq!(
+        super::register_plugin_tools(&mut l, &manager),
+        0,
+        "总闸关 = 插件工具不进供给面"
+    );
+    let l2 = build_loop();
+    assert_eq!(
+        super::apply_takeovers(&l2, &manager, true),
+        0,
+        "总闸关 = 接管面整体回内置（gate=true 也压不过）"
+    );
+    assert!(
+        super::takeover_switch_state("tt_gate_probe").is_none(),
+        "侧表清空，无死归因残留"
+    );
+
+    // 翻回开：下次重建双面恢复。
+    nemesis_config::plugins_native::set_enabled(
+        &common::workspace_path(&home).join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        true,
+    )
+    .expect("flip shell switch on");
+    let mut l3 = build_loop();
+    assert_eq!(
+        super::register_plugin_tools(&mut l3, &manager),
+        1,
+        "翻回开 = 供给恢复"
+    );
+    let l4 = build_loop();
+    assert_eq!(super::apply_takeovers(&l4, &manager, true), 1, "接管恢复");
 }

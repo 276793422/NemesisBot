@@ -24,6 +24,7 @@ const EXAMPLE_WIT_COPIES: &[&str] = &[
     "plugins/wasm/textstat/wit/plugin.wit",
     "plugins/wasm/wsinsight/wit/plugin.wit",
     "plugins/wasm/policy-sample/wit/plugin.wit",
+    "plugins/wasm/panel-echo/wit/plugin.wit",
 ];
 
 fn read(p: &Path) -> String {

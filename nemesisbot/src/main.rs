@@ -150,6 +150,15 @@ mod exec_world;
 /// `board.external_sources` 空 = 装配入口直接短路（零开销）。
 #[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
 mod external_source;
+/// P3 插件流程扩展：宿主侧 flow 引擎——面板插件 `[[flow.template]]` 剧本
+/// 的推进者（六类 step 原语绑定既有件：connector 取数 / board 落单 /
+/// agent_fixloop / 回归验收 / publish 发布 / dossier 报告；磁盘实例账本 +
+/// `flow://` 代答面 + manual gate 卡点 + estop 冻结）。门控 =
+/// plugins-wasm（manifest [[flow]] 段来源 + 代答桥；该 feature 已蕴含
+/// security）+ board（BoardStore/TaskOrigin）+ connectors（connector 执行
+/// 通路）——与 external_source/publish 消费点同闸。
+#[cfg(all(feature = "plugins-wasm", feature = "board", feature = "connectors"))]
+mod flow_engine;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;

@@ -1043,6 +1043,42 @@ pub(crate) async fn init_post_agent(
         );
     }
 
+    // P3 插件流程扩展（2026-10-31）：宿主 flow 引擎——面板插件
+    // `[[flow.template]]` 剧本推进者 + `flow://` 代答桥。board 任务库
+    // （tasks.db）独立连接开（多连接 WAL 既有纪律；开失败 = 引擎不装，
+    // warn 降级——面板 flow:// 绑定诚实报「流程引擎未装配」，其余零波及）。
+    // 三 feature 同闸：plugins-wasm（manifest [[flow]] 段 + 代答桥，蕴含
+    // security）+ board（store 面）+ connectors（connector 执行通路）。
+    #[cfg(all(feature = "plugins-wasm", feature = "board", feature = "connectors"))]
+    match nemesis_taskstore::TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &shared_resources.workspace_dir(),
+    )) {
+        Ok(db) => {
+            let flow_engine = std::sync::Arc::new(crate::flow_engine::FlowEngine::new(
+                agent_loop.clone(),
+                board_store
+                    .clone()
+                    .expect("board feature 已启用，board_store 必在"),
+                db,
+                home.join("workspace"),
+                home.clone(),
+                shared_resources.estop.clone(),
+                #[cfg(feature = "cluster")]
+                cluster_arc_ref.clone(),
+                #[cfg(not(feature = "cluster"))]
+                (),
+            ));
+            flow_engine.spawn_tick_loop();
+            nemesis_web::handlers::plugins_wasm::install_flow_engine_bridge(std::sync::Arc::new(
+                crate::flow_engine::FlowBridge::new(flow_engine),
+            ));
+            info!("[Gateway] Flow engine spawned + flow:// bridge installed");
+        }
+        Err(e) => {
+            warn!("[Gateway] flow 引擎未装配（tasks.db 打开失败）: {e}");
+        }
+    }
+
     // C5: inject the shared LSP manager (same Arc the LspTool registered
     // with) — Phase-2 diagnostics loop and future dashboard LSP ops read it.
     #[cfg(feature = "lsp")]

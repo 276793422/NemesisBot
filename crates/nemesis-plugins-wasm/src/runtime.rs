@@ -316,6 +316,37 @@ impl PluginRuntime {
         })
         .await
     }
+
+    /// 调用一次面板命令（ui.handle-ui-command；JSON 进出，墙钟同通用上限）。
+    ///
+    /// 帧纪律：非观察者帧（guest 动作要经 invoker 走 tool-invoke 全闸）；
+    /// llm 恒 None（LLM 花销只授循环治理路径，面板通道无此预算）；session
+    /// key 从入参投影抽取（审计 user 字段，策略点同源）。
+    pub(crate) async fn call_ui(
+        &self,
+        comp: u64,
+        mut frame: CallFrame,
+        input_json: String,
+    ) -> Result<String, PluginError> {
+        frame.observer_frame = false;
+        frame.kind = PluginKind::Panel;
+        frame.llm = None;
+        frame.session_key = extract_session_key(&input_json);
+        let timeout_ms = frame.limits.timeout_ms;
+        let name = "handle-ui-command";
+        self.run_call(comp, frame, timeout_ms, move |session| {
+            let out = session.call(name, &input_json, timeout_ms)?;
+            // 与策略点同形 result<json-string, host-error>；业务失败走
+            // 出参 {"error":...} 形态（guest 约定），host-error 走宿主错误面。
+            match bindings::parse_json_string_result(&out)
+                .map_err(|he| PluginError::Trap(format!("{name} decode: {he}")))?
+            {
+                Ok(reply_json) => Ok(reply_json),
+                Err(he) => Err(PluginError::Trap(format!("{name} host-error: {he}"))),
+            }
+        })
+        .await
+    }
 }
 
 /// 从策略投影 JSON 抽 session_key（审计 user 字段；无键 = 空串）。

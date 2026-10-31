@@ -568,6 +568,36 @@ impl PluginManager {
                 "policy plugin missing metadata snapshot".into(),
             ));
         }
+        // 面板注册面（2026-10-31 面板扩展批）：不携 tool/policy 元数据
+        // （扩展点本体 = ui/flow 声明面 + 可选 guest 命令通道，不走这两张
+        // 快照）；有载荷面板必须有编译句柄，纯声明式用 0 哨兵（无组件可
+        // drop，壳对 0 容忍）；路由跨插件唯一（前端 /panel/<route> 动态
+        // 挂载键，双声明 = 后装者诚实拒绝）。
+        if *manifest.kind == PluginKind::Panel {
+            if tool_meta.is_some() || policy_meta.is_some() {
+                return Err(PluginError::Manifest(
+                    "panel plugin must not carry tool/policy metadata".into(),
+                ));
+            }
+            if manifest.wasm_sha256.is_some() && component == 0 {
+                return Err(PluginError::Manifest(
+                    "panel plugin with payload requires a compiled component".into(),
+                ));
+            }
+            for reg in self.list() {
+                if *reg.manifest.kind != PluginKind::Panel {
+                    continue;
+                }
+                for page in &reg.manifest.ui.pages {
+                    if manifest.ui.pages.iter().any(|p| p.route == page.route) {
+                        return Err(PluginError::MetadataMismatch(format!(
+                            "ui route '{}' already declared by plugin '{}'",
+                            page.route, reg.manifest.slug
+                        )));
+                    }
+                }
+            }
+        }
         let (limits, ignored) = self.limits.tighten_with(&manifest.limits);
         for k in &ignored {
             tracing::warn!(slug = %slug, key = %k, "[WasmPlugin] manifest limits 放宽请求被忽略（只允许收紧）");
@@ -705,6 +735,45 @@ impl PluginManager {
             .await
     }
 
+    /// 面板命令转发（WSAPI `plugins.ui.invoke` 桥层入口；kind=panel 且启用）。
+    ///
+    /// 纯声明式插件（无载荷）在此诚实报错——`flow://` 绑定由 flow 引擎代答
+    /// （不经本通道），`cmd://` 绑定需要 guest，无载荷即无命令可转发。
+    /// 审计链对每次转发留痕（面板信任级 = dashboard 登录用户，无审批卡）。
+    pub async fn invoke_ui(&self, slug: &str, input_json: String) -> Result<String, PluginError> {
+        let Some(reg) = self.get(slug) else {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin not loaded: {slug}"
+            )));
+        };
+        if *reg.manifest.kind != PluginKind::Panel {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' is not a panel (kind={})",
+                reg.manifest.kind.as_str()
+            )));
+        }
+        if !self.is_enabled() || !reg.enabled.load(Ordering::SeqCst) {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' disabled"
+            )));
+        }
+        if reg.component == 0 {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' is declarative (no guest payload; cmd:// bind unavailable)"
+            )));
+        }
+        self.audit_event(
+            "plugin_ui_invoke",
+            "allow",
+            slug,
+            "LOW",
+            "panel command forwarded to guest",
+            "",
+        );
+        let frame = self.build_frame(&reg, false);
+        self.runtime.call_ui(reg.component, frame, input_json).await
+    }
+
     /// 找出接管某策略点的启用组件（桥层路由入口；None = 无接管 → 调用方
     /// 走内置实现）。
     #[must_use]
@@ -769,6 +838,15 @@ impl PluginManager {
                 "wasm plugin subsystem disabled".into(),
             ));
         }
+        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关 = 本注释
+        // 承诺的「子系统总开关关」臂——此前只实装了 estop 臂，策略面在翻关
+        // 后仍会咨询 guest。NotAvailable 语义下调用方静默回退内置策略
+        // （PolicyBridge 已有映射），开关改回即时恢复。
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled (runtime master gate)".into(),
+            ));
+        }
         let frame = self.build_frame(&reg, false);
         self.runtime
             .call_policy(reg.component, frame, point, input_json)
@@ -778,6 +856,11 @@ impl PluginManager {
     /// 投递一条观察者事件给全部启用的观察者插件（fire-and-forget；满丢弃+计数）。
     pub fn enqueue_observer_event(&self, event_json: String) {
         if !self.is_enabled() {
+            return;
+        }
+        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关后观察者
+        // 泵静默停投（fire-and-forget 语义一致）；开关改回即时恢复。
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
             return;
         }
         for reg in self.list() {
@@ -814,6 +897,13 @@ impl PluginManager {
         tokio::spawn(async move {
             while let Some(event_json) = rx.recv().await {
                 let Some(mgr) = mgr.upgrade() else { break };
+                // 运行期总闸（2026-11-01 BUG 修复）：入队闸只挡新增，翻关
+                // 前已排队的在途事件由这里兜住——「翻关后 guest 不执行任何
+                // 代码」的严格口径。丢弃与入队满丢语义一致（fire-and-forget
+                // 事件无回执）；开关改回即时恢复投递。
+                if !nemesis_config::plugin_wasm::runtime_enabled(&mgr.workspace_root) {
+                    continue;
+                }
                 let Some(reg) = mgr.get(&slug) else { break };
                 if !reg.enabled.load(Ordering::SeqCst) {
                     continue;

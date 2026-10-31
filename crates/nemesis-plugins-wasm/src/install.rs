@@ -53,7 +53,7 @@ pub struct PluginLockfile {
 pub struct LockfileEntry {
     /// manifest 版本。
     pub version: String,
-    /// wasm sha256（hex64）。
+    /// wasm sha256（hex64；纯声明式插件（无载荷）= 空串——无字节可比对）。
     pub wasm_sha256: String,
     /// 信任四态字符串。
     pub trust: String,
@@ -72,7 +72,7 @@ pub struct InstallReview {
     pub name: String,
     /// 版本。
     pub version: String,
-    /// kind（tool/observer/policy）。
+    /// kind（tool/observer/policy/panel）。
     pub kind: String,
     /// 信任四态。
     pub trust_state: String,
@@ -88,8 +88,12 @@ pub struct InstallReview {
     pub wasm_bytes: u64,
     /// wasm sha256（hex64，第③步重算值——审批卡上的人比对照锚点，与
     /// manifest/lockfile 记账同源。2026-09-30 复查 #12：装的是哪个载荷，
-    /// 审批者有权知道）。
+    /// 审批者有权知道。纯声明式 = 空串）。
     pub wasm_sha256: String,
+    /// 面板页面数（kind=panel 的声明面摘要；其他 kind = 0）。
+    pub ui_pages: usize,
+    /// flow 剧本模板数（kind=panel 的声明面摘要；其他 kind = 0）。
+    pub flow_templates: usize,
     /// manifest limits 被忽略的放宽请求。
     pub limits_ignored: Vec<String>,
     /// 来源目录。
@@ -279,32 +283,43 @@ impl PluginInstaller {
         let (manifest, outcome) = verify_manifest(&raw, &self.verifier)?;
         let trust_state = trust_state_for(&outcome, allow_unsigned)?;
 
+        // 纯声明式面板（无载荷）：③④⑥ 三步诚实跳过——无字节可比对/
+        // 可扫描/可编译，扩展点本体（ui/flow 段）全由宿主引擎兑现；
+        // manifest 校验已保证声明式必为 panel 且至少一个页面。
+        let declarative = manifest.wasm_sha256.is_none();
+
         // ③ wasm sha256 重算 + 大小上限（上限在读盘前用 metadata 判，
         // 64MiB 读进内存的 OOM 面提前拦）
-        ensure_plain_filename(&manifest.wasm)?;
-        let wasm_path = source_dir.join(&manifest.wasm);
-        let wasm_len = std::fs::metadata(&wasm_path)
-            .map_err(|e| PluginError::Wasm(format!("stat {}: {e}", wasm_path.display())))?
-            .len();
-        if wasm_len > WASM_MAX_BYTES {
-            return Err(PluginError::Wasm(format!(
-                "wasm exceeds {WASM_MAX_BYTES} bytes ({wasm_len})"
-            )));
-        }
-        let wasm_bytes = std::fs::read(&wasm_path)
-            .map_err(|e| PluginError::Wasm(format!("read {}: {e}", wasm_path.display())))?;
-        let actual_hash = hex::encode(Sha256::digest(&wasm_bytes));
-        if actual_hash != manifest.wasm_sha256.to_lowercase() {
-            return Err(PluginError::Wasm(format!(
-                "wasm sha256 mismatch: manifest {} actual {actual_hash}",
-                manifest.wasm_sha256
-            )));
+        let mut wasm_len = 0u64;
+        let mut actual_hash = String::new();
+        let mut wasm_bytes: Vec<u8> = Vec::new();
+        let mut scan_note: Option<String> = None;
+        if !declarative {
+            ensure_plain_filename(&manifest.wasm)?;
+            let wasm_path = source_dir.join(&manifest.wasm);
+            wasm_len = std::fs::metadata(&wasm_path)
+                .map_err(|e| PluginError::Wasm(format!("stat {}: {e}", wasm_path.display())))?
+                .len();
+            if wasm_len > WASM_MAX_BYTES {
+                return Err(PluginError::Wasm(format!(
+                    "wasm exceeds {WASM_MAX_BYTES} bytes ({wasm_len})"
+                )));
+            }
+            wasm_bytes = std::fs::read(&wasm_path)
+                .map_err(|e| PluginError::Wasm(format!("read {}: {e}", wasm_path.display())))?;
+            actual_hash = hex::encode(Sha256::digest(&wasm_bytes));
+            let expect = manifest.wasm_sha256.as_deref().unwrap_or_default();
+            if actual_hash != expect.to_lowercase() {
+                return Err(PluginError::Wasm(format!(
+                    "wasm sha256 mismatch: manifest {expect} actual {actual_hash}"
+                )));
+            }
+
+            // ④ 病毒扫描（无引擎跳过并注记）
+            scan_note = self.scan_payload(&wasm_bytes, &manifest.slug).await?;
         }
 
-        // ④ 病毒扫描（无引擎跳过并注记）
-        let scan_note = self.scan_payload(&wasm_bytes, &manifest.slug).await?;
-
-        // ⑤ 审批卡
+        // ⑤ 审批卡（纯声明式：wasm 摘要为零值 + ui/flow 计数留痕）
         let review = InstallReview {
             slug: manifest.slug.clone(),
             name: manifest.name.clone(),
@@ -315,8 +330,10 @@ impl PluginInstaller {
             signer_key: outcome.public_key.chars().take(16).collect(),
             egress: manifest.permissions.egress.clone(),
             x_secret: manifest.permissions.x_secret.clone(),
-            wasm_bytes: wasm_bytes.len() as u64,
+            wasm_bytes: wasm_len,
             wasm_sha256: actual_hash,
+            ui_pages: manifest.ui.pages.len(),
+            flow_templates: manifest.flow.templates.len(),
             limits_ignored: self.manager.limits().tighten_with(&manifest.limits).1,
             source_dir: source_dir.display().to_string(),
         };
@@ -338,11 +355,16 @@ impl PluginInstaller {
             }
         }
 
-        // ⑥ 编译 + 元数据对账
-        let component = self.manager.runtime().compile_component(&wasm_bytes)?;
-        let (tool_meta, policy_meta) = self
-            .probe_and_reconcile(&manifest, component, trust_state)
-            .await?;
+        // ⑥ 编译 + 元数据对账（纯声明式跳过——无组件；component=0 无效哨兵）
+        let (component, tool_meta, policy_meta) = if declarative {
+            (0u64, None, None)
+        } else {
+            let component = self.manager.runtime().compile_component(&wasm_bytes)?;
+            let (tool_meta, policy_meta) = self
+                .probe_and_reconcile(&manifest, component, trust_state)
+                .await?;
+            (component, tool_meta, policy_meta)
+        };
 
         // ⑦ lockfile（lockfile-first：落位之前写——失败 = 零突变干净中止，
         // 优于「报失败但新载荷已生效」的谎报；与 uninstall 的 remove-lockfile
@@ -368,8 +390,10 @@ impl PluginInstaller {
             .map_err(|e| PluginError::Io(format!("create plugin dir: {e}")))?;
         std::fs::write(target.join("plugin.toml"), raw.as_bytes())
             .map_err(|e| PluginError::Io(format!("write manifest: {e}")))?;
-        std::fs::write(target.join(&manifest.wasm), &wasm_bytes)
-            .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
+        if !declarative {
+            std::fs::write(target.join(&manifest.wasm), &wasm_bytes)
+                .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
+        }
 
         if let Some(note) = scan_note {
             tracing::info!(slug = %manifest.slug, "[WasmPlugin] {note}");
@@ -412,7 +436,10 @@ impl PluginInstaller {
 
     /// 编译后对账（第⑥步）：tool = probe get-metadata + 字段合法性；
     /// observer = 只编译验证（probe 由注册后首事件兜底）；
-    /// policy = probe get-policy-metadata + ≥1 接管点校验（2026-10-22 批 4）。
+    /// policy = probe get-policy-metadata + ≥1 接管点校验（2026-10-22 批 4）；
+    /// panel = 只编译验证（2026-10-31 面板扩展批——壳 compile 期已验 world +
+    /// `handle-ui-command` 导出在场；页面/路由合法性是声明面，归 manifest
+    /// validate，无运行期元数据可探）。
     #[allow(clippy::type_complexity)]
     async fn probe_and_reconcile(
         &self,
@@ -421,7 +448,7 @@ impl PluginInstaller {
         trust_state: PluginTrustState,
     ) -> Result<(Option<ToolMetaSnapshot>, Option<PolicyMetaSnapshot>), PluginError> {
         let _ = trust_state;
-        if *manifest.kind == PluginKind::Observer {
+        if *manifest.kind == PluginKind::Observer || *manifest.kind == PluginKind::Panel {
             return Ok((None, None));
         }
         if *manifest.kind == PluginKind::Policy {
@@ -520,7 +547,7 @@ impl PluginInstaller {
             manifest.slug.clone(),
             LockfileEntry {
                 version: manifest.version.clone(),
-                wasm_sha256: manifest.wasm_sha256.clone(),
+                wasm_sha256: manifest.wasm_sha256.clone().unwrap_or_default(),
                 trust: trust_state.as_str().to_string(),
                 installed_at_ms: unix_millis(),
                 signed_by: outcome.public_key.chars().take(16).collect(),
@@ -707,15 +734,21 @@ impl PluginInstaller {
         }
         // 装载容差由调用方按 lockfile 安装期记录给（recorded_allow_unsigned）。
         let trust_state = trust_state_for(&outcome, allow_unsigned)?;
+        // 纯声明式（无载荷）：跳过 sha/编译/对账——无字节可比对、无组件
+        // 可编译；component=0 无效哨兵（壳对 0 容忍；invoke 侧对 0 诚实
+        // 报「无载荷」）。
+        if manifest.wasm_sha256.is_none() {
+            return self.manager.register(manifest, trust_state, 0, None, None);
+        }
         ensure_plain_filename(&manifest.wasm)?;
         let wasm_path = pdir.join(&manifest.wasm);
         let wasm_bytes = std::fs::read(&wasm_path)
             .map_err(|e| PluginError::Wasm(format!("read {}: {e}", wasm_path.display())))?;
         let actual_hash = hex::encode(Sha256::digest(&wasm_bytes));
-        if actual_hash != manifest.wasm_sha256.to_lowercase() {
+        let expect = manifest.wasm_sha256.as_deref().unwrap_or_default();
+        if actual_hash != expect.to_lowercase() {
             return Err(PluginError::Wasm(format!(
-                "wasm sha256 mismatch (payload changed after install?): manifest {} actual {actual_hash}",
-                manifest.wasm_sha256
+                "wasm sha256 mismatch (payload changed after install?): manifest {expect} actual {actual_hash}",
             )));
         }
         let component = self.manager.runtime().compile_component(&wasm_bytes)?;

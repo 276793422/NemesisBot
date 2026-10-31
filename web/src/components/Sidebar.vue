@@ -8,6 +8,7 @@ import { useEditorMode } from '../composables/useEditorMode'
 import { useToast } from '../composables/useToast'
 import { on as onSSE, off as offSSE } from '../composables/useSSE'
 import { visibleNavGroups as visibleNavGroupsFiltered } from '../skins/navModel'
+import { usePanels, panelNavItems } from '../composables/usePanels'
 
 const router = useRouter()
 const route = useRoute()
@@ -42,6 +43,8 @@ async function openHomeDir() {
 // E-stop (kill switch): reflect + toggle global agent freeze via WSAPI.
 // engage/release 操作的是 gateway 里和 agent loop 共享的同一个 EstopState。
 const { request } = useWSAPI()
+// 面板注册表（【定制】组）——拉取单例 + 变化去重都在 usePanels 内。
+const { fetchPanels } = usePanels()
 const estopEngaged = ref(false)
 const estopBusy = ref(false)
 let estopTimer: ReturnType<typeof setInterval> | undefined
@@ -304,11 +307,13 @@ onMounted(() => {
   refreshEstop()
   refreshSigVerify()
   refreshSelfupdate()
+  fetchPanels() // 面板注册表（【定制】组）；失败静默等下轮
   onSSE('selfupdate-progress', onSuProgress)
   estopTimer = setInterval(() => {
     refreshEstop()
     refreshSigVerify() // 已加载即 no-op；状态进程内不变，无需独立计时器
     refreshSelfupdate()
+    fetchPanels() // 变化去重在 composable 内——清单不变=零响应式扰动
   }, 10000)
 })
 onUnmounted(() => {
@@ -319,7 +324,21 @@ onUnmounted(() => {
 // 导航分组清单 + feature 门控已上收 skins/navModel.ts（P2b 契约层单一
 // 真相源）：Sidebar 与 window.NemesisSkin.nav.model() 消费同一份模型，
 // 两处列表漂移 = 契约测试红。这里只保留响应式投影。
-const visibleNavGroups = computed(visibleNavGroupsFiltered)
+// 【定制】动态分组（2026-10-31 面板扩展 P2）在**渲染层**合并：静态契约
+// （navModel + 契约测试的「grouped ⊆ NAV_GROUPS」不变量）不动，插件面板
+// 页由 panelNavItems 供数、/panel/:route 静态参数路由承载。
+// 位置（2026-11-01 用户拍板）：插在【团队】之后——面板是团队协作域的
+// 扩展面，不沉到全部分组末尾；团队组被 feature 裁掉时（IoT 构建）回落
+// 追加到末尾。
+const visibleNavGroups = computed(() => {
+  const groups = visibleNavGroupsFiltered()
+  const items = panelNavItems()
+  if (!items.length) return groups
+  const out = [...groups]
+  const at = out.findIndex((g) => g.title === '团队')
+  out.splice(at >= 0 ? at + 1 : out.length, 0, { title: '定制', items })
+  return out
+})
 </script>
 
 <template>

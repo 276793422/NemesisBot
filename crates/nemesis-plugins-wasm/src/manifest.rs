@@ -23,6 +23,22 @@
 //!
 //! [config-schema]            # 可选；实例配置声明（键 → 人读描述）
 //! target_lang = "翻译目标语言"
+//!
+//! # —— 以下仅 kind = "panel"（2026-10-31 面板扩展批）——
+//! # 纯声明式面板：可省略 wasm / wasm-sha256（无载荷）
+//! [[ui.page]]
+//! route = "bugfix"
+//! title = "BUG 修复流水线"
+//! [[ui.page.views]]
+//! kind = "table"                      # form|table|timeline|detail|actions
+//! bind = "flow://bugfix-pipeline/list"  # flow:// 宿主代答 | cmd://<cmd> guest
+//! [[flow.template]]
+//! id = "bugfix-pipeline"
+//! [[flow.template.steps]]
+//! id = "fetch"
+//! kind = "connector_fetch"
+//! gate = "manual"                     # manual = 面板人工卡点
+//! on_fail = "retry:3"                 # park_human(缺省) | retry:<1-10> | continue
 //! ```
 
 use std::collections::BTreeMap;
@@ -43,6 +59,11 @@ pub enum PluginKind {
     Observer,
     /// 循环策略插件（world `plugin-loop-policy`；2026-10-22 样板工程批 4）。
     Policy,
+    /// 面板插件（world `plugin-panel`；2026-10-31 面板扩展批）——Dashboard
+    /// 「定制」分组页面：骨架由 `[[ui]]` 段声明、宿主预置组件渲染，命令
+    /// 通道 `handle-ui-command`；流程剧本由 `[[flow]]` 段声明、宿主 flow
+    /// 引擎执行。可带 guest 载荷（动作翻译），也可纯声明式（无载荷）。
+    Panel,
 }
 
 impl PluginKind {
@@ -53,7 +74,15 @@ impl PluginKind {
             Self::Tool => "tool",
             Self::Observer => "observer",
             Self::Policy => "policy",
+            Self::Panel => "panel",
         }
+    }
+
+    /// 该 kind 是否必须有 guest 载荷（wasm-sha256 必填）。
+    /// panel 是唯一允许纯声明式（无载荷）的 kind。
+    #[must_use]
+    pub fn requires_payload(&self) -> bool {
+        !matches!(self, Self::Panel)
     }
 }
 
@@ -70,6 +99,144 @@ pub struct ManifestPermissions {
     /// 凭据名声明（x-secret；进入 vault 别名约定）。
     #[serde(default, rename = "x-secret")]
     pub x_secret: Vec<String>,
+}
+
+/// 面板视图词汇表（v1 五种；2026-10-31 面板扩展批）。
+///
+/// 骨架由宿主预置组件渲染，插件永不自带 HTML/JS（三方任意前端代码 =
+/// XSS/凭据窃取面）。超出词汇表的呈现诉求等 v2 iframe 沙盒通道。
+pub const UI_VIEW_KINDS: &[&str] = &["form", "table", "timeline", "detail", "actions"];
+
+/// flow step 原语词表（v1 六种；宿主 flow 引擎的绑定面）。
+pub const FLOW_STEP_KINDS: &[&str] = &[
+    "connector_fetch", // connector op 拉外部条目 → 建实例
+    "board_land",      // board 建单 + 任务副本（external_source 同源链）
+    "agent_fixloop",   // 派发执行 + 交付捕获（测试⇄分析⇄改码循环）
+    "check_regress",   // 锚点双检 + 必检对账 + 评审
+    "publish",         // publish.rs：分支推送 + PR + unknown 对账
+    "report",          // dossier 导出 + connector 回帖
+];
+
+/// 表格/详情列定义。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UiColumn {
+    /// 数据键（行 JSON 的字段名）。
+    pub key: String,
+    /// 人读表头。
+    pub label: String,
+}
+
+/// 表单字段定义。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UiField {
+    /// 配置键（写入实例配置；secret 型进 vault 别名）。
+    pub key: String,
+    /// 人读标签。
+    pub label: String,
+    /// 控件形态：string | text | bool | int | secret（缺省 string；
+    /// secret = 值走 vault，表单只显占位不回显原文）。
+    #[serde(default = "default_field_type")]
+    pub field_type: String,
+    /// 占位提示。
+    #[serde(default)]
+    pub placeholder: String,
+    /// 说明文字。
+    #[serde(default)]
+    pub hint: String,
+}
+
+fn default_field_type() -> String {
+    "string".to_string()
+}
+
+/// 动作按钮定义。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UiButton {
+    /// 按钮文案。
+    pub label: String,
+    /// 触发的 guest 命令名（经 `plugins.ui.invoke` 转发 `handle-ui-command`）。
+    pub command: String,
+    /// 点击后需二次确认（默认 false）。
+    #[serde(default)]
+    pub confirm: bool,
+    /// 危险样式（默认 false）。
+    #[serde(default)]
+    pub danger: bool,
+}
+
+/// 面板视图声明（`[[ui.page.views]]`）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UiView {
+    /// 组件词汇表（[`UI_VIEW_KINDS`]）。
+    pub kind: String,
+    /// 数据绑定：`flow://<template-id>/<view>`（宿主 flow 引擎代答）或
+    /// `cmd://<command>`（guest `handle-ui-command`）。
+    pub bind: String,
+    /// table/detail 列定义。
+    #[serde(default)]
+    pub columns: Vec<UiColumn>,
+    /// form 字段定义。
+    #[serde(default)]
+    pub fields: Vec<UiField>,
+    /// actions 按钮定义。
+    #[serde(default)]
+    pub buttons: Vec<UiButton>,
+}
+
+/// 面板页面声明（`[[ui.page]]`）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UiPage {
+    /// 路由段（`/panel/<route>`；`[a-z0-9-]{1,64}` 形态同 slug）。
+    pub route: String,
+    /// 页面标题。
+    pub title: String,
+    /// 图标名（词汇表内；未知名宿主诚实回退默认图标）。
+    #[serde(default)]
+    pub icon: String,
+    /// 视图清单（自上而下渲染）。
+    #[serde(default)]
+    pub views: Vec<UiView>,
+}
+
+/// flow 步骤声明（`[[flow.template.steps]]`）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct FlowStep {
+    /// 步骤 id（`[a-z0-9-]{1,64}`；模板内唯一）。
+    pub id: String,
+    /// 原语种类（[`FLOW_STEP_KINDS`]；宿主 flow 引擎绑定面）。
+    pub kind: String,
+    /// 卡点：缺省 auto；`manual` = 面板人工闸（实例停 awaiting-gate 态，
+    /// actions 视图渲染确认按钮）。
+    #[serde(default)]
+    pub gate: String,
+    /// 失败分支：缺省 park-human；`retry:<N>`（1..=10，超限转 parked）；
+    /// `continue`（记缺口继续）。
+    #[serde(default)]
+    pub on_fail: String,
+    /// 步骤参数（如 connector id、op id、模板变量；语义由 step kind 定）。
+    #[serde(default)]
+    pub args: BTreeMap<String, String>,
+}
+
+/// flow 剧本模板声明（`[[flow.template]]`）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct FlowTemplate {
+    /// 模板 id（`[a-z0-9-]{1,64}`；flow:// 绑定与实例落账的命名空间）。
+    pub id: String,
+    /// fetch 轮询周期秒（0 = 只手动触发；缺省 0）。
+    #[serde(default)]
+    pub interval_secs: u64,
+    /// 步骤序列（≥1；顺序执行。serde default 让零步骤模板走到 validate
+    /// 报「needs at least one step」人读错误，而非 TOML 层 missing field）。
+    #[serde(default)]
+    pub steps: Vec<FlowStep>,
 }
 
 /// manifest 根结构（`signature` 表不在此——由验签器从原始文档剥离）。
@@ -92,8 +259,10 @@ pub struct PluginManifest {
     /// wasm 文件名（相对插件目录；缺省 `plugin.wasm`）。
     #[serde(default = "default_wasm_file")]
     pub wasm: String,
-    /// wasm sha256（hex64；安装期重算比对）。
-    pub wasm_sha256: String,
+    /// wasm sha256（hex64；安装期重算比对）。`None` = 纯声明式插件
+    /// （无载荷，仅 `kind=panel` 合法——ui/flow 段全由宿主引擎兑现）。
+    #[serde(default)]
+    pub wasm_sha256: Option<String>,
     /// 最低调用档（mini/normal/big；缺省 big）。
     #[serde(default = "default_min_tier")]
     pub min_tier: String,
@@ -106,11 +275,35 @@ pub struct PluginManifest {
     /// 实例配置声明（键 → 人读描述；x-secret 键不在此——凭据面分离）。
     #[serde(default)]
     pub config_schema: BTreeMap<String, String>,
+    /// 面板页面声明（仅 `kind=panel` 可声明；2026-10-31 面板扩展批）。
+    #[serde(default, rename = "ui")]
+    pub ui: UiSection,
+    /// flow 剧本模板声明（仅 `kind=panel` 可声明；2026-10-31 面板扩展批）。
+    #[serde(default)]
+    pub flow: FlowSection,
     /// 接管声明（内置工具名清单；2026-10-23 工具接管层）。仅 `kind=tool`
     /// 可声明；deny-list 命中 parse 拒绝。声明 = 安装审批卡 + wasm.list
     /// 徽标双留痕，激活还要过「目标在 loop 注册表在场」闸（agent_factory 8d）。
     #[serde(default)]
     pub takeover: Vec<String>,
+}
+
+/// 面板页面声明段（`ui` 表）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UiSection {
+    /// 页面清单（可多页；`[[ui.page]]`）。
+    #[serde(default, rename = "page")]
+    pub pages: Vec<UiPage>,
+}
+
+/// flow 剧本声明段（`flow` 表）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct FlowSection {
+    /// 剧本模板清单（`[[flow.template]]`）。
+    #[serde(default, rename = "template")]
+    pub templates: Vec<FlowTemplate>,
 }
 
 /// 接管 deny-list（宿主特权语义工具——沙盒内 guest 无法诚实兑现，接管
@@ -171,8 +364,9 @@ impl<'de> Deserialize<'de> for PluginKindSerde {
             "tool" => Ok(Self(PluginKind::Tool)),
             "observer" => Ok(Self(PluginKind::Observer)),
             "policy" => Ok(Self(PluginKind::Policy)),
+            "panel" => Ok(Self(PluginKind::Panel)),
             other => Err(serde::de::Error::custom(format!(
-                "invalid kind '{other}' (expected tool | observer | policy)"
+                "invalid kind '{other}' (expected tool | observer | policy | panel)"
             ))),
         }
     }
@@ -240,10 +434,22 @@ impl PluginManifest {
                 self.slug
             )));
         }
-        if !valid_sha256_hex(&self.wasm_sha256) {
-            return Err(PluginError::Manifest(
-                "wasm-sha256 must be 64 hex chars".into(),
-            ));
+        match &self.wasm_sha256 {
+            Some(h) if valid_sha256_hex(h) => {}
+            Some(_) => {
+                return Err(PluginError::Manifest(
+                    "wasm-sha256 must be 64 hex chars".into(),
+                ));
+            }
+            // 无载荷 = 纯声明式，仅 panel 合法（tool/observer/policy 必须
+            // 带 guest 组件——其扩展点本体就是 guest 出口）。
+            None if self.kind.requires_payload() => {
+                return Err(PluginError::Manifest(format!(
+                    "kind={} requires wasm-sha256 (guest payload mandatory; only kind=panel may omit it)",
+                    self.kind.as_str()
+                )));
+            }
+            None => {}
         }
         if !matches!(self.min_tier.as_str(), "mini" | "normal" | "big") {
             return Err(PluginError::Manifest(format!(
@@ -342,6 +548,107 @@ impl PluginManifest {
                 }
             }
         }
+        // ui/flow 段位校验（2026-10-31 面板扩展批）：仅 kind=panel 可声明
+        // （其他 kind 带段 = manifest 写错的信号，loud 拒）；纯声明式（无
+        // 载荷）必须至少声明一个页面——零声明零载荷的包装无意义。
+        let is_panel = *self.kind == PluginKind::Panel;
+        if !is_panel {
+            if !self.ui.pages.is_empty() {
+                return Err(PluginError::Manifest(
+                    "ui section requires kind=panel".into(),
+                ));
+            }
+            if !self.flow.templates.is_empty() {
+                return Err(PluginError::Manifest(
+                    "flow section requires kind=panel".into(),
+                ));
+            }
+        }
+        if self.wasm_sha256.is_none() && self.ui.pages.is_empty() {
+            return Err(PluginError::Manifest(
+                "declarative plugin (no wasm payload) must declare at least one [[ui.page]]".into(),
+            ));
+        }
+        if is_panel {
+            // 路由跨页面唯一（前端 /panel/<route> 动态挂载键）。
+            let mut routes = std::collections::BTreeSet::new();
+            for page in &self.ui.pages {
+                if !valid_slug(&page.route) {
+                    return Err(PluginError::Manifest(format!(
+                        "invalid ui.page.route: {} (form same as slug)",
+                        page.route
+                    )));
+                }
+                if page.title.trim().is_empty() || page.title.chars().count() > 128 {
+                    return Err(PluginError::Manifest(format!(
+                        "ui.page '{}' title must be 1-128 chars",
+                        page.route
+                    )));
+                }
+                if !routes.insert(page.route.as_str()) {
+                    return Err(PluginError::Manifest(format!(
+                        "duplicate ui.page.route: {}",
+                        page.route
+                    )));
+                }
+                for view in &page.views {
+                    validate_view(view)?;
+                }
+            }
+            // 模板 id 唯一（flow:// 绑定与实例落账的命名空间）。
+            let mut tids = std::collections::BTreeSet::new();
+            for tpl in &self.flow.templates {
+                if !valid_slug(&tpl.id) {
+                    return Err(PluginError::Manifest(format!(
+                        "invalid flow.template.id: {}",
+                        tpl.id
+                    )));
+                }
+                if !tids.insert(tpl.id.as_str()) {
+                    return Err(PluginError::Manifest(format!(
+                        "duplicate flow.template.id: {}",
+                        tpl.id
+                    )));
+                }
+                if tpl.steps.is_empty() {
+                    return Err(PluginError::Manifest(format!(
+                        "flow.template '{}' needs at least one step",
+                        tpl.id
+                    )));
+                }
+                let mut sids = std::collections::BTreeSet::new();
+                for step in &tpl.steps {
+                    if !valid_slug(&step.id) {
+                        return Err(PluginError::Manifest(format!(
+                            "flow.template '{}' step id invalid: {}",
+                            tpl.id, step.id
+                        )));
+                    }
+                    if !sids.insert(step.id.as_str()) {
+                        return Err(PluginError::Manifest(format!(
+                            "flow.template '{}' duplicate step id: {}",
+                            tpl.id, step.id
+                        )));
+                    }
+                    if !FLOW_STEP_KINDS.contains(&step.kind.as_str()) {
+                        return Err(PluginError::Manifest(format!(
+                            "flow.template '{}' step '{}': invalid kind '{}' (allowed: {})",
+                            tpl.id,
+                            step.id,
+                            step.kind,
+                            FLOW_STEP_KINDS.join("|")
+                        )));
+                    }
+                    if !step.gate.is_empty() && step.gate != "manual" {
+                        return Err(PluginError::Manifest(format!(
+                            "flow.template '{}' step '{}': invalid gate '{}' (empty|manual)",
+                            tpl.id, step.id, step.gate
+                        )));
+                    }
+                    validate_on_fail(tpl.id.as_str(), step)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -350,4 +657,125 @@ impl PluginManifest {
     pub fn config_schema_keys(&self) -> Vec<String> {
         self.config_schema.keys().cloned().collect()
     }
+}
+
+/// 视图声明校验：词表成员 + bind 形态 + 词汇专用段最低配置。
+fn validate_view(view: &UiView) -> Result<(), PluginError> {
+    if !UI_VIEW_KINDS.contains(&view.kind.as_str()) {
+        return Err(PluginError::Manifest(format!(
+            "invalid ui view kind '{}' (allowed: {})",
+            view.kind,
+            UI_VIEW_KINDS.join("|")
+        )));
+    }
+    // bind 形态：flow://<template>/<view>（宿主代答）或 cmd://<command>（guest）。
+    // actions 视图允许空 bind（语义在 per-button command，视图级 bind 无
+    // 消费者——强填只会造出无人读取的假锚点）。
+    let actions_empty_bind = view.kind == "actions" && view.bind.is_empty();
+    if !actions_empty_bind {
+        if let Some(rest) = view.bind.strip_prefix("flow://") {
+            let parts: Vec<&str> = rest.split('/').collect();
+            if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
+                return Err(PluginError::Manifest(format!(
+                    "invalid flow bind '{}' (expected flow://<template>/<view>)",
+                    view.bind
+                )));
+            }
+        } else if let Some(rest) = view.bind.strip_prefix("cmd://") {
+            if rest.is_empty()
+                || rest.len() > 64
+                || rest.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(PluginError::Manifest(format!(
+                    "invalid cmd bind '{}' (expected cmd://<command>, 1-64 chars, no whitespace)",
+                    view.bind
+                )));
+            }
+        } else {
+            return Err(PluginError::Manifest(format!(
+                "invalid ui view bind '{}' (must start with flow:// or cmd://)",
+                view.bind
+            )));
+        }
+    }
+    match view.kind.as_str() {
+        // table/detail 都靠列定义渲染行（detail = 键值逐行）；零列无法呈现。
+        "table" | "detail" => {
+            if view.columns.is_empty() {
+                return Err(PluginError::Manifest(format!(
+                    "ui view bind '{}' kind={} needs at least one column",
+                    view.bind, view.kind
+                )));
+            }
+            for col in &view.columns {
+                if col.key.is_empty() || col.label.is_empty() {
+                    return Err(PluginError::Manifest(format!(
+                        "ui view bind '{}': column key/label must be non-empty",
+                        view.bind
+                    )));
+                }
+            }
+        }
+        "form" => {
+            if view.fields.is_empty() {
+                return Err(PluginError::Manifest(format!(
+                    "ui view bind '{}' kind=form needs at least one field",
+                    view.bind
+                )));
+            }
+            for f in &view.fields {
+                if f.key.is_empty() || f.label.is_empty() {
+                    return Err(PluginError::Manifest(format!(
+                        "ui view bind '{}': field key/label must be non-empty",
+                        view.bind
+                    )));
+                }
+                if !matches!(
+                    f.field_type.as_str(),
+                    "string" | "text" | "bool" | "int" | "secret"
+                ) {
+                    return Err(PluginError::Manifest(format!(
+                        "ui view bind '{}': invalid field type '{}' (string|text|bool|int|secret)",
+                        view.bind, f.field_type
+                    )));
+                }
+            }
+        }
+        "actions" => {
+            if view.buttons.is_empty() {
+                return Err(PluginError::Manifest(format!(
+                    "ui view bind '{}' kind=actions needs at least one button",
+                    view.bind
+                )));
+            }
+            for b in &view.buttons {
+                if b.label.trim().is_empty() || b.command.is_empty() {
+                    return Err(PluginError::Manifest(format!(
+                        "ui view bind '{}': button label/command must be non-empty",
+                        view.bind
+                    )));
+                }
+            }
+        }
+        // timeline 无专用段（条目结构由渲染层定）；kind 已验词表，直通。
+        _ => {}
+    }
+    Ok(())
+}
+
+/// on_fail 分支形态校验：空（park_human 缺省）| retry:<1-10> | continue。
+fn validate_on_fail(template_id: &str, step: &FlowStep) -> Result<(), PluginError> {
+    if step.on_fail.is_empty() || step.on_fail == "park_human" || step.on_fail == "continue" {
+        return Ok(());
+    }
+    if let Some(n) = step.on_fail.strip_prefix("retry:") {
+        match n.parse::<u32>() {
+            Ok(k) if (1..=10).contains(&k) => return Ok(()),
+            _ => {}
+        }
+    }
+    Err(PluginError::Manifest(format!(
+        "flow.template '{template_id}' step '{}': invalid on_fail '{}' (park_human|retry:<1-10>|continue)",
+        step.id, step.on_fail
+    )))
 }

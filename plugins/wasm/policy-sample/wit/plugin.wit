@@ -13,6 +13,10 @@
 //   内调 LLM 的唯一通道）；新增 `loop-policy` interface + `plugin-loop-policy`
 //   world（循环流程策略接管面）。旧组件字节按名 import、宿主 linker 提供
 //   超集——存量 tool/observer 组件零影响。
+// - 2026-10-31 面板扩展批：新增 `ui` interface + `plugin-panel` world（面板
+//   插件出口：Dashboard【定制】分组页面的命令通道）。单入口 handle-ui-command
+//   抗命令演进（observer/loop-policy 单入口同纪律）；无状态请求-响应
+//   （fresh-store-per-call，guest 不驻留），编排归宿主 flow 引擎。
 package nemesis:plugin@0.1.0;
 
 /// 共享类型别名。
@@ -244,6 +248,31 @@ interface loop-policy {
     validate-args: func(input: json-string) -> result<json-string, host-error>;
 }
 
+/// 面板插件出口（world plugin-panel；2026-10-31 面板扩展批新增）。
+///
+/// Dashboard「定制」分组页面的命令通道：面板骨架（组件/布局/字段）由
+/// manifest `[[ui]]` 段声明、宿主预置组件渲染；本接口只承载数据投影与
+/// 动作翻译（血肉）。单入口抗命令演进：命令种类增减不改 WIT 形状，只改
+/// 入参 JSON 的 `command` 字段值域。
+///
+/// 语义约束：无状态请求-响应——fresh-store-per-call，guest 不驻留、无
+/// tick；流程编排归宿主 flow 引擎（manifest `[[flow]]` 段声明），guest 只
+/// 做无状态投影与动作转发。宿主侧闸（转发前生效）：estop 冻结、每帧宿主
+/// 调用预算、审计链、`plugins.wasm.enabled` 总闸。
+interface ui {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 处理一条面板命令。
+    ///
+    /// 入参投影：`{"command":"<cmd 名>","args":<object>,"context":{
+    /// "slug":...,"view"?:...}}`（context 由宿主注入，guest 只读）。
+    /// 出参：任意 JSON 文本（对象/数组/标量）；渲染层按 manifest 声明的
+    /// 视图词汇表消费。业务失败不 trap：出参 `{"error":"<可读原因>"}`
+    /// 形态（渲染层诚实展示），或 host-error 走宿主错误面。
+    handle-ui-command: func(input: json-string) -> result<json-string, host-error>;
+}
+
 /// 工具插件世界（一 manifest 一 kind 不混装）。
 world plugin-tool {
     import host;
@@ -260,4 +289,10 @@ world plugin-observer {
 world plugin-loop-policy {
     import host;
     export loop-policy;
+}
+
+/// 面板插件世界。
+world plugin-panel {
+    import host;
+    export ui;
 }

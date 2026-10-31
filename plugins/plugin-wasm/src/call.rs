@@ -2,7 +2,8 @@
 //!
 //! 调用面导出名：`get-metadata` / `execute`（tool world）、`observe`
 //! （observer world）、`get-policy-metadata` / `compact-check` /
-//! `judge-final` / `validate-args`（loop-policy world，2026-10-22 批 3）。
+//! `judge-final` / `validate-args`（loop-policy world，2026-10-22 批 3）、
+//! `handle-ui-command`（panel world，2026-10-31 面板扩展批）。
 //! 每调用 fresh store + fresh linker + 一次实例化
 //!（fresh-store-per-call 的宿主侧对齐形态）。
 
@@ -20,6 +21,8 @@ const TOOL_IFACE: &str = "nemesis:plugin/tool@0.1.0";
 const OBSERVER_IFACE: &str = "nemesis:plugin/observer@0.1.0";
 /// loop-policy world 导出接口全名（2026-10-22 批 3）。
 const POLICY_IFACE: &str = "nemesis:plugin/loop-policy@0.1.0";
+/// panel world 导出接口全名（2026-10-31 面板扩展批）。
+const UI_IFACE: &str = "nemesis:plugin/ui@0.1.0";
 
 /// world 归属（组件只导出自己 world 的接口）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +30,7 @@ pub(crate) enum WorldKind {
     Tool,
     Observer,
     Policy,
+    Panel,
 }
 
 /// 编译产物 + world 导出索引（component_new 期一次性解析）。
@@ -40,6 +44,7 @@ pub(crate) struct CompiledComponent {
     pol_compact: Option<wasmtime::component::ComponentExportIndex>,
     pol_judge: Option<wasmtime::component::ComponentExportIndex>,
     pol_validate: Option<wasmtime::component::ComponentExportIndex>,
+    ui_command: Option<wasmtime::component::ComponentExportIndex>,
 }
 
 /// 编译 + world 识别。都不是已知 world = 诚实失败（非本合同组件拒收）。
@@ -48,6 +53,7 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
     let tool_iface = c.get_export_index(None, TOOL_IFACE);
     let obs_iface = c.get_export_index(None, OBSERVER_IFACE);
     let pol_iface = c.get_export_index(None, POLICY_IFACE);
+    let ui_iface = c.get_export_index(None, UI_IFACE);
     let (
         world,
         tool_meta,
@@ -57,6 +63,7 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
         pol_compact,
         pol_judge,
         pol_validate,
+        ui_command,
     ) = if let Some(iface) = tool_iface {
         let meta = c
             .get_export_index(Some(&iface), "get-metadata")
@@ -73,6 +80,7 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             None,
             None,
             None,
+            None,
         )
     } else if let Some(iface) = obs_iface {
         let obs = c
@@ -83,6 +91,7 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             None,
             None,
             Some(obs),
+            None,
             None,
             None,
             None,
@@ -110,12 +119,25 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             Some(compact),
             Some(judge),
             Some(validate),
+            None,
+        )
+    } else if let Some(iface) = ui_iface {
+        let cmd = c
+            .get_export_index(Some(&iface), "handle-ui-command")
+            .ok_or("panel world missing handle-ui-command export")?;
+        (
+            WorldKind::Panel,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(cmd),
         )
     } else {
-        return Err(
-            "component exports neither plugin-tool, plugin-observer nor plugin-loop-policy world"
-                .into(),
-        );
+        return Err("component exports neither plugin-tool, plugin-observer, plugin-loop-policy nor plugin-panel world".into());
     };
     Ok(CompiledComponent {
         component: Arc::new(c),
@@ -127,6 +149,7 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
         pol_compact,
         pol_judge,
         pol_validate,
+        ui_command,
     })
 }
 
@@ -211,21 +234,40 @@ pub(crate) fn call_export(
             .map_err(classify_call)?;
             unwrap_result_val(&results[0])
         }
+        // 面板命令同形：单 json-string 进、result<json-string, host-error> 出。
+        ("handle-ui-command", WorldKind::Panel) => {
+            let idx = comp.ui_command.expect("validated at compile");
+            let func = instance
+                .get_func(&mut *store, idx)
+                .ok_or((status::INTERNAL, "handle-ui-command func missing".into()))?;
+            let mut results = val_results(&func, &mut *store, 1);
+            func.call(
+                &mut *store,
+                &[Val::String(args_json.to_string())],
+                &mut results,
+            )
+            .map_err(classify_call)?;
+            unwrap_result_val(&results[0])
+        }
         // world 误配（拿别的 world 的导出名调用）诚实报错。
-        ("get-metadata" | "execute", WorldKind::Observer | WorldKind::Policy) => Err((
+        ("get-metadata" | "execute", WorldKind::Observer | WorldKind::Policy | WorldKind::Panel) => Err((
             status::BAD_ARGS,
             "component is not a tool plugin (no tool exports)".into(),
         )),
-        ("observe", WorldKind::Tool | WorldKind::Policy) => Err((
+        ("observe", WorldKind::Tool | WorldKind::Policy | WorldKind::Panel) => Err((
             status::BAD_ARGS,
             "component is not an observer plugin (no observe export)".into(),
         )),
         (
             "get-policy-metadata" | "compact-check" | "judge-final" | "validate-args",
-            WorldKind::Tool | WorldKind::Observer,
+            WorldKind::Tool | WorldKind::Observer | WorldKind::Panel,
         ) => Err((
             status::BAD_ARGS,
             "component is not a loop-policy plugin (no policy exports)".into(),
+        )),
+        ("handle-ui-command", WorldKind::Tool | WorldKind::Observer | WorldKind::Policy) => Err((
+            status::BAD_ARGS,
+            "component is not a panel plugin (no ui exports)".into(),
         )),
         (other, _) => Err((status::BAD_ARGS, format!("unknown export name: {other}"))),
     }

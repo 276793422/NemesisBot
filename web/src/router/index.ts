@@ -69,6 +69,10 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_TERMINAL !== 'false' ? [{ path: '/terminal', name: 'terminal', component: () => import('../views/TerminalView.vue') }] : []),
   // P2-2 (2026-08-24 UI entry gap): 「二次开发」SDK 内嵌导出页。
   { path: '/sdk', name: 'sdk', component: () => import('../views/SdkView.vue') },
+  // 面板页（2026-10-31 插件 UI 面板扩展 P2）：静态参数路由，插件声明面
+  // 动态挂载——深链免 addRoute 时窗；route 段唯一性由后端注册面保证。
+  // 清单来自 plugins.ui.registry（见 composables/usePanels.ts）。
+  { path: '/panel/:route', name: 'panel', component: () => import('../views/PanelView.vue') },
   // 代理设置（2026-09-17）：per-model 代理总览 + 环境变量 + lane 支持。
   { path: '/proxy-settings', name: 'proxy-settings', component: () => import('../views/ProxySettingsView.vue') },
   // Other

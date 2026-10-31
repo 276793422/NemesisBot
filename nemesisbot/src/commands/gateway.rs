@@ -132,6 +132,14 @@ pub(crate) mod r9_live_tests;
 #[cfg(all(test, windows))]
 mod scenario_tests;
 
+/// 插件 UI 面板 + flow 剧本全链真机 E2E（2026-10-31 P4 样板工程批）：
+/// 手搓 mock Jira + CLI 装配漏斗 + ui.registry 锚点 + 六步剧本（双人工闸 +
+/// publish 诚实缺口）+ guest 血肉面，经 plugins.ui.invoke 全串透传宿主 flow
+/// 引擎逐段断言。零 LLM 链（模型指死端口），Windows 进程边界形态，与 R9 组
+/// 同门控同互斥闸。
+#[cfg(all(test, windows))]
+mod flow_live_tests;
+
 // -------------------------------------------------------------------------
 // 旧模板值一次性迁移（2026-10-19 用户报告「长任务 20 轮突然暂停」）
 // -------------------------------------------------------------------------
