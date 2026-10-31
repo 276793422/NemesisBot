@@ -1230,8 +1230,11 @@ function resyncFromLog(): Promise<void> {
 function rewindToastSummary(resp: any) {
   const parts: string[] = [`撤掉 ${resp?.removed_count ?? 0} 条消息`]
   if (resp?.file_restore === 'applied') {
+    // 文件清单在嵌套 restored_files 下（rewind/redo 同构），不是顶层
+    // written/deleted——顶层读取恒 undefined → toast 恒显示「写 0 / 删 0」
+    // （BUG-20261031-253）。
     parts.push(
-      `文件回滚：写 ${resp?.written?.length ?? 0} / 删 ${resp?.deleted?.length ?? 0}`,
+      `文件回滚：写 ${resp?.restored_files?.written?.length ?? 0} / 删 ${resp?.restored_files?.deleted?.length ?? 0}`,
     )
   } else if (resp?.file_restore_note) {
     parts.push(String(resp.file_restore_note))
