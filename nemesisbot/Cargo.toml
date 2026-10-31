@@ -332,6 +332,9 @@ nemesis-data = { workspace = true, features = ["usage-store"] }
 # 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
 # OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。
 test-harness = { path = "../test-tools/test-harness" }
+# 午夜清扫调度测试（midnight_tests）：真实 DST 时区（哈瓦那等午夜跳变带）
+# 驱动 secs_until_next_local_midnight 的 LocalResult::None 免疫断言。
+chrono-tz = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console"] }

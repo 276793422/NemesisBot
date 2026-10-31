@@ -38,6 +38,10 @@ mod reloader_tests;
 #[cfg(test)]
 mod projects_factory_tests;
 
+// 午夜清扫调度纯函数时区韧性测试（非 feature 门——时间逻辑与 cluster 无关）。
+#[cfg(test)]
+mod midnight_tests;
+
 // BUG-20261025-50 路由 config 接线测试（无 feature 门——纯映射逻辑默认
 // 构建必跑；模块名含 route_resolver 对齐过滤词）。
 #[cfg(test)]
@@ -4087,6 +4091,26 @@ fn inject_project_spawn_fn(
     ));
 }
 
+/// 距下一个本地午夜的秒数（naive 墙钟差，不做时区查找）。
+///
+/// 旧实现 `Local.from_local_datetime(..).unwrap()` 在「本地午夜不存在」的
+/// 时区（春令时跳变恰好落在 00:00——古巴/智利等真实存在）拿到
+/// `LocalResult::None` → unwrap panic → 清扫 task 死亡，SessionStore /
+/// rpc_cache / spill 三条 TTL 循环进程内永久停摆。naive 墙钟差天然免疫：
+/// 跳变夜墙钟差比真实时长短 1h，睡完恰好落在跳变后第一个有效时刻
+/// （01:00）；回拨夜会早醒一次（幂等清理，无害）。
+fn secs_until_next_local_midnight<Tz: chrono::TimeZone>(now: chrono::DateTime<Tz>) -> u64 {
+    let tomorrow_midnight = now
+        .date_naive()
+        .succ_opt()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .unwrap_or_else(|| now.date_naive().and_hms_opt(23, 59, 59).unwrap());
+    tomorrow_midnight
+        .signed_duration_since(now.naive_local())
+        .num_seconds()
+        .max(60) as u64
+}
+
 /// Spawn a background task that runs `cleanup_old_sessions(7)` every day at local midnight.
 ///
 /// The task sleeps until the next local midnight, runs cleanup, then loops.
@@ -4102,21 +4126,8 @@ fn spawn_daily_cleanup(
 ) {
     let label = label.to_string();
     tokio::spawn(async move {
-        use chrono::TimeZone;
         loop {
-            // Calculate seconds until next local midnight.
-            let now = chrono::Local::now();
-            let next_midnight = chrono::Local
-                .from_local_datetime(
-                    &now.date_naive()
-                        .succ_opt()
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                )
-                .unwrap();
-            let dur = next_midnight.signed_duration_since(now);
-            let sleep_secs = dur.num_seconds().max(60) as u64;
+            let sleep_secs = secs_until_next_local_midnight(chrono::Local::now());
 
             tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
 
@@ -4162,7 +4173,6 @@ fn spawn_rpc_cache_cleanup(mgr: Arc<nemesis_agent::ContinuationManager>) {
     }
     const TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
     tokio::spawn(async move {
-        use chrono::TimeZone;
         // Startup sweep.
         let removed = mgr.cleanup_old_snapshots(TTL).await;
         if removed > 0 {
@@ -4172,19 +4182,7 @@ fn spawn_rpc_cache_cleanup(mgr: Arc<nemesis_agent::ContinuationManager>) {
             );
         }
         loop {
-            // Calculate seconds until next local midnight.
-            let now = chrono::Local::now();
-            let next_midnight = chrono::Local
-                .from_local_datetime(
-                    &now.date_naive()
-                        .succ_opt()
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                )
-                .unwrap();
-            let dur = next_midnight.signed_duration_since(now);
-            let sleep_secs = dur.num_seconds().max(60) as u64;
+            let sleep_secs = secs_until_next_local_midnight(chrono::Local::now());
 
             tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
 
@@ -4213,20 +4211,8 @@ fn spawn_daily_spill_cleanup(spill_root: std::path::PathBuf, config_path: std::p
         return;
     }
     tokio::spawn(async move {
-        use chrono::TimeZone;
         loop {
-            let now = chrono::Local::now();
-            let next_midnight = chrono::Local
-                .from_local_datetime(
-                    &now.date_naive()
-                        .succ_opt()
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                )
-                .unwrap();
-            let dur = next_midnight.signed_duration_since(now);
-            let sleep_secs = dur.num_seconds().max(60) as u64;
+            let sleep_secs = secs_until_next_local_midnight(chrono::Local::now());
 
             tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
 
