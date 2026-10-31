@@ -1271,6 +1271,14 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
     // 等重同步落地再续作：本地回显若抢在 replace 前入列，会被整视图替换
     // 冲掉（流式占位同理）。响应丢失由 resync 的 10s 安全超时放行。
     await resyncFromLog()
+    // 会话一致性守卫：await 窗口内用户切走了会话（resync 响应被切换围栏
+    // 丢弃时此处由 10s 安全超时放行），续作若照走，重新生成的重发链会把
+    // 旧会话的提问原文发进新会话并触发真实执行——中止并告知。回退本身按
+    // 显式 sid 已落在旧会话（正确），只裁掉续作。
+    if (effectiveSid.value !== sid) {
+      toast.warn('会话已切换，已中止回退后续操作')
+      return null
+    }
     return plan
   } catch (e: any) {
     toast.error(e?.message || String(e))
@@ -2566,6 +2574,11 @@ const unwatchSession = watch(
     }
     // HD：换会话 → 作废全部在飞历史请求（旧会话响应迟到时被围栏丢弃）。
     inFlightHistory.clear()
+    // 分支旗标一并作废（组件实例级残留）：所属请求已被上面 clear 作废，
+    // 不清则新会话首个历史响应会被 resync/watchdog 分支误消费——包括
+    // setBusy(effectiveSid,false) 误清新会话的在飞 busy。
+    pendingResync = false
+    pendingWatchdogReload = false
     // 换会话 → 旧会话的切页恢复轮询随之作废（新会话历史落地后重新 detect）。
     stopPendingTurnPolling()
     // BUG 2026-09-21 ③：旧会话的加载失败态不带到新会话。
