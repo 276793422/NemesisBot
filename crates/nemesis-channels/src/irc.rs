@@ -12,12 +12,13 @@
 
 #![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
-use nemesis_types::channel::OutboundMessage;
+use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
@@ -60,9 +61,16 @@ impl Default for IRCConfig {
 
 /// IRC channel using raw TCP connection.
 pub struct IRCChannel {
-    base: BaseChannel,
+    /// Arc 共享进连接任务（allow-list 检查在 spawn 侧执行，BUG-20261031-247）。
+    base: Arc<BaseChannel>,
     config: IRCConfig,
     running: Arc<parking_lot::RwLock<bool>>,
+    /// Message bus sender for publishing inbound PRIVMSGs（BUG-20261031-247）。
+    ///
+    /// 与 external/qq/matrix 通道同构：收件必须发布到总线进 agent loop。
+    /// 此前本通道构造器没有 bus 参数，读循环也没有 PRIVMSG 分支——消息
+    /// 落 `_ => {}` 静默丢弃，收件面整体缺失。
+    bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
     /// Writer for sending raw IRC commands.
     writer: parking_lot::Mutex<Option<IRCWriter>>,
     /// Cancellation channel for the read loop.
@@ -76,7 +84,14 @@ struct IRCWriter {
 
 impl IRCChannel {
     /// Creates a new `IRCChannel`.
-    pub fn new(config: IRCConfig) -> Result<Self> {
+    ///
+    /// `bus_sender` is used to publish inbound PRIVMSGs read from the
+    /// connection (parity with external/qq/matrix channels'
+    /// `(cfg, messageBus)` shape).
+    pub fn new(
+        config: IRCConfig,
+        bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.server.is_empty() {
             return Err(NemesisError::Channel("irc server is required".to_string()));
         }
@@ -90,9 +105,13 @@ impl IRCChannel {
         let channel = ensure_hash_prefix(&config.channel);
 
         Ok(Self {
-            base: BaseChannel::new("irc"),
+            base: Arc::new(BaseChannel::with_allow_list(
+                "irc",
+                config.allow_from.clone(),
+            )),
             config: IRCConfig { channel, ..config },
             running: Arc::new(parking_lot::RwLock::new(false)),
+            bus_sender,
             writer: parking_lot::Mutex::new(None),
             cancel_tx: parking_lot::Mutex::new(None),
         })
@@ -197,11 +216,8 @@ impl IRCChannel {
 
     /// Handles a PING message by returning PONG.
     pub fn handle_ping(line: &str) -> Option<String> {
-        if let Some(data) = line.strip_prefix("PING ") {
-            Some(format!("PONG {data}"))
-        } else {
-            None
-        }
+        line.strip_prefix("PING ")
+            .map(|data| format!("PONG {data}"))
     }
 
     /// Parses a PRIVMSG to extract (target, content).
@@ -236,110 +252,13 @@ impl IRCChannel {
         }
     }
 
-    /// Connects to the IRC server, registers, and spawns the read loop.
-    async fn connect_and_run(&self) -> Result<()> {
-        let stream = TcpStream::connect(&self.config.server).await.map_err(|e| {
-            NemesisError::Channel(format!("IRC connect to {} failed: {e}", self.config.server))
-        })?;
-
-        let (reader, writer) = tokio::io::split(stream);
-        *self.writer.lock() = Some(IRCWriter { writer });
-
-        // Send registration
-        for cmd in self.build_registration() {
-            self.send_raw(&cmd).await?;
-        }
-
-        let mut reader = BufReader::new(reader);
-        let mut line = String::new();
-
-        loop {
-            line.clear();
-            match reader.read_line(&mut line).await {
-                Ok(0) => {
-                    warn!("[IRCChannel] connection closed by server");
-                    break;
-                }
-                Ok(_) => {
-                    let trimmed = line.trim_end_matches("\r\n").trim_end_matches('\n');
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-
-                    debug!(line = %trimmed, "[IRCChannel] recv");
-
-                    // Handle PING
-                    if let Some(pong) = Self::handle_ping(trimmed) {
-                        self.send_raw(&pong).await?;
-                        continue;
-                    }
-
-                    let (prefix, command, params) = Self::parse_irc_line(trimmed);
-
-                    match command {
-                        "001" => {
-                            // RPL_WELCOME - join channel
-                            info!(channel = %self.config.channel, "[IRCChannel] registered, joining channel");
-                            self.send_raw(&format!("JOIN {}", self.config.channel))
-                                .await?;
-                        }
-                        "433" => {
-                            // Nick already in use
-                            warn!("[IRCChannel] nick in use, appending _");
-                            let new_nick = format!("{}_", self.config.nick);
-                            self.send_raw(&format!("NICK {new_nick}")).await?;
-                        }
-                        "PRIVMSG" => {
-                            if let Some((target, content)) = Self::parse_privmsg(params) {
-                                let sender = prefix
-                                    .map(Self::extract_nick_from_prefix)
-                                    .unwrap_or("unknown");
-                                self.base.record_received();
-
-                                debug!(
-                                    sender = %sender,
-                                    target = %target,
-                                    content = %content,
-                                    "[IRCChannel] received PRIVMSG"
-                                );
-                            }
-                        }
-                        "JOIN" => {
-                            if let Some(nick) = prefix.map(Self::extract_nick_from_prefix) {
-                                if nick == self.config.nick {
-                                    info!(channel = %params.trim(), "[IRCChannel] joined channel");
-                                }
-                            }
-                        }
-                        "KICK" => {
-                            warn!(params = %params, "[IRCChannel] kicked from channel");
-                            // Rejoin
-                            self.send_raw(&format!("JOIN {}", self.config.channel))
-                                .await?;
-                        }
-                        "ERROR" => {
-                            error!(params = %params, "[IRCChannel] error from server");
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                Err(e) => {
-                    error!(error = %e, "[IRCChannel] read error");
-                    break;
-                }
-            }
-        }
-
-        // Clear writer
-        *self.writer.lock() = None;
-        Ok(())
-    }
-
     /// Spawns the connection loop with auto-reconnect and exponential backoff.
     fn spawn_connection_loop(&self) {
         let running = self.running.clone();
         let config = self.config.clone();
+        // BUG-20261031-247：收件发布面需要 allow-list 与 bus，一并共享进任务。
+        let base = Arc::clone(&self.base);
+        let bus_sender = self.bus_sender.clone();
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
@@ -347,6 +266,10 @@ impl IRCChannel {
         tokio::spawn(async move {
             let mut backoff_secs = config.reconnect_backoff_secs;
             let mut cancel_rx = cancel_rx;
+            // 433（昵称冲突）后服务器侧实际昵称会变化，私聊判别（target ==
+            // 本 bot 昵称）与重试基准必须跟随——此前每次 433 都用原始昵称
+            // 追加 `_`，连续冲突永不收敛。
+            let mut current_nick = config.nick.clone();
 
             loop {
                 if !*running.read() {
@@ -416,14 +339,58 @@ impl IRCChannel {
                                                     let _ = writer.flush().await;
                                                 }
                                                 "433" => {
-                                                    let new_nick = format!("{}_", config.nick);
+                                                    let new_nick = format!("{current_nick}_");
+                                                    current_nick = new_nick.clone();
                                                     let _ = writer.write_all(format!("NICK {new_nick}\r\n").as_bytes()).await;
                                                 }
-                                                "JOIN" => {
-                                                    if let Some(nick) = prefix.map(IRCChannel::extract_nick_from_prefix) {
-                                                        if nick == config.nick {
-                                                            info!("[IRCChannel] joined channel successfully");
+                                                "PRIVMSG" => {
+                                                    // BUG-20261031-247：收件必须发布到总线进
+                                                    // agent loop——此前读循环没有 PRIVMSG 分支，
+                                                    // 消息落 `_ => {}` 静默丢弃（通道从未接线
+                                                    // 总线：构造器无 bus 参数，allow_from 零
+                                                    // 消费）。私聊（target=本 bot 当前昵称）
+                                                    // chat_id 取发送者昵称，回复 PRIVMSG 才能
+                                                    // 送达；频道消息 chat_id=频道名。
+                                                    if let Some((target, content)) =
+                                                        IRCChannel::parse_privmsg(params)
+                                                    {
+                                                        let sender = prefix
+                                                            .map(IRCChannel::extract_nick_from_prefix)
+                                                            .unwrap_or("unknown");
+                                                        // IRC 昵称大小写不敏感（RFC 1459 casemapping）
+                                                        let chat_id =
+                                                            if target.eq_ignore_ascii_case(&current_nick) {
+                                                                sender.to_string()
+                                                            } else {
+                                                                target.to_string()
+                                                            };
+                                                        if base.handle_message(sender) {
+                                                            let inbound = InboundMessage {
+                                                                channel: base.name().to_string(),
+                                                                sender_id: sender.to_string(),
+                                                                chat_id: chat_id.clone(),
+                                                                content: content.to_string(),
+                                                                media: Vec::new(),
+                                                                session_key: format!("irc:{chat_id}"),
+                                                                correlation_id: String::new(),
+                                                                metadata: HashMap::new(),
+                                                                voice_playback: None,
+                                                            };
+                                                            if let Err(e) = bus_sender.send(inbound) {
+                                                                warn!(error = %e,
+                                                                    "[IRCChannel] failed to publish inbound message");
+                                                            }
+                                                        } else {
+                                                            warn!(sender = %sender,
+                                                                "[IRCChannel] message blocked by allow-list");
                                                         }
+                                                    }
+                                                }
+                                                "JOIN" => {
+                                                    if let Some(nick) = prefix.map(IRCChannel::extract_nick_from_prefix)
+                                                        && nick == current_nick
+                                                    {
+                                                        info!("[IRCChannel] joined channel successfully");
                                                     }
                                                 }
                                                 "KICK" => {
