@@ -126,8 +126,20 @@ fn executor_allow_network_follows_config_disk_state() {
 /// PIPE/SANDBOX_BACKEND 由调用方追加，不在本装配点。
 #[test]
 fn base_executor_env_keys_pinned() {
-    let exec_root = PathBuf::from(r"C:\tmp\workspace-root");
-    let home = PathBuf::from(r"C:\tmp\agent-home");
+    // fixture 路径必须随平台：装配点的 EXTRA_ROOTS 走 `env::join_paths`，
+    // 它拒收含平台分隔符的段（Linux 分隔符是 `:`）——Windows 字面量在
+    // Linux 上编码失败 → 按 fail-closed 设计丢第 7 键 → 钉死断言 6≠7 假红
+    //（2026-10-31 ET Linux 全量实录）。两平台各用合法路径，7 键钉死共通。
+    let exec_root = PathBuf::from(if cfg!(windows) {
+        r"C:\tmp\workspace-root"
+    } else {
+        "/tmp/workspace-root"
+    });
+    let home = PathBuf::from(if cfg!(windows) {
+        r"C:\tmp\agent-home"
+    } else {
+        "/tmp/agent-home"
+    });
     let agent_id = "ag-42";
     let env = super::base_executor_env(&exec_root, &home, agent_id);
 
