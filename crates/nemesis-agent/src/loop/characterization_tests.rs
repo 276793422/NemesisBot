@@ -41,7 +41,7 @@
 //   截断续写/续写预算耗尽     ★golden_length_continuation ★golden_length_budget_exhausted
 //   steer escape/degenerate  ☆tests(degenerate/steer 系)
 //   heartbeat/Accept/GiveUp  ★golden_plain_qa（Accept 主路径）☆tests(heartbeat)
-//   批内 cancel/estop 双发   ☆tests(estop_blocks_remaining_tools_in_batch)
+//   批内 cancel/estop 单发（2026-10-31 双发遗留修正） ☆tests(estop_blocks_remaining_tools_in_batch)
 //   __ASYNC__/__BG_SPAWN__   ☆e3_tests / g4_background_spawn_tests（需 continuation
 //                             基建，standalone 不可达，不进 golden 场景集）
 //   escalation/validation    ★golden_validation_retry_budget
@@ -834,6 +834,9 @@ async fn golden_estop_mid_llm() {
 }
 
 /// estop 顶检：engaged 状态直接拒收（5735 系出口，Done 一次性）。
+/// 2026-10-31 有意变更：turn_end detail done→estop（prepare_round estop
+/// 顶检臂 reason 照记，与批内 estop 臂同款纪律——急停终局不再谎报 done），
+/// golden 基线同步更新。
 #[tokio::test]
 async fn golden_estop_top() {
     let _g = GOLDEN_LOCK.lock();

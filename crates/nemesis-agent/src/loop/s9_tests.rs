@@ -2319,6 +2319,70 @@ async fn cancel_during_tool_execution_breaks_turn() {
     let _ = runner.await;
 }
 
+/// 批内取消（≥2 工具串行批，cancel 命中工具 #1 执行中）→ 单发 Done
+/// （2026-10-31 双发遗留修正回归锁）：工具 #2 被 checkpoint 拦下不执行，
+/// 出站恰好一条「已取消」——旧形态 push Done + Continue 会经下一轮器官 1
+/// 顶检重发一次 = 聊天里两条「已取消」。
+#[tokio::test]
+async fn cancel_mid_batch_publishes_single_done() {
+    let _logs = capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let s1 = std::sync::Arc::new(tokio::sync::Notify::new());
+    let r1 = std::sync::Arc::new(tokio::sync::Notify::new());
+    let s2 = std::sync::Arc::new(tokio::sync::Notify::new());
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![tc_resp(vec![
+            s9_call("b1", "s9gate1", "{}"),
+            s9_call("b2", "s9gate2", "{}"),
+        ])])),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.register_tool(
+        "s9gate1".to_string(),
+        Box::new(GatedTool {
+            started: s1.clone(),
+            release: r1.clone(),
+        }),
+    );
+    agent_loop.register_tool(
+        "s9gate2".to_string(),
+        Box::new(GatedTool {
+            started: s2,
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }),
+    );
+    let handle = std::sync::Arc::new(agent_loop);
+    let runner = tokio::spawn(handle.clone().run_bus_arc(in_rx));
+
+    in_tx.send(plain_msg("cancel mid batch")).await.unwrap();
+    // 工具 #1 已开跑 → cancel → 放行 → 工具 #2 前检查点应拦下并单发 Done。
+    tokio::time::timeout(std::time::Duration::from_secs(3), s1.notified())
+        .await
+        .expect("tool#1 started");
+    assert!(
+        handle.cancel_session("agent:main:main"),
+        "cancel token existed and was cancelled"
+    );
+    r1.notify_one();
+    drop(in_tx);
+
+    // 收完出站通道（runner 结束后通道关闭），断言恰好一条「已取消」。
+    let mut outs = Vec::new();
+    while let Ok(Some(m)) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv()).await
+    {
+        outs.push(m.content);
+    }
+    let cancels = outs.iter().filter(|c| c.contains("已取消")).count();
+    assert_eq!(cancels, 1, "应恰好一条已取消（单发），实际: {outs:?}");
+    let _ = runner.await;
+}
+
 /// post_llm_call hook 里 cancel → 工具执行前检查臂（4568-4574）。
 #[tokio::test]
 async fn hook_cancels_session_before_tool_dispatch() {

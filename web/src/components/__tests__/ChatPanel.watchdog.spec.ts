@@ -380,7 +380,11 @@ describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在
     w.unmount()
   })
 
-  it('stopGeneration 遇 cancelled>0 既有行为不回归（复位 + 系统行）', async () => {
+  it('stopGeneration 遇 cancelled>0 走诚实过渡态，后端「已取消」帧收尾（2026-10-31 F2）', async () => {
+    // 旧形态（已退役）：受理即假完成（复位 + 加「已停止生成」系统行），
+    // 而后端还要跑到检查点——UI 停了、回复还在蹦，割裂。新形态：受理后
+    // busy/inflight 保持（诚实反映「还在跑到检查点」），收尾交给后端
+    // 「已取消」assistant 帧沿既有清账路径完成。
     prepareSession()
     vi.useFakeTimers()
     const w = await mountWithHistory()
@@ -395,9 +399,24 @@ describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在
     await w.find('button.btn-stop').trigger('click')
     await flushPromises()
 
+    // 受理成功 ≠ 完成：保持过渡态（检查点语义：工具跑完才停）。
+    expect(chat.streaming).toBe(true)
+    expect(chat.inflightTurns['s1']).toBeDefined()
+    expect(chat.messages.some((m) => m.content === '已停止生成')).toBe(false)
+    // 按钮置灰防重复点击。
+    expect(w.find('button.btn-stop').attributes('disabled')).toBeDefined()
+
+    // 后端取消命中 →「已取消」assistant 帧回面板 → 既有清账路径收尾。
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'receive',
+      data: { session_id: 's1', role: 'assistant', content: '已取消', timestamp: new Date().toISOString() },
+    })
+    await flushPromises()
     expect(chat.streaming).toBe(false)
     expect(chat.inflightTurns['s1']).toBeUndefined()
-    expect(chat.messages.some((m) => m.content === '已停止生成')).toBe(true)
+    expect(chat.messages.some((m) => m.content === '已取消')).toBe(true)
     w.unmount()
   })
 })

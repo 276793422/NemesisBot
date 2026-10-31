@@ -318,8 +318,8 @@ impl AgentLoop {
             }
 
             // 器官 8（§4.2 → tool_batch.rs）：中间消息落账 + 批次执行。
-            // Continue = 批次毕（或批内 cancel/estop 双发 Done 语义——顶检
-            // 重发，§9①）；Stop = 终局事件 push + break。
+            // Continue = 批次毕；Stop = 终局事件 push + break（批内
+            // cancel/estop 亦走此出口——2026-10-31 双发遗留修正后单发）。
             match self
                 .execute_tool_batch(
                     instance,
@@ -756,12 +756,15 @@ impl AgentLoop {
                 "[AgentLoop] E-stop engaged at top of iteration, turns_used={}",
                 turns_used
             );
+            // reason 照记 "estop"（2026-10-31 与 tool_batch 批内 estop 臂同款
+            // 纪律）：finalize_turn 的 end_reason 优先采 terminal_reason——
+            // 缺省 unwrap_or("done") 会把急停终局谎报成 done。
             return Some((
                 AgentEvent::Done(
                     "⛔ 已急停 (E-STOP) — 已停止当前任务。发送 `nemesisbot estop --release` 恢复。"
                         .to_string(),
                 ),
-                None,
+                Some("estop"),
             ));
         }
 

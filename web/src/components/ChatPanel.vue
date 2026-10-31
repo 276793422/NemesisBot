@@ -2124,32 +2124,82 @@ async function sendValidated(content: string, media: { id: string }[]) {
   })
 }
 
+// F2（2026-10-31 停止按钮 BUG）：「停止中」诚实过渡标记——取消受理后后端
+// 要走到检查点（LLM 调用中=立即中断；工具执行中=当前工具/串行批当前工具
+// 跑完；并行批=批尾）才实际停，期间 UI 保持 busy 如实反映，停止按钮置灰
+// 防重复点击。收尾由后端「已取消」assistant 帧 / error 帧沿既有清账路径
+// 完成（busy=false → streaming 消失），本函数不再立即假完成。
+// 三轮自查补正：stopping 记会话归属（stoppingSid）——多会话并发时 A 点停止
+// 后切到 B，B 自己的在跑任务不该被 A 的过渡态污染（按钮错误置灰点不了）；
+// 置灰只对被取消的那个会话生效（stoppingForCurrent）。
+const stopping = ref(false)
+const stoppingSid = ref<string | null>(null)
+const stoppingForCurrent = computed(
+  () => stopping.value && stoppingSid.value === effectiveSid.value,
+)
+let stoppingFallbackTimer: ReturnType<typeof setTimeout> | null = null
+function clearStopping() {
+  stopping.value = false
+  stoppingSid.value = null
+  if (stoppingFallbackTimer) {
+    clearTimeout(stoppingFallbackTimer)
+    stoppingFallbackTimer = null
+  }
+}
+// 收尾帧（assistant「已取消」/ error「已取消（用户中断）」）清 busy →
+// streaming 消失 → 按钮卸载；此处同步摘过渡标记，防下次 send 后按钮带残态。
+// watch 锚定**被停止会话**的 busy 投影（不锚 effectiveSid——视图切换不该
+// 干扰 A 的收尾观察）。
+watch(
+  () => (stoppingSid.value ? chatStore.isBusy(stoppingSid.value) : false),
+  (busy) => {
+    if (!busy && stopping.value) clearStopping()
+  },
+)
+
 function stopGeneration() {
   // stopGeneration only applies to the default chat module (cancels the
   // agent loop). Workflow_chat streams are driven by the workflow engine,
   // not the agent loop, so agent.cancel is a no-op there — we hide the
   // stop button in that case via `showStopButton`.
-  request('agent', 'cancel').then((res) => {
+  // F1（2026-10-31 停止按钮 BUG）：带 session_id 取消——项目会话跑在独立
+  // AgentLoop（L6++），不带 session_id 的取消恒落主 loop，项目 loop 的
+  // 取消令牌表永远收不到信号 = 停止按钮对项目会话完全失效（任务跑到自然
+  // 结束）。后端按 session_id 走 resolve_session_loop 单一裁决点，主/项目
+  // 两态都正确路由。空 sid 不传（保持旧 cancel_all 兜底语义）。
+  // 点击时刻捕获 sid——timer/回调闭包里一律用捕获值：响应/兜底到期时用户
+  // 可能已切走，effectiveSid.value 是执行时刻的值，引用它会误清别的会话
+  // 的 busy（捕获值让兜底精确指向被取消的那个会话）。
+  const sid = effectiveSid.value
+  const cancelData = sid ? { session_id: sid } : {}
+  // F2：受理即进入过渡态；后端收尾帧丢失（罕见）时 20s 强制复位兜底，
+  // 不加「已停止生成」假行（与 W5 同口径：不确定就不谎报）。
+  stopping.value = true
+  stoppingSid.value = sid
+  if (stoppingFallbackTimer) clearTimeout(stoppingFallbackTimer)
+  stoppingFallbackTimer = setTimeout(() => {
+    stoppingFallbackTimer = null
+    if (stopping.value) {
+      clearStopping()
+      chatStore.setBusy(sid, false)
+      chatStore.clearInflightTurn(sid)
+    }
+  }, 20000)
+  request('agent', 'cancel', cancelData).then((res) => {
     if (res && res.cancelled > 0) {
-      chatStore.setBusy(effectiveSid.value, false)
-      // B2：主动停止 = 在飞轮次终结。
-      chatStore.clearInflightTurn(effectiveSid.value)
-      chatStore.addMessage({
-        role: 'system',
-        content: '已停止生成',
-        timestamp: new Date().toISOString(),
-      })
-      nextTick(() => scrollToBottom())
+      // 受理成功：保持过渡态，收尾交给后端「已取消」帧（检查点语义见上）。
     } else {
       // W5（2026-09-23）：cancelled=0 = 后端没有在跑的轮次——本地点击
       // 的停止意图仍然生效，UI 的 streaming/在飞登记是陈旧态（回复丢失
       // 或早已完成而前端漏了收尾），必须复位，否则停止按钮永远不消失。
       // 不加「已停止生成」系统行——后端确认无在跑轮次，加行是假话。
-      chatStore.setBusy(effectiveSid.value, false)
-      chatStore.clearInflightTurn(effectiveSid.value)
+      clearStopping()
+      chatStore.setBusy(sid, false)
+      chatStore.clearInflightTurn(sid)
     }
   }).catch(() => {
-    chatStore.setBusy(effectiveSid.value, false)
+    clearStopping()
+    chatStore.setBusy(sid, false)
   })
 }
 
@@ -3178,7 +3228,7 @@ onUnmounted(() => {
           @click="sendMode = 'queue'"
         >⏭排队</button>
       </div>
-      <button v-if="streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
+      <button v-if="streaming && showStopButton" class="btn btn-stop" :disabled="stoppingForCurrent" @click="stopGeneration" :title="stoppingForCurrent ? '停止中…（等待当前步骤到检查点）' : '停止生成'">
         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
           <rect x="6" y="6" width="12" height="12" rx="2"/>
         </svg>
@@ -3491,6 +3541,13 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .btn-stop:hover {
+  background: #c82333;
+  border-color: #c82333;
+}
+/* F2 停止中过渡态：置灰防重复点击（disabled 属性驱动）。 */
+.btn-stop:disabled {
+  opacity: 0.55;
+  cursor: wait;
   background: #c82333;
   border-color: #c82333;
 }
