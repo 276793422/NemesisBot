@@ -125,6 +125,31 @@ fn search_memory_files_respects_limit() {
 }
 
 #[test]
+fn collect_markdown_files_walks_in_sorted_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    // BUG-20261101-268：≤200 截断发生在收集过程中（提前 return），收集序
+    // 曾跟随 read_dir 平台序（NTFS 字典序 vs ext4 哈希序）——大记忆库下
+    // 哪些文件参与轻量检索会跨平台漂移。每层按文件名排序后必须确定。
+    write_file(&ws.join("memory").join("zeta.md"), "z");
+    write_file(&ws.join("memory").join("alpha.md"), "a");
+    write_file(&ws.join("memory").join("notes").join("mid.md"), "m");
+    write_file(&ws.join("memory").join("skip.txt"), "not md");
+
+    let mut out = Vec::new();
+    collect_markdown_files(&ws.join("memory"), 0, &mut out);
+    let names: Vec<String> = out
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["alpha.md", "mid.md", "zeta.md"],
+        "collect must walk name-sorted (deterministic truncation set) and skip non-md: {names:?}"
+    );
+}
+
+#[test]
 fn search_memory_files_missing_dir_is_empty_not_error() {
     let tmp = tempfile::tempdir().unwrap();
     let hits = search_memory_files(tmp.path(), "anything", 10);

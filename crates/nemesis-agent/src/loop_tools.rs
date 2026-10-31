@@ -556,6 +556,12 @@ impl Tool for ListDirectoryTool {
         if listing.is_empty() {
             Ok("(empty directory)".to_string())
         } else {
+            // 确定性输出序（2026-11-01）：listing 是给 LLM 的目录清单（模型
+            // 可能按位置取第一个条目跟进操作），而 read_dir 顺序是平台实现
+            // 细节（NTFS 字典序 vs ext4 哈希序）——与 filesystem.rs /
+            // guest/tools.rs / security middleware 的同语义实现保持一致，
+            // 按名字排序。
+            listing.sort();
             Ok(listing.join("\n"))
         }
     }
@@ -6792,7 +6798,13 @@ fn grep_recursive(
         Ok(e) => e,
         Err(_) => return,
     };
-    for entry in entries.flatten() {
+    let mut kids: Vec<_> = entries.flatten().collect();
+    // 确定性走查序（2026-11-01）：`max` 截断让返回的命中子集依赖遍历序，
+    // 而 read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——每层
+    // 按文件名排序，同一目录树跨平台命中同一子集（同 history_search 的
+    // limit 截断先例）。
+    kids.sort_by_key(|e| e.file_name());
+    for entry in kids {
         if out.len() >= max {
             return;
         }
