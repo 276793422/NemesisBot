@@ -9,17 +9,18 @@
 //! # 喂入点与单一真相源
 //!
 //! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate::r#loop`]
-//! `emit_round_text`（tool_batch 每轮先叙述后工具的发布序，空正文轮不发
-//! ——纯工具轮由 [`WorkRecorder::tool_started`] 的分组规则自动成轮）；
-//! ToolStarted/ToolFinished 在 [`crate::tool_event_hook::ToolEventHook`]。
+//! `emit_round_output`（tool_batch 每轮先叙述后工具的发布序，叙述与思考
+//! 皆空的轮不发——纯工具轮由 [`WorkRecorder::tool_started`] 的分组规则
+//! 自动成轮）；ToolStarted/ToolFinished 在
+//! [`crate::tool_event_hook::ToolEventHook`]。
 //! 实时 WS 推送与落盘时间线是同一发射点的两个投影，无第二份转换逻辑。
 //!
 //! # 分组规则（一轮一个工具批次）
 //!
-//! LLM 每轮 = 至多一条叙述 + 恰好一个工具批次（execute_tool_batch per
-//! round），发布序恒为「叙述 → Started/Finished×k → 下一轮」。据此：
-//! 叙述开新轮；工具进「末轮」当且仅当末轮有叙述且尚无工具，否则开纯
-//! 工具轮（空正文轮的批次不会误挂上一轮）。
+//! LLM 每轮 = 至多一条叙述 + 思考链 + 恰好一个工具批次（execute_tool_batch
+//! per round），发布序恒为「叙述 → Started/Finished×k → 下一轮」。据此：
+//! 输出（叙述或思考）开新轮；工具进「末轮」当且仅当末轮有叙述或思考且
+//! 尚无工具，否则开纯工具轮（两者皆空轮的批次不会误挂上一轮）。
 //!
 //! # 体积护栏
 //!
@@ -54,11 +55,15 @@ pub struct WorkToolRecord {
     pub running: bool,
 }
 
-/// 一个中间轮：叙述 + 该轮工具批次。
+/// 一个中间轮：叙述 + 思考链 + 该轮工具批次。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WorkRound {
-    /// 模型该轮过程叙述。空 = 纯工具轮（空正文轮不发 RoundText）。
+    /// 模型该轮过程叙述。空 = 纯工具轮（叙述与思考皆空的轮不发）。
     pub text: String,
+    /// 该轮思考链（Provider 归一后的 reasoning_content；旧 jsonl 缺省空
+    /// ——serde default 兼容，空则不序列化）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning: String,
     pub tools: Vec<WorkToolRecord>,
 }
 
@@ -90,12 +95,14 @@ impl RecordingWork {
             .unwrap_or(0)
     }
 
-    /// 工具落点轮：末轮有叙述且尚无工具 = 本批次的叙述轮；否则开纯工具轮
-    /// （空正文轮 / 首轮即工具）。超限 = None（truncated 已置）。
+    /// 工具落点轮：末轮有叙述或思考且尚无工具 = 本批次的叙述轮；否则开
+    /// 纯工具轮（两者皆空的轮 / 首轮即工具）。超限 = None（truncated 已置）。
+    /// 「或思考」：thinking-only 轮（叙述空、思考有值）照样接收后续工具
+    /// 批次——否则思考与工具分离成两轮。
     fn ensure_tool_round(&mut self) -> Option<&mut WorkRound> {
         let reuse_last = matches!(
             self.rounds.last(),
-            Some(r) if !r.text.is_empty() && r.tools.is_empty()
+            Some(r) if (!r.text.is_empty() || !r.reasoning.is_empty()) && r.tools.is_empty()
         );
         if !reuse_last {
             if self.rounds.len() >= MAX_WORK_ROUNDS {
@@ -104,6 +111,7 @@ impl RecordingWork {
             }
             self.rounds.push(WorkRound {
                 text: String::new(),
+                reasoning: String::new(),
                 tools: Vec::new(),
             });
         }
@@ -127,13 +135,19 @@ impl WorkRecorder {
         });
     }
 
-    /// 中间轮叙述（emit_round_text 同点喂入）。会话不匹配忽略。
-    pub fn push_round_text(&self, session_key: &str, text: &str) {
+    /// 中间轮输出（emit_round_output 同点喂入；叙述 + 思考链同轮）。
+    /// 两者皆空不建轮（trim 判定与观察面 emit_round_output 同口径；
+    /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder::tool_started`]
+    /// 的分组规则自动成轮。会话不匹配忽略。
+    pub fn push_round_output(&self, session_key: &str, text: &str, reasoning: &str) {
         let mut slot = self.0.lock();
         let Some(w) = slot.as_mut() else {
             return;
         };
         if w.session_key != session_key {
+            return;
+        }
+        if text.trim().is_empty() && reasoning.trim().is_empty() {
             return;
         }
         if w.rounds.len() >= MAX_WORK_ROUNDS {
@@ -142,6 +156,7 @@ impl WorkRecorder {
         }
         w.rounds.push(WorkRound {
             text: text.to_string(),
+            reasoning: reasoning.to_string(),
             tools: Vec::new(),
         });
     }

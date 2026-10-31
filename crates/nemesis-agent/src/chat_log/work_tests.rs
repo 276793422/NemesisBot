@@ -25,18 +25,26 @@ fn sample_timeline() -> WorkTimeline {
     WorkTimeline {
         started_at_ms: 1_730_000_000_000,
         ended_at_ms: 1_730_000_073_500,
-        rounds: vec![WorkRound {
-            text: "我先核对入口".to_string(),
-            tools: vec![WorkToolRecord {
-                tool: "exec".to_string(),
-                call_id: "c1".to_string(),
-                ok: true,
-                duration_ms: 42,
-                args_preview: "ls".to_string(),
-                result_preview: "out".to_string(),
-                running: false,
-            }],
-        }],
+        rounds: vec![
+            WorkRound {
+                text: "我先核对入口".to_string(),
+                reasoning: "应该先看配置再动手".to_string(),
+                tools: vec![WorkToolRecord {
+                    tool: "exec".to_string(),
+                    call_id: "c1".to_string(),
+                    ok: true,
+                    duration_ms: 42,
+                    args_preview: "ls".to_string(),
+                    result_preview: "out".to_string(),
+                    running: false,
+                }],
+            },
+            WorkRound {
+                text: "纯工具轮".to_string(),
+                reasoning: String::new(),
+                tools: vec![],
+            },
+        ],
         truncated: false,
     }
 }
@@ -69,8 +77,16 @@ fn test_work_meta_entry_writes_work_key_legacy_rows_omit() {
     assert_eq!(work["started_at_ms"], 1_730_000_000_000i64);
     assert_eq!(work["ended_at_ms"], 1_730_000_073_500i64);
     let rounds = work["rounds"].as_array().expect("rounds array");
-    assert_eq!(rounds.len(), 1);
+    assert_eq!(rounds.len(), 2);
+    // 批次二（2026-10-31）：reasoning 字段 roundtrip——有值落键、空省略
+    // （旧 jsonl 无该键照常解析 = 宽容读契约）。
     assert_eq!(rounds[0]["text"], "我先核对入口");
+    assert_eq!(rounds[0]["reasoning"], "应该先看配置再动手");
+    assert_eq!(rounds[1]["text"], "纯工具轮");
+    assert!(
+        rounds[1].get("reasoning").is_none(),
+        "空思考省略 reasoning 键"
+    );
     let tools = rounds[0]["tools"].as_array().expect("tools array");
     assert_eq!(tools[0]["tool"], "exec");
     assert_eq!(tools[0]["ok"], true);

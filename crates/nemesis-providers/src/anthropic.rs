@@ -942,6 +942,29 @@ fn translate_tools(tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// 思考块提取（思考链形态②，家族纯函数——定位是可测试性，非跨 lane 复用：
+/// CLI lane 的 wire 不是 blocks 数组，无共享解析逻辑）。`type=="thinking"`
+/// 的块取 `thinking` 字段文本（服务端摘要，API 不回传原文），多个块 `\n\n`
+/// 拼接；`redacted_thinking`（上游加密块）跳过——API 语义即不可解，诚实边界。
+fn thinking_from_blocks(blocks: &[serde_json::Value]) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for block in blocks {
+        if block.get("type").and_then(|t| t.as_str()) != Some("thinking") {
+            continue;
+        }
+        if let Some(text) = block.get("thinking").and_then(|t| t.as_str())
+            && !text.trim().is_empty()
+        {
+            parts.push(text);
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// Parse the Anthropic Messages API response.
 fn parse_response(data: &serde_json::Value) -> LLMResponse {
     let mut content = String::new();
@@ -986,6 +1009,8 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
                         arguments: Some(arguments),
                     });
                 }
+                // thinking / redacted_thinking 等块不走 content 累积——
+                // thinking 由 thinking_from_blocks 统一收进 reasoning_content。
                 _ => {}
             }
         }
@@ -1022,12 +1047,19 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         None
     };
 
+    // 非流式 thinking 块提取（流式侧 thinking_delta 已有，此处补齐非流式
+    // 通路——此前 `_ => {}` 直接丢弃）。
+    let reasoning_content = data
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|blocks| thinking_from_blocks(blocks));
+
     LLMResponse {
         content,
         tool_calls,
         finish_reason: finish_reason.to_string(),
         usage,
-        reasoning_content: None,
+        reasoning_content,
         extra: HashMap::new(),
         raw_request_body: None,
         raw_response_body: None,

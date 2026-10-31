@@ -669,12 +669,16 @@ impl AgentLoop {
             tool_calls.clone(),
             response.reasoning_content.clone(),
         );
-        // R1（2026-09-21）：中间轮正文非空才发布——模型多步执行时每轮的
-        // 过程叙述（「我先看下 X 再改 Y」）此前只进 history，前端看不见；
-        // 空正文轮（纯工具调用）无可读内容，不发。
-        if !assistant_content.trim().is_empty() {
-            self.emit_round_text(&context.session_key, &context.chat_id, &assistant_content);
-        }
+        // R1（2026-09-21）：中间轮输出发布——模型多步执行时每轮的过程叙述
+        // （「我先看下 X 再改 Y」）此前只进 history，前端看不见；批次二
+        // （2026-10-31）叙述与思考链同发，皆空才不发（guard 在
+        // emit_round_output 内）——thinking-only 轮（叙述空、思考有值）照发。
+        self.emit_round_output(
+            &context.session_key,
+            &context.chat_id,
+            &assistant_content,
+            response.reasoning_content.as_deref(),
+        );
         events.push(AgentEvent::ToolCall(tool_calls.clone()));
 
         // Execute each tool call.

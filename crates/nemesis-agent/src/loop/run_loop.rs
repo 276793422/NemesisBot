@@ -112,7 +112,7 @@ impl AgentLoop {
         // 本 turn 可变状态收拢（§4.1 TurnState：12 跨轮局部变量；P2-4）。
         // 字段语义见类型定义处注释。
         // Work 时间线（2026-10-30）：turn 开始重置累加器——上一 turn 的
-        // 残余（中断/续行未消费）就此丢弃；喂入点在 emit_round_text 与
+        // 残余（中断/续行未消费）就此丢弃；喂入点在 emit_round_output 与
         // ToolEventHook（同点同源），取走在 turn.rs 最终回复落盘。
         self.work_recorder.begin(&context.session_key);
         let mut st = TurnState {
@@ -537,6 +537,16 @@ impl AgentLoop {
                         &content,
                         Vec::new(),
                         response.reasoning_content.clone(),
+                    );
+                    // 批次二（2026-10-31）：终答轮思考链以 `("", reasoning)`
+                    // 形态发布——终答正文走 Done 既有通路，思考链单独成轮
+                    // 供 Work 时间线 / UI 折叠展示（直答轮也能看到思考）。
+                    // canvas/hook 续轮时每次 Accept 各对应一条新响应，不重发。
+                    self.emit_round_output(
+                        &context.session_key,
+                        &context.chat_id,
+                        "",
+                        response.reasoning_content.as_deref(),
                     );
                     // P30（WS14）：canvas 块检出 + JS 语法预检。有问题且回灌
                     // 预算未尽 → 反馈落 user 消息续一轮（模型整条重发自纠，

@@ -1963,3 +1963,86 @@ fn drain_request(sock: &mut std::net::TcpStream) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 思考链捕获（形态②）：非流式 thinking 块提取
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_response_thinking_block() {
+    // thinking 块收进 reasoning_content，不进 content。
+    let data = serde_json::json!({
+        "content": [
+            {"type": "thinking", "thinking": "  need to check the file first  "},
+            {"type": "text", "text": "answer"}
+        ],
+        "stop_reason": "end_turn"
+    });
+    let resp = parse_response(&data);
+    assert_eq!(resp.content, "answer");
+    assert_eq!(
+        resp.reasoning_content.as_deref(),
+        Some("  need to check the file first  ")
+    );
+}
+
+#[test]
+fn test_parse_response_thinking_and_tool_use_mix() {
+    // thinking + tool_use 混合轮（思考后调工具的典型形态）。
+    let data = serde_json::json!({
+        "content": [
+            {"type": "thinking", "thinking": "step one"},
+            {"type": "thinking", "thinking": "step two"},
+            {"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "a.txt"}}
+        ],
+        "stop_reason": "tool_use"
+    });
+    let resp = parse_response(&data);
+    assert_eq!(resp.finish_reason, "tool_calls");
+    assert_eq!(
+        resp.reasoning_content.as_deref(),
+        Some("step one\n\nstep two")
+    );
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.content, "");
+}
+
+#[test]
+fn test_parse_response_redacted_thinking_skipped() {
+    // redacted_thinking（上游加密块）跳过——API 语义即不可解。
+    let data = serde_json::json!({
+        "content": [
+            {"type": "redacted_thinking", "data": "encrypted-blob"},
+            {"type": "text", "text": "ok"}
+        ],
+        "stop_reason": "end_turn"
+    });
+    let resp = parse_response(&data);
+    assert_eq!(resp.content, "ok");
+    assert_eq!(resp.reasoning_content, None);
+}
+
+#[test]
+fn test_parse_response_no_thinking_blocks_none() {
+    // 纯文本响应：reasoning_content 恒 None（不造空壳）。
+    let data = serde_json::json!({
+        "content": [{"type": "text", "text": "plain"}],
+        "stop_reason": "end_turn"
+    });
+    let resp = parse_response(&data);
+    assert_eq!(resp.reasoning_content, None);
+}
+
+#[test]
+fn test_parse_response_empty_thinking_block_none() {
+    // 空思考块（whitespace-only）不产壳。
+    let data = serde_json::json!({
+        "content": [
+            {"type": "thinking", "thinking": "   "},
+            {"type": "text", "text": "x"}
+        ],
+        "stop_reason": "end_turn"
+    });
+    let resp = parse_response(&data);
+    assert_eq!(resp.reasoning_content, None);
+}

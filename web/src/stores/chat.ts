@@ -67,8 +67,10 @@ export interface WorkToolEntry {
 }
 
 export interface WorkRoundEntry {
-  /** 模型该轮过程叙述。空串 = 纯工具轮（空正文轮不发叙述）。 */
+  /** 模型该轮过程叙述。空串 = 纯工具轮 / thinking-only 轮（叙述空）。 */
   text: string
+  /** 该轮思考链（后端 reasoning_content 归一形态；空/旧数据省略）。 */
+  reasoning?: string
   tools: WorkToolEntry[]
 }
 
@@ -313,18 +315,19 @@ export const useChatStore = defineStore('chat', () => {
     return pendingWork.value
   }
 
-  /** 摄取中间轮叙述（RoundText）。一条叙述开一轮——其后的工具批次落该轮
-   *  （与后端 emit_round_text 发布序同构：叙述 → Started/Finished×k）。 */
-  function ingestWorkRoundText(content: string) {
-    if (!content) return
+  /** 摄取中间轮输出（RoundText：叙述 + 思考链，2026-10-31 批次二）。
+   *  一条输出开一轮——其后的工具批次落该轮（与后端 emit_round_output
+   *  发布序同构：叙述/思考 → Started/Finished×k）。皆空不建轮。 */
+  function ingestWorkRoundText(content: string, reasoning?: string) {
+    if (!content && !reasoning) return
     const w = ensurePendingWork()
-    w.rounds.push({ text: content, tools: [] })
+    w.rounds.push({ text: content, reasoning: reasoning || undefined, tools: [] })
     w.ended_at_ms = Date.now()
   }
 
-  /** 摄取工具开始。分组规则与后端 ensure_tool_round 同构：末轮有叙述且
-   *  尚无工具 = 本批次的叙述轮；否则开纯工具轮（空正文轮不发叙述，其
-   *  批次不得误挂上一轮）。同 call_id 幂等（重复 Started 只刷新 args）。 */
+  /** 摄取工具开始。分组规则与后端 ensure_tool_round 同构：末轮有叙述或
+   *  思考且尚无工具 = 本批次的输出轮；否则开纯工具轮（皆空轮不发输出，
+   *  其批次不得误挂上一轮）。同 call_id 幂等（重复 Started 只刷新 args）。 */
   function ingestWorkToolStart(callId: string, tool: string, argsPreview?: string) {
     const w = ensurePendingWork()
     for (const r of w.rounds) {
@@ -335,7 +338,8 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
     const last = w.rounds[w.rounds.length - 1]
-    let round = last && last.text && last.tools.length === 0 ? last : null
+    let round =
+      last && (last.text || last.reasoning) && last.tools.length === 0 ? last : null
     if (!round) {
       round = { text: '', tools: [] }
       w.rounds.push(round)

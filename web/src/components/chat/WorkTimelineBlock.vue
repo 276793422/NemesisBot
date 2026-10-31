@@ -40,6 +40,10 @@ const failedCount = computed(
 const runningCount = computed(
   () => props.work.rounds.flatMap(r => r.tools).filter(t => t.running).length,
 )
+// 思考链轮数（批次二 2026-10-31；头部 💭 N 徽标，有思考才显示）。
+const thinkCount = computed(
+  () => props.work.rounds.filter(r => r.reasoning).length,
+)
 
 // --- 用时（live 每秒走表；落地取 ended_at_ms 定格）---
 const nowTick = ref(Date.now())
@@ -84,6 +88,7 @@ watch(
       <span class="wt-icon">⚒</span>
       <span class="wt-title">用时 {{ formatDuration(durationMs) }}</span>
       <span v-if="live" class="wt-badge wt-live"><span class="wt-dot"></span>进行中</span>
+      <span v-if="thinkCount" class="wt-badge wt-think">💭 {{ thinkCount }}</span>
       <span v-if="runningCount" class="wt-badge wt-running">运行中 {{ runningCount }}</span>
       <span v-if="failedCount" class="wt-badge wt-failed">失败 {{ failedCount }}</span>
       <span v-if="work.truncated" class="wt-badge wt-truncated">已截断</span>
@@ -92,6 +97,13 @@ watch(
     <div v-if="open" class="wt-body">
       <template v-for="(r, ri) in work.rounds" :key="ri">
         <div v-if="r.text" class="wt-round-text">{{ r.text }}</div>
+        <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户拍板：思考
+             是可看不可刷的次级内容，65k 级长文不默认展开）；正文 pre-wrap，
+             高度钳制滚动——万级 token 思考不撑爆时间线。 -->
+        <details v-if="r.reasoning" class="wt-think">
+          <summary>💭 思考过程</summary>
+          <div class="wt-think-body">{{ r.reasoning }}</div>
+        </details>
         <div v-for="t in r.tools" :key="t.call_id" class="wt-tool" :title="t.args_preview || t.tool">
           <span class="wt-tool-status" :class="t.running ? 'is-running' : t.ok ? 'is-ok' : 'is-fail'">
             <span v-if="t.running" class="wt-spinner"></span>
@@ -153,6 +165,41 @@ watch(
 .wt-truncated {
   color: #c98a2b;
   background: rgba(201, 138, 43, 0.12);
+}
+/* 思考链（批次二 2026-10-31）：头部计数徽标 + 正文折叠卡。元素限定选择
+   器——徽标 span 与 details 共用 wt-think 类名但形态不同。紫色系 = 「思
+   考/推理」次级语义，与工具（accent）/失败（红）区分。 */
+span.wt-think {
+  color: #9b7fd4;
+  background: rgba(155, 127, 212, 0.12);
+}
+details.wt-think {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: var(--text-xs, 12px);
+  color: var(--text-muted);
+}
+details.wt-think > summary {
+  cursor: pointer;
+  user-select: none;
+  line-height: 1.6;
+}
+details.wt-think > summary:hover {
+  color: var(--text);
+}
+/* 折叠正文：pre-wrap 原样保留模型思考的换行/缩进；高度钳制 + 滚动——
+   65k 级思考展开后不撑爆时间线，也不截断内容（滚动能看全）。 */
+.wt-think-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  line-height: 1.5;
+  margin-top: 2px;
+  padding: 4px 0 2px;
+  border-top: 1px dashed var(--border);
+  opacity: 0.9;
 }
 .wt-dot {
   display: inline-block;

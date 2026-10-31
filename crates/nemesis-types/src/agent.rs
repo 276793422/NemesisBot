@@ -135,6 +135,10 @@ pub enum AgentEvent {
         chat_id: String,
         /// 该轮正文（完整不截断——与最终回复同地位的用户可读文本）。
         content: String,
+        /// 该轮思考链（Provider 层归一后的 reasoning_content；旧序列化
+        /// /旧环帧缺省为空——serde default 兼容，kind 不变，空则不序列化）。
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        reasoning: String,
     },
     /// 审批请求事件（M7，devtool-upgrade 阶段 5）。安全 auditor 命中
     /// require_approval 时由 WebApprovalManager 发布；web pump 转 SSE

@@ -389,7 +389,7 @@ enum Commands {
         #[arg(long)]
         mode: Option<String>,
 
-        /// Output format: text (default) or json (K2, not yet implemented)
+        /// Output format: text (default) or json (K2 NDJSON event stream)
         #[arg(long)]
         format: Option<String>,
 
@@ -400,6 +400,12 @@ enum Commands {
         /// Model override for this run (must exist in model_list)
         #[arg(long)]
         model: Option<String>,
+
+        /// Print reasoning/thinking-chain lines (round-level): json format
+        /// emits extra `thinking` NDJSON rows; text format prints
+        /// `[thinking]`-prefixed lines on stderr. Default off.
+        #[arg(long)]
+        thinking: bool,
     },
     /// Run the ACP agent server over stdio (ACP editors/clients; L7)
     Acp,
@@ -1246,11 +1252,14 @@ async fn run_command(cli: Cli) -> Result<()> {
             format,
             max_turns,
             model,
+            thinking,
         } => {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
-            if let Err(e) =
-                commands::run::run(&home, task, workspace, mode, format, max_turns, model).await
+            if let Err(e) = commands::run::run(
+                &home, task, workspace, mode, format, max_turns, model, thinking,
+            )
+            .await
             {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

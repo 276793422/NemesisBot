@@ -17,6 +17,10 @@
 //!   `docs/INFO/2026-09-06_k2-ndjson-event-stream-schema.md`）——
 //!   tool_start/tool_end 实时逐行输出，turn/final/error 任务结束后按序输出；
 //!   stdout 只承载 NDJSON 行，日志/告警一律 stderr。
+//! - `--thinking`：思考链开关（默认关，D11 拍板 opt-in）。开启后轮级
+//!   reasoning（AgentEvent::RoundText 的 reasoning 字段，批次一全模型捕获）
+//!   随执行输出：json 模式新增 `thinking` NDJSON type；text 模式逐行打
+//!   `[thinking] ` 前缀行到 stderr（stdout 仍只承载最终回复/NDJSON）。
 //! - 退出码：0 = agent 正常完成；1 = 装配失败或 agent 报错（stderr）。
 //!   文本模式 stdout 只承载最终回复；json 模式只承载 NDJSON 行——管道可安全截取。
 
@@ -58,9 +62,13 @@ pub struct ValidatedRun {
     /// 0 = 用配置默认（透传 `DetachedOpts.max_turns` 语义）。
     pub max_turns: u32,
     pub model: Option<String>,
+    /// 思考链开关（`--thinking`，默认关）：开 = json 模式多 thinking 行 /
+    /// text 模式 stderr `[thinking]` 前缀行。
+    pub thinking: bool,
 }
 
 /// 校验/归一 CLI 参数（纯函数）。`Err` = 用户可读错误（含 remedy）。
+#[allow(clippy::too_many_arguments)]
 pub fn validate(
     task: Option<String>,
     workspace: Option<PathBuf>,
@@ -68,6 +76,7 @@ pub fn validate(
     format: Option<&str>,
     max_turns: Option<u32>,
     model: Option<String>,
+    thinking: bool,
 ) -> Result<ValidatedRun, String> {
     // `-` 与缺省同义 = stdin。
     let task = match task {
@@ -97,6 +106,7 @@ pub fn validate(
         format,
         max_turns: max_turns.unwrap_or(0),
         model,
+        thinking,
     })
 }
 
@@ -121,8 +131,15 @@ pub fn fold_text(events: &[nemesis_agent::types::AgentEvent]) -> (Option<String>
 
 /// 实时事件 → NDJSON 行。只输出 schema 内的 `tool_start` / `tool_end`；
 /// `TodoUpdated` / `ModeChanged` 不在 v1 契约内，返回 `None` 跳过
-/// （不向脚本发送未知 type——消费方按固定 5 type 解析）。
-pub fn serialize_live_event(ev: &nemesis_types::agent::AgentEvent) -> Option<String> {
+/// （不向脚本发送未知 type——消费方按固定 type 解析）。
+///
+/// `thinking`（`--thinking` 开关）：开启时 `RoundText` 携带非空 reasoning
+/// → 额外输出 `{"type":"thinking","text":…}` 行（批次四：思考链 opt-in）；
+/// 关闭 = 行为与现状逐字节一致（RoundText 全部落 `_` 跳过）。
+pub fn serialize_live_event(
+    ev: &nemesis_types::agent::AgentEvent,
+    thinking: bool,
+) -> Option<String> {
     let line = match ev {
         nemesis_types::agent::AgentEvent::ToolStarted {
             call_id,
@@ -150,10 +167,36 @@ pub fn serialize_live_event(ev: &nemesis_types::agent::AgentEvent) -> Option<Str
             "ok": ok,
             "result_preview": result_preview,
         }),
+        nemesis_types::agent::AgentEvent::RoundText { reasoning, .. }
+            if thinking && !reasoning.trim().is_empty() =>
+        {
+            serde_json::json!({
+                "type": "thinking",
+                "text": reasoning,
+            })
+        }
         // v1 契约外：不输出未知 type（诚实边界记录在 schema 文档）。
         _ => return None,
     };
     Some(line.to_string())
+}
+
+/// text 模式 + `--thinking` 的思考链行（纯函数）：`RoundText` 携带非空
+/// reasoning → 每行加 `[thinking] ` 前缀输出到 stderr（人读 + 可 grep，
+/// 多行 reasoning 逐行前缀保持行级可过滤）；关闭或 reasoning 空 = `None`。
+pub fn thinking_stderr_line(ev: &nemesis_types::agent::AgentEvent) -> Option<String> {
+    if let nemesis_types::agent::AgentEvent::RoundText { reasoning, .. } = ev
+        && !reasoning.trim().is_empty()
+    {
+        return Some(
+            reasoning
+                .lines()
+                .map(|l| format!("[thinking] {l}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    None
 }
 
 /// 终结事件集 → NDJSON 行序列（纯函数）。`Message` = 中间轮次文本
@@ -208,6 +251,7 @@ fn bind_estop(home: &std::path::Path) -> Arc<nemesis_agent::estop::EstopState> {
 /// Run the headless task. Setup failures and agent errors both bubble as
 /// `Err`（dispatch 臂统一 eprintln + exit 1）；正常完成 = 打印最终回复 +
 /// `Ok(())`（exit 0）。
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     home: &std::path::Path,
     task: Option<String>,
@@ -216,6 +260,7 @@ pub async fn run(
     format: Option<String>,
     max_turns: Option<u32>,
     model: Option<String>,
+    thinking: bool,
 ) -> anyhow::Result<()> {
     let v = validate(
         task,
@@ -224,6 +269,7 @@ pub async fn run(
         format.as_deref(),
         max_turns,
         model,
+        thinking,
     )
     .map_err(anyhow::Error::msg)?;
 
@@ -284,10 +330,11 @@ pub async fn run(
     let security_plugin =
         crate::security_setup::build_security_plugin(home, security_enabled).await;
 
-    // 3.5 K2：json 模式才挂工具事件通道（M1a broadcast——Some 时工厂给
-    //     AgentLoop 装 ToolEventHook，tool_start/tool_end 实时可读；text
-    //     模式保持 K1 形态 None = 零 hook 开销）。
-    let (agent_event_tx, event_rx) = if v.format == OutputFormat::Json {
+    // 3.5 事件通道（M1a broadcast——Some 时工厂给 AgentLoop 装 ToolEventHook）：
+    //     json 模式消费 tool_start/tool_end 实时流（K2）；`--thinking` 消费
+    //     RoundText 的轮级 reasoning。两者都不需要时保持 K1 形态 None =
+    //     零 hook 开销。
+    let (agent_event_tx, event_rx) = if v.format == OutputFormat::Json || v.thinking {
         let (tx, rx) = tokio::sync::broadcast::channel(256);
         (Some(tx), Some(rx))
     } else {
@@ -356,30 +403,30 @@ pub async fn run(
     agent_loop.set_mode_with_event(v.mode, "", "");
 
     // 7. 跑任务（depth 0 = 顶层；全治理链路同 spawn 子代理）。
-    //     json 模式：run_detached_events 放进独立任务，主任务边执行边从
-    //     M1a broadcast 消费工具事件逐行输出（K2 实时流）；执行完成后
-    //     try_recv 排干残余、再按序输出 turn/final/error 终结行——
-    //     broadcast send 同步入缓冲 + 任务完成先行发生于 try_recv，顺序
-    //     有保证（工具行不会落在终结行之后）。
+    //     json / `--thinking` 模式：run_detached_events 放进独立任务，主任务
+    //     边执行边从 M1a broadcast 消费实时事件逐行输出（json = NDJSON stdout；
+    //     text+thinking = `[thinking]` 行 stderr）；执行完成后排干残余、再按
+    //     序输出终结行——broadcast send 同步入缓冲 + 任务完成先行发生于
+    //     排干，顺序有保证（实时行不会落在终结行之后）。
     match v.format {
         OutputFormat::Text => {
-            let events = agent_loop
-                .run_detached_events(
+            if v.thinking {
+                let rx = event_rx.expect("thinking 模式必有事件接收端");
+                let events = run_detached_streaming(
+                    Arc::clone(&agent_loop),
                     &task_text,
-                    nemesis_agent::r#loop::DetachedOpts {
-                        depth: 0,
-                        max_turns: v.max_turns,
-                        ..Default::default()
+                    v.max_turns,
+                    rx,
+                    &|ev| {
+                        if let Some(line) = thinking_stderr_line(ev) {
+                            eprintln!("{}", line);
+                        }
                     },
                 )
-                .await;
-            fold_and_finish(&events)
-        }
-        OutputFormat::Json => {
-            let mut rx = event_rx.expect("json 模式必有事件接收端");
-            let task_loop = Arc::clone(&agent_loop);
-            let mut handle = tokio::spawn(async move {
-                task_loop
+                .await?;
+                fold_and_finish(&events)
+            } else {
+                let events = agent_loop
                     .run_detached_events(
                         &task_text,
                         nemesis_agent::r#loop::DetachedOpts {
@@ -388,51 +435,25 @@ pub async fn run(
                             ..Default::default()
                         },
                     )
-                    .await
-            });
-            // 实时消费工具事件，直到执行任务完成。注意：select 的 handle
-            // 分支会**消费** JoinHandle 的完成态输出——之后再 await 就是
-            // 「JoinHandle polled after completion」panic（实测抓到过），
-            // 所以完成态结果必须在分支里接住，不存在第二次 poll。
-            let mut finished: Option<
-                Result<Vec<nemesis_agent::types::AgentEvent>, tokio::task::JoinError>,
-            > = None;
-            loop {
-                tokio::select! {
-                    ev = rx.recv() => match ev {
-                        Ok(ev) => {
-                            if let Some(line) = serialize_live_event(&ev) {
-                                println!("{}", line);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            // 消费太慢丢帧：诚实注记走 stderr（stdout 只承载 NDJSON 行）。
-                            eprintln!("ndjson: {} live events dropped (consumer too slow)", n);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    },
-                    res = &mut handle => {
-                        finished = Some(res);
-                        break;
+                    .await;
+                fold_and_finish(&events)
+            }
+        }
+        OutputFormat::Json => {
+            let rx = event_rx.expect("json 模式必有事件接收端");
+            let thinking = v.thinking;
+            let events = run_detached_streaming(
+                Arc::clone(&agent_loop),
+                &task_text,
+                v.max_turns,
+                rx,
+                &move |ev| {
+                    if let Some(line) = serialize_live_event(ev, thinking) {
+                        println!("{}", line);
                     }
-                }
-            }
-            let events = match finished {
-                Some(res) => res.map_err(|e| anyhow::anyhow!("agent task join error: {}", e))?,
-                // Closed 先退出（理论上不可能：senders 活到本函数结束）——
-                // handle 未被 poll 至完成，这里首 poll 合法。
-                None => handle
-                    .await
-                    .map_err(|e| anyhow::anyhow!("agent task join error: {}", e))?,
-            };
-            // 排干执行完成前已入缓冲的残余事件（send 先于任务完成，必已入缓冲）。
-            // drain_residual 穿透 Lagged：环形缓冲被覆盖时游标已推进到最旧
-            // 存活事件，尾部（配对的 tool_end 等）仍可读，不得提前终止。
-            for ev in crate::event_drain::drain_residual(&mut rx) {
-                if let Some(line) = serialize_live_event(&ev) {
-                    println!("{}", line);
-                }
-            }
+                },
+            )
+            .await?;
             for line in serialize_terminal_events(&events) {
                 println!("{}", line);
             }
@@ -445,6 +466,76 @@ pub async fn run(
             }
         }
     }
+}
+
+/// 共享的「边执行边消费实时事件」驱动器（K2 json 与 text+thinking 两分支
+/// 同构部分，批次四提取）：执行任务放进独立任务，主任务从 M1a broadcast
+/// 实时消费（每事件交 `emit` 决定映射与去向），执行完成后排干残余、返回
+/// 全量事件集（终结行/折叠由调用方输出）。
+///
+/// 类型注记：broadcast 通道承载 `nemesis_types::agent::AgentEvent`（实时
+/// 遥测枚举：ToolStarted/ToolFinished/RoundText/…），`run_detached_events`
+/// 返回 `nemesis_agent::types::AgentEvent`（loop 内部枚举：Message/…/
+/// Done/Error）——两个同名不同形的类型，别混。
+async fn run_detached_streaming(
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    task_text: &str,
+    max_turns: u32,
+    mut rx: tokio::sync::broadcast::Receiver<nemesis_types::agent::AgentEvent>,
+    emit: &dyn Fn(&nemesis_types::agent::AgentEvent),
+) -> anyhow::Result<Vec<nemesis_agent::types::AgentEvent>> {
+    let task_loop = Arc::clone(&agent_loop);
+    let task_text = task_text.to_string();
+    let mut handle = tokio::spawn(async move {
+        task_loop
+            .run_detached_events(
+                &task_text,
+                nemesis_agent::r#loop::DetachedOpts {
+                    depth: 0,
+                    max_turns,
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    // 实时消费事件，直到执行任务完成。注意：select 的 handle 分支会
+    // **消费** JoinHandle 的完成态输出——之后再 await 就是「JoinHandle
+    // polled after completion」panic（实测抓到过），所以完成态结果必须在
+    // 分支里接住，不存在第二次 poll。
+    let mut finished: Option<
+        Result<Vec<nemesis_agent::types::AgentEvent>, tokio::task::JoinError>,
+    > = None;
+    loop {
+        tokio::select! {
+            ev = rx.recv() => match ev {
+                Ok(ev) => emit(&ev),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // 消费太慢丢帧：诚实注记走 stderr（stdout 只承载 NDJSON 行）。
+                    eprintln!("ndjson: {} live events dropped (consumer too slow)", n);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            res = &mut handle => {
+                finished = Some(res);
+                break;
+            }
+        }
+    }
+    let events = match finished {
+        Some(res) => res.map_err(|e| anyhow::anyhow!("agent task join error: {}", e))?,
+        // Closed 先退出（理论上不可能：senders 活到本函数结束）——
+        // handle 未被 poll 至完成，这里首 poll 合法。
+        None => handle
+            .await
+            .map_err(|e| anyhow::anyhow!("agent task join error: {}", e))?,
+    };
+    // 排干执行完成前已入缓冲的残余事件（send 先于任务完成，必已入缓冲）。
+    // drain_residual 穿透 Lagged：环形缓冲被覆盖时游标已推进到最旧
+    // 存活事件，尾部（配对的 tool_end 等）仍可读，不得提前终止。
+    for ev in crate::event_drain::drain_residual(&mut rx) {
+        emit(&ev);
+    }
+    Ok(events)
 }
 
 /// 折叠终结事件并落退出码语义（仅文本模式）：Done→stdout+Ok；仅

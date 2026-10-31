@@ -125,6 +125,52 @@ describe('chat store work timeline (2026-10-30)', () => {
     expect(store.flushPendingWork()).toBeUndefined()
   })
 
+  // --- 批次二（2026-10-31）：思考链摄取（reasoning 可选字段）---
+
+  it('thinking-only round: empty content + reasoning opens a round (thinking-only 轮照建)', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('', '先想清楚改哪里再动手')
+    expect(store.pendingWork?.rounds).toHaveLength(1)
+    expect(store.pendingWork?.rounds[0]).toMatchObject({
+      text: '',
+      reasoning: '先想清楚改哪里再动手',
+      tools: [],
+    })
+  })
+
+  it('both empty is ignored (皆空不建轮；旧网关无 reasoning 键同形态)', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('', undefined)
+    store.ingestWorkRoundText('', '')
+    expect(store.pendingWork).toBeNull()
+    // 有叙述的轮照常。
+    store.ingestWorkRoundText('叙述', '')
+    expect(store.pendingWork?.rounds[0].text).toBe('叙述')
+    expect(store.pendingWork?.rounds[0].reasoning).toBeUndefined()
+  })
+
+  it('reasoning round carries the following tool batch (工具批次挂思考轮)', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('', '推敲方案')
+    store.ingestWorkToolStart('c1', 'exec', 'ls')
+    store.ingestWorkToolFinish('c1', true, 5, 'out')
+    expect(store.pendingWork?.rounds).toHaveLength(1)
+    expect(store.pendingWork?.rounds[0].reasoning).toBe('推敲方案')
+    expect(store.pendingWork?.rounds[0].tools[0]).toMatchObject({ call_id: 'c1', ok: true })
+  })
+
+  it('thinking round does not capture the next batch after tools exist (与叙述轮同规)', () => {
+    const store = useChatStore()
+    store.ingestWorkRoundText('', '第一轮思考')
+    store.ingestWorkToolStart('c1', 'exec', '')
+    store.ingestWorkToolFinish('c1', true, 1, '')
+    // 第二轮纯工具（无输出）→ 新纯工具轮，不误挂思考轮。
+    store.ingestWorkToolStart('c2', 'grep', 'pat')
+    expect(store.pendingWork?.rounds).toHaveLength(2)
+    expect(store.pendingWork?.rounds[0].tools.map(t => t.call_id)).toEqual(['c1'])
+    expect(store.pendingWork?.rounds[1].tools.map(t => t.call_id)).toEqual(['c2'])
+  })
+
   it('adoptWorkSnapshot replaces wholesale (work_current 活查询恢复)', () => {
     const store = useChatStore()
     store.adoptWorkSnapshot(snap([{ text: '恢复的叙述', tools: [] }]))

@@ -568,9 +568,14 @@ function applyToolEventPayload(ev: any) {
     // 徽标实时刷新。会话过滤由调用方完成。
     if (p.mode === 'plan' || p.mode === 'build') chatStore.setAgentMode(p.mode)
   } else if (ev?.kind === 'RoundText') {
-    // 中间轮正文（模型每轮过程叙述）——live 折叠块内展开显示，最终回复
-    // 落地时 flush 挂载到该消息。
-    if (typeof p.content === 'string' && p.content) chatStore.ingestWorkRoundText(p.content)
+    // 中间轮输出（过程叙述 + 思考链；2026-10-31 批次二起皆空才不发）
+    // ——live 折叠块内展开显示，最终回复落地时 flush 挂载到该消息。
+    if (
+      (typeof p.content === 'string' && p.content) ||
+      (typeof p.reasoning === 'string' && p.reasoning)
+    ) {
+      chatStore.ingestWorkRoundText(p.content ?? '', p.reasoning ?? '')
+    }
   }
 }
 

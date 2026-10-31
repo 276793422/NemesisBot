@@ -9,34 +9,35 @@ use super::*;
 
 #[test]
 fn validate_defaults_build_mode_text_format() {
-    let v = validate(Some("do X".into()), None, None, None, None, None).unwrap();
+    let v = validate(Some("do X".into()), None, None, None, None, None, false).unwrap();
     assert_eq!(v.task, TaskSource::Arg("do X".into()));
     assert_eq!(v.mode, nemesis_agent::types::AgentMode::Build);
     assert_eq!(v.format, OutputFormat::Text);
     assert_eq!(v.max_turns, 0, "缺省 = 0 = 用配置默认");
     assert!(v.model.is_none());
     assert!(v.workspace.is_none());
+    assert!(!v.thinking, "缺省关（D11 拍板 opt-in）");
 }
 
 #[test]
 fn validate_dash_and_missing_task_both_mean_stdin() {
-    let v = validate(None, None, None, None, None, None).unwrap();
+    let v = validate(None, None, None, None, None, None, false).unwrap();
     assert_eq!(v.task, TaskSource::Stdin);
-    let v = validate(Some("-".into()), None, None, None, None, None).unwrap();
+    let v = validate(Some("-".into()), None, None, None, None, None, false).unwrap();
     assert_eq!(v.task, TaskSource::Stdin);
 }
 
 #[test]
 fn validate_mode_is_case_tolerant() {
-    let v = validate(None, None, Some("PLAN"), None, None, None).unwrap();
+    let v = validate(None, None, Some("PLAN"), None, None, None, false).unwrap();
     assert_eq!(v.mode, nemesis_agent::types::AgentMode::Plan);
-    let v = validate(None, None, Some("build"), None, None, None).unwrap();
+    let v = validate(None, None, Some("build"), None, None, None, false).unwrap();
     assert_eq!(v.mode, nemesis_agent::types::AgentMode::Build);
 }
 
 #[test]
 fn validate_unknown_mode_rejected_with_remedy() {
-    let err = validate(None, None, Some("yolo"), None, None, None).unwrap_err();
+    let err = validate(None, None, Some("yolo"), None, None, None, false).unwrap_err();
     assert!(err.contains("yolo"), "错误要回显原值: {err}");
     assert!(
         err.contains("plan") && err.contains("build"),
@@ -46,13 +47,13 @@ fn validate_unknown_mode_rejected_with_remedy() {
 
 #[test]
 fn validate_format_json_lands_k2() {
-    let v = validate(None, None, None, Some("json"), None, None).unwrap();
+    let v = validate(None, None, None, Some("json"), None, None, false).unwrap();
     assert_eq!(v.format, OutputFormat::Json, "K2 已落地：json 合法");
 }
 
 #[test]
 fn validate_unknown_format_rejected() {
-    let err = validate(None, None, None, Some("yaml"), None, None).unwrap_err();
+    let err = validate(None, None, None, Some("yaml"), None, None, false).unwrap_err();
     assert!(err.contains("yaml") && err.contains("text"), "{err}");
 }
 
@@ -65,11 +66,20 @@ fn validate_carries_workspace_model_and_turn_budget() {
         None,
         Some(42),
         Some("test/testai-1.1".into()),
+        false,
     )
     .unwrap();
     assert_eq!(v.workspace, Some(PathBuf::from("/tmp/wsx")));
     assert_eq!(v.max_turns, 42);
     assert_eq!(v.model.as_deref(), Some("test/testai-1.1"));
+}
+
+#[test]
+fn validate_carries_thinking_flag() {
+    let v = validate(None, None, None, None, None, None, true).unwrap();
+    assert!(v.thinking);
+    let v = validate(None, None, None, None, None, None, false).unwrap();
+    assert!(!v.thinking);
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +148,8 @@ fn live_tool_start_serializes_with_schema_fields() {
         tool: "exec".into(),
         args_preview: "{\"command\":\"ls\"}".into(),
     };
-    let v: serde_json::Value = serde_json::from_str(&serialize_live_event(&ev).unwrap()).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&serialize_live_event(&ev, false).unwrap()).unwrap();
     assert_eq!(v["type"], "tool_start");
     assert_eq!(v["call_id"], "c1");
     assert_eq!(v["tool"], "exec");
@@ -156,7 +167,8 @@ fn live_tool_end_serializes_with_result_and_ok() {
         ok: false,
         result_preview: "Tool error: boom".into(),
     };
-    let v: serde_json::Value = serde_json::from_str(&serialize_live_event(&ev).unwrap()).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&serialize_live_event(&ev, false).unwrap()).unwrap();
     assert_eq!(v["type"], "tool_end");
     assert_eq!(v["duration_ms"], 42);
     assert_eq!(v["ok"], false);
@@ -165,7 +177,7 @@ fn live_tool_end_serializes_with_result_and_ok() {
 
 #[test]
 fn live_events_outside_v1_contract_are_skipped() {
-    // TodoUpdated / ModeChanged 不在 v1 固定 5-type 契约内——不发未知 type。
+    // TodoUpdated / ModeChanged 不在 v1 固定 type 集内——不发未知 type。
     let todo = LiveEvent::TodoUpdated {
         session_key: "s".into(),
         chat_id: "s".into(),
@@ -176,8 +188,72 @@ fn live_events_outside_v1_contract_are_skipped() {
         chat_id: "s".into(),
         mode: "plan".into(),
     };
-    assert_eq!(serialize_live_event(&todo), None);
-    assert_eq!(serialize_live_event(&mode), None);
+    assert_eq!(serialize_live_event(&todo, false), None);
+    assert_eq!(serialize_live_event(&mode, false), None);
+}
+
+// ---------------------------------------------------------------------------
+// 批次四（2026-10-31）：`--thinking` 两态——关 = 与现状逐字节一致；
+// 开 = json thinking 行 / text stderr 前缀行。
+// ---------------------------------------------------------------------------
+
+fn round_text(reasoning: &str) -> LiveEvent {
+    LiveEvent::RoundText {
+        session_key: "s".into(),
+        chat_id: "web:conn".into(),
+        content: String::new(),
+        reasoning: reasoning.into(),
+    }
+}
+
+#[test]
+fn thinking_off_round_text_is_skipped_byte_identical_to_legacy() {
+    // 关（默认）：RoundText 全部落契约外跳过——与无此开关前的行为一致
+    // （工具行照常、thinking 行不存在）。
+    assert_eq!(serialize_live_event(&round_text("思考"), false), None);
+    // 工具行不受 thinking 开关影响（两态都在）。
+    let started = LiveEvent::ToolStarted {
+        session_key: "s".into(),
+        chat_id: "web:conn".into(),
+        call_id: "c1".into(),
+        tool: "exec".into(),
+        args_preview: "ls".into(),
+    };
+    assert!(serialize_live_event(&started, false).is_some());
+    assert!(serialize_live_event(&started, true).is_some());
+}
+
+#[test]
+fn thinking_on_round_text_with_reasoning_emits_thinking_line() {
+    let line = serialize_live_event(&round_text("先想清楚改哪里"), true).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["type"], "thinking");
+    assert_eq!(v["text"], "先想清楚改哪里");
+    // 只这两个键——消费方按固定 type 集解析，不发多余字段
+    // （serde_json::Map 是 BTreeMap，键序按字典序排列，与插入序无关）。
+    let mut keys = v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys, ["text", "type"]);
+}
+
+#[test]
+fn thinking_on_empty_reasoning_still_skipped() {
+    // 开着开关但 reasoning 空/纯空白：不发空壳行（诚实：没有思考就没有行）。
+    assert_eq!(serialize_live_event(&round_text(""), true), None);
+    assert_eq!(serialize_live_event(&round_text("   \n\t"), true), None);
+}
+
+#[test]
+fn thinking_stderr_line_prefixes_each_line() {
+    let ev = round_text("第一行推敲\n第二行验证\n");
+    let out = thinking_stderr_line(&ev).unwrap();
+    assert_eq!(out, "[thinking] 第一行推敲\n[thinking] 第二行验证");
+}
+
+#[test]
+fn thinking_stderr_line_empty_reasoning_is_none() {
+    assert_eq!(thinking_stderr_line(&round_text("")), None);
+    assert_eq!(thinking_stderr_line(&round_text("  ")), None);
 }
 
 #[test]
@@ -288,7 +364,7 @@ mod wave_a {
     async fn run_stdin_eof_empty_task_bails() {
         let _th = home_env();
         // task=None → Stdin 源；EOF ⇒ 空任务 ⇒ 诚实报错。
-        let err = run(&_th.home, None, None, None, None, None, None)
+        let err = run(&_th.home, None, None, None, None, None, None, false)
             .await
             .unwrap_err();
         assert!(
@@ -301,9 +377,18 @@ mod wave_a {
     #[tokio::test]
     async fn run_config_missing_bails() {
         let _th = home_env();
-        let err = run(&_th.home, Some("hi".into()), None, None, None, None, None)
-            .await
-            .unwrap_err();
+        let err = run(
+            &_th.home,
+            Some("hi".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("Configuration not found"), "{err}");
     }
 
@@ -311,9 +396,18 @@ mod wave_a {
     async fn run_corrupt_config_bails() {
         let th = home_env();
         std::fs::write(th.home.join("config.json"), "{not json").unwrap();
-        let err = run(&th.home, Some("hi".into()), None, None, None, None, None)
-            .await
-            .unwrap_err();
+        let err = run(
+            &th.home,
+            Some("hi".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("failed to load config"), "{err}");
     }
 
@@ -336,6 +430,7 @@ mod wave_a {
             None,
             None,
             None,
+            false,
         )
         .await;
         match res {
@@ -365,6 +460,7 @@ mod wave_a {
             Some("json".into()),
             None,
             None,
+            false,
         )
         .await;
         match res {
@@ -405,6 +501,7 @@ mod wave6 {
             None,
             None,
             Some("fake".into()),
+            false,
         )
         .await;
         match res {
@@ -433,6 +530,7 @@ mod wave6 {
             None,
             None,
             Some("w6-not-registered".into()),
+            false,
         )
         .await
         .unwrap_err();

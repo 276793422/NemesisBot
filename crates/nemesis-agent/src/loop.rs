@@ -1032,20 +1032,36 @@ impl AgentLoop {
         *self.plan_present.write() = Some(handle);
     }
 
-    /// R1（2026-09-21）：中间轮正文发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。
+    /// R1（2026-09-21）：中间轮输出发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。
     /// web pump 的默认路径即覆盖全部投递（注入 session_id + record_tool 入环 +
     /// tool_event 通道 WS push），本方法只负责发；agent_event_tx 未装配
     /// （CLI / B 端 worker）为 no-op。
-    fn emit_round_text(&self, session_key: &str, chat_id: &str, content: &str) {
+    ///
+    /// 批次二（2026-10-31）：扩为叙述 + 思考链双输入（`("", reasoning)` 形态
+    /// 供终答轮思考链发射）——皆空才跳过，thinking-only 轮照发（UI 折叠展示）。
+    fn emit_round_output(
+        &self,
+        session_key: &str,
+        chat_id: &str,
+        content: &str,
+        reasoning: Option<&str>,
+    ) {
+        let reasoning = reasoning.unwrap_or("");
+        // 皆空不发：纯工具轮 / 无思考直答无可观察输出。
+        if content.trim().is_empty() && reasoning.trim().is_empty() {
+            return;
+        }
         // Work 时间线喂入（2026-10-30）：与事件发射同点同源——先喂累加器
         // （落盘真相源，与 tx 在场与否无关），再发实时事件（观察面）。
-        self.work_recorder.push_round_text(session_key, content);
+        self.work_recorder
+            .push_round_output(session_key, content, reasoning);
         if let Some(tx) = self.agent_event_tx.read().as_ref() {
             // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
             let _ = tx.send(nemesis_types::agent::AgentEvent::RoundText {
                 session_key: session_key.to_string(),
                 chat_id: chat_id.to_string(),
                 content: content.to_string(),
+                reasoning: reasoning.to_string(),
             });
         }
     }

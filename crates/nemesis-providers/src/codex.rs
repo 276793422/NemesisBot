@@ -366,6 +366,34 @@ fn translate_tools_for_codex(
     result
 }
 
+/// reasoning summary 提取（思考链形态④，家族纯函数——定位是可测试性，非跨
+/// lane 复用）：`output[]` 中 `type=="reasoning"` 条目的 `summary[].text`
+/// 非空段拼接（服务端摘要，部分请求参数下不回传 = None 诚实）。非流式响应
+/// 与流式终态 `response` 对象同构（`parse_sse_text` 终态事件直送本解析器
+/// 同一函数），一处修复两条通路。
+fn reasoning_from_output(output: &[serde_json::Value]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for item in output {
+        if item.get("type").and_then(|t| t.as_str()) != Some("reasoning") {
+            continue;
+        }
+        if let Some(summary) = item.get("summary").and_then(|s| s.as_array()) {
+            for s in summary {
+                if let Some(text) = s.get("text").and_then(|t| t.as_str())
+                    && !text.trim().is_empty()
+                {
+                    parts.push(text.to_string());
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// Parse the Codex Responses API response.
 fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
     let mut content = String::new();
@@ -422,10 +450,18 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
                         arguments: Some(arguments),
                     });
                 }
+                // reasoning 条目不走 content 累积——summary 由
+                // reasoning_from_output 统一收进 reasoning_content。
                 _ => {}
             }
         }
     }
+
+    // reasoning summary（流式终态对象与非流式同构，共用此提取）。
+    let reasoning_content = data
+        .get("output")
+        .and_then(|o| o.as_array())
+        .and_then(|output| reasoning_from_output(output));
 
     let finish_reason = if data.get("status").and_then(|s| s.as_str()) == Some("incomplete") {
         "length"
@@ -467,7 +503,7 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
         tool_calls,
         finish_reason: finish_reason.to_string(),
         usage,
-        reasoning_content: None,
+        reasoning_content,
         extra: HashMap::new(),
         raw_request_body: None,
         raw_response_body: None,

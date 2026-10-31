@@ -90,13 +90,13 @@ function roundTextFrame(seq: number, content: string) {
 }
 
 /** sync 补拉的 kind=tool 条目（RoundText 形态，tool 内层即实时帧 ev）。 */
-function syncRoundText(seq: number, content: string) {
+function syncRoundText(seq: number, content: string, reasoning?: string) {
   return {
     seq,
     kind: 'tool',
     role: '',
     content: '',
-    tool: { kind: 'RoundText', data: { session_id: 's1', chat_id: 'web:conn-x', content } },
+    tool: { kind: 'RoundText', data: { session_id: 's1', chat_id: 'web:conn-x', content, ...(reasoning ? { reasoning } : {}) } },
   }
 }
 
@@ -241,6 +241,54 @@ describe('R1：sync 补拉 RoundText 条目 → assistant 行落地时同轮挂�
     const block = w.find('.wt-block:not(.live)')
     expect(block.exists()).toBe(true)
     expect(block.find('.wt-header').text()).toContain('用时')
+    w.unmount()
+  })
+
+  it('批次二：补拉的 thinking-only RoundText（含 reasoning）同样成轮挂载', async () => {
+    prepareSession()
+    let syncN = 0
+    requestMock.mockImplementation((_mod: string, cmd: string) => {
+      if (cmd === 'inbox_status') return Promise.resolve({ available: true, busy: true })
+      if (cmd === 'sync') {
+        syncN += 1
+        if (syncN === 1) return Promise.resolve({})
+        return Promise.resolve({
+          events: [
+            syncRoundText(5, '', '重放的思考推敲'),
+            { seq: 6, role: 'assistant', content: '结论如下', ts: '2026-09-21T00:00:00Z' },
+          ],
+        })
+      }
+      return Promise.resolve({})
+    })
+    vi.useFakeTimers()
+    const w = mount(ChatPanel)
+    await flushPromises()
+    feedHistory(lastRequestId(), [{ role: 'user', content: 'reconnect thinking' }])
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(4100)
+    await flushPromises()
+    vi.useRealTimers()
+
+    const chat = useChatStore()
+    const last = chat.messages[chat.messages.length - 1]
+    expect(last.content).toBe('结论如下')
+    expect(last.work?.rounds).toHaveLength(1)
+    expect(last.work?.rounds[0]).toMatchObject({ text: '', reasoning: '重放的思考推敲' })
+    // 落地块存在、默认折叠、头部带 💭 徽标（与实时路径共用同一渲染组件，
+    // 展开交互已由 ChatPanel.worktimeline 的落地用例覆盖——此处 jsdom +
+    // fake timers 流程下 VTU trigger 不投递事件，用手动 dispatchEvent 验证
+    // 展开渲染补拉的思考正文）。
+    const block = w.find('.wt-block:not(.live)')
+    expect(block.exists()).toBe(true)
+    expect(block.find('.wt-header').text()).toContain('用时')
+    expect(block.find('.wt-header span.wt-think').text()).toContain('💭 1')
+    ;(block.find('.wt-header').element as HTMLElement).dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+    expect(w.find('.wt-block:not(.live) details.wt-think .wt-think-body').text()).toBe('重放的思考推敲')
     w.unmount()
   })
 })

@@ -4,12 +4,18 @@
 // history——web 前端只见工具卡与最终回复。修复后中间轮正文非空即经
 // agent_event_tx 广播 RoundText（web pump 默认路径投递 + 入环回放）。
 //
+// 批次二（2026-10-31）：RoundText 扩思考链字段（reasoning）——叙述与
+// 思考皆空才不发；thinking-only 轮照发；终答轮思考链以 ("", reasoning)
+// 形态发布（正文走 Done 既有通路）。
+//
 // 覆盖面：
 // ① 两轮带叙述的中间轮各发布一条，内容与顺序一一对应；
 // ② RoundText 走观察者通道（agent_event_tx），不混入 run() 返回的
 //    chat 语义事件 Vec（ToolCall/Done 等的通道）；
-// ③ 纯工具调用轮（空正文）不发布——无可读内容；
-// ④ 最终回复轮不发布（它是 Done，常规渲染路径）。
+// ③ 纯工具调用轮（叙述与思考皆空）不发布——无可观察输出；
+// ④ 最终回复轮正文不发布（它是 Done，常规渲染路径）；
+// ⑤ thinking-only 轮（叙述空、思考有值）照发布（批次二）；
+// ⑥ 终答轮思考链以 ("", reasoning) 发布（批次二）。
 //
 // 自带迷你 Mock（兄弟模块私有类型不共享，f1/f8 同款）。
 
@@ -82,6 +88,19 @@ fn resp(content: &str, tool_calls: Vec<ToolCallInfo>, finished: bool) -> LlmResp
     }
 }
 
+/// 带思考链的响应（批次二）。
+fn resp_r(
+    content: &str,
+    reasoning: Option<&str>,
+    tool_calls: Vec<ToolCallInfo>,
+    finished: bool,
+) -> LlmResponse {
+    LlmResponse {
+        reasoning_content: reasoning.map(|s| s.to_string()),
+        ..resp(content, tool_calls, finished)
+    }
+}
+
 fn echo_call(id: &str) -> ToolCallInfo {
     ToolCallInfo {
         id: id.to_string(),
@@ -141,10 +160,12 @@ async fn intermediate_round_prose_published_as_round_text() {
             session_key,
             chat_id,
             content,
+            reasoning,
         } => {
             assert_eq!(content, "第一步：先执行 echo 确认工具可用。");
             assert_eq!(chat_id, "rtchat");
             assert!(!session_key.is_empty(), "session_key 供 web pump 路由");
+            assert!(reasoning.is_empty(), "无思考模型 reasoning 恒空串");
         }
         other => panic!("必须是 RoundText，实际 {other:?}"),
     }
@@ -167,8 +188,8 @@ async fn intermediate_round_prose_published_as_round_text() {
 
 #[tokio::test]
 async fn empty_prose_round_not_published() {
-    // 纯工具调用轮（content 空串）不发 RoundText——既有「只报工具卡」
-    // 形态的回归钉；最终轮（无 tool_calls）走 Done，同样不发布。
+    // 纯工具调用轮（content 空串、无思考）不发 RoundText——既有「只报
+    // 工具卡」形态的回归钉；最终轮（无 tool_calls）走 Done，同样不发布。
     let provider = ScriptedProvider {
         responses: std::sync::Mutex::new(vec![
             resp("", vec![echo_call("tc_1")], false),
@@ -187,8 +208,80 @@ async fn empty_prose_round_not_published() {
     let texts = drain_round_texts(&mut rx);
     assert!(
         texts.is_empty(),
-        "空正文中间轮不得发布 RoundText，实际: {texts:?}"
+        "皆空中间轮不得发布 RoundText，实际: {texts:?}"
     );
     assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCall(_))));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Done(_))));
+}
+
+#[tokio::test]
+async fn thinking_only_round_published() {
+    // 批次二：叙述空、思考有值的工具轮照发布（UI 折叠展示面）；
+    // thinking-only RoundText 的 content 为空、reasoning 带值。
+    let provider = ScriptedProvider {
+        responses: std::sync::Mutex::new(vec![
+            resp_r(
+                "",
+                Some("先想清楚改哪里再动手"),
+                vec![echo_call("tc_1")],
+                false,
+            ),
+            resp("改完了。", Vec::new(), true),
+        ]),
+    };
+    let mut al = AgentLoop::new(Box::new(provider), rt_config());
+    al.register_tool("echo".to_string(), Box::new(EchoTool));
+    let (tx, mut rx) = tokio::sync::broadcast::channel(32);
+    al.set_agent_event_tx(Some(tx));
+
+    let instance = AgentInstance::new(rt_config());
+    let context = RequestContext::new("web", "rtchat", "rtuser", "rtsession");
+    let _ = al.run(&instance, "思考轮", &context).await;
+
+    let texts = drain_round_texts(&mut rx);
+    assert_eq!(texts.len(), 1, "thinking-only 轮必须发布，实际: {texts:?}");
+    match &texts[0] {
+        nemesis_types::agent::AgentEvent::RoundText {
+            content, reasoning, ..
+        } => {
+            assert!(content.is_empty());
+            assert_eq!(reasoning, "先想清楚改哪里再动手");
+        }
+        other => panic!("必须是 RoundText，实际 {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn final_answer_reasoning_published_as_empty_content_round() {
+    // 批次二：终答轮思考链以 ("", reasoning) 发布——正文走 Done 通路，
+    // 思考链单独成轮（直答轮也能看到思考）。
+    let provider = ScriptedProvider {
+        responses: std::sync::Mutex::new(vec![resp_r(
+            "最终答案。",
+            Some("直答前的推敲"),
+            Vec::new(),
+            true,
+        )]),
+    };
+    let mut al = AgentLoop::new(Box::new(provider), rt_config());
+    al.register_tool("echo".to_string(), Box::new(EchoTool));
+    let (tx, mut rx) = tokio::sync::broadcast::channel(32);
+    al.set_agent_event_tx(Some(tx));
+
+    let instance = AgentInstance::new(rt_config());
+    let context = RequestContext::new("web", "rtchat", "rtuser", "rtsession");
+    let events = al.run(&instance, "直答带思考", &context).await;
+
+    let texts = drain_round_texts(&mut rx);
+    assert_eq!(texts.len(), 1, "终答思考链一条，实际: {texts:?}");
+    match &texts[0] {
+        nemesis_types::agent::AgentEvent::RoundText {
+            content, reasoning, ..
+        } => {
+            assert!(content.is_empty(), "终答正文不重发（走 Done）");
+            assert_eq!(reasoning, "直答前的推敲");
+        }
+        other => panic!("必须是 RoundText，实际 {other:?}"),
+    }
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Done(_))));
 }

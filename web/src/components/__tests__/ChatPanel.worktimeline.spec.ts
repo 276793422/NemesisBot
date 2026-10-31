@@ -71,6 +71,15 @@ function roundText(content: string): any {
   }
 }
 
+/** 批次二：带思考链的 RoundText 帧（reasoning 可选字段）。 */
+function roundTextR(content: string, reasoning: string): any {
+  return {
+    type: 'push',
+    cmd: 'tool_event',
+    data: { kind: 'RoundText', data: { chat_id: 'web:s1', content, reasoning } },
+  }
+}
+
 function assistantReply(content: string): any {
   return {
     type: 'message',
@@ -186,6 +195,64 @@ describe('ChatPanel work 时间线（2026-10-30）', () => {
     await flushPromises()
 
     expect(chat.pendingWork?.rounds.flatMap(r => r.tools)).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  // --- 批次二（2026-10-31）：思考链折叠卡 ---
+
+  it('思考链：thinking-only RoundText 帧 → live 块默认收起的 💭 折叠卡 + 头部徽标', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    h(roundTextR('', '先想清楚改哪里再动手'))
+    await flushPromises()
+
+    // 缓冲：thinking-only 轮照建（content 空、reasoning 有值）。
+    expect(chat.pendingWork?.rounds).toHaveLength(1)
+    expect(chat.pendingWork?.rounds[0]).toMatchObject({ text: '', reasoning: '先想清楚改哪里再动手' })
+
+    // live 块：头部 💭 徽标；思考卡默认收起（无 open 属性）。jsdom 下
+    // details 的子节点恒在 DOM（无 CSS 隐藏语义），收起与否只由 open 属性
+    // 表达——正文渲染内容直接可断言；浏览器原生展开交互无 JS 参与，无需模拟。
+    const live = wrapper.find('.wt-block.live')
+    expect(live.exists()).toBe(true)
+    expect(live.find('span.wt-think').text()).toContain('💭 1')
+    const think = live.find('details.wt-think')
+    expect(think.exists()).toBe(true)
+    expect(think.find('summary').text()).toContain('💭')
+    expect(think.attributes('open')).toBeUndefined()
+    expect(think.find('.wt-think-body').text()).toBe('先想清楚改哪里再动手')
+    wrapper.unmount()
+  })
+
+  it('思考链：随回复落地折叠挂载；无思考的轮不渲染折叠卡', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    // 轮 0：思考 + 工具；轮 1：纯叙述（无思考）。
+    h(roundTextR('', '推敲方案'))
+    h(started('c1'))
+    h(finished('c1'))
+    h(roundText('纯叙述轮'))
+    h(assistantReply('完成'))
+    await flushPromises()
+
+    expect(chat.messages[0].work?.rounds).toHaveLength(2)
+    expect(chat.messages[0].work?.rounds[0].reasoning).toBe('推敲方案')
+    expect(chat.messages[0].work?.rounds[1].reasoning).toBeUndefined()
+
+    // 落地折叠块：头部徽标 💭 1（只有 1 轮带思考）。
+    const block = wrapper.find('.wt-block:not(.live)')
+    expect(block.find('.wt-header span.wt-think').text()).toContain('💭 1')
+
+    // 展开后：仅轮 0 有 details.wt-think；轮 1 无。
+    await block.find('.wt-header').trigger('click')
+    await flushPromises()
+    const thinks = wrapper.findAll('.wt-block:not(.live) details.wt-think')
+    expect(thinks).toHaveLength(1)
+    expect(thinks[0].find('.wt-think-body').text()).toBe('推敲方案')
     wrapper.unmount()
   })
 

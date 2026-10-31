@@ -475,6 +475,13 @@ impl HttpProvider {
                     let reasoning_content = parsed["choices"][0]["message"]["reasoning_content"]
                         .as_str()
                         .map(|s| s.to_string());
+                    // 完整 JSON 单次成型：内联 <think> 用非流式纯函数一次剥离
+                    //（形态③，与 SSE 路径同一归一出口）；剥出思考并入下方终态
+                    // chunk 的 reasoning_content（与 message 字段并存拼接）。
+                    let (content, inline_thinking) =
+                        crate::think_strip::strip_inline_thinking(&content);
+                    let reasoning_content =
+                        crate::think_strip::merge_reasoning(reasoning_content, inline_thinking);
                     if !content.is_empty() {
                         let _ = tx
                             .send(Ok(StreamChunk {
@@ -548,6 +555,9 @@ impl HttpProvider {
             > = std::collections::BTreeMap::new();
             // Accumulated reasoning content from thinking-mode models.
             let mut accumulated_reasoning = String::new();
+            // 内联 <think> 剥离状态机（思考链形态③，跨 chunk；见
+            // think_strip 模块）：content delta 过滤，剥出并入上方累积。
+            let mut think_stripper = crate::think_strip::ThinkStripper::new();
             // 终态帧是否已发（finish chunk 正常先行，[DONE] 只收尾不再补发；
             // 2026-10-13 wal_crash 实证根修——[DONE] 硬编码 "stop" 二连发会把
             // 聚合侧已收的 finish_reason="tool_calls" 覆盖成 "stop"，工具调用
@@ -648,9 +658,13 @@ impl HttpProvider {
                                 model = %model,
                                 "[Provider] SSE [DONE] without finish chunk — synthesizing termination chunk"
                             );
+                            // [DONE] 也是终态：剥离器残留在此定谳（holdback
+                            // 正文补发 + 未闭合思考归 reasoning），与下方
+                            // finish 帧路径同一出口。
+                            let flushed_delta = think_stripper.finish(&mut accumulated_reasoning);
                             let _ = tx
                                 .send(Ok(StreamChunk {
-                                    delta: String::new(),
+                                    delta: flushed_delta,
                                     tool_calls: done_calls,
                                     finish_reason: Some(
                                         if !pending_tool_calls.is_empty() {
@@ -681,6 +695,22 @@ impl HttpProvider {
                             .unwrap_or("")
                             .to_string();
 
+                        // <think> 内联剥离（形态③，状态机跨 chunk）：净正文
+                        // 替换发射；剥出的思考并入 accumulated_reasoning——随
+                        // 终态 chunk 既有 reasoning 出口带出，聚合器「出现即
+                        // 覆盖」语义不变。块闭合才交出（take_thinking 门闩），
+                        // holdback 疑似标签前缀在终态 finish 定谳。
+                        let delta_content = {
+                            let cleaned = think_stripper.feed(&delta_content);
+                            if let Some(th) = think_stripper.take_thinking() {
+                                if !accumulated_reasoning.is_empty() {
+                                    accumulated_reasoning.push_str("\n\n");
+                                }
+                                accumulated_reasoning.push_str(&th);
+                            }
+                            cleaned
+                        };
+
                         // Accumulate reasoning_content from thinking-mode models.
                         if let Some(rc) =
                             parsed["choices"][0]["delta"]["reasoning_content"].as_str()
@@ -691,6 +721,15 @@ impl HttpProvider {
                         let finish_reason = parsed["choices"][0]["finish_reason"]
                             .as_str()
                             .map(|s| s.to_string());
+
+                        // 终态到达：剥离器残留定谳并补发（flush 只在终态做——
+                        // 流中途会把真标签前缀提前当正文放走）。
+                        let delta_content = if finish_reason.is_some() {
+                            let flushed = think_stripper.finish(&mut accumulated_reasoning);
+                            format!("{flushed}{delta_content}")
+                        } else {
+                            delta_content
+                        };
 
                         // Handle streaming tool calls.
                         if let Some(tc_array) =
@@ -824,9 +863,12 @@ impl HttpProvider {
                 tool_call_count = flushed_calls.len(),
                 "[Provider] SSE stream ended without [DONE] — synthesized termination chunk"
             );
+            // EOF 同为终态：剥离器残留定谳（截断流的未闭合思考在此归
+            // reasoning，holdback 正文补发），与 finish/[DONE] 路径同出口。
+            let flushed_delta = think_stripper.finish(&mut accumulated_reasoning);
             let _ = tx
                 .send(Ok(StreamChunk {
-                    delta: String::new(),
+                    delta: flushed_delta,
                     finish_reason: Some(
                         if !flushed_calls.is_empty() {
                             "tool_calls"
@@ -1003,10 +1045,14 @@ impl LLMProvider for HttpProvider {
         }
 
         // Parse OpenAI-compatible response
-        let content = data["choices"][0]["message"]["content"]
+        let raw_content = data["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("")
             .to_string();
+        // 内联 <think> 剥离（思考链形态③）——必须在 tool-call repair 之前：
+        // 思考文本里的伪工具调用 JSON 不该喂给 repair 启发式。剥出的思考
+        // 在下方 LLMResponse 构造处与 reasoning_content 字段合并（\n\n）。
+        let (content, inline_thinking) = crate::think_strip::strip_inline_thinking(&raw_content);
 
         let mut finish_reason = data["choices"][0]["finish_reason"]
             .as_str()
@@ -1075,9 +1121,12 @@ impl LLMProvider for HttpProvider {
             tool_calls,
             finish_reason,
             usage,
-            reasoning_content: data["choices"][0]["message"]["reasoning_content"]
-                .as_str()
-                .map(|s| s.to_string()),
+            reasoning_content: crate::think_strip::merge_reasoning(
+                data["choices"][0]["message"]["reasoning_content"]
+                    .as_str()
+                    .map(|s| s.to_string()),
+                inline_thinking,
+            ),
             extra: HashMap::new(),
             raw_request_body: Some(body),
             raw_response_body: Some(raw_response_text),

@@ -885,3 +885,85 @@ fn test_parse_sse_text_incomplete_treated_as_finished() {
     assert_eq!(r.finish_reason, "length");
     assert_eq!(r.content, "截断");
 }
+
+// ---------------------------------------------------------------------------
+// 思考链捕获（形态④）：output[] reasoning summary（非流式与流式终态同构）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_codex_response_reasoning_summary() {
+    // output[] 的 reasoning 条目 summary[].text 收进 reasoning_content。
+    let data = serde_json::json!({
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "need to read config first"},
+                {"type": "summary_text", "text": "then patch the parser"}
+            ]},
+            {"type": "message", "content": [{"type": "output_text", "text": "done"}]}
+        ]
+    });
+    let resp = parse_codex_response(&data);
+    assert_eq!(resp.content, "done");
+    assert_eq!(
+        resp.reasoning_content.as_deref(),
+        Some("need to read config first\n\nthen patch the parser")
+    );
+}
+
+#[test]
+fn test_parse_codex_response_reasoning_only() {
+    // 纯 reasoning（无 message）——content 空、reasoning 有值。
+    let data = serde_json::json!({
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "just thinking"}]}
+        ]
+    });
+    let resp = parse_codex_response(&data);
+    assert_eq!(resp.content, "");
+    assert_eq!(resp.reasoning_content.as_deref(), Some("just thinking"));
+}
+
+#[test]
+fn test_parse_codex_response_no_reasoning_none() {
+    // 无 reasoning 条目 = None（部分请求参数下上游不回传，诚实）。
+    let data = serde_json::json!({
+        "status": "completed",
+        "output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "plain"}]}
+        ]
+    });
+    let resp = parse_codex_response(&data);
+    assert_eq!(resp.reasoning_content, None);
+}
+
+#[test]
+fn test_parse_codex_response_reasoning_empty_summary_none() {
+    // summary 空/空白段不产壳。
+    let data = serde_json::json!({
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "  "}]},
+            {"type": "reasoning"}
+        ]
+    });
+    let resp = parse_codex_response(&data);
+    assert_eq!(resp.reasoning_content, None);
+}
+
+#[test]
+fn test_parse_sse_text_terminal_carries_reasoning() {
+    // 流式终态对象与非流式同构：response.completed 的 response 直送
+    // parse_codex_response——同一提取器双通路（一处修复两条通路断言）。
+    let text = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"mid-stream dropped\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",",
+        "\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"terminal summary\"}]},",
+        "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n",
+    );
+    let r = parse_sse_text(text, "gpt-4o").expect("completed 是合法终态");
+    assert_eq!(r.content, "answer");
+    assert_eq!(r.reasoning_content.as_deref(), Some("terminal summary"));
+}
