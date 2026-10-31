@@ -29,6 +29,13 @@ export interface ApprovalRequest {
   /** F3:「总是允许」将记住的 pattern（B5 归约前缀，如 `cargo publish *`）。
    * 空/缺省 = 不适用（CRITICAL 非 exec、run_script 等无 target 场景）。 */
   pattern?: string
+  /** 授权卡自解释三字段（感知层 §5 合同项；后端 `approval_card_fields`
+   * 单一真相源派生，SSE approval-requested 与 approval.pending 两路载荷
+   * 都携带）。非空才渲染；缺省 = 旧条目兼容（BUG-20261031-254 此前全链
+   * 丢弃这三字段，IM 通道审批卡同源三行已渲染而 Web 卡漏接）。 */
+  why?: string
+  impact?: string
+  reject_note?: string
   /** 本地到期时刻（ms epoch）= 接收时刻 + (timeout_secs - age_secs) * 1000 */
   expiresAt: number
 }
@@ -76,6 +83,9 @@ function upsertFromPayload(data: any) {
     chat_id: data.chat_id || undefined,
     session_key: data.session_key || undefined,
     pattern: data.pattern ? String(data.pattern) : undefined,
+    why: data.why ? String(data.why) : undefined,
+    impact: data.impact ? String(data.impact) : undefined,
+    reject_note: data.reject_note ? String(data.reject_note) : undefined,
     expiresAt: Date.now() + Math.max(0, timeout - age) * 1000,
   }
   if (existing === -1) {

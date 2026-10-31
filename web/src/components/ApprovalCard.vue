@@ -115,6 +115,23 @@ function canAlways(req: ApprovalRequest): boolean {
             <span class="approval-label">理由</span>
             <span class="approval-value">{{ req.reason }}</span>
           </div>
+          <!-- BUG-20261031-254：授权卡自解释三字段（感知层 §5 合同项，后端
+               approval_card_fields 派生、SSE 与 approval.pending 两路载荷都
+               带）——此前 FE 全链丢弃。why 在 reason 非空时恒等于 reason，
+               只在与理由不同（reason 空 → 风险级回落文案）时显示，防重复；
+               impact/reject_note 非空即显示（对齐 IM 通道审批卡同源三行）。 -->
+          <div v-if="req.why && req.why !== req.reason" class="approval-row">
+            <span class="approval-label">为什么</span>
+            <span class="approval-value">{{ req.why }}</span>
+          </div>
+          <div v-if="req.impact" class="approval-row">
+            <span class="approval-label">影响</span>
+            <span class="approval-value">{{ req.impact }}</span>
+          </div>
+          <div v-if="req.reject_note" class="approval-row approval-reject-note">
+            <span class="approval-label">拒绝后果</span>
+            <span class="approval-value">{{ req.reject_note }}</span>
+          </div>
           <!-- F3：总是允许前的确认串回显——用户看到的就是将写入规则的 pattern。 -->
           <div v-if="canAlways(req)" class="approval-row approval-always-scope">
             <span class="approval-label">记住</span>
@@ -268,6 +285,13 @@ function canAlways(req: ApprovalRequest): boolean {
 .approval-always-scope {
   padding-top: var(--space-1);
   border-top: 1px dashed var(--border);
+}
+
+/* BUG-20261031-254：拒绝后果说明（固定口径文案）——弱化降调，不与
+   操作/目标等事实字段抢视觉权重。 */
+.approval-reject-note .approval-value {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 .approval-note-input {

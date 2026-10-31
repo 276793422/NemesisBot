@@ -405,4 +405,61 @@ describe('ApprovalCard', () => {
     ).toBe(1)
     w.unmount()
   })
+
+  // ---- BUG-20261031-254（授权卡自解释三字段）----
+  // 后端 approval_card_fields（web_approval.rs 单一真相源）派生
+  // why/impact/reject_note，SSE approval-requested（server.rs 展平）与
+  // approval.pending（entry_json）两路载荷都携带；IM 通道审批卡同源三行
+  // 已渲染，Web 卡此前接口/转换/渲染全链丢弃——「授权卡自解释」在
+  // Dashboard 落空。BE 真实形状：reason 非空时 why == reason（回落文案
+  // 只在 reason 空时出现），impact 按 op_type 推导，reject_note 固定口径。
+
+  it('BUG-254: 载荷带三字段 → 卡片渲染「影响/拒绝后果」，why 与理由重复时不显示', async () => {
+    const w = await mounted()
+    // reason 非空的真实形状：why == reason 原文。
+    fireApproval(
+      makePayload('r-254a', {
+        impact: '将在本机执行命令/进程：cargo publish',
+        reject_note: '拒绝后本动作不执行、不产生任何效果；agent 会收到拒绝通知并继续对话。',
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.text()).toContain('将在本机执行命令/进程：cargo publish')
+    expect(w.text()).toContain('拒绝后本动作不执行、不产生任何效果')
+    expect(w.find('.approval-reject-note').exists()).toBe(true)
+    // why == reason → 「理由」行已承载同文，为什么行不渲染（防重复）。
+    expect(w.text()).not.toContain('为什么')
+    w.unmount()
+  })
+
+  it('BUG-254: reason 空时 why 为风险级回落文案 → 「为什么」行显示', async () => {
+    const w = await mounted()
+    fireApproval(
+      makePayload('r-254b', {
+        reason: '',
+        why: 'HIGH 级操作按安全策略需要人工确认',
+        impact: '将发起网络访问：https://example.com',
+        reject_note: '拒绝后本动作不执行、不产生任何效果；agent 会收到拒绝通知并继续对话。',
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.text()).toContain('为什么')
+    expect(w.text()).toContain('HIGH 级操作按安全策略需要人工确认')
+    expect(w.text()).toContain('将发起网络访问：https://example.com')
+    w.unmount()
+  })
+
+  it('BUG-254: 旧条目（无三字段）照常渲染，无空行残留', async () => {
+    const w = await mounted()
+    fireApproval(makePayload('r-254c'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.find('.approval-reject-note').exists()).toBe(false)
+    expect(w.text()).not.toContain('为什么')
+    expect(w.text()).not.toContain('拒绝后果')
+    expect(w.text()).toContain('rule: exec-publish')
+    w.unmount()
+  })
 })
