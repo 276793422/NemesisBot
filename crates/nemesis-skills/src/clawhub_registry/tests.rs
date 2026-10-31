@@ -1987,7 +1987,7 @@ async fn test_download_skill_zip_rejects_oversized_body() {
         .await
         .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("too large"), "msg: {msg}");
+    assert!(msg.contains("exceeds limit"), "msg: {msg}");
 }
 
 // --- get_skill_content strategy-1 failure-to-fallback trigger arms ---
@@ -2206,4 +2206,90 @@ fn test_extract_zip_rejects_drive_prefix_entry() {
         matches!(err, NemesisError::Security(_)),
         "expect Security error, got: {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-273 回归锁：下载/解压双闸（恶意源防护）。
+// ---------------------------------------------------------------------------
+
+// 下载侧：read_body_capped 必须在读入**过程中**拒绝超限 body——旧 bytes()
+// 全量吞完才检查，恶意源在检查前已把任意大 body 灌进内存。wiremock 回
+// 1MB body、cap 64KB → 中途断开报错。
+#[tokio::test]
+async fn read_body_capped_aborts_oversized_body_mid_read() {
+    let server = wiremock::MockServer::start().await;
+    let big = vec![0xABu8; 1024 * 1024];
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(big)
+                .append_header("content-type", "application/zip"),
+        )
+        .mount(&server)
+        .await;
+    let registry = ClawHubRegistry::new();
+    let response = registry.client.get(&server.uri()).send().await.unwrap();
+    let err = read_body_capped(response, 64 * 1024).await.unwrap_err();
+    assert!(err.to_string().contains("exceeds limit"), "{err}");
+}
+
+// 下载侧正常路径：cap 内 body 完整读回（分块拼接无丢失）。
+#[tokio::test]
+async fn read_body_capped_passes_small_body() {
+    let server = wiremock::MockServer::start().await;
+    let small = vec![0xCDu8; 8192];
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(small.clone())
+                .append_header("content-type", "application/zip"),
+        )
+        .mount(&server)
+        .await;
+    let registry = ClawHubRegistry::new();
+    let response = registry.client.get(&server.uri()).send().await.unwrap();
+    let body = read_body_capped(response, 64 * 1024).await.unwrap();
+    assert_eq!(body, small);
+}
+
+// 内存构造 zip（单条目 payload 可压缩 → 压缩后远小于解压量）。
+fn make_one_entry_zip(payload: &[u8]) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut w = zip::ZipWriter::new(&mut cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        w.start_file("big.bin", opts).unwrap();
+        std::io::Write::write_all(&mut w, payload).unwrap();
+        w.finish().unwrap();
+    }
+    cursor.into_inner()
+}
+
+// 解压侧：累计解压量超 total_cap 必须拒绝（炸弹条目压缩体合法、解压量
+// 巨大——50MB 压缩闸管不住，本闸管实际落盘字节）。
+#[test]
+fn extract_zip_to_dir_capped_rejects_decompression_bomb() {
+    // 512KB 模式化 payload：deflate 后 ~KB 级（过压缩体闸），解压 512KB
+    // 远超 64KB 总量闸。
+    let payload: Vec<u8> = (0..512 * 1024).map(|i| (i % 251) as u8).collect();
+    let zip_bytes = make_one_entry_zip(&payload);
+    let tmp = tempfile::tempdir().unwrap();
+    let err =
+        extract_zip_to_dir_capped(&zip_bytes, tmp.path().to_str().unwrap(), 64 * 1024).unwrap_err();
+    assert!(
+        err.to_string().contains("exceeds limit") || err.to_string().contains("bomb"),
+        "{err}"
+    );
+}
+
+// 解压侧正常路径：小技能包在 cap 内完整解出。
+#[test]
+fn extract_zip_to_dir_capped_passes_normal_package() {
+    let payload = b"SKILL.md content".repeat(64);
+    let zip_bytes = make_one_entry_zip(&payload);
+    let tmp = tempfile::tempdir().unwrap();
+    extract_zip_to_dir_capped(&zip_bytes, tmp.path().to_str().unwrap(), 64 * 1024).unwrap();
+    let out = tmp.path().join("big.bin");
+    assert_eq!(std::fs::read(&out).unwrap(), payload);
 }

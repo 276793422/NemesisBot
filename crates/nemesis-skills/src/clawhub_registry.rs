@@ -555,16 +555,11 @@ impl ClawHubRegistry {
             }
         }
 
-        let body = response
-            .bytes()
-            .await
-            .map_err(|e| NemesisError::Other(format!("failed to read ZIP response: {}", e)))?;
-
-        if body.len() as u64 > 50 * 1024 * 1024 {
-            return Err(NemesisError::Other(
-                "ZIP file too large (>50MB)".to_string(),
-            ));
-        }
+        // 下载侧流式累计闸（BUG-20261101-273）：旧 `bytes()` 全量吞完才查
+        // 50MB——顺序倒置，恶意/被攻陷源在检查前已把任意大 body 灌进内存
+        // （与 zip_util::read_entry_capped「拒绝发生在读入过程本身」同一
+        // 哲学）。chunk() 分块拉取，累计超限在读入中途即断。
+        let body = read_body_capped(response, MAX_ZIP_BODY_BYTES).await?;
 
         // Extract ZIP to target directory.
         extract_zip_to_dir(&body, target_dir)?;
@@ -579,8 +574,43 @@ impl Default for ClawHubRegistry {
     }
 }
 
+/// ClawHub 技能包 zip 体积上限（压缩体）。
+const MAX_ZIP_BODY_BYTES: u64 = 50 * 1024 * 1024;
+/// 解压总量上限（未压缩实际落盘字节）。50MB 闸的是压缩体，Deflated 压缩
+/// 比常见 3~10x、理论 >1000:1——炸弹条目靠本闸在撑爆磁盘前拒绝。正常
+/// 技能包（SKILL.md/脚本，KB 级条目）远低于此，不误伤。
+const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 200 * 1024 * 1024;
+
+/// 下载响应体分块读入 + 累计上限（BUG-20261101-273 下载侧）。
+///
+/// 不用 `bytes()`：它把 body 全量吞进内存后调用方才能检查大小——检查在
+/// 读入之后，防不了读入过程本身。`chunk()` 逐块拉取累计，超 `cap` 立即
+/// 断开连接返回错误（恶意源的巨大 body 在撑内存前被拒）。
+async fn read_body_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8>> {
+    let mut body: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| NemesisError::Other(format!("failed to read ZIP response: {}", e)))?
+    {
+        total += chunk.len() as u64;
+        if total > cap {
+            return Err(NemesisError::Other(format!(
+                "ZIP download exceeds limit (>{cap} bytes); aborted mid-read",
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// Extract a ZIP archive to a directory, flattening a single top-level directory if present.
 fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
+    extract_zip_to_dir_capped(data, target_dir, MAX_TOTAL_UNCOMPRESSED_BYTES)
+}
+
+fn extract_zip_to_dir_capped(data: &[u8], target_dir: &str, total_cap: u64) -> Result<()> {
     use std::io::Cursor;
 
     let reader = Cursor::new(data);
@@ -613,6 +643,8 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
 
     std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
 
+    // 解压总量累计（写入段逐条目累加，超 total_cap 拒绝）。
+    let mut total_uncompressed: u64 = 0;
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
@@ -672,7 +704,15 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
 
         // Write file.
         let mut output = std::fs::File::create(&dest_path).map_err(NemesisError::Io)?;
-        std::io::copy(&mut file, &mut output).map_err(NemesisError::Io)?;
+        // 解压总量闸（BUG-20261101-273 解压侧）：累计实际解压字节，超限
+        // 拒绝——zip-slip 闸管路径，本闸管体量。
+        let n = std::io::copy(&mut file, &mut output).map_err(NemesisError::Io)?;
+        total_uncompressed += n;
+        if total_uncompressed > total_cap {
+            return Err(NemesisError::Security(format!(
+                "uncompressed size exceeds limit (>{total_cap} bytes): decompression bomb suspected",
+            )));
+        }
     }
 
     Ok(())
