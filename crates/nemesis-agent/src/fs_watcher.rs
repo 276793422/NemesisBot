@@ -247,3 +247,9 @@ fn flush(
 
 #[cfg(test)]
 mod tests;
+
+// 产品性质回归锁：被 watch 的目录必须保持可删（2026-10-31 实证 notify
+// recommended_watcher 不钉目录；防未来后端/模式更换引入钉住。Windows-only
+// 语义在文件内自挂 cfg(windows)）。
+#[cfg(test)]
+mod watcher_dir_lock_tests;

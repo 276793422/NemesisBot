@@ -272,12 +272,32 @@ struct Inner {
     seen: HashMap<Option<String>, HashSet<String>>,
 }
 
-/// git2 `Repository` is Send but !Sync — Mutex 使其可跨 await 共享。
-/// 锁纪律：repo 锁与 inner 锁绝不互相嵌套持有（先 repo 操作、放锁、再
-/// inner，反之亦然），杜绝双锁排序死锁。
+/// git 影子库后端句柄（BUG-20261031 非驻留化）。
+///
+/// **不持有** `git2::Repository`——只存 (影子库路径, 工作区根) 路径对 +
+/// 操作串行锁；每个 git 操作经 [`GitBackend::open`] 临时打开 → 操作 →
+/// drop。原因：常驻 Repository 会让 libgit2 沿 alternates 链 mmap 目标
+/// 项目 `.git/objects/pack/*.pack`，句柄驻留至 Repository drop——gateway
+/// 常驻 = 用户扫描过的项目无法删除（产品原则：bot 不得在用户文件系统上
+/// 持有任何驻留锁，项目目录随时可能消失）。本地 bare 仓库 open 毫秒级，
+/// checkpoint 每 turn 一次，开销可忽略。
+///
+/// `op_lock` 保留旧 `Mutex<Repository>` 的操作串行语义（并发 open 会撞
+/// git lock 文件 / rename 窗口）。锁纪律：op_lock 与 inner 锁绝不互相
+/// 嵌套持有（先 git 操作、放锁、再 inner，反之亦然），杜绝双锁排序死锁。
 #[cfg(feature = "checkpoint-git")]
 struct GitBackend {
-    repo: Mutex<git2::Repository>,
+    shadow: PathBuf,
+    root: PathBuf,
+    op_lock: Mutex<()>,
+}
+
+#[cfg(feature = "checkpoint-git")]
+impl GitBackend {
+    /// 临时打开影子库（每操作一次；drop 即释放全部 mmap 句柄）。
+    fn open(&self) -> Result<git2::Repository, String> {
+        CheckpointStore::open_shadow(&self.shadow, &self.root)
+    }
 }
 
 /// 主仓 index 中的一条 gitlink（mode 160000）。`path` 保留 Git index
@@ -408,7 +428,12 @@ impl CheckpointStore {
             Self::init_shadow(shadow, root)
         };
         match result {
+            // 一次性 fs 副作用（初始化/自愈/alternates）借这个临时 repo 完成，
+            // 随即 drop——**不驻留**（BUG-20261031：常驻 Repository 会沿
+            // alternates mmap 目标项目 pack 并持有到 drop）。后续每个操作
+            // 经 GitBackend::open 临时打开。
             Ok(repo) => {
+                drop(repo);
                 // P20（2026-09-25 能力扩展）：启动自愈——清扫崩溃残留的
                 // temp 对象 / 半成品锁文件（幂等，无残留 = 0 清扫不吭声）。
                 let healed = Self::heal_shadow_repo(shadow);
@@ -419,7 +444,9 @@ impl CheckpointStore {
                     warn!("[checkpoint] alternates 写失败（blob 复用降级，不影响正确性）: {e}");
                 }
                 Some(GitBackend {
-                    repo: Mutex::new(repo),
+                    shadow: shadow.to_path_buf(),
+                    root: root.to_path_buf(),
+                    op_lock: Mutex::new(()),
                 })
             }
             Err(e) => {
@@ -1035,7 +1062,8 @@ impl CheckpointStore {
             .git
             .as_ref()
             .ok_or_else(|| "影子库不可用（JSON 形态），无法捕获交付分支".to_string())?;
-        let mut repo = gb.repo.lock();
+        let _op = gb.op_lock.lock();
+        let mut repo = gb.open()?;
         // 先做可变操作（index 写入 + commit + ref），再取 immutable 句柄——
         // git2 的 Tree/Diff 借用 repo，顺序不能反（同 git_restore 纪律）。
         let tree_hex = Self::write_current_tree(&mut repo)?;
@@ -1118,7 +1146,8 @@ impl CheckpointStore {
             .git
             .as_ref()
             .ok_or_else(|| "影子库不可用（JSON 形态），无法读取交付分支".to_string())?;
-        let repo = gb.repo.lock();
+        let _op = gb.op_lock.lock();
+        let repo = gb.open()?;
         let ref_name = format!("nemesis/{branch}");
         let commit = repo
             .find_branch(&ref_name, git2::BranchType::Local)
@@ -1142,7 +1171,8 @@ impl CheckpointStore {
             .git
             .as_ref()
             .ok_or_else(|| "影子库不可用（JSON 形态），无交付分支".to_string())?;
-        let repo = gb.repo.lock();
+        let _op = gb.op_lock.lock();
+        let repo = gb.open()?;
         let prefix = "refs/heads/nemesis/";
         let mut names: Vec<String> = repo
             .references()
@@ -1223,12 +1253,14 @@ impl CheckpointStore {
 
         let prompt = prompt.into();
 
-        // git track 先行（repo 锁独立短区间，不与 inner 锁嵌套）。
+        // git track 先行（git 操作锁独立短区间，不与 inner 锁嵌套）。
         #[cfg(feature = "checkpoint-git")]
         let tree_hex = match self.git.as_ref() {
             Some(gb) => {
-                let mut repo = gb.repo.lock();
-                match Self::write_current_tree(&mut repo) {
+                match gb
+                    .open()
+                    .and_then(|mut repo| Self::write_current_tree(&mut repo))
+                {
                     Ok(h) => Some(h),
                     Err(e) => {
                         warn!(
@@ -1557,10 +1589,14 @@ impl CheckpointStore {
             for p in &report.other_session_paths {
                 excluded.insert(p.clone());
             }
-            let mut repo = gb.repo.lock();
-            let extra =
-                Self::tree_diff_unchecked(&mut repo, &target_hex, &reference_hex, &excluded);
-            drop(repo);
+            let extra = match gb.open() {
+                // open 失败 = 全树 diff 预检不可用，按既有降级语义取空集
+                // （预检不误报，与 tree_diff_unchecked 内部失败同路）。
+                Ok(mut repo) => {
+                    Self::tree_diff_unchecked(&mut repo, &target_hex, &reference_hex, &excluded)
+                }
+                Err(_) => Vec::new(),
+            };
             for p in extra {
                 if !report.unchecked_paths.contains(&p) {
                     report.unchecked_paths.push(p);
@@ -1701,14 +1737,21 @@ impl CheckpointStore {
         // ---- 第二段：repo 锁内做 tree diff + checkout，随即放锁 ----
         #[cfg(feature = "checkpoint-git")]
         let mut result = match self.git.as_ref() {
-            Some(gb) => {
-                let mut repo = gb.repo.lock();
-                Self::git_restore(&self.root, &mut repo, &target_hex)
-            }
+            Some(gb) => match gb.open() {
+                Ok(mut repo) => Self::git_restore(&self.root, &mut repo, &target_hex),
+                Err(e) => {
+                    // 跨模式（会话曾以 git 模式记录，现 .git 消失回落 JSON）：tree
+                    // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
+                    warn!(
+                        "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复: {e}"
+                    );
+                    RestoreReport::default()
+                }
+            },
             None => {
-                // 跨模式（会话曾以 git 模式记录，现 .git 消失回落 JSON）：tree
-                // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
-                warn!("[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复");
+                warn!(
+                    "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用（JSON 形态），跳过工作区内恢复"
+                );
                 RestoreReport::default()
             }
         };
@@ -1887,8 +1930,10 @@ impl CheckpointStore {
     #[cfg(feature = "checkpoint-git")]
     pub fn current_tree_hex(&self) -> Option<String> {
         let gb = self.git.as_ref()?;
-        let mut repo = gb.repo.lock();
-        match Self::write_current_tree(&mut repo) {
+        match gb
+            .open()
+            .and_then(|mut repo| Self::write_current_tree(&mut repo))
+        {
             Ok(h) => Some(h),
             Err(e) => {
                 warn!("[checkpoint] 实时影子 tree 写入失败（redo 前向恢复降级到 begin 树）: {e}");
@@ -1926,7 +1971,8 @@ impl CheckpointStore {
         let Some(gb) = self.git.as_ref() else {
             return Err("影子库不可用（JSON 形态），无法按 tree 恢复文件".to_string());
         };
-        let mut repo = gb.repo.lock();
+        let _op = gb.op_lock.lock();
+        let mut repo = gb.open()?;
         Ok(Self::git_restore(&self.root, &mut repo, tree_hex))
     }
 
@@ -1950,7 +1996,8 @@ impl CheckpointStore {
     #[cfg(feature = "checkpoint-git")]
     pub fn conflict_scan_since_tree(&self, base_tree_hex: &str) -> Option<Vec<String>> {
         let gb = self.git.as_ref()?;
-        let mut repo = gb.repo.lock();
+        let _op = gb.op_lock.lock();
+        let mut repo = gb.open().ok()?;
         // git2 借用纪律（同 git_restore）：先做可变操作（index 写入），
         // 再拿 immutable 的 Tree 句柄——Tree 借用 repo，顺序不能反。
         let cur_hex = Self::write_current_tree(&mut repo).ok()?;
@@ -2025,7 +2072,8 @@ impl CheckpointStore {
         let Some(gb) = self.git.as_ref() else {
             return Err("影子库不可用（JSON 形态），无法按 tree 读文件".to_string());
         };
-        let repo = gb.repo.lock();
+        let _op = gb.op_lock.lock();
+        let repo = gb.open()?;
         let oid = git2::Oid::from_str(tree_hex).map_err(|e| format!("tree hex 解析失败: {e}"))?;
         let tree = repo
             .find_tree(oid)
@@ -2149,3 +2197,9 @@ mod p4_tests;
 // 自挂 feature 守卫）。
 #[cfg(test)]
 mod gc_tests;
+
+// BUG-20261031：影子库常驻 git2::Repository 持有扫描目标项目 pack 句柄
+// （Windows mmap 锁 → 项目无法删除）复现/回归锁（Windows-only 语义在
+// 文件内自挂 cfg(windows)）。
+#[cfg(all(test, feature = "checkpoint-git"))]
+mod pack_lock_tests;

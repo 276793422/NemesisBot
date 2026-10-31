@@ -15,13 +15,13 @@
 //!   贝复用）→ 把保留 tree 闭包里主仓没有的对象 raw 拷进去 → **换名前完
 //!   整性自检**（每个保留 tree 在新库做闭包校验；旧库本来就坏的 tree 记
 //!   broken_before 基线，不因 gc 变得更坏即可）→ 原子换名 `objects/` 子树
-//!   （影子库路径不变：同一 store 的常驻句柄、集群共享 store 的句柄、
-//!   refs、index 全部继续有效）。任一步失败诚实放弃，零破坏。
+//!   （影子库路径不变：同一 store 后续临时 open 的句柄、集群共享 store
+//!   的临时句柄、refs、index 全部继续有效）。任一步失败诚实放弃，零破坏。
 //! - **JSON 形态**：窗口外 turn-N.json 直删（fsutil 韧性包装）。
 //! - **触发**：`truncate_from_scoped` 后 + gateway 周期拍（runtime 装配，
 //!   6h 与 uploads/logs 同拍）；每轮打 INFO。
 //!
-//! 锁纪律：inner 快照（短锁）→ 释放 → git 操作（repo 锁只在换名窗口
+//! 锁纪律：inner 快照（短锁）→ 释放 → git 操作（op_lock 只在换名窗口
 //! 短持）→ inner 清账（短锁）。绝不嵌套。
 
 use std::collections::HashSet;
@@ -162,7 +162,7 @@ impl CheckpointStore {
     /// M6：装配 gc（config 开关 + undo/redo 栈下界闭包）。未装配 = gc 全
     /// 路径零触碰。主 loop / 项目 loop 各自装配。**集群闸（BUG-95）**：
     /// cluster agent 的 checkpoint store 与主 store 是独立实例**共享同一影
-    /// 子库目录**——GitBackend 的 repo Mutex 是实例级的，本 store 换名窗口
+    /// 子库目录**——GitBackend 的 op_lock 是实例级的，本 store 换名窗口
     /// 锁不住集群写入者（旧注释「对共享句柄无害」失实，回头检查已纠）；
     /// 且保留集闭包只接主 loop 栈，集群栈引用的 tree 会被误清。故主 store
     /// 的装配点（agent_factory）在 config.cluster.enabled 时**不调用本方法**。
@@ -358,8 +358,8 @@ impl CheckpointStore {
             .git
             .as_ref()
             .ok_or_else(|| "影子库未启用".to_string())?;
-        // 影子库路径从常驻句柄读（store 不存该字段）。
-        let shadow = gb.repo.lock().path().to_path_buf();
+        // 影子库路径直接读字段（BUG-20261031 非驻留化后无常驻句柄可查）。
+        let shadow = gb.shadow.clone();
         let root = self.root.clone();
         let open_flags = git2::RepositoryOpenFlags::NO_SEARCH;
 
@@ -390,7 +390,7 @@ impl CheckpointStore {
                     );
                 }
             } else {
-                let _heal_guard = gb.repo.lock();
+                let _heal_guard = gb.op_lock.lock();
                 std::fs::rename(&objects_old, shadow.join("objects"))
                     .map_err(|e| format!("破损态自愈失败（.gc-old 搬回 objects）: {e}"))?;
                 tracing::warn!(
@@ -569,11 +569,13 @@ impl CheckpointStore {
         report.trees_kept = trees_kept;
         drop(new_repo); // 换名窗口前落袋新库句柄（Windows 不钉 tmp/objects）
 
-        // 原子换名 objects/ 子树：影子库路径不变 → 常驻句柄 / 集群共享
-        // store 句柄 / refs / index 全部继续有效（loose 对象按路径按需读，
-        // 无持久句柄钉住）。objects_old 已在函数头构造（BUG-96 残留处置）。
-        // 换名窗口串行本 store 的并发 git 操作。
-        let _repo_guard = gb.repo.lock();
+        // 原子换名 objects/ 子树：影子库路径不变 → 各路临时句柄（含集群
+        // 共享 store 的 open）/ refs / index 全部继续有效（loose 对象按路
+        // 径按需读，无持久句柄钉住）。objects_old 已在函数头构造（BUG-96
+        // 残留处置）。换名窗口经 op_lock 串行本 store 的并发 git 操作
+        // （集群共享影子库的另一个 store 实例有自己的 op_lock，跨实例
+        // 不互斥——BUG-95 集群闸在装配点兜住，此处语义不变）。
+        let _repo_guard = gb.op_lock.lock();
         std::fs::rename(shadow.join("objects"), &objects_old)
             .map_err(|e| format!("旧 objects 换名失败（瞬时句柄占用，下轮重试）: {e}"))?;
         if let Err(e) = std::fs::rename(tmp.join("objects"), shadow.join("objects")) {

@@ -78,7 +78,8 @@ fn add_parent_gitlink(root: &Path, rel: &str, oid: git2::Oid) {
 
 fn current_tree_entry(store: &CheckpointStore, rel: &str) -> Option<(git2::Oid, i32)> {
     let backend = store.git.as_ref().unwrap();
-    let mut repo = backend.repo.lock();
+    let _op = backend.op_lock.lock();
+    let mut repo = backend.open().unwrap();
     let tree_hex = CheckpointStore::write_current_tree(&mut repo).unwrap();
     let tree = repo
         .find_tree(git2::Oid::from_str(&tree_hex).unwrap())
