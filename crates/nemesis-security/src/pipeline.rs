@@ -12,7 +12,7 @@
 use crate::audit_log::{AuditLogConfig, AuditLogger};
 use crate::auditor::{AuditorConfig, OperationRequest, SecurityAuditor};
 use crate::command::Guard as CommandGuard;
-use crate::credential::Scanner as CredentialScanner;
+use crate::credential::{CredentialResult, Scanner as CredentialScanner};
 use crate::dlp::{DlpConfidence, DlpConfig, DlpEngine};
 use crate::injection::{Detector as InjectionDetector, InjectionConfig};
 use crate::integrity::{AuditChain, AuditChainConfig};
@@ -26,6 +26,37 @@ use crate::types::*;
 use parking_lot::RwLock;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Depth-first credential scan over every string leaf of a tool-args JSON
+/// tree. Returns the first block-action hit (short-circuit), if any.
+///
+/// Recursion depth is bounded by serde_json's parse-depth limit (128 by
+/// default; `unbounded_depth` is not enabled), so deeply nested args cannot
+/// overflow the stack. Cost is on par with L1/L5, which already recurse over
+/// the same tree.
+fn scan_credentials_in_value(
+    scanner: &CredentialScanner,
+    value: &serde_json::Value,
+) -> Option<CredentialResult> {
+    match value {
+        serde_json::Value::String(s) => {
+            if s.len() > 10 {
+                let result = scanner.scan_content(s);
+                if result.has_matches && result.action == "block" {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .find_map(|v| scan_credentials_in_value(scanner, v)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .find_map(|v| scan_credentials_in_value(scanner, v)),
+        _ => None,
+    }
+}
 
 /// F5: per-layer fixed remediation hints fed to the model alongside the
 /// deny summary. Keys match [`DenyInfo::layer`].
@@ -852,40 +883,37 @@ impl SecurityPlugin {
             return (false, Some(deny_info("abac", "abac", abac_reason)));
         }
 
-        // Layer 4: Credential Scanner
+        // Layer 4: Credential Scanner — depth-first over ALL string leaves.
+        // BUG-20261030-210: previously only top-level string values were
+        // scanned; nested payloads (multiedit `edits[].new_text`, headers
+        // objects, arrays) skipped the scan entirely, and the ~20 credential
+        // patterns with no DLP counterpart (EC/DSA/PGP private-key headers,
+        // SendGrid, Slack webhook, bare Bearer, npm token, …) made it a
+        // double miss. L1 injection and L5 DLP both recurse; so does L4 now.
         if let Some(ref scanner) = self.credential_scanner
-            && let serde_json::Value::Object(map) = &invocation.args
+            && let Some(result) = scan_credentials_in_value(scanner, &invocation.args)
         {
-            for (_key, value) in map {
-                if let serde_json::Value::String(s) = value
-                    && s.len() > 10
-                {
-                    let result = scanner.scan_content(s);
-                    if result.has_matches && result.action == "block" {
-                        self.log_audit_event(
-                            "denied",
-                            &op_type.to_string(),
-                            &invocation.user,
-                            &invocation.source,
-                            &target,
-                            "CRITICAL",
-                            &format!("credential leak: {}", result.summary),
-                            "credential_scanner",
-                        );
-                        return (
-                            false,
-                            Some(deny_info(
-                                "credential",
-                                "credential_scanner",
-                                format!(
-                                    "operation blocked: potential credential leak detected ({})",
-                                    result.summary
-                                ),
-                            )),
-                        );
-                    }
-                }
-            }
+            self.log_audit_event(
+                "denied",
+                &op_type.to_string(),
+                &invocation.user,
+                &invocation.source,
+                &target,
+                "CRITICAL",
+                &format!("credential leak: {}", result.summary),
+                "credential_scanner",
+            );
+            return (
+                false,
+                Some(deny_info(
+                    "credential",
+                    "credential_scanner",
+                    format!(
+                        "operation blocked: potential credential leak detected ({})",
+                        result.summary
+                    ),
+                )),
+            );
         }
 
         // Layer 5: DLP — confidence-aware + direction-aware.

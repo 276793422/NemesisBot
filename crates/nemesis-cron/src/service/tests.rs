@@ -3306,6 +3306,313 @@ fn add_job_internal_still_allows_legacy_dead_schedule() {
 }
 
 #[test]
+fn add_job_ext_rejects_empty_message_enabled_loud() {
+    // BUG-20261030-222：空 message 闸（死排程闸同族不变量）——enabled 作
+    // 业 message 空白 = 每次触发都落 on_job 的 "No message to deliver"
+    // （status=ok）＝以已排程假象什么都不投递的静默僵尸，loud 拒绝。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let every = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60_000),
+        expr: None,
+        tz: None,
+    };
+
+    for msg in ["", "   ", "\t\n"] {
+        let err = svc
+            .add_job_ext(
+                "zombie",
+                every.clone(),
+                msg,
+                false,
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("空转"),
+            "空白 message（{msg:?}）必须点明空转: {err}"
+        );
+    }
+
+    // 一个都不在册。
+    let names: Vec<String> = svc.list_jobs(true).into_iter().map(|j| j.name).collect();
+    assert!(names.is_empty(), "空 message 任务一个都不能建: {names:?}");
+
+    // legacy add_job（恒 enabled=true 委托）同闸。
+    assert!(
+        svc.add_job("zombie-legacy", every.clone(), "", false, None, None)
+            .is_err()
+    );
+
+    // disabled 放行（W1b 对称：不触发；enable 路径复检）。
+    let dormant = svc
+        .add_job_ext(
+            "dormant",
+            every.clone(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    assert!(!dormant.enabled);
+
+    // 非空 message 正常创建（对照臂）。
+    assert!(
+        svc.add_job_ext("ok", every, "m", false, None, None, None, None, true)
+            .is_ok()
+    );
+}
+
+#[test]
+fn empty_message_gate_covers_enable_toggle_patch_paths() {
+    // BUG-20261030-222：闸覆盖全部翻正/更新路径（对齐死排程闸家族
+    // BUG-20261025-30 的覆盖面）——休眠空 message 作业不得经 enable/
+    // toggle/patch 翻正成空转僵尸；patch 也不得把启用中作业的 message
+    // 改空。校验在任何变更应用前，Err = 无副作用。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let every = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60_000),
+        expr: None,
+        tz: None,
+    };
+
+    // ① enable_job 启用空 message 休眠作业 → 拒绝，状态不变。
+    let d1 = svc
+        .add_job_ext(
+            "e1",
+            every.clone(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    assert!(svc.enable_job(&d1.id, true).unwrap_err().contains("空转"));
+    assert!(
+        !svc.list_jobs(true)
+            .into_iter()
+            .any(|j| j.id == d1.id && j.enabled)
+    );
+
+    // ② toggle_job 翻正空 message 休眠作业 → 拒绝，状态不变。
+    let d2 = svc
+        .add_job_ext(
+            "e2",
+            every.clone(),
+            "  ",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    assert!(svc.toggle_job(&d2.id).unwrap_err().contains("空转"));
+    assert!(
+        !svc.list_jobs(true)
+            .into_iter()
+            .any(|j| j.id == d2.id && j.enabled)
+    );
+
+    // ③ patch 把启用中作业 message 改空 → 拒绝，原 message 保留。
+    let live = svc
+        .add_job_ext(
+            "e3",
+            every.clone(),
+            "real msg",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(
+        svc.patch_job(
+            &live.id,
+            &CronJobPatch {
+                message: Some(String::new()),
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+        .contains("空转")
+    );
+    let after = svc
+        .list_jobs(true)
+        .into_iter()
+        .find(|j| j.id == live.id)
+        .unwrap();
+    assert_eq!(after.payload.message, "real msg", "拒绝后 message 不得被改");
+
+    // ④ patch 翻正：休眠空 message 作业 patch enabled=true → 拒绝。
+    let d4 = svc
+        .add_job_ext("e4", every, "", false, None, None, None, None, false)
+        .unwrap();
+    assert!(
+        svc.patch_job(
+            &d4.id,
+            &CronJobPatch {
+                enabled: Some(true),
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+        .contains("空转")
+    );
+    assert!(
+        !svc.list_jobs(true)
+            .into_iter()
+            .any(|j| j.id == d4.id && j.enabled)
+    );
+}
+
+#[test]
+fn empty_message_gate_exempts_internal_reserved_prefix_jobs() {
+    // R289 / BUG-20261031-228：222 空 message 闸漏豁免保留前缀内部作业。
+    // 闸的前提「启用 + message 空 = 什么都不投递的空转僵尸」只对用户作业
+    // 成立——`board-ap:{id}` / `memory-dreaming:sweep` 的 on_job 分派在
+    // message 判空**之前**按名拦截（add_job_internal 旁路注释同一理由），
+    // 它们 message 恒空却真实干活。漏豁免的实害：autopilot 启动同步/规则
+    // 更新（arm_autopilot_job_with → patch_job schedule+enabled）与
+    // dreaming 配置跟随（dreaming_job.rs patch_job）全部被闸 loud 拒绝
+    // ——改 cron 表达式永不生效（改时报错、重启同步 warn 跳过）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let mk = |expr: &str| CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some(expr.to_string()),
+        tz: None,
+    };
+
+    // 内部作业（message 恒空）经旁路创建——这是 autopilot/dreaming 的
+    // 真实装配形态。
+    let ap_job = svc
+        .add_job_internal(
+            "board-ap:7",
+            mk("0 9 * * *"),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let dream_job = svc
+        .add_job_internal(
+            "memory-dreaming:sweep",
+            mk("30 3 * * *"),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+    // ① patch：store 侧规则改了 cron 表达式 → 同步必须成功（这正是
+    //    sync_autopilot_jobs / autopilot.update / dreaming 跟随的调用形态）。
+    let patched = svc
+        .patch_job(
+            &ap_job.id,
+            &CronJobPatch {
+                schedule: Some(mk("0 10 * * *")),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("内部作业 patch 不得被空 message 闸拒绝: {e}"));
+    assert_eq!(patched.schedule.expr.as_deref(), Some("0 10 * * *"));
+
+    // ② dreaming 跟随形态：enabled=Some(true) + 换表达式，同样放行。
+    let dream_patched = svc
+        .patch_job(
+            &dream_job.id,
+            &CronJobPatch {
+                schedule: Some(mk("0 4 * * *")),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("dreaming 跟随 patch 不得被空 message 闸拒绝: {e}"));
+    assert_eq!(dream_patched.schedule.expr.as_deref(), Some("0 4 * * *"));
+
+    // ③ enable/toggle 翻正内部休眠作业 → 放行（W1b：闸不管内部作业）。
+    let dormant_ap = svc
+        .add_job_internal(
+            "board-ap:9",
+            mk("0 5 * * *"),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    svc.enable_job(&dormant_ap.id, true)
+        .unwrap_or_else(|e| panic!("内部作业 enable 不得被空 message 闸拒绝: {e}"));
+    let toggled = svc
+        .toggle_job(&dormant_ap.id)
+        .unwrap_or_else(|e| panic!("内部作业 toggle 不得被空 message 闸拒绝: {e}"));
+    assert!(!toggled, "toggle 应翻回停用");
+
+    // ④ 负对照：用户作业（非保留前缀）空 message 翻正仍必须被闸拒绝
+    //    （222 对用户面的保护不得松动）。
+    let user_dormant = svc
+        .add_job_ext(
+            "user-job",
+            mk("0 6 * * *"),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    let err = svc
+        .patch_job(
+            &user_dormant.id,
+            &CronJobPatch {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(err.contains("空转"), "用户作业仍须被闸拦: {err}");
+}
+
+#[test]
 fn cron_expr_can_fire_combines_syntax_and_semantics() {
     // BUG-20261025-18：挂载面（autopilot/dreaming）共用的组合判定。
     let now = Local::now().timestamp_millis();

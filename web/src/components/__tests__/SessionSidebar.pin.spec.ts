@@ -122,7 +122,7 @@ describe('SessionSidebar pin（行菜单入口）', () => {
     await openRowMenu(w, 0)
     await clickMenuItem(w, '删除会话')
     await flushPromises()
-    expect(deleteMock).toHaveBeenCalledWith('a')
+    expect(deleteMock).toHaveBeenCalledWith('a', undefined, undefined)
     expect(JSON.parse(localStorage.getItem(PIN_KEY)!)).toEqual([])
     vi.unstubAllGlobals()
     w.unmount()

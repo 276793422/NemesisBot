@@ -407,3 +407,100 @@ fn cron_tick_coalesced_when_same_job_already_queued() {
     }
     assert_eq!(al.inbox.pending(key), (3, 0), "burst 未改变队列");
 }
+
+// ---------------------------------------------------------------------------
+// R294（BUG-20261031-236）：busy 判定与入队之间的竞态孤儿 kick
+// ---------------------------------------------------------------------------
+
+/// 合法交织的坏终态 + kick 行为：回合持闸期间消息进 busy 分支，回合在本闸
+/// try_acquire 与入队之间完成（release + 空手 drain——两个 worker 并行），
+/// 消息入队后没有任何在途回合会来排它（drain 只挂在回合/维护/历史闸尾巴）
+/// ——滞留到该会话下一条消息到来（顺序倒挂），无下一条则无限期滞留。
+/// kick = 入队后复查 busy，已空闲则就地走 drain 同款排空（reinject 回流，
+/// 泵按正常闸门重新准入）。busy 时 kick 必须是 no-op（正常路径由在途回合
+/// 尾巴排空）。
+///
+/// 诚实边界：交织窗口在 gate_inbound 单次调用内部（纯同步区间），无法从
+/// 外部确定性注入——本测试按同一批原语的合法调用序构造坏终态，再驱动
+/// 生产 helper 本体；两处 Queued* 臂的接线为可见的两行调用。
+#[tokio::test]
+async fn busy_race_orphan_kick_reinjects_parked_head() {
+    struct UnusedLlmProvider;
+    #[async_trait]
+    impl LlmProvider for UnusedLlmProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            panic!("kick 路径不得触碰 LLM");
+        }
+    }
+
+    let al = AgentLoop::new(Box::new(UnusedLlmProvider), test_config());
+    let (rein_tx, mut rein_rx) = tokio::sync::mpsc::channel(4);
+    al.set_reinject_tx(rein_tx);
+    let key = "agent:main:session:covkick";
+
+    // ① 坏终态（合法原语序）：turn 持闸 → 完成（release + 空手 drain）→
+    //    消息入队（此刻已无在途回合）。
+    assert!(al.try_acquire_session(key));
+    al.release_session(key);
+    let queued = crate::inbox::QueuedMessage {
+        msg: nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: "covuser".to_string(),
+            chat_id: "covchat".to_string(),
+            content: "孤儿消息".to_string(),
+            media: vec![],
+            session_key: key.to_string(),
+            correlation_id: String::new(),
+            metadata: Default::default(),
+            voice_playback: None,
+        },
+        timestamp: chrono::Local::now().to_rfc3339(),
+        priority: crate::inbox::MessagePriority::Normal,
+    };
+    assert_eq!(
+        al.inbox.enqueue_for_mode(key, queued, false),
+        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+    );
+    assert_eq!(al.inbox.pending(key), (1, 0));
+    assert!(
+        !al.is_session_busy(key),
+        "precondition: interleaved turn already finished"
+    );
+
+    // ② kick：队列清空，队首经 reinject 通道回流。
+    al.kick_orphaned_queue_if_idle(key);
+    assert_eq!(al.inbox.pending(key), (0, 0), "orphan must be drained");
+    let reinjected = tokio::time::timeout(std::time::Duration::from_secs(2), rein_rx.recv())
+        .await
+        .expect("kick must re-inject the parked head")
+        .expect("channel open");
+    assert_eq!(reinjected.content, "孤儿消息");
+    assert_eq!(reinjected.session_key, key, "会话键归一随队首回流");
+
+    // ③ 正常路径守卫：busy 会话不 kick（在途回合的尾巴负责）。
+    assert!(al.try_acquire_session(key));
+    let queued2 = crate::inbox::QueuedMessage {
+        msg: nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: "covuser".to_string(),
+            chat_id: "covchat".to_string(),
+            content: "第二条".to_string(),
+            media: vec![],
+            session_key: key.to_string(),
+            correlation_id: String::new(),
+            metadata: Default::default(),
+            voice_playback: None,
+        },
+        timestamp: chrono::Local::now().to_rfc3339(),
+        priority: crate::inbox::MessagePriority::Normal,
+    };
+    let _ = al.inbox.enqueue_for_mode(key, queued2, false);
+    al.kick_orphaned_queue_if_idle(key);
+    assert_eq!(al.inbox.pending(key), (1, 0), "busy session must not kick");
+}

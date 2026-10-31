@@ -492,7 +492,7 @@ fn test_task_dispatch_callback() -> Result<String, String> {
 // ============================================================
 
 fn test_task_status_lifecycle() -> Result<String, String> {
-    let mut tm = TaskManager::new();
+    let tm = TaskManager::new();
     tm.start();
 
     let completed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));

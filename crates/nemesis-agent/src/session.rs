@@ -838,9 +838,23 @@ impl SessionStore {
     /// the session was present in memory. Best-effort on disk (errors logged,
     /// not fatal — a missing file is not an error).
     pub fn delete_session(&self, key: &str) -> bool {
+        let existed = self.detach_session(key);
+        // session_logs/{safe}.jsonl (user-facing chat history)
+        crate::chat_log::delete_chat_log(key);
+        existed
+    }
+
+    /// Detach a session's LLM context without touching the user-facing
+    /// history: in-memory cache + on-disk `sessions/*.json` only. Used by the
+    /// session trash path (2026-10-30) — the chat_log three-file set moves to
+    /// `logs/trash/sessions/` for restore, while the context store does NOT
+    /// (it is derivable from the jsonl via the self-heal rebuild path, so
+    /// restoring doesn't need it). Returns whether the session was present
+    /// in memory (same contract as [`Self::delete_session`]).
+    pub fn detach_session(&self, key: &str) -> bool {
         let existed = self.sessions.write().unwrap().remove(key).is_some();
 
-        // 1. sessions/{sanitize}.json (LLM context store)
+        // sessions/{sanitize}.json (LLM context store)
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
             if let Err(e) = std::fs::remove_file(&path)
@@ -849,14 +863,10 @@ impl SessionStore {
                 warn!(
                     file = %path.display(),
                     error = %e,
-                    "[SessionStore] delete_session: failed to remove json"
+                    "[SessionStore] detach_session: failed to remove json"
                 );
             }
         }
-
-        // 2. session_logs/{safe}.jsonl (user-facing chat history)
-        crate::chat_log::delete_chat_log(key);
-
         existed
     }
 

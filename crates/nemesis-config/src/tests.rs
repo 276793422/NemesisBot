@@ -1286,8 +1286,9 @@ fn test_discord_config_default() {
 #[test]
 fn test_tools_config_default() {
     let cfg = ToolsConfig::default();
-    // Default trait gives serde defaults; brave.max_results=0, duckduckgo.enabled=false via Default trait
-    assert_eq!(cfg.web.brave.max_results, 0);
+    // BUG-20261031-226：brave.max_results 已收敛字段级缺省 5；
+    // duckduckgo 保持刻意不收敛（见 lib.rs DuckDuckGoConfig 注记）。
+    assert_eq!(cfg.web.brave.max_results, 5);
     assert!(!cfg.web.duckduckgo.enabled);
 }
 
@@ -1300,16 +1301,20 @@ fn test_exec_config_default() {
 
 #[test]
 fn test_heartbeat_config_default() {
+    // BUG-20261031-226：Default 已与 serde 字段级缺省/出厂模板收敛
+    // （{enabled:true, interval:30}）——键缺席不再静默关心跳服务。
     let cfg = HeartbeatConfig::default();
-    assert!(!cfg.enabled); // Default trait gives false, serde default gives true
-    assert_eq!(cfg.interval, 0); // Default trait gives 0, serde default gives 30
+    assert!(cfg.enabled);
+    assert_eq!(cfg.interval, 30);
 }
 
 #[test]
 fn test_devices_config_default() {
+    // BUG-20261031-226：monitor_usb 已与字段级缺省/模板收敛为 true
+    // （enabled 仍缺省关）。
     let cfg = DevicesConfig::default();
     assert!(!cfg.enabled);
-    assert!(!cfg.monitor_usb); // Default trait gives false, serde default gives true
+    assert!(cfg.monitor_usb);
 }
 
 #[test]
@@ -1536,25 +1541,58 @@ fn test_security_layers_config_default() {
 
 #[test]
 fn test_brave_config_default() {
+    // BUG-20261031-226：max_results 已与字段级缺省/模板收敛为 5
+    // （enabled 仍缺省关）。
     let cfg = BraveConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.api_key.is_empty());
-    assert_eq!(cfg.max_results, 0); // Default trait gives 0, serde default gives 5
+    assert_eq!(cfg.max_results, 5);
 }
 
 #[test]
 fn test_duckduckgo_config_default() {
+    // DuckDuckGo 刻意保持双路径现状（BUG-20261031-226 排除项）：
+    // 键缺席=false 与模板显式 false 一致，不收敛。
     let cfg = DuckDuckGoConfig::default();
-    assert!(!cfg.enabled); // Default trait gives false, serde default gives true
-    assert_eq!(cfg.max_results, 0); // Default trait gives 0, serde default gives 5
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.max_results, 0);
 }
 
 #[test]
 fn test_perplexity_config_default() {
+    // BUG-20261031-226：max_results 已与字段级缺省/模板收敛为 5
+    // （enabled 仍缺省关）。
     let cfg = PerplexityConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.api_key.is_empty());
-    assert_eq!(cfg.max_results, 0); // Default trait gives 0, serde default gives 5
+    assert_eq!(cfg.max_results, 5);
+}
+
+// BUG-20261031-226 回归锁：顶层键整段缺席时 serde 走子结构体 `Default::default()`
+//（BUG-20261028-109 双路径纪律），必须与字段级 serde 缺省/出厂模板/default_config()
+// 收敛。修复前 HeartbeatConfig derive 的 Default 是 {enabled:false, interval:0}——
+// migrate 骨架（openclaw_config.rs 无 heartbeat 段）与手精简 config 的心跳服务
+// 被静默关闭，与 bot_service.rs 装配闸/模板 {enabled:true,interval:30} 相反。
+#[test]
+fn test_absent_top_level_keys_converge_with_field_serde_defaults() {
+    // 顶层键全缺席 → 每段走结构体 Default（修复前=derive 分叉值）。
+    let cfg: Config = serde_json::from_str("{}").unwrap();
+    assert!(cfg.heartbeat.enabled);
+    assert_eq!(cfg.heartbeat.interval, 30);
+    assert!(!cfg.devices.enabled);
+    assert!(cfg.devices.monitor_usb);
+    assert!(!cfg.tools.web.brave.enabled);
+    assert_eq!(cfg.tools.web.brave.max_results, 5);
+    assert!(!cfg.tools.web.perplexity.enabled);
+    assert_eq!(cfg.tools.web.perplexity.max_results, 5);
+
+    // 段在场但字段缺席 → 字段级 serde 缺省（原路径，两路必须同值）。
+    let partial: Config =
+        serde_json::from_str(r#"{"heartbeat": {}, "devices": {}, "tools": {"web": {}}}"#).unwrap();
+    assert!(partial.heartbeat.enabled);
+    assert_eq!(partial.heartbeat.interval, 30);
+    assert!(partial.devices.monitor_usb);
+    assert_eq!(partial.tools.web.brave.max_results, 5);
 }
 
 #[test]

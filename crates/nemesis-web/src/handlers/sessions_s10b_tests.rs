@@ -6,8 +6,8 @@
 //!   firstMessage
 //! - `clear` truncates the chat_log (both the loopless skip arm and the
 //!   live-store arm)
-//! - `delete` removes the chat_log and reports an empty pause list with no
-//!   cron service
+//! - `delete` (2026-10-30 起默认软删) moves the chat_log into the session
+//!   trash and reports an empty pause list with no cron service
 //! - `export` returns the seeded messages
 //!
 //! create/rename happy paths stay untested on purpose (see the note at the
@@ -21,9 +21,31 @@ use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
+
+// home 重定向（sessions_trash_tests 同款）：默认软删的 trash 移动走
+// production() 寻址（进程单例 home），不重定向会把回收站条目落进真实
+// 数据目录（旧 delete_chat_log 清理对已移走的 jsonl 是 no-op——泄漏）。
+struct HomeGuard {
+    old: PathBuf,
+    _lock: parking_lot::ReentrantMutexGuard<'static, ()>,
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        nemesis_path::default_path_manager().set_home_dir(self.old.clone());
+    }
+}
+
+fn isolate(home: &std::path::Path) -> HomeGuard {
+    let lock = crate::test_home::lock_home();
+    let old = nemesis_path::default_path_manager().home_dir();
+    nemesis_path::default_path_manager().set_home_dir(home.to_path_buf());
+    HomeGuard { old, _lock: lock }
+}
 
 struct NoopProvider;
 
@@ -235,21 +257,21 @@ async fn clear_truncates_chat_log_with_and_without_live_store() {
 }
 
 #[tokio::test]
-async fn delete_removes_chat_log_only_through_the_store_arm() {
-    let _home = crate::test_home::lock_home();
-    // ⚠ Documented asymmetry (S10b-1 挂账, not fixed here): `clear` truncates
-    // the chat_log UNCONDITIONALLY, but `delete` only removes the jsonl via
-    // SessionStore::delete_session (which calls delete_chat_log) — with
-    // agent_loop absent the jsonl survives while the handler still reports
-    // success. Production always runs with a live loop, so this pins current
-    // behaviour rather than fixing it.
+async fn delete_default_soft_moves_jsonl_to_trash_both_ctx_shapes() {
+    // 2026-10-30 起默认软删（移入回收站）：三件套移动在 handler 侧无条件
+    // 执行——loopless 退化 ctx 也收得走 jsonl（旧 S10b-1「loopless delete
+    // jsonl 幸存」的不对称就此消除；该不对称仅存于 hard:true 的 store 臂，
+    // 由 sessions_trash_tests::delete_hard_true_keeps_legacy_semantics 钉）。
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+
+    // Loopless ctx：cron = None → 空 pause 列表；jsonl 移入回收站。
     let sid = unique_sid();
     let key = session_key_for(&sid);
     nemesis_agent::chat_log::append_chat_log(&key, "user", "待删");
-
-    // Loopless ctx: cron = None → empty pause list; jsonl NOT removed.
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx(&dir, false);
+    let ctx_dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&ctx_dir, false);
     let out = run(
         &ctx,
         "delete",
@@ -259,21 +281,30 @@ async fn delete_removes_chat_log_only_through_the_store_arm() {
     .unwrap()
     .unwrap();
     assert_eq!(out["deleted"], serde_json::json!(sid));
+    assert_eq!(out["trashed"], serde_json::Value::Bool(true));
+    let entry = out["trash_entry"].as_str().unwrap().to_string();
+    assert!(!entry.is_empty());
     assert_eq!(out["paused_cron_jobs"], serde_json::json!([]));
     let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
     assert_eq!(
-        total, 1,
-        "loopless delete leaves the jsonl (store arm skipped)"
+        total, 0,
+        "软删把 jsonl 移入回收站（handler 侧，loopless 也生效）"
     );
-    nemesis_agent::chat_log::delete_chat_log(&key);
+    // 移动而非删除：原文躺在回收站条目里（tempdir home 之下）。
+    let moved = nemesis_path::resolve_trash_sessions_dir_in_workspace(
+        &nemesis_path::default_path_manager().workspace(),
+    )
+    .join(&entry)
+    .join("chat.jsonl");
+    assert!(moved.exists(), "jsonl 应已移入回收站: {}", moved.display());
+    nemesis_agent::chat_trash::trash_purge(&entry).unwrap();
 
-    // With a live store (production shape): store.delete_session removes the
-    // store json AND the chat_log jsonl.
+    // Live store ctx（生产形态）：detach + trash 移动，回执同形。
     let sid2 = unique_sid();
     let key2 = session_key_for(&sid2);
     nemesis_agent::chat_log::append_chat_log(&key2, "user", "真删");
-    let dir2 = tempfile::tempdir().unwrap();
-    let ctx2 = make_ctx(&dir2, true);
+    let ctx_dir2 = tempfile::tempdir().unwrap();
+    let ctx2 = make_ctx(&ctx_dir2, true);
     let out = run(
         &ctx2,
         "delete",
@@ -283,9 +314,12 @@ async fn delete_removes_chat_log_only_through_the_store_arm() {
     .unwrap()
     .unwrap();
     assert_eq!(out["deleted"], serde_json::json!(sid2));
+    assert_eq!(out["trashed"], serde_json::Value::Bool(true));
+    let entry2 = out["trash_entry"].as_str().unwrap().to_string();
+    assert!(!entry2.is_empty());
     let (_, total2, _, _) = nemesis_agent::chat_log::read_chat_log(&key2, 10, None);
-    assert_eq!(total2, 0, "store arm cascades to the chat_log");
-    nemesis_agent::chat_log::delete_chat_log(&key2);
+    assert_eq!(total2, 0, "软删移走 jsonl（detach + trash 双保险）");
+    nemesis_agent::chat_trash::trash_purge(&entry2).unwrap();
 }
 
 #[tokio::test]
@@ -317,10 +351,13 @@ async fn export_returns_seeded_messages() {
 // ---------------------------------------------------------------------------
 
 /// turn 在飞（busy）时 delete/clear 诚实拒绝且零副作用（jsonl 原样——
-/// 旧行为是 peek 不置位、破坏性操作直接动手）；释放后放行直达 store 臂。
+/// 旧行为是 peek 不置位、破坏性操作直接动手）；释放后放行走默认软删
+/// （jsonl 移入回收站）。home 重定向防 trash 条目落真实数据目录。
 #[tokio::test]
 async fn delete_and_clear_refuse_busy_session_then_succeed_after_release() {
-    let _home = crate::test_home::lock_home();
+    let dir0 = tempfile::tempdir().unwrap();
+    let home = dir0.path().join("nb-home");
+    let _g = isolate(&home);
     let sid = unique_sid();
     let key = session_key_for(&sid);
     nemesis_agent::chat_log::append_chat_log(&key, "user", "占用中");
@@ -349,7 +386,8 @@ async fn delete_and_clear_refuse_busy_session_then_succeed_after_release() {
     let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
     assert_eq!(total, 1, "busy 拒绝路径零副作用");
 
-    // 释放后放行：delete 走 store 臂级联删 jsonl。
+    // 释放后放行：默认软删把 jsonl 移入回收站（trash 面契约归
+    // sessions_trash_tests，这里只钉 jsonl 离场 + 闸释放）。
     al.release_session(&key);
     let out = run(
         &ctx,
@@ -361,7 +399,7 @@ async fn delete_and_clear_refuse_busy_session_then_succeed_after_release() {
     .unwrap();
     assert_eq!(out["deleted"], serde_json::json!(sid));
     let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
-    assert_eq!(total, 0, "store 臂级联删 jsonl");
+    assert_eq!(total, 0, "软删移走 jsonl");
     assert!(!al.is_session_busy(&key), "闸必须随操作完成释放");
 
     // clear 放行后照常截断（新键，不与上面的 delete 互相干扰）。

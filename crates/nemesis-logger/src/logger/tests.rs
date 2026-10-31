@@ -253,6 +253,111 @@ fn test_logger_set_hook() {
     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
+// ============================================================
+// BUG-20261031-242 红绿证：hook take/put-back 竞态。
+// 旧形态 log() 把钩子 take 出锁外调用、结束后 put 回——钩子 in-flight
+// 期间（1）并发 log 锁内取到 None 丢投递；（2）set_hook(新) 被放回的
+// 旧钩子覆盖。两条测试都用 entered/release 栅栏制造确定性 in-flight
+// 窗口，不依赖时序碰运气。
+// ============================================================
+
+/// 竞态 1：钩子 in-flight 期间并发 log 必须照样送达（Arc clone 后放锁调用）。
+/// 旧代码：第一条把钩子 take 走，第二条锁内取到 None → 计数 1 ≠ 2。
+#[test]
+fn concurrent_log_reaches_hook_while_invocation_in_flight() {
+    let logger = Arc::new(NemesisLogger::new());
+    logger.disable_console();
+
+    let entered = Arc::new(std::sync::Mutex::new(false));
+    let release = Arc::new(std::sync::Mutex::new(false));
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let (entered2, release2, count2) = (entered.clone(), release.clone(), count.clone());
+    logger.set_hook(Box::new(move |_entry| {
+        count2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut entered = entered2.lock().unwrap();
+        if !*entered {
+            *entered = true;
+            drop(entered);
+            // 第一次调用：卡在钩子里直到放行——制造 take 后的 in-flight 窗口
+            while !*release2.lock().unwrap() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }));
+
+    let l2 = logger.clone();
+    let t = std::thread::spawn(move || l2.info("first"));
+    while !*entered.lock().unwrap() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // in-flight 窗口内并发第二条：必须照样送达
+    logger.info("second");
+    *release.lock().unwrap() = true;
+    t.join().unwrap();
+
+    assert_eq!(
+        count.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "hook must receive every log entry, including ones logged while a \
+         previous hook invocation is still in flight"
+    );
+}
+
+/// 竞态 2：in-flight 期间 set_hook(新) 不被放回的旧钩子覆盖。
+/// 旧代码：钩子返回后 put 回旧钩子 → 后续日志继续进旧钩子
+/// （count1=2, count2=0）。
+#[test]
+fn set_hook_during_in_flight_invocation_is_not_clobbered() {
+    let logger = Arc::new(NemesisLogger::new());
+    logger.disable_console();
+
+    let entered = Arc::new(std::sync::Mutex::new(false));
+    let release = Arc::new(std::sync::Mutex::new(false));
+    let count1 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count2 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let (entered2, release2, c1) = (entered.clone(), release.clone(), count1.clone());
+    logger.set_hook(Box::new(move |_entry| {
+        c1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut entered = entered2.lock().unwrap();
+        if !*entered {
+            *entered = true;
+            drop(entered);
+            while !*release2.lock().unwrap() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }));
+
+    let l2 = logger.clone();
+    let t = std::thread::spawn(move || l2.info("first"));
+    while !*entered.lock().unwrap() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    // 旧钩子 in-flight 期间换新钩子
+    let c2 = count2.clone();
+    logger.set_hook(Box::new(move |_entry| {
+        c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+
+    *release.lock().unwrap() = true;
+    t.join().unwrap(); // 等旧钩子完全返回（旧代码此刻已完成 put-back 覆盖）
+
+    logger.info("after swap"); // 必须进新钩子
+    assert_eq!(
+        count1.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "old hook must not receive entries after set_hook replaced it"
+    );
+    assert_eq!(
+        count2.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "new hook must receive entries logged after set_hook"
+    );
+}
+
 #[test]
 fn test_logger_empty_component() {
     let logger = NemesisLogger::new();

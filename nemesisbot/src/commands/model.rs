@@ -1054,7 +1054,10 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let report = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(run_probe(&home, &name))
             })?;
-            println!("{}", format_probe_report(&name, &report));
+            // run_probe 返回 (report, wrote)：wrote = tier/vision 写回是否
+            // 真正落盘（BUG-20261030-218：报告必须如实反映，不再无条件
+            // 宣称"已写入 config.json"）。
+            println!("{}", format_probe_report(&name, &report.0, report.1));
             // N1：生效 context_window + 来源标记——fallback 命中自然引导
             // 用户显式配置（catalog 未收录的小众模型手动钉死）。
             let probe_cfg = std::fs::read_to_string(&cfg_path)
@@ -1304,6 +1307,16 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             if name.is_empty() {
                 anyhow::bail!("模型名不能为空");
             }
+            // BUG-20261030-219：基础价四字段有限性校验——clap f64 解析接受
+            // "NaN"/"inf" 字面量，无校验时坏值直接落自定义层污染计价输出
+            // （与下方 parse_price_tiers 的 is_finite 校验同函数族，此处对齐）。
+            if !(input.is_finite()
+                && output.is_finite()
+                && cache_read.is_finite()
+                && cache_creation.is_finite())
+            {
+                anyhow::bail!("价格须为有限数值（拒绝 NaN/±inf）");
+            }
             let tiers = parse_price_tiers(&price_tiers)?;
             let tier_note = if tiers.is_some() {
                 "（含阶梯价）"
@@ -1389,7 +1402,7 @@ where
 async fn run_probe(
     home: &std::path::Path,
     name: &str,
-) -> anyhow::Result<nemesis_agent::probe::ProbeReport> {
+) -> anyhow::Result<(nemesis_agent::probe::ProbeReport, bool)> {
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1430,7 +1443,12 @@ async fn run_probe(
     // Persist the detected tier.
     let data = std::fs::read_to_string(&cfg_path)?;
     let mut cfg_val: serde_json::Value = serde_json::from_str(&data)?;
-    let wrote = update_model_entry(&mut cfg_val, name, |e| {
+    // BUG-20261030-218：写回查找目标 = 实际被探测的 llm_ref，不是原始 name。
+    // `probe ""`（探默认模型）时 name 为空串，update_model_entry 的
+    // full/alias/suffix 三匹配对空串永不命中 → 8 次 LLM 调用的探针结果
+    // 静默丢失且报告谎称已写入。用 llm_ref（name 非空时与 name 相同，
+    // 行为不变；name 为空时为生效默认模型别名，命中真实条目）。
+    let wrote = update_model_entry(&mut cfg_val, &llm_ref, |e| {
         e["model_tier"] = serde_json::Value::String(report.tier.to_string());
         // T10（多模态 D9）：视觉探针结果——`Some(_)` 才写（None = 传输类
         // 未定，不给模型钉"不支持"；auto 解析序继续走名字关键词/默认放行）。
@@ -1442,10 +1460,10 @@ async fn run_probe(
         // REL-002：统一原子写入。
         write_config_atomic(&cfg_path, &cfg_val)?;
     }
-    Ok(report)
+    Ok((report, wrote))
 }
 
-fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport) -> String {
+fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport, wrote: bool) -> String {
     let mut s = format!("能力探针报告: {}\n", name);
     s.push_str(&format!(
         "  format={:.2}  selection={:.2}  schema={:.2}\n",
@@ -1458,7 +1476,16 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport) -> Str
             tool, sc.format, sc.selection, sc.schema
         ));
     }
-    s.push_str(&format!("  → tier={} (已写入 config.json)", r.tier));
+    // BUG-20261030-218：写回结果如实呈现——写失败（config 中找不到条目）
+    // 不得谎称"已写入 config.json"。
+    if wrote {
+        s.push_str(&format!("  → tier={} (已写入 config.json)", r.tier));
+    } else {
+        s.push_str(&format!(
+            "  → tier={} (⚠ 未写入：config.json 中未找到条目「{name}」，探针结果未持久化)",
+            r.tier
+        ));
+    }
     // T10（多模态 D9）：第 8 题视觉探针结果。
     match r.vision_probe {
         Some(true) => s.push_str(

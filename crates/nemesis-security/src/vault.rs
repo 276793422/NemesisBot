@@ -858,11 +858,17 @@ pub fn migrate_model_keys_to_vault(
             // 残留清扫（BUG-20261028-119）：config 已指 vault 但 creds 仍留
             // 同名明文别名 = 上次迁移 config 已提交、creds 回写失败的现场
             // ——顺手清掉，让重试真正收敛（明文彻底离盘）。
-            if let (Some(alias), Some(creds_mut)) = (
-                api_key.strip_prefix(nemesis_config::vault_ref::VAULT_PREFIX),
-                creds.as_mut(),
-            ) && creds_mut.keys.remove(alias).is_some()
+            // 在场守卫：vault 缺席该条目（vault.enc 丢失/重置后的损坏态）
+            // 绝不删 creds 明文——那是最后一份可恢复副本，删了 config 的
+            // `vault:<alias>` 引用从此无处解析且明文已灭。与下方自愈臂的
+            // `store.get(alias).is_ok()` 同一条「动手前先验证 vault 在场」
+            // 纪律；元数据明文可读，contains_key 不依赖解锁态。
+            if let Some(alias) = api_key.strip_prefix(nemesis_config::vault_ref::VAULT_PREFIX)
+                && let Some(creds_mut) = creds.as_mut()
+                && creds_mut.keys.contains_key(alias)
+                && store.file.entries.contains_key(alias)
             {
+                creds_mut.keys.remove(alias);
                 report.creds_changed = true;
                 report.yaml_aliases_removed.push(alias.to_string());
             }

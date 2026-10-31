@@ -1,5 +1,10 @@
 use super::*;
 
+/// 构造测试用总线发送端（broadcast::channel 是同步构造，不依赖 runtime）。
+fn test_sender() -> tokio::sync::broadcast::Sender<InboundMessage> {
+    tokio::sync::broadcast::channel(16).0
+}
+
 #[test]
 fn test_extract_email_address_with_brackets() {
     assert_eq!(
@@ -59,7 +64,7 @@ fn test_build_smtp_message() {
 #[tokio::test]
 async fn test_email_channel_new_validates() {
     let config = EmailConfig::default();
-    assert!(EmailChannel::new(config).is_err());
+    assert!(EmailChannel::new(config, test_sender()).is_err());
 }
 
 #[tokio::test]
@@ -71,7 +76,7 @@ async fn test_email_channel_lifecycle() {
         imap_password: "pass".to_string(),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
     assert_eq!(ch.name(), "email");
 
     ch.start().await.unwrap();
@@ -90,7 +95,7 @@ fn test_seen_tracking() {
         imap_password: "pass".to_string(),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
 
     assert!(!ch.is_seen("msg-1"));
     ch.mark_seen("msg-1");
@@ -140,7 +145,7 @@ fn test_smtp_username_fallback() {
         smtp_password: None,
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
     assert_eq!(ch.smtp_username(), "smtp_user");
     assert_eq!(ch.smtp_password(), "imap_pass");
 }
@@ -235,7 +240,7 @@ fn test_seen_tracking_multiple() {
         imap_password: "pass".to_string(),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
 
     assert!(!ch.is_seen("a"));
     assert!(!ch.is_seen("b"));
@@ -258,7 +263,7 @@ fn test_smtp_username_default_fallback() {
         imap_password: "imap_pass".to_string(),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
     assert_eq!(ch.smtp_username(), "imap_user");
     assert_eq!(ch.smtp_password(), "imap_pass");
 }
@@ -273,7 +278,7 @@ fn test_smtp_password_explicit() {
         smtp_password: Some("smtp_pass".to_string()),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
     assert_eq!(ch.smtp_password(), "smtp_pass");
 }
 
@@ -344,7 +349,7 @@ async fn test_smtp_send_black_hole_times_out() {
         imap_password: "pass".to_string(),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
 
     let started = std::time::Instant::now();
     let err = ch
@@ -379,7 +384,7 @@ fn test_sender_map_shared_between_task_clone_and_read_path() {
         imap_password: "pass".to_string(),
         ..Default::default()
     };
-    let ch = EmailChannel::new(config).unwrap();
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
 
     // 复刻 start() 542 行的捕获形态：与字段同源克隆交给「任务侧」。
     let task_side_map = ch.sender_map.clone();
@@ -396,5 +401,158 @@ fn test_sender_map_shared_between_task_clone_and_read_path() {
         ch.sender_map.get("chat-1").map(|info| info.subject.clone()),
         Some("Re: Hello".to_string()),
         "reply info written via the task-side clone must be visible to the send() read path (BUG-20261029-142)"
+    );
+}
+
+// ---- BUG-20261031-244：收件黑洞（IMAP 轮询到标已读为止，从不发布总线） ----
+
+/// 起一个只讲最小 IMAP 方言的假服务器（单连接）：greeting → LOGIN/SELECT OK →
+/// SEARCH 返回 1 封 → FETCH 头（Alice / Hello there / m1）→ FETCH 正文
+/// （"Hello body"）→ STORE/LOGOUT OK。命令匹配按内容不按 tag，tag 响应号
+/// 与客户端 next_tag 顺序（NB001..NB007）对齐。
+async fn spawn_fake_imap() -> std::net::SocketAddr {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = match listener.accept().await {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let (rd, mut wr) = stream.into_split();
+        let mut rd = BufReader::new(rd);
+        let mut line = String::new();
+        if wr.write_all(b"* OK IMAP4rev1 ready\r\n").await.is_err() {
+            return;
+        }
+        loop {
+            line.clear();
+            if rd.read_line(&mut line).await.unwrap_or(0) == 0 {
+                break;
+            }
+            let resp = if line.contains("LOGIN") {
+                "NB001 OK LOGIN\r\n".to_string()
+            } else if line.contains("SELECT") {
+                "NB002 OK SELECT\r\n".to_string()
+            } else if line.contains("SEARCH") {
+                "* SEARCH 1\r\nNB003 OK SEARCH\r\n".to_string()
+            } else if line.contains("BODY[HEADER") {
+                "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {68}\r\n\
+                 From: Alice <alice@example.com>\r\n\
+                 Subject: Hello there\r\n\
+                 Message-ID: <m1@example.com>\r\n\
+                 )\r\n\
+                 NB004 OK FETCH\r\n"
+                    .to_string()
+            } else if line.contains("BODY[TEXT]") {
+                "* 1 FETCH (BODY[TEXT] {10}\r\nHello body\r\n)\r\nNB005 OK FETCH\r\n".to_string()
+            } else if line.contains("STORE") {
+                "NB006 OK STORE\r\n".to_string()
+            } else if line.contains("LOGOUT") {
+                "NB007 OK LOGOUT\r\n".to_string()
+            } else {
+                "NB999 OK\r\n".to_string()
+            };
+            if wr.write_all(resp.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+    addr
+}
+
+/// 修复前红证形态：旧代码轮询循环把邮件处理到「标已读 + debug 日志」为止，
+/// `_body` 取了即丢、构造器没有 bus 参数——总线订阅端永远收不到任何消息
+/// （本测试在旧源码下连编译都过不了：`EmailChannel::new` 只收 1 个参数，
+/// 收件发布面在修复前结构性不存在）。修复后：轮询收到邮件必须以
+/// InboundMessage 发布到总线，content=正文、metadata 带 subject、
+/// chat_id=发件人地址（回复可路由）。
+#[tokio::test]
+async fn test_poll_loop_publishes_inbound_email_to_bus() {
+    let addr = spawn_fake_imap().await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = EmailConfig {
+        imap_host: addr.ip().to_string(),
+        imap_port: addr.port(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        poll_interval: 3600, // 首 tick 立即触发，测试期内不再第二轮询
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config, tx).unwrap();
+    ch.start().await.unwrap();
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("poll loop must publish the fetched email within 5s")
+        .unwrap();
+    assert_eq!(inbound.channel, "email");
+    assert_eq!(inbound.chat_id, "alice@example.com");
+    assert_eq!(inbound.sender_id, "alice@example.com");
+    assert_eq!(inbound.content, "Hello body");
+    assert_eq!(
+        inbound.metadata.get("subject").map(String::as_str),
+        Some("Hello there")
+    );
+
+    ch.stop().await.unwrap();
+}
+
+/// allow_from 白名单必须真正拦截（旧代码 allow_from 全文件零消费）：
+/// 白名单只放行 bob 时，alice 的邮件不得进总线。
+#[tokio::test]
+async fn test_poll_loop_blocks_disallowed_sender() {
+    let addr = spawn_fake_imap().await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = EmailConfig {
+        imap_host: addr.ip().to_string(),
+        imap_port: addr.port(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        poll_interval: 3600,
+        allow_from: vec!["bob@example.com".to_string()],
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config, tx).unwrap();
+    ch.start().await.unwrap();
+
+    let nothing = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+    assert!(
+        nothing.is_err(),
+        "disallowed sender must not reach the bus, got: {nothing:?}"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+/// 加固臂：build_smtp_message 是 pub 编码单一入口——from/to/subject 混入
+/// CR/LF 必须被拍平成单行（RFC 5322 头部值形态），注入的「头」退化为
+/// Subject 值内的普通文本；body 区不受影响（dot-stuffing 的辖区）。
+#[test]
+fn test_build_smtp_message_flattens_crlf_in_headers() {
+    let msg = EmailChannel::build_smtp_message(
+        "bot@example.com",
+        "user@example.com",
+        "Hi\r\nBcc: victim@example.com",
+        "line1\r\n.line2",
+    );
+    assert!(
+        msg.starts_with(
+            "From: bot@example.com\r\n\
+             To: user@example.com\r\n\
+             Subject: HiBcc: victim@example.com\r\n\
+             Date: "
+        ),
+        "header CR/LF must be stripped inlined, got: {msg}"
+    );
+    assert!(
+        !msg.contains("\r\nBcc:"),
+        "injected header line must not exist, got: {msg}"
+    );
+    assert!(
+        msg.ends_with("line1\r\n.line2"),
+        "body region must pass through untouched, got: {msg}"
     );
 }

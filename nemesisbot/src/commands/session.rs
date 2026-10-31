@@ -54,7 +54,7 @@ pub enum SessionAction {
     },
 }
 
-pub fn run(action: SessionAction, local: bool) -> Result<()> {
+pub async fn run(action: SessionAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
 
     // The fork copies BOTH the SessionStore file (explicit home below) and
@@ -100,7 +100,7 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
             // 同一原语：resolve_model_config + create_provider +
             // ProviderAdapter）；同步执行（进程即跑即退，无后台可 spawn），
             // 失败/未配置诚实注记，不阻塞分叉本体。
-            let summary_line = generate_branch_summary_cli(&home, &info);
+            let summary_line = generate_branch_summary_cli(&home, &info).await;
             println!("✅ 会话分支完成：");
             println!("  源会话   : {}（未改动）", info.source_key);
             println!("  新会话   : {}", info.new_key);
@@ -186,10 +186,20 @@ fn list_sessions(home: &Path) -> Result<()> {
 }
 
 /// F5（2026-09-27）：CLI 形态的分支摘要生成（与 WSAPI fork 的 P18 通道
-/// 对齐）——解析 small_model 槽位 → `prepare_branch_summary_with` → 同步
-/// run + 写新会话 meta。返回面向用户的输出行（各闸门的诚实注记，含跳过
-/// 原因）。绝不 panic、绝不阻塞分叉本体（任何失败都折算成注记文案）。
-fn generate_branch_summary_cli(
+/// 对齐）——解析 small_model 槽位 → `prepare_branch_summary_with` → 同一
+/// 生成通道 run + 写新会话 meta。返回面向用户的输出行（各闸门的诚实注
+/// 记，含跳过原因）。绝不 panic、绝不阻塞分叉本体（任何失败都折算成注
+/// 记文案）。
+///
+/// BUG-20261030-224 根修：必须 async + 直接 await——生产入口在 tokio
+/// runtime 上下文内（main 的 multi_thread runtime → async_main →
+/// run_command 同步调用本命令），旧实现自建嵌套 current_thread runtime
+/// 再 `block_on`，tokio `enter_runtime` 检测到嵌套直接 panic「Cannot
+/// start a runtime from within a runtime」，且 panic 点在 fork 落盘之后
+/// （fork 成功但零输出、退码 101，用户重试即双 fork）。直接 await 与
+/// WSAPI fork 的 async 通道同构，任何调用方运行时形态（multi_thread /
+/// current_thread / 无运行时的纯测试）都合法。
+async fn generate_branch_summary_cli(
     home: &Path,
     info: &nemesis_agent::session_fork::ForkInfo,
 ) -> String {
@@ -247,15 +257,9 @@ fn generate_branch_summary_cli(
     ) else {
         return "分支摘要 : 跳过（遗弃内容为空）".to_string();
     };
-    // 同步执行：CLI 进程即跑即退，无后台可 spawn（WSAPI 形态走
-    // spawn_write 后台落盘，这里 block_on 等待完成再报告结果）。
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build();
-    let Ok(rt) = rt else {
-        return "分支摘要 : 跳过（本地 runtime 构建失败）".to_string();
-    };
-    match rt.block_on(prepared.run()) {
+    // 执行段：直接 await（与 WSAPI 形态同一 async 通道；WSAPI 走
+    // spawn_write 后台落盘，这里前台等待完成再报告结果）。
+    match prepared.run().await {
         Some(summary) => {
             let chars = summary.chars().count();
             nemesis_agent::chat_log::write_session_branch_summary(&info.new_key, &summary);

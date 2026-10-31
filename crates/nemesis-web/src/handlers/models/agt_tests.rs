@@ -243,3 +243,130 @@ async fn agt_update_field_proxy_default_detection_by_model_and_alias() {
         "socks5://127.0.0.1:1080"
     );
 }
+
+/// BUG-20261030-223 回归锁：update_field 改**默认模型**的构造期消费字段
+/// （protocol/proxy/stream）补跑运行时热切时，必须经 projects bridge
+/// 通知项目 loop（set_default / rename 两处同款）——漏接 = 项目 loop
+/// 保持旧 wire 配置直至重启。
+///
+/// 归因纪律：记录**调用方线程 id**——同二进制并行跑的 set_default/rename
+/// 测试也读进程级 bridge 槽调 reload_provider_all，纯计数会把并发噪声
+/// 吃进断言（exact 计数假红、delta 断言在漏修 + 噪声窗里假绿）；按
+/// 测试自身线程过滤后两种漂移都不可能。
+struct AgtRecordingBridge(std::sync::Mutex<Vec<std::thread::ThreadId>>);
+impl crate::handlers::projects::ProjectsBridge for AgtRecordingBridge {
+    fn list(&self) -> Vec<crate::handlers::projects::ProjectInfo> {
+        Vec::new()
+    }
+    fn create(
+        &self,
+        _name: &str,
+        _path: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn remove(&self, _project_id: &str) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn rename(
+        &self,
+        _project_id: &str,
+        _new_name: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn set_trust(
+        &self,
+        _project_id: &str,
+        _trusted: bool,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn owner_of(&self, _session_key: &str) -> Option<String> {
+        None
+    }
+    fn loop_for_session(&self, _project_id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+        None
+    }
+    fn project_path(&self, _project_id: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn bind_session(&self, _session_key: &str, _project_id: &str) -> Result<(), String> {
+        Err("not wired".to_string())
+    }
+    fn forget_session(&self, _session_key: &str) {}
+    fn reload_provider_all(&self) {
+        self.0.lock().unwrap().push(std::thread::current().id());
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // 持 BRIDGE_TEST_LOCK 串行化共享 bridge 槽（同 agent/agt_tests 纪律，故意跨 await）
+async fn agt_update_field_default_model_notifies_projects_bridge() {
+    use crate::handlers::projects::{
+        BRIDGE_TEST_LOCK, install_projects_bridge, set_projects_bridge_for_test,
+    };
+    let _lock = BRIDGE_TEST_LOCK.lock();
+    let bridge = Arc::new(AgtRecordingBridge(std::sync::Mutex::new(Vec::new())));
+    install_projects_bridge(bridge.clone());
+
+    let dir = tempfile::tempdir().unwrap();
+    agt_write_config(
+        dir.path(),
+        r#"{
+            "agents": { "defaults": { "llm": "m1" } },
+            "model_list": [
+                { "model_name": "m1", "model": "zhipu/glm-4.7-flash", "api_key": "sk" },
+                { "model_name": "m2", "model": "test/testai-1.1" }
+            ]
+        }"#,
+    );
+    let ctx = agt_make_ctx(&dir);
+    let h = ModelsHandler::new();
+    let me = std::thread::current().id();
+    let my_calls =
+        |b: &AgtRecordingBridge| b.0.lock().unwrap().iter().filter(|id| **id == me).count();
+
+    // ① 默认模型改 protocol → 热切联动必须通知 bridge（本线程）。
+    h.update_field(
+        &agt_home_str(&dir),
+        &serde_json::json!({ "name": "m1", "field": "protocol", "value": "anthropic" }),
+        &ctx,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        my_calls(&bridge) > 0,
+        "default-model protocol edit must notify projects bridge"
+    );
+
+    // ② 默认模型改 stream → 同款联动。
+    let before = my_calls(&bridge);
+    h.update_field(
+        &agt_home_str(&dir),
+        &serde_json::json!({ "name": "m1", "field": "stream", "value": "yes" }),
+        &ctx,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        my_calls(&bridge) > before,
+        "default-model stream edit must notify projects bridge"
+    );
+
+    // ③ 对照：卸 bridge 后非默认模型改 proxy → if-let 跳过臂安全无 panic
+    // （非默认不触发热切，无需通知——归属判定语义由
+    // agt_update_field_proxy_default_detection 的对照臂钉住）。
+    set_projects_bridge_for_test(None);
+    h.update_field(
+        &agt_home_str(&dir),
+        &serde_json::json!({ "name": "m2", "field": "proxy", "value": "http://127.0.0.1:9999" }),
+        &ctx,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        agt_read_config_raw(dir.path())["model_list"][1]["proxy"],
+        "http://127.0.0.1:9999"
+    );
+}

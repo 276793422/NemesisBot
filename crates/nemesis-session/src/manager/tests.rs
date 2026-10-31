@@ -1180,3 +1180,61 @@ fn chat_session_save_failure_warns_not_silent() {
         "save 失败必须有可见信号（warn），实际日志: {logs}"
     );
 }
+
+// --- BUG-20261030-213：同键并发保存 lost-update（确定性构造）-------------
+// save_chat_session 快照在状态锁内、落盘在锁外——旧快照的 rename 可能晚于
+// 新快照落盘（last-rename-wins = 已完成保存的消息重启后丢失；BUG-51 只修了
+// 撕裂写，没修这个序问题）。修复 = 快照+落盘用同一把 save 闸串行化。
+// 确定性复现：save_delay 测试钩子把 T0 钉在「快照后、落盘前」的停顿窗口，
+// T1 的完整保存整体落在窗口内——修复前 T0 的旧快照 rename 必然最后落地
+// （丢 T1 消息）；修复后 T1 阻塞在闸上、快照+rename 都晚于 T0，盘上完整。
+#[test]
+fn test_concurrent_same_key_saves_never_lose_messages() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_session_race_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), dir.to_str().unwrap());
+    // 底噪大消息：让每次保存的序列化+写盘都有稳定耗时（窗口不依赖机器速度）。
+    mgr.add_message(
+        "gw:race",
+        "user",
+        &format!("base-{}", "x".repeat(4 * 1024 * 1024)),
+    );
+    // 一次性钩子：只延迟 T0 的首个保存（消费即归零，T1 的保存不受影响）。
+    mgr.save_delay_ms
+        .store(1200, std::sync::atomic::Ordering::SeqCst);
+    let mgr = std::sync::Arc::new(mgr);
+    // T0：先快照（含 base），随后在钩子停顿里挂起 1200ms 再落盘。
+    let t0 = {
+        let mgr = mgr.clone();
+        std::thread::spawn(move || {
+            mgr.add_message("gw:race", "user", "from-t0");
+        })
+    };
+    // 等 T0 进入停顿窗口（快照已拍），再让 T1 完成整轮保存。
+    std::thread::sleep(Duration::from_millis(300));
+    mgr.add_message("gw:race", "user", "from-t1");
+    t0.join().unwrap();
+    // 直接读盘比对（无收尾保存）。
+    let mgr2 = SessionMgr::with_storage(Duration::from_secs(3600), dir.to_str().unwrap());
+    let disk: Vec<String> = mgr2
+        .get_history("gw:race")
+        .iter()
+        .map(|m| m.content.chars().take(16).collect())
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        disk.iter().any(|c| c == "from-t0"),
+        "盘上缺 from-t0：{disk:?}"
+    );
+    assert!(
+        disk.iter().any(|c| c == "from-t1"),
+        "盘上缺 from-t1（T0 旧快照 rename 后落地覆盖了 T1 的已完成保存）：{disk:?}"
+    );
+}

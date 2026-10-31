@@ -96,7 +96,7 @@ fn read_empty_log_file_returns_empty() {
     delete_chat_log(&key);
     // 先写一行再清空，确保文件存在且为空。
     append_chat_log(&key, "user", "x");
-    clear_chat_log(&key);
+    clear_chat_log(&key).unwrap();
     let (msgs, total, has_more, oldest) = read_chat_log(&key, 10, None);
     assert!(msgs.is_empty());
     assert_eq!(total, 0);

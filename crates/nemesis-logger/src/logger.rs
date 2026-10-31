@@ -82,7 +82,10 @@ struct LoggerState {
     logging_enabled: bool,
     console_enabled: bool,
     file: Option<File>,
-    hook: Option<LogHook>,
+    /// Arc'd hook（BUG-20261031-242）：log() 在锁内 clone Arc 后放锁再调用。
+    /// 旧 `Option<LogHook>`（Box）+ take/put-back 形态下，并发 log 会 take 到
+    /// None 丢 SSE 投递；in-flight 期间 set_hook(新) 会被放回的旧钩子覆盖。
+    hook: Option<Arc<dyn Fn(LogEntry) + Send + Sync>>,
     file_path: Option<String>,
 }
 
@@ -157,7 +160,9 @@ impl NemesisLogger {
 
     /// Set the SSE log hook.
     pub fn set_hook(&self, hook: LogHook) {
-        self.state.lock().hook = Some(hook);
+        // Box → Arc 入库：存储侧用 clone 代替 take/put-back；公共签名不变，
+        // 既有 `set_hook(Box::new(...))` 调用方零改动。
+        self.state.lock().hook = Some(Arc::from(hook));
     }
 
     /// Enable file logging.
@@ -223,7 +228,12 @@ impl NemesisLogger {
 
         // Console output
         let console_enabled = state.console_enabled;
-        let hook = state.hook.take();
+        // BUG-20261031-242：锁内只 clone Arc，绝不做 take/put-back——take
+        // 形态下并发 log 取到 None 丢投递，in-flight 期间 set_hook(新) 会被
+        // 放回的旧钩子覆盖。与 sse_layer.rs 的 global_log_callback_slot 同款
+        // 纪律：hold the lock only long enough to clone，never invoke while
+        // holding it。
+        let hook = state.hook.clone();
         drop(state); // Release lock before console output and hook
 
         if console_enabled {
@@ -255,9 +265,7 @@ impl NemesisLogger {
 
         // SSE hook (non-blocking, fire and forget)
         if let Some(hook) = hook {
-            hook(entry.clone());
-            // Put hook back
-            self.state.lock().hook = Some(hook);
+            hook(entry);
         }
     }
 

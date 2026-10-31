@@ -111,14 +111,6 @@ fn map_provider_error(e: &nemesis_providers::failover::FailoverError) -> String 
     }
 }
 
-/// L10：流式不支持探测——`chat_stream` trait 缺省实现的诚实错误文本
-/// （"streaming (chat_stream) not implemented for this provider"）。
-/// 命中 = 该 provider 没有流式 lane（CLI 型 / 未实现），chat_streamed 静默
-/// 回落非流式调用。
-fn is_stream_unsupported(e: &nemesis_providers::failover::FailoverError) -> bool {
-    format!("{e}").contains("not implemented")
-}
-
 /// L10：agent 层 ChatOptions → provider 层（chat / chat_streamed 共用转换，
 /// 单一真相源——此前内联在 chat()）。
 fn agent_options_to_provider(
@@ -338,7 +330,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             Some(item) => item,
         };
         if let Err(e) = &first {
-            if is_stream_unsupported(e) {
+            if nemesis_providers::router::is_stream_unsupported(e) {
                 return self
                     .fallback_non_stream(
                         &provider_messages,

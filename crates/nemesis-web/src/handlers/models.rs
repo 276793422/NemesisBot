@@ -1524,6 +1524,13 @@ impl ModelsHandler {
         // agent loop 的 config mtime 重读，不经此处。
         if matches!(field.as_str(), "protocol" | "proxy" | "stream") && entry_is_default {
             Self::apply_runtime_swap(&final_cfg, &entry_model_name, ctx)?;
+            // 模型热切联动（BUG 2026-09-21 同族）：update_field 改默认模型
+            // 的构造期消费字段时，项目 loop 同样要经 bridge 同步——
+            // set_default / rename 两处同款（漏接 = 项目 loop 保持旧
+            // protocol/proxy/stream 直至重启）。
+            if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+                bridge.reload_provider_all();
+            }
         }
         Ok(Some(serde_json::json!({
             "updated": true, "name": name, "field": field, "value": normalized,

@@ -102,10 +102,11 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 27 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 无 feature 闸的 28 个模块（register_all 的无条件注册段；L6++ G4 起
 /// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
 /// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道，2026-10-23 起
-/// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖）。board
+/// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖），
+/// 2026-10-31 起含 proxy——独立代理配置 config.proxy.json 读写面。board
 /// 2026-10-17 起随 `board` feature 门控——nemesis-board 转 optional，SQLite
 /// 随它进出；connectors/paperbroker 2026-10-17 起随 `connectors` feature
 /// 门控——nemesis-security（被 connectors 无条件依赖）随之进出）。
@@ -137,6 +138,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "roles",
     "selfupdate",
     "quic",
+    "proxy",
 ];
 
 // ---------------------------------------------------------------------------
@@ -203,6 +205,11 @@ fn registry_anchor_commands_present() {
     assert!(cmds_of(&reg, "canvas").contains(&"close"));
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
+    // 会话回收站（2026-10-30）：列表/恢复/单条清除/清空四命令锚点。
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_list"));
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_restore"));
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_purge"));
+    assert!(cmds_of(&reg, "sessions").contains(&"trash_purge_all"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));
     assert!(cmds_of(&reg, "projects").contains(&"create"));
     // 角色目录（2026-09-28）：roles.list + chat.spawn 锚点。
@@ -235,6 +242,9 @@ fn registry_anchor_commands_present() {
     assert!(cmds_of(&reg, "quic").contains(&"relay.status"));
     assert!(cmds_of(&reg, "quic").contains(&"relay.config"));
     assert!(cmds_of(&reg, "quic").contains(&"registry.members"));
+    // 独立代理配置（2026-10-31）：proxy.get/save 恒注册，锚点在这里红。
+    assert!(cmds_of(&reg, "proxy").contains(&"get"));
+    assert!(cmds_of(&reg, "proxy").contains(&"save"));
     // M5-1（2026-10-10 机制加固）：评审重触发入口（模块内无条件注册，钩子
     // 未安装时诚实报错）。模块本体 2026-10-17 起随 board feature 门控。
     if cfg!(feature = "board") {
@@ -242,7 +252,6 @@ fn registry_anchor_commands_present() {
     }
     if cfg!(feature = "security") {
         assert!(cmds_of(&reg, "security").contains(&"config.get"));
-        assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
         // Full Access 编辑器放行开关(2026-09-20)。
         assert!(cmds_of(&reg, "editor").contains(&"get"));
         assert!(cmds_of(&reg, "editor").contains(&"set"));
@@ -251,6 +260,13 @@ fn registry_anchor_commands_present() {
         assert!(cmds_of(&reg, "vault").contains(&"set"));
         // L7c（2026-10-13）：解锁测试命令。
         assert!(cmds_of(&reg, "vault").contains(&"unlock"));
+    }
+    // scanner 2026-09-28 从 security 拆分（细粒度化）：handler 模块在
+    // handlers/mod.rs 随 `scanner` feature 单独门控（security 只含本体+
+    // editor+vault），锚点闸必须与 cfg 对齐——security-on/scanner-off 构建
+    // 下模块缺席，挂在 security 闸里恒红（2026-10-30 全量跑批实录）。
+    if cfg!(feature = "scanner") {
+        assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
     }
     if cfg!(feature = "sandbox") {
         assert!(cmds_of(&reg, "sandbox").contains(&"commit"));

@@ -884,8 +884,10 @@ async fn test_w4c_execute_detailed_all_in_cooldown_falls_through_exhausted() {
 }
 
 #[tokio::test]
-async fn test_w4c_execute_detailed_explicit_model_overrides_entry_model() {
-    // 非空 model → effective_model = 请求的 model（不取 entry.model）
+async fn test_w4c_execute_detailed_entry_model_wins_per_level() {
+    // BUG-20261031-225 回归锁：每级恒用本级装配模型名（entry.model）——
+    // 调用方请求名只作级名缺失时的兜底。旧语义（非空请求名覆盖所有级）
+    // 在生产装配形态下把主模型名发进备用 provider（真实上游 400）。
     let recorder = Arc::new(RecordingProvider {
         name: "rec".to_string(),
         model: "entry-model".to_string(),
@@ -902,7 +904,8 @@ async fn test_w4c_execute_detailed_explicit_model_overrides_entry_model() {
         .execute_detailed(&w4c_msg(), &[], "explicit-model", &ChatOptions::default())
         .await;
     assert!(result.response.is_some());
-    assert_eq!(recorder.seen.lock()[0], "explicit-model");
+    // 请求名被忽略，级装配名生效
+    assert_eq!(recorder.seen.lock()[0], "entry-model");
 }
 
 #[test]
@@ -923,8 +926,9 @@ fn test_w4c_fallback_exhausted_display_lists_provider_errors() {
 }
 
 #[tokio::test]
-async fn test_w4c_chat_trait_method_explicit_model_reaches_provider() {
-    // LLMProvider::chat 走同样链路（走 trait 对象而非 execute_detailed）
+async fn test_w4c_chat_trait_method_uses_entry_model_per_level() {
+    // LLMProvider::chat 走同样链路（走 trait 对象而非 execute_detailed）；
+    // BUG-20261031-225 同款语义：级装配名优先于调用方请求名。
     let recorder = Arc::new(RecordingProvider {
         name: "rec".to_string(),
         model: "entry-model".to_string(),
@@ -943,7 +947,52 @@ async fn test_w4c_chat_trait_method_explicit_model_reaches_provider() {
         .await
         .unwrap();
     assert_eq!(resp.content, "ok");
-    assert_eq!(recorder.seen.lock()[0], "trait-model");
+    assert_eq!(recorder.seen.lock()[0], "entry-model");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261031-225：跨模型 fallback 链的级模型名回归锁
+// ---------------------------------------------------------------------------
+
+/// 生产装配形态回归锁（BUG-20261031-225）：主级失败轮到 fallback 级时，
+/// fallback 级必须收到**自己的**装配模型名，而不是调用方传的主模型别名。
+/// 旧语义（非空调用方名覆盖所有级）把主模型名发进备用 provider 的
+/// api_base——真实上游 400 model not exist，`fallback_to` 跨模型故障转移
+/// 在生产恒失效；mock 不模拟 400 所以该矛盾在测试面从未暴露。
+#[tokio::test]
+async fn test_fallback_chain_fallback_level_receives_own_model_name() {
+    let primary = Arc::new(MockFailProvider {
+        name: "p1".to_string(),
+        model: "m1".to_string(),
+        retriable: true,
+    });
+    let recorder = Arc::new(RecordingProvider {
+        name: "p2".to_string(),
+        model: "m2".to_string(),
+        seen: parking_lot::Mutex::new(Vec::new()),
+    });
+    let provider = FallbackProvider::new(
+        "xmodel",
+        vec![
+            FallbackEntry {
+                provider: primary as Arc<dyn LLMProvider>,
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: recorder.clone() as Arc<dyn LLMProvider>,
+                model: "m2".to_string(),
+            },
+        ],
+    );
+    use crate::router::LLMProvider as _;
+    // 调用方传主模型别名（生产 ProviderAdapter 恒传非空主名）
+    let resp = provider
+        .chat(&w4c_msg(), &[], "m1", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "ok");
+    // 回归点：fallback 级收到自己的装配名 "m2"，而非调用方请求名 "m1"
+    assert_eq!(recorder.seen.lock()[0], "m2");
 }
 
 // ---------------------------------------------------------------------------

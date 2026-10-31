@@ -252,6 +252,27 @@ impl GatewayCtx {
         args.extend(extra_args.iter().cloned());
         let _log_flags = common::init_logger_from_config(&config_path, &args);
 
+        // Step 5a：独立代理配置 env 段注入（2026-10-31 代理设置三项改造批B）。
+        // 位置纪律：必须在 `init_logger_from_config` **之后**（注入日志要被
+        // subscriber 捕获——首版放在 gateway.rs run() 顶部，早于 logger 初始化，
+        // tracing 事件蒸发成静默注入，e2e 抓出后挪此处）且先于一切 reqwest
+        // client 构造（Step 7 起；hyper-util from_env 在 client 构建期快照
+        // env）。`config.proxy.json` 缺失 = 静默跳过不落盘；损坏 = WARN 按
+        // 未配置走。CLI 型 lane 的子进程（读小写）与本进程（读大写）双对覆盖。
+        match nemesis_config::proxy_file::load(&common::workspace_path(&home).join("config")) {
+            Ok(Some(c)) => {
+                for (key, value) in nemesis_config::proxy_file::env_vars_to_apply(&c.env) {
+                    tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    // set_var 在 Rust 2024 为 unsafe（并发读写下 UB 面）；
+                    // 此处是启动装配窗口（先例 common.rs PATH 注入），注入
+                    // 先于一切并发 client 构建。
+                    unsafe { std::env::set_var(key, value) };
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("[Gateway] {e}；环境变量代理按未配置处理"),
+        }
+
         // Step 5b（goal：反向桥与多设备汇聚，一期批次一）：`--relay` 纯中继
         // 模式早退——只起 web server（状态页 `/relay` + `/bridge` 接入 +
         // `/d/<node_id>/` 转发），不起本地 agent/board/集群/discovery，状态页

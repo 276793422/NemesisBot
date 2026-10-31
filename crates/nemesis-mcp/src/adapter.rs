@@ -469,19 +469,31 @@ fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
     }
 
     // Sanitize nested property schemas
-    // 2026-10-25 BUG-20261025-47：flatten_type 现已递归覆盖 properties/items
-    // 全深度（含数组元素），此处一遍调用即可，无需分层手抄。
+    // 2026-10-25 BUG-20261025-47：flatten_type 递归覆盖 properties/items
+    // 全深度（含数组元素）；2026-10-30 BUG-20261030-212 收编复合关键字
+    // （anyOf/oneOf/allOf、对象形态 additionalProperties、$defs/definitions、
+    // patternProperties/prefixItems）。此处一遍调用即可，无需分层手抄。
     flatten_type(&mut schema);
 
     schema
 }
 
 /// Flatten `type` arrays to the first element (e.g. `["string", "null"]` → `"string"`),
-/// recursing into `properties` members and `items` at full depth.
+/// recursing at full depth: `properties`/`patternProperties`/`$defs`/`definitions`
+/// (map-of-schema), `items`/`prefixItems` (single schema, tuple array), and the
+/// composition keywords `anyOf`/`oneOf`/`allOf` plus object-form
+/// `additionalProperties`.
 ///
 /// 背景（BUG-20261025-47）：部分 LLM provider 拒绝数组形态的 `type`；旧实现
 /// 只处理两层 properties 且完全不碰 `items`——深层嵌套或数组项带
 /// `type: ["x","null"]` 时原样透传，provider 侧报 schema 非法。
+///
+/// 背景（BUG-20261030-212）：BUG-47 的收编面仍漏复合关键字——`anyOf`/
+/// `oneOf`/`allOf` 分支（可空联合的常见载体）、对象形态 `additionalProperties`
+/// （map 值 schema）、`$defs`/`definitions`（随 `$ref` 一起整体上行给
+/// provider）、`patternProperties`/`prefixItems`——这些位置里的数组形态
+/// `type` 照样穿透。布尔形态 `additionalProperties`（true/false）不是
+/// schema，跳过不碰。
 fn flatten_type(schema: &mut serde_json::Value) {
     if let Some(types) = schema.get("type").and_then(|t| t.as_array())
         && let Some(first) = types.first()
@@ -496,16 +508,50 @@ fn flatten_type(schema: &mut serde_json::Value) {
             flatten_type(prop);
         }
     }
-    // 数组项 schema：items 可能是单个 schema 或按位置排列的 schema 数组
-    // （tuple validation 形态）。
-    match obj.get_mut("items") {
-        Some(serde_json::Value::Array(items)) => {
-            for item in items.iter_mut() {
-                flatten_type(item);
+    if let Some(props) = obj
+        .get_mut("patternProperties")
+        .and_then(|p| p.as_object_mut())
+    {
+        for prop in props.values_mut() {
+            flatten_type(prop);
+        }
+    }
+    if let Some(defs) = obj.get_mut("$defs").and_then(|d| d.as_object_mut()) {
+        for def in defs.values_mut() {
+            flatten_type(def);
+        }
+    }
+    if let Some(defs) = obj.get_mut("definitions").and_then(|d| d.as_object_mut()) {
+        for def in defs.values_mut() {
+            flatten_type(def);
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(branches) = obj.get_mut(key).and_then(|b| b.as_array_mut()) {
+            for branch in branches.iter_mut() {
+                flatten_type(branch);
             }
         }
-        Some(item @ serde_json::Value::Object(_)) => flatten_type(item),
-        _ => {}
+    }
+    // 对象形态 additionalProperties = map 值的 schema；布尔形态（惯例的
+    // 严/松开关）不是 schema，跳过。
+    if let Some(ap) = obj.get_mut("additionalProperties")
+        && ap.is_object()
+    {
+        flatten_type(ap);
+    }
+    // 数组项 schema：items/prefixItems 可能是单个 schema 或按位置排列的
+    // schema 数组（tuple validation 形态）。
+    for key in ["items", "prefixItems"] {
+        match obj.get_mut(key) {
+            Some(serde_json::Value::Array(items)) => {
+                for item in items.iter_mut() {
+                    flatten_type(item);
+                }
+            }
+            Some(item @ serde_json::Value::Object(_)) => flatten_type(item),
+            _ => {}
+        }
     }
 }
 

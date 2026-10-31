@@ -1155,3 +1155,130 @@ fn r47_sanitize_schema_flattens_deep_nesting_and_items() {
     assert_eq!(props["tuple"]["items"][0]["type"], "string");
     assert_eq!(props["tuple"]["items"][1]["type"], "boolean");
 }
+
+// --- BUG-20261030-212：flatten_type 复合关键字收编回归锁 ----------------
+// BUG-47 只收编了 properties/items——anyOf/oneOf/allOf 分支、对象形态
+// additionalProperties、$defs/definitions、patternProperties/prefixItems
+// 里的数组形态 type 原样透传给 provider（部分 provider 拒绝数组形态 type）。
+
+#[test]
+fn r212_flatten_reaches_anyof_oneof_allof_branches() {
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "q": {"anyOf": [{"type": ["string", "null"]}, {"type": "integer"}]},
+            "w": {"oneOf": [{"type": ["boolean", "null"]}]},
+            "e": {"allOf": [{"type": ["number", "null"]}]}
+        }
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("unions", None, schema));
+    let props = &adapter.definition().parameters["properties"];
+    assert_eq!(
+        props["q"]["anyOf"][0]["type"], "string",
+        "anyOf branch type array must be flattened"
+    );
+    assert_eq!(props["q"]["anyOf"][1]["type"], "integer");
+    assert_eq!(
+        props["w"]["oneOf"][0]["type"], "boolean",
+        "oneOf branch type array must be flattened"
+    );
+    assert_eq!(
+        props["e"]["allOf"][0]["type"], "number",
+        "allOf branch type array must be flattened"
+    );
+}
+
+#[test]
+fn r212_flatten_reaches_additional_properties_schema_form() {
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": {"type": ["string", "null"]}
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("map", None, schema));
+    let p = &adapter.definition().parameters;
+    assert_eq!(
+        p["additionalProperties"]["type"], "string",
+        "object-form additionalProperties must be flattened"
+    );
+
+    // 布尔形态是开关不是 schema：false 必须原样保留（顶层缺省补 false
+    // 的既有行为不受影响）。
+    let mock2 = MockClient::new("srv", vec![]);
+    let schema_bool = serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+    });
+    let adapter_bool = McpAdapter::new(Box::new(mock2), w4c_tool("map2", None, schema_bool));
+    assert_eq!(
+        adapter_bool.definition().parameters["additionalProperties"],
+        false,
+        "boolean additionalProperties must be left alone"
+    );
+}
+
+#[test]
+fn r212_flatten_reaches_defs_pattern_properties_prefix_items() {
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "$defs": {"nullable": {"type": ["string", "null"]}},
+        "definitions": {"legacy": {"type": ["integer", "null"]}},
+        "patternProperties": {"^x-": {"type": ["number", "null"]}},
+        "properties": {
+            "vec": {"type": "array", "prefixItems": [{"type": ["boolean", "null"]}]}
+        }
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("defs", None, schema));
+    let p = &adapter.definition().parameters;
+    assert_eq!(
+        p["$defs"]["nullable"]["type"], "string",
+        "$defs entries must be flattened"
+    );
+    assert_eq!(
+        p["definitions"]["legacy"]["type"], "integer",
+        "definitions entries must be flattened"
+    );
+    assert_eq!(
+        p["patternProperties"]["^x-"]["type"], "number",
+        "patternProperties values must be flattened"
+    );
+    assert_eq!(
+        p["properties"]["vec"]["prefixItems"][0]["type"], "boolean",
+        "prefixItems tuple entries must be flattened"
+    );
+}
+
+#[test]
+fn r212_flatten_reaches_composite_nested_inside_properties() {
+    // 组合形态咬合：composite 关键字再嵌 composite（anyOf 分支里的
+    // additionalProperties 对象形态 + $defs）——递归必须一路走到底。
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "cfg": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": {"type": ["string", "null"]},
+                        "$defs": {"inner": {"type": ["number", "null"]}}
+                    },
+                    {"type": "null"}
+                ]
+            }
+        }
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("nested", None, schema));
+    let branch = &adapter.definition().parameters["properties"]["cfg"]["anyOf"][0];
+    assert_eq!(
+        branch["additionalProperties"]["type"], "string",
+        "composite-inside-composite (additionalProperties under anyOf) must be flattened"
+    );
+    assert_eq!(
+        branch["$defs"]["inner"]["type"], "number",
+        "composite-inside-composite ($defs under anyOf) must be flattened"
+    );
+}

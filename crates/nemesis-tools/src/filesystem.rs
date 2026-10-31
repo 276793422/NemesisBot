@@ -369,8 +369,21 @@ impl Tool for DeleteFileTool {
             Err(e) => return ToolResult::error(&e),
         };
 
-        match tokio::fs::remove_file(&canonical).await {
-            Ok(()) => ToolResult::success(&format!("deleted file: {}", path)),
+        // BUG-20261031-238：操作面删除走 fsutil 退避重试（Windows Defender/
+        // 索引器瞬时句柄单发必败，fsutil 模块注释与 CI 实证）。重试变体把
+        // NotFound 吞成成功（清理语义），操作面「删不存在文件要报错」的
+        // 语义由前置存在性检查保留。
+        if tokio::fs::metadata(&canonical).await.is_err() {
+            return ToolResult::error(&format!("file not found: {}", path));
+        }
+        let retry_target = canonical.clone();
+        match tokio::task::spawn_blocking(move || {
+            nemesis_utils::fsutil::remove_file_retry(&retry_target)
+        })
+        .await
+        {
+            Ok(Ok(())) => ToolResult::success(&format!("deleted file: {}", path)),
+            Ok(Err(e)) => ToolResult::error(&format!("failed to delete file: {}", e)),
             Err(e) => ToolResult::error(&format!("failed to delete file: {}", e)),
         }
     }
@@ -440,9 +453,17 @@ impl Tool for DeleteDirTool {
             }
         }
 
-        // Remove the directory and all its contents
-        match tokio::fs::remove_dir_all(&target).await {
-            Ok(()) => ToolResult {
+        // Remove the directory and all its contents.
+        // BUG-20261031-238：操作面删除走 fsutil 退避重试（Windows Defender/
+        // 索引器瞬时句柄单发必败，os error 5/32——红测受控句柄复现）。阻塞
+        // 实现经 spawn_blocking 进线程池，不占 async executor 线程。
+        let retry_target = target.clone();
+        match tokio::task::spawn_blocking(move || {
+            nemesis_utils::fsutil::remove_dir_all_retry(&retry_target)
+        })
+        .await
+        {
+            Ok(Ok(())) => ToolResult {
                 for_llm: format!("Directory deleted: {}", path),
                 for_user: None,
                 silent: true,
@@ -450,6 +471,7 @@ impl Tool for DeleteDirTool {
                 is_async: false,
                 task_id: None,
             },
+            Ok(Err(e)) => ToolResult::error(&format!("failed to delete directory: {}", e)),
             Err(e) => ToolResult::error(&format!("failed to delete directory: {}", e)),
         }
     }

@@ -131,7 +131,16 @@ impl OpenAiMessage {
     /// tool_calls / tool_call_id 保真——wire 适配归 provider 层）。
     fn to_provider_message(&self) -> nemesis_providers::types::Message {
         let content = match &self.content {
-            Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
+            Some(v) => normalize_openai_content(v).unwrap_or_else(|reason| {
+                // 兜底不吞文本（BUG-b 2026-10-30）：归一失败（未知/畸形
+                // part）退化为纯文本（text() 的数组 text-part 拼接语义），
+                // 绝不静默清空整条消息。原先 `unwrap_or_default()` 会把
+                // OpenAI `image_url` parts 连同 text part 一起清成空串。
+                tracing::warn!(
+                    "[OpenAI-compat] 多模态 content 归一失败，退化为纯文本透传: {reason}"
+                );
+                nemesis_providers::types::MessageContent::Text(self.text())
+            }),
             // null / 缺失 → 空文本（tool 结果消息常态；MessageContent 反
             // 序列化本就宽容，走到这里的是非 string/array 形态）。
             None => nemesis_providers::types::MessageContent::default(),
@@ -143,6 +152,80 @@ impl OpenAiMessage {
             tool_call_id: self.tool_call_id.clone(),
             ..Default::default()
         }
+    }
+}
+
+/// OpenAI wire 多模态 content 归一（BUG-b 2026-10-30，纯函数供测试）：
+/// OpenAI 形态 `{"type":"image_url","image_url":{"url":...}}` 与内部
+/// [`ContentPart`] serde tag（`type:"image"`）不同，直接 `from_value` 会
+/// 整体失败 → 整条消息被清空。本函数把 string / text part / image_url
+/// part 归一为内部形态；未知或畸形 part 诚实报 Err（交由调用方兜底），
+/// 不做静默丢弃。
+pub(crate) fn normalize_openai_content(
+    v: &serde_json::Value,
+) -> Result<nemesis_providers::types::MessageContent, String> {
+    use nemesis_providers::types::{ContentPart, ImageSource, MessageContent};
+    match v {
+        serde_json::Value::String(s) => Ok(MessageContent::Text(s.clone())),
+        serde_json::Value::Array(parts) => {
+            let mut out: Vec<ContentPart> = Vec::with_capacity(parts.len());
+            for p in parts {
+                let ty = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match ty {
+                    "text" => {
+                        let text = p
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .ok_or_else(|| format!("text part 缺 `text` 字段: {p}"))?;
+                        out.push(ContentPart::Text {
+                            text: text.to_string(),
+                        });
+                    }
+                    "image_url" => {
+                        let img = p
+                            .get("image_url")
+                            .ok_or_else(|| format!("image_url part 缺 `image_url` 对象: {p}"))?;
+                        let url = img
+                            .get("url")
+                            .and_then(|u| u.as_str())
+                            .ok_or_else(|| format!("image_url.url 缺失或非字符串: {p}"))?;
+                        // data URI（data:<media_type>;base64,<data>）拆
+                        // Base64；其余按 http(s) URL 原样透传交 provider。
+                        let image = if let Some(rest) = url.strip_prefix("data:") {
+                            let (meta, data) = rest.split_once(";base64,").ok_or_else(|| {
+                                format!("image_url data URI 非 base64 形态: {url}")
+                            })?;
+                            let media_type = meta.split(';').next().unwrap_or("").to_string();
+                            if media_type.is_empty() || data.is_empty() {
+                                return Err(format!("image_url data URI 不完整: {url}"));
+                            }
+                            ImageSource::Base64 {
+                                media_type,
+                                data: data.to_string(),
+                            }
+                        } else {
+                            ImageSource::Url(url.to_string())
+                        };
+                        let detail = img
+                            .get("detail")
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string())
+                            .and_then(|s| {
+                                serde_json::from_value::<nemesis_providers::types::ImageDetail>(
+                                    serde_json::Value::String(s),
+                                )
+                                .ok()
+                            });
+                        out.push(ContentPart::Image { image, detail });
+                    }
+                    other => {
+                        return Err(format!("未支持的 content part type `{other}`: {p}"));
+                    }
+                }
+            }
+            Ok(MessageContent::Parts(out))
+        }
+        _ => Err(format!("不支持的 content 形态: {v}")),
     }
 }
 
@@ -746,10 +829,28 @@ async fn bare_forward_stream(
     // stream 块内多次使用（tracing），头写入还要一份——clone 进块。
     let execution_model_stream = execution_model.clone();
 
-    // 首帧判定：起流失败不 commit SSE（错误面保持 JSON 形态）。
+    // 首帧判定：起流失败不 commit SSE（错误面保持 JSON 形态）；唯「流式
+    // 不被该 provider 支持」（trait 缺省实现，BUG-a 2026-10-30）例外——
+    // 回落非流式合成 SSE，不把本地能力缺口伪装成上游故障（此前直接 502
+    // "not implemented"，请求死在本进程未出网；agent 链路 llm_bridge 同判
+    // 同源回落，两条链路行为对齐）。
     let first = match rx.recv().await {
         Some(Ok(c)) => c,
         Some(Err(e)) => {
+            if nemesis_providers::router::is_stream_unsupported(&e) {
+                tracing::info!(
+                    "[OpenAI-compat] 裸转发流式不被支持，回落非流式：model={execution_model}"
+                );
+                return bare_fallback_non_stream(
+                    provider,
+                    &req,
+                    messages,
+                    options,
+                    execution_model,
+                    started,
+                )
+                .await;
+            }
             let (status, err_type) = bare_error_status(&e);
             tracing::warn!(
                 "[OpenAI-compat] 裸转发流式起流失败：model={execution_model} {status} {e}"
@@ -852,6 +953,77 @@ async fn bare_forward_stream(
     }
     let _ = state;
     response
+}
+
+/// 裸 lane 流式回落（BUG-a 2026-10-30）：provider 无流式 lane（`chat_stream`
+/// trait 缺省实现）时改走 `chat()` 非流式，成功后合成 OpenAI SSE 完整流
+/// （全量 content 单 delta 帧 + tool_calls delta 帧若有 + 终帧
+/// finish_reason/usage + `[DONE]`；语义对齐 llm_bridge `fallback_non_stream`
+/// ——非流式 provider 也产生一次完整「流」，调用方无差别）。回落后的
+/// `chat()` 失败 = 真实上游错误，诚实上报不伪装。
+async fn bare_fallback_non_stream(
+    provider: &dyn nemesis_providers::router::LLMProvider,
+    req: &OpenAiChatRequest,
+    messages: Vec<nemesis_providers::types::Message>,
+    options: ChatOptions,
+    execution_model: String,
+    started: Instant,
+) -> Response {
+    match provider
+        .chat(&messages, &req.tools, &execution_model, &options)
+        .await
+    {
+        Ok(resp) => {
+            let id = completion_id();
+            let model_echo = req.model.clone().unwrap_or_default();
+            let execution_model_stream = execution_model.clone();
+            let stream = async_stream::stream! {
+                if !resp.content.is_empty() {
+                    yield Ok::<_, Infallible>(SseEvent::default().data(bare_chunk_json(
+                        &id,
+                        &model_echo,
+                        serde_json::json!({ "content": resp.content }),
+                        None,
+                    )));
+                }
+                if !resp.tool_calls.is_empty() {
+                    yield Ok(SseEvent::default().data(bare_chunk_json(
+                        &id,
+                        &model_echo,
+                        serde_json::json!({ "tool_calls": tool_calls_delta_json(&resp.tool_calls) }),
+                        None,
+                    )));
+                }
+                yield Ok(SseEvent::default().data(bare_final_chunk_json(
+                    &id,
+                    &model_echo,
+                    &resp.finish_reason,
+                    resp.usage.as_ref(),
+                )));
+                yield Ok(SseEvent::default().data("[DONE]"));
+                tracing::info!(
+                    "[OpenAI-compat] 裸转发非流式回落完成：model={execution_model_stream} {}ms",
+                    started.elapsed().as_millis()
+                );
+            };
+            let mut response = Sse::new(stream)
+                .keep_alive(KeepAlive::default())
+                .into_response();
+            if let Ok(v) = http::HeaderValue::from_str(&execution_model) {
+                response
+                    .headers_mut()
+                    .insert("x-nemesis-execution-model", v);
+            }
+            response
+        }
+        Err(e) => {
+            let (status, err_type) = bare_error_status(&e);
+            tracing::warn!(
+                "[OpenAI-compat] 裸转发非流式回落失败：model={execution_model} {status} {e}"
+            );
+            error_response(status, format!("upstream error: {e}"), err_type)
+        }
+    }
 }
 
 /// axum handler 薄壳。

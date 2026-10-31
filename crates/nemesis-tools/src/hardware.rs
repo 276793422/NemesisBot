@@ -733,16 +733,25 @@ mod linux_impl {
     const I2C_SMBUS_QUICK: u32 = 0;
     const I2C_SMBUS_BYTE: u32 = 1;
 
-    /// i2c_smbus_ioctl_data matches the kernel struct.
-    /// 12 bytes: read_write(u8) + command(u8) + size(u32) + data pointer.
+    /// i2c_smbus_ioctl_data matches the kernel struct
+    /// (`struct i2c_smbus_ioctl_data` in <linux/i2c-dev.h>):
+    /// read_write(u8) + command(u8) + [pad u16] + size(u32) + data(ptr)
+    /// = 16 bytes on LP64.
     #[repr(C)]
     struct I2cSmbusIoctlData {
         read_write: u8,
         command: u8,
         _pad: u16,
         size: u32,
-        data: *const [u8; 34],
+        // READ 方向内核经 copy_to_user 写入该缓冲（union i2c_smbus_data），
+        // 必须是可变指针——传 *const / 指向不可变绑定是 FFI 契约 UB
+        // （BUG-20261031-246）。
+        data: *mut [u8; 34],
     }
+
+    // 布局在 CI Linux 形态编译期钉死（本仓无 Linux 运行时红绿证条件，
+    // struct 镜像正确性靠编译期断言兜底）。
+    const _: () = assert!(std::mem::size_of::<I2cSmbusIoctlData>() == 16);
 
     // SPI ioctl constants from <linux/spi/spidev.h>
     // _IOW('k', nr, size) = direction(1)<<30 | size<<16 | type(0x6B)<<8 | nr
@@ -751,7 +760,9 @@ mod linux_impl {
     const SPI_IOC_WR_MAX_SPEED_HZ: u64 = 0x40046B04;
     const SPI_IOC_MESSAGE_1: u64 = 0x40206B00;
 
-    /// spi_ioc_transfer matches the kernel struct (32 bytes).
+    /// spi_ioc_transfer matches the kernel struct
+    /// (`struct spi_ioc_transfer` in <linux/spi/spidev.h>, 32 bytes;
+    /// 字段序自 v4.0 起 bits_per_word 在 cs_change 前)。
     #[repr(C)]
     struct SpiIocTransfer {
         tx_buf: u64,
@@ -766,6 +777,8 @@ mod linux_impl {
         word_delay: u8,
         pad: u8,
     }
+
+    const _: () = assert!(std::mem::size_of::<SpiIocTransfer>() == 32);
 
     /// Open an I2C device file.
     fn open_i2c(dev_path: &str) -> Result<std::fs::File, String> {
@@ -793,21 +806,22 @@ mod linux_impl {
                 command: 0,
                 _pad: 0,
                 size: I2C_SMBUS_QUICK,
-                data: std::ptr::null(),
+                data: std::ptr::null_mut(),
             };
             let ret =
                 unsafe { libc::ioctl(fd.as_raw_fd(), I2C_SMBUS as _, &args as *const _ as usize) };
             return ret >= 0;
         }
 
-        // SMBus Read Byte
-        let _data = [0u8; 34];
+        // SMBus Read Byte —— 内核对 READ 方向会把结果写进 data 缓冲
+        // （copy_to_user），缓冲必须可变、指针必须是 *mut。
+        let mut _data = [0u8; 34];
         let args = I2cSmbusIoctlData {
             read_write: I2C_SMBUS_READ,
             command: 0,
             _pad: 0,
             size: I2C_SMBUS_BYTE,
-            data: &_data as *const _,
+            data: &mut _data as *mut _,
         };
         let ret =
             unsafe { libc::ioctl(fd.as_raw_fd(), I2C_SMBUS as _, &args as *const _ as usize) };

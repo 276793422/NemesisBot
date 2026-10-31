@@ -573,3 +573,42 @@ fn test_row_turn_count_and_cut_skip_steer_rows() {
     // 缺 steer 字段的行 = 旧行为（轮边界，修复前写入的行按旧行为退化）。
     assert_eq!(row_user_turn_count(&[row("user", "legacy")]), 1);
 }
+
+/// BUG-20261030-205 回归锁：fork 的 jsonl 落盘失败必须诚实 Err + 原子
+/// 回退。旧代码把 open 失败（返回 0）静默吞掉——fork 照常建 store 落
+/// meta 写 boundary 并返回成功，产出「store 有历史、jsonl 真相源缺席」
+/// 的半残 fork（self-heal 一跑历史清零）。注入走 chat_log 的 key 定向
+/// 测试钩子——目录占位会被 unique_key 的 taken 检查避让，注入不到 fork
+/// 的写入位点。
+#[test]
+fn test_fork_jsonl_write_failure_fails_loudly_and_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = unique_src();
+    seed_clean_log(&src);
+    let target_key = format!("{}__fork", src);
+    crate::chat_log::arm_test_fail_open(&target_key);
+
+    let err = fork_session(&store, &src, Some(target_key.clone()), None)
+        .expect_err("jsonl 落盘失败必须 Err，不得静默成功");
+    assert!(err.contains("0/6"), "错误信息带行数现场: {err}");
+
+    // 原子回退：jsonl 真相源不存在、store 无半残会话、boundary 无痕。
+    assert!(
+        !crate::chat_log::chat_log_exists(&target_key),
+        "半残 jsonl 必须被回收"
+    );
+    assert!(!store.contains(&target_key), "store 不得有半残会话");
+    assert!(
+        read_boundary_events(&target_key).is_empty(),
+        "boundary 不得有 fork 痕"
+    );
+
+    // 源会话原封不动（6 行全在——fork 全程只读源）。
+    let (rows, total, _, _) = read_chat_log(&src, 100_000, None);
+    assert_eq!(total, 6);
+    assert_eq!(rows.len(), 6);
+
+    delete_chat_log(&src);
+    delete_chat_log(&target_key);
+}

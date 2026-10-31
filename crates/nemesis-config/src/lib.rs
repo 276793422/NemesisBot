@@ -14,6 +14,7 @@ pub mod hot_reload;
 pub mod plugin_wasm;
 pub mod plugins_native;
 pub mod provider_resolver;
+pub mod proxy_file;
 pub mod store;
 pub mod vault_ref;
 
@@ -210,9 +211,10 @@ pub struct Config {
     /// [`HealthFlagConfig`]。
     #[serde(default)]
     pub health: Option<HealthFlagConfig>,
-    /// 日志五族 TTL 清扫（M7/M8；None = 全默认——session_logs 30d /
-    /// boundary 30d / request_logs 14d / terminal 7d / event_ledger 30d；
-    /// 0 = 该族关闭清扫）。见 [`LogsTtlConfig`]。
+    /// 日志六族 TTL 清扫（M7/M8 + 回收站 2026-10-30；None = 全默认——
+    /// session_logs 30d / boundary 30d / request_logs 14d / terminal 7d /
+    /// event_ledger 30d / trash 90d；0 = 该族关闭清扫）。见
+    /// [`LogsTtlConfig`]。
     #[serde(default)]
     pub logs: Option<LogsTtlConfig>,
     /// checkpoint gc（M6；None = 全默认——**enabled=false 总闸关**，删错 =
@@ -511,6 +513,9 @@ pub struct LogsTtlConfig {
     /// op==append**——truncate/fork 行携带 chat_log 的唯一旁证正文，
     /// 末行非 append 保留）。默认 30。
     pub event_ledger: u64,
+    /// 会话回收站（`logs/trash/sessions/`，整目录清扫，目录 mtime ≈ 删除
+    /// 时刻）。默认 **90**（拍板①：30 天太短）。
+    pub trash: u64,
 }
 
 impl Default for LogsTtlConfig {
@@ -521,6 +526,7 @@ impl Default for LogsTtlConfig {
             request_logs: 14,
             terminal: 7,
             event_ledger: 30,
+            trash: 90,
         }
     }
 }
@@ -3474,7 +3480,7 @@ pub struct WebToolsConfig {
     pub perplexity: PerplexityConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BraveConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -3484,6 +3490,23 @@ pub struct BraveConfig {
     pub max_results: i64,
 }
 
+impl Default for BraveConfig {
+    /// 手写收敛（BUG-20261031-226 同批）：`max_results` 字段级缺省 5，
+    /// derive 给 0——enabled 缺省关使分歧平时不可达，用户开启后保存的
+    /// 0 会被 agent_factory `.max(1)` 钳成 1 条结果（模板语义 5）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            max_results: default_max_results(),
+        }
+    }
+}
+
+// 注意：DuckDuckGoConfig 刻意**不**收敛双路径（BUG-20261031-226 排除项）——
+// 键缺席（derive false）与出厂模板的显式 `{enabled: false}` 一致；键在场但
+// enabled 缺席（字段级 true）表示用户主动配置该段=想启用。两路各服务各自
+// 人群，任何收敛方向都会翻转其中一路的产品默认行为。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DuckDuckGoConfig {
     #[serde(default = "default_true")]
@@ -3492,7 +3515,7 @@ pub struct DuckDuckGoConfig {
     pub max_results: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerplexityConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -3500,6 +3523,17 @@ pub struct PerplexityConfig {
     pub api_key: String,
     #[serde(default = "default_max_results")]
     pub max_results: i64,
+}
+
+impl Default for PerplexityConfig {
+    /// 手写收敛（BUG-20261031-226 同批，BraveConfig 同理）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            max_results: default_max_results(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -3516,7 +3550,7 @@ pub struct ExecConfig {
     pub custom_deny_patterns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -3524,12 +3558,41 @@ pub struct HeartbeatConfig {
     pub interval: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl Default for HeartbeatConfig {
+    /// 手写而非 derive（serde 双路径纪律，WebChannelConfig 同款——
+    /// BUG-20261031-226）：`heartbeat` 顶层键整段缺席时 serde 走结构体
+    /// `Default::default()`，字段级缺省函数不经过。derive 的
+    /// {enabled:false, interval:0} 与字段级缺省/出厂模板/default_config()
+    /// 的 {true, 30} 相反——migrate 骨架（openclaw_config.rs 无 heartbeat
+    /// 段）与手精简 config 的心跳服务被静默关闭（bot_service.rs 装配闸
+    /// 直接读 enabled）。两条构造路径必须收敛同值。
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: default_heartbeat_interval_minutes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevicesConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub monitor_usb: bool,
+}
+
+impl Default for DevicesConfig {
+    /// 手写收敛（BUG-20261031-226 同批）：`monitor_usb` 字段级缺省 true，
+    /// derive 给 false——devices 服务缺省关使分歧暂不可达，但用户经
+    /// Dashboard 开启 enabled 保存的是内存结构体（缺席键场景=derive 值），
+    /// monitor_usb:false 会落盘，与模板 monitor_usb:true 相反。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            monitor_usb: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -5898,6 +5961,11 @@ mod plugins_native_tests;
 // 迁移 / RMW 语义。
 #[cfg(test)]
 mod plugin_wasm_tests;
+
+// 独立代理配置（proxy_file）：纯读不落盘 / RMW 段互不覆盖 / 损坏重建 /
+// 前缀校验 / env 注入清单配对。
+#[cfg(test)]
+mod proxy_file_tests;
 
 // HotReloader force_reload 语义（写方自刷新，绕过 mtime 检测）测试。
 #[cfg(test)]

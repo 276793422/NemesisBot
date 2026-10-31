@@ -889,3 +889,72 @@ fn streaming_hash_matches_whole_read_hash() {
     assert_eq!(size, payload.len() as u64);
     assert_eq!(hash, sha256_hex(&payload), "流式与整读必须同值");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261030-202 / BUG-20261030-203：回调锁卫生 + manifest 条数闸
+// ---------------------------------------------------------------------------
+
+/// BUG-20261030-202：回调 panic 不毒化锁（恢复式，后续接线照常生效）；
+/// 回调内重入 set_on_overlimit（同一把锁）不死锁——消费点锁内 clone、
+/// 锁外调用（旧形态持锁调回调在此永久阻塞）。
+#[test]
+fn callback_panics_do_not_poison_and_reentrant_set_is_safe() {
+    let root = temp_root("cb-hygiene");
+    let sink = Arc::new(TransferSink::new(&root, 0));
+    let req = TransferOverlimit {
+        task_id: "t-cb".into(),
+        source_node: "node-a".into(),
+        total_bytes: 1,
+        limit: 0,
+        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+    };
+    // 毒化恢复：panic 回调照常传播（不吞），锁不中毒——新回调可接线并执行。
+    sink.set_on_overlimit(Arc::new(|_| panic!("boom")));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sink.note_overlimit(&req);
+    }));
+    assert!(r.is_err(), "回调 panic 照常传播");
+    let hit = Arc::new(AtomicU32::new(0));
+    let h2 = hit.clone();
+    sink.set_on_overlimit(Arc::new(move |_| {
+        h2.fetch_add(1, Ordering::SeqCst);
+    }));
+    sink.note_overlimit(&req);
+    assert_eq!(hit.load(Ordering::SeqCst), 1, "毒化后新回调照常执行");
+    // 重入安全：回调内再 set_on_overlimit（同一把锁）。
+    let weak = Arc::downgrade(&sink);
+    sink.set_on_overlimit(Arc::new(move |_| {
+        if let Some(s) = weak.upgrade() {
+            s.set_on_overlimit(Arc::new(|_| {}));
+        }
+    }));
+    sink.note_overlimit(&req);
+}
+
+/// BUG-20261030-203：files 条数超闸 → 诚实拒绝（可诊断错误 + 打包建议），
+/// 不再放行到传输层撞 16MiB 帧；闸值内通过结构校验。
+#[test]
+fn manifest_file_count_gate() {
+    let mk = |n: usize| TransferBegin {
+        transfer_id: "tr-gate".into(),
+        task_id: "t-gate".into(),
+        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+        source_node: "node-a".into(),
+        total_bytes: 0,
+        chunk_size: 64 * 1024,
+        chunk_count: 0,
+        content_hash: "h".into(),
+        files: (0..n)
+            .map(|i| TransferFileEntry {
+                path: format!("f/{i}.txt"),
+                size: 0,
+                sha256: String::new(),
+            })
+            .collect(),
+    };
+    let over = mk(MAX_MANIFEST_FILES + 1);
+    let err = validate_manifest(&over).unwrap_err();
+    assert!(err.contains("条目"), "错误指明条数超闸: {err}");
+    let ok = mk(MAX_MANIFEST_FILES);
+    assert!(validate_manifest(&ok).is_ok(), "闸值内通过结构校验");
+}

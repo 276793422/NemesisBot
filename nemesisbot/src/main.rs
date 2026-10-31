@@ -1057,7 +1057,7 @@ async fn run_command(cli: Cli) -> Result<()> {
         }
         Commands::Session { action } => {
             common::ensure_default_logger();
-            commands::session::run(action, cli.local)?;
+            commands::session::run(action, cli.local).await?;
         }
         Commands::Channel { action } => {
             common::ensure_default_logger();

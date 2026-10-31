@@ -55,6 +55,35 @@ fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// BUG-20261030-221：forward_tree 的 gc 在途保护 guard。采集后立即注册进
+/// [`AgentLoop::gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
+/// 到它），压栈成功后 [`Self::defuse`]（栈条目接管保护）；任何早退路径
+/// （恢复失败 blocked / 提交失败 blocked / no-op 不压栈）drop 自动注销。
+struct GcInflightGuard<'a> {
+    al: &'a AgentLoop,
+    tree: Option<String>,
+}
+
+impl GcInflightGuard<'_> {
+    /// 采集即注册：把 forward_tree 并入在途保护集（gc extras 读得到）。
+    fn register(&mut self) {
+        if let Some(t) = &self.tree {
+            self.al.gc_inflight_trees.lock().insert(t.clone());
+        }
+    }
+    fn defuse(mut self) {
+        self.tree = None;
+    }
+}
+
+impl Drop for GcInflightGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(t) = self.tree.take() {
+            self.al.gc_inflight_trees.lock().remove(&t);
+        }
+    }
+}
+
 impl AgentLoop {
     /// Attach a checkpoint store for the edit safety net. When set, every writer
     /// tool call (write_file/edit_file/append_file/delete_file) snapshots the
@@ -285,6 +314,11 @@ impl AgentLoop {
         report_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
+        // BUG-20261031-231：jsonl 重写窗口登记（守卫持至函数退出，含全部
+        // 早退路径）。本函数以进闸时刻的快照整文件重写会话 jsonl——窗口内
+        // 绕闸追加（busy 回绝留痕 / snooze 唤醒行）会被截断静默吞掉；登记
+        // 后追加方检查在旗诚实跳过，消灭「写了就被吞」面。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         // 文件恢复锚：cut 起第一个带 checkpoint_turn 标记的行（第一个仍在
         // 的 checkpoint turn）——恢复到它 begin 之前 = index 所在 turn 完成
         // 时的文件态。None = 之后没有 checkpoint turn（或全是无标记旧行）。
@@ -361,6 +395,17 @@ impl AgentLoop {
         } else {
             None
         };
+
+        // BUG-20261030-221：forward_tree 从采集到压栈之间不在索引（待截条
+        // 目刚清）也不在栈（压栈在 jsonl 提交之后）——truncate_from_scoped
+        // 内联 gc（及周期拍/并发会话 gc）撞进这个窗口会把它的对象当孤儿清
+        // 掉，redo 的文件前向恢复必炸「tree 查找失败」。采集即注册在途保
+        // 护（压栈成功后 defuse 移交栈条目；早退路径 guard drop 兜底注销）。
+        let mut _gc_inflight = GcInflightGuard {
+            al: self,
+            tree: forward_tree.clone(),
+        };
+        _gc_inflight.register();
 
         // 1) 文件恢复（先于 jsonl 截断——中途崩溃时对话完好，可重试）。
         // R3（2026-10-24 外评）：恢复**不完整时零推进**——jsonl 不截断、
@@ -525,6 +570,9 @@ impl AgentLoop {
                 stack.pop_front();
             }
         }
+        // 栈条目已接管 forward_tree 的 gc 保护（undo_stack_tree_refs 读得到
+        // ），在途注册注销；redoable=false 时不经过这里，guard drop 兜底。
+        _gc_inflight.defuse();
 
         Ok(serde_json::json!({
             "session_key": session_key,
@@ -546,24 +594,29 @@ impl AgentLoop {
 
     /// M6（2026-10-27 整改批次五）：checkpoint gc 的**下界查询口**——
     /// 全会话 undo/redo 栈条目引用的全部影子 tree hex（forward/post/undo
-    /// 盘面三族）。gc 据此把这些 tree 并入保留集（栈是内存态，gc 掉栈里
-    /// 引用的 tree = redo 文件恢复必炸）。栈为内存态、重启即丢，重启后无
-    /// 栈约束属设计语义（gc 不需要跨重启保守）。
+    /// 盘面三族）+ 回退中尚未压栈的 forward_tree 在途保护集
+    /// （BUG-20261030-221）。gc 据此把这些 tree 并入保留集（栈是内存态，
+    /// gc 掉栈里引用的 tree = redo 文件恢复必炸）。栈为内存态、重启即丢，
+    /// 重启后无栈约束属设计语义（gc 不需要跨重启保守）。
     pub fn undo_stack_tree_refs(&self) -> Vec<String> {
-        let stacks = self.rewind_undo_stacks.lock();
-        stacks
-            .values()
-            .flat_map(|stack| {
-                stack.iter().flat_map(|e| {
-                    [
-                        e.forward_tree.clone(),
-                        e.post_tree.clone(),
-                        e.undo_disk_tree.clone(),
-                    ]
+        let mut refs: Vec<String> = {
+            let stacks = self.rewind_undo_stacks.lock();
+            stacks
+                .values()
+                .flat_map(|stack| {
+                    stack.iter().flat_map(|e| {
+                        [
+                            e.forward_tree.clone(),
+                            e.post_tree.clone(),
+                            e.undo_disk_tree.clone(),
+                        ]
+                    })
                 })
-            })
-            .flatten()
-            .collect()
+                .flatten()
+                .collect()
+        };
+        refs.extend(self.gc_inflight_trees.lock().iter().cloned());
+        refs
     }
 
     /// E3 redo：弹本会话 undo 栈顶，反向恢复——被截断的行 VERBATIM 回填
@@ -599,6 +652,10 @@ impl AgentLoop {
         session_key: &str,
         force: bool,
     ) -> Result<serde_json::Value, String> {
+        // BUG-20261031-231：重写窗口登记（同 rewind_from_cut）——redo 的
+        // 截断写回同样以整文件重写落盘，守卫 1 读取与截断之间的绕闸追加
+        // （busy 回绝留痕 / snooze 唤醒行）会被静默吞掉。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         let entry = {
             let mut stacks = self.rewind_undo_stacks.lock();
             stacks.get_mut(session_key).and_then(|s| s.pop_back())

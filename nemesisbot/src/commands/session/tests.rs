@@ -17,8 +17,9 @@ use super::*;
 /// --local 指向不存在 home 时：拒绝执行（home 不一致守卫），且**不创建**
 /// `.nemesisbot`（create_dir_all 在守卫之后才轮到）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[test]
-fn run_local_missing_home_bails_without_creating() {
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+async fn run_local_missing_home_bails_without_creating() {
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -26,7 +27,7 @@ fn run_local_missing_home_bails_without_creating() {
     let orig = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
 
-    let list = run(SessionAction::List, true);
+    let list = run(SessionAction::List, true).await;
     let fork = run(
         SessionAction::Fork {
             session_key: "agent:main:session:x".into(),
@@ -35,7 +36,8 @@ fn run_local_missing_home_bails_without_creating() {
             reason: None,
         },
         true,
-    );
+    )
+    .await;
     let created = tmp.path().join(".nemesisbot").exists();
 
     std::env::set_current_dir(&orig).unwrap();
@@ -194,20 +196,24 @@ mod r7_success_paths {
 
     /// run(List, local=false)：env home 与单例一致 → 守卫放行 → 空会话表 Ok。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_list_via_env_home_ok_empty() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_list_via_env_home_ok_empty() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
-        run(SessionAction::List, false).expect("guard passes, list ok");
+        run(SessionAction::List, false)
+            .await
+            .expect("guard passes, list ok");
     }
 
     /// run(Show)：有 jsonl 的会话 → 轮次表打印 Ok。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_show_prints_turn_table_ok() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_show_prints_turn_table_ok() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -221,13 +227,15 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect("show with jsonl → turn table ok");
     }
 
     /// run(Fork) 全量：源 jsonl 逐行复制到新 key + store 落盘 + boundary 事件。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_fork_full_flow_copies_jsonl_and_creates_store() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_fork_full_flow_copies_jsonl_and_creates_store() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -245,6 +253,7 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect("fork full flow ok");
 
         // jsonl 复制到了新 key（6 行 verbatim）。
@@ -260,8 +269,9 @@ mod r7_success_paths {
 
     /// run(Fork --at 1)：只保留第 1 轮（2 行）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_fork_at_turn_1_keeps_prefix_only() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_fork_at_turn_1_keeps_prefix_only() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -278,6 +288,7 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect("fork at=1 ok");
         let copied = singleton_test_home()
             .join("workspace/logs/session_logs/agent_main_session_r7fork2__at1.jsonl");
@@ -291,8 +302,9 @@ mod r7_success_paths {
 
     /// run(Fork) 源不存在：明确报错（jsonl 为空 → fork_session Err → run Err）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_fork_missing_source_errors() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_fork_missing_source_errors() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -307,14 +319,16 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect_err("no jsonl for source → fork errors");
         assert!(err.to_string().contains("不存在"), "got: {err}");
     }
 
     /// run(Fork) 源只有 assistant 行：没有 user 轮 → 报错。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_fork_source_without_user_turns_errors() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_fork_source_without_user_turns_errors() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -338,6 +352,7 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect_err("0 user turns → fork errors");
         assert!(err.to_string().contains("user 轮"), "got: {err}");
     }
@@ -345,8 +360,9 @@ mod r7_success_paths {
     /// run(Show) 对不存在的会话走 run() 入口（show_turns bail 在 tests 顶部
     /// 已有直接调用版本；这里钉 run() 分发臂）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_show_missing_session_dispatches_to_error() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_show_missing_session_dispatches_to_error() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -358,6 +374,7 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect_err("missing jsonl → show errors");
         assert!(err.to_string().contains("不存在"), "got: {err}");
         // 只读路径：不产生 jsonl。
@@ -368,8 +385,9 @@ mod r7_success_paths {
     /// zero-user-turn bail（上面 fork 测试报错来自 nemesis-agent 的
     /// fork_session；这里是 commands/session.rs 的同义 bail 臂）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_show_zero_user_turns_errors_from_cli_bail() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_show_zero_user_turns_errors_from_cli_bail() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -390,6 +408,7 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect_err("rows exist but zero user turns → CLI bail");
         assert!(err.to_string().contains("没有完整 user 轮次"), "got: {err}");
     }
@@ -400,8 +419,9 @@ mod r7_success_paths {
     /// fork 本体不受影响照常成功（保留前缀 4 行 verbatim）。钉的是「通道
     /// 进得去、出得来、不 panic、不阻断分叉」。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[test]
-    fn run_fork_with_dropped_turns_exercises_summary_channel_and_succeeds() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
+    async fn run_fork_with_dropped_turns_exercises_summary_channel_and_succeeds() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -419,6 +439,7 @@ mod r7_success_paths {
             },
             false,
         )
+        .await
         .expect("fork with ≥3 dropped turns must succeed (summary is best-effort)");
 
         let copied = singleton_test_home()
@@ -459,10 +480,10 @@ fn fork_info_fixture(dropped_user_turns: usize) -> nemesis_agent::session_fork::
 
 /// 遗弃 <3 轮：阈值闸先于 config 读取——「无需生成」注记，home 零副作用
 /// （不创建 config.json，不读盘）。
-#[test]
-fn branch_summary_cli_below_threshold_notes_no_need() {
+#[tokio::test]
+async fn branch_summary_cli_below_threshold_notes_no_need() {
     let tmp = tempfile::tempdir().unwrap();
-    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(2));
+    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(2)).await;
     assert!(
         line.contains("分支摘要") && line.contains("无需生成") && line.contains("2 轮"),
         "got: {line}"
@@ -476,14 +497,40 @@ fn branch_summary_cli_below_threshold_notes_no_need() {
 /// 遗弃 ≥3 轮 + small_model 未配置：home 无 config.json → load_config 走
 /// 内嵌默认（config.default.json 无 small_model 键，无 env 覆盖面）→
 /// 诚实跳过注记。确定性：不触网、不 panic、不阻塞调用方。
-#[test]
-fn branch_summary_cli_small_model_unconfigured_notes_skip() {
+#[tokio::test]
+async fn branch_summary_cli_small_model_unconfigured_notes_skip() {
     let tmp = tempfile::tempdir().unwrap();
-    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(3));
+    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(3)).await;
     assert!(
         line.contains("分支摘要") && line.contains("跳过") && line.contains("agents.small_model"),
         "got: {line}"
     );
+}
+
+/// BUG-20261030-224 回归锁：完整闸门链（≥3 轮遗弃 + small_model 已配置 +
+/// provider 构造成功）必须在**运行时上下文内**走到执行段而不 panic——
+/// 生产入口 async_main → run_command 在 runtime worker 上调用本命令，
+/// 旧实现自建嵌套 runtime + block_on，tokio enter_runtime 检测到嵌套
+/// 直接 panic「Cannot start a runtime from within a runtime」，且 panic
+/// 点在 fork 落盘**之后**（fork 成功但零输出、退码 101，用户重试即双
+/// fork）。small_model 指向 127.0.0.1:1（连接立即被拒）→ 修复后走到
+/// 「生成失败/为空」诚实注记；本测试以 #[tokio::test] 复现生产运行时
+/// 上下文，旧实现在此必 panic。
+#[tokio::test]
+async fn branch_summary_cli_full_gate_chain_runs_inside_runtime_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{
+            "agents": { "small_model": "mini" },
+            "model_list": [
+                { "model_name": "mini", "model": "offline/mini", "api_key": "sk", "api_base": "http://127.0.0.1:1/v1" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(3)).await;
+    assert!(line.contains("分支摘要"), "got: {line}");
 }
 
 // ===========================================================================

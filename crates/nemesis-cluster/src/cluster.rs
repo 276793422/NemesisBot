@@ -569,6 +569,15 @@ impl Cluster {
             );
         }
 
+        // TaskManager 后台清理循环（BUG-20261030-209）：此前从未在生产接线
+        // （旧 &mut self 签名无法经 Arc<TaskManager> 调用）——2h 终态清理
+        // 与 pending/running 安全网兜底双双失效，终态任务（含完整
+        // payload+result）在 tasks.db 无限累积。接线后 on_complete 生产恒
+        // None（gateway 走 with_workspace 不挂回调），清理只落状态不重复
+        // 唤醒——pending 唤醒仍由 recovery_loop 独占（settle 幂等，双循环
+        // 竞争无害）。
+        self.task_manager.start();
+
         // G2: 主动健康探针循环（health_check_interval_secs=0 关闭）。
         if app_cfg.health_check_interval_secs > 0 {
             self.start_health_check_loop(
@@ -1364,6 +1373,9 @@ impl Cluster {
         {
             tracing::warn!(error = %e, "[Cluster] Discovery stop error");
         }
+
+        // Stop TaskManager cleanup loop（BUG-20261030-209：start 接线的对称收口）
+        self.task_manager.stop();
 
         // Signal recovery/sync loops to exit
         let _ = self.stop_tx.send(());

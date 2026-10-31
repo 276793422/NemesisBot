@@ -204,3 +204,31 @@ async fn call_id_for_empty_raw_generates() {
     assert!(generated.len() > "exec".len());
     assert_eq!(call_id_for("abc", "exec"), "abc");
 }
+
+/// BUG-20261030-204：轮转失败不杀 WAL、不静默丢行。老代码轮转判定+rename
+/// 在文件锁外做——rename 失败（.old 位点被占/瞬时句柄）时 guard 永久停在
+/// None，此后所有 log 行被 `if let Some` **静默**丢弃（无 per-write warn、
+/// M2 degraded 报告永不触发）。修复后轮转在锁内做 + 失败重开原文件续写。
+#[tokio::test]
+async fn rotation_failure_does_not_kill_wal_or_drop_lines() {
+    let dir = tmp_dir("rotate-fail");
+    let wal = TurnWal::open(&dir).expect("open").with_limits(512, 3600);
+    // .old 位点放一个目录：remove_file 失败（ignored）→ rename 撞目录
+    // 在 Windows/Unix 上都必败——确定性的轮转失败注入。
+    std::fs::create_dir_all(&wal.old_path).expect("make .old a dir");
+
+    let c = call("rf");
+    // 首行 ~700B 撑过 512B 阈值 → 轮转尝试（必失败）→ 行仍须落盘。
+    wal.log(&c, STATE_ADMITTED, &"x".repeat(600), None);
+    let lines = read_lines(wal.path());
+    assert_eq!(lines.len(), 1, "轮转失败当行不得静默丢弃: {lines:?}");
+    assert_eq!(lines[0].state, STATE_ADMITTED);
+
+    // 后续行继续可写（轮转失败 ≠ WAL 永久死亡）。
+    wal.log(&c, STATE_FINISHED, "done", Some(true));
+    let lines = read_lines(wal.path());
+    assert_eq!(lines.len(), 2, "轮转失败后 WAL 必须继续可写: {lines:?}");
+    assert_eq!(lines[1].state, STATE_FINISHED);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

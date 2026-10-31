@@ -1262,29 +1262,58 @@ mod gated {
     #[test]
     fn downgrade_gate_error_matrix() {
         assert!(
-            downgrade_gate_error(DowngradeVerdict::Downgrade, false).is_some(),
+            downgrade_gate_error(DowngradeVerdict::Downgrade, false, false).is_some(),
             "降级未豁免 = 拒"
         );
         assert!(
-            downgrade_gate_error(DowngradeVerdict::Downgrade, true).is_none(),
+            downgrade_gate_error(DowngradeVerdict::Downgrade, true, false).is_none(),
             "显式豁免 = 放行"
         );
         assert!(
-            downgrade_gate_error(DowngradeVerdict::Unknown, false).is_some(),
+            downgrade_gate_error(DowngradeVerdict::Unknown, false, false).is_some(),
             "顺序未知未豁免 = 拒（R1 语义反转主断言）"
         );
         assert!(
-            downgrade_gate_error(DowngradeVerdict::Unknown, true).is_none(),
+            downgrade_gate_error(DowngradeVerdict::Unknown, true, false).is_none(),
             "顺序未知显式豁免 = 放行"
         );
         assert!(
-            downgrade_gate_error(DowngradeVerdict::Same, false).is_some()
-                && downgrade_gate_error(DowngradeVerdict::Same, true).is_some(),
-            "Same 恒拒（不随豁免放开）"
+            downgrade_gate_error(DowngradeVerdict::Same, false, false).is_some()
+                && downgrade_gate_error(DowngradeVerdict::Same, true, false).is_some(),
+            "Same 恒拒（不随 allow_downgrade 豁免放开）"
         );
         assert!(
-            downgrade_gate_error(DowngradeVerdict::Upgrade, false).is_none(),
+            downgrade_gate_error(DowngradeVerdict::Upgrade, false, false).is_none(),
             "升级恒放行"
+        );
+    }
+
+    /// force（强制更新，2026-10-30）只豁免 `Same` 臂——「重装当前版本」的
+    /// 意志，不是降级豁免：Downgrade/Unknown 在 force 下仍由
+    /// `allow_downgrade` 管辖。
+    #[test]
+    fn downgrade_gate_error_force_matrix() {
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Same, false, true).is_none(),
+            "Same × force = 放行（强制更新重装当前版本）"
+        );
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Same, true, true).is_none(),
+            "Same × force × allow_downgrade = 放行（力大者胜，同向）"
+        );
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Downgrade, false, true).is_some()
+                && downgrade_gate_error(DowngradeVerdict::Downgrade, true, true).is_none(),
+            "Downgrade 不随 force 放开——仍由 allow_downgrade 管辖"
+        );
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Unknown, false, true).is_some()
+                && downgrade_gate_error(DowngradeVerdict::Unknown, true, true).is_none(),
+            "Unknown 不随 force 放开——仍由 allow_downgrade 管辖"
+        );
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Upgrade, false, true).is_none(),
+            "升级 × force 恒放行"
         );
     }
 
@@ -1685,7 +1714,7 @@ mod gated {
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
         let m = manager_for(tmp_dir("dl-estop"), estop);
-        let err = m.download("0123456").await.unwrap_err();
+        let err = m.download("0123456", false).await.unwrap_err();
         assert!(err.contains("estop"), "estop 闸拒下载: {err}");
     }
 
@@ -1700,7 +1729,7 @@ mod gated {
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
         let m = manager_for(ws.clone(), estop);
-        let err = m.apply("v1", "0123456", false).await.unwrap_err();
+        let err = m.apply("v1", "0123456", false, false).await.unwrap_err();
         assert!(err.contains("estop"), "estop 闸拒: {err}");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -1714,7 +1743,7 @@ mod gated {
             ws.clone(),
             std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
         );
-        let err = m.apply("v1", "0123456", false).await.unwrap_err();
+        let err = m.apply("v1", "0123456", false, false).await.unwrap_err();
         assert!(err.contains("未收口"), "journal 闸拒: {err}");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -1730,7 +1759,7 @@ mod gated {
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
         let m = manager_for(ws.clone(), estop.clone());
-        let err = m.apply("v1", "0123456", false).await.unwrap_err();
+        let err = m.apply("v1", "0123456", false, false).await.unwrap_err();
         assert!(err.contains("estop"), "estop 闸拒: {err}");
         let rec = m.last_apply_error_snapshot().expect("失败必须入案");
         assert!(rec.message.contains("estop"), "{rec:?}");
@@ -1740,7 +1769,7 @@ mod gated {
         // 第二次尝试（换 journal 闸）：发起清旧错 → 新失败改写记录。
         estop.release();
         save_journal(&ws, &journal("staging", "x", "y")).unwrap();
-        let err2 = m.apply("v1", "0123456", false).await.unwrap_err();
+        let err2 = m.apply("v1", "0123456", false, false).await.unwrap_err();
         assert!(err2.contains("未收口"), "journal 闸拒: {err2}");
         let rec2 = m.last_apply_error_snapshot().expect("第二次失败也要入案");
         assert!(rec2.message.contains("未收口"), "{rec2:?}");
@@ -1775,7 +1804,7 @@ mod gated {
             std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
         );
         let held = m.flight.lock().await;
-        let err = m.apply("v1", "0123456", false).await.unwrap_err();
+        let err = m.apply("v1", "0123456", false, false).await.unwrap_err();
         assert!(err.contains("已有自更新在进行"), "单飞闸拒: {err}");
         drop(held);
         let _ = std::fs::remove_dir_all(&ws);
@@ -1797,7 +1826,7 @@ mod gated {
             ws.clone(),
             std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
         );
-        let err = m.apply("v1", "0123456", false).await.unwrap_err();
+        let err = m.apply("v1", "0123456", false, false).await.unwrap_err();
         if TARGET_ASSET.is_empty() {
             assert!(err.contains("APK"), "Android 桩诚实指认 APK 通道: {err}");
         } else {
@@ -2051,5 +2080,205 @@ mod gated {
             "裸 plugins 真实目录不在清扫面"
         );
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    // -----------------------------------------------------------------------
+    // 完整性检查（2026-10-30）：纯分类器（hand-build 清单）+ 签名基线全链
+    //（save_applied_manifest → integrity_snapshot_at）。判定语义：ok /
+    // mismatch / missing / unreadable（逐文件）+ ok / mismatch / no_baseline /
+    // baseline_error（总判定）；extra_files 信息性收集不定罪。
+    // -----------------------------------------------------------------------
+
+    /// hand-build 清单（纯分类器用——不经验签，直接喂分类器）。
+    fn manifest_for(exe_bytes: &[u8], plugins: &[(&str, &[u8])]) -> UpdateManifest {
+        UpdateManifest {
+            commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            sequence: 7,
+            exe_sha256: sha256_hex(exe_bytes),
+            plugins_sha256: plugins
+                .iter()
+                .map(|(n, b)| (n.to_string(), sha256_hex(b)))
+                .collect(),
+            built_at: "2026-10-30T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn integrity_classifier_all_ok() {
+        let dir = tmp_dir("integrity-ok");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"exe-bytes").unwrap();
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        std::fs::write(dir.join("plugins/a.dll"), b"plug-a").unwrap();
+        let m = manifest_for(b"exe-bytes", &[("a.dll", b"plug-a")]);
+        let r = super::super::integrity_report_from_manifest(&exe, &m);
+        assert_eq!(r.verdict, IntegrityVerdict::Ok);
+        assert_eq!(r.baseline_commit, m.commit);
+        assert_eq!(r.baseline_sequence, 7);
+        assert_eq!(r.files.len(), 2, "exe + a.dll 两条目");
+        assert!(
+            r.files
+                .iter()
+                .all(|f| f.verdict == IntegrityFileVerdict::Ok),
+            "全绿：{:?}",
+            r.files
+        );
+        assert!(r.extra_files.is_empty(), "无多余文件: {:?}", r.extra_files);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrity_classifier_tampered_and_missing() {
+        let dir = tmp_dir("integrity-damage");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"exe-bytes").unwrap();
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        std::fs::write(dir.join("plugins/a.dll"), b"plug-a").unwrap();
+        // b.dll 盘上字节 ≠ 清单绑定；c.dll 清单绑定但盘上缺席。
+        std::fs::write(dir.join("plugins/b.dll"), b"plug-b-TAMPERED").unwrap();
+        let m = manifest_for(
+            b"exe-bytes",
+            &[
+                ("a.dll", b"plug-a"),
+                ("b.dll", b"plug-b-original"),
+                ("c.dll", b"plug-c"),
+            ],
+        );
+        let r = super::super::integrity_report_from_manifest(&exe, &m);
+        assert_eq!(r.verdict, IntegrityVerdict::Mismatch);
+        let find = |n: &str| r.files.iter().find(|f| f.name == n).expect(n);
+        assert_eq!(find("nemesisbot.exe").verdict, IntegrityFileVerdict::Ok);
+        assert_eq!(find("a.dll").verdict, IntegrityFileVerdict::Ok);
+        let b = find("b.dll");
+        assert_eq!(b.verdict, IntegrityFileVerdict::Mismatch);
+        assert!(
+            !b.actual_sha256.is_empty(),
+            "摘要不匹配但字节读到了：实际值照报（人读比对现场）: {:?}",
+            b
+        );
+        assert_eq!(find("c.dll").verdict, IntegrityFileVerdict::Missing);
+        assert!(
+            r.note.contains("强制更新"),
+            "修复指引点名强制更新: {}",
+            r.note
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrity_classifier_extra_files_informational() {
+        let dir = tmp_dir("integrity-extra");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"exe-bytes").unwrap();
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        std::fs::write(dir.join("plugins/a.dll"), b"plug-a").unwrap();
+        std::fs::write(dir.join("plugins/user_extra.dll"), b"user-installed").unwrap();
+        let m = manifest_for(b"exe-bytes", &[("a.dll", b"plug-a")]);
+        let r = super::super::integrity_report_from_manifest(&exe, &m);
+        assert_eq!(
+            r.verdict,
+            IntegrityVerdict::Ok,
+            "用户自装插件不定罪（install_plugins_files 只同名覆盖不删既有的镜像语义）"
+        );
+        assert_eq!(r.extra_files, vec!["user_extra.dll".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrity_classifier_exe_mismatch_reports_actual() {
+        let dir = tmp_dir("integrity-exe");
+        let exe = dir.join("nemesisbot.exe");
+        // 清单绑定原始字节，盘上是篡改字节 → exe 条目 Mismatch 且实际值照报。
+        std::fs::write(&exe, b"tampered-exe").unwrap();
+        let m = manifest_for(b"original-exe", &[]);
+        let r = super::super::integrity_report_from_manifest(&exe, &m);
+        assert_eq!(r.verdict, IntegrityVerdict::Mismatch);
+        assert_eq!(r.files.len(), 1);
+        assert_eq!(r.files[0].verdict, IntegrityFileVerdict::Mismatch);
+        assert_eq!(r.files[0].actual_sha256, sha256_hex(b"tampered-exe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 签名基线夹具：写 exe + plugins/x.dll + 签名清单落 applied 副本。
+    /// 返回测试锚集（integrity_snapshot_at 锚穿参注入——不碰 builtin，
+    /// 免进程级 env 竞态）。验签时刻 +60s 避开证书 not-before 边界。
+    fn write_signed_baseline(exe: &Path, exe_bytes: &[u8], plugin_bytes: &[u8]) -> Vec<[u8; 32]> {
+        std::fs::write(exe, exe_bytes).unwrap();
+        std::fs::create_dir_all(exe.parent().unwrap().join("plugins")).unwrap();
+        std::fs::write(exe.parent().unwrap().join("plugins/x.dll"), plugin_bytes).unwrap();
+        let json = serde_json::json!({
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "sequence": 7,
+            "exe_sha256": sha256_hex(exe_bytes),
+            "built_at": "2026-10-30T00:00:00Z",
+            "plugins_sha256": {"x.dll": sha256_hex(plugin_bytes)}
+        });
+        let (carrier, anchors) = sign_manifest(&json, now_secs());
+        super::super::save_applied_manifest(exe, &carrier, &anchors, now_secs() + 60)
+            .expect("applied 副本落盘");
+        anchors
+    }
+
+    #[test]
+    fn integrity_snapshot_baseline_ok() {
+        let dir = tmp_dir("integrity-snap-ok");
+        let exe = dir.join("nemesisbot.exe");
+        let anchors = write_signed_baseline(&exe, b"exe-signed", b"plug-signed");
+        let r = super::super::integrity_snapshot_at(&exe, &anchors);
+        assert_eq!(r.verdict, IntegrityVerdict::Ok, "{}", r.note);
+        assert_eq!(
+            r.baseline_commit,
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(r.baseline_sequence, 7);
+        assert!(
+            r.files
+                .iter()
+                .all(|f| f.verdict == IntegrityFileVerdict::Ok),
+            "盘上布局与基线一致：{:?}",
+            r.files
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrity_snapshot_tampered_plugin_reports_mismatch() {
+        let dir = tmp_dir("integrity-snap-tamper");
+        let exe = dir.join("nemesisbot.exe");
+        let anchors = write_signed_baseline(&exe, b"exe-signed", b"plug-signed");
+        // 基线落盘后篡改插件 → 总判定 Mismatch + 修复指引。
+        std::fs::write(dir.join("plugins/x.dll"), b"plug-TAMPERED").unwrap();
+        let r = super::super::integrity_snapshot_at(&exe, &anchors);
+        assert_eq!(r.verdict, IntegrityVerdict::Mismatch);
+        assert!(r.note.contains("强制更新"), "{}", r.note);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrity_snapshot_no_baseline_honest() {
+        let dir = tmp_dir("integrity-snap-none");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"manual-install").unwrap();
+        let r = super::super::integrity_snapshot_at(&exe, &[[0u8; 32]; 0]);
+        assert_eq!(r.verdict, IntegrityVerdict::NoBaseline);
+        assert!(r.files.is_empty() && r.extra_files.is_empty());
+        assert!(
+            r.note.contains("无已验签基线") && r.note.contains("强制更新"),
+            "诚实说明基线缺席 + 指路强制更新: {}",
+            r.note
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrity_snapshot_corrupted_baseline_error() {
+        let dir = tmp_dir("integrity-snap-corrupt");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"exe-signed").unwrap();
+        std::fs::write(dir.join("applied_manifest.json"), b"garbage-not-a-carrier").unwrap();
+        let r = super::super::integrity_snapshot_at(&exe, &[[0u8; 32]; 0]);
+        assert_eq!(r.verdict, IntegrityVerdict::BaselineError);
+        assert!(r.note.contains("强制更新"), "{}", r.note);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

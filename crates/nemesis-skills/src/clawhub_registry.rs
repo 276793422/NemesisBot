@@ -861,14 +861,24 @@ struct ConvexLatestVersion {
 }
 
 /// Minimal URL encoding (avoids extra dependency).
+///
+/// Percent-encoding operates on bytes, so iteration must be over UTF-8
+/// bytes: iterating chars and casting with `as u8` truncates multibyte
+/// codepoints to their low 8 bits ('中' U+4E2D -> `%2D` = '-'), silently
+/// corrupting every non-ASCII search query / slug / cursor. Same byte-wise
+/// shape as `modelscope_registry::url_encode_component`.
 mod urlencoding {
     pub fn encode(s: &str) -> String {
-        s.chars()
-            .map(|c| match c {
-                'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-                _ => format!("%{:02X}", c as u8),
-            })
-            .collect()
+        let mut out = String::with_capacity(s.len());
+        for &b in s.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{:02X}", b)),
+            }
+        }
+        out
     }
 }
 

@@ -410,6 +410,19 @@ pub trait LLMProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// 流式不支持判定（单一真相源，2026-10-30）：provider 未覆写
+/// [`LLMProvider::chat_stream`] 时 trait 缺省实现发出的错误。消费方：
+/// llm_bridge `chat_streamed` 回落非流式、openai_compat 裸转发流式回落
+/// 非流式——两条链路同判一处，不各自维护子串匹配。
+///
+/// 按错误 Display 含 `not implemented` 判定（与历史 llm_bridge 私有实现
+/// 逐字节同语义）；该词表锚定 trait 缺省实现的错误文本，上游真实错误
+/// 不应出现该短语（出现即视为不支持流式，回落行为仍安全——只是多一次
+/// 非流式重放，非流式调用本身还会诚实报上游错误）。
+pub fn is_stream_unsupported(e: &FailoverError) -> bool {
+    format!("{e}").contains("not implemented")
+}
+
 /// Provider router with intelligent model selection.
 pub struct Router {
     providers: DashMap<String, Arc<dyn LLMProvider>>,

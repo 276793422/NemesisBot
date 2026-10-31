@@ -362,11 +362,13 @@ pub fn resolve_model_files(
         return Err(format!("model name is empty for tier '{}'", active));
     }
 
-    // Check local_model_path first
+    // Check local_model_path first. 存在性判定一律走 is_non_empty_file：
+    // 零字节残骸不能报 Model found（BUG-20261031-241）——否则这里放行、
+    // 插件 init 以晦涩错误失败，用户重装也永远跳不过残骸。
     let data_dir = embedding_data_dir(config_dir).join(&model_conf.name);
 
     let model_path = if !model_conf.local_model_path.is_empty()
-        && Path::new(&model_conf.local_model_path).exists()
+        && is_non_empty_file(Path::new(&model_conf.local_model_path))
     {
         info!(
             "[EmbeddingConfig] Model found at {}",
@@ -376,13 +378,13 @@ pub fn resolve_model_files(
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| data_dir.clone())
-    } else if data_dir.join("model.onnx").exists() {
+    } else if is_non_empty_file(&data_dir.join("model.onnx")) {
         info!(
             "[EmbeddingConfig] Model found at {}",
             data_dir.join("model.onnx").display()
         );
         data_dir.clone()
-    } else if config_dir.join("model.onnx").exists() {
+    } else if is_non_empty_file(&config_dir.join("model.onnx")) {
         info!(
             "[EmbeddingConfig] Model found at {}",
             config_dir.join("model.onnx").display()
@@ -396,6 +398,12 @@ pub fn resolve_model_files(
     };
 
     Ok((model_path.to_string_lossy().to_string(), dim))
+}
+
+/// 零字节文件 = 中断下载的残骸（BUG-20261031-241）：存在但为空不能当
+/// 「已下载/已安装」放行，调用方应走重下路径。metadata 读失败视为不存在。
+fn is_non_empty_file(p: &Path) -> bool {
+    std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
 }
 
 /// Download model and tokenizer files for the active tier.
@@ -434,7 +442,7 @@ pub fn download_model_files(
 
     // Resolve or download model file
     let model_path = if !model_conf.local_model_path.is_empty()
-        && Path::new(&model_conf.local_model_path).exists()
+        && is_non_empty_file(Path::new(&model_conf.local_model_path))
     {
         info!(
             "[EmbeddingConfig] Model found at {}",
@@ -444,10 +452,10 @@ pub fn download_model_files(
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| data_dir.clone())
-    } else if model_dest.exists() {
+    } else if is_non_empty_file(&model_dest) {
         info!("[EmbeddingConfig] Model found at {}", model_dest.display());
         data_dir.clone()
-    } else if config_dir.join("model.onnx").exists() {
+    } else if is_non_empty_file(&config_dir.join("model.onnx")) {
         info!(
             "[EmbeddingConfig] Model found at {}",
             config_dir.join("model.onnx").display()
@@ -474,7 +482,7 @@ pub fn download_model_files(
 
     // Resolve or download tokenizer file
     let tokenizer_path = model_path.join("tokenizer.json");
-    if !tokenizer_path.exists() {
+    if !is_non_empty_file(&tokenizer_path) {
         if !model_conf.local_tokenizer_path.is_empty()
             && Path::new(&model_conf.local_tokenizer_path).exists()
         {
@@ -519,8 +527,17 @@ pub fn download_model_files(
 }
 
 /// Download a file using reqwest (blocking).
+///
+/// BUG-20261031-241 三重加固（对齐 nemesis-voice model.rs 同族已修先例
+/// BUG-20261029-146）：
+/// - 已存在文件只在**非空**时跳过——零字节是中断下载的残骸，重下；
+/// - 响应体为空 → 诚实报错，不落 0 字节终文件；
+/// - 落盘走 write_file_atomic——写一半（进程被杀/磁盘满）不会以终文件名
+///   残留半截文件。旧 `std::fs::write` 直写终路径是「一次中断 → 半截
+///   model.onnx → 重装永远跳过 → 插件 init 失败 → with_config_dir 写
+///   enabled:false 永久自禁增强记忆」失败链的源头。
 fn download_file(url: &str, dest: &Path) -> Result<(), String> {
-    if dest.exists() {
+    if is_non_empty_file(dest) {
         return Ok(());
     }
 
@@ -539,12 +556,16 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
         .bytes()
         .map_err(|e| format!("failed to read download response: {}", e))?;
 
+    if bytes.is_empty() {
+        return Err(format!("downloaded file is empty: {}", url));
+    }
+
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create parent dir: {}", e))?;
     }
 
-    std::fs::write(dest, &bytes)
+    nemesis_utils::file::write_file_atomic(&dest.to_string_lossy(), &bytes, 0o644)
         .map_err(|e| format!("failed to write file to {}: {}", dest.display(), e))?;
 
     Ok(())

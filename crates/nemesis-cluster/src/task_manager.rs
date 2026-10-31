@@ -299,7 +299,10 @@ pub struct TaskManager {
     /// `stale_task_safety_net(llm_timeout)` 按阶梯推导后经
     /// [`Self::set_pending_timeout`] 覆盖，保证安全网 > B 端 LLM 超时。
     pending_timeout: Arc<parking_lot::RwLock<chrono::Duration>>,
-    stop_tx: Option<tokio::sync::broadcast::Sender<()>>,
+    /// Mutex 化（BUG-20261030-209）：生产装配点持有 `Arc<TaskManager>`
+    /// （`Cluster.task_manager`），旧 `&mut self` 签名让 start/stop 无法经
+    /// Arc 调用——清理循环因此在生产从未接线，终态任务在 tasks.db 无限累积。
+    stop_tx: parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<()>>>,
 }
 
 /// G4: pending 任务安全网默认值（24 小时）。
@@ -335,7 +338,7 @@ impl TaskManager {
             cleanup_interval,
             on_complete: Mutex::new(None),
             pending_timeout: Arc::new(parking_lot::RwLock::new(default_pending_timeout())),
-            stop_tx: None,
+            stop_tx: parking_lot::Mutex::new(None),
         }
     }
 
@@ -353,8 +356,12 @@ impl TaskManager {
     ///
     /// Only spawns if inside a tokio runtime. Safe to call multiple times
     /// (subsequent calls are no-ops).
-    pub fn start(&mut self) {
-        if self.stop_tx.is_some() {
+    ///
+    /// `&self`（BUG-20261030-209）：生产装配点经 `Arc<TaskManager>` 调用，
+    /// 幂等 check+set 收进同一临界区。
+    pub fn start(&self) {
+        let mut guard = self.stop_tx.lock();
+        if guard.is_some() {
             return; // Already started
         }
 
@@ -364,7 +371,8 @@ impl TaskManager {
         };
 
         let (stop_tx, mut stop_rx) = tokio::sync::broadcast::channel(1);
-        self.stop_tx = Some(stop_tx);
+        *guard = Some(stop_tx);
+        drop(guard);
 
         let store = self.store.clone();
         let cleanup_interval = self.cleanup_interval;
@@ -389,8 +397,8 @@ impl TaskManager {
     /// Stop the background cleanup loop.
     ///
     /// Mirrors Go's `TaskManager.Stop()`.
-    pub fn stop(&mut self) {
-        if let Some(stop_tx) = self.stop_tx.take() {
+    pub fn stop(&self) {
+        if let Some(stop_tx) = self.stop_tx.lock().take() {
             let _ = stop_tx.send(());
         }
     }

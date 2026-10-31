@@ -148,7 +148,13 @@ impl MessageBus {
     /// 逐次 WARN 是每世代固定启动噪音。
     pub fn subscribe_inbound(&self) -> broadcast::Receiver<InboundMessage> {
         let existing = self.inbound_tx.receiver_count();
-        info!("[Bus] New inbound subscriber, total receivers={}", existing);
+        // BUG-20261030-214：`total` 必须是**订阅后**总数——旧实现打新增前
+        // 计数（首个订阅者打 total=0），恒差 1，排障时订阅拓扑口径失真。
+        // fan-out warn 里的 existing_receivers 是「既有数」语义，保持不动。
+        info!(
+            "[Bus] New inbound subscriber, total receivers={}",
+            existing + 1
+        );
         if existing > 0 && !self.inbound_fanout_warned.swap(true, Ordering::Relaxed) {
             warn!(
                 existing_receivers = existing,
@@ -166,9 +172,10 @@ impl MessageBus {
     /// fan-out concern as `subscribe_inbound` (warn-once per bus).
     pub fn subscribe_outbound(&self) -> broadcast::Receiver<OutboundMessage> {
         let existing = self.outbound_tx.receiver_count();
+        // BUG-20261030-214：同 subscribe_inbound——total 打订阅后总数。
         info!(
             "[Bus] New outbound subscriber, total receivers={}",
-            existing
+            existing + 1
         );
         if existing > 0 && !self.outbound_fanout_warned.swap(true, Ordering::Relaxed) {
             warn!(

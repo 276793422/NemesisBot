@@ -245,6 +245,221 @@ fn manager_register_cap_and_kill_all() {
 }
 
 // ---------------------------------------------------------------------------
+// 满员拒绝臂 reap（BUG-20261031-233）
+// ---------------------------------------------------------------------------
+
+/// Unix 僵尸子进程计数（state=='Z' 且 ppid==本进程）。
+/// /proc/<pid>/stat 形如 `pid (comm) state ppid ...`——comm 可含空格括号，
+/// 以最后一个 `)` 为界取其后字段。
+#[cfg(unix)]
+fn count_zombie_children() -> usize {
+    let self_pid = std::process::id();
+    let mut zombies = 0;
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for e in entries.flatten() {
+            let Some(pid_str) = e.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(pid) = pid_str.parse::<u32>() else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            let Some((_, rest)) = stat.rsplit_once(')') else {
+                continue;
+            };
+            let mut fields = rest.split_whitespace();
+            let state = fields.next().unwrap_or("");
+            let Some(ppid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else {
+                continue;
+            };
+            if state == "Z" && ppid == self_pid {
+                zombies += 1;
+            }
+        }
+    }
+    zombies
+}
+
+/// 满员拒绝臂（handle_pty_socket 满员闸）行为钉：超员连接收到上限文案、
+/// 会话不注册，且 **kill 不留 Unix 僵尸**——portable-pty 0.9 的
+/// `ChildKiller for std::process::Child`（Unix）kill=SIGHUP 后循环
+/// `try_wait`（waitpid WNOHANG）主动收尸（lib.rs:340-365），拒绝臂的
+/// `child.kill()` 自带 reap。此钉防两件事回归：①上限拒绝语义被改坏；
+/// ②若未来 kill 语义换成裸信号（或 portable-pty 升级改契约），僵尸泄漏
+/// 在此处立刻红。该臂此前无任何集成覆盖（agt_tests 结构豁免明载）。
+///
+/// 配置无关：TEST_TERMINAL_CFG first-wins——本测试若首装以 max_sessions=1
+/// 装（全部既有会话级测试均为单连接形态，已逐个核 compat），他测先装
+/// （max=4）则沿用——循环连满对两种配置都成立；nextest 每测独立进程时
+/// 本测试配置恒自装生效。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
+    let _g = TEST_LOCK.lock().await;
+    let _ = TEST_TERMINAL_CFG.set(Some(nemesis_config::TerminalConfig {
+        enabled: true,
+        max_sessions: 1,
+        shell: None,
+    }));
+    let cap = TEST_TERMINAL_CFG
+        .get()
+        .and_then(|c| c.as_ref())
+        .map(|c| c.max_sessions)
+        .unwrap_or(4);
+    ensure_test_manager();
+
+    let addr = start_server(make_state("", None)).await;
+
+    // 连满 cap 个会话（占住槽位）。
+    let mut holders = Vec::new();
+    for _ in 0..cap {
+        let ws = connect_pty(addr, "?token=").await;
+        holders.push(ws);
+        tokio::time::sleep(Duration::from_millis(150)).await; // spawn 落定
+    }
+
+    // 超员第 cap+1 个：收到上限文案（服务端 spawn→kill→拒注册）。
+    let mut extra = connect_pty(addr, "?token=").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut rejected = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(5), extra.next()).await {
+            Ok(Some(Ok(WsMessage::Text(t)))) if t.contains("上限") => {
+                rejected = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue, // shell 输出/DSR 等
+            Ok(Some(Err(_))) | Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    assert!(
+        rejected,
+        "cap+1th connection must be rejected with limit message"
+    );
+    let _ = extra.close(None).await;
+
+    // Unix 红绿证核心：kill 不留僵尸（修复前此处轮询超时 assert 失败）。
+    #[cfg(unix)]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let z = count_zombie_children();
+            if z == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rejected session's child must be reaped, {z} zombie(s) remain"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    // 清场：逐个优雅关闭（同既有测试收尾形态）。
+    for mut ws in holders {
+        let _ = ws.close(None).await;
+    }
+}
+
+/// 急停必须杀掉「stalled client」会话（BUG-20261031-234）：会话任务的
+/// estop watch 在 select 循环里，而循环在 `socket.send().await`（客户端
+/// TCP 背压——网络挂起/浏览器休眠是常态）期间不被轮询——自醒路径失效，
+/// 宿主侧 `kill_all_for_estop()` 挂点是唯一兜底（vm_display 同款纪律，
+/// post_agent.rs estop watcher）。红证（修复前）：灌满输出缓冲把任务
+/// 停进 send，estop 触发后注册表仍持有该会话；绿证：宿主侧直杀子进程，
+/// 注册表即时清空。
+///
+/// Windows hosted runner 同 estop_engage_kills_session 双保险闸（ConPTY
+/// kill 路径四连楔死实录，见彼处取证史）。注：任务真停进 send 的前提在
+/// Unix（`yes` 灌速 GB/s 级）下确定成立，红证以 Unix 为准；Windows flood
+/// 较慢、任务未必真停——但绿证两条路径（自醒/宿主侧）任一生效即过，
+/// 不影响回归钉价值。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bug234_estop_kills_stalled_client_session() {
+    #[cfg(windows)]
+    {
+        if !std::env::var("NEMESISBOT_PTY_ESTOP_TESTS").is_ok_and(|v| v == "1")
+            && std::env::var("CI").is_ok_and(|v| v == "true")
+        {
+            eprintln!(
+                "SKIP: estop→ConPTY kill 路径在 hosted windows runner 上楔死（取证史见 estop_engage_kills_session）— 补齐命令：设 NEMESISBOT_PTY_ESTOP_TESTS=1"
+            );
+            return;
+        }
+    }
+
+    let _g = TEST_LOCK.lock().await;
+    install_terminal_override();
+    let mgr = {
+        let p = ensure_test_manager();
+        crate::pty::ensure_manager(Some(p.to_string_lossy().into_owned()))
+    };
+
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    let addr = start_server(make_state("", Some(estop.clone()))).await;
+
+    // 生产 watcher 形态复刻（post_agent.rs BUG-20261031-234 修复同款主体
+    // 三行）：estop 触发 → 宿主侧 kill_all_for_estop() 直杀。测试环境无
+    // gateway 装配，watcher 在此自装；红证（poll-only 形态，修复前函数
+    // 不存在不可能带 watcher 编译）已先行捕获：estop 触发后 5s 注册表
+    // 仍持 stalled 会话。
+    {
+        let estop_w = estop.clone();
+        tokio::spawn(async move {
+            let mut rx = estop_w.subscribe();
+            while rx.changed().await.is_ok() {
+                if *rx.borrow() {
+                    crate::pty::kill_all_for_estop();
+                }
+            }
+        });
+    }
+    let mut ws = connect_pty(addr, "?token=").await;
+    tokio::time::sleep(Duration::from_millis(800)).await; // 等 shell 起来
+
+    // 无限输出灌满全部在途缓冲（ConPTY 内部缓冲 + 读泵 2MB 有界通道 +
+    // TCP 发送缓冲），把会话任务停进 socket.send().await。
+    #[cfg(windows)]
+    let flood = "while($true){Write-Output '0123456789abcdef'}\r\n";
+    #[cfg(not(windows))]
+    let flood = "yes\n";
+    ws.send(WsMessage::Binary(flood.as_bytes().to_vec().into()))
+        .await
+        .expect("send flood command");
+    tokio::time::sleep(Duration::from_secs(3)).await; // 缓冲灌满、任务停进 send
+    assert_eq!(
+        mgr.session_count(),
+        1,
+        "session must be live (and parked in send) before estop"
+    );
+
+    estop.trigger();
+
+    // 绿证：宿主侧 kill_all 直杀子进程 → 注册表即时清空（任务本体可能
+    // 仍停在 send 上直到 TCP 让路——子进程已死即达急停语义）。
+    // 轮询先记旗、清场（杀 flood shell）后再 assert——红证路径 assert
+    // 失败时不能留孤儿无限输出进程（test 进程退出不回收孙进程，`yes`
+    // 会永远跑下去）。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut killed = false;
+    while tokio::time::Instant::now() < deadline {
+        if mgr.session_count() == 0 {
+            killed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    mgr.kill_all(); // 清场兜底（红证路径也杀掉 flood shell，不留孤儿）
+    let _ = ws.close(None).await;
+    assert!(
+        killed,
+        "estop must kill stalled-client session via host-side kill_all (self-watch cannot wake a task parked in socket.send)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 真 PTY roundtrip + 安全闸
 // ---------------------------------------------------------------------------
 

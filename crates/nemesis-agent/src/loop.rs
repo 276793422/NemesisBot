@@ -545,6 +545,14 @@ pub struct AgentLoop {
     /// 最旧。
     rewind_undo_stacks:
         parking_lot::Mutex<HashMap<String, std::collections::VecDeque<RewindUndoEntry>>>,
+    /// BUG-20261030-221：回退中、尚未压入 undo 栈的 forward_tree 在途保护
+    /// 集。forward_tree 采集于 truncate 之前、压栈在 jsonl 提交之后——这个
+    /// 窗口里它既不在索引（本会话 turn ≥ 锚的条目待截）也不在栈里，重建式
+    /// gc 的保留集看不到它 = 当孤儿对象清掉，redo 的文件前向恢复必炸「tree
+    /// 查找失败」。经 [`Self::undo_stack_tree_refs`] 并入 gc extras；注册/
+    /// 注销由 rewind 模块的 RAII guard 管理（早退路径 drop 兜底，不残留陈
+    /// 旧 hex——残留 = gc 永久清不掉对应对象，反向泄漏）。
+    gc_inflight_trees: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// K1a/K1b/K2 钩子三槽（P3-1 收拢 [`HooksState`]；字段语义见该类型）。
     hooks: HooksState,
     /// 内存四槽（P3-2 收拢 [`MemoryState`]；字段语义见该类型）。
@@ -908,6 +916,7 @@ impl AgentLoop {
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
+            gc_inflight_trees: parking_lot::Mutex::new(std::collections::HashSet::new()),
             hooks: HooksState {
                 tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
                 llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),

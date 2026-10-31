@@ -30,6 +30,11 @@ pub enum SelfupdateCommand {
         /// Allow switching to an OLDER commit than the current one.
         #[arg(long)]
         allow_downgrade: bool,
+        /// Force re-download and re-install even when already at the latest
+        /// version (repair path for a corrupted local install; freshness
+        /// gates are bypassed, estop/signature verification still apply).
+        #[arg(long)]
+        force: bool,
     },
     /// Show current identity + pending journal / local pending package.
     Status,
@@ -37,10 +42,16 @@ pub enum SelfupdateCommand {
 
 pub async fn run(cmd: SelfupdateCommand, local: bool) -> Result<()> {
     match cmd {
-        SelfupdateCommand::Check => run_check().await,
-        SelfupdateCommand::Apply { allow_downgrade } => {
+        SelfupdateCommand::Check => {
             let home = common::resolve_home(local);
-            run_apply(&common::workspace_path(&home), allow_downgrade).await
+            run_check(&common::workspace_path(&home)).await
+        }
+        SelfupdateCommand::Apply {
+            allow_downgrade,
+            force,
+        } => {
+            let home = common::resolve_home(local);
+            run_apply(&common::workspace_path(&home), allow_downgrade, force).await
         }
         SelfupdateCommand::Status => {
             let home = common::resolve_home(local);
@@ -49,7 +60,7 @@ pub async fn run(cmd: SelfupdateCommand, local: bool) -> Result<()> {
     }
 }
 
-async fn run_check() -> Result<()> {
+async fn run_check(workspace: &Path) -> Result<()> {
     let version = common::VERSION_INFO.version;
     let commit = common::VERSION_INFO.git_commit;
     if commit.is_empty() {
@@ -57,7 +68,10 @@ async fn run_check() -> Result<()> {
     } else {
         println!("Current build: {version} (commit {commit})");
     }
-    let c = nemesis_web::selfupdate::check(version, commit)
+    // 下载代理调用时读盘（config.proxy.json selfupdate 段——保存即生效，
+    // CLI 一次性进程与 gateway 同语义）。
+    let proxy = nemesis_config::proxy_file::load_selfupdate_proxy(&workspace.join("config"));
+    let c = nemesis_web::selfupdate::check(version, commit, proxy.as_deref())
         .await
         .map_err(anyhow::Error::msg)
         .context("查询 Release 元数据失败")?;
@@ -129,7 +143,7 @@ fn run_status(workspace: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn run_apply(workspace: &Path, allow_downgrade: bool) -> Result<()> {
+async fn run_apply(workspace: &Path, allow_downgrade: bool, force: bool) -> Result<()> {
     // 前置快检（与 gateway 同判据）：journal 未收口，本地直接拒——不占用
     // gateway 的单飞闸。
     if let Some(j) = nemesis_web::selfupdate::load_journal(workspace) {
@@ -156,6 +170,9 @@ async fn run_apply(workspace: &Path, allow_downgrade: bool) -> Result<()> {
     let mut body = serde_json::json!({ "cmd": "selfupdate_apply" });
     if allow_downgrade {
         body["allow_downgrade"] = serde_json::json!(true);
+    }
+    if force {
+        body["force"] = serde_json::json!(true);
     }
     post_internal(&base_url, &auth_token, &body).await?;
     println!("✓ apply 已受理（gateway 侧两段式编排已启动；无待装包会自动先下载）。");

@@ -1,14 +1,17 @@
-//! M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫器。
+//! M7/M8（2026-10-27 整改批次三）：logs 六族统一 TTL 清扫器。
 //!
-//! 五族日志此前零生命周期管理——session_logs / boundary / request_logs /
-//! terminal / event_ledger 只写不删，长跑实例磁盘占用单调增长。本模块按
-//! `config.logs`（[`nemesis_config::LogsTtlConfig`]）逐族保留天数清扫：
-//! 启动扫一次 + 每 6h 一拍（与 uploads sweeper 同拍），每族每拍限量
+//! 六族日志此前零生命周期管理——session_logs / boundary / request_logs /
+//! terminal / event_ledger / trash 只写不删，长跑实例磁盘占用单调增长。
+//! 本模块按 `config.logs`（[`nemesis_config::LogsTtlConfig`]）逐族保留天数
+//! 清扫：启动扫一次 + 每 6h 一拍（与 uploads sweeper 同拍），每族每拍限量
 //! [`MAX_DELETIONS_PER_SWEEP`] 件防 IO 尖峰（扫不完下次周期继续）。
 //!
 //! 族语义要点：
 //! - **request_logs** 的条目是 `{ts}_{rand}/` 会话**目录**（内含多轮 LLM
-//!   请求/响应文件），按目录 mtime 整目录删；其余四族是平铺文件。
+//!   请求/响应文件），按目录 mtime 整目录删；**trash**（会话回收站）同构
+//!   ——条目是 `{ms}_{key}/` 整目录（三件套副本 + trash.json 清单），目录
+//!   入站后不再变化，mtime ≈ 删除时刻；按名排序 = 按删除时刻升序，超限量
+//!   时最老的先进刀。其余族是平铺文件。
 //! - **session_logs** 删 `{key}.jsonl` 时**配对同删** `{key}.meta.json`
 //!   （不看 sidecar 自身年龄）——只删正文留 sidecar 会在 Logs 页产生
 //!   幽灵会话条目。
@@ -16,6 +19,8 @@
 //!   行携带被删行全文 = chat_log 的唯一旁证，末行非 append 的账本保留
 //!   （存量靠 TTL 自然老化，不做人工清账）。
 //! - **terminal** 含回显密码（审计文件头有诚实注记），敏感面最短（默认 7d）。
+//! - **trash** 默认 90d（拍板①：30 天太短）——回收站的存在意义就是「删了
+//!   还能反悔」，保留期刻意长于所有日志族。
 //!
 //! 删除一律走 [`nemesis_utils::fsutil`] 韧性包装（Windows AV/索引器瞬时
 //! 句柄是常态）；目录不存在 / 读不到 mtime / 末行不可解析 = 诚实跳过，
@@ -35,7 +40,7 @@ const SWEEP_INTERVAL_SECS: u64 = 6 * 3600;
 /// 一天的秒数。
 const DAY_SECS: u64 = 86400;
 
-/// 五族 TTL 快照（gateway 装配期从 config 读一次；改 config 重启生效）。
+/// 六族 TTL 快照（gateway 装配期从 config 读一次；改 config 重启生效）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogsTtl {
     /// `logs/session_logs/` 保留天数（0=族关）。
@@ -48,18 +53,22 @@ pub struct LogsTtl {
     pub terminal: u64,
     /// `logs/event_ledger/` 保留天数（0=族关）。
     pub event_ledger: u64,
+    /// `logs/trash/sessions/`（会话回收站）保留天数（0=族关）。
+    pub trash: u64,
 }
 
 impl Default for LogsTtl {
     fn default() -> Self {
         // 默认值与 LogsTtlConfig::default 同源口径（terminal 含回显密码，
-        // 敏感面最短）。
+        // 敏感面最短；trash 拍板① 90 天——回收站的存在意义就是「删了还能
+        // 反悔」，保留期刻意长于所有日志族）。
         Self {
             session_logs: 30,
             boundary: 30,
             request_logs: 14,
             terminal: 7,
             event_ledger: 30,
+            trash: 90,
         }
     }
 }
@@ -74,18 +83,20 @@ impl LogsTtl {
                 request_logs: c.request_logs,
                 terminal: c.terminal,
                 event_ledger: c.event_ledger,
+                trash: c.trash,
             },
             None => Self::default(),
         }
     }
 
-    /// 五族全 0 = 完全不装配清扫任务。
+    /// 六族全 0 = 完全不装配清扫任务。
     pub fn all_disabled(&self) -> bool {
         self.session_logs == 0
             && self.boundary == 0
             && self.request_logs == 0
             && self.terminal == 0
             && self.event_ledger == 0
+            && self.trash == 0
     }
 }
 
@@ -97,6 +108,7 @@ enum Family {
     RequestLogs,
     Terminal,
     EventLedger,
+    Trash,
 }
 
 impl Family {
@@ -107,12 +119,13 @@ impl Family {
             Family::RequestLogs => "request_logs",
             Family::Terminal => "terminal",
             Family::EventLedger => "event_ledger",
+            Family::Trash => "trash",
         }
     }
 
-    /// request_logs 的条目是会话目录（整目录删）；其余族是文件。
+    /// request_logs / trash 的条目是会话目录（整目录删）；其余族是文件。
     fn entries_are_dirs(&self) -> bool {
-        matches!(self, Family::RequestLogs)
+        matches!(self, Family::RequestLogs | Family::Trash)
     }
 }
 
@@ -270,13 +283,14 @@ fn sweep_family(dir: &Path, ttl_days: u64, family: Family, now: SystemTime) -> S
     stats
 }
 
-/// 五族全量扫一轮（纯文件系统操作，无全局态——测试直接打临时 workspace）。
+/// 六族全量扫一轮（纯文件系统操作，无全局态——测试直接打临时 workspace）。
 /// 返回每族统计（零删除的族也在列，调用方决定日志口径）。
 fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Family, SweepStats)> {
     let logs_root = nemesis_path::logs_dir_in_workspace(ws);
     let session_logs_dir = nemesis_path::resolve_session_logs_dir_in_workspace(ws);
     let boundary_dir = nemesis_path::resolve_boundary_events_dir_in_workspace(ws);
     let request_logs_dir = nemesis_path::resolve_request_logs_dir_in_workspace(ws);
+    let trash_dir = nemesis_path::resolve_trash_sessions_dir_in_workspace(ws);
     // terminal / event_ledger 无独立 resolver（pty.rs / event_ledger.rs
     // 各自 join）——这里与写端同构拼装，路径真相源仍是 logs 根 + 固定段。
     let terminal_dir = logs_root.join("terminal");
@@ -287,6 +301,7 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
         (Family::RequestLogs, request_logs_dir, ttl.request_logs),
         (Family::Terminal, terminal_dir, ttl.terminal),
         (Family::EventLedger, event_ledger_dir, ttl.event_ledger),
+        (Family::Trash, trash_dir, ttl.trash),
     ]
     .into_iter()
     .map(|(family, dir, days)| (family, sweep_family(&dir, days, family, now)))
@@ -310,6 +325,7 @@ fn run_sweep_once(ttl: &LogsTtl) {
                     Family::RequestLogs => ttl.request_logs,
                     Family::Terminal => ttl.terminal,
                     Family::EventLedger => ttl.event_ledger,
+                    Family::Trash => ttl.trash,
                 },
                 "[LogsSweeper] 清扫完成"
             );
@@ -327,7 +343,7 @@ fn run_sweep_once(ttl: &LogsTtl) {
 /// 装配清扫任务：启动扫一次 + 每 6h 一拍。全 0 = 不装配（info 一句收场）。
 pub fn spawn_logs_sweeper(ttl: LogsTtl) {
     if ttl.all_disabled() {
-        info!("[LogsSweeper] logs.ttl 五族全 0 —— 清扫不装配");
+        info!("[LogsSweeper] logs.ttl 六族全 0 —— 清扫不装配");
         return;
     }
     info!(
@@ -336,8 +352,9 @@ pub fn spawn_logs_sweeper(ttl: LogsTtl) {
         request_logs_days = ttl.request_logs,
         terminal_days = ttl.terminal,
         event_ledger_days = ttl.event_ledger,
+        trash_days = ttl.trash,
         interval_secs = SWEEP_INTERVAL_SECS,
-        "[LogsSweeper] logs 五族 TTL 清扫装配"
+        "[LogsSweeper] logs 六族 TTL 清扫装配"
     );
     tokio::spawn(async move {
         run_sweep_once(&ttl);

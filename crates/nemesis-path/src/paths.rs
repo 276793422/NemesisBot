@@ -614,6 +614,18 @@ pub fn resolve_boundary_events_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("boundary")
 }
 
+/// `<workspace>/logs/trash/sessions` —— 会话回收站（2026-10-30）。每个子
+/// 目录 = 一个被删除的会话（`{deleted_at_ms}_{sanitize(key)}` 命名，内含
+/// chat/boundary/meta 三件套 + trash.json 清单）。logs 根之下 = 自动进
+/// checkpoint 忽略表（`WORKSPACE_IGNORED_DIRS` 含 `logs`），logs sweeper
+/// 第六族按目录 mtime 整目录 TTL 清扫；写端 nemesis-agent `chat_trash`，
+/// 读方 nemesis-web sessions handler + nemesisbot sweeper 三方共用本真相源。
+pub fn resolve_trash_sessions_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace)
+        .join("trash")
+        .join("sessions")
+}
+
 // --- home 根 logs 区（不属于 workspace 的运行日志） ---
 
 /// `<home>/logs` —— home 根日志区（LLM 请求 spill 等超大临时外溢）。

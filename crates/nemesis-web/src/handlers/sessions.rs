@@ -39,6 +39,10 @@ impl ModuleHandler for SessionsHandler {
             "snooze",
             "unsnooze",
             "detach",
+            "trash_list",
+            "trash_restore",
+            "trash_purge",
+            "trash_purge_all",
         ]
     }
 
@@ -359,6 +363,23 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
+                // 回收站（2026-10-30 拍板③）：默认移入回收站（可恢复，90d
+                // TTL 清扫）；`hard: true` = 旧硬删除语义原样保留。
+                let hard = data
+                    .as_ref()
+                    .and_then(|d| d.get("hard"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                // 回收站条目来源（2026-10-30 浏览器 E2E T4 根修）：单删
+                // 缺席/未知值落 "single"；侧栏批量循环显式传 "batch"。
+                let source = match data
+                    .as_ref()
+                    .and_then(|d| d.get("source"))
+                    .and_then(|v| v.as_str())
+                {
+                    Some("batch") => "batch",
+                    _ => "single",
+                };
                 let session_key = format!(
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
@@ -375,11 +396,13 @@ impl ModuleHandler for SessionsHandler {
                 match crate::handlers::projects::resolve_session_loop(ctx, &session_key) {
                     Ok(al) => {
                         al.under_history_gate(&session_key, "删除", || {
-                            delete_session_body(ctx, &session_id, &session_key)
+                            delete_session_body(ctx, &session_id, &session_key, hard, source)
                         })
                         .await
                     }
-                    Err(_) => delete_session_body(ctx, &session_id, &session_key).await,
+                    Err(_) => {
+                        delete_session_body(ctx, &session_id, &session_key, hard, source).await
+                    }
                 }
             }
             "clear" => {
@@ -618,6 +641,70 @@ impl ModuleHandler for SessionsHandler {
                 }
                 Ok(Some(serde_json::json!({ "ok": true })))
             }
+            // 会话回收站（2026-10-30）：sessions.delete 默认移入
+            // `logs/trash/sessions/`，这里四个读侧命令管理它。条目寻址只见
+            // 目录名（core 侧严格校验，防注入）；无在飞竞态（对象不是活会话），
+            // 不进 history gate。
+            "trash_list" => {
+                let entries = nemesis_agent::chat_trash::trash_list();
+                Ok(Some(serde_json::json!({ "entries": entries })))
+            }
+            "trash_restore" => {
+                let entry = data
+                    .as_ref()
+                    .and_then(|d| d.get("entry"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing entry".to_string())?
+                    .to_string();
+                let new_sid = data
+                    .as_ref()
+                    .and_then(|d| d.get("new_sid"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let out = nemesis_agent::chat_trash::trash_restore(&entry, new_sid.as_deref())?;
+                // 恢复成功（非 conflict）→ 项目归属重挂：meta 快照里的
+                // project_id 仍注册则 bind 回去；已移除/未注册 = 摘除陈旧
+                // sidecar 字段（会话落未分组，不进孤儿灰组）。
+                let mut out = out;
+                if out.get("conflict") != Some(&serde_json::Value::Bool(true))
+                    && let Some(pid) = out
+                        .get("project_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                {
+                    let restored = out["restored"].as_str().unwrap_or_default().to_string();
+                    let rebound = match crate::handlers::projects::projects_bridge() {
+                        Some(bridge) => match bridge.bind_session(&restored, &pid) {
+                            Ok(()) => Some(pid),
+                            Err(_) => {
+                                bridge.forget_session(&restored);
+                                None
+                            }
+                        },
+                        None => None,
+                    };
+                    out["project_rebound"] = match rebound {
+                        Some(p) => serde_json::Value::String(p),
+                        None => serde_json::Value::Null,
+                    };
+                }
+                Ok(Some(out))
+            }
+            "trash_purge" => {
+                let entry = data
+                    .as_ref()
+                    .and_then(|d| d.get("entry"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing entry".to_string())?
+                    .to_string();
+                nemesis_agent::chat_trash::trash_purge(&entry)?;
+                Ok(Some(serde_json::json!({ "purged": entry })))
+            }
+            "trash_purge_all" => {
+                let n = nemesis_agent::chat_trash::trash_purge_all()?;
+                Ok(Some(serde_json::json!({ "purged": n })))
+            }
             _ => Err(format!("unknown sessions cmd: {}", cmd)),
         }
     }
@@ -632,20 +719,42 @@ impl ModuleHandler for SessionsHandler {
 
 /// sessions.delete 操作体：store 删除（内存 + sessions/*.json + jsonl）→
 /// 方言 SessionEnd → cron 级联停用 → 项目归属/绑定摘除。
+///
+/// `hard=false`（默认，2026-10-30 回收站）：store 只 detach 内存/json
+/// 上下文（不删 chat_log 三件套），三件套 rename 进
+/// `logs/trash/sessions/{ms}_{safe}/`（可恢复，90d TTL 清扫）。顺序刻意
+/// 先 detach 后移文件：两步间崩溃 = 会话从 store 消失但 jsonl 还在
+/// sessions.list —— 表现为「没删掉」，重试即成；反序则 self-heal 会把
+/// 已进回收站的会话复活成空 jsonl（删除丢失，方向错误）。
+/// `hard=true` = 旧语义原样（store 删除含 jsonl + meta，不可恢复）。
 async fn delete_session_body(
     ctx: &RequestContext,
     session_id: &str,
     session_key: &str,
+    hard: bool,
+    source: &str,
 ) -> Result<Option<serde_json::Value>, String> {
     // Clear SessionStore (in-memory + sessions/*.json) +
     // session_logs/*.jsonl. Best-effort; absence is not an error.
+    let mut trash_entry: Option<String> = None;
     {
         let guard = ctx.state.agent_loop.read();
         if let Some(al) = guard.as_ref()
             && let Some(store) = al.session_store()
         {
-            store.delete_session(session_key);
+            if hard {
+                store.delete_session(session_key);
+            } else {
+                store.detach_session(session_key);
+            }
         }
+    }
+    if !hard {
+        // 移入回收站（guard 作用域外——trash 不持 store 锁）。三件套全
+        // 缺席（从未物化）= Ok(None)，删除即完成（trashed:false）。
+        // source 由调用方声明（单删 single / 批量循环 batch——回收站列表
+        // 来源徽标的依据；展示性字段，未知值由 dispatch 层落 single）。
+        trash_entry = nemesis_agent::chat_trash::trash_chat_log(session_key, source)?;
     }
     // 方言 SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
     // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
@@ -712,6 +821,8 @@ async fn delete_session_body(
     }
     Ok(Some(serde_json::json!({
         "deleted": session_id,
+        "trashed": trash_entry.is_some(),
+        "trash_entry": trash_entry,
         "paused_cron_jobs": paused,
     })))
 }
@@ -726,7 +837,8 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     // jsonl would let `rebuild_from_chat_log` resurrect the
     // content the user just asked to clear. jsonl-first keeps the
     // rebuild path unable to revive cleared data.
-    nemesis_agent::chat_log::clear_chat_log(session_key);
+    nemesis_agent::chat_log::clear_chat_log(session_key)
+        .map_err(|e| format!("清空会话失败: {e}"))?;
     let guard = ctx.state.agent_loop.read();
     if let Some(al) = guard.as_ref()
         && let Some(store) = al.session_store()
@@ -817,6 +929,13 @@ pub(crate) fn wake_due_sessions() -> usize {
             continue;
         }
         let session_key = format!("agent:main:session:{sid}");
+        // BUG-20261031-231：会话 jsonl 重写窗口（rewind/redo）进行中 →
+        // 本轮整条目跳过（标记保留，10s 后下轮重试——窗口通常亚秒级）。
+        // 必须先于摘标记：旧序「摘标记 → 落唤醒行」在窗口内行被截断吞掉
+        // = 标记已摘、留痕永久丢失。
+        if nemesis_agent::chat_log::history_rewrite_active(&session_key) {
+            continue;
+        }
         let Some((_, note)) = nemesis_agent::chat_log::clear_session_snooze(&session_key) else {
             continue; // 已被并发方摘掉
         };

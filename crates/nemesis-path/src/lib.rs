@@ -32,7 +32,7 @@ pub use paths::{
     resolve_skills_cache_dir_in_workspace, resolve_skills_config_path,
     resolve_skills_config_path_in_workspace, resolve_spill_dir_for_home,
     resolve_spill_dir_in_workspace, resolve_state_dir_in_workspace,
-    resolve_tasks_db_path_in_workspace, resolve_uploads_dir_in_workspace,
-    resolve_vault_path_in_workspace, set_local_mode, skills_dir_in_workspace, workspace_config_dir,
-    workspace_data_dir, workspace_dir,
+    resolve_tasks_db_path_in_workspace, resolve_trash_sessions_dir_in_workspace,
+    resolve_uploads_dir_in_workspace, resolve_vault_path_in_workspace, set_local_mode,
+    skills_dir_in_workspace, workspace_config_dir, workspace_data_dir, workspace_dir,
 };

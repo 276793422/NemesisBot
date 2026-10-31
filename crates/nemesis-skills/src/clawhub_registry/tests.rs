@@ -50,6 +50,25 @@ fn test_urlencoding() {
     assert_eq!(urlencoding::encode("a/b"), "a%2Fb");
 }
 
+// BUG-20261030-207 回归锁：encode 必须按 UTF-8 字节迭代做百分号编码。
+// 旧实现按 char 迭代并 `c as u8` 截断——'中'(U+4E2D) 被编码成 "%2D"('-')、
+// 'é'(U+00E9) 被编码成 "%E9"（孤立尾字节，非法 UTF-8 序列），搜索词/slug/
+// cursor 四个消费点全部静默损坏（中文查询变乱码查询、非 ASCII slug 404）。
+#[test]
+fn test_urlencoding_non_ascii_utf8_bytes() {
+    // '中' = UTF-8 E4 B8 AD（旧实现输出 "%2D" = '-'）
+    assert_eq!(urlencoding::encode("中"), "%E4%B8%AD");
+    // 'é' = UTF-8 C3 A9（旧实现输出 "%E9"，孤立尾字节）
+    assert_eq!(urlencoding::encode("café"), "caf%C3%A9");
+    // 混合 ASCII 与多字节：只有非 unreserved 字节被编码
+    assert_eq!(
+        urlencoding::encode("技能-skill"),
+        "%E6%8A%80%E8%83%BD-skill"
+    );
+    // ASCII 透传不受影响
+    assert_eq!(urlencoding::encode("abc-DEF_1.2~"), "abc-DEF_1.2~");
+}
+
 #[test]
 fn test_convex_response_deserialization() {
     let json = r#"{"status":"success","value":{"test":true}}"#;

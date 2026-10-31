@@ -4969,6 +4969,11 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
     use nemesis_board::models::IssueStatus as St;
     use nemesis_board::models::dispatch_state;
 
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸）——
+    // 按模块约定串行持锁 + 开场清残留（此前漏锁，与 ua 停车档案测试并行
+    // 是潜在互踩面）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("mutex-release-wave");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -8887,6 +8892,13 @@ async fn w5_rebalance_moves_queued_from_overloaded_worker() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_sweep_counts_failed_candidate_dispatch() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    // 且首派 no_match 停车会写 HANDOFF_WORKSPACE（进程级 OnceLock，ua
+    // 测试装配指向其临时目录）——不持锁会与 ua 并行互踩档案断言
+    // （2026-10-31 实录：ua 断言读到本测试写入的 ["python"] 假红）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-sweep-fail");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);

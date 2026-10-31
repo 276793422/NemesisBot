@@ -500,11 +500,20 @@ pub(crate) fn sequence_verdict(current: Option<u64>, target: u64) -> DowngradeVe
 /// 顺序证据缺失（清单缺失/验签失败/applied 副本缺失）不能默认当成升级；
 /// `allow_downgrade` 是「顺序未知」显式豁免。v4 验签在任何路径都不豁免
 ///（不变）。
+///
+/// `force`（强制更新，2026-10-30）：只豁免 `Same` 臂——强制更新的意志是
+/// 「重装当前版本」（本地包残了自救），不是降级；`Downgrade`/`Unknown`
+/// 仍由 `allow_downgrade` 管辖，force 不混同。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
-pub(crate) fn downgrade_gate_error(v: DowngradeVerdict, allow_downgrade: bool) -> Option<String> {
+pub(crate) fn downgrade_gate_error(
+    v: DowngradeVerdict,
+    allow_downgrade: bool,
+    force: bool,
+) -> Option<String> {
     match v {
         DowngradeVerdict::Upgrade => None,
+        DowngradeVerdict::Same if force => None,
         DowngradeVerdict::Same => {
             Some("目标更新包与当前安装版本相同（sequence 命中）：无需更新。".to_string())
         }
@@ -761,6 +770,235 @@ fn write_applied_manifest_from_journal(
 }
 
 // ---------------------------------------------------------------------------
+// 完整性检查（2026-10-30）：活安装 vs applied_manifest.json 已验签基线。
+// 只读不处置——修复路径 = 强制更新（download/apply 带 force）。
+// ---------------------------------------------------------------------------
+
+/// 单文件完整性判定。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IntegrityFileVerdict {
+    /// 与基线一致
+    Ok,
+    /// sha256 不匹配（损坏/被改）
+    Mismatch,
+    /// 清单有、盘上无
+    Missing,
+    /// 读失败（占用/权限）
+    Unreadable,
+}
+
+/// 完整性总判定。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IntegrityVerdict {
+    /// 全部一致（extra_files 不影响判定）
+    Ok,
+    /// 有 mismatch/missing/unreadable
+    Mismatch,
+    /// 无 applied_manifest.json（手工安装目录/从未走通道更新）——诚实说明，
+    /// 不算损坏；「强制更新」可重建基线。
+    NoBaseline,
+    /// 基线文件在场但读取失败/验签失败/解析失败——基线自身损坏，诚实上报。
+    BaselineError,
+}
+
+/// 逐文件完整性报告（WSAPI 投影单元）。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct IntegrityFileReport {
+    /// 文件名（exe 本体 = 进程可执行文件名；plugins/ 下为平面名）。
+    pub name: String,
+    pub verdict: IntegrityFileVerdict,
+    /// 基线绑定摘要（64 hex）。
+    pub expected_sha256: String,
+    /// 实际摘要（读到字节时给出；missing/unreadable 为空串）。
+    pub actual_sha256: String,
+}
+
+/// 完整性总报告（`selfupdate.integrity` 的返回体）。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct IntegrityReport {
+    pub verdict: IntegrityVerdict,
+    /// 基线身份（人读定位是哪个版本的基线；无基线时为空）。
+    pub baseline_commit: String,
+    pub baseline_sequence: u64,
+    /// 逐文件明细（exe 本体 + plugins/ 清单条目；无基线时为空）。
+    pub files: Vec<IntegrityFileReport>,
+    /// 盘上有、基线没有（用户自装插件）——**信息性，不算损坏**
+    ///（`install_plugins_files` 只同名覆盖不删既有是刻意设计）。
+    pub extra_files: Vec<String>,
+    /// 人读结论/说明（no_baseline / baseline_error 的原因注记等）。
+    pub note: String,
+}
+
+/// 完整性纯分类器（可测核心）：给 exe 路径 + 已验签清单，对 exe 本体 +
+/// `plugins/` 平面文件逐一 sha256 比对。只读；缺文件=Missing、读失败=
+/// Unreadable、不匹配=Mismatch，任一非 Ok 即总判定 Mismatch；
+/// extra_files（盘上有、基线没有）只收集不定罪。`read_dir` 结果显式排序
+///（目录枚举顺序是平台实现细节，报告必须稳定）。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn integrity_report_from_manifest(exe: &Path, m: &UpdateManifest) -> IntegrityReport {
+    let plugins_dir = exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("plugins");
+    let mut files = Vec::new();
+    let mut damaged = false;
+
+    // ① exe 本体（活字节 vs 清单绑定值）。
+    let exe_name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let exe_actual = sha256_file(exe).ok();
+    let exe_verdict = match &exe_actual {
+        None => {
+            damaged = true;
+            IntegrityFileVerdict::Unreadable
+        }
+        Some(h) if h.eq_ignore_ascii_case(&m.exe_sha256) => IntegrityFileVerdict::Ok,
+        Some(_) => {
+            damaged = true;
+            IntegrityFileVerdict::Mismatch
+        }
+    };
+    files.push(IntegrityFileReport {
+        name: exe_name,
+        verdict: exe_verdict,
+        expected_sha256: m.exe_sha256.clone(),
+        actual_sha256: exe_actual.unwrap_or_default(),
+    });
+
+    // ② plugins/ 清单条目 → 盘上必须存在且摘要一致。
+    for (name, expected) in &m.plugins_sha256 {
+        let path = plugins_dir.join(name);
+        let (verdict, actual) = if !path.exists() {
+            damaged = true;
+            (IntegrityFileVerdict::Missing, String::new())
+        } else {
+            match sha256_file(&path) {
+                Err(_) => {
+                    damaged = true;
+                    (IntegrityFileVerdict::Unreadable, String::new())
+                }
+                Ok(h) if h.eq_ignore_ascii_case(expected) => (IntegrityFileVerdict::Ok, h),
+                Ok(h) => {
+                    damaged = true;
+                    // 摘要不匹配但字节读到了：实际值照报（人读比对现场）。
+                    (IntegrityFileVerdict::Mismatch, h)
+                }
+            }
+        };
+        files.push(IntegrityFileReport {
+            name: name.clone(),
+            verdict,
+            expected_sha256: expected.clone(),
+            actual_sha256: actual,
+        });
+    }
+
+    // ③ 盘上多出的插件文件（用户自装）——信息性收集，显式排序保稳定。
+    let mut extra_files = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&plugins_dir) {
+        for entry in rd.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !m
+                .plugins_sha256
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case(&name))
+            {
+                extra_files.push(name);
+            }
+        }
+    }
+    extra_files.sort();
+
+    let (verdict, note) = if damaged {
+        (
+            IntegrityVerdict::Mismatch,
+            "检测到与已验证基线不一致的文件：可用【强制更新】重下重装修复（本地包残了不用手动去云端下载）。"
+                .to_string(),
+        )
+    } else {
+        let mut note = String::from("完整性与已验证基线一致。");
+        if !extra_files.is_empty() {
+            note.push_str(&format!(
+                "另有 {} 个非发布包文件（用户自装，保留不动）。",
+                extra_files.len()
+            ));
+        }
+        (IntegrityVerdict::Ok, note)
+    };
+
+    IntegrityReport {
+        verdict,
+        baseline_commit: m.commit.clone(),
+        baseline_sequence: m.sequence,
+        files,
+        extra_files,
+        note,
+    }
+}
+
+/// 完整性检查执行体（可测形态：exe 路径 + 锚集注入——生产锚=manager 侧
+/// `builtin_root_anchors`，测试锚=keygen 自产，与 save_applied_manifest /
+/// load_applied_sequence 的锚穿参模式同源）。基线 = `applied_manifest.json`
+///（上次成功更新写入的**已验签**清单副本）：缺失 = NoBaseline；读取失败/
+/// 验签失败/解析失败 = BaselineError（基线自身损坏，诚实上报）。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn integrity_snapshot_at(exe: &Path, anchors: &[[u8; 32]]) -> IntegrityReport {
+    let path = applied_manifest_path(exe);
+    if !path.exists() {
+        return IntegrityReport {
+            verdict: IntegrityVerdict::NoBaseline,
+            baseline_commit: String::new(),
+            baseline_sequence: 0,
+            files: Vec::new(),
+            extra_files: Vec::new(),
+            note: "本机无已验签基线（applied_manifest.json 不在场：手工安装目录或从未走通道更新），无法做完整性比对；「强制更新」可重建基线。"
+                .to_string(),
+        };
+    }
+    let carrier = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            return IntegrityReport {
+                verdict: IntegrityVerdict::BaselineError,
+                baseline_commit: String::new(),
+                baseline_sequence: 0,
+                files: Vec::new(),
+                extra_files: Vec::new(),
+                note: format!("基线清单存在但读取失败（{}）：{e}", path.display()),
+            };
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match verify_and_parse_manifest(&carrier, anchors, now) {
+        Ok(m) => integrity_report_from_manifest(exe, &m),
+        Err(e) => IntegrityReport {
+            verdict: IntegrityVerdict::BaselineError,
+            baseline_commit: String::new(),
+            baseline_sequence: 0,
+            files: Vec::new(),
+            extra_files: Vec::new(),
+            note: format!(
+                "基线清单验签/解析失败（{e}）：applied_manifest.json 自身可能被篡改或损坏——请用「强制更新」重建。"
+            ),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // check（只读，全平台可用；不下载主包）
 // ---------------------------------------------------------------------------
 
@@ -781,7 +1019,14 @@ pub struct UpdateCheck {
     pub current_commit_known: bool,
 }
 
-pub async fn check(current_version: &str, current_commit: &str) -> Result<UpdateCheck, String> {
+/// 检查更新（只读，全平台可用；不下载主包）。`proxy` = 检查链路的下载
+/// 代理（`config.proxy.json` selfupdate 段，调用时读盘——保存即对下次
+/// 检查/下载生效，免重启；None = 直连）。
+pub async fn check(
+    current_version: &str,
+    current_commit: &str,
+    proxy: Option<&str>,
+) -> Result<UpdateCheck, String> {
     // Android 走 APK 发行形态，主包通道整体不适用（诚实拒绝而非假装查询）。
     if TARGET_ASSET.is_empty() {
         return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
@@ -789,7 +1034,7 @@ pub async fn check(current_version: &str, current_commit: &str) -> Result<Update
     // 同源解析：与 apply 的下载对象一致（首个含主包资产的 release），消除旧
     // 实现「check 读列表第一条 / apply 下载首个含资产的」双路径分裂——最新
     // 条目尚未产出资产时，展示与安装可能跨版本错位。
-    let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await?;
+    let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET, proxy).await?;
     let asset_present = meta.has_asset(TARGET_ASSET);
     let latest_commit = meta.body_commit().unwrap_or_default();
     let current_known = !current_commit.is_empty();
@@ -1641,9 +1886,13 @@ impl SelfUpdateManager {
     /// 下载待装包（WSAPI `selfupdate.download` 的执行体；调用方负责放进
     /// tokio 任务——受理即回）。幂等语义：pending 已就绪直接返回；在途下载
     /// 中重复调用幂等受理。estop 生效 = 拒绝（下载段同受急停冻结）。
-    pub async fn download(&self, current_commit: &str) -> Result<String, String> {
+    ///
+    /// `force`（强制更新，2026-10-30）：跳过「pending 已就绪」幂等早退——
+    /// 存量 pending 可能就是残包，强制更新必须重拉。新鲜度闸仅此一道；
+    /// estop/单飞锁照常。
+    pub async fn download(&self, current_commit: &str, force: bool) -> Result<String, String> {
         let exe_path = std::env::current_exe().map_err(|e| format!("取 current_exe 失败：{e}"))?;
-        if let Some(p) = load_pending(&exe_path) {
+        if !force && let Some(p) = load_pending(&exe_path) {
             return Ok(format!(
                 "待装包已就绪（{}，commit {}，{}MB）：直接【开始更新】即可。",
                 p.release_tag,
@@ -1651,12 +1900,22 @@ impl SelfUpdateManager {
                 p.size_bytes / (1024 * 1024)
             ));
         }
+        if force {
+            self.audit_event(
+                "selfupdate",
+                "allowed",
+                "download: force (freshness gate bypassed)",
+            );
+        }
         if self.estop.is_engaged() {
             self.audit_event("selfupdate", "denied", "download: estop engaged");
             return Err("急停（estop）生效中：更新下载被冻结。释放急停后重试。".to_string());
         }
         match self.download_flight.try_lock() {
-            Ok(_g) => self.download_to_pending(&exe_path, current_commit).await,
+            Ok(_g) => {
+                self.download_to_pending(&exe_path, current_commit, force)
+                    .await
+            }
             Err(_) => {
                 if self.progress_snapshot().active {
                     // 幂等受理：同一目标已在下，调用方无需等待。
@@ -1694,6 +1953,25 @@ impl SelfUpdateManager {
         self.last_check.lock().clone()
     }
 
+    /// 完整性检查（WSAPI `selfupdate.integrity`；只读、本地哈希、同步秒级，
+    /// 无网络依赖）。基线与判定语义见 [`integrity_snapshot_at`]。
+    pub(crate) fn integrity_snapshot(&self) -> IntegrityReport {
+        match std::env::current_exe() {
+            Ok(exe) => {
+                let anchors = nemesis_verify::builtin_root_anchors();
+                integrity_snapshot_at(&exe, &anchors)
+            }
+            Err(e) => IntegrityReport {
+                verdict: IntegrityVerdict::BaselineError,
+                baseline_commit: String::new(),
+                baseline_sequence: 0,
+                files: Vec::new(),
+                extra_files: Vec::new(),
+                note: format!("取 current_exe 失败：{e}"),
+            },
+        }
+    }
+
     /// 下载编排：同源解析 → 干净起步 → 流式落 .part → rename 就位 →
     /// sha256 → meta 后写。任一步失败 = 整清 updates/ + error 进度帧 +
     /// 审计（调用方拿 Err）。进度经 SSE（100ms 节流）+ 进度槽双面可见。
@@ -1701,6 +1979,7 @@ impl SelfUpdateManager {
         &self,
         exe_path: &Path,
         current_commit: &str,
+        force: bool,
     ) -> Result<String, String> {
         *self.download_progress.lock() = DownloadProgress {
             active: true,
@@ -1710,7 +1989,7 @@ impl SelfUpdateManager {
         self.download_cancel
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let result = self
-            .download_to_pending_inner(exe_path, current_commit)
+            .download_to_pending_inner(exe_path, current_commit, force)
             .await;
         match result {
             Ok(msg) => {
@@ -1742,20 +2021,29 @@ impl SelfUpdateManager {
         &self,
         exe_path: &Path,
         current_commit: &str,
+        force: bool,
     ) -> Result<String, String> {
         // Android 走 APK 发行形态，主包通道整体不适用。
         if TARGET_ASSET.is_empty() {
             return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
         }
-        // 同源解析（check / 早闸 / 下载同一对象）。
-        let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await?;
+        // 同源解析（check / 早闸 / 下载同一对象）。下载代理调用时读盘
+        //（selfupdate 段热生效语义：下载是逐次操作，保存即对下次生效）。
+        let proxy =
+            nemesis_config::proxy_file::load_selfupdate_proxy(&self.workspace.join("config"));
+        let meta =
+            crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET, proxy.as_deref())
+                .await?;
         if !meta.has_asset(TARGET_ASSET) {
             return Err(format!(
                 "最新 Release（{}）尚未产出 {TARGET_ASSET} 附件（CI 尚未产出该包）",
                 meta.tag_name
             ));
         }
-        if let Some(latest) = meta.body_commit()
+        // 同版新鲜度闸：force（强制更新）跳过——同版也重下（重装当前版本
+        // 是强制更新的合法意志）。
+        if !force
+            && let Some(latest) = meta.body_commit()
             && commit_matches(current_commit, &latest)
         {
             return Err(format!(
@@ -1819,6 +2107,7 @@ impl SelfUpdateManager {
                 }
                 true
             },
+            proxy.as_deref(),
         )
         .await
         .map_err(|e| format!("下载 {TARGET_ASSET} 失败：{e}"))?;
@@ -1865,6 +2154,7 @@ impl SelfUpdateManager {
         current_version: &str,
         current_commit: &str,
         allow_downgrade: bool,
+        force: bool,
     ) -> Result<String, String> {
         // ── 步骤 1a：estop 闸 ──
         if self.estop.is_engaged() {
@@ -1932,23 +2222,27 @@ impl SelfUpdateManager {
             let mut pending = load_pending(&exe_path);
             if pending.is_none() {
                 self.audit_event("selfupdate", "allowed", "no pending: auto-download");
-                self.download_to_pending(&exe_path, current_commit).await?;
+                self.download_to_pending(&exe_path, current_commit, force)
+                    .await?;
                 pending = load_pending(&exe_path);
             }
             pending
         }
         .ok_or_else(|| "下载完成但待装包元数据读取失败（updates/ 已清空）：请重试。".to_string())?;
         // ── 步骤 1e-2：发布源对账（轻量元信息拉取）。发布源比 pending 新 →
-        //    作废重下；已最新 → 清空拒绝。列表拉取失败 → 诚实 warn 按 pending
-        //    继续不给断网用户装不了已下载更新的死锁——身份权威始终是包内
-        //    签名清单，此处只是新鲜度对账。
-        match crate::handlers::release_fetch::fetch_release_list().await {
+        //    作废重下；已最新 → 清空拒绝（force 豁免此臂——强制更新的意志是
+        //    重装，同版照装）。列表拉取失败 → 诚实 warn 按 pending 继续不给
+        //    断网用户装不了已下载更新的死锁——身份权威始终是包内签名清单，
+        //    此处只是新鲜度对账。对账拉取同样走下载代理（调用时读盘）。
+        let proxy =
+            nemesis_config::proxy_file::load_selfupdate_proxy(&self.workspace.join("config"));
+        match crate::handlers::release_fetch::fetch_release_list(proxy.as_deref()).await {
             Ok(list) => {
                 let latest =
                     crate::handlers::release_fetch::resolve_release_for_asset(&list, TARGET_ASSET)
                         .and_then(|meta| meta.body_commit())
                         .unwrap_or_default();
-                if !latest.is_empty() && commit_matches(current_commit, &latest) {
+                if !force && !latest.is_empty() && commit_matches(current_commit, &latest) {
                     clear_updates_dir(&exe_path);
                     self.audit_event("selfupdate", "denied", "reconcile: already at latest");
                     return Err(format!(
@@ -2120,8 +2414,9 @@ impl SelfUpdateManager {
             );
         }
         // ④ 同版闸（保留：拒绝性优化闸——命中即免走 staging；待装包同时
-        //    作废清空，回干净态）。
-        if commit_matches(current_commit, &target_commit) {
+        //    作废清空，回干净态）。force（强制更新）跳过——同版重装是强制
+        //    更新的合法意志（本地包残了自救）。
+        if !force && commit_matches(current_commit, &target_commit) {
             clear_updates_dir(&exe_path);
             self.audit_event("selfupdate", "denied", "already at target commit");
             return Err(format!(
@@ -2133,11 +2428,11 @@ impl SelfUpdateManager {
         //    （上次成功更新收口写入的已验签清单副本）。applied 缺失（存量安装
         //    首次更新）/副本验签失败/清单本侧缺失（豁免放行）= Unknown——默认
         //    拒绝（R1 语义反转），allow_downgrade 显式豁免 + 审计留痕。v4 验签
-        //    对任何路径都不豁免。
+        //    对任何路径都不豁免。force 只豁免 Same 臂（见 downgrade_gate_error）。
         if let Some(m) = &manifest {
             let current_seq = load_applied_sequence(&exe_path, &anchors, now);
             let verdict = sequence_verdict(current_seq, m.sequence);
-            if let Some(err) = downgrade_gate_error(verdict, allow_downgrade) {
+            if let Some(err) = downgrade_gate_error(verdict, allow_downgrade, force) {
                 self.downgrade_denied
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 self.audit_event(
@@ -2364,8 +2659,9 @@ impl SelfUpdateManager {
         current_version: &str,
         current_commit: &str,
         allow_downgrade: bool,
+        force: bool,
     ) -> Result<String, String> {
-        let _ = (current_version, current_commit, allow_downgrade);
+        let _ = (current_version, current_commit, allow_downgrade, force);
         self.audit_event("selfupdate", "denied", "stub platform boundary");
         Err(if TARGET_ASSET.is_empty() {
             "当前平台（Android）走 APK 发行形态，不走主包自更新通道：\
@@ -2387,12 +2683,13 @@ impl SelfUpdateManager {
         current_version: &str,
         current_commit: &str,
         allow_downgrade: bool,
+        force: bool,
     ) -> Result<String, String> {
         self.downgrade_denied
             .store(false, std::sync::atomic::Ordering::SeqCst);
         *self.last_apply_error.lock() = None;
         let result = self
-            .apply_inner(current_version, current_commit, allow_downgrade)
+            .apply_inner(current_version, current_commit, allow_downgrade, force)
             .await;
         if let Err(e) = &result {
             *self.last_apply_error.lock() = Some(ApplyErrorRecord {

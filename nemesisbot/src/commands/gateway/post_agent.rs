@@ -743,6 +743,23 @@ pub(crate) async fn init_post_agent(
                         });
                     }
                 }
+                // PTY estop kill 挂点（BUG-20261031-234）：会话任务的自醒
+                // （select 循环内 watch 订阅）在 socket.send().await（客户端
+                // TCP 背压——网络挂起/浏览器休眠是常态）期间不被轮询，
+                // stalled client 会话的自醒杀不掉，必须宿主侧直杀（与上方
+                // vm-display 同款纪律；terminal 与 vm 独立 feature，同级放置）。
+                #[cfg(feature = "terminal")]
+                {
+                    let estop = shared_resources.estop.clone();
+                    tokio::spawn(async move {
+                        let mut rx = estop.subscribe();
+                        while rx.changed().await.is_ok() {
+                            if *rx.borrow() {
+                                nemesis_web::pty::kill_all_for_estop();
+                            }
+                        }
+                    });
+                }
                 // WSAPI agents.* 同点接线（同一 Manager 实例；web 侧 trait
                 // + 槽，实现落本 crate——依赖方向 nemesisbot→nemesis-web）。
                 // G1：先注入 loop manager 再装 bridge（bridge 的

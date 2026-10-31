@@ -181,6 +181,10 @@ impl AgentLoop {
         node_id: &str,
         session_key: &str,
     ) {
+        // R294（BUG-20261031-235）：panic 兜底守卫（同 admitted/维护尾巴
+        // ——RPC ACK 等待/落盘路径 panic 展开时释放会话）。正常路径在两个
+        // 出口各显式 drop（= 原 release_session），均先于 drain。
+        let _busy_guard = super::admission::SessionBusyGuard::new(self, session_key);
         // ① 收据先发。
         let receipt = format!("⏳ 已把编码任务派发给节点 {node_id}，完成后自动回复结果。");
         self.finish_message(msg, receipt, None, false).await;
@@ -262,7 +266,7 @@ impl AgentLoop {
                     )
                     .await;
                 }
-                self.release_session(session_key);
+                drop(_busy_guard); // = release_session（ACK 出口；panic 展开由守卫兜底）
                 // ACK 出口同样排空排队消息（与 admitted/维护尾巴同源，
                 // 2026-09-28 真模型验证发现的滞留修复）。
                 self.drain_next_turn_queue(session_key).await;
@@ -273,7 +277,7 @@ impl AgentLoop {
 
         // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
         self.finish_message(msg, result, None, true).await;
-        self.release_session(session_key);
+        drop(_busy_guard); // = release_session（同步出口；panic 展开由守卫兜底）
         // 排队消息排空（与 admitted/维护尾巴同源，2026-09-28 滞留修复）。
         self.drain_next_turn_queue(session_key).await;
     }
@@ -283,7 +287,9 @@ impl AgentLoop {
     /// 条目 + 磁盘 json，下一回合 get_or_create 重建空会话）。key 保留，
     /// 会话继续可用。实例按回合从 store 重建，无驻留内存态需要清。
     pub async fn clear_session(&self, session_key: &str) -> Result<String, String> {
-        crate::chat_log::clear_chat_log(session_key);
+        // BUG-20261030-205：jsonl 清空失败诚实报错（旧形态 warn-only 后
+        // 照样回「✓ 已清空」，jsonl 残留 + store 先清 = self-heal 复活）。
+        crate::chat_log::clear_chat_log(session_key)?;
         if let Some(ref store) = self.session_store {
             store.clear_session(session_key);
         }

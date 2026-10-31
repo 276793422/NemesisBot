@@ -108,6 +108,7 @@ fn flat_family_sweep_deletes_expired_keeps_fresh() {
             request_logs: 14,
             terminal: 7,
             event_ledger: 30,
+            trash: 90,
         },
         old_now(),
     );
@@ -266,9 +267,53 @@ fn all_zero_ttl_sweeps_nothing() {
     let stats = sweep_workspace_logs(ws.path(), &LogsTtl::all_disabled_shape(), old_now());
     assert!(
         stats.iter().all(|(_, s)| s.deleted == 0 && s.failed == 0),
-        "五族全 0 = 零触碰: {stats:?}"
+        "六族全 0 = 零触碰: {stats:?}"
     );
     assert_eq!(names(&sl), vec!["ancient.jsonl"], "夹具原样保留");
+}
+
+// —— trash：回收站条目目录（拍板① 90d） ——
+
+#[test]
+fn trash_family_sweeps_entry_dirs_and_outlives_other_families() {
+    let ws = tempfile::tempdir().unwrap();
+    // 条目形态 = chat_trash 真实布局：logs/trash/sessions/{ms}_{safe}/
+    // 内 chat.jsonl + trash.json 清单。
+    let tr = ws.path().join("logs").join("trash").join("sessions");
+    let entry = tr.join("1729000000_agent_main_session_aaaa");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(
+        entry.join("chat.jsonl"),
+        "{\"role\":\"user\",\"content\":\"x\"}\n",
+    )
+    .unwrap();
+    std::fs::write(entry.join("trash.json"), "{}").unwrap();
+
+    // 时钟拨 40 天：其余族全部超龄（默认 7~30d），trash(90d) 未超龄——
+    // 「回收站保留期长于所有日志族」的拍板语义在此被单独钉住。
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(40 * 86400),
+    );
+    let trash = stats.iter().find(|(f, _)| f.name() == "trash").unwrap().1;
+    assert_eq!(trash.deleted, 0, "40 天 < 90d：回收站一件不删: {stats:?}");
+    assert_eq!(
+        names(&tr),
+        vec!["1729000000_agent_main_session_aaaa"],
+        "条目保留（内容口径）"
+    );
+
+    // 时钟拨 100 天：trash 超龄 → 整目录删（清单 + 三件套副本同走）。
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(100 * 86400),
+    );
+    let trash = stats.iter().find(|(f, _)| f.name() == "trash").unwrap().1;
+    assert_eq!(trash.deleted, 1, "100 天 >= 90d：条目整目录删: {stats:?}");
+    assert!(trash.bytes_freed > 0, "释放字节按条目内文件累计");
+    assert_eq!(names(&tr), Vec::<String>::new(), "内容口径：回收站清空");
 }
 
 // —— 限量：单族单拍不超过 200 件 ——
@@ -292,7 +337,7 @@ fn per_sweep_cap_bounds_deletions() {
 }
 
 impl LogsTtl {
-    /// 测试助记：五族全 0 形态。
+    /// 测试助记：六族全 0 形态。
     fn all_disabled_shape() -> Self {
         Self {
             session_logs: 0,
@@ -300,6 +345,7 @@ impl LogsTtl {
             request_logs: 0,
             terminal: 0,
             event_ledger: 0,
+            trash: 0,
         }
     }
 }

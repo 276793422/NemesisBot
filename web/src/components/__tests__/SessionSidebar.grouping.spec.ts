@@ -109,9 +109,10 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     const { useSessionStore } = await import('../../stores/session')
     expect(useSessionStore().currentId).toBe('s9')
 
-    // 定时 / Skills → 路由跳转。
+    // 定时 / Skills → 路由跳转。（2026-10-30 起第 4 个 fn-btn 是「☑ 批量」
+    // ——批量管理入口，行为归 batch spec。）
     const btns = w.findAll('.fn-btn').map((b: any) => b.text())
-    expect(btns).toHaveLength(3)
+    expect(btns).toHaveLength(4)
     await w.findAll('.fn-btn')[0].trigger('click')
     expect(routerPushMock).toHaveBeenCalledWith('/tasks')
     await w.findAll('.fn-btn')[1].trigger('click')
@@ -180,7 +181,7 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     await orphanItem.find('.row-more').trigger('click')
     await clickMenuItem(w, '.row-menu', '删除会话')
     await flushPromises()
-    expect(deleteMock).toHaveBeenCalledWith('g')
+    expect(deleteMock).toHaveBeenCalledWith('g', undefined, undefined)
     expect(groupNames(w)).toEqual([])
     vi.unstubAllGlobals()
     w.unmount()

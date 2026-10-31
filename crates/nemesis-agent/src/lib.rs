@@ -24,6 +24,10 @@ pub mod background_registry;
 pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
+/// 会话回收站（2026-10-30）：sessions.delete 默认移入 `logs/trash/sessions/`
+/// 三件套改名副本 + trash.json 清单；恢复/彻底删除/TTL 清扫读侧在
+/// nemesis-web sessions handler + nemesisbot sweeper。
+pub mod chat_trash;
 pub mod checkpoint;
 /// ②typed checks 块捕获（诚实边界收口 2026-10-19）：检查类工具（exec /
 /// run_checks）真实执行后的管线侧确定性记账——交付证据 `$.delivery.checks`
