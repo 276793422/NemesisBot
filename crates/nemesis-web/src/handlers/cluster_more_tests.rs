@@ -2456,3 +2456,31 @@ async fn test_topology_with_log_dir_uses_rpc_connections() {
     assert!(result["connections"].as_array().unwrap().is_empty());
     assert!(result["traces"].as_array().is_some());
 }
+
+// --- BUG-20261101-279：snapshots.list 顺序契约锁 ---
+
+#[tokio::test]
+async fn test_snapshots_list_sorted_by_name() {
+    // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——快照
+    // 列表直回前端。显式按名排序钉死（NTFS 本就字典序，本测是契约锁；
+    // ext4 哈希序平台是真回归网）。
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cluster(&dir);
+    let c = ctx.state.cluster.as_ref().unwrap();
+    let cache_dir = c.continuation_store().cache_dir();
+    std::fs::create_dir_all(cache_dir).unwrap();
+    // 刻意非字典序创建：创建序不代表输出序。
+    std::fs::write(cache_dir.join("zzz.json"), r#"{"foo":"bar"}"#).unwrap();
+    std::fs::write(cache_dir.join("aaa.json"), r#"{"foo":"bar"}"#).unwrap();
+    std::fs::write(cache_dir.join("mmm.json"), r#"{"foo":"bar"}"#).unwrap();
+
+    let result = handler
+        .handle_cmd("snapshots.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let snaps = result["snapshots"].as_array().unwrap();
+    let names: Vec<&str> = snaps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["aaa.json", "mmm.json", "zzz.json"]);
+}

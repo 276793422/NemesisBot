@@ -400,6 +400,11 @@ impl ContextBuilder {
                     }
                 }
             }
+            // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs
+            // ext4 哈希序），技能增删后哈希序还会洗牌——skills 段直接渲染进
+            // system prompt（build_skills_section 按插入序出 bullet），字节
+            // 跨重启/跨平台漂移打穿 prompt cache 前缀纪律。显式排序钉死。
+            self.skills_info.sort_by(|a, b| a.name.cmp(&b.name));
         }
     }
 

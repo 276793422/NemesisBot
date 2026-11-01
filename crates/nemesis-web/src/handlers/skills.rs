@@ -334,6 +334,16 @@ impl SkillsHandler {
             }
         }
 
+        // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+        // 哈希序），列表直回前端而前端无客户端排序 → 已装技能面板顺序跨平台
+        // 不稳定。显式排序钉死。
+        skills.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        });
+
         Ok(Some(serde_json::json!({ "skills": skills })))
     }
 

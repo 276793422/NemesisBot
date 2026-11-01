@@ -1299,8 +1299,14 @@ fn collect_files(
         return Ok(());
     }
     let read_dir = std::fs::read_dir(&dir).map_err(|e| format!("failed to read dir: {}", e))?;
-    for entry in read_dir {
-        let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
+    // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+    // 哈希序）——文件浏览器列表直回前端，逐层显式排序钉死遍历序（DFS +
+    // 层内字典序 = 输出全局确定）。
+    let mut entries: Vec<_> = read_dir
+        .collect::<Result<_, _>>()
+        .map_err(|e: std::io::Error| format!("failed to read entry: {}", e))?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
         let path = entry.path();
         let name = path
             .file_name()

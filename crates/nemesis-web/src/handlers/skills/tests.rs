@@ -789,3 +789,29 @@ async fn install_convex_error_maps_chinese_prefix() {
     assert!(err.starts_with("安装失败"), "err: {err}");
     assert!(err.contains("no such skill"), "err: {err}");
 }
+
+// --- BUG-20261101-279：installed() 列表顺序契约锁 ---
+
+#[test]
+fn bug279_installed_skills_sorted_by_name() {
+    // read_dir 顺序是平台实现细节——列表直回前端而前端无客户端排序，
+    // 已装技能面板顺序跨平台不稳定。显式排序钉死（NTFS 本就字典序，
+    // 本测是契约锁；ext4 哈希序平台是真回归网）。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_string_lossy().to_string();
+    // 刻意非字典序创建：创建序不代表输出序。
+    for name in ["zeta", "alpha"] {
+        let skill_dir = dir.path().join("skills").join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("# {} skill\nUse {}.\n", name, name),
+        )
+        .unwrap();
+    }
+
+    let result = SkillsHandler::new().installed(&workspace).unwrap().unwrap();
+    let skills = result["skills"].as_array().unwrap();
+    let names: Vec<&str> = skills.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["alpha", "zeta"]);
+}

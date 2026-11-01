@@ -1789,6 +1789,15 @@ impl ClusterHandler {
             }
         }
 
+        // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+        // 哈希序），快照列表直回前端 → 顺序跨平台不稳定。按名称显式排序钉死。
+        snapshots.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        });
+
         Ok(Some(serde_json::json!({ "snapshots": snapshots })))
     }
 
