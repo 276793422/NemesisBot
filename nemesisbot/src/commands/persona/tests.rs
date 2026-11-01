@@ -695,4 +695,24 @@ mod id_gate {
         cmd_remove(ws, "extra").expect("合法 id 过闸正常删除");
         assert!(!pdir.exists());
     }
+
+    /// BUG-20261101-294：activate 此前漏 slug 闸——空串/路径形态 name 命中
+    /// personas 目录本身，激活生命周期清空工作区人格文件后把激活标记写成
+    /// 非法名。与 install/remove 对齐（validate_persona_id 同源）。
+    #[test]
+    fn activate_rejects_hostile_names_before_fs_touch() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        for hostile in ["", "../x", "a/b", "con", "x:", ".."] {
+            let err = cmd_activate(ws, hostile).expect_err(hostile);
+            assert!(
+                err.to_string().contains("非法"),
+                "hostile={hostile} err: {err:#}"
+            );
+            assert!(
+                !ws.join("personas").exists(),
+                "hostile={hostile} 不得初始化 personas 目录"
+            );
+        }
+    }
 }

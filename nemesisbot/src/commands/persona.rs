@@ -171,6 +171,10 @@ fn cmd_list(workspace: &std::path::Path) -> Result<()> {
 }
 
 fn cmd_activate(workspace: &std::path::Path, name: &str) -> Result<()> {
+    // slug 闸与 install/remove 对齐（BUG-20261101-294：activate 此前漏闸，
+    // 空串/路径形态 name 命中 personas 目录本身——激活生命周期清空工作区
+    // 人格文件后把激活标记写成非法名）。
+    validate_persona_id(name)?;
     // 与 web 面同源的完整生命周期（归档当前人格 → 清理根 → 恢复目标 →
     // 原子写标记；BUG-20261028-117 前 CLI 简化版只拷 4 个 .md 不归档，
     // 运行期 memory 滞留根目录，下次 web 切换时被归档进错误人格目录）。
