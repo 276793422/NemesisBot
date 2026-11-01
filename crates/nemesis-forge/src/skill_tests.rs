@@ -25,6 +25,10 @@ pub const FIXTURE_MAX_BYTES: usize = 65536;
 pub const FIXTURE_MAX_COUNT: usize = 8;
 /// turns 脚本轮数上限。
 pub const TURNS_MAX: usize = 6;
+/// frontmatter YAML 嵌套深度上限（DoS 闸，BUG-20261101-276）。tests 段
+/// 真实 schema（tests→case→turns/fixtures/expect）深度 ≤ 10，64 已是
+/// 荒谬余量（与 pipeline.rs 的 serde_json 128 层递归闸同族语义）。
+pub const FRONTMATTER_MAX_NESTING_DEPTH: usize = 64;
 
 /// 多轮脚本中的一轮用户消息。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -211,6 +215,18 @@ pub fn parse_skill_tests(content: &str) -> Result<Option<SkillTestsSpec>, String
     if fm.is_empty() {
         return Ok(None);
     }
+    // 嵌套深度预检（BUG-20261101-276）：SKILL.md 内容是**不可信输入**
+    // （远端仓库安装；optimize 候选 = 模型生成），serde_yaml 反序列化器
+    // 按嵌套深度递归下降——深嵌套 flow 集合（`[[[[…]]]]`）或块式缩进
+    // 炸弹会栈溢出，而栈溢出是 abort 不可捕获（gateway 内 forge.test /
+    // pipeline Stage2 解析 = 进程级 DoS）。词法扫描给等价上界，超限
+    // 诚实拒绝（不喂给 serde_yaml）。
+    let depth = yaml_nesting_depth(&fm);
+    if depth > FRONTMATTER_MAX_NESTING_DEPTH {
+        return Err(format!(
+            "frontmatter nesting depth {depth} > max {FRONTMATTER_MAX_NESTING_DEPTH} (untrusted-content stack overflow guard)"
+        ));
+    }
     let yaml: JsonValue =
         serde_yaml::from_str(&fm).map_err(|e| format!("frontmatter YAML parse failed: {e}"))?;
     let Some(tests_val) = yaml.get("tests") else {
@@ -242,6 +258,46 @@ fn extract_frontmatter(content: &str) -> String {
         out.push(line);
     }
     out.join("\n")
+}
+
+/// YAML 嵌套深度词法估计（BUG-20261101-276 DoS 闸的度量件）。
+///
+/// 双覆盖：flow 集合按括号字符计（引号内的 `[`/`{` 不计——引号里是
+/// 字面量，serde 不会为其递归）；块式嵌套按缩进宽度计（2 字符一级，
+/// tab 按单字符保守计入——block 炸弹靠逐行加深缩进绕不开）。
+/// 取二者最大值。只需上界正确，不求精确语义。
+fn yaml_nesting_depth(s: &str) -> usize {
+    let mut flow_cur = 0usize;
+    let mut flow_max = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut indent_max = 0usize;
+    for line in s.lines() {
+        let indent = line.len() - line.trim_start().len();
+        indent_max = indent_max.max(indent);
+        for ch in line.chars() {
+            if let Some(q) = quote {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' && q == '"' {
+                    escaped = true;
+                } else if ch == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match ch {
+                '"' | '\'' => quote = Some(ch),
+                '[' | '{' => {
+                    flow_cur += 1;
+                    flow_max = flow_max.max(flow_cur);
+                }
+                ']' | '}' => flow_cur = flow_cur.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    flow_max.max(indent_max / 2)
 }
 
 /// 格式约束校验（定稿数值）。
