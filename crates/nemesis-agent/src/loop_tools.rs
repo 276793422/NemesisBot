@@ -29,7 +29,7 @@ use crate::background_registry::{
     BackgroundKillTool, BackgroundOutputTool, BackgroundProcessRegistry, BackgroundStartTool,
 };
 use crate::context::RequestContext;
-use crate::r#loop::{FileChange, FileChangeKind, McpToolSnapshotEntry, Tool};
+use crate::r#loop::{FileChange, FileChangeKind, McpToolSnapshotEntry, OperationOverride, Tool};
 // ===========================================================================
 // Basic file/message tools
 // ===========================================================================
@@ -7360,6 +7360,30 @@ impl Tool for McpDiscoverTool {
             Ok(info) => Ok(format_discovery_result(&info)),
             Err(e) => Err(e),
         }
+    }
+
+    /// BUG-20261102-296：stdio 臂（`command` 参数）是 LLM 可控的任意进程
+    /// spawn（`discover_server_metadata` → `StdioTransport` → 直接
+    /// `Command::spawn`）——效果面与 exec 同级，静态 NetworkRequest
+    /// （MEDIUM）档让 exec 族全部闸失配：默认配置的 `process_rules.exec`
+    /// 危险命令 deny 规则（rm -rf / format / del /s / remove-item
+    /// -recurse…）、Layer 2 命令守卫、preexec 扫描、guardian 危级全部照
+    /// 不到本工具。dispatch 嗅探本投影把 stdio 形态投成 process_exec
+    /// （CRITICAL，与 exec 同管线同闸）；HTTP 臂（url）维持静态
+    /// NetworkRequest（SSRF 由 nemesis-security `extract_url` 的
+    /// mcp_discover 臂覆盖）。args 非对象 / command 缺席或空白 = None
+    /// （旧行为，connector 投影同款 None 语义）。
+    fn operation_override(&self, args: &str) -> Option<OperationOverride> {
+        let v: serde_json::Value = serde_json::from_str(args).ok()?;
+        let command = v.get("command")?.as_str()?.trim();
+        if command.is_empty() {
+            return None;
+        }
+        Some(OperationOverride {
+            op_type: "process_exec".to_string(),
+            force_approval: None,
+            receipt_ctx: None,
+        })
     }
 }
 

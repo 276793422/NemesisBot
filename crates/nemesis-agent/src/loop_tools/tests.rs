@@ -3635,6 +3635,38 @@ fn test_format_discovery_result_empty() {
     assert!(output.contains("None"));
 }
 
+// BUG-20261102-296：stdio 臂（command 参数）投影 process_exec 过 exec
+// 同款管线；HTTP 臂 / 空 command / 非对象 args 维持静态档（None）。
+#[test]
+fn test_mcp_discover_operation_override_command_projects_process_exec() {
+    let tool = McpDiscoverTool::new();
+    let ov = tool
+        .operation_override(r#"{"command": "npx", "args": ["-y", "@modelcontextprotocol/server"]}"#)
+        .expect("command form must project an override");
+    assert_eq!(ov.op_type, "process_exec");
+    assert!(ov.force_approval.is_none());
+    assert!(ov.receipt_ctx.is_none());
+}
+
+#[test]
+fn test_mcp_discover_operation_override_url_form_none() {
+    let tool = McpDiscoverTool::new();
+    assert!(
+        tool.operation_override(r#"{"url": "http://localhost:8080/mcp"}"#)
+            .is_none()
+    );
+}
+
+#[test]
+fn test_mcp_discover_operation_override_empty_or_bad_args_none() {
+    let tool = McpDiscoverTool::new();
+    // 空 command / 非字符串 / 非对象 / 烂 JSON 都落 None（旧行为）。
+    assert!(tool.operation_override(r#"{"command": "  "}"#).is_none());
+    assert!(tool.operation_override(r#"{"command": 42}"#).is_none());
+    assert!(tool.operation_override(r#""just a string""#).is_none());
+    assert!(tool.operation_override("not json at all").is_none());
+}
+
 // =========================================================================
 // McpListTool tests
 // =========================================================================

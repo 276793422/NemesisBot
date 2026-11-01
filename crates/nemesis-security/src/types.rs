@@ -460,8 +460,12 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "upload" => Some(OperationType::NetworkUpload),
         "http_request" | "web_request" | "web_fetch" | "web_search" | "cluster_rpc"
         | "find_skills" => Some(OperationType::NetworkRequest),
-        // 浏览器自动化 = 网络面向能力；MCP 发现会拉起配置的 MCP server
-        // 进程（stdio）/HTTP 连接——工具本身只列举，不给 exec 档。
+        // 浏览器自动化 = 网络面向能力；MCP 发现的静态档只承载 HTTP 臂
+        // （url → NetworkRequest，SSRF 由 extract_url 覆盖）——stdio 臂
+        // （LLM 可控 command spawn）经工具 `operation_override` 每次调用
+        // 投影 process_exec 过 exec 同款管线（BUG-20261102-296；静态表
+        // 无法按参数分档，投影是唯一通道）。旧注记「拉起配置的 MCP server
+        // 进程」只对配置驱动路径成立，agent 工具的 command 来自 LLM。
         "browser" | "mcp_discover" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
         // H1（2026-09-05）：todowrite 本质是 workspace 内写文件（sessions/
@@ -571,6 +575,41 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        // BUG-20261102-296：mcp_discover 的 stdio 臂（`command` 参数）是
+        // LLM 可控的任意进程 spawn（经工具 operation_override 投影
+        // process_exec 过 exec 同款管线）——target 取命令行本体让 Layer 2
+        // 命令守卫 / process_rules / 审计链照常工作（BUG-20261028-118
+        // run_script 同款先例：无臂 → target 恒空 → 两层被
+        // `!target.is_empty()` 前置整体跳过）；HTTP 臂（无 command）取 url。
+        "mcp_discover" => {
+            let command = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            if command.is_empty() {
+                args.get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                let extra = args
+                    .get("args")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default();
+                if extra.is_empty() {
+                    command.to_string()
+                } else {
+                    format!("{command} {extra}")
+                }
+            }
+        }
         "cluster_rpc" => args
             .get("peer_id")
             .and_then(|v| v.as_str())
@@ -609,7 +648,11 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
 pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
         "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
-        | "install_skill" | "find_skills" => args
+        // BUG-20261102-296：mcp_discover HTTP 臂的 url 此前无臂 → Layer 6
+        // SSRF 对该工具整体失明（LLM 可控 url 任指内网/metadata 端点）。
+        // 与 web_fetch 同语义同闸；loopback 目标走 ssrf.allowed_hosts 例外
+        // （web_fetch 先例）。stdio 臂无 url 字段 → 空串照常跳过。
+        | "install_skill" | "find_skills" | "mcp_discover" => args
             .get("url")
             .or_else(|| args.get("source"))
             .and_then(|v| v.as_str())
