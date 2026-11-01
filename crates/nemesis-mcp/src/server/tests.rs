@@ -248,6 +248,65 @@ fn resource_count_via_list() {
     assert!(resources.is_empty());
 }
 
+// BUG-20261101-286 回归钉：tools/list / resources/list 必须按 name/uri
+// 排序输出——注册表是 HashMap，迭代序是进程随机态，不排序则外部 MCP
+// 客户端每次重启拿到的数组顺序洗牌。
+#[tokio::test]
+async fn tools_list_sorted_by_name() {
+    let mut server = McpServer::new("test", "1.0");
+    let mk = |name: &str| McpTool {
+        name: name.into(),
+        description: None,
+        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        ..Default::default()
+    };
+    let handler: ToolHandler = Arc::new(|_| ToolCallResult::ok("ok"));
+    // 刻意非字典序插入。
+    for name in ["zeta", "alpha", "mid"] {
+        server.register_tool(mk(name), handler.clone()).unwrap();
+    }
+    let req = JSONRPCRequest::new("tools/list", None);
+    let resp = server.handle_request(&req).await;
+    let result = resp.result.unwrap();
+    let names: Vec<&str> = result["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+}
+
+#[tokio::test]
+async fn resources_list_sorted_by_uri() {
+    let mut server = McpServer::new("test", "1.0");
+    for uri in ["file:///z.txt", "file:///a.txt"] {
+        server.register_resource(
+            Resource {
+                uri: uri.into(),
+                name: "r".into(),
+                description: None,
+                mime_type: None,
+            },
+            ResourceContent {
+                uri: uri.into(),
+                mime_type: None,
+                text: Some("x".into()),
+            },
+        );
+    }
+    let req = JSONRPCRequest::new("resources/list", None);
+    let resp = server.handle_request(&req).await;
+    let result = resp.result.unwrap();
+    let uris: Vec<&str> = result["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uri"].as_str().unwrap())
+        .collect();
+    assert_eq!(uris, vec!["file:///a.txt", "file:///z.txt"]);
+}
+
 #[tokio::test]
 async fn prompts_list_not_supported() {
     // Server without prompts capability returns method not found for prompts/list
