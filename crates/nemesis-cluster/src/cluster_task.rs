@@ -598,10 +598,30 @@ impl ClusterTaskList {
                 && matches!(status, TaskStatus::Pending | TaskStatus::WaitingRemote)
             {
                 let conv_path = self.conversation_path(&task_id);
-                if conv_path.exists()
-                    && let Ok(conv_data) = std::fs::read_to_string(&conv_path)
-                {
-                    task.conversation = serde_json::from_str(&conv_data).ok();
+                // BUG-20261101-282：写侧 write_file_atomic 原子，读侧遇到的损坏
+                // 只剩外部篡改/历史残留/磁盘问题——正是需要第一个可见信号的场景
+                // （session 坏档 WARN 同族口径，BUG-20261025-44 的漏网点）。跳过
+                // 语义不变：不炸、任务照常恢复，但丢上下文必须 loud 留痕。
+                if conv_path.exists() {
+                    match std::fs::read_to_string(&conv_path) {
+                        Ok(conv_data) => match serde_json::from_str(&conv_data) {
+                            Ok(conv) => task.conversation = Some(conv),
+                            Err(e) => tracing::warn!(
+                                task_id = %task_id,
+                                path = %conv_path.display(),
+                                "[ClusterTaskList] Corrupt conversation file, task restored \
+                                 without context: {}",
+                                e
+                            ),
+                        },
+                        Err(e) => tracing::warn!(
+                            task_id = %task_id,
+                            path = %conv_path.display(),
+                            "[ClusterTaskList] Failed to read conversation file, task \
+                             restored without context: {}",
+                            e
+                        ),
+                    }
                 }
             }
 

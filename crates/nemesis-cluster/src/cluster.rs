@@ -327,7 +327,25 @@ impl Cluster {
 
         // Try to load existing node identity from static config
         let peers_path = cluster_dir.join("peers.toml");
-        let sc = crate::cluster_config::load_static_config(&peers_path).ok();
+        // BUG-20261101-282：peers.toml 存在但损坏（手改出错/历史残留/磁盘问题）
+        // 时不得静默——`.ok()` 吞掉后 node_id 走新生成，ensure_node_id 对不可
+        // 解析文件整体序列化覆盖，节点身份静默漂移 + [peers.*] 静态表全部丢失
+        // 且零日志。NotFound（首次启动）是正常路径不打扰；其余失败 loud WARN
+        // 显性化（与 tasks.db fail-closed / ChatSecretStore 熔断同款可观测纪律）。
+        let sc = match crate::cluster_config::load_static_config(&peers_path) {
+            Ok(sc) => Some(sc),
+            Err(ConfigError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::warn!(
+                    path = %peers_path.display(),
+                    error = %e,
+                    "[Cluster] peers.toml exists but failed to parse — node identity will \
+                     regenerate and the file will be overwritten (static [peers.*] tables \
+                     lost). Back up / fix the file before restart if the old identity matters"
+                );
+                None
+            }
+        };
         let node_id = sc
             .as_ref()
             .and_then(|s| {

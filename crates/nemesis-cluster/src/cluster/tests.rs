@@ -10549,3 +10549,83 @@ async fn interval_missed_tick_delay_reanchors_after_gap() {
         "Delay：下一 tick 从当前时刻重排，无突发"
     );
 }
+
+// --- BUG-20261101-282：peers.toml 损坏身份漂移必须可观测 -------------------
+// `.ok()` 吞掉 load_static_config 的解析失败后，node_id 走新生成，
+// ensure_node_id 对不可解析文件整体序列化覆盖——身份静默漂移 +
+// [peers.*] 静态表丢失且零日志。修复 = 损坏 loud WARN（NotFound 首次
+// 启动不打扰）；覆盖写语义保留（构造器不可 fail）。
+
+#[derive(Clone)]
+struct Bug282Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Bug282Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for Bug282Capture {
+    type Writer = Bug282Capture;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[test]
+fn test_bug282_corrupt_peers_toml_warns_and_drift_is_visible() {
+    // ① 损坏文件：必须 warn + 身份重新生成 + peers.toml 被重写为合法 TOML。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        b"[node
+id = broken ===",
+    )
+    .unwrap();
+
+    let mut cfg = make_config();
+    cfg.node_id = String::new(); // 生产形态：无显式 id → 生成（漂移才会发生）
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(Bug282Capture(captured.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let cluster = Cluster::with_workspace(cfg, dir.path().to_path_buf());
+
+    let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("failed to parse"),
+        "peers.toml 损坏必须有可见信号（warn），实际日志: {logs}"
+    );
+    assert!(!cluster.node_id().is_empty());
+    // ensure_node_id 覆盖后文件回到可解析态（后续重启身份稳定）。
+    let rescanned = crate::cluster_config::load_static_config(&cluster_dir.join("peers.toml"))
+        .expect("覆盖写后 peers.toml 必须可解析");
+    assert!(!rescanned.node.id.is_empty());
+    drop(_guard);
+
+    // ② 文件不存在（首次启动）：不得产生该 warn（正常路径不打扰）。
+    let dir2 = tempfile::tempdir().unwrap();
+    let captured2 = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber2 = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(Bug282Capture(captured2.clone()))
+        .finish();
+    let _guard2 = tracing::subscriber::set_default(subscriber2);
+    let _cluster2 = Cluster::with_workspace(make_config(), dir2.path().to_path_buf());
+    let logs2 = String::from_utf8(captured2.lock().unwrap().clone()).unwrap();
+    assert!(
+        !logs2.contains("failed to parse"),
+        "首次启动（无 peers.toml）不得 warn，实际日志: {logs2}"
+    );
+}
