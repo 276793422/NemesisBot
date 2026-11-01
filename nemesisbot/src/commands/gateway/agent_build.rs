@@ -324,6 +324,9 @@ pub(crate) async fn init_agent(
         question_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_types::agent::QuestionAsker>>,
         )),
+        // WS4（P13）/BUG-20261101-295：install_skill 工具审批门槽（先建空
+        // 槽，gateway.rs 建门后填 LateWebSkillsGate；同一 Arc 晚填可见）。
+        skills_install_gate_slot: Default::default(),
     };
 
     let shared_resources = Arc::new(shared_resources);

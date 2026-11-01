@@ -2826,7 +2826,7 @@ async fn test_cron_tool_list_after_create() {
 #[tokio::test]
 async fn test_install_skill_tool_missing_slug() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"name": "test"}"#, &ctx).await;
@@ -2845,7 +2845,7 @@ async fn test_install_skill_tool_missing_slug() {
 #[tokio::test]
 async fn test_install_skill_tool_empty_slug() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"slug": ""}"#, &ctx).await;
@@ -2856,7 +2856,7 @@ async fn test_install_skill_tool_empty_slug() {
 #[tokio::test]
 async fn test_install_skill_tool_invalid_json() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute("not json", &ctx).await;
@@ -2867,7 +2867,7 @@ async fn test_install_skill_tool_invalid_json() {
 #[tokio::test]
 async fn test_install_skill_tool_path_traversal() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"slug": "../evil"}"#, &ctx).await;
@@ -2884,7 +2884,7 @@ async fn test_install_skill_tool_already_exists() {
     std::fs::create_dir_all(&skill_dir).unwrap();
 
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, workspace);
+    let tool = InstallSkillTool::new(registry, workspace, None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"slug": "existing-skill"}"#, &ctx).await;
@@ -2944,7 +2944,7 @@ async fn test_find_skills_tool_description_and_params() {
 #[test]
 fn test_install_skill_tool_description_and_params() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     assert!(!tool.description().is_empty());
     assert!(tool.parameters().is_object());
 }

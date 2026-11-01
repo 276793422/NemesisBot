@@ -836,7 +836,7 @@ async fn test_install_skill_tool_force_with_existing_dir_attempts_install() {
     std::fs::create_dir_all(tmp.path().join("skills").join("present")).unwrap();
 
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, workspace);
+    let tool = InstallSkillTool::new(registry, workspace, None);
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = tool
         .execute(r#"{"slug": "present", "force": true}"#, &ctx)
@@ -851,7 +851,7 @@ async fn test_install_skill_tool_force_with_existing_dir_attempts_install() {
 async fn test_install_skill_tool_with_version_and_registry() {
     // Both "version" and "registry" fields are accepted (default registry="github").
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = tool
         .execute(
@@ -868,7 +868,7 @@ async fn test_install_skill_tool_with_version_and_registry() {
 #[tokio::test]
 async fn test_install_skill_tool_empty_name_field() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = tool.execute(r#"{"name": ""}"#, &ctx).await;
     assert!(r.is_err());
@@ -878,7 +878,7 @@ async fn test_install_skill_tool_empty_name_field() {
 #[tokio::test]
 async fn test_install_skill_tool_slug_with_slash_rejected() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = tool.execute(r#"{"slug": "a/b"}"#, &ctx).await;
     assert!(r.is_err());

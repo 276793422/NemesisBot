@@ -265,6 +265,17 @@ fn normalize_repo_ref(repo: &str, ref_field: Option<&str>) -> Result<String, Str
     }
 }
 
+/// BUG-20261101-295：skills 面 name 参数路径安全闸——复用 R35 技能 slug
+/// 验证器单一真相源（拒空串/路径分隔符/`..`/Windows 保留名/尾点尾空格）。
+/// detail/open_dir 此前裸拼 `skills/<name>`：detail 读任意
+/// `*/SKILL.md`、open_dir explorer 打开 workspace 外任意目录（且报错
+/// 泄露绝对路径 = 存在性 oracle）。与 uninstall/learned_remove/install
+/// 同源同闸。
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    nemesis_skills::types::validate_skill_identifier(name)
+        .map_err(|e| format!("invalid skill name '{}': {}", name, e))
+}
+
 /// BUG-20261028-118 取消窗口兜底：force 更新在「备份已挪走、新版未落位」
 /// 的窗口内 future 被 drop（任务取消/超时）时，Drop 同步触发把备份复位回
 /// 原位。显式成功/失败路径先 `disarm()` 再走自己的消费/回滚逻辑，guard
@@ -348,6 +359,10 @@ impl SkillsHandler {
     }
 
     fn detail(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        // 路径安全（BUG-20261101-295，与 uninstall/learned_remove 同源同闸）：
+        // name 直接拼 `skills/<name>/SKILL.md`，无闸时 workspace 内任意
+        // `*/SKILL.md` 可读（如 `../config` 形态越出 skills/ 语义边界）。
+        validate_skill_name(name)?;
         let relative = format!("skills/{}/SKILL.md", name);
         let content = read_workspace_file(workspace, &relative)?;
         Ok(Some(serde_json::json!({
@@ -360,6 +375,11 @@ impl SkillsHandler {
     /// skills open_dir 的路径拼接 + 存在性校验，happy 路径单测只测这里。
     /// pub(crate)：skills_extra_tests（同 crate 兄弟模块）是它的消费者。
     pub(crate) fn resolve_skill_dir(workspace: &str, name: &str) -> Result<PathBuf, String> {
+        // 路径安全（BUG-20261101-295）：裸 join 无 resolve_path 兜底——
+        // `name="../.."` 会 explorer 打开 workspace 外任意目录（且报错
+        // 泄露绝对路径 = 存在性 oracle）。单一闸口放这里，open_dir 与
+        // 未来新增消费者共用。
+        validate_skill_name(name)?;
         let skill_dir = PathBuf::from(workspace).join("skills").join(name);
         if !skill_dir.exists() {
             return Err(format!(

@@ -1289,3 +1289,87 @@ async fn test_skills_uninstall_removes_subdir_contents() {
     assert!(result["uninstalled"].as_bool().unwrap());
     assert!(!skill_dir.exists());
 }
+
+// -----------------------------------------------------------------------
+// BUG-20261101-295：detail / open_dir 的 name 参数路径安全闸
+// （裸拼 skills/<name>：detail 读任意 */SKILL.md；open_dir explorer 打开
+// workspace 外任意目录 + 报错泄露绝对路径 = 存在性 oracle）
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_skills_detail_hostile_names_rejected() {
+    let handler = skills::SkillsHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    // 种一个真实技能，确保拒绝来自闸而非目录缺席。
+    let skill_dir = dir.path().join("skills/demo");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "demo content").unwrap();
+    let ctx = make_ctx(&dir);
+
+    for hostile in ["", "..", "../..", "a/b", "a\\b", ".", "con"] {
+        let data = serde_json::json!({ "name": hostile });
+        let result = handler.handle_cmd("detail", Some(data), &ctx).await;
+        assert!(
+            result.is_err(),
+            "hostile name {:?} must be rejected",
+            hostile
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("invalid skill name"),
+            "hostile name {:?} error must come from the slug gate, got: {}",
+            hostile,
+            err
+        );
+    }
+    // 合法名不误伤。
+    let data = serde_json::json!({ "name": "demo" });
+    let result = handler
+        .handle_cmd("detail", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["content"].as_str().unwrap(), "demo content");
+}
+
+#[tokio::test]
+async fn test_skills_open_dir_hostile_names_rejected_before_spawn() {
+    let handler = skills::SkillsHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+
+    for hostile in ["", "..", "../..", "..\\..\\", "a/b"] {
+        let data = serde_json::json!({ "name": hostile });
+        // 闸在 resolve_skill_dir 内、进程 spawn 之前——拒绝且不开 explorer。
+        assert!(
+            handler
+                .handle_cmd("open_dir", Some(data), &ctx)
+                .await
+                .is_err(),
+            "hostile name {:?} must be rejected",
+            hostile
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skills_resolve_skill_dir_rejects_traversal() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    for hostile in ["", "..", "../..", "a/b", "a\\b", ".", "aux"] {
+        let err = skills::SkillsHandler::resolve_skill_dir(&ws, hostile).unwrap_err();
+        assert!(
+            err.contains("invalid skill name"),
+            "resolve_skill_dir({:?}) must fail at the slug gate, got: {}",
+            hostile,
+            err
+        );
+    }
+    // 合法名照常（目录存在时返回路径）。
+    std::fs::create_dir_all(dir.path().join("skills/demo")).unwrap();
+    let ok = skills::SkillsHandler::resolve_skill_dir(&ws, "demo").unwrap();
+    assert!(ok.ends_with("skills/demo"));
+    // 合法名目录缺席照常报 not found（原错误语义不变）。
+    let err = skills::SkillsHandler::resolve_skill_dir(&ws, "ghost").unwrap_err();
+    assert!(err.contains("not found"), "got: {}", err);
+}
