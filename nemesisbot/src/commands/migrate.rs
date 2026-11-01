@@ -245,7 +245,10 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
 
     let mut config = serde_json::json!({
         "version": "1.0",
-        "default_model": "",
+        // BUG-20261101-291：默认模型写 agents.defaults.llm（装配唯一真相源，
+        // 与 crate 主路径 convert_config 同源）——旧版写顶层 default_model
+        // 死键，装配层（get_effective_llm）不读，迁移后模型配置断裂。
+        "agents": {"defaults": {"llm": "zhipu/glm-4.7-flash"}},
         "model_list": [],
         "channels": {
             "web": {"enabled": true, "host": "127.0.0.1", "port": 8080},
@@ -264,13 +267,9 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                     let trimmed = line.trim();
                     if let Some(model) = trimmed.strip_prefix("default_model:") {
                         let model = model.trim().trim_matches('"').trim_matches('\'');
-                        if !model.is_empty()
-                            && let Some(obj) = config.as_object_mut()
-                        {
-                            obj.insert(
-                                "default_model".to_string(),
-                                serde_json::Value::String(model.to_string()),
-                            );
+                        if !model.is_empty() {
+                            config["agents"]["defaults"]["llm"] =
+                                serde_json::Value::String(model.to_string());
                         }
                     }
                     if let Some(port_str) = trimmed.strip_prefix("port:")

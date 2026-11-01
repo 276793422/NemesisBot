@@ -223,7 +223,9 @@ fn test_convert_config_fallback_with_yaml() {
     .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
-    assert_eq!(config["default_model"], "test/model");
+    // BUG-20261101-291：默认模型写装配唯一真相源 agents.defaults.llm（顶层
+    // default_model 死键已废）。
+    assert_eq!(config["agents"]["defaults"]["llm"], "test/model");
     assert_eq!(config["channels"]["web"]["port"], 9090);
 }
 
@@ -267,7 +269,8 @@ fn test_convert_config_fallback_yml_extension() {
     .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
-    assert_eq!(config["default_model"], "yml-model");
+    // BUG-20261101-291：同上，agents.defaults.llm 单一真相源。
+    assert_eq!(config["agents"]["defaults"]["llm"], "yml-model");
 }
 
 #[test]
@@ -569,7 +572,7 @@ fn test_convert_config_fallback_with_all_yaml_variants() {
         )
         .unwrap();
         let (config, _) = convert_config_fallback(tmp.path()).unwrap();
-        assert_eq!(config["default_model"], "test-model");
+        assert_eq!(config["agents"]["defaults"]["llm"], "test-model");
         assert_eq!(config["channels"]["web"]["port"], 3000);
     }
 }
@@ -589,7 +592,8 @@ fn test_convert_config_fallback_yaml_priority() {
     )
     .unwrap();
     let (config, _) = convert_config_fallback(tmp.path()).unwrap();
-    assert_eq!(config["default_model"], "from-config-yaml");
+    // BUG-20261101-291：config.yaml 优先级胜出写 agents.defaults.llm。
+    assert_eq!(config["agents"]["defaults"]["llm"], "from-config-yaml");
 }
 
 #[test]
@@ -617,7 +621,7 @@ fn test_convert_config_fallback_port_invalid() {
     )
     .unwrap();
     let (config, _) = convert_config_fallback(tmp.path()).unwrap();
-    assert_eq!(config["default_model"], "test");
+    assert_eq!(config["agents"]["defaults"]["llm"], "test");
     // Port should remain default (8080) since parse fails
     assert_eq!(config["channels"]["web"]["port"], 8080);
 }
@@ -627,7 +631,10 @@ fn test_convert_config_fallback_default_structure() {
     let tmp = TempDir::new().unwrap();
     let (config, warnings) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(config["version"], "1.0");
-    assert_eq!(config["default_model"], "");
+    // BUG-20261101-291：默认模板带 agents.defaults.llm（装配真相源）；
+    // 顶层 default_model 死键不再产出。
+    assert_eq!(config["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash");
+    assert!(config.get("default_model").is_none());
     assert!(config["model_list"].is_array());
     assert!(config["model_list"].as_array().unwrap().is_empty());
     assert_eq!(config["channels"]["web"]["enabled"], true);
@@ -968,7 +975,11 @@ fn fallback_conversion_extracts_default_model_port_and_models() {
     .unwrap();
 
     let (cfg, warnings) = convert_config_fallback(tmp.path()).unwrap();
-    assert_eq!(cfg["default_model"], "claude-9", "单引号 YAML 值也要剥干净");
+    // BUG-20261101-291：单引号 YAML 值也要剥干净，写 agents.defaults.llm。
+    assert_eq!(
+        cfg["agents"]["defaults"]["llm"], "claude-9",
+        "单引号 YAML 值也要剥干净"
+    );
     assert_eq!(cfg["channels"]["web"]["port"], 4321);
     let models = cfg["model_list"].as_array().unwrap();
     assert_eq!(models.len(), 2, "- name: 和 - model: 两种条目都要抓到");
@@ -984,7 +995,9 @@ fn fallback_conversion_extracts_default_model_port_and_models() {
 fn fallback_conversion_with_no_sources_keeps_defaults() {
     let tmp = tempfile::tempdir().unwrap();
     let (cfg, _) = convert_config_fallback(tmp.path()).unwrap();
-    assert_eq!(cfg["default_model"], "");
+    // BUG-20261101-291：无来源=模板默认模型；顶层 default_model 死键不存在。
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash");
+    assert!(cfg.get("default_model").is_none());
     assert_eq!(cfg["channels"]["web"]["port"], 8080, "缺省端口 8080");
     assert_eq!(
         cfg["model_list"].as_array().unwrap().len(),
@@ -1337,7 +1350,11 @@ mod r10_fallback {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("config.yaml")).unwrap();
         let (config, warnings) = convert_config_fallback(tmp.path()).unwrap();
-        assert_eq!(config["default_model"], "", "读不出内容不得写入模型名");
+        // BUG-20261101-291：读不出内容保持模板默认模型，不写死键。
+        assert_eq!(
+            config["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash",
+            "读不出内容保持模板默认模型"
+        );
         assert_eq!(config["channels"]["web"]["port"], 8080, "端口保持默认");
         assert!(warnings.iter().any(|w| w.contains("fallback")));
     }
@@ -1353,10 +1370,13 @@ mod r10_fallback {
         )
         .unwrap();
         let (config, _) = convert_config_fallback(tmp.path()).unwrap();
+        // BUG-20261101-291：空值走 !model.is_empty() 短路边——不触发写入，
+        // agents.defaults.llm 保持模板默认（既不插死键也不覆盖默认）。
         assert_eq!(
-            config["default_model"], "",
-            "空值必须保持默认空串，而不是插入同名新值"
+            config["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash",
+            "空值必须保持模板默认模型，而不是覆盖默认或插死键"
         );
+        assert!(config.get("default_model").is_none());
         // 同一文件里合法的 port 行仍要生效——证明逐行扫描确实跑了。
         assert_eq!(config["channels"]["web"]["port"], 9999);
     }
