@@ -2228,7 +2228,7 @@ async fn read_body_capped_aborts_oversized_body_mid_read() {
         .mount(&server)
         .await;
     let registry = ClawHubRegistry::new();
-    let response = registry.client.get(&server.uri()).send().await.unwrap();
+    let response = registry.client.get(server.uri()).send().await.unwrap();
     let err = read_body_capped(response, 64 * 1024).await.unwrap_err();
     assert!(err.to_string().contains("exceeds limit"), "{err}");
 }
@@ -2247,7 +2247,7 @@ async fn read_body_capped_passes_small_body() {
         .mount(&server)
         .await;
     let registry = ClawHubRegistry::new();
-    let response = registry.client.get(&server.uri()).send().await.unwrap();
+    let response = registry.client.get(server.uri()).send().await.unwrap();
     let body = read_body_capped(response, 64 * 1024).await.unwrap();
     assert_eq!(body, small);
 }
