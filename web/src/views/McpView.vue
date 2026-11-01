@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { safeExternalUrl } from '../utils/url'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -321,7 +322,7 @@ onMounted(async () => {
             <div v-if="detailServer.provider_name || detailServer.provider_url" style="margin-bottom: var(--space-3);">
               <div style="font-size: var(--text-xs); color: var(--text-muted); margin-bottom: 4px;">供应商</div>
               <span>{{ detailServer.provider_name }}</span>
-              <a v-if="detailServer.provider_url" :href="detailServer.provider_url" target="_blank" style="font-size: var(--text-xs); margin-left: var(--space-2);">{{ detailServer.provider_url }}</a>
+              <a v-if="detailServer.provider_url" :href="safeExternalUrl(detailServer.provider_url) || undefined" target="_blank" style="font-size: var(--text-xs); margin-left: var(--space-2);">{{ detailServer.provider_url }}</a>
             </div>
             <div v-if="detailServer.tags && detailServer.tags.length" style="margin-bottom: var(--space-3);">
               <div style="display: flex; gap: 4px; flex-wrap: wrap;">

@@ -479,6 +479,20 @@ async fn invoke(
     Ok(text)
 }
 
+/// PR 链接 scheme 闸：只接受 http(s) 绝对 URL。`html_url` 来自 connector
+/// 调用的模型回复（安全 8 层管工具调用入参，不管回复 JSON 的取值内容）
+/// ——被注入的输出可携带 `javascript:` 伪 URL，落账后 Dashboard `:href`
+/// 直染成可点击链接（BUG-20261101-274）。链接是展示性留痕（权威标识是
+/// pr_number），非 http(s) 诚实丢弃。
+fn safe_pr_url(raw: &str) -> Option<String> {
+    let lower = raw.trim_start().to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        Some(raw.to_string())
+    } else {
+        None
+    }
+}
+
 /// create_pull 成功响应 → (number, html_url)。直接对象或单元素数组都认；
 /// 认不出的形态交给对账（不猜）。
 fn parse_pr_response(text: &str) -> Option<(i64, Option<String>)> {
@@ -492,7 +506,7 @@ fn parse_pr_response(text: &str) -> Option<(i64, Option<String>)> {
     let url = obj
         .get("html_url")
         .and_then(|x| x.as_str())
-        .map(str::to_string);
+        .and_then(safe_pr_url);
     Some((n, url))
 }
 
@@ -589,7 +603,7 @@ fn find_pr_by_head(list_text: &str, head_branch: &str) -> Option<(i64, Option<St
             let url = pr
                 .get("html_url")
                 .and_then(|x| x.as_str())
-                .map(str::to_string);
+                .and_then(safe_pr_url);
             return Some((n, url));
         }
     }

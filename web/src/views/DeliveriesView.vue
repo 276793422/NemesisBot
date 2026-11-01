@@ -9,6 +9,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { safeExternalUrl } from '../utils/url'
 
 interface DeliveryRow {
   id: string
@@ -324,7 +325,7 @@ async function openDetail(d: DeliveryRow) {
                 : lastOutcome.status === 'already_published' ? '已发布过（幂等跳过）'
                 : '发布失败' }}
             </strong>
-            <a v-if="lastOutcome.pr_url" :href="lastOutcome.pr_url" target="_blank" rel="noopener" style="margin-left: var(--space-2);">{{ lastOutcome.pr_url }}</a>
+            <a v-if="lastOutcome.pr_url" :href="safeExternalUrl(lastOutcome.pr_url) || undefined" target="_blank" rel="noopener" style="margin-left: var(--space-2);">{{ lastOutcome.pr_url }}</a>
             <div class="outcome-detail">{{ lastOutcome.detail }}</div>
           </div>
         </div>
@@ -355,7 +356,7 @@ async function openDetail(d: DeliveryRow) {
                     <span class="badge" :class="statusBadge(d.status).cls" data-test="dl-status">{{ statusBadge(d.status).text }}</span>
                     <a
                       v-if="d.pr_url"
-                      :href="d.pr_url"
+                      :href="safeExternalUrl(d.pr_url) || undefined"
                       target="_blank"
                       rel="noopener"
                       class="pr-link"
@@ -474,7 +475,7 @@ async function openDetail(d: DeliveryRow) {
                 <tr v-if="detailRow.commit"><th>commit</th><td><code>{{ detailRow.commit }}</code></td></tr>
                 <tr v-if="detailRow.head_tree"><th>head tree</th><td><code>{{ detailRow.head_tree }}</code></td></tr>
                 <tr v-if="detailRow.base_tree"><th>base tree</th><td><code>{{ detailRow.base_tree }}</code></td></tr>
-                <tr v-if="detailRow.pr_url"><th>PR</th><td><a :href="detailRow.pr_url" target="_blank" rel="noopener">PR #{{ detailRow.pr_number }}</a>（{{ formatTs(detailRow.published_at) }}）</td></tr>
+                <tr v-if="detailRow.pr_url"><th>PR</th><td><a :href="safeExternalUrl(detailRow.pr_url) || undefined" target="_blank" rel="noopener">PR #{{ detailRow.pr_number }}</a>（{{ formatTs(detailRow.published_at) }}）</td></tr>
                 <tr><th>创建</th><td>{{ formatTs(detailRow.created_at) }}</td></tr>
                 <tr v-if="detailRow.delivered_at"><th>送达</th><td>{{ formatTs(detailRow.delivered_at) }}</td></tr>
                 <tr v-if="detailRow.confirmed_at"><th>确认</th><td>{{ formatTs(detailRow.confirmed_at) }}</td></tr>
