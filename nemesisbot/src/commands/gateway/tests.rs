@@ -5704,7 +5704,7 @@ async fn init_cluster_enabled_arms_rpc_call_fn_and_placeholder_snapshot() {
     // 健康探针关闭避免后台探活噪声。
     std::fs::write(
         ws_config.join("config.cluster.json"),
-        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": "gw-test-token"}"#,
     )
     .expect("write config.cluster.json");
 
@@ -6929,7 +6929,7 @@ async fn ci2_rpc_start_error_arm_logged_and_ignored() {
     std::fs::create_dir_all(&ws_config).expect("ws config dir");
     std::fs::write(
         ws_config.join("config.cluster.json"),
-        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": "gw-test-token"}"#,
     )
     .expect("write cluster cfg");
     let wiring = init_cluster(&f.ctx).await.expect("init ok");
@@ -6972,6 +6972,45 @@ async fn ci2_vault_reference_broken_fails_closed() {
     );
 }
 
+/// BUG-20261102-297：空 token 同款 fail-closed——init_cluster 装配后
+/// rpc_auth_unavailable 统一裁决为 true，RPC 绑定点拒绝 bind（宁可没有
+/// RPC，不可无认证 RPC）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_empty_token_fails_closed() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    write_peers_toml(&f.ctx.home, "worker");
+    let ws_config = f.ctx.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": ""}"#,
+    )
+    .expect("write cluster cfg");
+    let wiring = init_cluster(&f.ctx).await.expect("init still ok");
+    let (cluster, _tl, _q, _p) = wiring.cluster_adapter_refs.unwrap();
+    assert!(
+        cluster.rpc_token_missing(),
+        "empty token must trip the token_missing flag"
+    );
+    assert!(
+        !cluster.rpc_reference_broken(),
+        "empty literal is not a broken reference — flags stay distinguishable"
+    );
+    assert!(cluster.rpc_auth_unavailable());
+    assert!(
+        !cluster.rpc_server().expect("server set").is_running(),
+        "fail-closed: RPC must not bind on empty token"
+    );
+}
+
 /// call_fn 自环（registry peer 指向自身 RPC server 的真实 TCP 回环）：
 /// ACK accepted → CD1 TaskManager 登记（成功 + 同 id 幂等 Err 两臂）；
 /// ACK 拒绝 → 占位续行快照清理；非 peer_chat action → 不做 CD5 预生成。
@@ -6991,7 +7030,7 @@ async fn ci2_call_fn_self_loopback_ack_and_cd1_registration() {
     std::fs::create_dir_all(&ws_config).expect("ws config dir");
     std::fs::write(
         ws_config.join("config.cluster.json"),
-        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": "gw-test-token"}"#,
     )
     .expect("write cluster cfg");
     let wiring = init_cluster(&f.ctx).await.expect("init ok");
@@ -7102,7 +7141,7 @@ async fn ci2_recovered_delivery_callback_routes_chat_and_board() {
     std::fs::create_dir_all(&ws_config).expect("ws config dir");
     std::fs::write(
         ws_config.join("config.cluster.json"),
-        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": "gw-test-token"}"#,
     )
     .expect("write cluster cfg");
     let wiring = init_cluster(&f.ctx).await.expect("init ok");
@@ -7382,7 +7421,7 @@ async fn pa2_enabled_cluster_rebuilds_pending_from_board_dispatches() {
     std::fs::create_dir_all(&ws_config).expect("ws config dir");
     std::fs::write(
         ws_config.join("config.cluster.json"),
-        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": "gw-test-token"}"#,
     )
     .expect("write config.cluster.json");
     // 预置在途派发：worker_id 用静态 peer（canonical_peer_id 可解析）。

@@ -463,12 +463,19 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
 
         // Start RPC server (network operation — only when cluster is fully enabled).
         if cluster_should_start {
-            // P0 vault fail-closed：token 引用解析失败 → 拒绝 bind（宁可没有
-            // RPC，不可无认证 RPC）。节点其余功能照常，日志已带补救指引。
-            if cluster.rpc_reference_broken() {
-                error!(
-                    "[Gateway] Cluster RPC auth token 引用解析失败 —— fail-closed：RPC 服务不启动（请修复引用或运行 `nemesisbot vault set <alias>`）"
-                );
+            // P0 vault fail-closed（BUG-20261102-297 扩展）：token 引用解析
+            // 失败**或**为空 → 拒绝 bind（宁可没有 RPC，不可无认证 RPC）。
+            // 节点其余功能照常，日志已带补救指引。
+            if cluster.rpc_auth_unavailable() {
+                if cluster.rpc_reference_broken() {
+                    error!(
+                        "[Gateway] Cluster RPC auth token 引用解析失败 —— fail-closed：RPC 服务不启动（请修复引用或运行 `nemesisbot vault set <alias>`）"
+                    );
+                } else {
+                    error!(
+                        "[Gateway] Cluster RPC auth token 为空 —— fail-closed：RPC 服务不启动（无认证 RPC = 局域网任意主机可驱动本节点 agent）。请运行 `nemesisbot cluster token generate --save`（或重跑 `nemesisbot cluster enable`）后重启网关"
+                    );
+                }
             } else {
                 let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();
                 info!(

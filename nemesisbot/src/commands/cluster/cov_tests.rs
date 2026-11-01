@@ -234,6 +234,9 @@ mod wave5 {
         let g = EnvHomeGuard::new();
         let home = g.home();
         seed(&home);
+        // BUG-20261102-297：空 token 现在先于 bind 被 fail-closed 拦下——
+        // 本测的是 bind 冲突臂，补一个字面量 token 让流程走到 bind。
+        update_cluster_config(&home, "token", serde_json::json!("w5-node-tok-0001")).unwrap();
         // 静态 peers（含 rpc_port 字段）→ run_node 头段装载循环。
         let peers_toml = r#"
 [node]
