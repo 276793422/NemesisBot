@@ -90,6 +90,65 @@ fn test_handler() {
     assert_eq!(called.load(Ordering::SeqCst), 0);
 }
 
+// BUG-20261102-301 回归锁：handler 执行墙钟超过 interval（错过多拍）后
+// 必须恰好补一拍（Delay 语义：从当前时刻重排），不得按默认 Burst 逐拍
+// 补发——本循环的 tick 消费者是完整 agent loop（LLM+工具轮次），逐拍
+// 补发 = 连环心跳执行（LLM 成本放大 + HEARTBEAT.md 任务重复副作用）。
+// paused time 确定性验证：跳过 2.5 个周期后 Delay 恰好 1 次补拍，Burst
+// 会补 2 次。
+#[tokio::test(start_paused = true)]
+async fn test_bug301_missed_tick_not_burst_after_long_gap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+    std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Test task").unwrap();
+
+    let called = Arc::new(AtomicU64::new(0));
+    let called_clone = called.clone();
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_secs(100),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        called_clone.fetch_add(1, Ordering::SeqCst);
+        None
+    }));
+    svc.start().await.unwrap();
+
+    // 先让出：spawn 任务的首次 poll 必须先完成（注册 1s 首拍 timer）——
+    // 相对计时器若在时钟推进后才注册会整体错位（sleep 从推进后的时刻起算）。
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // 首拍：1s sleep 到期 → handler 第 1 次（Go AfterFunc(1s) 节奏）。
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert_eq!(called.load(Ordering::SeqCst), 1);
+
+    // 一次跳过 2.5 个周期（模拟 handler 长执行错过 ticker 多拍）。
+    // ticker 自 t=101s 起每 100s 一拍；t=251s 时 101s/201s 两拍已错过。
+    tokio::time::advance(Duration::from_secs(250)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        called.load(Ordering::SeqCst),
+        2,
+        "missed-tick 补拍必须恰好 1 次（Delay）；默认 Burst 会补 2 次——\
+         tick 消费者是完整 agent loop，逐拍补发 = 连环心跳"
+    );
+
+    // 重排后的下一拍按完整 interval 到来（Delay：t=251+100=351s）。
+    tokio::time::advance(Duration::from_secs(100)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert_eq!(called.load(Ordering::SeqCst), 3);
+
+    svc.stop();
+}
+
 // --- Tests for new methods ---
 
 #[test]
