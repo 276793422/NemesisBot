@@ -8,6 +8,7 @@ import PanelForm from '../components/panel/PanelForm.vue'
 import PanelTimeline from '../components/panel/PanelTimeline.vue'
 import PanelDetail from '../components/panel/PanelDetail.vue'
 import PanelActions from '../components/panel/PanelActions.vue'
+import PanelChart from '../components/panel/PanelChart.vue'
 
 // 面板容器（P2）：/panel/:route → 注册表查页 → 五词汇分块渲染。
 // 取数/动作统一走 plugins.ui.invoke（estop 闸在代理层）；业务失败是
@@ -135,73 +136,79 @@ watch(routeSeg, () => {
 </script>
 
 <template>
-  <div class="panel-view" data-test="panel-view">
+  <!-- 布局契约：根类必须 page- 前缀开头（.main-content > [class^="page-"] 给
+       height:100% + flex 列，main-content 自身 overflow:hidden 永不滚动），
+       内容滚动唯一区域 = page-body。违约形态 = 长内容被裁切且无滚动条。 -->
+  <div class="page-panel panel-view" data-test="panel-view">
     <template v-if="entry">
-      <header class="panel-head">
+      <header class="page-header">
         <h2>{{ entry.page.title }}</h2>
-        <span class="panel-sub">
-          {{ entry.plugin.name }}
-          <template v-if="!entry.plugin.payload && needsGuest">（载荷缺失——插件页检查安装状态）</template>
-        </span>
+        <div class="page-header-actions">
+          <span class="panel-sub">
+            {{ entry.plugin.name }}
+            <template v-if="!entry.plugin.payload && needsGuest">（载荷缺失——插件页检查安装状态）</template>
+          </span>
+        </div>
       </header>
-      <template v-for="(v, i) in entry.page.views" :key="i">
-        <PanelTable
-          v-if="v.kind === 'table'"
-          :decl="v"
-          :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
-          @refresh="loadView(i)"
-        />
-        <PanelDetail
-          v-else-if="v.kind === 'detail'"
-          :decl="v"
-          :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
-          @refresh="loadView(i)"
-        />
-        <PanelTimeline
-          v-else-if="v.kind === 'timeline'"
-          :decl="v"
-          :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
-          @refresh="loadView(i)"
-        />
-        <PanelForm
-          v-else-if="v.kind === 'form'"
-          :decl="v"
-          :busy="busyCommand !== ''"
-          @submit="(vals: Record<string, unknown>) => onFormSubmit(i, vals)"
-        />
-        <PanelActions
-          v-else-if="v.kind === 'actions'"
-          :buttons="v.buttons"
-          :busy="busyCommand !== ''"
-          @run="(b) => runCommand(b.command, {}, b.label)"
-        />
-        <!-- 未知 kind：诚实占位（旧 dashboard 配新插件声明的降级面）。 -->
-        <section v-else class="panel-unknown-kind">未知视图类型：{{ v.kind }}</section>
-      </template>
+      <div class="page-body">
+        <template v-for="(v, i) in entry.page.views" :key="i">
+          <PanelTable
+            v-if="v.kind === 'table'"
+            :decl="v"
+            :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
+            @refresh="loadView(i)"
+          />
+          <PanelDetail
+            v-else-if="v.kind === 'detail'"
+            :decl="v"
+            :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
+            @refresh="loadView(i)"
+          />
+          <PanelTimeline
+            v-else-if="v.kind === 'timeline'"
+            :decl="v"
+            :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
+            @refresh="loadView(i)"
+          />
+          <PanelForm
+            v-else-if="v.kind === 'form'"
+            :decl="v"
+            :busy="busyCommand !== ''"
+            @submit="(vals: Record<string, unknown>) => onFormSubmit(i, vals)"
+          />
+          <PanelActions
+            v-else-if="v.kind === 'actions'"
+            :buttons="v.buttons"
+            :busy="busyCommand !== ''"
+            @run="(b) => runCommand(b.command, {}, b.label)"
+          />
+          <PanelChart
+            v-else-if="v.kind === 'chart'"
+            :decl="v"
+            :state="slots[i] ?? { loading: false, error: '', data: null, from: 'none' }"
+            @refresh="loadView(i)"
+          />
+          <!-- 未知 kind：诚实占位（旧 dashboard 配新插件声明的降级面）。 -->
+          <section v-else class="panel-unknown-kind">未知视图类型：{{ v.kind }}</section>
+        </template>
+      </div>
     </template>
-    <div v-else class="panel-missing" data-test="panel-missing">
-      <h2>面板未找到</h2>
-      <p>
-        路由 <code>/panel/{{ routeSeg }}</code> 不在当前面板注册表中——插件可能未安装、未启用，
-        或注册表尚未加载（稍候自动重试）。
-      </p>
-      <p>可在「插件」页确认 WASM 插件的安装与启用状态。</p>
+    <div v-else class="page-body">
+      <div class="panel-missing" data-test="panel-missing">
+        <h2>面板未找到</h2>
+        <p>
+          路由 <code>/panel/{{ routeSeg }}</code> 不在当前面板注册表中——插件可能未安装、未启用，
+          或注册表尚未加载（稍候自动重试）。
+        </p>
+        <p>可在「插件」页确认 WASM 插件的安装与启用状态。</p>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .panel-view {
-  padding: var(--space-3);
-  max-width: 960px;
-}
-.panel-head {
-  margin-bottom: var(--space-3);
-}
-.panel-head h2 {
-  margin: 0 0 4px 0;
-  font-size: var(--text-xl);
-  color: var(--text-primary);
+  /* 全站 page-* 契约：根不加 max-width/padding——头部带通栏、正文由 page-body 统一内边距 */
 }
 .panel-sub {
   font-size: var(--text-xs);

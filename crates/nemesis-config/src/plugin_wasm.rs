@@ -3,8 +3,16 @@
 //! schema：
 //!
 //! ```json
-//! { "plugins": { "<slug>": { "enabled": false, "config": {} } } }
+//! { "panel_llm": { "enabled": false },
+//!   "plugins": { "<slug>": { "enabled": false, "config": {} } } }
 //! ```
+//!
+//! `panel_llm.enabled`（2026-11-01 决策 C）：面板帧 llm-complete 总闸，
+//! **缺省 false**——插件 manifest 还须 `x-llm = true` 声明（双闸，任一缺 =
+//! 帧内恒 unavailable）。每调用现读无缓存（[`runtime_enabled`] 同款热语义）：
+//! 开关翻转即时生效，无需重启。选本文件而非 config.json 做真相源：本文件
+//! 已有读改写函数 + config 写锁 + fail-closed 纪律，且不受 typed save_config
+//! 影响（config.json 顶层未知段会被 typed 保存静默丢弃）。
 //!
 //! **缺省语义 = enabled=false**（文件/键缺席按未启用处理——与 native 插件
 //! 的缺省启用相反：wasm 组件无论 sha256/签名/信任态如何一律默认不加载，
@@ -38,8 +46,39 @@ pub struct WasmSwitch {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
 struct SwitchFile {
+    /// 面板 LLM 总闸（缺省缺席 = false；`skip_serializing_if` 保老文件
+    /// 字节稳定——开关从未打开过就不落键）。
+    #[serde(default, skip_serializing_if = "panel_llm_off")]
+    panel_llm: PanelLlmSwitch,
     #[serde(default)]
     plugins: BTreeMap<String, WasmSwitch>,
+}
+
+/// 面板帧 llm-complete 总闸（manifest `x-llm` 声明之外的授权面）。
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, Default)]
+struct PanelLlmSwitch {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    enabled: bool,
+}
+
+/// `skip_serializing_if` 谓词：panel_llm 整段关（= 缺省）时不序列化。
+fn panel_llm_off(s: &PanelLlmSwitch) -> bool {
+    !s.enabled
+}
+
+/// 面板帧 llm-complete 总闸现读（每调用读盘，无缓存——开关翻转即时生效；
+/// 文件缺席/损坏 = false，fail-closed 与整个文件同一纪律）。
+#[must_use]
+pub fn panel_llm_enabled(config_dir: &Path) -> bool {
+    read_switch_file(config_dir).panel_llm.enabled
+}
+
+/// 写面板 LLM 总闸（读-改-写；罩 config 家族写串行锁）。
+pub fn set_panel_llm(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    let _serial = crate::config_write_lock();
+    let mut file = read_switch_file(config_dir);
+    file.panel_llm.enabled = enabled;
+    write_switch_file(config_dir, &file)
 }
 
 /// 旧 per-slug 实例文件形态（`config/plugins/<slug>.json`，已退役）。

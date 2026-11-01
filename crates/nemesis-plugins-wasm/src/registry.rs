@@ -697,13 +697,23 @@ impl PluginManager {
             workspace_root: self.workspace_root.clone(),
             egress: reg.egress.clone(),
             invoker: self.invoker.lock().clone(),
-            // LLM 面只授策略插件（契约 = host_impl::LlmInvoker「只有策略帧
-            // 可用」；调用时闸在 cb_llm_complete，这里供给面再收一道纵深：
-            // tool/observer 帧构造期即 None。2026-10-24 R70 帧纪律补齐）。
-            llm: if *reg.manifest.kind == PluginKind::Policy {
-                self.llm.lock().clone()
-            } else {
-                None
+            // LLM 面授予（供给面单一裁决点；调用时闸在 cb_llm_complete 再收
+            // 一道纵深）：policy 帧按 kind 硬规则授（2026-10-24 R70 帧纪律）；
+            // panel 帧走双闸 = manifest `[permissions] x-llm` 声明 × 宿主总闸
+            // `panel_llm_enabled`（2026-11-01 决策 C；总闸每调用现读无缓存
+            // ——翻转即时生效，帧是 fresh-store-per-call 无驻留会话）。
+            // tool/observer 帧构造期即 None。
+            llm: match *reg.manifest.kind {
+                PluginKind::Policy => self.llm.lock().clone(),
+                PluginKind::Panel
+                    if reg.manifest.permissions.x_llm
+                        && nemesis_config::plugin_wasm::panel_llm_enabled(
+                            &self.workspace_root.join("config"),
+                        ) =>
+                {
+                    self.llm.lock().clone()
+                }
+                _ => None,
             },
             data_dir: reg.data_dir.clone(),
             audit: self.audit.lock().clone(),

@@ -757,6 +757,55 @@ fn panel_flow_template_validation_matrix() {
 }
 
 // ---------------------------------------------------------------------------
+// 2026-11-01 决策 C：面板 LLM 总闸——manifest `x-llm` 声明位校验矩阵。
+// （授予裁决本体在 registry::build_frame，端到端归 e2e_guest::panel_llm_dual_gate。）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn x_llm_manifest_validation_matrix() {
+    // panel + x-llm 声明 → 解析过且落字段。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\n{PANEL_HEAD}\
+         [permissions]\nx-llm = true\n\n{}",
+        "a".repeat(64),
+        one_page()
+    );
+    let m = PluginManifest::parse(&raw)
+        .expect("panel x-llm must parse")
+        .0;
+    assert!(m.permissions.x_llm, "x-llm = true must land on x_llm");
+
+    // panel + 显式 false → 过（等价未声明）。
+    let raw = raw.replace("x-llm = true", "x-llm = false");
+    let m = PluginManifest::parse(&raw)
+        .expect("panel x-llm=false must parse")
+        .0;
+    assert!(!m.permissions.x_llm);
+
+    // 非 panel kind 声明 → loud 拒（tool/observer 帧无 llm 面；policy 帧
+    // llm 走 kind 硬规则，声明 = 死键 = manifest 写错信号）。
+    for kind in ["tool", "observer", "policy"] {
+        let raw = format!(
+            "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"demo\"\nkind = \"{kind}\"\n\
+             name = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+             [permissions]\nx-llm = true\n",
+            "a".repeat(64)
+        );
+        let err = parse_raw(&raw).unwrap_err();
+        assert!(
+            err.contains("requires kind=panel"),
+            "kind={kind} declaring x-llm must be rejected: {err}"
+        );
+    }
+
+    // 缺省（无 permissions 段）→ x_llm = false（老 manifest 零迁移）。
+    // 带载荷形态（纯声明式零页面在页数闸就被拒，到不了本断言）。
+    let raw = format!("wasm-sha256 = \"{}\"\n{}", "a".repeat(64), PANEL_HEAD);
+    let m = PluginManifest::parse(&raw).expect("parse").0;
+    assert!(!m.permissions.x_llm, "absent key defaults false");
+}
+
+// ---------------------------------------------------------------------------
 // 2026-10-31 面板扩展批：面板注册面（声明式载荷诚实报错 + 路由跨插件唯一）
 // ---------------------------------------------------------------------------
 

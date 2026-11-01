@@ -17,6 +17,8 @@
 //! egress = []                # 精确域名 allowlist；空 = 无出站
 //! allow-private = false
 //! x-secret = ["api_key"]     # 凭据名声明（vault:plugin/<slug>/<name>）
+//! x-llm = true               # 面板帧 llm-complete 声明（仅 kind=panel 消费；
+//!                            # 还须宿主总闸 panel_llm.enabled 打开才生效）
 //!
 //! [limits]                   # 可选；只允许在宿主全局上限内收紧
 //! fuel = 100_000_000
@@ -30,13 +32,14 @@
 //! route = "bugfix"
 //! title = "BUG 修复流水线"
 //! [[ui.page.views]]
-//! kind = "table"                      # form|table|timeline|detail|actions
+//! kind = "table"                      # form|table|timeline|detail|actions|chart
 //! bind = "flow://bugfix-pipeline/list"  # flow:// 宿主代答 | cmd://<cmd> guest
 //! [[flow.template]]
 //! id = "bugfix-pipeline"
 //! [[flow.template.steps]]
 //! id = "fetch"
 //! kind = "connector_fetch"
+//! when = "{{steps.fetch.count}} > 0"  # 可选条件（宿主求值；假=跳过该步）
 //! gate = "manual"                     # manual = 面板人工卡点
 //! on_fail = "retry:3"                 # park_human(缺省) | retry:<1-10> | continue
 //! ```
@@ -99,13 +102,24 @@ pub struct ManifestPermissions {
     /// 凭据名声明（x-secret；进入 vault 别名约定）。
     #[serde(default, rename = "x-secret")]
     pub x_secret: Vec<String>,
+    /// 面板帧 llm-complete 声明（2026-11-01 决策 C）。仅 `kind=panel`
+    /// 消费（build_frame 授予面）；还须宿主总闸
+    /// `panel_llm_enabled(config_dir)` 打开才生效——双闸任一缺 = 帧内
+    /// 恒 unavailable。policy 帧不受此键影响（其 llm 授予走 kind 硬规则）。
+    #[serde(default, rename = "x-llm")]
+    pub x_llm: bool,
 }
 
-/// 面板视图词汇表（v1 五种；2026-10-31 面板扩展批）。
+/// 面板视图词汇表（v1 六种；2026-10-31 面板扩展批，chart 加入 =
+/// 2026-11-01 决策 A）。
 ///
 /// 骨架由宿主预置组件渲染，插件永不自带 HTML/JS（三方任意前端代码 =
-/// XSS/凭据窃取面）。超出词汇表的呈现诉求等 v2 iframe 沙盒通道。
-pub const UI_VIEW_KINDS: &[&str] = &["form", "table", "timeline", "detail", "actions"];
+/// XSS/凭据窃取面）。超出词汇表的呈现诉求等 v2 iframe 沙盒通道；
+/// tree/自由布局明确不做（声明式自由布局 = 重新发明前端模板引擎）。
+pub const UI_VIEW_KINDS: &[&str] = &["form", "table", "timeline", "detail", "actions", "chart"];
+
+/// chart 视图支持的图表类型（echarts 预置渲染器词表）。
+pub const CHART_TYPES: &[&str] = &["line", "bar", "pie"];
 
 /// flow step 原语词表（v1 六种；宿主 flow 引擎的绑定面）。
 pub const FLOW_STEP_KINDS: &[&str] = &[
@@ -185,6 +199,16 @@ pub struct UiView {
     /// actions 按钮定义。
     #[serde(default)]
     pub buttons: Vec<UiButton>,
+    /// chart 图表类型（[`CHART_TYPES`]；仅 kind=chart 消费，其余 kind
+    /// 声明 = loud 拒——manifest 写错信号）。
+    #[serde(default)]
+    pub chart: String,
+    /// chart X 轴/类目字段（行 JSON 的字段名；仅 kind=chart 消费）。
+    #[serde(default, rename = "x-key")]
+    pub x_key: String,
+    /// chart 系列定义（每项一条线/一柱组/一饼扇；仅 kind=chart 消费）。
+    #[serde(default)]
+    pub series: Vec<UiColumn>,
 }
 
 /// 面板页面声明（`[[ui.page]]`）。
@@ -222,6 +246,13 @@ pub struct FlowStep {
     /// 步骤参数（如 connector id、op id、模板变量；语义由 step kind 定）。
     #[serde(default)]
     pub args: BTreeMap<String, String>,
+    /// 运行条件（2026-11-01 决策 B）：单比较表达式 `{{token}} <op> <值>`，
+    /// op ∈ == != > >= < <=；左侧先过 token 插值（含 `steps.<id>.<field>`）
+    /// 再求值；两侧都能转数字按数值比，否则按字符串比。求值假 = 步骤记
+    /// **skipped** 并同 tick 顺延到下一步；表达式畸形（算不出布尔）= 步骤
+    /// 诚实失败（走 on_fail）。宿主求值，guest 无参与。
+    #[serde(default)]
+    pub when: String,
 }
 
 /// flow 剧本模板声明（`[[flow.template]]`）。
@@ -522,6 +553,15 @@ impl PluginManifest {
                 ));
             }
         }
+        // x-llm 声明位校验（2026-11-01 决策 C）：仅 panel 可声明——tool/
+        // observer 帧无 llm 消费面（callbacks 闸按 kind 拒），policy 帧
+        // llm 走 kind 硬规则授予（声明了也是死键 = manifest 写错信号）。
+        if self.permissions.x_llm && *self.kind != PluginKind::Panel {
+            return Err(PluginError::Manifest(format!(
+                "permissions.x-llm requires kind=panel (kind={} frames have no llm surface)",
+                self.kind.as_str()
+            )));
+        }
         // 接管声明校验（2026-10-23 工具接管层）：仅 tool kind；目标名形态 +
         // deny-list（宿主特权语义——沙盒内 guest 无法诚实兑现，接管一律拒）。
         if !self.takeover.is_empty() {
@@ -646,6 +686,7 @@ impl PluginManifest {
                         )));
                     }
                     validate_on_fail(tpl.id.as_str(), step)?;
+                    validate_when(tpl.id.as_str(), step)?;
                 }
             }
         }
@@ -697,6 +738,52 @@ fn validate_view(view: &UiView) -> Result<(), PluginError> {
                 view.bind
             )));
         }
+    }
+    // chart 视图（2026-11-01 决策 A）：图表类型 + X 轴字段 + 系列定义，
+    // 数据仍走 bind 投影行（与 table 同源）；专用段与其他词汇互斥。
+    if view.kind == "chart" {
+        if !CHART_TYPES.contains(&view.chart.as_str()) {
+            return Err(PluginError::Manifest(format!(
+                "ui view bind '{}' kind=chart: invalid chart type '{}' (allowed: {})",
+                view.bind,
+                view.chart,
+                CHART_TYPES.join("|")
+            )));
+        }
+        if view.x_key.is_empty() {
+            return Err(PluginError::Manifest(format!(
+                "ui view bind '{}' kind=chart needs x-key (category axis field)",
+                view.bind
+            )));
+        }
+        if view.series.is_empty() {
+            return Err(PluginError::Manifest(format!(
+                "ui view bind '{}' kind=chart needs at least one series",
+                view.bind
+            )));
+        }
+        for s in &view.series {
+            if s.key.is_empty() || s.label.is_empty() {
+                return Err(PluginError::Manifest(format!(
+                    "ui view bind '{}': series key/label must be non-empty",
+                    view.bind
+                )));
+            }
+        }
+        if !view.columns.is_empty() || !view.fields.is_empty() || !view.buttons.is_empty() {
+            return Err(PluginError::Manifest(format!(
+                "ui view bind '{}' kind=chart forbids columns/fields/buttons sections",
+                view.bind
+            )));
+        }
+        return Ok(());
+    }
+    // 非 chart 视图声明 chart 专用段 = manifest 写错信号（跨词汇段互斥）。
+    if !view.chart.is_empty() || !view.x_key.is_empty() || !view.series.is_empty() {
+        return Err(PluginError::Manifest(format!(
+            "ui view bind '{}': chart/x-key/series only apply to kind=chart",
+            view.bind
+        )));
     }
     match view.kind.as_str() {
         // table/detail 都靠列定义渲染行（detail = 键值逐行）；零列无法呈现。
@@ -777,5 +864,32 @@ fn validate_on_fail(template_id: &str, step: &FlowStep) -> Result<(), PluginErro
     Err(PluginError::Manifest(format!(
         "flow.template '{template_id}' step '{}': invalid on_fail '{}' (park_human|retry:<1-10>|continue)",
         step.id, step.on_fail
+    )))
+}
+
+/// when 条件形态静态校验（2026-11-01 决策 B）：非空时必须含比较算子
+/// 且两侧非空。算子匹配按二字优先（`>=` 不被 `>` 吞掉）。token 插值与
+/// 求值在运行期（token 值装配期不可知），这里只抓拼写级畸形。
+fn validate_when(template_id: &str, step: &FlowStep) -> Result<(), PluginError> {
+    if step.when.is_empty() {
+        return Ok(());
+    }
+    const OPS: &[&str] = &["==", "!=", ">=", "<=", ">", "<"];
+    for op in OPS {
+        if let Some(idx) = step.when.find(op) {
+            let left = step.when[..idx].trim();
+            let right = step.when[idx + op.len()..].trim();
+            if left.is_empty() || right.is_empty() {
+                return Err(PluginError::Manifest(format!(
+                    "flow.template '{template_id}' step '{}': invalid when '{}' (both sides of '{op}' must be non-empty)",
+                    step.id, step.when
+                )));
+            }
+            return Ok(());
+        }
+    }
+    Err(PluginError::Manifest(format!(
+        "flow.template '{template_id}' step '{}': invalid when '{}' (expected <left> <op> <right>, op: == != >= <= > <)",
+        step.id, step.when
     )))
 }

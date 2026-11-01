@@ -219,6 +219,7 @@ fn tpl(id: &str, kinds: &[&str]) -> FlowTemplate {
                 id: format!("s{i}"),
                 kind: (*k).to_string(),
                 gate: String::new(),
+                when: String::new(),
                 on_fail: String::new(),
                 args: Default::default(),
             })
@@ -783,4 +784,116 @@ fn entry_string_dot_path_and_literal_fallback() {
     let obj: Value = serde_json::json!({"fields": {"summary": {"x": 1}}, "flag": true});
     assert_eq!(entry_string(&obj, "fields.summary"), None);
     assert_eq!(entry_string(&obj, "flag"), None);
+}
+
+// ---------------------------------------------------------------------------
+// 决策 B：when 条件步（eval_when / skip_step / steps.<id>.<field> 投影）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_when_semantics() {
+    // 数值对按数值比。
+    assert!(eval_when("10 >= 9").unwrap());
+    assert!(!eval_when("9 > 10").unwrap());
+    assert!(eval_when("3.14 == 3.14").unwrap());
+    assert!(eval_when("2 != 3").unwrap());
+    assert!(eval_when("1 <= 1").unwrap());
+    assert!(eval_when("1 < 2").unwrap());
+    // 非数值对按字符串比（== 全等 / > 字典序）。
+    assert!(eval_when("done == done").unwrap());
+    assert!(eval_when("'done' == done").unwrap(), "成对引号剥离");
+    assert!(eval_when("\"failed\" != ok").unwrap());
+    assert!(eval_when("beta > alpha").unwrap());
+    assert!(
+        !eval_when("9 > abc").unwrap(),
+        "混对退字符串字典序（'9' < 'a'）"
+    );
+    // 同位时长 op 先中（>= / <= 不被单字符误拆）。
+    assert!(eval_when("5 >= 5").unwrap());
+    assert!(eval_when("5 <= 5").unwrap());
+    // 左值含比较符形态：最左命中是确定性文档化行为。
+    assert!(!eval_when("a >= b >= c").unwrap());
+    // 畸形 → Err（调用方按失败走 on_fail，不静默）。
+    assert!(eval_when("just text").is_err(), "无比较符");
+    assert!(eval_when("== right").is_err(), "左空");
+    assert!(eval_when("left ==").is_err(), "右空");
+}
+
+#[test]
+fn skip_step_marks_skipped_and_advances() {
+    let flows = FlowStore::new(&temp_ws("skip"));
+    let mut inst = inst_with_steps(
+        "tpl",
+        &[
+            ("cond", KIND_LAND, "", "park_human"),
+            ("after", KIND_REPORT, "", ""),
+        ],
+    );
+    skip_step(&flows, &mut inst, "1 == 2");
+    assert_eq!(inst.steps[0].status, StepStatus::Skipped);
+    assert_eq!(inst.steps[0].artifacts["skipped_when"], "1 == 2");
+    assert!(inst.steps[0].finished_at_ms.is_some());
+    assert_eq!(inst.current_step, 1);
+    assert!(inst.parked.is_none(), "跳过不走 on_fail（跳过不是失败）");
+    assert!(inst.gaps.is_empty(), "跳过不是缺口");
+}
+
+#[test]
+fn substitute_tokens_steps_projection() {
+    let mut inst = inst_with_steps(
+        "tpl",
+        &[("land", KIND_LAND, "", ""), ("fix", KIND_FIXLOOP, "", "")],
+    );
+    inst.steps[0].status = StepStatus::Ok;
+    inst.steps[1].attempts = 2;
+    inst.steps[1].error = Some("第一次派发失败".to_string());
+
+    let out = substitute_tokens(
+        "{{steps.land.status}}/{{steps.fix.attempts}}/{{steps.fix.error}}",
+        &inst,
+        &serde_json::json!({}),
+    );
+    assert_eq!(out, "ok/2/第一次派发失败");
+    // 未知 id / 未知 field = 原样保留（诚实不猜，模板写错可见）。
+    assert_eq!(
+        substitute_tokens("[{{steps.ghost.status}}]", &inst, &serde_json::json!({})),
+        "[{{steps.ghost.status}}]"
+    );
+    assert_eq!(
+        substitute_tokens("[{{steps.land.mystery}}]", &inst, &serde_json::json!({})),
+        "[{{steps.land.mystery}}]"
+    );
+}
+
+#[test]
+fn when_pipeline_interpolate_then_eval() {
+    // advance_template 接线形态（纯函数级）：先内插（含 steps 投影 + 账面
+    // 产物）再求值——true 推进 / false 跳过 / Err 失败三分支的数据基础。
+    let mut inst = inst_with_steps(
+        "tpl",
+        &[("land", KIND_LAND, "", ""), ("reg", KIND_REGRESS, "", "")],
+    );
+    inst.steps[0].status = StepStatus::Ok;
+    inst.steps[0].artifacts = serde_json::json!({ "board_issue": "NB-9" });
+    inst.current_step = 1;
+
+    // 条件引用前步投影 → true。
+    let rendered = substitute_tokens("{{steps.land.status}} == ok", &inst, &serde_json::json!({}));
+    assert!(eval_when(&rendered).unwrap());
+    // 条件引用账面产物 + 字符串比较（board_issue 非数值形态）。
+    let rendered = substitute_tokens("{{board_issue}} >= NB-1", &inst, &serde_json::json!({}));
+    assert!(eval_when(&rendered).unwrap());
+    // false 分支：状态不匹配。
+    let rendered = substitute_tokens(
+        "{{steps.land.status}} == running",
+        &inst,
+        &serde_json::json!({}),
+    );
+    assert!(!eval_when(&rendered).unwrap());
+    // 畸形（token 不在账面且无值语义）原样保留后仍可判 → false 而非 Err。
+    let rendered = substitute_tokens("{{unknown_token}} == x", &inst, &serde_json::json!({}));
+    assert!(
+        !eval_when(&rendered).unwrap(),
+        "残留 token 按字符串比较，确定性 false"
+    );
 }

@@ -104,9 +104,10 @@ pub trait HostToolInvoker: Send + Sync {
 
 /// 杂务 LLM 补全面（gateway 注入；2026-10-22 样板工程批 4）。实现 =
 /// Weak<AgentLoop> 委托 `chore_completion`（bypass_llm 护栏同源 + estop
-/// fail-closed + small_model 杂务槽）。policy 帧纪律：只有策略帧可用
-///（observer 帧恒 unavailable——同 tool-invoke 收窄理由：观察路径不授
-/// LLM 花销能力）。
+/// fail-closed + small_model 杂务槽）。帧纪律：policy 帧（kind 硬规则）
+/// 与 panel 帧（双闸 manifest `x-llm` × 总闸 `panel_llm_enabled`，2026-11-01
+/// 决策 C）可用；observer 帧恒 unavailable（观察路径不授 LLM 花销能力）。
+/// 授予裁决集中在 registry::build_frame，这里只消费帧内是否在场。
 pub trait LlmInvoker: Send + Sync {
     /// 杂务补全一次（max_tokens 已由调用方钳上限；Err = 失败文本）。
     fn complete(

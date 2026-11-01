@@ -14,6 +14,23 @@ const toastError = vi.fn()
 vi.mock('../../composables/useToast', () => ({
   useToast: () => ({ success: toastSuccess, error: toastError, warn: vi.fn(), info: vi.fn() }),
 }))
+// echarts 按需装载 mock：vitest（jsdom 无 canvas）不拉真 echarts，只验容器
+// 面取数/渲染接线；echarts 本体的装载与注册归 build 门（vite 构建验证拆包）。
+vi.mock('../../components/panel/echartsLoader', () => ({
+  loadECharts: () =>
+    Promise.resolve({
+      init: () => {
+        const inst = {
+          setOption: vi.fn(),
+          resize: vi.fn(),
+          dispose: vi.fn(),
+        }
+        ;(inst as any).__setOption = inst.setOption
+        return inst
+      },
+      use: vi.fn(),
+    }),
+}))
 
 import PanelView from '../../views/PanelView.vue'
 import { usePanels } from '../../composables/usePanels'
@@ -96,6 +113,53 @@ const FLOW_PANEL = {
 // 行带 instance/state 等字段）——夹具镜像运行时，不从断言反推。
 const FLOW_LIST = {
   rows: [{ instance: 'I-1', ext_key: 'BUG-1', title: '样例实例', state: 'running' }],
+}
+
+// chart 面板（2026-11-01 决策 A）：bind 取数 → PanelChart 渲染（echarts 装载
+// mock 化，只验容器接线与空态/未知类型诚实面）。
+const CHART_PANEL = {
+  slug: 'chart-panel',
+  name: '图表面板',
+  payload: false,
+  pages: [
+    {
+      route: 'chart',
+      title: '图表面板',
+      icon: 'puzzle',
+      views: [
+        {
+          kind: 'chart',
+          bind: 'flow://bugfix-pipeline/metrics',
+          chart: 'line',
+          x_key: 'day',
+          columns: [],
+          fields: [],
+          buttons: [],
+          series: [
+            { key: 'count', label: '数量' },
+            { key: 'score', label: '分数' },
+          ],
+        },
+        {
+          kind: 'chart',
+          bind: 'flow://bugfix-pipeline/ghostchart',
+          chart: 'treemap',
+          x_key: 'day',
+          columns: [],
+          fields: [],
+          buttons: [],
+          series: [{ key: 'count', label: '数量' }],
+        },
+      ],
+    },
+  ],
+}
+
+const CHART_ROWS = {
+  rows: [
+    { day: '周一', count: 3, score: 8.5 },
+    { day: '周二', count: 5, score: 7 },
+  ],
 }
 
 /** 匹配 command 的 ui.invoke 调用列表（每个元素 = [module, cmd, data, timeout]）。 */
@@ -287,5 +351,25 @@ describe('PanelView', () => {
     await flushPromises()
     expect(wrapper.find('[data-test="panel-view"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('NB-1')
+  })
+
+  it('chart 视图：bind 取数 → 图表块渲染；未知图表类型诚实占位', async () => {
+    requestMock.mockReset()
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'ui.registry') return Promise.resolve({ panels: [CHART_PANEL] })
+      if (data?.command === 'flow://bugfix-pipeline/metrics') return Promise.resolve(CHART_ROWS)
+      return Promise.resolve({ rows: [] })
+    })
+    const wrapper = await mountAt('/panel/chart')
+    const blocks = wrapper.findAll('[data-test="panel-chart"]')
+    expect(blocks).toHaveLength(2)
+    // 第一个块拿到数据（echarts mock 的 init/setOption 被调）——取数接线成立。
+    await flushPromises()
+    await new Promise((r) => setTimeout(r, 10))
+    await flushPromises()
+    // 第二个块：treemap 不在词表 → 诚实占位（不猜渲染）。
+    expect(blocks[1].text()).toContain('未知图表类型：treemap')
+    // bind 取数按 flow:// 全串透传（同 table 语义）。
+    expect(invokeCalls('flow://bugfix-pipeline/metrics')).toHaveLength(1)
   })
 })

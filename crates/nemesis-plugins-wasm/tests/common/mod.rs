@@ -5,6 +5,8 @@
 //! 与 adversarial.rs 的 wasm fixture 构建同纪律）；产物路径经
 //! `NEMESIS_WASM_HOST_DLL` 注入 loader（env 候选序第一——测试二进制在
 //! `target/debug/deps/`，exe-相邻与仓库开发路径都摸不到壳产物）。
+//! 开发路径 DLL 被运行中 gateway 进程锁住（Windows 加载中文件不可替换）时
+//! 回落独立 target-dir（`target/host-dll-fallback`）重建，不要求杀服务。
 //!
 //! 壳是本仓库一等公民（同工具链同源码），构建失败按环境错误 loud 失败，
 //! 不做 SKIP——与 wasm32 fixture（需额外 target + 网络）的 SKIP 语义区分。
@@ -55,27 +57,50 @@ fn build_host_dll() -> Option<PathBuf> {
     // 本地全量红 27 例而 CI 全新 checkout 无缓存不受影响。改为：产物缺席
     // 或任一源文件比产物新（checkout/提交都会刷新 mtime，方向恒安全）→ 重建。
     if !out.exists() || dll_is_stale(&out, &crate_dir) {
-        let cargo = std::env::var_os("CARGO")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("cargo"));
-        let mut cmd = std::process::Command::new(cargo);
-        cmd.args(["build", "--release"]).current_dir(&crate_dir);
-        // 隔离外层 cargo 注入（嵌套 cargo 目标目录 / 编码 flags 串扰）。
-        for k in [
-            "CARGO_TARGET_DIR",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "CARGO_BUILD_TARGET",
-        ] {
-            cmd.env_remove(k);
-        }
-        match cmd.status() {
-            Ok(s) if s.success() => {}
-            s => {
-                eprintln!("宿主壳 DLL 构建失败：{s:?}");
-                return None;
-            }
+        if build_shell(crate_dir.as_path(), None).is_none() {
+            // Windows：开发路径 DLL 是 loader 候选序末端，运行中的 gateway
+            // 进程（开发树起的服务）会把它锁住（链接期 os error 5 拒绝访问）
+            // ——回落独立 target-dir 重建（同源同 flags，仅输出路径不同），
+            // 测试不必杀用户现场服务。
+            let fallback_root = crate_dir.join("target/host-dll-fallback");
+            return build_shell(crate_dir.as_path(), Some(&fallback_root));
         }
     }
+    out.exists().then_some(out)
+}
+
+/// 在壳 crate 跑 `cargo build --release`；`target_dir`=Some 时经
+/// `CARGO_TARGET_DIR` 重定向输出（fallback 用），返回产物路径。
+fn build_shell(
+    crate_dir: &std::path::Path,
+    target_dir: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    let cargo = std::env::var_os("CARGO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+    let mut cmd = std::process::Command::new(cargo);
+    cmd.args(["build", "--release"]).current_dir(crate_dir);
+    // 隔离外层 cargo 注入（嵌套 cargo 目标目录 / 编码 flags 串扰）。
+    for k in [
+        "CARGO_TARGET_DIR",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_TARGET",
+    ] {
+        cmd.env_remove(k);
+    }
+    if let Some(td) = target_dir {
+        cmd.env("CARGO_TARGET_DIR", td);
+    }
+    match cmd.status() {
+        Ok(s) if s.success() => {}
+        s => {
+            eprintln!("宿主壳 DLL 构建失败：{s:?}");
+            return None;
+        }
+    }
+    let out = target_dir
+        .map(|td| td.join("release").join(dll_file_name()))
+        .unwrap_or_else(|| crate_dir.join("target/release").join(dll_file_name()));
     out.exists().then_some(out)
 }
 

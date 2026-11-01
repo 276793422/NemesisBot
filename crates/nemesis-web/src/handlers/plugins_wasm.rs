@@ -13,7 +13,9 @@
 //! 命令（module=`plugins`，cmd 带 `wasm.` 前缀，由 plugins.rs 代理）：
 //! `wasm.list` / `wasm.install` / `wasm.enable` / `wasm.disable` /
 //! `wasm.uninstall` / `wasm.config.get` / `wasm.config.set` / `wasm.logs` /
-//! `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块宿主槽）。
+//! `wasm.panel_llm.get` / `wasm.panel_llm.set`（面板 LLM 总闸，2026-11-01
+//! 决策 C）/ `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块
+//! 宿主槽）。
 //! 面板通道（cmd 带 `ui.` 前缀，同由 plugins.rs 代理；estop 闸在代理层）：
 //! `ui.registry`（声明面聚合）/ `ui.invoke`（guest `handle-ui-command`
 //! 转发，2026-10-31 面板扩展批）。
@@ -151,6 +153,7 @@ fn row_of(
         "min_tier": m.min_tier,
         "egress": m.permissions.egress,
         "x_secret": m.permissions.x_secret,
+        "x_llm": m.permissions.x_llm,
         "tool": reg.tool_meta.as_ref().map(|t| serde_json::json!({
             "name": t.name,
             "base": t.base,
@@ -258,6 +261,7 @@ fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
                 "takes_over": m.takeover,
                 "egress": m.permissions.egress,
                 "x_secret": m.permissions.x_secret,
+                "x_llm": m.permissions.x_llm,
                 "data_dir": mgr.plugin_data_dir(&slug).display().to_string(),
             }),
             Err(e) => pending_row(
@@ -677,6 +681,81 @@ pub fn cmd_logs(slug: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "slug": slug, "lines": rows, "dropped": dropped }))
 }
 
+/// `wasm.panel_llm.get`：面板 LLM 总闸状态 + 已声明 `[permissions] x-llm`
+/// 的插件清单投影（声明面 toml 直读，装载态另注——与 `ui.registry` 同
+/// 纪律：声明与运行态解耦）。总闸真相源 `<config>/config.plugin.wasm.json`
+/// 的 `panel_llm.enabled`（缺省 false）。
+pub fn cmd_panel_llm_get() -> Result<serde_json::Value, String> {
+    panel_llm_get_impl(require_installer()?.as_ref())
+}
+
+fn panel_llm_get_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
+    let mgr = &installer.manager;
+    let enabled =
+        nemesis_config::plugin_wasm::panel_llm_enabled(&mgr.workspace_root().join("config"));
+    let switches = switch_map(mgr);
+    let mut discovered: Vec<std::path::PathBuf> = match std::fs::read_dir(mgr.plugins_dir()) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.join("plugin.toml").is_file())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    discovered.sort();
+    let mut plugins: Vec<serde_json::Value> = Vec::new();
+    for pdir in discovered {
+        let slug = pdir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let Ok((m, _)) = nemesis_plugins_wasm::manifest::PluginManifest::load_from_dir(&pdir)
+        else {
+            continue;
+        };
+        if !m.permissions.x_llm {
+            continue;
+        }
+        plugins.push(serde_json::json!({
+            "slug": slug,
+            "name": m.name,
+            "enabled": switches.get(&slug).is_some_and(|sw| sw.enabled),
+            "loaded": mgr.get(&slug).is_some(),
+        }));
+    }
+    Ok(serde_json::json!({ "enabled": enabled, "plugins": plugins }))
+}
+
+/// `wasm.panel_llm.set {enabled}`：翻面板 LLM 总闸。热生效（build_frame
+/// 每次 UI 帧现读，无驻留会话可挂旧值）；落 `config.plugin.wasm.json`
+/// 重启保持。语义：总闸 × manifest `x-llm` 声明双闸（build_frame 单点
+/// 授予），模型槽 = `agents.small_model`（未配置回落主模型——UI 文案照实）。
+pub fn cmd_panel_llm_set(data: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
+    panel_llm_set_impl(require_installer()?.as_ref(), data)
+}
+
+fn panel_llm_set_impl(
+    installer: &PluginInstaller,
+    data: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let data = data.ok_or("missing data")?;
+    let enabled = data
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or("enabled (bool) is required")?;
+    nemesis_config::plugin_wasm::set_panel_llm(
+        &installer.manager.workspace_root().join("config"),
+        enabled,
+    )
+    .map_err(|e| format!("写面板 LLM 开关失败: {e}"))?;
+    tracing::info!(
+        target: "plugins",
+        enabled,
+        "panel llm total switch toggled (wasm.panel_llm.set)"
+    );
+    Ok(serde_json::json!({ "enabled": enabled }))
+}
+
 /// `ui.registry`：面板声明面聚合——扫 `plugins_wasm/` 载荷目录，取
 /// `kind=panel` 且开关 enabled 的插件，投影 `{slug, name, payload,
 /// pages:[{route,title,icon,views:[...]}]}`。声明面投影（toml 直读）与
@@ -772,6 +851,14 @@ fn project_view(v: &nemesis_plugins_wasm::manifest::UiView) -> serde_json::Value
                     "danger": b.danger,
                 })
             })
+            .collect::<Vec<_>>(),
+        // chart 专用段（2026-11-01 决策 A）：非 chart 视图恒空值（前端忽略）。
+        "chart": v.chart,
+        "x_key": v.x_key,
+        "series": v
+            .series
+            .iter()
+            .map(|c| serde_json::json!({ "key": c.key, "label": c.label }))
             .collect::<Vec<_>>(),
     })
 }
@@ -910,6 +997,8 @@ pub async fn handle(
             let slug = require_slug(data.as_ref())?;
             cmd_logs(&slug).map(Some)
         }
+        "panel_llm.get" => cmd_panel_llm_get().map(Some),
+        "panel_llm.set" => cmd_panel_llm_set(data.as_ref()).map(Some),
         _ => Err(format!("unknown command: plugins.wasm.{cmd}")),
     }
 }

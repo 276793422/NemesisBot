@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nemesis_plugins_wasm::host_impl::SecretResolver;
+use nemesis_plugins_wasm::host_impl::{LlmInvoker, SecretResolver};
 use nemesis_plugins_wasm::install::{
     AutoApprove, InstallApprover, InstallReview, PluginInstaller, WASM_MAX_BYTES,
 };
@@ -881,4 +881,108 @@ async fn panel_install_roundtrip_and_ui_invoke() {
         .unwrap_err();
     assert!(err.to_string().contains("not loaded"), "{err}");
     let _ = ws; // tempdir 生命周期保持到断言结束
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-01 决策 C：面板 llm-complete 双闸（manifest `x-llm` 声明 ×
+// `panel_llm.enabled` 总闸，缺省 false）。授予裁决在 registry::build_frame
+// （私有，无公开帧访问器——crate 纪律 src 零内联测试），可观察面 = guest
+// 夹具 `llm_probe` 命令消费帧内 llm 是否在场。宿主 invoker 用测试桩。
+// ---------------------------------------------------------------------------
+
+/// LLM 双闸变体：同面板 + `[permissions] x-llm = true`（单源派生防漂移）。
+fn panel_echo_llm_toml() -> String {
+    PANEL_ECHO_TOML.replace(
+        "description = \"e2e fixture panel\"\n",
+        "description = \"e2e fixture panel\"\n\n[permissions]\nx-llm = true\n",
+    )
+}
+
+/// 测试桩 invoker：恒回固定标记文本。
+struct StubLlm;
+
+impl LlmInvoker for StubLlm {
+    fn complete(
+        &self,
+        _prompt: &str,
+        _max_tokens: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Ok("stub-llm-ok".to_string()) })
+    }
+}
+
+/// 装好 panel-echo（给定 manifest）并接好 llm 桩，返回 (workspace, manager)。
+async fn staged_llm_panel(
+    toml_body: String,
+) -> Result<(tempfile::TempDir, Arc<PluginManager>, PluginInstaller), Box<dyn std::error::Error>> {
+    let Some(wasm) = fixture_wasm("panel-echo", "panel_echo_plugin") else {
+        return Err("fixture missing".into());
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), toml_body, &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("panel-echo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+    mgr.set_llm(Arc::new(StubLlm));
+    Ok((ws, mgr, installer))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_llm_dual_gate_hot() {
+    let Ok((ws, mgr, _installer)) = staged_llm_panel(panel_echo_llm_toml()).await else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let config_dir = mgr.workspace_root().join("config");
+    let probe = |mgr: &Arc<PluginManager>| {
+        let mgr = mgr.clone();
+        async move {
+            mgr.invoke_ui("panel-echo", r#"{"command":"llm_probe"}"#.into())
+                .await
+                .expect("llm_probe")
+        }
+    };
+
+    // ① 总闸缺省 false（文件缺席）→ 帧内 llm 缺席 → guest 诚实报 unavailable。
+    let reply = probe(&mgr).await;
+    assert!(reply.contains("\"llm\":\"unavailable\""), "reply: {reply}");
+
+    // ② 开闸（写真相源）→ 下一次调用即生效（fresh-store-per-call 热语义）。
+    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, true).expect("set on");
+    let reply = probe(&mgr).await;
+    assert!(
+        reply.contains("\"llm\":\"ok:stub-llm-ok\""),
+        "双闸齐 → invoker 文本透传: {reply}"
+    );
+
+    // ③ 关闸 → 立刻回到 unavailable（无缓存，关也是热的）。
+    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, false).expect("set off");
+    let reply = probe(&mgr).await;
+    assert!(reply.contains("\"llm\":\"unavailable\""), "reply: {reply}");
+    let _ = ws;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_llm_missing_declaration_stays_denied() {
+    // 总闸开 + 无 `x-llm` 声明 → 仍然 denied（双闸是 AND，声明位不可省）。
+    let Ok((_ws, mgr, _installer)) = staged_llm_panel(PANEL_ECHO_TOML.to_string()).await else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let config_dir = mgr.workspace_root().join("config");
+    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, true).expect("set on");
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"llm_probe"}"#.into())
+        .await
+        .expect("llm_probe");
+    assert!(
+        reply.contains("\"llm\":\"unavailable\""),
+        "未声明 x-llm 的面板即使总闸开也不得拿到 llm 面: {reply}"
+    );
 }

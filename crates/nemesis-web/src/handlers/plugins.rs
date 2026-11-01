@@ -411,6 +411,10 @@ impl ModuleHandler for PluginsHandler {
             #[cfg(feature = "plugins-wasm")]
             "wasm.logs",
             #[cfg(feature = "plugins-wasm")]
+            "wasm.panel_llm.get",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.panel_llm.set",
+            #[cfg(feature = "plugins-wasm")]
             "wasm.devkit_download",
             #[cfg(feature = "plugins-wasm")]
             "ui.registry",

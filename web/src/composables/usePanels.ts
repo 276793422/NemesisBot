@@ -40,14 +40,20 @@ export interface PanelButton {
   danger?: boolean
 }
 
-/** 视图声明（v0 五词汇：form/table/timeline/detail/actions）。 */
+/** 视图声明（v1 六词汇：form/table/timeline/detail/actions/chart）。 */
 export interface PanelViewDecl {
   kind: string
-  /** `cmd://<command>`（guest）或 `flow://<template>/<view>`（P3 流程引擎）。 */
+  /** `cmd://<command>`（guest）或 `flow://<template>/<view>`（流程引擎）。 */
   bind: string
   columns: PanelColumn[]
   fields: PanelField[]
   buttons: PanelButton[]
+  /** chart 图表类型（line|bar|pie；manifest CHART_TYPES；仅 kind=chart）。 */
+  chart?: string
+  /** chart 类目轴/X 轴字段（行 JSON 字段名；仅 kind=chart）。 */
+  x_key?: string
+  /** chart 系列定义（每项一条线/一柱组/一饼扇；仅 kind=chart）。 */
+  series?: PanelColumn[]
 }
 
 export interface PanelPage {

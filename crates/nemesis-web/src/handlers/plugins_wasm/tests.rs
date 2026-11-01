@@ -361,3 +361,101 @@ async fn flow_binding_routing_contract() {
     assert_eq!(out["view"], "list");
     assert_eq!(out["got_instance"], "I-1");
 }
+
+// ==================== 面板 LLM 总闸（2026-11-01 决策 C） ====================
+
+/// 纯声明式面板 manifest fixture（无 wasm 载荷——panel 免 sha 闸），
+/// `with_llm` 控制 `[permissions] x-llm` 段有无。
+fn write_panel_manifest(dir: &std::path::Path, slug: &str, with_llm: bool) {
+    let pdir = dir.join("plugins_wasm").join(slug);
+    std::fs::create_dir_all(&pdir).expect("payload dir");
+    let perms = if with_llm {
+        "\n[permissions]\nx-llm = true\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        pdir.join("plugin.toml"),
+        format!(
+            "api-version = 1\nslug = \"{slug}\"\nkind = \"panel\"\nname = \"{slug}\"\nversion = \"0.1.0\"\ndescription = \"panel-llm fixture\"\n\n[[ui.page]]\nroute = \"{slug}\"\ntitle = \"T\"\n{perms}"
+        ),
+    )
+    .expect("manifest");
+}
+
+#[test]
+fn panel_llm_get_projects_x_llm_declarations_with_default_off() {
+    // 投影契约：只收声明 x-llm 的面板插件（未声明的普通面板不进清单）；
+    // 总闸缺省 false；行 enabled=载荷开关位、loaded=注册表态，与总闸正交。
+    let (dir, inst) = temp_installer();
+    write_panel_manifest(dir.path(), "llmpanel", true);
+    write_panel_manifest(dir.path(), "plainpanel", false);
+    let out = panel_llm_get_impl(&inst).expect("get ok");
+    assert_eq!(out["enabled"], false, "缺省关（决策 C 用户拍板）");
+    let plugins = out["plugins"].as_array().expect("plugins");
+    assert_eq!(plugins.len(), 1, "未声明 x-llm 的面板不进清单: {plugins:?}");
+    assert_eq!(plugins[0]["slug"], "llmpanel");
+    assert_eq!(plugins[0]["name"], "llmpanel");
+    assert_eq!(plugins[0]["enabled"], false, "无开关记录 = 未装载");
+    assert_eq!(plugins[0]["loaded"], false, "注册表缺席 = 未加载");
+    // 声明插件的载荷开关翻开后照读（开关位 ≠ 总闸，两层独立）。
+    nemesis_config::plugin_wasm::set_enabled(
+        &dir.path().join("workspace").join("config"),
+        "llmpanel",
+        true,
+    )
+    .expect("switch");
+    let out = panel_llm_get_impl(&inst).expect("get ok");
+    assert_eq!(out["enabled"], false, "载荷开关不影响总闸投影");
+    assert_eq!(
+        out["plugins"][0]["enabled"], true,
+        "开关记录位翻开后行 enabled=true"
+    );
+}
+
+#[test]
+fn panel_llm_set_validates_and_roundtrips_via_config_truth() {
+    // set 路径直注 impl（不走全局槽——OnceLock 首胜 + 并行 TempDir 先删
+    // 竞态，同 list_impl 直注纪律）：校验臂 + config 真相源往返 + get 投影联动。
+    let (dir, inst) = temp_installer();
+    assert_eq!(
+        panel_llm_set_impl(&inst, None).unwrap_err(),
+        "missing data",
+        "缺 data 诚实报错"
+    );
+    assert_eq!(
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({ "enabled": "yes" }))).unwrap_err(),
+        "enabled (bool) is required",
+        "非 bool enabled 拒绝（字符串不猜）"
+    );
+    assert_eq!(
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({}))).unwrap_err(),
+        "enabled (bool) is required",
+        "缺 enabled 键同拒绝"
+    );
+    // 开 → config 落盘真相 + get 投影联动 + 往返幂等。
+    let out =
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({ "enabled": true }))).expect("set on");
+    assert_eq!(out["enabled"], true);
+    assert!(
+        nemesis_config::plugin_wasm::panel_llm_enabled(
+            &dir.path().join("workspace").join("config")
+        ),
+        "config 真相源已落盘"
+    );
+    assert_eq!(
+        panel_llm_get_impl(&inst).expect("get ok")["enabled"],
+        true,
+        "get 与 set 同源联动"
+    );
+    // 关 → 回落（重启保持语义的写半边由 config 层单测钉，此处钉 handler 面）。
+    let out =
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({ "enabled": false }))).expect("set off");
+    assert_eq!(out["enabled"], false);
+    assert!(
+        !nemesis_config::plugin_wasm::panel_llm_enabled(
+            &dir.path().join("workspace").join("config")
+        ),
+        "关后 config 真相回落"
+    );
+}

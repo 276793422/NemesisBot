@@ -319,3 +319,67 @@ fn runtime_gate_malformed_master_falls_to_shell_switch() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+// ==================== 面板 LLM 总闸 panel_llm（2026-11-01 决策 C） ====================
+//
+// 真相源 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`
+// （缺省 false）。与 per-slug 开关同文件同锁；false 时键整体省略（既有文件
+// 消费者零感知）；热语义 = 每次 build_frame 现读（无缓存）。
+
+#[test]
+fn panel_llm_defaults_false_and_set_roundtrips_hot() {
+    let dir = temp_config_dir("panel_llm");
+    let _g = SERIAL.lock().unwrap();
+    assert!(
+        !panel_llm_enabled(&dir),
+        "文件缺席 = 缺省 false（LLM 花销能力不默认开）"
+    );
+    assert!(!plugin_wasm_config_path(&dir).exists(), "纯读不得落盘");
+    set_panel_llm(&dir, true).unwrap();
+    assert!(panel_llm_enabled(&dir), "写开 = 读开");
+    set_panel_llm(&dir, false).unwrap();
+    assert!(!panel_llm_enabled(&dir), "写关 = 读关（热语义：无缓存）");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn panel_llm_set_preserves_per_slug_siblings() {
+    let dir = temp_config_dir("panel_llm_sib");
+    let _g = SERIAL.lock().unwrap();
+    set_enabled(&dir, "alpha", true).unwrap();
+    set_panel_llm(&dir, true).unwrap();
+    set_panel_llm(&dir, false).unwrap();
+    assert!(
+        switch(&dir, "alpha").enabled,
+        "翻面板总闸不得抹掉 per-slug 开关"
+    );
+    set_enabled(&dir, "beta", true).unwrap();
+    assert!(!panel_llm_enabled(&dir), "翻 per-slug 开关不得惊动面板总闸");
+    assert!(switch(&dir, "alpha").enabled);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn panel_llm_key_shape_stable_for_existing_files() {
+    let dir = temp_config_dir("panel_llm_shape");
+    let _g = SERIAL.lock().unwrap();
+    // 既有文件（升级前形态）：只有 per-slug 开关，无 panel_llm 键。
+    std::fs::write(
+        plugin_wasm_config_path(&dir),
+        "{\n  \"plugins\": {\n    \"alpha\": {\n      \"enabled\": true\n    }\n  }\n}\n",
+    )
+    .unwrap();
+    // 开闸：panel_llm 键出现、per-slug 原样保留。
+    set_panel_llm(&dir, true).unwrap();
+    let raw = std::fs::read_to_string(plugin_wasm_config_path(&dir)).unwrap();
+    assert!(raw.contains("\"panel_llm\""), "开闸后键必须落盘");
+    assert!(raw.contains("\"alpha\""), "既有条目保留");
+    // 关闸：panel_llm 键整体省略（skip_serializing_if）——文件回到升级前形态，
+    // 既有消费者（旧版本二进制解析该文件）零感知。
+    set_panel_llm(&dir, false).unwrap();
+    let raw = std::fs::read_to_string(plugin_wasm_config_path(&dir)).unwrap();
+    assert!(!raw.contains("panel_llm"), "关闸后键整体省略");
+    assert!(raw.contains("\"alpha\""), "既有条目仍保留");
+    assert!(raw.ends_with('\n'), "尾随换行形态稳定");
+    let _ = std::fs::remove_dir_all(&dir);
+}

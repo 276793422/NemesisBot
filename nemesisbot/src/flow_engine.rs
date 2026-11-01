@@ -84,6 +84,22 @@ pub enum StepStatus {
     Ok,
     /// 失败（on_fail 分支裁决后可能重试/停车/带隙续跑）。
     Failed,
+    /// 条件步不成立被跳过（决策 B：when=false 同 tick 推进，留痕不执行）。
+    Skipped,
+}
+
+impl StepStatus {
+    /// serde rename_all = "snake_case" 的文本形态（条件步 steps.<id>.status
+    /// 投影与 timeline state 词汇共用，与磁盘序列化字节一致）。
+    fn as_str(&self) -> &'static str {
+        match self {
+            StepStatus::Pending => "pending",
+            StepStatus::Running => "running",
+            StepStatus::Ok => "ok",
+            StepStatus::Failed => "failed",
+            StepStatus::Skipped => "skipped",
+        }
+    }
 }
 
 /// 步骤运行时状态（模板声明 + 执行投影）。
@@ -97,6 +113,10 @@ pub struct StepRun {
     pub attempts: u32,
     /// `manual` = 面板卡点；空 = 无卡点。
     pub gate: String,
+    /// 条件声明（决策 B）：空 = 无条件恒执行；非空 = 单比较式
+    /// `{{token}} <op> <值>`，host 侧求值（见 eval_when）——false 跳过本步，
+    /// 畸形按失败走 on_fail。
+    pub when: String,
     /// `park_human` | `retry:N` | `continue`；空 = park_human（防御默认）。
     pub on_fail: String,
     /// gate 已确认（manual 卡点的放行凭据）。
@@ -119,6 +139,7 @@ impl Default for StepRun {
             status: StepStatus::Pending,
             attempts: 0,
             gate: String::new(),
+            when: String::new(),
             on_fail: String::new(),
             gate_confirmed: false,
             args: BTreeMap::new(),
@@ -136,6 +157,7 @@ impl StepRun {
             id: step.id.clone(),
             kind: step.kind.clone(),
             gate: step.gate.clone(),
+            when: step.when.clone(),
             on_fail: step.on_fail.clone(),
             args: step.args.clone(),
             ..Default::default()
@@ -439,6 +461,19 @@ impl FlowStore {
                         "ts_ms": ts,
                         "state": "failed",
                     })),
+                    StepStatus::Skipped => {
+                        let why = s
+                            .artifacts
+                            .get("skipped_when")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        events.push(json!({
+                            "title": title,
+                            "detail": format!("条件不成立已跳过（{why}）"),
+                            "ts_ms": ts,
+                            "state": "skipped",
+                        }));
+                    }
                     _ => {}
                 }
             }
@@ -721,6 +756,20 @@ fn substitute_tokens(tpl: &str, inst: &FlowInstance, extra: &Value) -> String {
             "ext_key" => Some(inst.ext_key.clone()),
             "title" => Some(inst.title.clone()),
             "board_issue" | "report_path" => ledger_then_extra(key),
+            // 步骤投影（决策 B 条件步数据源）：steps.<id>.<field>，field 词表
+            // status/error/attempts。未知 id/field = None（token 原样保留，
+            // 模板写错可见）。
+            other if other.starts_with("steps.") => {
+                let (_, rest) = other.split_once('.').expect("prefix checked");
+                let (id, field) = rest.split_once('.')?;
+                let step = inst.steps.iter().find(|s| s.id == id)?;
+                match field {
+                    "status" => Some(step.status.as_str().to_string()),
+                    "error" => Some(step.error.clone().unwrap_or_default()),
+                    "attempts" => Some(step.attempts.to_string()),
+                    _ => None,
+                }
+            }
             other => extra.get(other).map(|v| match v {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -1054,7 +1103,23 @@ impl FlowEngine {
             }
             let cur = inst.steps[inst.current_step].clone();
             match cur.status {
-                StepStatus::Ok | StepStatus::Failed => continue,
+                StepStatus::Ok | StepStatus::Failed | StepStatus::Skipped => continue,
+                StepStatus::Pending if !cur.when.is_empty() => {
+                    // 决策 B 条件步：先 token 内插（含 steps.<id>.<field> 投影）
+                    // 再求值。true = gate/start 语义照旧；false = Skipped 同
+                    // tick 推进；畸形 = 按失败走 on_fail（诚实不静默）。
+                    let rendered = substitute_tokens(&cur.when, &inst, &json!({}));
+                    match eval_when(&rendered) {
+                        Ok(true) => {
+                            if !cur.gate.is_empty() && !cur.gate_confirmed {
+                                continue; // 条件成立但 manual gate 未放行，照旧等
+                            }
+                            self.start_step(&mut inst, &cur).await;
+                        }
+                        Ok(false) => skip_step(&self.flows, &mut inst, &rendered),
+                        Err(e) => fail_step(&self.flows, &mut inst, &format!("条件式畸形: {e}")),
+                    }
+                }
                 StepStatus::Pending if !cur.gate.is_empty() && !cur.gate_confirmed => continue,
                 StepStatus::Pending => self.start_step(&mut inst, &cur).await,
                 StepStatus::Running => self.poll_step(&mut inst, &cur).await,
@@ -1335,6 +1400,75 @@ fn fail_step(flows: &FlowStore, inst: &mut FlowInstance, error: &str) {
         }
     }
     let _ = flows.save(inst);
+}
+
+/// 条件步不成立（决策 B）：Skipped 留痕（条件式进 artifacts，面板可见）
+/// + 游标同 tick 推进——不执行步骤本体，不走 on_fail（跳过不是失败）。
+fn skip_step(flows: &FlowStore, inst: &mut FlowInstance, rendered_when: &str) {
+    if let Some(step) = inst.steps.get_mut(inst.current_step) {
+        step.status = StepStatus::Skipped;
+        step.artifacts = json!({ "skipped_when": rendered_when });
+        step.finished_at_ms = Some(now_ms());
+    }
+    inst.current_step += 1;
+    inst.updated_at_ms = now_ms();
+    let _ = flows.save(inst);
+}
+
+/// 条件求值（决策 B）：单比较 `左 <op> 右`。op 词表 `==`/`!=`/`>=`/`<=`/
+/// `>`/`<`（两字符 op 先于单字符命中——按首次出现位置取最早，同位取长）。
+/// 两侧 trim + 成对引号剥离；两侧均可解析为数字按数值比，否则按字符串比
+/// （`==`/`!=` 全等，`>`/`<` 字典序）。畸形（无 op / 空侧）→ Err，调用方
+/// 按失败走 on_fail。
+fn eval_when(rendered: &str) -> Result<bool, String> {
+    // 闭包的显式 `-> &str` 返回注解会引入独立生命周期（不吃实参省略规则），
+    // 嵌套 fn 走函数省略：唯一入参生命周期约束全部输出。
+    fn strip_quotes(s: &str) -> &str {
+        let t = s.trim();
+        if t.len() >= 2
+            && ((t.starts_with('"') && t.ends_with('"'))
+                || (t.starts_with('\'') && t.ends_with('\'')))
+        {
+            &t[1..t.len() - 1]
+        } else {
+            t
+        }
+    }
+    const OPS: [&str; 6] = ["==", "!=", ">=", "<=", ">", "<"];
+    let hit = OPS
+        .iter()
+        .filter_map(|op| rendered.find(op).map(|pos| (pos, *op)))
+        .min_by_key(|(pos, op)| (*pos, std::cmp::Reverse(op.len()))); // 同位时长 op（>=/>）先中
+    let (pos, op) = hit.ok_or_else(|| "无非比较符（== != >= <= > <）".to_string())?;
+    let op_len = op.len();
+    let left = strip_quotes(&rendered[..pos]);
+    let right = strip_quotes(&rendered[pos + op_len..]);
+    if left.is_empty() {
+        return Err("比较符左侧为空".to_string());
+    }
+    if right.is_empty() {
+        return Err("比较符右侧为空".to_string());
+    }
+    let (ln, rn) = (left.parse::<f64>(), right.parse::<f64>());
+    let outcome = match (ln, rn) {
+        (Ok(a), Ok(b)) => match op {
+            "==" => a == b,
+            "!=" => a != b,
+            ">=" => a >= b,
+            "<=" => a <= b,
+            ">" => a > b,
+            _ => a < b,
+        },
+        _ => match op {
+            "==" => left == right,
+            "!=" => left != right,
+            ">=" => left >= right,
+            "<=" => left <= right,
+            ">" => left > right,
+            _ => left < right,
+        },
+    };
+    Ok(outcome)
 }
 
 // ---------------------------------------------------------------------------

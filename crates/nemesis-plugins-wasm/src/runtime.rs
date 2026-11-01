@@ -37,7 +37,9 @@ pub(crate) struct CallFrame {
     pub(crate) workspace_root: std::path::PathBuf,
     pub(crate) egress: Arc<crate::egress::EgressPolicy>,
     pub(crate) invoker: Option<Arc<dyn HostToolInvoker>>,
-    /// 杂务 LLM 补全面（policy 帧授权；None = 未装配恒 unavailable）。
+    /// 杂务 LLM 补全面（policy 帧授权 + panel 帧双闸授权
+    /// `[permissions] x-llm` × 总闸 `panel_llm_enabled`；None = 未装配恒
+    /// unavailable）。授予裁决集中在 registry::build_frame。
     pub(crate) llm: Option<Arc<dyn LlmInvoker>>,
     pub(crate) data_dir: std::path::PathBuf,
     pub(crate) audit: Option<crate::host_impl::SharedAuditLogger>,
@@ -320,8 +322,10 @@ impl PluginRuntime {
     /// 调用一次面板命令（ui.handle-ui-command；JSON 进出，墙钟同通用上限）。
     ///
     /// 帧纪律：非观察者帧（guest 动作要经 invoker 走 tool-invoke 全闸）；
-    /// llm 恒 None（LLM 花销只授循环治理路径，面板通道无此预算）；session
-    /// key 从入参投影抽取（审计 user 字段，策略点同源）。
+    /// llm 只在 build_frame 双闸授予时在场（manifest `x-llm` × 宿主总闸
+    /// `panel_llm_enabled`，2026-11-01 决策 C——授予裁决在供给面单一收口，
+    /// 这里不二次改写；未授予 = None 恒 unavailable）；session key 从入参
+    /// 投影抽取（审计 user 字段，策略点同源）。
     pub(crate) async fn call_ui(
         &self,
         comp: u64,
@@ -330,7 +334,6 @@ impl PluginRuntime {
     ) -> Result<String, PluginError> {
         frame.observer_frame = false;
         frame.kind = PluginKind::Panel;
-        frame.llm = None;
         frame.session_key = extract_session_key(&input_json);
         let timeout_ms = frame.limits.timeout_ms;
         let name = "handle-ui-command";

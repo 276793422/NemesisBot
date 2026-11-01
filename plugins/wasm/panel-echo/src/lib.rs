@@ -11,6 +11,8 @@
 //! - `fail`：业务失败形态 `{"error":...}`（渲染层诚实展示，非 trap）。
 //! - `trap`：故意 panic（宿主错误面归约路径）。
 //! - `probe`：宿主能力面自检摘要（log / now / tool-invoke 预期 unavailable）。
+//! - `llm_probe`：面板帧 llm-complete 探针（宿主双闸裁决的可观察面——
+//!   granted = 回宿主 invoker 文本；否则诚实报 unavailable）。
 //!
 //! 注意：args 解析是夹具级的子串匹配（不做通用 JSON 解析），三方插件
 //! 请用 serde_json 之类正经实现。
@@ -61,6 +63,17 @@ impl Guest for PanelEchoPlugin {
                 };
                 host::log(LogLevel::Info, "panel probe end");
                 Ok(format!(r#"{{"ok":true,"now":{now},"invoke":"{invoke_note}"}}"#))
+            }
+            "llm_probe" => {
+                // 面板帧 llm-complete：授予由宿主 build_frame 双闸裁决
+                // （manifest x-llm × panel_llm 总闸），这里只消费帧内是否在场。
+                match host::llm_complete("panel llm probe", 32) {
+                    Ok(text) => Ok(format!(r#"{{"ok":true,"llm":"ok:{text}"}}"#)),
+                    Err(HostError::Unavailable(_)) => {
+                        Ok(r#"{"ok":true,"llm":"unavailable"}"#.to_string())
+                    }
+                    Err(_) => Ok(r#"{"ok":true,"llm":"other-error"}"#.to_string()),
+                }
             }
             other => Ok(format!(r#"{{"error":"unknown command: {other}"}}"#)),
         }

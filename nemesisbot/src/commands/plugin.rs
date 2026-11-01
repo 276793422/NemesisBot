@@ -93,6 +93,14 @@ pub enum PluginAction {
         #[arg(long)]
         name: Option<String>,
     },
+    /// 面板 LLM 总闸（2026-11-01 决策 C）。无参 = 查看状态；`on` / `off`
+    /// = 翻闸（写 `config.plugin.wasm.json`，运行中 gateway 热生效——面板
+    /// UI 帧逐次现读，重启保持）。语义 = manifest `[permissions] x-llm`
+    /// 声明 × 本总闸双闸；模型槽 `agents.small_model`（未配置回落主模型）。
+    PanelLlm {
+        /// on | off（缺省 = 只查看当前状态）
+        state: Option<String>,
+    },
 }
 
 fn err_msg(e: nemesis_plugins_wasm::PluginError) -> anyhow::Error {
@@ -553,6 +561,48 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                     entry.name,
                     trust_path(&home).display()
                 );
+            }
+        }
+        PluginAction::PanelLlm { state } => {
+            let config_dir = common::workspace_path(&home).join("config");
+            match state.as_deref() {
+                None => {
+                    let enabled = nemesis_config::plugin_wasm::panel_llm_enabled(&config_dir);
+                    println!(
+                        "面板 LLM 总闸: {}",
+                        if enabled { "开" } else { "关（缺省）" }
+                    );
+                    println!(
+                        "  语义 : manifest [permissions] x-llm 声明 × 本总闸双闸（任一缺 = 拒答）"
+                    );
+                    println!("  模型 : agents.small_model 杂务槽（未配置诚实回落主模型）");
+                    println!("  开关 : `plugin panel-llm on|off` 或 Dashboard 插件页");
+                    println!(
+                        "  文件 : {}",
+                        config_dir.join("config.plugin.wasm.json").display()
+                    );
+                }
+                Some(s) => {
+                    let on = match s.to_ascii_lowercase().as_str() {
+                        "on" | "true" | "yes" => true,
+                        "off" | "false" | "no" => false,
+                        other => anyhow::bail!("非法状态: {other}（可选 on|off）"),
+                    };
+                    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, on)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    // 盘上真相回读（持久化失败不得静默报成功——Trust 同纪律）。
+                    let now = nemesis_config::plugin_wasm::panel_llm_enabled(&config_dir);
+                    if now == on {
+                        println!("面板 LLM 总闸已{}", if on { "开启" } else { "关闭" });
+                        println!("  生效 : 运行中 gateway 热生效（面板 UI 帧逐次现读）；重启保持");
+                    } else {
+                        anyhow::bail!(
+                            "开关持久化失败：写入后回读不符（期望 {}，读到 {}）",
+                            on,
+                            now
+                        );
+                    }
+                }
             }
         }
     }
