@@ -5445,6 +5445,61 @@ async fn test_logs_cluster_task_list_parses_dirs() {
 }
 
 #[tokio::test]
+async fn test_logs_cluster_task_list_device_filter_sanitized() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    // 正常设备目录：一个任务。
+    let dev_dir = dir.path().join("logs/cluster_logs").join("node-abc");
+    write_request_log_dir(
+        &dev_dir,
+        "2026-06-17_10-00-00-123_t8x7a3f9",
+        "glm-4.7",
+        "peer hi",
+    );
+    // 树外诱饵目录：形如 cluster 设备任务的子目录——穿越过滤不消毒时
+    // 会被当成 device 行列出来（列表泄漏）。cluster_logs 上两级正是
+    // workspace 根，`../outside` 从 root 出发恰好命中这里。
+    write_request_log_dir(
+        &dir.path().join("outside"),
+        "2026-06-17_10-00-00-123_zev9x1aa",
+        "glm-4.7",
+        "should not leak",
+    );
+
+    let ctx = make_ctx(&dir);
+    let handler = LogsHandler;
+
+    // 穿越过滤：消毒后不命中任何设备目录 → 空 entries（树外诱饵不泄漏）。
+    let data = serde_json::json!({ "device_id": "../../outside" });
+    let res = handler
+        .handle_cmd("cluster_task_list", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(res["entries"].as_array().unwrap().len(), 0);
+
+    // 合法过滤：精确命中该设备的一个任务（消毒对合法名恒等）。
+    let data = serde_json::json!({ "device_id": "node-abc" });
+    let res = handler
+        .handle_cmd("cluster_task_list", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let entries = res["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "t8x7a3f9");
+
+    // 不存在的设备：空 entries（与穿越过滤同语义，不报错）。
+    let data = serde_json::json!({ "device_id": "node-ghost" });
+    let res = handler
+        .handle_cmd("cluster_task_list", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(res["entries"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn test_logs_unknown_command_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path());

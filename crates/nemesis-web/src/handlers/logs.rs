@@ -962,7 +962,12 @@ impl LogsHandler {
 
         let local = local_node_id(ctx);
         let device_dirs: Vec<PathBuf> = if let Some(ref dev) = device_filter {
-            vec![root.join(dev)]
+            // SAN-05 家族契约：id 形参数进路径前过白名单消毒（同文件
+            // cluster_task_detail 的 task_id、request_detail 的 id 同纪律）。
+            // device_id 来自 WSAPI 参数，穿越/绝对路径形态不消毒会把树外
+            // 目录当 device 行列出来（列表泄漏 + 语义错乱）；消毒后不存在的
+            // 名字与「无此设备」同语义，自然落到空 entries。
+            vec![root.join(sanitize_session_key(dev))]
                 .into_iter()
                 .filter(|p| p.exists())
                 .collect()
