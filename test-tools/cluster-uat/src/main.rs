@@ -12418,7 +12418,12 @@ async fn main() {
         if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
             return fail("T43", format!("issue.dispatch unexpected: {disp}"));
         }
-        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 30).await {
+        // 60s 而非 30s：worker 拾取派发走 dispatch sweep（默认 interval=20s，
+        // 重启后计时器重置首拍最多 +20s），满载 runner 上 30s 余量不足
+        // （CI 41273770830 attempt2 T46 40.5min 龄真红实录：30s 现态仍
+        // ["dispatched"]）；60s = 3 个 sweep 拍的余量，与 10405/13003 两处
+        // 既有 60s 先例对齐。冻结/击杀窗口锚在 running 之后，不削弱断言。
+        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 60).await {
             return fail("T43", e);
         }
 
@@ -12810,7 +12815,7 @@ async fn main() {
         if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
             return fail("T46", format!("issue.dispatch unexpected: {disp}"));
         }
-        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 30).await {
+        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 60).await {
             return fail("T46", e);
         }
 
