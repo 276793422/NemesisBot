@@ -293,6 +293,97 @@ pub fn exec_rule_bucket_match(
     }
 }
 
+/// 敏感 flag 词表 + 放行臂二次校验（L01，2026-11-01）。
+///
+/// 动机：pattern 归约（审批记忆 `git push *`、规则表 allow `git push *`）
+/// 不区分破坏性 flag——已批准过 `git push origin main` 的用户，此后敲
+/// `git push --force origin main` 会被 pattern **静默放行**。消费点在
+/// auditor 的两个自动放行臂（规则表 allow 遍 / F3 审批记忆
+/// auto_by_rule）：命中非空 = 不自动放行，降级弹卡 + 审计 `flag_hit=`。
+/// 会话 allow-all / 免打扰开关是用户显式无人值守意志，**刻意不拦**
+/// （显式意图优先）。
+///
+/// 输入契约：[`exec_rule_segments`] 的产物（已归一化小写/剥引号/合并
+/// 空白/剥 env 头）。引号内文本不判 flag 由「命令头 gated」保证——头
+/// 不在词表的段（如 `echo`）整段跳过，`echo "--force"` 归一化剥引号后
+/// 也不会命中。子命令按**任意位置精确 token** 认（`git -C repo push`
+/// 的全局选项前置形态照常命中；代价是提交消息文本恰含词表组合的极端
+/// 误拦——fail-closed 方向，只多弹一次卡）。
+///
+/// 返回去重后的命中 flag 规范名（审计 reason 用；空 = 无命中 = 放行
+/// 不受影响）。词表从紧：只收明确破坏性项，每加一项都要论证误拦率。
+pub fn scan_dangerous_flags(segs: &[String]) -> Vec<&'static str> {
+    let mut hits: Vec<&'static str> = Vec::new();
+    for seg in segs {
+        let tokens: Vec<&str> = seg.split(' ').filter(|t| !t.is_empty()).collect();
+        let Some(raw_head) = tokens.first() else {
+            continue;
+        };
+        // 命令头按 basename 认（/usr/bin/git、git.exe 同命中——与
+        // extract_interpreter_payloads 的 bin_key 同口径）。
+        let base = raw_head.rsplit(['/', '\\']).next().unwrap_or(raw_head);
+        let head = base.strip_suffix(".exe").unwrap_or(base);
+        let rest = &tokens[1.min(tokens.len())..];
+        let has = |f: &str| rest.contains(&f);
+        let starts = |p: &str| rest.iter().any(|t| t.starts_with(p));
+        let has_sub = |s: &str| rest.contains(&s);
+        match head {
+            "git" => {
+                // --force-with-lease 认前缀（`--force-with-lease=main` 带
+                // 等号值形态常用）；-f 精确（--follow-tags 不误拦）。
+                if has_sub("push") && (has("--force") || has("-f") || starts("--force-with-lease"))
+                {
+                    hits.push("--force");
+                } else if has_sub("reset") && has("--hard") {
+                    hits.push("--hard");
+                } else if has_sub("clean")
+                    && rest.iter().any(|t| t.starts_with('-') && t.contains('f'))
+                {
+                    // clean 词表内含 f 的组合全破坏性（-f/-fd/-dfx…）
+                    hits.push("-f");
+                } else if (has_sub("checkout") || has_sub("restore")) && has("--force") {
+                    hits.push("--force");
+                }
+            }
+            "rm" => {
+                // 组合串（-rf/-fr/-rdf…含 r 且含 f）+ 分写（-r -f /
+                // --recursive --force——字符级组合打不中分写，单独认；
+                // 段已小写化，-R 不可能出现在归一化产物里）。
+                let combo = rest.iter().any(|t| {
+                    t.len() > 1
+                        && t.starts_with('-')
+                        && !t.starts_with("--")
+                        && t.contains('r')
+                        && t.contains('f')
+                });
+                let split = (has("-r") && has("-f")) || (has("--recursive") && has("--force"));
+                if combo || split {
+                    hits.push("-rf");
+                }
+            }
+            // //f 是 git-bash 转义形态（MSYS 路径转换），与 /f 同义。
+            "taskkill" if has("/f") || has("//f") => {
+                hits.push("/f");
+            }
+            "docker" => {
+                // 子命令序列任意位置含 rm/rmi，或 system prune /
+                // volume rm 相邻对形态（docker system prune -f --volumes）
+                let destructive = rest.iter().any(|t| *t == "rm" || *t == "rmi")
+                    || rest.windows(2).any(|w| {
+                        (w[0] == "system" && w[1] == "prune") || (w[0] == "volume" && w[1] == "rm")
+                    });
+                if destructive && (has("--force") || has("-f")) {
+                    hits.push("--force");
+                }
+            }
+            _ => {}
+        }
+    }
+    hits.sort_unstable();
+    hits.dedup();
+    hits
+}
+
 /// Check if a domain matches a pattern.
 ///
 /// # Examples
@@ -335,5 +426,7 @@ pub fn match_domain_pattern(pattern: &str, domain: &str) -> bool {
 
 #[cfg(test)]
 mod cov_tests;
+#[cfg(test)]
+mod dangerous_flag_tests;
 #[cfg(test)]
 mod tests;

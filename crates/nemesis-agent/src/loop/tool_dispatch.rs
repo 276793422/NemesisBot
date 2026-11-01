@@ -617,6 +617,10 @@ impl AgentLoop {
                             chat_id: context.chat_id.clone(),
                             sender_id: context.user.clone(),
                             session_key: context.session_key.clone(),
+                            // L07：limits 超限卡同样产 diff 预览（数据源同主
+                            // 审批路径——原始 args 透传）。
+                            tool_args: serde_json::from_str(&tool_call.arguments)
+                                .unwrap_or(serde_json::Value::Null),
                         };
                         match security.auditor().request_limit_approval(
                             &tool_call.name,

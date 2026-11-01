@@ -1085,3 +1085,87 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
     );
     std::fs::remove_dir(&lp).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// L14（2026-11-01）：会话执行统计 sidecar 字段（stats）读写契约
+// ---------------------------------------------------------------------------
+
+/// stats round-trip：写入八字段 → 读回逐字段一致；全零不落盘（旧 meta
+/// 形态兼容——无 stats 字段的文件读回 Default）。
+#[test]
+fn test_session_exec_stats_round_trip() {
+    let key = format!(
+        "test:stats:rt:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+    // 无 meta / 无字段 = Default（旧会话零迁移）。
+    assert!(read_session_stats(&key).is_zero());
+
+    update_session_stats(&key, |s| {
+        s.tool_calls += 3;
+        s.tool_failures += 1;
+        s.retries += 2;
+        s.validation_failures += 4;
+        s.compactions += 1;
+        s.approvals_total += 5;
+        s.approvals_approved += 3;
+        s.approvals_denied += 2;
+    });
+    let s = read_session_stats(&key);
+    assert_eq!(s.tool_calls, 3);
+    assert_eq!(s.tool_failures, 1);
+    assert_eq!(s.retries, 2);
+    assert_eq!(s.validation_failures, 4);
+    assert_eq!(s.compactions, 1);
+    assert_eq!(s.approvals_total, 5);
+    assert_eq!(s.approvals_approved, 3);
+    assert_eq!(s.approvals_denied, 2);
+
+    // 增量累加语义：二次写只动目标字段，其余保留。
+    update_session_stats(&key, |s| s.tool_calls += 1);
+    let s2 = read_session_stats(&key);
+    assert_eq!(s2.tool_calls, 4);
+    assert_eq!(s2.approvals_total, 5);
+
+    // add()：饱和加、逐字段。
+    let mut base = SessionExecStats::default();
+    base.tool_calls = u64::MAX;
+    let mut delta = SessionExecStats::default();
+    delta.tool_calls = 10;
+    base.add(&delta);
+    assert_eq!(base.tool_calls, u64::MAX, "饱和加不回绕");
+
+    delete_chat_log(&key);
+}
+
+/// 并发写安全：多线程同键 update_session_stats 无丢账（META_LOCK 互斥 +
+/// RMW 原子）。8 线程 × 25 次 = 恰 200。
+#[test]
+fn test_session_exec_stats_concurrent_increments() {
+    let key = format!(
+        "test:stats:conc:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let k = key.clone();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..25 {
+                crate::chat_log::update_session_stats(&k, |s| s.tool_calls += 1);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(read_session_stats(&key).tool_calls, 200);
+    delete_chat_log(&key);
+}

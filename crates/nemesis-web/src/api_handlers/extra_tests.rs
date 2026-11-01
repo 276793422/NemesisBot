@@ -61,6 +61,7 @@ fn make_state(
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })
@@ -106,6 +107,7 @@ fn make_state_with_tx(
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })
@@ -421,6 +423,7 @@ async fn test_handle_api_status_includes_model_base() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });
@@ -825,6 +828,7 @@ async fn test_handle_api_sessions_with_count() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });
@@ -1227,6 +1231,7 @@ fn test_app_state_clone() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     };

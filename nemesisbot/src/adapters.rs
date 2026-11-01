@@ -426,6 +426,16 @@ impl LifecycleService for AgentLoopServiceAdapter {
         if let Some(ref al) = state.agent_loop {
             al.stop();
             al.clear_session_busy();
+            // L07（2026-11-01）孤儿卡配对清理：loop 停止 = 在途请求终局——
+            // 未决审批卡在 abort handle 前定向关闭（等待方收到拒绝裁决而非
+            // 随任务 abort 消失；卡不残留到超时窗口）。trait 默认空实现 =
+            // 无审批面形态零开销。
+            if let Some(responder) = al.approval_responder() {
+                let n = responder.resolve_orphans("agent loop stopped");
+                if n > 0 {
+                    tracing::warn!("[AgentAdapter] stop: closed {n} pending approval card(s)");
+                }
+            }
         }
 
         // Abort the inbound bridge. This drops `agent_inbound_tx` (the mpsc

@@ -2548,3 +2548,89 @@ async fn agt_list_graph_query_backend_error_reports_query_failed() {
         result.content
     );
 }
+
+// ============================================================
+// L08（2026-11-01）graph 渲染日期戳回归锁：B15 修复后 graph 段是
+// 唯一不带日期的检索渲染面——三处（search graph 段 / graph_query /
+// graph_related）补 `[YYYY-MM-DD]` 前缀（created_at 自 INIT 就在
+// GraphTriple 上，纯渲染缺口，无历史裸数据）。三则端到端锁钉死
+// 渲染形态，防未来重构再丢日期。
+// ============================================================
+
+/// 建 manager + 存一条三元组，返回 (executor, today, tempdir 守卫)。
+/// 守卫随返回值存活到测试结束（目录生命周期盖住 store 全程，与
+/// 既有测试同形态）。
+async fn graph_fixture() -> (MemoryToolExecutor, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({
+                "memory_type": "graph",
+                "triple_subject": "Rust",
+                "triple_predicate": "is_a",
+                "triple_object": "language"
+            }),
+        )
+        .await;
+    assert!(result.success, "triple store failed: {}", result.content);
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    (executor, today, dir)
+}
+
+#[tokio::test]
+async fn agt_search_graph_render_carries_created_at_date() {
+    let (executor, today, _dir) = graph_fixture().await;
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "rust", "memory_type": "graph"}),
+        )
+        .await;
+    assert!(result.success, "{}", result.content);
+    let expected = format!("1. [{today}] Rust --[is_a]--> language");
+    assert!(
+        result.content.contains(&expected),
+        "graph 段渲染必须带日期前缀，expected `{expected}` in: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn agt_list_graph_query_render_carries_created_at_date() {
+    let (executor, today, _dir) = graph_fixture().await;
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_query", "subject": "Rust"}),
+        )
+        .await;
+    assert!(result.success, "{}", result.content);
+    let expected = format!("1. [{today}] Rust --[is_a]--> language");
+    assert!(
+        result.content.contains(&expected),
+        "graph_query 渲染必须带日期前缀，expected `{expected}` in: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn agt_list_graph_related_render_carries_created_at_date() {
+    let (executor, today, _dir) = graph_fixture().await;
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_related", "entity_name": "Rust"}),
+        )
+        .await;
+    assert!(result.success, "{}", result.content);
+    let expected = format!("1. [{today}] Rust --[is_a]--> language");
+    assert!(
+        result.content.contains(&expected),
+        "graph_related 渲染必须带日期前缀，expected `{expected}` in: {}",
+        result.content
+    );
+}

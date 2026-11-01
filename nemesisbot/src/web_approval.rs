@@ -41,6 +41,11 @@ struct PendingEntry {
     why: String,
     impact: String,
     reject_note: String,
+    /// L07：审批卡预览（unified diff / 命令现场）；None = 不适用——卡片
+    /// 无预览区。入册时生成一次的冻结快照（现盘后续变化不反映）。
+    preview: Option<String>,
+    /// 渲染提示："diff" | "text"（`approval_preview::build_preview` 出槽）。
+    preview_format: Option<String>,
     created_at: std::time::Instant,
     tx: mpsc::Sender<nemesis_security::auditor::ApprovalVerdict>,
 }
@@ -185,6 +190,8 @@ impl WebApprovalManager {
                 why: Some(entry.why.clone()),
                 impact: Some(entry.impact.clone()),
                 reject_note: Some(entry.reject_note.clone()),
+                preview: entry.preview.clone(),
+                preview_format: entry.preview_format.clone(),
             };
             let _ = tx.send(event);
         }
@@ -203,7 +210,7 @@ impl WebApprovalManager {
     }
 
     fn entry_json(request_id: &str, entry: &PendingEntry) -> serde_json::Value {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "request_id": request_id,
             "operation": entry.operation,
             "target": entry.target,
@@ -217,7 +224,16 @@ impl WebApprovalManager {
             "impact": entry.impact,
             "reject_note": entry.reject_note,
             "age_secs": entry.created_at.elapsed().as_secs(),
-        })
+        });
+        // L07：预览字段仅在在场时出现（skip_serializing_if 同款语义——旧
+        // 前端/无预览形态零破坏）。
+        if let Some(p) = entry.preview.as_deref() {
+            v["preview"] = serde_json::Value::String(p.to_string());
+        }
+        if let Some(f) = entry.preview_format.as_deref() {
+            v["preview_format"] = serde_json::Value::String(f.to_string());
+        }
+        v
     }
 
     /// P1：构造台账条目（pending/decision 共用同一定位字段）。
@@ -353,6 +369,81 @@ impl WebApprovalManager {
             );
         }
     }
+
+    /// L07：孤儿卡清理公共主体。摘出匹配的未决卡，逐条：台账记 Orphaned
+    /// （幂等条件更新，先到先得——respond/超时抢先的卡自然落空）→ tx 送
+    /// **拒绝**裁决（清理绝不产生批准效果，等待方立即醒来不再空等超时）→
+    /// 广播 resolved（decision="orphaned"，前端按 request_id 摘卡）。
+    /// 返回实际关闭数。
+    fn resolve_orphans_matching<F>(&self, reason: &str, keep: F) -> usize
+    where
+        F: Fn(&PendingEntry) -> bool,
+    {
+        // 先摘后清（drain 语义）：被本函数摘出的卡不可能再被 respond 命中；
+        // respond 先摘走的卡不在集合内，两侧互斥（同锁）。
+        let orphans: Vec<(String, PendingEntry)> = {
+            let mut map = match self.pending.lock() {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::error!("[WebApproval] resolve_orphans: pending map poisoned: {e}");
+                    return 0;
+                }
+            };
+            let ids: Vec<String> = map
+                .iter()
+                .filter(|(_, e)| keep(e))
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| map.remove(&id).map(|e| (id, e)))
+                .collect()
+        };
+        let mut closed = 0usize;
+        for (id, entry) in orphans {
+            // 台账记账：Orphaned。Ok(false) = respond/超时抢先完成裁决——
+            // 跳过 send 与广播（不假广播），卡已由抢先方摘除。
+            let decided = self.journal().map(|j| {
+                j.record_decision(
+                    &id,
+                    nemesis_types::approval_journal::ApprovalDecision::Orphaned,
+                    Some(reason),
+                    "system-orphan-cleanup",
+                )
+            });
+            match decided {
+                Some(Ok(false)) => {
+                    tracing::info!(
+                        "[WebApproval] orphan cleanup for {id}: already decided elsewhere; \
+                         skipping"
+                    );
+                    continue;
+                }
+                Some(Err(e)) => {
+                    // 审计缺失 loud 留痕，不阻断清理（与台账既有立场一致：
+                    // 审批可用性不绑 tasks.db）。
+                    tracing::error!(
+                        "[WebApproval] orphan cleanup journal record failed for {id}: {e}"
+                    );
+                }
+                _ => {}
+            }
+            // 拒绝裁决送等待方（block_in_place 中的工具调用链）——真实终局
+            // 原因随 note 送达，模型得到「系统已终止」而非「用户拒绝/超时」。
+            let _ = entry.tx.send(nemesis_security::auditor::ApprovalVerdict {
+                approved: false,
+                note: Some(format!("审批卡已被系统清理（{reason}），操作未执行")),
+            });
+
+            self.broadcast_resolved(&id, "orphaned");
+            tracing::warn!(
+                "[WebApproval] orphan card closed: {id} ({} {}) reason={reason}",
+                entry.operation,
+                entry.target
+            );
+            closed += 1;
+        }
+        closed
+    }
 }
 
 impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
@@ -378,6 +469,7 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             timeout_secs,
             "",
             "",
+            &serde_json::Value::Null,
         )
     }
 
@@ -395,7 +487,8 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
         // （loop dispatch 构造 ApprovalContext 时从 RequestContext 穿线）
         // 落进 PendingEntry 与台账 payload——重启补裁 respond_stale 据此
         // 把裁决消息回灌原会话。空值 = 无来源上下文（cron 直发等），补裁
-        // 自然退化纯记账。
+        // 自然退化纯记账。L07：ctx.tool_args 随行——挂起点 diff 预览的
+        // 数据源（Null = 无 args，预览不产）。
         self.request_routed(
             request_id,
             operation,
@@ -405,6 +498,7 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             timeout_secs,
             &ctx.chat_id,
             &ctx.session_key,
+            &ctx.tool_args,
         )
     }
 }
@@ -423,11 +517,20 @@ impl WebApprovalManager {
         timeout_secs: u64,
         chat_id: &str,
         session_key: &str,
+        tool_args: &serde_json::Value,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
         let (tx, rx) = mpsc::channel::<nemesis_security::auditor::ApprovalVerdict>();
         let (why, impact, reject_note) =
             approval_card_fields(operation, target, risk_level, reason);
         let pattern = nemesis_security::approval_rules::pattern_for(operation, target);
+        // L07：挂起点生成 diff 预览（args 只在这里可见；生成失败/不适用 =
+        // None，卡片无预览区——预览是尽力而为的展示增强，不是审批闸的
+        // 组成部分，失败绝不阻断审批主链路）。
+        let (preview, preview_format) =
+            match crate::approval_preview::build_preview(operation, target, tool_args) {
+                Some((text, fmt)) => (Some(text), Some(fmt.to_string())),
+                None => (None, None),
+            };
         let entry = PendingEntry {
             operation: operation.to_string(),
             target: target.to_string(),
@@ -440,6 +543,8 @@ impl WebApprovalManager {
             why,
             impact,
             reject_note,
+            preview,
+            preview_format,
             created_at: std::time::Instant::now(),
             tx,
         };
@@ -732,6 +837,18 @@ impl ApprovalResponder for WebApprovalManager {
             }
         }
         out
+    }
+
+    fn resolve_orphans(&self, reason: &str) -> usize {
+        self.resolve_orphans_matching(reason, |_| true)
+    }
+
+    fn resolve_orphans_for_session(&self, session_key: &str, reason: &str) -> usize {
+        // session_key 为空的卡不命中定向清理（空键卡只在全量清理时关闭——
+        // cron 直发等无会话上下文的卡不随某个会话清空被误伤）。
+        self.resolve_orphans_matching(reason, |e| {
+            !e.session_key.is_empty() && e.session_key == session_key
+        })
     }
 }
 

@@ -162,6 +162,10 @@ pub struct ApprovalContext {
     /// bus，项目会话经 ProjectLoopManager 归属转发，同一 session_key 两种
     /// 归宿都命中）。空 = 旧链路/无会话上下文，补裁退化为纯记账。
     pub session_key: String,
+    /// L07（2026-11-01）审批卡 diff 预览数据源：触发审批的工具调用原始
+    /// args（pipeline 从 `ToolInvocation.args` 透传）。`Value::Null`
+    /// （Default）= 无 args（旧调用方 / limits 直发路径），预览不产。
+    pub tool_args: serde_json::Value,
 }
 
 pub trait ApprovalManager: Send + Sync {
@@ -930,20 +934,56 @@ impl SecurityAuditor {
                 &req.target,
                 &req.danger_level.to_string(),
             ) {
-                self.allowed_count.fetch_add(1, Ordering::SeqCst);
-                let event = AuditEvent {
-                    event_id: uuid::Uuid::new_v4().to_string(),
-                    request: req.clone(),
-                    decision: "allowed".to_string(),
-                    reason: format!(
-                        "auto allowed by approval rule ({} {})",
-                        rule.op, rule.pattern
-                    ),
-                    timestamp: chrono::Local::now().to_rfc3339(),
-                    policy_rule: format!("auto_by_rule:{}", rule.pattern),
+                // L01 敏感 flag 放行臂二次校验：记忆规则的归约形态
+                // （exec `git push *`）不区分破坏性 flag——已批准
+                // `git push origin main` 的记忆不得静默放行 --force
+                // 变体。命中 = 留痕 flag_hit 后**跳过本条自动放行**
+                // （fall through 到后续臂/人工卡）。仅命令行 op；会话
+                // allow-all / 免打扰开关是用户显式无人值守意志，
+                // 刻意不受本闸约束（显式意图优先）。
+                let flag_blocked = matches!(
+                    req.op_type,
+                    OperationType::ProcessExec | OperationType::ProcessSpawn
+                ) && {
+                    let flags =
+                        matcher::scan_dangerous_flags(&matcher::exec_rule_segments(&req.target));
+                    if flags.is_empty() {
+                        false
+                    } else {
+                        let event = AuditEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            request: req.clone(),
+                            decision: "require_approval".to_string(),
+                            reason: format!(
+                                "sensitive flag_hit={} blocked auto-allow rule ({})",
+                                flags.join(","),
+                                rule.pattern
+                            ),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                            policy_rule: "sensitive_flag".to_string(),
+                        };
+                        self.log_audit_event(&event);
+                        true
+                    }
                 };
-                self.log_audit_event(&event);
-                return (true, None, None);
+                if !flag_blocked {
+                    self.allowed_count.fetch_add(1, Ordering::SeqCst);
+                    let event = AuditEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        request: req.clone(),
+                        decision: "allowed".to_string(),
+                        reason: format!(
+                            "auto allowed by approval rule ({} {})",
+                            rule.op, rule.pattern
+                        ),
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        policy_rule: format!("auto_by_rule:{}", rule.pattern),
+                    };
+                    self.log_audit_event(&event);
+                    return (true, None, None);
+                }
+                // flag_blocked：fall through（会话 allow-all / 免打扰 /
+                // 人工卡照常接力）。
             }
         }
 
@@ -1671,6 +1711,30 @@ impl SecurityAuditor {
                     continue;
                 }
                 if rule_matches("allow", rule) {
+                    // L01 敏感 flag 放行臂二次校验：规则表 allow 的
+                    // pattern 归约（`git push *`）不区分破坏性 flag，
+                    // 命中 = 不放行，降级弹卡 + reason 带 flag_hit 供
+                    // 审计链检索。仅命令行 op（kill/suspend 的 target
+                    // 是 PID 非命令行）。
+                    if matches!(
+                        req.op_type,
+                        OperationType::ProcessExec | OperationType::ProcessSpawn
+                    ) {
+                        let flags = matcher::scan_dangerous_flags(&matcher::exec_rule_segments(
+                            &req.target,
+                        ));
+                        if !flags.is_empty() {
+                            return (
+                                SecurityDecision::RequireApproval,
+                                format!(
+                                    "sensitive flag_hit={} behind allow rule `{}` (需要重新确认)",
+                                    flags.join(","),
+                                    rule.pattern
+                                ),
+                                "sensitive_flag".to_string(),
+                            );
+                        }
+                    }
                     return (
                         normalize_decision(&rule.action),
                         format!("rule matched: pattern={}", rule.pattern),

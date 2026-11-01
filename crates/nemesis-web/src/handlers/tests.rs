@@ -49,6 +49,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: Some(std::sync::Arc::new(std::sync::Mutex::new(
             nemesis_cron::CronService::new(&format!("{}/cron/jobs.json", ws)),
         ))),
@@ -100,6 +101,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });

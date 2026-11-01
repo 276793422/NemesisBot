@@ -1588,6 +1588,7 @@ async fn observing_approval_manager_notifies_then_delegates() {
                 chat_id: "1".to_string(),
                 sender_id: "u".to_string(),
                 session_key: String::new(),
+                tool_args: serde_json::Value::Null,
             },
         )
         .expect("delegated");

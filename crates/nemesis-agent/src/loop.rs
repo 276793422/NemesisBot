@@ -581,6 +581,12 @@ pub struct AgentLoop {
     agent_event_tx: parking_lot::RwLock<
         Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
     >,
+    /// L14（2026-11-01）：会话执行统计 sink——loop 内部计数（LLM 重试/
+    /// 校验失败回灌/压缩成功）经 [`crate::session_stats::SessionStatsSink`]
+    /// 上抛宿主聚合器（nemesisbot `session_stats` 装配注入）。`None`
+    /// （standalone / 未注入）= 不统计，调用点零开销。
+    session_stats:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn crate::session_stats::SessionStatsSink>>>,
     /// Work 时间线累加器（2026-10-30 ChatPanel 长任务时间线改造）：turn
     /// 级「叙述+工具」按真实时序收拢，落盘随行（turn.rs 最终回复行）+
     /// `chat.work_current` 活查询。Arc 与 ToolEventHook 共享同一实例
@@ -935,6 +941,7 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             mode: std::sync::Arc::new(parking_lot::RwLock::new(crate::types::AgentMode::Build)),
             agent_event_tx: parking_lot::RwLock::new(None),
+            session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),

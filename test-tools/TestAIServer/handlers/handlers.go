@@ -105,6 +105,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		time.Sleep(delay)
 	}
 
+	// L21 stream_break：流中断模型（StreamBreaker）在流式请求且命中中断
+	// 条件时短路——发 partial 后中途掐断传输（见 handleStreamBreakResponse
+	// 注释：干净 EOF 会被 http_provider J1 宽容层掩成成功）。
+	if req.Stream {
+		if breaker, ok := model.(models.StreamBreaker); ok && breaker.ShouldBreak() {
+			h.handleStreamBreakResponse(c, model.Name(), breaker.PartialContent())
+			return
+		}
+	}
+
 	// 处理消息
 	responseContent := model.Process(req.Messages)
 
@@ -275,6 +285,84 @@ func (h *Handler) sendSSEChunk(w gin.ResponseWriter, chunk models.StreamChunk) {
 	w.Write(data)
 	w.Write([]byte("\n\n"))
 	w.Flush()
+}
+
+// handleStreamBreakResponse L21 stream_break：流中断响应——SSE 前缀正常
+// （role 块 + partial 内容块，与正常流同形态），partial 发完（全部 Flush
+// 出内核）后**中途掐断传输**：panic(http.ErrAbortHandler) 让 net/http
+// 直接关连接，chunked 帧无终止帧——客户端（hyper/reqwest）读到
+// incomplete message 传输错误 → nemesis-providers SSE 读错误 →
+// transport_error → collect_stream_response Err 臂（partial 非空 →
+// StreamInterrupted 携带 partial）。
+//
+// ⚠ 刻意不走「干净 EOF（不发 finish/[DONE] 直接 return）」形态：
+// http_provider 的 J1 宽容层会把 EOF-无-[DONE] 合成终态块当成功收尾
+// （2026-10-13 wal_crash 根修的刻意设计），干净 EOF 的 partial 会被当
+// 完整回复上抛、中断根本不可见。真实中断的可观测形态就是传输层错误。
+func (h *Handler) handleStreamBreakResponse(c *gin.Context, modelName, content string) {
+	// 设置 SSE headers（与正常流式同款）
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Access-Control-Allow-Origin", "*")
+
+	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
+	// 1. role 块（与 handleStreamingResponse 同形态）
+	roleChunk := models.StreamChunk{
+		ID:      chatID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   modelName,
+		Choices: []models.StreamChoice{
+			{
+				Index:        0,
+				Delta:        models.Delta{Role: "assistant", Content: ""},
+				FinishReason: nil,
+			},
+		},
+	}
+	h.sendSSEChunk(c.Writer, roleChunk)
+
+	// 2. partial 内容块（逐字符，与正常流同节奏；每个 chunk 都 Flush 出去，
+	//    TCP 有序投递保证 FIN 前客户端已收到全部 partial 字节）
+	for _, char := range content {
+		contentChunk := models.StreamChunk{
+			ID:      chatID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   modelName,
+			Choices: []models.StreamChoice{
+				{
+					Index:        0,
+					Delta:        models.Delta{Content: string(char)},
+					FinishReason: nil,
+				},
+			},
+		}
+		h.sendSSEChunk(c.Writer, contentChunk)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 3. 中断点：不发 finish 块、不发 [DONE]，hijack 裸连接后直接关闭——
+	//    chunked 帧无终止帧，客户端读到 incomplete message 传输错误。
+	//    ⚠ 不能用 panic(http.ErrAbortHandler)：本服务的 gin.Recovery()
+	//    中间件会吞掉 panic 并正常收尾响应（实测 curl 干净退出），中断
+	//    根本不发生。Hijack 之后连接脱离 net/http 与 gin 的收尾逻辑，
+	//    Close() 的 FIN 落在 chunked body 中间——hyper/reqwest 报
+	//    incomplete message；TCP 有序投递保证 FIN 前全部 partial 已达。
+	hijacker, ok := c.Writer.(http.Hijacker)
+	if !ok {
+		// 不可劫持（理论不达：HTTP/1.1 明文回环）——退回干净 EOF，
+		// 中断被 http_provider J1 宽容层掩成成功，bench 会红出来而非假绿。
+		return
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	_ = conn.Close()
 }
 
 // handleStreamingResponseWithTools 处理带工具调用的流式响应

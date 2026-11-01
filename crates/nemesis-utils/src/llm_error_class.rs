@@ -33,6 +33,17 @@ pub enum LlmErrorClass {
 pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
     let msg = error_msg.to_lowercase();
 
+    // L02 流中断短路（2026-11-01）：**必须最先**——StreamInterrupted 的
+    // Display 尾段携带模型生成的任意文本（partial 全文），状态码提取
+    // （partial 里恰有 "status: 429" 形态）与后续全部词表匹配（"token"/
+    // "expired"/"unauthorized" 等）都会被内容污染误分类。归 Timeout 类 =
+    // 瞬态可重试（is_retriable 同口径）；头行根因在 reason 字段不丢。
+    // 用 starts_with 前缀锚不用 contains——contains 对携带任意文本的
+    // 错误值同样可被伪造/污染。
+    if msg.starts_with("stream interrupted from provider") {
+        return Some(LlmErrorClass::Timeout);
+    }
+
     // Image dimension/size errors: non-retriable format error.
     if is_image_dimension_error(&msg) || is_image_size_error(&msg) {
         return Some(LlmErrorClass::Format);

@@ -172,6 +172,11 @@ pub struct SharedResources {
     /// None = 不挂 hook（CLI/exec_worker 等无 web 的形态零开销）。
     pub agent_event_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
 
+    /// L14（2026-11-01）：会话执行统计聚合器单例（gateway 建一次，跨 loop
+    /// 重建存活——主/集群/项目 loop 共享同一账本）。Some 时 build 出的每个
+    /// loop 挂 SessionStatsSink（loop 内部计数上抛）；None = 不统计零开销。
+    pub session_stats: Option<Arc<crate::session_stats::SessionStatsAggregator>>,
+
     /// B4（devtool-upgrade 阶段 3）：后台进程注册表单例。gateway::run 建一次，
     /// 跨 agent 重启存活；gateway 进程退出（Drop）时给残余任务发 kill 旗标。
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
@@ -260,6 +265,7 @@ impl Default for SharedResources {
             #[cfg(feature = "lsp")]
             lsp_manager: Arc::new(nemesis_lsp::LspManager::new(None, None)),
             agent_event_tx: None,
+            session_stats: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
             plugin_manager: None,
             entrance: nemesis_agent::prompt::Entrance::Interactive,
@@ -859,6 +865,14 @@ pub fn build_agent_loop(
     // 发布 ModeChanged（前端徽标实时刷新）。与 hook 注入不同，这里 None 也
     // 照常注入（loop 侧对 None 静默跳过）——standalone 模式切换本身仍可用。
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+    // L14（2026-11-01）：会话执行统计 sink 注入——loop 内部计数（重试/校验
+    // 失败/压缩成功）上抛聚合器。None（headless/未装配）= 不统计零开销。
+    agent_loop.set_session_stats_sink(
+        shared
+            .session_stats
+            .clone()
+            .map(|a| a as std::sync::Arc<dyn nemesis_agent::SessionStatsSink>),
+    );
     // N2（机会项）：present_plan 计划审批句柄——plan 模式下模型把写好的计划
     // 交给用户裁决（question broker 同款阻塞等答）；批准=共享 mode Arc 翻转
     // build + ModeChanged 广播，驳回/超时=批次尾消费 verdict 结构性终止本轮。
@@ -2636,6 +2650,13 @@ pub fn build_cluster_agent_loop(
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+    // L14：集群 loop 同挂会话统计 sink（B 端任务会话同账本）。
+    agent_loop.set_session_stats_sink(
+        shared
+            .session_stats
+            .clone()
+            .map(|a| a as std::sync::Arc<dyn nemesis_agent::SessionStatsSink>),
+    );
 
     // ASM-06（2026-09-16 横扫存量加固）：continuation manager——3-hop 链路里
     // B 端对下一跳就是 A 端，cluster loop 发起 cluster_rpc 时续行快照必须有
@@ -3587,6 +3608,13 @@ pub fn build_agent_loop_from_spec(
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+    // L14：项目 loop 同挂会话统计 sink（项目会话同账本）。
+    agent_loop.set_session_stats_sink(
+        shared
+            .session_stats
+            .clone()
+            .map(|a| a as std::sync::Arc<dyn nemesis_agent::SessionStatsSink>),
+    );
     // N2（机会项）：项目 loop 同样接 present_plan——项目会话的 plan 模式
     // 经 chat.set_mode 按 loop 路由，审批卡（question broker 全局单例）与
     // mode 翻转都锚本 loop 的共享句柄。

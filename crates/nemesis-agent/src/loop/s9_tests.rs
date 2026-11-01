@@ -292,7 +292,9 @@ async fn force_compression_advances_summary_cache() {
         Box::new(MockLlmProvider::new(vec![resp("S9 summary of the prefix")])),
         test_config(),
     );
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
     let cache = instance.get_summary_cache();
     let cache = cache.expect("summary cache must be set by force_compression");
     assert!(

@@ -284,6 +284,9 @@ pub struct WebServer {
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
     /// WS4 技能装前审批门（P13；gateway 注入，flows into AppState）。
     skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
+    /// L14：会话执行统计读侧（gateway 注入 nemesisbot 聚合器；flows into
+    /// AppState for sessions.stats）。
+    session_stats: Option<Arc<dyn nemesis_agent::SessionStatsReader>>,
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
     /// Managed-agent board service (set by gateway when the `board` feature is on;
@@ -384,6 +387,7 @@ impl WebServer {
             estop: None,
             signature_verify: None,
             skills_install_gate: None,
+            session_stats: None,
             cron: None,
             board: None,
             conv_router: None,
@@ -576,6 +580,12 @@ impl WebServer {
         self.cron = Some(cron);
     }
 
+    /// L14（2026-11-01）：注入会话执行统计读侧（nemesisbot 聚合器，
+    /// `sessions.stats` 消费）。None = 未装配（诚实返回 unavailable）。
+    pub fn set_session_stats(&mut self, reader: Arc<dyn nemesis_agent::SessionStatsReader>) {
+        self.session_stats = Some(reader);
+    }
+
     /// Set the managed-agent board service (gateway injects when the `board`
     /// feature is enabled and the store opened successfully).
     #[cfg(feature = "board")]
@@ -719,6 +729,7 @@ impl WebServer {
             estop: self.estop.clone(),
             signature_verify: self.signature_verify.clone(),
             skills_install_gate: self.skills_install_gate.clone(),
+            session_stats: self.session_stats.clone(),
             cron: self.cron.clone(),
             board,
         };

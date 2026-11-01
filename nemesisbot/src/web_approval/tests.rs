@@ -1147,6 +1147,7 @@ fn ctx_request_routes_session_key_into_entry_and_journal() {
                 chat_id: "sess-9".to_string(),
                 sender_id: "user-1".to_string(),
                 session_key: "agent:main:session:sess-9".to_string(),
+                tool_args: serde_json::Value::Null,
             };
             let r = mgr.request_approval_sync_ctx(
                 "req-ctx",
@@ -1181,4 +1182,248 @@ fn ctx_request_routes_session_key_into_entry_and_journal() {
     assert!(mgr.respond("req-ctx", true, false, None).unwrap());
     let v = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
     assert!(v.approved);
+}
+
+// ---------------------------------------------------------------------------
+// L07（2026-11-01）：孤儿卡配对清理 + diff 预览透传。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn orphan_cleanup_closes_all_and_denies_waiters() {
+    // 全清：estop 类终局把所有未决卡一次关掉；等待方立即醒来拿到
+    // 「系统清理」拒绝裁决（不是超时假象，也绝不产生批准）。
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let rx1 = request_async(mgr.clone(), "req-o1", 300);
+    let rx2 = request_async(mgr.clone(), "req-o2", 300);
+    wait_pending(&mgr, 2);
+
+    let closed = ApprovalResponder::resolve_orphans(mgr.as_ref(), "estop engaged");
+    assert_eq!(closed, 2);
+    assert!(mgr.pending().is_empty());
+    for rx in [rx1, rx2] {
+        let v = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert!(!v.approved, "cleanup must deny");
+        let note = v.note.expect("cleanup carries note");
+        assert!(note.contains("已被系统清理"), "note: {note}");
+        assert!(
+            note.contains("estop engaged"),
+            "真实终局原因随 note 送达: {note}"
+        );
+    }
+    // 清理后 map 已空：二次清理 = 0（幂等）。
+    assert_eq!(ApprovalResponder::resolve_orphans(mgr.as_ref(), "again"), 0);
+}
+
+#[test]
+fn orphan_cleanup_for_session_targets_only_matching_session() {
+    // 定向清：会话 clear 只关本会话的卡；别的会话与无来源（session_key
+    // 为空——cron 直发等旧链路形态）的卡不受波及。
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let sk = "agent:main:session:sess-a";
+    let rx_mine = {
+        let (tx, rx) = mpsc::channel();
+        let m = mgr.clone();
+        std::thread::spawn(move || {
+            let ctx = nemesis_security::auditor::ApprovalContext {
+                chat_id: "sess-a".to_string(),
+                session_key: sk.to_string(),
+                ..Default::default()
+            };
+            let r = m.request_approval_sync_ctx(
+                "req-mine",
+                "process_exec",
+                "cargo publish",
+                "HIGH",
+                "rule",
+                300,
+                &ctx,
+            );
+            let _ = tx.send(r);
+        });
+        rx
+    };
+    let rx_other = {
+        let (tx, rx) = mpsc::channel();
+        let m = mgr.clone();
+        std::thread::spawn(move || {
+            let ctx = nemesis_security::auditor::ApprovalContext {
+                chat_id: "sess-b".to_string(),
+                session_key: "agent:main:session:sess-b".to_string(),
+                ..Default::default()
+            };
+            let r = m.request_approval_sync_ctx(
+                "req-other",
+                "process_exec",
+                "cargo publish",
+                "HIGH",
+                "rule",
+                300,
+                &ctx,
+            );
+            let _ = tx.send(r);
+        });
+        rx
+    };
+    let rx_noctx = request_async(mgr.clone(), "req-noctx", 300); // session_key 空
+    wait_pending(&mgr, 3);
+
+    let closed =
+        ApprovalResponder::resolve_orphans_for_session(mgr.as_ref(), sk, "session cleared");
+    assert_eq!(closed, 1, "只清本会话的卡");
+    let v = rx_mine
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert!(!v.approved);
+    assert!(mgr.pending().iter().any(|c| c["request_id"] == "req-other"));
+    assert!(mgr.pending().iter().any(|c| c["request_id"] == "req-noctx"));
+
+    // 全清收尾（另一个会话 + 无来源卡都关掉）。
+    assert_eq!(ApprovalResponder::resolve_orphans(mgr.as_ref(), "final"), 2);
+    let _ = rx_other
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    let _ = rx_noctx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn orphan_cleanup_records_journal_orphaned_and_broadcasts() {
+    // 台账记账：Orphaned 幂等落账（重启补裁视角可见终局）；广播 decision
+    // = "orphaned" 供前端摘卡。
+    use nemesis_types::approval_journal::status;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal_at(&dir.path().join("tasks.db"));
+    let (mgr, mut events) = mgr_with_events();
+    let mgr = std::sync::Arc::new(mgr);
+    mgr.set_journal(journal.clone());
+
+    let rx = request_async(mgr.clone(), "req-orphan-j", 300);
+    let req_ev = recv_scoped(&mut events).await;
+    assert_eq!(req_ev["kind"], "ApprovalRequested");
+
+    assert_eq!(
+        ApprovalResponder::resolve_orphans(mgr.as_ref(), "estop engaged"),
+        1
+    );
+    let e = journal.entry("req-orphan-j").unwrap();
+    assert_eq!(e.status, status::ORPHANED);
+    assert_eq!(e.decided_by.as_deref(), Some("system-orphan-cleanup"));
+
+    let resolved = recv_scoped(&mut events).await;
+    assert_eq!(resolved["kind"], "ApprovalResolved");
+    assert_eq!(resolved["data"]["request_id"], "req-orphan-j");
+    assert_eq!(resolved["data"]["decision"], "orphaned");
+
+    let v = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert!(!v.approved);
+}
+
+#[test]
+fn orphan_cleanup_after_respond_raced_is_noop() {
+    // 竞速：respond 先裁决摘卡 → 孤儿清理看不到它（map.remove 互斥）→
+    // 返回 0、等待方拿到的是用户裁决而非清理裁决。
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let rx = request_async(mgr.clone(), "req-race", 300);
+    wait_pending(&mgr, 1);
+    assert!(mgr.respond("req-race", true, false, None).unwrap());
+    assert_eq!(
+        ApprovalResponder::resolve_orphans(mgr.as_ref(), "estop engaged"),
+        0
+    );
+    let v = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert!(v.approved, "用户裁决不被清理覆盖");
+}
+
+#[tokio::test]
+async fn preview_flows_through_ctx_request_into_card_and_broadcast() {
+    // ctx.tool_args（command 形态）→ pending 卡 JSON 与 ApprovalRequested
+    // 广播都带 preview / preview_format。
+    let (mgr, mut events) = mgr_with_events();
+    let mgr = std::sync::Arc::new(mgr);
+    let rx = {
+        let (tx, rx) = mpsc::channel();
+        let m = mgr.clone();
+        std::thread::spawn(move || {
+            let ctx = nemesis_security::auditor::ApprovalContext {
+                chat_id: "sess-p".to_string(),
+                session_key: "agent:main:session:sess-p".to_string(),
+                tool_args: serde_json::json!({ "command": "rm -rf build/", "cwd": "C:/proj" }),
+                ..Default::default()
+            };
+            let r = m.request_approval_sync_ctx(
+                "req-pv",
+                "process_exec",
+                "rm -rf build/",
+                "HIGH",
+                "rule",
+                300,
+                &ctx,
+            );
+            let _ = tx.send(r);
+        });
+        rx
+    };
+    let payload = recv_scoped(&mut events).await;
+    assert_eq!(payload["kind"], "ApprovalRequested");
+    assert_eq!(payload["data"]["preview_format"], "text");
+    let preview = payload["data"]["preview"]
+        .as_str()
+        .expect("preview present");
+    assert!(preview.contains("rm -rf build/"), "preview: {preview}");
+    assert!(preview.contains("C:/proj"));
+
+    let card = mgr
+        .pending()
+        .into_iter()
+        .find(|c| c["request_id"] == "req-pv")
+        .expect("card visible");
+    assert!(card["preview"].as_str().unwrap().contains("rm -rf build/"));
+    assert_eq!(card["preview_format"], "text");
+
+    assert!(mgr.respond("req-pv", true, false, None).unwrap());
+    let _ = rx.recv_timeout(Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn preview_absent_when_tool_args_null_or_unmatched() {
+    // Null args（旧调用方）与非白名单形态都不产 preview——卡片 JSON 里
+    // 该键**不出现**（skip_serializing_if，旧前端零破坏）。
+    let (mgr, mut events) = mgr_with_events();
+    let mgr = std::sync::Arc::new(mgr);
+    let rx = {
+        let (tx, rx) = mpsc::channel();
+        let m = mgr.clone();
+        std::thread::spawn(move || {
+            let ctx = nemesis_security::auditor::ApprovalContext {
+                tool_args: serde_json::Value::Null,
+                ..Default::default()
+            };
+            let r = m.request_approval_sync_ctx(
+                "req-nopv",
+                "process_exec",
+                "x",
+                "HIGH",
+                "rule",
+                300,
+                &ctx,
+            );
+            let _ = tx.send(r);
+        });
+        rx
+    };
+    let payload = recv_scoped(&mut events).await;
+    assert!(payload["data"].get("preview").is_none(), "无 args 不产预览");
+    let card = mgr
+        .pending()
+        .into_iter()
+        .find(|c| c["request_id"] == "req-nopv")
+        .expect("card visible");
+    assert!(card.get("preview").is_none());
+    assert!(card.get("preview_format").is_none());
+    assert!(mgr.respond("req-nopv", true, false, None).unwrap());
+    let _ = rx.recv_timeout(Duration::from_secs(2));
 }

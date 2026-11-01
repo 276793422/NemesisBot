@@ -395,6 +395,26 @@ impl AgentLoop {
         *self.agent_event_tx.write() = tx;
     }
 
+    /// L14（2026-11-01）：注入会话执行统计 sink（nemesisbot
+    /// `session_stats::SessionStatsAggregator` 装配）。`None` = 不统计。
+    pub fn set_session_stats_sink(
+        &self,
+        sink: Option<std::sync::Arc<dyn crate::session_stats::SessionStatsSink>>,
+    ) {
+        *self.session_stats.write() = sink;
+    }
+
+    /// L14：sink 上抛单点——槽空静默跳过（未装配路径零开销）。
+    pub(crate) fn bump_session_stats(
+        &self,
+        session_key: &str,
+        counter: crate::session_stats::StatCounter,
+    ) {
+        if let Some(sink) = self.session_stats.read().as_ref() {
+            sink.bump(session_key, counter);
+        }
+    }
+
     /// ASM-08（2026-09-16 横扫存量加固）：关键接线面快照。
     ///
     /// gateway 级装配点（主/集群/项目 loop）在装配完成时用它断言「该接的

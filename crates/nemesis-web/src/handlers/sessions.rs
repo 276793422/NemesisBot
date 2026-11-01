@@ -43,6 +43,7 @@ impl ModuleHandler for SessionsHandler {
             "trash_restore",
             "trash_purge",
             "trash_purge_all",
+            "stats",
         ]
     }
 
@@ -714,6 +715,38 @@ impl ModuleHandler for SessionsHandler {
             "trash_purge_all" => {
                 let n = nemesis_agent::chat_trash::trash_purge_all()?;
                 Ok(Some(serde_json::json!({ "purged": n })))
+            }
+            // L14 会话执行统计：8 字段只读视图（工具调用/失败/重试/校验失败/
+            // 压缩/审批三面）。读盘不读内存——先经聚合器 flush pending 增量
+            // 落盘再读 sidecar meta，进程重启后统计不归零。聚合器未装配
+            // （headless 形态或老 gateway）= 诚实报错。
+            "stats" => {
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                // 双形态兼容：LogsView 会话浏览器传文件 stem
+                // （`agent_main_session_*`，logs.session_list 口径），侧栏传
+                // 裸 sid——统一剥前缀后走 sanitize。
+                let bare = session_id
+                    .strip_prefix("agent_main_session_")
+                    .unwrap_or(session_id);
+                let sid = nemesis_agent::session::SessionStore::sanitize_session_id(bare);
+                let session_key = format!("agent:main:session:{sid}");
+                if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
+                    return Err(format!("会话不存在: {sid}"));
+                }
+                let reader = ctx
+                    .state
+                    .session_stats
+                    .as_ref()
+                    .ok_or_else(|| "会话执行统计未装配（聚合器未运行）".to_string())?;
+                let s = reader.flush_and_read(&session_key);
+                Ok(Some(serde_json::json!({
+                    "session_id": sid,
+                    "stats": s,
+                })))
             }
             _ => Err(format!("unknown sessions cmd: {}", cmd)),
         }

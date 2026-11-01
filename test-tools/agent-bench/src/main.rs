@@ -261,6 +261,31 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
             model("testai-vision-1.0"),
             model("testai-codemode-1.0"),
             model("testai-docslift-1.0"),
+            // L04 length_continuation：撞顶续行模型（usage 数值判定路径）。
+            model("testai-lenbreak-1.0"),
+            // L17 codemode_chain：逐轮/code_run 对比模型对。
+            model("testai-chain-step-1.0"),
+            model("testai-chain-code-1.0"),
+            // L21 stream_break：断流模型对——强制流式（openai 兼容 lane
+            // auto=非流式，不强制则断流契约无从触发）。
+            json!({
+                "model": "test/testai-break-1.0",
+                "model_name": "testai-break-1.0",
+                "api_base": format!("http://127.0.0.1:{ai}/v1"),
+                "api_key": "test-key",
+                "provider": "test",
+                "enabled": true,
+                "stream": "yes",
+            }),
+            json!({
+                "model": "test/testai-heal-1.0",
+                "model_name": "testai-heal-1.0",
+                "api_base": format!("http://127.0.0.1:{ai}/v1"),
+                "api_key": "test-key",
+                "provider": "test",
+                "enabled": true,
+                "stream": "yes",
+            }),
         ],
         "channels": {
             "web": {"enabled": true, "host": "127.0.0.1", "port": WS_PORT as i64, "auth_token": AUTH_TOKEN},
@@ -335,6 +360,11 @@ async fn run_scenario(
         "codemode_orchestration" => scenarios::run_codemode_orchestration(ctx, runs, ws).await,
         "docs_lift" => scenarios::run_docs_lift(ctx, runs, ws).await,
         "disconnect_resume" => scenarios::run_disconnect_resume(ctx, runs).await,
+        "stream_break" => scenarios::run_stream_break(ctx, runs).await,
+        "length_continuation" => scenarios::run_length_continuation(ctx, runs).await,
+        "codemode_chain" => scenarios::run_codemode_chain(ctx, runs, ws).await,
+        // gateway_restart 不走本调度：它要吃掉/交还 gateway 进程所有权，
+        // 在 main() 场景循环特判。
         other => {
             println!("  未知场景 {other}，跳过");
             Vec::new()
@@ -466,7 +496,18 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        let results = run_scenario(spec.name, ctx, spec.runs, &ws, &security_target).await;
+        // gateway_restart 在场景内部完成优雅重启：吃掉 gateway 进程
+        // 所有权、交还新句柄（本循环持有方更新，收尾停机不漏进程）；
+        // 其余场景走统一入口。
+        let results = if spec.name == "gateway_restart" {
+            let (res, gw) =
+                scenarios::run_gateway_restart(ctx, spec.runs, &ws, &cfg.gateway_bin, gateway)
+                    .await;
+            gateway = gw;
+            res
+        } else {
+            run_scenario(spec.name, ctx, spec.runs, &ws, &security_target).await
+        };
         let score = card.score(spec.name);
         for r in results {
             match r {
@@ -488,6 +529,9 @@ async fn main() -> Result<()> {
             score.passed,
             score.total()
         );
+        // 场景后重连 WSAPI：gateway_restart 换过进程，旧连接已死；
+        // 无条件重连对其他场景是廉价幂等（比按场景特判更鲁棒）。
+        api = WsApi::connect().await?;
     }
     card.bench_wall_secs = bench_start.elapsed().as_secs();
 

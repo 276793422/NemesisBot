@@ -41,6 +41,12 @@ pub fn ai_server_port() -> u16 {
 /// cluster-uat 节点重启会在 IT 的 precheck 之后、bind 之前的秒级窗口抢占 37300
 /// （IT 的 WS 全打到 cluster-uat 节点 = 6 个假 FAIL）。41300 与 cluster-uat
 /// 全段（373xx/484xx/1879x/37105）不相交，并行跑也不再撞。
+///
+/// ⚠ 本端口的**串行复跑间隔 ≥4 分钟**（2026-11-01 agent-bench --compare 假红
+/// 实录）：上一轮进程的连接进 TIME_WAIT（Windows 默认 240s），本轮 gateway
+/// spawn 重绑 41300 撞 WSAEADDRINUSE → 重试拖 ~25s → gateway_restart 场景
+/// p50 延迟假回退（对照门 +30% 必红）。pass_rate 不受影响；间隔拉开或等
+/// `netstat` 无 41300 残留再跑即绿。
 pub const WEB_PORT: u16 = 41300;
 pub const WS_PORT: u16 = WEB_PORT;
 /// Gateway/health port for spawned gateways. NOT 18790 — that value is the

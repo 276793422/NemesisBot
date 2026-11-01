@@ -147,6 +147,7 @@ async fn make_ctx_with_cron(dir: &tempfile::TempDir) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: Some(svc),
         board: None,
     });

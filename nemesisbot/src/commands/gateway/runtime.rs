@@ -697,6 +697,73 @@ pub(crate) async fn run_runtime(
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
+            // L07（2026-11-01）：审批卡 estop 挂点——急停触发时全部未决卡
+            // 立即关闭（等待方收到拒绝裁决、前端摘卡、台账留 orphaned 痕），
+            // 不再挂满超时窗口。watch 订阅单点覆盖全部触发入口（WSAPI /
+            // CLI /api/internal / 托盘菜单）；结构照抄上方 question broker
+            // 的 estop watcher 同款先例。释放不动作（卡片已被清理，重新
+            // 发卡要模型重新走到审批点——语义上就是重新裁决）。
+            {
+                let mgr_for_estop = web_mgr.clone();
+                let estop = Arc::clone(&shared_resources.estop);
+                if estop.is_engaged() {
+                    let n = mgr_for_estop.resolve_orphans("estop already engaged at wiring time");
+                    if n > 0 {
+                        info!(
+                            "[Gateway] estop already engaged at approval wiring: closed {n} orphan card(s)"
+                        );
+                    }
+                }
+                tokio::spawn(async move {
+                    let mut rx = estop.subscribe();
+                    while rx.changed().await.is_ok() {
+                        if *rx.borrow_and_update() {
+                            let n = mgr_for_estop.resolve_orphans("estop engaged");
+                            if n > 0 {
+                                info!(
+                                    "[Gateway] estop engaged: closed {n} pending approval card(s)"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+            // L06 复核点③（2026-11-01）：凭据卡 estop 挂点——急停触发时全部
+            // 在途凭据索要卡立即关闭（等待方收 Denied、前端摘卡），不再挂满
+            // 300s 超时窗口；清理只送裁决不落 vault。broker 槽在 init_agent
+            // 先于本函数装好（headless 不装 → current() None = 优雅跳过）。
+            // 结构照抄上方审批卡 estop watcher；释放不动作（卡已被清理，
+            // 重新发卡要模型重新走到凭据点）。
+            #[cfg(feature = "security")]
+            {
+                let broker_for_estop = crate::credential_broker::current();
+                let estop_for_cred = Arc::clone(&shared_resources.estop);
+                if let Some(broker) = broker_for_estop.as_ref()
+                    && estop_for_cred.is_engaged()
+                {
+                    let n = broker.close_all("estop already engaged at credential wiring");
+                    if n > 0 {
+                        info!(
+                            "[Gateway] estop already engaged at credential wiring: closed {n} pending credential card(s)"
+                        );
+                    }
+                }
+                if let Some(broker) = broker_for_estop {
+                    tokio::spawn(async move {
+                        let mut rx = estop_for_cred.subscribe();
+                        while rx.changed().await.is_ok() {
+                            if *rx.borrow_and_update() {
+                                let n = broker.close_all("estop engaged");
+                                if n > 0 {
+                                    info!(
+                                        "[Gateway] estop engaged: closed {n} pending credential card(s)"
+                                    );
+                                }
+                            }
+                        }
+                    });
+                }
+            }
             // L9 selfupdate：两段式 apply/download 编排器装配（selfupdate
             // implies security）。审计链走 security_plugin；estop 同源；
             // 确认在 Dashboard 侧完成（审批卡已退役——v4 签名验签是安全闸）。

@@ -389,3 +389,125 @@ async fn deadline_wording_enters_transient_ring_and_recovers() {
         "首败 + transient 环重试成功 = 恰好 2 次调用"
     );
 }
+
+// -- ⑧ L02 StreamInterrupted Display 前缀短路 → transient 环 ------------------
+
+#[tokio::test(start_paused = true)]
+async fn stream_interrupted_display_enters_transient_ring_not_rate_limit_or_compression() {
+    // L02 对抗 A1/A2：partial 全文含 "429"/"rate limit"/"token"/"expired"
+    // 污染词（模型任意输出）。前缀短路必须把错误路由进 transient 环
+    // （recovery is_stream_interrupted starts_with + classify_llm_error
+    // 入口短路双保险）：误入限流环会发「重试」进度通知、误入压缩环会
+    // 多烧一次摘要调用（calls==3）。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "stream interrupted from provider openai/gpt-4: connection reset\
+                   （已接收 88 字符，中断前部分文本随错误通知保留）\n\n--- 以下为中断前已生成的部分内容 ---\n\
+                   上游 status: 429 rate limit，token 总量 999999，凭证已 expired unauthorized"
+            .to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "流中断 Display 必须进 transient 环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + transient 环重试成功 = 恰好 2 次调用（压缩环路由 = 3 次）"
+    );
+    let mut saw_rate_limit_progress = false;
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            saw_rate_limit_progress = true;
+        }
+    }
+    assert!(
+        !saw_rate_limit_progress,
+        "不得进限流环（partial 的 429/rate limit 词是内容污染，非真实限流）"
+    );
+}
+
+// -- ⑨ L02 终局 history 瘦身（头行进 history / 全文出站）----------------------
+
+#[tokio::test(start_paused = true)]
+async fn stream_interrupted_exhausted_history_pruned_but_outbound_full() {
+    // 终局臂拆分：history（add_assistant_message）只取 Display 头行
+    // （半截文本永不单独成为 assistant turn，不进模型上下文）；出站
+    // Error 事件保留全文（partial 到用户）。
+    const PARTIAL: &str = "半截回复内容 status: 429 token expired";
+    let provider = AlwaysFailing {
+        calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        err_text: format!(
+            "stream interrupted from provider openai/gpt-4: connection reset\
+             （已接收 {} 字符，中断前部分文本随错误通知保留）\n\n\
+             --- 以下为中断前已生成的部分内容 ---\n{}",
+            PARTIAL.chars().count(),
+            PARTIAL
+        ),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let err_text = single_error_text(&events);
+    assert!(
+        err_text.contains(PARTIAL),
+        "出站文本保留 partial 全文: {err_text}"
+    );
+    assert!(
+        err_text.contains("已接收"),
+        "出站文本保留注记框架头行: {err_text}"
+    );
+
+    let history = instance.get_history();
+    let last_assistant = history
+        .iter()
+        .rev()
+        .find(|t| t.role == "assistant")
+        .expect("终局必须落一条 assistant 错误行");
+    assert!(
+        last_assistant
+            .content
+            .starts_with("Error: stream interrupted from provider"),
+        "history 错误行保留头行前缀: {:?}",
+        last_assistant.content
+    );
+    assert!(
+        !last_assistant.content.contains(PARTIAL),
+        "partial 全文不进 history（半截文本不进模型上下文）: {:?}",
+        last_assistant.content
+    );
+    assert!(
+        !last_assistant.content.contains('\n'),
+        "history 只含头行（首个 \n 之前）: {:?}",
+        last_assistant.content
+    );
+}

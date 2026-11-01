@@ -468,6 +468,8 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
         why: Some("为什么".to_string()),
         impact: Some("影响".to_string()),
         reject_note: Some("拒绝后果".to_string()),
+        preview: None,
+        preview_format: None,
     };
     let v = serde_json::to_value(&ev).unwrap();
     // serde(tag = "kind", content = "data") 形状——web pump 原样转 SSE/WS。
@@ -493,6 +495,7 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
             why,
             impact,
             reject_note,
+            ..
         } => {
             assert_eq!(session_key, "agent:main:session:s1");
             assert_eq!(chat_id, "web:abc");
@@ -527,6 +530,8 @@ fn test_agent_event_approval_requested_accessors() {
         why: None,
         impact: None,
         reject_note: None,
+        preview: None,
+        preview_format: None,
     };
     assert_eq!(ev.chat_id(), "web:x");
     assert_eq!(ev.kind(), "ApprovalRequested");

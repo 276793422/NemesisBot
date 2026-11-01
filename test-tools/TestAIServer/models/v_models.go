@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -444,3 +445,119 @@ func (m *TestAI100) Process(messages []Message) string {
 }
 
 func (m *TestAI100) Delay() time.Duration { return 0 }
+
+// ---------------------------------------------------------------- L21 stream-break 模型对
+//
+// testai-break-1.0 / testai-heal-1.0 —— agent-bench stream_break 场景
+// （2026-11-01）的流中断模型对。实现 StreamBreaker 接口的模型在流式请求
+// （req.Stream=true）且 ShouldBreak()=true 时，handler 发出 SSE 前缀
+// （role 块 + partial 内容块）后**中途掐断传输**（http.ErrAbortHandler，
+// chunked 帧无终止帧）——客户端读到 incomplete message 传输错误，对应
+// nemesis-providers SSE 读错误 → transport_error → collect_stream_response
+// Err 臂（partial 非空 → StreamInterrupted 携带 partial）。
+//
+// ⚠ 刻意不走「干净 EOF」形态：http_provider 的 J1 宽容层会把 EOF-无-
+// [DONE] 合成终态块当成功收尾（2026-10-13 wal_crash 根修的刻意设计），
+// 干净 EOF 的 partial 会被当完整回复上抛、中断根本不可见。
+//
+// 分工：
+//   - testai-break-1.0 恒断——每次请求都中断。断言重试耗尽终局：错误
+//     通知诚实上报（stream interrupted from provider 头行）+ partial
+//     全文随注记框架保留。
+//   - testai-heal-1.0 全局奇偶交替——奇数次请求中断、偶数次请求正常
+//     完整回复。断言重试路径完整：断流后重试成功，用户拿到完整回复、
+//     partial 不上抛。奇偶配对成立的前提是本模型被场景独占（bench
+//     单线程逐场景串行请求），不设每会话状态。
+
+// StreamBreaker 流中断模型契约（L21）。handler 在流式请求下先问
+// ShouldBreak()——true 则走 handleStreamBreakResponse（partial 后无终态
+// 收尾），false 走正常 Process 路径。
+type StreamBreaker interface {
+	Model
+	ShouldBreak() bool
+	PartialContent() string
+}
+
+// breakPartialContent 中断前发出的确定性 partial（bench 断言错误通知携带
+// 全文的 marker）。刻意避开错误分类词表污染面（token/429/expired/
+// unauthorized/password 等）。
+const breakPartialContent = "BREAK_PARTIAL_A1：这是中断前的半截内容，"
+
+// TestAIBreak 恒断模型。
+type TestAIBreak struct{}
+
+func NewTestAIBreak() *TestAIBreak          { return &TestAIBreak{} }
+func (m *TestAIBreak) Name() string         { return "testai-break-1.0" }
+func (m *TestAIBreak) Delay() time.Duration { return 0 }
+func (m *TestAIBreak) ShouldBreak() bool    { return true }
+func (m *TestAIBreak) PartialContent() string {
+	return breakPartialContent
+}
+
+// Process 恒断路径不消费（handler 在 Process 之前短路进中断分支）；
+// 非流式请求兜底返回提示文本。
+func (m *TestAIBreak) Process(messages []Message) string {
+	return "BREAK_UNREACHABLE（本模型只在流式请求下工作：恒中断）"
+}
+
+// TestAIHeal 奇偶交替模型：奇数次请求中断，偶数次请求完整回复。
+type TestAIHeal struct {
+	calls atomic.Int64
+}
+
+func NewTestAIHeal() *TestAIHeal           { return &TestAIHeal{} }
+func (m *TestAIHeal) Name() string         { return "testai-heal-1.0" }
+func (m *TestAIHeal) Delay() time.Duration { return 0 }
+
+// ShouldBreak 全局请求计数奇偶：1/3/5… 中断，2/4/6… 完整。跨请求持久
+// （进程生命周期）——场景串行的前提下每对请求恰好一断一成。
+func (m *TestAIHeal) ShouldBreak() bool {
+	return m.calls.Add(1)%2 == 1
+}
+
+func (m *TestAIHeal) PartialContent() string { return breakPartialContent }
+
+// Process 偶数次（重试）请求的完整回复。marker 供 bench 断言「重试完整」；
+// 刻意不含 BREAK_PARTIAL marker——bench 同时断言 partial 不泄漏进成功
+// 回复。
+func (m *TestAIHeal) Process(messages []Message) string {
+	return "HEAL_RETRY_OK：重试后的完整回复"
+}
+
+// ---------------------------------------------------------------- L04 length-continuation 模型
+//
+// testai-lenbreak-1.0 —— agent-bench length_continuation 场景（2026-11-01）
+// 的输出撞顶续行模型。两步确定性脚本：
+//
+//   - 轮 1（任务消息）：返回 9016 字符长正文。handler 非流式普通路径组装
+//     usage.completion_tokens = len(content) ≥ agents.defaults.max_tokens
+//     （bench config 8192）→ 主循环 handle_length_continuation 的 usage
+//     数值判定（hit_cap）命中。刻意不伪造 finish_reason（恒 "stop"）——
+//     同时覆盖「上游不给 length 信号、只有 usage 超限」的最难检测形态
+//     （usage 判定优先于 finish_reason 回落，run_loop.rs §6.2）。
+//   - 轮 2（最后一条 user 消息是 continue 提示 "Output limit reached"）：
+//     返回短补全段 LENBREAK_PART_B OK——正常 usage 不触发，器官 7 终答。
+//
+// bench 断言终答含 LENBREAK_PART_B OK：续行判定失效时轮 1 长文直接成
+// 终答（PART_B 永不出现 → 断言超时）；续写预算耗尽 / 空输出 guard 的
+// 报错终局同样到不了 PART_B。
+type TestAILenBreak struct{}
+
+func NewTestAILenBreak() *TestAILenBreak     { return &TestAILenBreak{} }
+func (m *TestAILenBreak) Name() string       { return "testai-lenbreak-1.0" }
+func (m *TestAILenBreak) Delay() time.Duration { return 0 }
+
+func (m *TestAILenBreak) Process(messages []Message) string {
+	// 倒序找最后一条 user 消息：continue 提示是最新 user 轮（系统/assistant
+	// 历史消息不参与判定——主循环每轮注入的时间 system 消息不影响）。
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		if strings.Contains(messages[i].Content, "Output limit reached") {
+			return "LENBREAK_PART_B OK：续写轮补全段"
+		}
+		return "LENBREAK_PART_A:" + strings.Repeat("x", 9000)
+	}
+	return "LENBREAK_NO_USER_MESSAGE"
+}

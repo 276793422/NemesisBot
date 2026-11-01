@@ -233,6 +233,162 @@ async fn gate_preferred_but_unsupported_lane_falls_back() {
 }
 
 // ---------------------------------------------------------------------------
+// 流中断 partial 保留（L02 契约在 chat_streamed 自带聚合循环的接线，2026-11-01）
+//
+// chat_streamed 不走 provider.chat() 内部的 collect_stream_response，自带
+// 聚合循环——中途 Err 臂漏接 StreamInterrupted 包装即 partial 丢弃（L21
+// agent-bench stream_break 终局臂实证）。三臂对齐 collect_stream_response
+// Err 臂契约：内容非空 → 包装；内容空但出现过 tool_calls → 包装；全空 →
+// 原错误原样上抛。
+// ---------------------------------------------------------------------------
+
+/// 中途断流 mock：先发 partial 块（delta / tool_calls 按配置），再发 Err。
+struct MidStreamBreakMock {
+    delta: &'static str,
+    tool_calls: Vec<nemesis_providers::types::ToolCall>,
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for MidStreamBreakMock {
+    async fn chat(
+        &self,
+        _messages: &[ProviderMessage],
+        _tools: &[ProviderToolDef],
+        _model: &str,
+        _options: &ProviderChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        unreachable!("偏好流式时 chat() 不应被触达")
+    }
+
+    fn chat_stream(
+        &self,
+        _messages: &[ProviderMessage],
+        _tools: &[ProviderToolDef],
+        _model: &str,
+        _options: &ProviderChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let _ = tx.try_send(Ok(StreamChunk {
+            delta: self.delta.to_string(),
+            tool_calls: self.tool_calls.clone(),
+            finish_reason: None,
+            usage: None,
+            reasoning_content: None,
+        }));
+        let _ = tx.try_send(Err(FailoverError::Unknown {
+            provider: "break-mock".to_string(),
+            message: "connect error (model mock/model): unexpected EOF during chunk size line"
+                .to_string(),
+        }));
+        rx
+    }
+
+    fn stream_preferred(&self, _model: &str) -> bool {
+        true
+    }
+
+    fn default_model(&self) -> &str {
+        "mock/model"
+    }
+
+    fn name(&self) -> &str {
+        "break-mock"
+    }
+}
+
+fn break_tool_call() -> nemesis_providers::types::ToolCall {
+    nemesis_providers::types::ToolCall {
+        id: "call-break-1".to_string(),
+        call_type: Some("function".to_string()),
+        function: Some(nemesis_providers::types::FunctionCall {
+            name: "exec".to_string(),
+            arguments: "{}".to_string(),
+        }),
+        name: None,
+        arguments: None,
+    }
+}
+
+#[tokio::test]
+async fn mid_stream_err_with_partial_content_wraps_stream_interrupted() {
+    let mock = MidStreamBreakMock {
+        delta: "PARTIAL_HALF_TEXT",
+        tool_calls: vec![],
+    };
+    let adapter = ProviderAdapter::new(Arc::new(mock), "mock/model".to_string());
+    let deltas = delta_collector();
+    let d = deltas.clone();
+    let err = adapter
+        .chat_streamed(
+            "mock/model",
+            one_user_msg(),
+            None,
+            vec![],
+            &move |s: String| d.lock().unwrap().push(s),
+        )
+        .await
+        .expect_err("中途断流必须 Err");
+
+    // Display 头行前缀 = recovery transient 词表短路锚（agent loop 侧契约）。
+    assert!(
+        err.starts_with("stream interrupted from provider break-mock/mock/model"),
+        "头行前缀缺失：{err}"
+    );
+    // 根因链保留 + partial 全文随注记框架携带（L02 生命线）。
+    assert!(
+        err.contains("unexpected EOF during chunk size line"),
+        "{err}"
+    );
+    assert!(err.contains("已接收 17 字符"), "{err}");
+    assert!(
+        err.contains("--- 以下为中断前已生成的部分内容 ---"),
+        "{err}"
+    );
+    assert!(err.contains("PARTIAL_HALF_TEXT"), "{err}");
+    // 前端增量面照常收到过 partial（中断前已实时下发）。
+    assert_eq!(deltas.lock().unwrap().join(""), "PARTIAL_HALF_TEXT");
+}
+
+#[tokio::test]
+async fn mid_stream_err_with_only_tool_calls_wraps_stream_interrupted() {
+    // 内容空但出现过 tool_calls：半截不可当纯文本续用，同样走包装臂
+    // （对齐 collect_stream_response 判据 `content 空 && tool_calls 空`）。
+    let mock = MidStreamBreakMock {
+        delta: "",
+        tool_calls: vec![break_tool_call()],
+    };
+    let adapter = ProviderAdapter::new(Arc::new(mock), "mock/model".to_string());
+    let err = adapter
+        .chat_streamed("mock/model", one_user_msg(), None, vec![], &|_: String| {})
+        .await
+        .expect_err("中途断流必须 Err");
+    assert!(
+        err.starts_with("stream interrupted from provider break-mock/mock/model"),
+        "tool_calls 在场必须包装而非原样上抛：{err}"
+    );
+}
+
+#[tokio::test]
+async fn mid_stream_err_with_nothing_aggregated_maps_raw_error() {
+    // 全空（空 delta 块 + 无 tool_calls）：原错误原样上抛，不虚构中断框架
+    // （诚实分类不吞——对齐 collect_stream_response 空 臂）。
+    let mock = MidStreamBreakMock {
+        delta: "",
+        tool_calls: vec![],
+    };
+    let adapter = ProviderAdapter::new(Arc::new(mock), "mock/model".to_string());
+    let err = adapter
+        .chat_streamed("mock/model", one_user_msg(), None, vec![], &|_: String| {})
+        .await
+        .expect_err("中途断流必须 Err");
+    assert!(
+        err.starts_with("unknown error from provider break-mock:"),
+        "空聚合必须原错误直传：{err}"
+    );
+    assert!(!err.contains("stream interrupted"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
 // 真实 lane 的 stream_preferred 判据（与各自 chat() 内部切换同源钉死）
 // ---------------------------------------------------------------------------
 

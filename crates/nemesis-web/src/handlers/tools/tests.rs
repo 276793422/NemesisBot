@@ -102,6 +102,7 @@ fn make_ctx(al: AgentLoop, dir: &tempfile::TempDir) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });

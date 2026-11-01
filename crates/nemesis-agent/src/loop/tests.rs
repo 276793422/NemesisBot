@@ -2857,7 +2857,9 @@ async fn test_force_compression() {
     // system + 10 = 11
     assert_eq!(instance.get_history().len(), 11);
 
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
 
     // History is unchanged (append-only).
     assert_eq!(instance.get_history().len(), 11);
@@ -2883,7 +2885,9 @@ async fn test_force_compression_short_history() {
     let instance = AgentInstance::new(test_config());
     instance.add_user_message("Hello");
 
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
     assert!(instance.get_summary_cache().is_none());
     // History len unchanged: system + 1 user = 2.
     assert_eq!(instance.get_history().len(), 2);
@@ -3091,7 +3095,9 @@ async fn test_force_compression_llm_failure_keeps_cache_unset() {
     }
     assert_eq!(instance.get_history().len(), 11);
 
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
 
     assert!(
         instance.get_summary_cache().is_none(),
@@ -3118,7 +3124,9 @@ async fn test_force_compression_llm_failure_preserves_existing_cache() {
         text: "previous coverage".to_string(),
     }));
 
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
 
     let cache = instance
         .get_summary_cache()
@@ -4875,7 +4883,9 @@ async fn test_force_compression_no_system_prompt() {
         Box::new(MockLlmProvider::new(vec![llm_text("SUMMARY")])),
         test_config(),
     );
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
     assert_eq!(cache.covers_up_to, 10 - SMALL_K_FORCE);
@@ -4900,7 +4910,9 @@ async fn test_force_compression_preserves_last_message() {
         Box::new(MockLlmProvider::new(vec![llm_text("SUMMARY")])),
         test_config(),
     );
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
     assert_eq!(cache.covers_up_to, 42 - SMALL_K_FORCE); // tail = last 2 messages

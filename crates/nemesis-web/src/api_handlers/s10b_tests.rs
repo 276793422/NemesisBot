@@ -76,6 +76,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })
@@ -304,6 +305,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     };

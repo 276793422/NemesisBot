@@ -87,6 +87,22 @@ function canAlways(req: ApprovalRequest): boolean {
   const op = req.operation.toLowerCase()
   return op === 'process_exec' || op === 'process_spawn'
 }
+
+/** L07（2026-11-01）：预览按行拆分（CRLF 容错）——逐行渲染供行首染色。 */
+function previewLines(text: string): string[] {
+  return text.replace(/\r\n/g, '\n').split('\n')
+}
+
+/** L07：diff 行首染色（+增/-删/@@hunk/文件头）；text 形态不染色。
+ * `+++`/`---` 文件头行以 +/- 开头但不是变更行，归 meta 灰。 */
+function previewLineClass(line: string, format?: 'diff' | 'text'): string {
+  if (format !== 'diff') return 'pv-plain'
+  if (line.startsWith('+++') || line.startsWith('---')) return 'pv-meta'
+  if (line.startsWith('+')) return 'pv-add'
+  if (line.startsWith('-')) return 'pv-del'
+  if (line.startsWith('@@')) return 'pv-hunk'
+  return 'pv-plain'
+}
 </script>
 
 <template>
@@ -136,6 +152,20 @@ function canAlways(req: ApprovalRequest): boolean {
           <div v-if="canAlways(req)" class="approval-row approval-always-scope">
             <span class="approval-label">记住</span>
             <code class="approval-value approval-target">{{ req.pattern }}</code>
+          </div>
+          <!-- L07（2026-11-01）：操作预览快照（unified diff 染色 / 命令现场）。
+               快照非授权面——批准的仍是操作本身；后端保证截断（64KB）。 -->
+          <div v-if="req.preview" class="approval-preview">
+            <div class="approval-preview-title">
+              {{ req.preview_format === 'diff' ? '变更预览（即将写入的内容）' : '操作预览' }}
+            </div>
+            <div class="approval-preview-body">
+              <div
+                v-for="(line, i) in previewLines(req.preview)"
+                :key="i"
+                :class="previewLineClass(line, req.preview_format)"
+              >{{ line.length ? line : ' ' }}</div>
+            </div>
           </div>
           <!-- F6：拒绝备注（可选）——回灌给模型帮它下一轮纠正。 -->
           <input
@@ -298,6 +328,57 @@ function canAlways(req: ApprovalRequest): boolean {
   width: 100%;
   margin-top: var(--space-1);
   font-size: var(--text-sm);
+}
+
+/* L07（2026-11-01）：操作预览区——等宽 + diff 行首染色；超长内部滚动
+   （后端 64KB 截断兜底，这里限高保证卡片不被撑爆）。 */
+.approval-preview {
+  margin-top: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.approval-preview-title {
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.approval-preview-body {
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.approval-preview-body div {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.pv-add {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.pv-del {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
+.pv-hunk,
+.pv-meta {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.pv-plain {
+  color: var(--text-secondary);
 }
 
 .approval-footer {

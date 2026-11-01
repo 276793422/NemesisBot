@@ -1341,6 +1341,7 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });

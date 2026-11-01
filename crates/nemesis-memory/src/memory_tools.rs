@@ -57,7 +57,7 @@ pub fn memory_tool_definitions() -> Vec<MemoryTool> {
     vec![
         MemoryTool {
             name: "memory_search".into(),
-            description: "Search stored memories. Can search episodic memories (past conversations) or knowledge graph (entities and relationships).".into(),
+            description: "Search stored memories. Can search episodic memories (past conversations) or knowledge graph (entities and relationships). Every result line carries a [YYYY-MM-DD] creation date — check it to judge recency before trusting a memory.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -311,9 +311,13 @@ impl MemoryToolExecutor {
                             } else {
                                 String::new()
                             };
+                            // B15（2026-11-01 L08 复核补齐）：graph 段此前是
+                            // B15 修复后唯一不带日期的检索渲染面——三元组
+                            // created_at 一直在数据模型上，纯渲染缺口。
                             output.push_str(&format!(
-                                "{}. {} --[{}]--> {}{}\n",
+                                "{}. [{}] {} --[{}]--> {}{}\n",
                                 i + 1,
+                                t.created_at.format("%Y-%m-%d"),
                                 t.subject,
                                 t.predicate,
                                 t.object,
@@ -776,9 +780,11 @@ impl MemoryToolExecutor {
                     } else {
                         String::new()
                     };
+                    // B15 同款日期戳（L08 复核补齐，与 search graph 段一致）。
                     output.push_str(&format!(
-                        "{}. {} --[{}]--> {}{}\n",
+                        "{}. [{}] {} --[{}]--> {}{}\n",
                         i + 1,
+                        t.created_at.format("%Y-%m-%d"),
                         t.subject,
                         t.predicate,
                         t.object,
@@ -843,9 +849,11 @@ impl MemoryToolExecutor {
                     triples.len()
                 ));
                 for (i, t) in triples.iter().enumerate() {
+                    // B15 同款日期戳（L08 复核补齐，与 search graph 段一致）。
                     output.push_str(&format!(
-                        "{}. {} --[{}]--> {}\n",
+                        "{}. [{}] {} --[{}]--> {}\n",
                         i + 1,
+                        t.created_at.format("%Y-%m-%d"),
                         t.subject,
                         t.predicate,
                         t.object

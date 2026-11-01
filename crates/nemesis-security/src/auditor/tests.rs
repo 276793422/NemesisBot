@@ -3407,3 +3407,70 @@ fn session_allow_all_beats_auto_config_in_audit_attribution() {
         "不得归因到免打扰: {content}"
     );
 }
+
+// ===== L01 敏感 flag 放行臂二次校验（2026-11-01）=====
+// pattern 归约（规则表 allow / F3 审批记忆）不区分破坏性 flag——命中
+// 敏感 flag 的命令必须降级人工确认，不得静默自动放行。
+
+#[test]
+fn l01_allow_rule_with_dangerous_flag_requires_approval() {
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "deny".to_string(),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    auditor.set_rules(
+        OperationType::ProcessExec,
+        vec![SecurityRule {
+            pattern: "git push *".to_string(),
+            action: "allow".to_string(),
+            comment: "allow push".to_string(),
+        }],
+    );
+
+    // 无 flag → allow 规则照常放行（不回归）。
+    let (allowed, _, _) = auditor.request_permission(&exec_request("l01a", "git push origin main"));
+    assert!(allowed, "plain push 必须照常放行");
+
+    // --force 变体 → 降级 RequireApproval（弹卡 + reason 带 flag_hit）。
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("l01b", "git push --force origin main"));
+    assert!(!allowed, "敏感 flag 不得被 allow 规则静默放行");
+    assert!(
+        err.as_ref().is_some_and(|e| e.contains("flag_hit")),
+        "reason 必须带 flag_hit 供审计检索: {err:?}"
+    );
+    assert_eq!(auditor.pending_count(), 1, "降级后必须入 pending 弹卡");
+}
+
+#[test]
+fn l01_f3_memory_rule_flag_gate_e2e() {
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    let git_push_rule = crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "git push *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir, &[git_push_rule]));
+
+    // 无 flag → F3 记忆规则自动放行（无 request_id = 没弹卡）。
+    let (allowed, _, request_id) =
+        auditor.request_permission_tracked(&exec_request("l01c", "git push origin main"), None);
+    assert!(allowed, "plain push 由记忆规则自动放行");
+    assert!(request_id.is_none(), "自动放行不得产生审批卡");
+
+    // --force 变体 → 记忆规则被 flag 闸阻断 → fall through 到人工卡
+    // （无 manager 形态 = pending 入队 + reason 带 approval required）。
+    let (allowed, err, _) = auditor
+        .request_permission_tracked(&exec_request("l01d", "git push --force origin main"), None);
+    assert!(!allowed, "敏感 flag 必须拦下记忆规则自动放行");
+    assert!(
+        err.as_ref()
+            .is_some_and(|e| e.contains("approval required")),
+        "flag 阻断后必须落到人工卡（pending）而不是静默放行: {err:?}"
+    );
+    assert_eq!(auditor.pending_count(), 1, "fall through 后必须入 pending");
+}

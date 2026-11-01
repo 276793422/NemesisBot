@@ -66,6 +66,7 @@ fn make_ctx(dir: &tempfile::TempDir, workspace: Option<String>) -> RequestContex
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });

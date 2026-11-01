@@ -70,6 +70,7 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
     let instance = AgentInstance::new(test_config());
     let provider = agent_loop.provider.read().clone();
     let opts = crate::types::ChatOptions::default();
+    let context = RequestContext::new("web", "rl-chat", "rl-sender", "agent:main:session:rlstop");
 
     let started = std::time::Instant::now();
     let task = {
@@ -78,6 +79,7 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
             agent_loop
                 .retry_transient(
                     &instance,
+                    &context,
                     &provider,
                     "test-model",
                     &opts,
@@ -121,11 +123,13 @@ async fn stopped_loop_skips_transient_retry_entirely() {
     let instance = AgentInstance::new(test_config());
     let provider = agent_loop.provider.read().clone();
     let opts = crate::types::ChatOptions::default();
+    let context = RequestContext::new("web", "rl-chat", "rl-sender", "agent:main:session:rlstop");
 
     let started = std::time::Instant::now();
     let (maybe_resp, last_err) = agent_loop
         .retry_transient(
             &instance,
+            &context,
             &provider,
             "test-model",
             &opts,

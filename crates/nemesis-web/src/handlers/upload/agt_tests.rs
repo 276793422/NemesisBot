@@ -79,6 +79,7 @@ fn agt_state() -> Arc<AppState> {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })

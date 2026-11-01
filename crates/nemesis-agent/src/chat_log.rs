@@ -1647,6 +1647,82 @@ pub struct SessionMeta {
     /// 有损形态还原不了，hydrate 直接读本字段）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_key: Option<String>,
+    /// L14（2026-11-01）：会话执行统计（聚合器累加，节流落盘；重启读回
+    /// 不归零）。全零不落盘，兼容旧文件形态。
+    #[serde(default, skip_serializing_if = "is_default_exec_stats")]
+    pub stats: SessionExecStats,
+}
+
+/// L14（2026-11-01）：会话执行统计（session sidecar meta 的 `stats` 字段）。
+/// 计数语义：tool_calls=工具调用发起数；tool_failures=执行失败数；
+/// retries=LLM 瞬态错误重试次数；validation_failures=args 校验失败回灌次数；
+/// compactions=上下文压缩成功次数（auto+manual）；approvals_*=审批卡
+/// 产生/批准/未批准（denied、超时、孤儿清理都归「未批准」）。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SessionExecStats {
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub tool_calls: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub tool_failures: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub retries: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub validation_failures: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub compactions: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub approvals_total: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub approvals_approved: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub approvals_denied: u64,
+}
+
+impl SessionExecStats {
+    /// L14：增量合并（聚合器 flush 载荷应用；逐字段饱和加，防溢出）。
+    pub fn add(&mut self, delta: &Self) {
+        self.tool_calls = self.tool_calls.saturating_add(delta.tool_calls);
+        self.tool_failures = self.tool_failures.saturating_add(delta.tool_failures);
+        self.retries = self.retries.saturating_add(delta.retries);
+        self.validation_failures = self
+            .validation_failures
+            .saturating_add(delta.validation_failures);
+        self.compactions = self.compactions.saturating_add(delta.compactions);
+        self.approvals_total = self.approvals_total.saturating_add(delta.approvals_total);
+        self.approvals_approved = self
+            .approvals_approved
+            .saturating_add(delta.approvals_approved);
+        self.approvals_denied = self.approvals_denied.saturating_add(delta.approvals_denied);
+    }
+
+    /// L14：是否有任一非零字段（全零 = 无需落盘）。
+    pub fn is_zero(&self) -> bool {
+        *self == SessionExecStats::default()
+    }
+}
+
+/// L14: `skip_serializing_if` 助手（全零 stats 不落盘，兼容旧文件形态）。
+fn is_default_exec_stats(s: &SessionExecStats) -> bool {
+    s.is_zero()
+}
+
+/// L14: `skip_serializing_if` 助手（0 不落盘）。
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+/// L14（2026-11-01）：会话执行统计累加（聚合器节流调用的唯一写入口）。
+/// 读 meta（缺省 Default）→ 闭包改 stats → 原子替换，与
+/// `write_session_project` 同款模式（META_LOCK 互斥 + upsert 语义）。
+pub fn update_session_stats(session_key: &str, f: impl FnOnce(&mut SessionExecStats)) {
+    upsert_meta(session_key, |m| f(&mut m.stats));
+}
+
+/// L14（2026-11-01）：读会话执行统计（meta 缺失/字段缺席 = Default）。
+pub fn read_session_stats(session_key: &str) -> SessionExecStats {
+    read_meta_full(session_key)
+        .map(|m| m.stats)
+        .unwrap_or_default()
 }
 
 /// WS9/P17：一次消息级回退的谱系记录（`last_rewind` 的载荷）。

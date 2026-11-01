@@ -163,6 +163,17 @@ impl ApprovalResponder for RemoteNotifyResponder {
     fn pending(&self) -> Vec<serde_json::Value> {
         self.inner.pending()
     }
+
+    // L07（2026-11-01）孤儿卡清理透传：项目会话经装饰器装配 responder，
+    // 不透传 = 项目会话的未决审批卡清不掉。终局裁决仍在 inner（本地
+    // pending 是真相源），装饰器只旁路上行，与本文件 respond 同姿态。
+    fn resolve_orphans(&self, reason: &str) -> usize {
+        self.inner.resolve_orphans(reason)
+    }
+
+    fn resolve_orphans_for_session(&self, session_key: &str, reason: &str) -> usize {
+        self.inner.resolve_orphans_for_session(session_key, reason)
+    }
 }
 
 /// 按字符数截断（char boundary 安全；超出补省略号。board_bus 同款）。

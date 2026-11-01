@@ -856,6 +856,9 @@ impl SecurityPlugin {
                 .get("approval_session_key")
                 .cloned()
                 .unwrap_or_default(),
+            // L07：原始 args 透传——审批卡 diff 预览的数据源（preview 在
+            // 挂起点生成，args 只在这里可见）。
+            tool_args: invocation.args.clone(),
         };
         let (allowed, err, approval_id) = self
             .auditor

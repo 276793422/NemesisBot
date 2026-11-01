@@ -251,7 +251,9 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
     /// 同参同返回，finished 判定同源）。三个诚实回落：
     /// - 首块即 "not implemented"（trait 缺省实现）→ 该 provider 无流式
     ///   lane，静默回落 `inner.chat`（非流式），成功后合成一条全量增量；
-    /// - 流中途 Err → `map_provider_error`（与 chat 同一映射，429 保真）；
+    /// - 流中途 Err → 已聚合 partial 非空则包装 `StreamInterrupted`（L02
+    ///   契约，对齐 collect_stream_response Err 臂：partial 随错误携带不
+    ///   丢），空则 `map_provider_error` 原样上抛（429 保真）；
     /// - EOF 无 finish_reason（上游早断）→ 按 tool_calls 推导 finished，
     ///   不虚构终止原因。
     /// raw_request_body / raw_response_body 恒 None（流式路径不缓存原文——
@@ -368,8 +370,35 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             match rx.recv().await {
                 Some(Ok(next)) => chunk = Some(next),
                 Some(Err(e)) => {
-                    warn!("[LlmBridge] LLM stream error: {}", e);
-                    return Err(map_provider_error(&e));
+                    // L02 契约对齐（stream_util::collect_stream_response Err 臂
+                    // 同款语义）：流中断但已聚合非空部分内容/工具调用 → 包装
+                    // StreamInterrupted（partial 随错误 Display 携带不丢——
+                    // recovery 按 "stream interrupted from provider" 前缀短路进
+                    // transient 重试环，重试=全新请求 partial 不回灌；重试耗尽
+                    // 终局通知保留全文）。空 → lane 原错误原样上抛（诚实分类
+                    // 不吞）。⚠ 本聚合循环是 chat_streamed 自带的（不走
+                    // provider.chat() 内部的 collect_stream_response），漏接即
+                    // partial 丢弃——L21 agent-bench stream_break 终局臂实证
+                    // （2026-11-01）。
+                    if content.trim().is_empty() && last_tool_calls.is_empty() {
+                        warn!("[LlmBridge] LLM stream error: {}", e);
+                        return Err(map_provider_error(&e));
+                    }
+                    let chars = content.chars().count();
+                    let wrapped = nemesis_providers::failover::FailoverError::StreamInterrupted {
+                        provider: self.inner.name().to_string(),
+                        model: model_to_use.to_string(),
+                        reason: e.to_string(),
+                        partial_content: content,
+                        has_partial_tool_calls: !last_tool_calls.is_empty(),
+                    };
+                    warn!(
+                        "[LlmBridge] LLM stream interrupted with partial content ({} chars): provider={} model={}",
+                        chars,
+                        self.inner.name(),
+                        model_to_use
+                    );
+                    return Err(map_provider_error(&wrapped));
                 }
                 None => break,
             }

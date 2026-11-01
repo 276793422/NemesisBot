@@ -100,6 +100,7 @@ fn ctx_of(channel: &str, chat: &str) -> ApprovalContext {
         chat_id: chat.to_string(),
         sender_id: "u1".to_string(),
         session_key: String::new(),
+        tool_args: serde_json::Value::Null,
     }
 }
 

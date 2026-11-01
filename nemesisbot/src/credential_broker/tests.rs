@@ -232,3 +232,97 @@ fn convenience_entry_false_when_broker_absent() {
     super::uninstall();
     assert!(!super::request_credential_card("svc", "alias", "why", 1));
 }
+
+// ---------------------------------------------------------------------------
+// L06 复核点③（2026-11-01）：estop 收口——close_all 两臂
+// （等待方在场 = 等待方广播；等待方已亡 = 清理侧补广播；每卡恰一次）
+// + 清理绝不落 vault + 清理后 respond 诚实 Err。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn estop_close_all_wakes_waiter_with_denied_and_unregisters() {
+    let dir = tempfile::tempdir().unwrap();
+    let (broker, mut rx) = make_broker(&dir);
+
+    // 真实等待方在场（30s 长窗，close_all 必须立即唤醒而非等超时）。
+    let waiter = broker.clone();
+    let t = std::thread::spawn(move || {
+        waiter
+            .request_credential(&request("cred-estop", 30))
+            .unwrap()
+    });
+    // 等注册可见再关（先入册后广播时序的镜像）。
+    for _ in 0..100 {
+        if broker
+            .pending_cards()
+            .iter()
+            .any(|c| c["request_id"] == "cred-estop")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let n = broker.close_all("estop engaged");
+    assert_eq!(n, 1);
+    assert_eq!(
+        t.join().unwrap(),
+        CredentialOutcome::Denied,
+        "等待方收 Denied"
+    );
+    assert!(
+        broker.pending_cards().is_empty(),
+        "关闭后 pending 清空（前端无悬空卡）"
+    );
+
+    // 恰一次广播，来自等待方正常路径（清理侧 send 成功不补发）。
+    let mut resolved = 0;
+    while let Ok(ev) = rx.try_recv() {
+        let p = serde_json::to_value(&ev).unwrap();
+        if p["data"]["decision"] == "denied" {
+            resolved += 1;
+        }
+    }
+    assert_eq!(resolved, 1, "每卡恰好一次 Resolved 广播");
+
+    // 清理后 respond：请求已出册 = 诚实 Err（绝不假成功）。
+    let err = broker.respond("cred-estop", SECRET).unwrap_err();
+    assert!(err.contains("不存在"), "got: {err}");
+}
+
+#[test]
+fn estop_close_all_dead_waiter_broadcasts_from_cleanup_side() {
+    let dir = tempfile::tempdir().unwrap();
+    let (broker, mut rx) = make_broker(&dir);
+
+    // 等待方已亡形态（estop 冻结下 loop task 被放弃）：手动入册 + 预先
+    // drop 接收端——tests 是子模块，可直接构造私有 PendingEntry。
+    let (tx, dead_rx) = std::sync::mpsc::channel::<CredentialOutcome>();
+    drop(dead_rx);
+    broker.pending.lock().insert(
+        "cred-dead".to_string(),
+        PendingEntry {
+            service: "connector/test-conn".to_string(),
+            key_name: "connector/test-conn/api_key".to_string(),
+            created_at: std::time::Instant::now(),
+            tx,
+        },
+    );
+
+    let n = broker.close_all("estop engaged");
+    assert_eq!(n, 1);
+    assert!(broker.pending_cards().is_empty());
+
+    // send 失败臂：清理侧补广播摘卡（前端不留悬空卡）。
+    let ev = rx.try_recv().unwrap();
+    let p = serde_json::to_value(&ev).unwrap();
+    assert_eq!(p["data"]["decision"], "denied");
+    assert_eq!(p["data"]["request_id"], "cred-dead");
+}
+
+#[test]
+fn estop_close_all_on_empty_pending_is_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let (broker, _rx) = make_broker(&dir);
+    assert_eq!(broker.close_all("estop engaged"), 0);
+}

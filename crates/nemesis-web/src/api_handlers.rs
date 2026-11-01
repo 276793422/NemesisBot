@@ -153,6 +153,10 @@ pub struct AppState {
     /// AlwaysAllow 语义直装——headless/测试装配），`install_approval` 的
     /// 消费点在 gateway 注入侧。
     pub skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
+    /// L14（2026-11-01）：会话执行统计读侧（flush 未落盘增量 + 读持久层
+    /// 总数）。gateway 注入 nemesisbot 聚合器；None = 未装配（`sessions.stats`
+    /// 诚实返回 unavailable）。
+    pub session_stats: Option<Arc<dyn nemesis_agent::SessionStatsReader>>,
 }
 
 impl AppState {

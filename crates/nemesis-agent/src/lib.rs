@@ -89,6 +89,9 @@ pub mod request_logger_observer;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;
+/// L14（2026-11-01）：会话执行统计 sink——loop 内部计数（重试/校验失败/
+/// 压缩成功）上抛宿主聚合器的 trait 面。
+pub mod session_stats;
 pub mod skills_digest;
 pub mod spill;
 pub mod todo_closeout;
@@ -163,6 +166,7 @@ pub use session::{Session, SessionManager, SessionStore, StoredMessage, StoredSe
 pub use session::{
     estimate_tokens, estimate_tokens_for_turns, force_compress_turns, is_internal_channel,
 };
+pub use session_stats::{SessionStatsReader, SessionStatsSink, StatCounter};
 pub use todo_closeout::TodoCloseoutHook;
 pub use types::*;
 pub use workspace_lease::{LEASE_WRITE_TOOLS, LeaseGuardTool, WorkspaceLease};

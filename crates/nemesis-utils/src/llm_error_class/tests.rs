@@ -219,3 +219,43 @@ fn error_chain_msg_preserves_source_chain_for_connect_detection() {
     // 裸顶层（无链）不应命中——词表纪律保持。
     assert!(!is_connect_error(&w.to_string()));
 }
+
+// -- L02（2026-11-01）流中断入口短路（对抗用例 A1/A2/A4）----------------------
+
+/// 构造 StreamInterrupted 的真实 Display 形态（头行 + 注记框架 + partial）。
+fn stream_interrupted_display(partial: &str) -> String {
+    format!(
+        "stream interrupted from provider openai/gpt-4: connection reset（已接收 {} 字符，中断前部分文本随错误通知保留）\n\n--- 以下为中断前已生成的部分内容 ---\n{}",
+        partial.chars().count(),
+        partial
+    )
+}
+
+#[test]
+fn l02_prefix_short_circuits_to_timeout_despite_polluted_partial() {
+    // A1：partial 全文含 429 / token / expired / unauthorized 污染词——
+    // 入口前缀短路必须恒 Timeout 类，状态码提取与全部词表不许碰到 partial。
+    let display = stream_interrupted_display(
+        "上游返回 status: 429 且 token 计数异常，授权已 expired (unauthorized)，rate limit exceeded",
+    );
+    assert_eq!(classify_llm_error(&display), Some(LlmErrorClass::Timeout));
+}
+
+#[test]
+fn l02_multiline_partial_with_fake_error_line_short_circuits() {
+    // A4：多行 partial 内嵌完整 "Error: fake ..." 伪行——前缀锚只认头行，
+    // 尾段内容不参与分类。
+    let display = stream_interrupted_display(
+        "第一行\nError: fake context length overflow 999999 tokens\ninvalid request",
+    );
+    assert_eq!(classify_llm_error(&display), Some(LlmErrorClass::Timeout));
+}
+
+#[test]
+fn l02_non_prefixed_text_with_stream_word_not_short_circuited() {
+    // 短路只认头行前缀锚（starts_with）——普通错误文本里恰好含
+    // "stream interrupted" 字样不享受短路（词表照常工作）。
+    let msg = "upstream error: stream interrupted budget; invalid request format";
+    // "invalid request" → Format（词表既有行为，不被 L02 短路劫持）。
+    assert_eq!(classify_llm_error(msg), Some(LlmErrorClass::Format));
+}

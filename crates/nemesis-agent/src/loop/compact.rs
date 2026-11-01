@@ -875,6 +875,11 @@ impl AgentLoop {
                 if let Some(st) = self.compact_state.lock().get_mut(session_key) {
                     st.no_progress = 0;
                 }
+                // L14：auto 压缩成功采用计入会话统计。
+                self.bump_session_stats(
+                    session_key,
+                    crate::session_stats::StatCounter::Compactions,
+                );
             }
         } else {
             // 2026-08-25 摘要静默失败修复：失败（或无可摘要内容）时绝不推进
@@ -982,19 +987,23 @@ impl AgentLoop {
     /// reduces the tail to [`SMALL_K_FORCE`] messages; if that still isn't
     /// enough (the caller will retry), the next call folds everything into the
     /// summary (tail → 0). Bounded by the caller's retry limit.
-    pub async fn force_compression(&self, instance: &AgentInstance) {
-        self.force_compression_opts(instance, false).await;
+    pub async fn force_compression(&self, instance: &AgentInstance, session_key: &str) {
+        self.force_compression_opts(instance, false, session_key)
+            .await;
     }
 
     /// N2：`force_compression` 的参数化形态——`prefer_small=true` 时手动
     /// 入口（E6 `/compact`）优先用 `agents.small_model` 跑摘要；自动压缩
     /// 路径维持 `false`（主模型，质量敏感不降档）。
     ///
+    /// `session_key`：L14 会话统计的压缩成功计数归属（成功采用时 bump）。
+    ///
     /// 返回 `true` = 已发起摘要生成尝试；`false` = 无可推进内容（未触达 LLM）。
     pub async fn force_compression_opts(
         &self,
         instance: &AgentInstance,
         prefer_small: bool,
+        session_key: &str,
     ) -> bool {
         let history = instance.get_history();
         let cache = instance.get_summary_cache();
@@ -1054,6 +1063,9 @@ impl AgentLoop {
                 covers_up_to: new_c,
                 text: summary,
             }));
+            // L14：压缩成功采用计入会话统计（force 路径 = 手动 /compact +
+            // 上下文错误环内压缩；auto 路径的成功采用在 maybe_update_summary）。
+            self.bump_session_stats(session_key, crate::session_stats::StatCounter::Compactions);
             info!(
                 "[AgentLoop] Force-compressed: covers_up_to {} -> {} (verbatim tail {} -> {} messages)",
                 current_c,
@@ -1105,7 +1117,9 @@ impl AgentLoop {
 
         // N2：手动 /compact 是 `agents.small_model` 的唯一消费点——摘要用小
         // 省钱；自动压缩路径（context_length_exceeded 等）维持主模型。
-        let attempted = self.force_compression_opts(&instance, true).await;
+        let attempted = self
+            .force_compression_opts(&instance, true, session_key)
+            .await;
 
         // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发），与 auto 路径对称。
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
