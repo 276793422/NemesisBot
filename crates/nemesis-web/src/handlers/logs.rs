@@ -14,7 +14,9 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use chrono::NaiveDateTime;
 #[cfg(feature = "security")]
 use nemesis_security::integrity::AuditEvent;
-#[cfg(feature = "security")]
+// 无 feature 门：下方目录 helper（request/cluster/security/session/boundary）
+// 全部无门控使用 Path/PathBuf——门在导入上会让无 security 构建炸出 46 错
+// 级联（2026-11-02 Windows 分片实录：Linux 带 security 绿、Windows 裸 feature 红）。
 use std::path::{Path, PathBuf};
 
 pub struct LogsHandler;
