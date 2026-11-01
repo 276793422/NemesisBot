@@ -790,7 +790,7 @@ fn push_dispatch_baseline(
     ));
     let export = nemesis_board::git_repo::export_head_tree(&root, &staging);
     if let Err(e) = export {
-        let _ = std::fs::remove_dir_all(&staging);
+        nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
         return Err(format!("基线导出失败: {e}"));
     }
     tracing::info!(
@@ -813,7 +813,7 @@ fn push_dispatch_baseline(
             .await
         })
     });
-    let _ = std::fs::remove_dir_all(&staging);
+    nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
     match pushed {
         // 空仓库/空树 = NothingToSend：worker 收 `_baseline_commit` 后按空
         // 基线开跑（goal 空集宽容），基线行照记（管线归属不变）。

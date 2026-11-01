@@ -319,7 +319,7 @@ async fn delete_dir(val: &serde_json::Value, workspace: &Path) -> Result<String,
         Ok(_) => {}
         Err(e) => return Err(format!("failed to access directory '{path_str}': {e}")),
     }
-    tokio::fs::remove_dir_all(&path)
+    nemesis_utils::fsutil::remove_dir_all_retry_async(&path)
         .await
         .map_err(|e| format!("failed to delete directory: {e}"))?;
     Ok(format!("Directory deleted: {path_str}"))

@@ -91,6 +91,39 @@ pub fn remove_file_retry(file: impl AsRef<Path>) -> std::io::Result<()> {
     }
 }
 
+/// 带退避重试的单文件删除，返回是否删除成功。
+///
+/// 清理类变体：语义与目录版 [`remove_dir_all_resilient`] 对称——窗口内
+/// 中间失败只落 `debug!`，彻底失败 `warn!` 留痕；不向上传播错误。
+/// 「删除旧文件/临时文件失败 = 残留垃圾」的调用点用本变体替代裸
+/// `let _ = std::fs::remove_file`（瞬时句柄场景单发必胜假设不成立）。
+pub fn remove_file_resilient(file: impl AsRef<Path>) -> bool {
+    let file = file.as_ref();
+    match remove_file_retry(file) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                file = %file.display(),
+                last_error = %e,
+                "[FsUtil] 文件删除重试耗尽（残留交清扫兜底）"
+            );
+            false
+        }
+    }
+}
+
+/// [`remove_dir_all_retry`] 的异步包装。
+///
+/// 同步实现的 `thread::sleep` 退避不能直接进 async 上下文（阻塞 executor
+/// 线程），故经 `spawn_blocking` 移入阻塞线程池执行——实现单一真相源不变，
+/// 语义与同步版一致（`NotFound` 视为成功，耗尽返回最后错误）。
+pub async fn remove_dir_all_retry_async(dir: impl AsRef<Path>) -> std::io::Result<()> {
+    let dir = dir.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || remove_dir_all_retry(dir))
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::other(format!("spawn_blocking join: {e}"))))
+}
+
 /// 读取配置文件文本并剥离前导 UTF-8 BOM（`\u{FEFF}`）。
 ///
 /// Windows 记事本「带 BOM 的 UTF-8」保存形态：serde_json / toml 解析器都

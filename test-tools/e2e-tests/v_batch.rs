@@ -627,8 +627,8 @@ fn v2_pre_gateway(ws: &TestWorkspace) -> Result<()> {
     std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
 
     // ③ config.enhanced_memory.json：enabled + active=medium + auto_inject。
-    //    仓库模板打底（含三档 models 定义），仅改需要的字段——模板缺
-    //    auto_inject 键，json 索引赋值补上。
+    //    仓库模板打底（含三档 models 定义），仅改需要的字段——模板已含
+    //    auto_inject 两键（2026-11-01 补齐），json 索引赋值显式覆盖。
     let em_dir = ws.home().join("workspace").join("config");
     std::fs::create_dir_all(&em_dir)?;
     let template = std::fs::read_to_string(

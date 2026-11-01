@@ -207,6 +207,13 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 root: std::path::PathBuf::from(workspace),
                 restrict: true,
                 extra_roots,
+                // editor 开关闸 v1 不接（子进程无开关通路）：None = 围栏按
+                // 自身根/第二根判定，界外一律拒。executor 分离形态下本子进程
+                // 围栏是这些文件操作的**第一道**围栏（gateway 侧
+                // RemoteExecutorTool 纯转发不跑围栏；8 层管线/开关在 gateway
+                // dispatch 照跑）——开关开着时审批层放行、这里仍拒（项目+
+                // executor 组合形态的两层分叉，见 editor 围栏修复报告遗留）。
+                editor_gate: None,
             },
         )),
         // WS9/P22：executor 侧租约——gateway 在 spawn 前经

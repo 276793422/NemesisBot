@@ -117,6 +117,11 @@ fn test_config_enhanced_memory_default_is_valid_json() {
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_ENHANCED_MEMORY_DEFAULT).unwrap();
     assert!(cfg.is_object());
     assert_eq!(cfg.get("enabled").unwrap().as_bool(), Some(false));
+    // 模板与 EmbeddingConfig 结构体对齐锁（2026-11-01）：P3.1 新增的
+    // auto_inject 两键曾从模板缺漏（靠 serde default 兜底，运行时首写
+    // 才补成完整形态）——这里把两键钉进模板契约，防再漂移。
+    assert_eq!(cfg.get("auto_inject").unwrap().as_bool(), Some(false));
+    assert_eq!(cfg.get("auto_inject_top_k").unwrap().as_u64(), Some(3));
 }
 
 #[test]

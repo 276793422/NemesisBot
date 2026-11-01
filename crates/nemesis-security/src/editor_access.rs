@@ -97,6 +97,32 @@ impl EditorAccessState {
         )
     }
 
+    /// 围栏闸门（2026-11-01 BUG 修复单一真相源）：工具层
+    /// `WorkspaceBoundary` 在界外路径拒绝前问本闸，判定与
+    /// [`Self::evaluate`] **完全同源**（直接委托 evaluate，同一套
+    /// full/ext/roots 判据）——两层裁决不再分叉。`is_write_delete` =
+    /// 写删族（true，对齐 WRITE_DELETE_OPS：FileWrite/FileDelete/
+    /// DirCreate/DirDelete）或读族（false）；读族按 evaluate 语义开关一
+    /// 开即放（与绝对路径同权），写删族界外需开关二。返回 false = 围栏
+    /// 维持自身拒绝（开关全关恒 false，行为与无闸一致）。
+    ///
+    /// 闭包签名用原始类型（`&str, bool`），不暴露本 crate 类型——
+    /// nemesis-agent 以 feature 无关形态持有（裁剪编译不受影响）。
+    pub fn fence_gate(self: &Arc<Self>) -> Arc<dyn Fn(&str, bool) -> bool + Send + Sync> {
+        let this = Arc::clone(self);
+        Arc::new(move |path, is_write_delete| {
+            let op = if is_write_delete {
+                OperationType::FileWrite
+            } else {
+                OperationType::FileRead
+            };
+            matches!(
+                this.evaluate(op, path),
+                Some((SecurityDecision::Allowed, _, _))
+            )
+        })
+    }
+
     /// 注入 workspace roots(归一化后存储)。空段自动滤除。
     pub fn set_workspace_roots(&self, roots: Vec<String>) {
         let normalized: Vec<String> = roots

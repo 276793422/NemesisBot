@@ -66,6 +66,35 @@ async fn test_list_directory_tool() {
 }
 
 #[tokio::test]
+async fn test_list_directory_output_is_sorted() {
+    let tmp = TempDir::new().unwrap();
+    // 乱序创建（BUG-20261101-268）：listing 顺序曾跟随 read_dir 平台序
+    // （NTFS 字典序 vs ext4 哈希序），而这是给 LLM 的目录清单——同目录
+    // 跨平台输出必须同一行序。按名字排序断言。
+    for name in ["zeta.txt", "alpha.txt", "mid.txt", "beta"] {
+        tokio::fs::write(tmp.path().join(name), "x").await.unwrap();
+    }
+    tokio::fs::create_dir(tmp.path().join("a_dir"))
+        .await
+        .unwrap();
+
+    let tool = ListDirectoryTool::default();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({ "path": tmp.path().to_string_lossy() }).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    let names: Vec<&str> = result
+        .lines()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["a_dir", "alpha.txt", "beta", "mid.txt", "zeta.txt"],
+        "listing must be name-sorted regardless of creation order: {result}"
+    );
+}
+
+#[tokio::test]
 async fn test_edit_file_tool() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("edit_test.txt");
@@ -4857,6 +4886,42 @@ fn grep_recursive_respects_max_results() {
     let mut out = Vec::new();
     grep_recursive(tmp.path(), &re, None, 1, &mut out);
     assert_eq!(out.len(), 1, "max=1 must cap results: {out:?}");
+    // 确定性截断面（BUG-20261101-268）：max 截断取哪个文件曾依赖
+    // read_dir 顺序（平台实现细节）——现按文件名字典序走查，恒取 a.txt。
+    assert!(
+        out[0].replace('\\', "/").ends_with("a.txt:1: needle"),
+        "max-truncation must deterministically keep the lexicographically-first file: {out:?}"
+    );
+}
+
+#[test]
+fn grep_recursive_traversal_order_is_deterministic() {
+    let tmp = TempDir::new().unwrap();
+    // 乱序创建 + 嵌套目录：截断面（max=3 < 共 5 处命中）必须跨平台取同一
+    // 子集——字节序走查（'_' < 'i'，故 d_mid 排在 dir_x 前）下前 3 个命中
+    // 是 a_root.txt / d_mid.txt / dir_x/b_nested.txt。
+    std::fs::create_dir_all(tmp.path().join("dir_y")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("dir_x")).unwrap();
+    std::fs::write(tmp.path().join("e_last.txt"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("dir_y").join("c_deep.txt"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("a_root.txt"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("d_mid.txt"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("dir_x").join("b_nested.txt"), "needle\n").unwrap();
+
+    let re = regex::Regex::new("needle").unwrap();
+    let mut out = Vec::new();
+    grep_recursive(tmp.path(), &re, None, 3, &mut out);
+    assert_eq!(out.len(), 3, "max=3 caps at three hits: {out:?}");
+    let joined = out.join("|");
+    let norm = joined.replace('\\', "/");
+    assert!(
+        norm.contains("a_root.txt:1")
+            && norm.contains("d_mid.txt:1")
+            && norm.contains("dir_x/b_nested.txt:1")
+            && !norm.contains("c_deep.txt")
+            && !norm.contains("e_last.txt"),
+        "truncation must keep the lexicographically-first three hits (byte order: '_' < 'i'): {joined}"
+    );
 }
 
 // --- GitTool fresh-repo arms ------------------------------------------------

@@ -3,7 +3,8 @@
 use std::fs;
 
 use super::{
-    read_config_string, remove_dir_all_resilient, remove_dir_all_retry, remove_file_retry,
+    read_config_string, remove_dir_all_resilient, remove_dir_all_retry, remove_dir_all_retry_async,
+    remove_file_resilient, remove_file_retry,
 };
 
 #[test]
@@ -42,6 +43,36 @@ fn resilient_removes_tree_and_reports_true() {
     fs::create_dir_all(dir.join("a").join("b")).unwrap();
     fs::write(dir.join("a").join("b").join("f"), b"x").unwrap();
     assert!(remove_dir_all_resilient(&dir));
+}
+
+// BUG-20261101-272：async 包装面（spawn_blocking 转发同步实现）——guest
+// delete_dir 等异步调用点的接线用例。
+#[tokio::test]
+async fn async_retry_removes_nested_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tree = tmp.path().join("tree").join("inner");
+    fs::create_dir_all(&tree).unwrap();
+    fs::write(tree.join("leaf.txt"), b"x").unwrap();
+    remove_dir_all_retry_async(&tree).await.unwrap();
+    assert!(!tree.exists());
+}
+
+#[tokio::test]
+async fn async_retry_treats_not_found_as_success() {
+    let tmp = tempfile::tempdir().unwrap();
+    let absent = tmp.path().join("never-existed");
+    remove_dir_all_retry_async(&absent).await.unwrap();
+}
+
+#[test]
+fn file_resilient_removes_and_reports_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("stale.tmp");
+    fs::write(&f, b"x").unwrap();
+    assert!(remove_file_resilient(&f));
+    assert!(!f.exists());
+    // 缺失文件同语义：清理类调用点 NotFound 不算失败。
+    assert!(remove_file_resilient(&f));
 }
 
 // 重试耗尽面（真 AV/索引器句柄冲突）无零依赖模拟手段：std 打开的句柄默认

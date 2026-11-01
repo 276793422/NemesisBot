@@ -76,9 +76,17 @@ fn model_tool_health_zero_calls_branch_yields_zero_rate() {
     {
         let db_path = path.to_string_lossy().to_string();
         let raw = rusqlite::Connection::open(&db_path).expect("raw conn");
+        // 行日期相对今天回退 30 天：查询窗 60 天，行日期随 cutoff 同步
+        // 移动、永在窗内。硬编码日历日是午夜定时炸弹——'2026-09-01' 被
+        // now-60d 在 2026-11-01 00:00Z 越过，coverage 真红（00:40Z 实录）。
+        let day = (chrono::Local::now() - chrono::Duration::days(30))
+            .format("%Y-%m-%d")
+            .to_string();
         raw.execute(
-            "INSERT INTO tool_validation_stats (day, model, tool_calls, validation_failures)
-             VALUES ('2026-09-01', 'probe-model', 0, 3)",
+            &format!(
+                "INSERT INTO tool_validation_stats (day, model, tool_calls, validation_failures)
+                 VALUES ('{day}', 'probe-model', 0, 3)"
+            ),
             [],
         )
         .expect("insert zero-call row");

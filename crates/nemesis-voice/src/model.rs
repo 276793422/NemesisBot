@@ -34,14 +34,42 @@ fn report_progress(msg: &str) {
     });
 }
 
+/// 把模型清单的 `local` 字段钉死在模型目录内（BUG-20261101-269）。
+///
+/// 拒绝：空 / 绝对路径 / 盘符或冒号 / 根前缀 / 任何非 Normal 组件
+/// （`..`、`.`）；反斜杠先归一为 `/`。同族位点全部有闸（image_gen
+/// sanitize_rel / cluster safe_relative_path / forge slugify_skill_name /
+/// guest bulk safe_entry_rel），模型清单此前是唯一漏网——`local` 来自
+/// 本地配置 JSON（可被工作区写工具篡改），裸 join = 把远端下载字节写到
+/// 任意路径的围栏逃逸链。返回 None = 非法（调用方诚实报错，不猜）。
+fn sanitize_model_local(local: &str) -> Option<PathBuf> {
+    let norm = local.replace('\\', "/");
+    if norm.is_empty() || norm.starts_with('/') || norm.contains(':') {
+        return None;
+    }
+    let p = PathBuf::from(&norm);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(p)
+}
+
 /// Check if a model directory has at least the expected files.
 fn check_model_files(dir: &Path, expected_files: &[(&str, &str)]) -> bool {
     if !dir.exists() {
         return false;
     }
-    expected_files
-        .iter()
-        .all(|(local, _)| dir.join(local).exists())
+    expected_files.iter().all(|(local, _)| {
+        // 非法 local 视为缺失 → 走下载臂诚实报错，而非拿穿越路径探测
+        // 工作区外文件存在性。
+        match sanitize_model_local(local) {
+            Some(rel) => dir.join(rel).exists(),
+            None => false,
+        }
+    })
 }
 
 /// Build download URL from mirror base + repo + filename
@@ -241,8 +269,11 @@ pub fn ensure_vad_model(cfg: &AppConfig) -> Result<PathBuf> {
         &cfg.models.proxy.url,
     )?;
 
-    // Return the first file (the model itself)
-    Ok(dir.join(&source.files[0].local))
+    // Return the first file (the model itself)——同一净化闸（消费点与
+    // check/download 同源，防「检查侧合法、返回侧穿越」错位）。
+    let rel = sanitize_model_local(&source.files[0].local)
+        .ok_or_else(|| anyhow::anyhow!("unsafe local path in model manifest entry"))?;
+    Ok(dir.join(rel))
 }
 
 /// Ensure TTS model is ready. Returns the model directory path.
@@ -583,7 +614,14 @@ fn download_model_files_inner(
         .context("Failed to create HTTP client")?;
 
     for file in files {
-        let target_file = target_dir.join(&file.local);
+        let rel = sanitize_model_local(&file.local).ok_or_else(|| {
+            anyhow::anyhow!(
+                "model manifest entry has unsafe local path: {:?} (must be a relative path \
+                 without drive/root/'..'/'.')",
+                file.local
+            )
+        })?;
+        let target_file = target_dir.join(&rel);
         // Create parent directories for files in subdirectories (e.g., dict/file)
         if let Some(parent) = target_file.parent() {
             let _ = fs::create_dir_all(parent);

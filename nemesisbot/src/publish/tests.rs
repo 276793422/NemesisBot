@@ -53,17 +53,48 @@ fn parse_pr_response_empty_array_is_none() {
     assert!(parse_pr_response("[]").is_none());
 }
 
+#[test]
+fn parse_pr_response_unsafe_scheme_dropped() {
+    // BUG-20261101-274：html_url 来自 connector 调用的模型回复，可携带
+    // `javascript:` 伪 URL——落账后 Dashboard `:href` 直染成点击执行向量。
+    // scheme 闸：非 http(s) 诚实丢弃（链接是展示性留痕，权威标识是
+    // pr_number）。
+    let (n, url) =
+        parse_pr_response(r#"{"number": 7, "html_url": "javascript:alert(1)"}"#).unwrap();
+    assert_eq!(n, 7);
+    assert_eq!(url, None);
+
+    // data: / 相对串同样丢弃；前导空白剥掉后再判（模型爱加空格）。
+    let (_, url) = parse_pr_response(r#"{"number": 8, "html_url": "data:text/html,<b>"}"#).unwrap();
+    assert_eq!(url, None);
+    let (_, url) = parse_pr_response(r#"{"number": 9, "html_url": "  javascript:x"}"#).unwrap();
+    assert_eq!(url, None);
+
+    // 大小写不敏感：HTTPS()/Http() 前缀照常放行。
+    let (_, url) = parse_pr_response(r#"{"number": 10, "html_url": "HTTPS://X/pr/10"}"#).unwrap();
+    assert_eq!(url.as_deref(), Some("HTTPS://X/pr/10"));
+}
+
+#[test]
+fn find_pr_by_head_unsafe_scheme_dropped() {
+    // 对账路径同闸：命中 head 的 PR 带伪 URL → number 照常返回、url 丢弃。
+    let list = r#"[{"number": 5, "head": {"ref": "nemesis/task-t1"}, "html_url": "javascript:x"}]"#;
+    let (n, url) = find_pr_by_head(list, "nemesis/task-t1").unwrap();
+    assert_eq!(n, 5);
+    assert_eq!(url, None);
+}
+
 // ---------------------------------------------------------------------------
 // find_pr_by_head
 // ---------------------------------------------------------------------------
 
 #[test]
 fn find_pr_by_head_finds_matching() {
-    let list = r#"[{"number": 3, "head": {"ref": "other"}, "html_url": "u3"},
-                   {"number": 9, "head": {"ref": "nemesis/task-t1"}, "html_url": "u9"}]"#;
+    let list = r#"[{"number": 3, "head": {"ref": "other"}, "html_url": "https://x/pr/3"},
+                   {"number": 9, "head": {"ref": "nemesis/task-t1"}, "html_url": "https://x/pr/9"}]"#;
     let (n, url) = find_pr_by_head(list, "nemesis/task-t1").unwrap();
     assert_eq!(n, 9);
-    assert_eq!(url.as_deref(), Some("u9"));
+    assert_eq!(url.as_deref(), Some("https://x/pr/9"));
 }
 
 #[test]

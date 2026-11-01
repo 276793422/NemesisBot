@@ -32,5 +32,7 @@
       "local_model_path": "",
       "local_tokenizer_path": ""
     }
-  }
+  },
+  "auto_inject": false,
+  "auto_inject_top_k": 3
 }

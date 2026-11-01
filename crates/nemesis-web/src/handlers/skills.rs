@@ -434,7 +434,7 @@ impl SkillsHandler {
         }
         let skill_dir = ws_path.join("skills").join(name);
         if skill_dir.exists() {
-            std::fs::remove_dir_all(&skill_dir)
+            nemesis_utils::fsutil::remove_dir_all_retry(&skill_dir)
                 .map_err(|e| format!("failed to remove skill dir: {}", e))?;
         }
         nemesis_skills::learned::remove_learned(ws_path, name)?;

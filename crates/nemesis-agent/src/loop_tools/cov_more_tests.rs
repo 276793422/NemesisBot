@@ -79,7 +79,7 @@ fn binary_file_summary_magic_dispatch() {
 /// 有界非 restrict → join 后放行（186-198）。
 #[test]
 fn resolve_tool_path_with_and_without_boundary() {
-    let p = resolve_tool_path("a/b.txt", None).unwrap();
+    let p = resolve_tool_path("a/b.txt", None, FenceOpFamily::WriteDelete).unwrap();
     assert_eq!(p, PathBuf::from("a/b.txt"));
 
     let dir = tempfile::tempdir().unwrap();
@@ -89,7 +89,9 @@ fn resolve_tool_path_with_and_without_boundary() {
             root: dir.path().to_path_buf(),
             restrict: true,
             extra_roots: Vec::new(),
+            editor_gate: None,
         }),
+        FenceOpFamily::WriteDelete,
     )
     .unwrap();
     assert_eq!(inside, dir.path().join("sub/new.txt"));
@@ -104,7 +106,9 @@ fn resolve_tool_path_with_and_without_boundary() {
             root: dir.path().to_path_buf(),
             restrict: true,
             extra_roots: Vec::new(),
+            editor_gate: None,
         }),
+        FenceOpFamily::WriteDelete,
     )
     .unwrap_err();
     assert!(err.contains("outside the workspace"), "{err}");
@@ -119,7 +123,9 @@ fn resolve_tool_path_with_and_without_boundary() {
             root: dir.path().to_path_buf(),
             restrict: false,
             extra_roots: Vec::new(),
+            editor_gate: None,
         }),
+        FenceOpFamily::WriteDelete,
     )
     .unwrap();
     assert_eq!(

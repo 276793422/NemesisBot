@@ -188,9 +188,10 @@ impl Tool for MessageTool {
 pub(crate) fn resolve_tool_path(
     path: &str,
     boundary: Option<&WorkspaceBoundary>,
+    family: FenceOpFamily,
 ) -> Result<PathBuf, String> {
     match boundary {
-        Some(b) => validate_workspace_path(path, b),
+        Some(b) => validate_workspace_path(path, b, family),
         None => Ok(PathBuf::from(path)),
     }
 }
@@ -244,7 +245,7 @@ impl Tool for ReadFileTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
+        let path = resolve_tool_path(&path, self.boundary.as_deref(), FenceOpFamily::Read)?;
 
         if !path.exists() {
             return Err(format!("File not found: {}", path.display()));
@@ -333,12 +334,31 @@ fn binary_file_summary(path: &Path) -> String {
     format!("{} bytes binary (type unknown)", size)
 }
 
+/// 文件工具的围栏操作族（2026-11-01 editor 开关 × 围栏修复）：开关闸按族
+/// 分判——读族只受开关一（Full Access）管辖，写删族受开关一+二管辖，口径
+/// 与 nemesis-security `editor_access::WRITE_DELETE_OPS` 一致。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FenceOpFamily {
+    /// 读族：read_file / list_dir（及只读消费方：LSP、诊断回灌钩子）。
+    Read,
+    /// 写删族：write_file / edit_file / multiedit / append_file /
+    /// delete_file / create_dir / delete_dir（及 format-on-save 钩子）。
+    WriteDelete,
+}
+
+impl FenceOpFamily {
+    /// 闸门布尔契约（`EditorAccessState::fence_gate`：true = 写删族）。
+    fn is_write_delete(self) -> bool {
+        matches!(self, Self::WriteDelete)
+    }
+}
+
 /// write_file / edit_file / append_file 的工作区边界。
 ///
 /// 安全 8 层管线之外的第二道闸（纵深防御，不单靠管线）：管线按操作语义
 /// 拦截，本边界保证写路径落点不出工作区。`restrict=false` 时形同未设界
 /// （用户在 config 显式关掉 `agents.defaults.restrict_to_workspace`）。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkspaceBoundary {
     /// 工作区根（gateway 侧 = `<home>/workspace`；executor 子进程侧 =
     /// `NEMESISBOT_EXECUTOR_WORKSPACE`）。
@@ -349,6 +369,24 @@ pub struct WorkspaceBoundary {
     /// 项目会话 = `[agent_home]`（Bot 可自改的数据域，围栏第二根）；
     /// 其余形态 = 空（行为与单根版逐字节一致）。
     pub extra_roots: Vec<PathBuf>,
+    /// editor 放行开关闸（2026-11-01 两层不认账修复）：Some 时界外路径
+    /// 拒绝前先问闸（`(归一后路径, 是否写删族) -> 放行`），判定与审批层
+    /// `EditorAccessState::evaluate` 同源——审批层认开关，围栏同一裁决；
+    /// 开关全关恒 false = 旧行为。None（主会话按用户拍板暂不接线 /
+    /// executor 子进程无开关通路）= 旧行为一概拒绝。闭包签名纯原始类型，
+    /// 不引 security 类型（`--no-default-features` 裁剪编译不受影响）。
+    pub editor_gate: Option<Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>,
+}
+
+impl std::fmt::Debug for WorkspaceBoundary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceBoundary")
+            .field("root", &self.root)
+            .field("restrict", &self.restrict)
+            .field("extra_roots", &self.extra_roots)
+            .field("editor_gate", &self.editor_gate.is_some())
+            .finish()
+    }
 }
 
 /// 校验 `path` 是否落在边界内，返回归一后的路径供后续 IO 使用。
@@ -356,9 +394,14 @@ pub struct WorkspaceBoundary {
 /// 相对路径先 join 到边界根；双侧 `canonicalize_for_compare` 归一（防
 /// symlink escape + Windows 8.3 短名/大小写失配误拒——RUNNER~1 家族），
 /// 目标不存在时按最长存在祖先解析（write 新文件路径合法）。
+///
+/// 2026-11-01：界外且 restrict 时，先问 editor 开关闸（`family` 决定读
+/// 族/写删族口径，见 [`WorkspaceBoundary::editor_gate`]），闸放行即放；
+/// 闸缺席或说拒 = 旧行为拒绝。
 pub fn validate_workspace_path(
     path: &str,
     boundary: &WorkspaceBoundary,
+    family: FenceOpFamily,
 ) -> Result<PathBuf, String> {
     let target = Path::new(path);
     let canonical = if target.is_absolute() {
@@ -381,6 +424,13 @@ pub fn validate_workspace_path(
         if resolved.starts_with(&extra_canon) {
             return Ok(canonical);
         }
+    }
+    // editor 放行开关闸（2026-11-01）：传**归一后**路径（逃逸/8.3 形态
+    // 按 evaluate 既有语义处理），判定与审批层 evaluate 同源。
+    if let Some(gate) = &boundary.editor_gate
+        && gate(&resolved.to_string_lossy(), family.is_write_delete())
+    {
+        return Ok(canonical);
     }
     Err(format!(
         "access denied: path '{}' is outside the workspace",
@@ -434,7 +484,7 @@ impl Tool for WriteFileTool {
 
         // A5（2026-09-04）：工作区边界（纵深防御，不单靠安全 8 层管线）。
         let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b)?,
+            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
             None => PathBuf::from(&path),
         };
 
@@ -523,7 +573,7 @@ impl Tool for ListDirectoryTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
+        let path = resolve_tool_path(&path, self.boundary.as_deref(), FenceOpFamily::Read)?;
 
         if !path.exists() {
             return Err(format!("Directory not found: {}", path.display()));
@@ -556,6 +606,12 @@ impl Tool for ListDirectoryTool {
         if listing.is_empty() {
             Ok("(empty directory)".to_string())
         } else {
+            // 确定性输出序（2026-11-01）：listing 是给 LLM 的目录清单（模型
+            // 可能按位置取第一个条目跟进操作），而 read_dir 顺序是平台实现
+            // 细节（NTFS 字典序 vs ext4 哈希序）——与 filesystem.rs /
+            // guest/tools.rs / security middleware 的同语义实现保持一致，
+            // 按名字排序。
+            listing.sort();
             Ok(listing.join("\n"))
         }
     }
@@ -788,7 +844,7 @@ impl Tool for EditFileTool {
 
         // A5（2026-09-04）：工作区边界（纵深防御，不单靠安全 8 层管线）。
         let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b)?,
+            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
             None => PathBuf::from(&path),
         };
         let path = Path::new(&path);
@@ -964,7 +1020,7 @@ impl Tool for MultiEditTool {
             let label = format!("edit {}/{}", i + 1, total);
             // A5：工作区边界（纵深防御，与 edit_file 同源校验）。
             let vpath = match &self.boundary {
-                Some(b) => match validate_workspace_path(&e.path, b) {
+                Some(b) => match validate_workspace_path(&e.path, b, FenceOpFamily::WriteDelete) {
                     Ok(p) => p,
                     Err(m) => {
                         statuses.push(format!("  {}. {} — FAILED: {}", i + 1, e.path, m));
@@ -1151,7 +1207,7 @@ impl Tool for AppendFileTool {
 
         // A5（2026-09-04）：工作区边界（纵深防御，不单靠安全 8 层管线）。
         let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b)?,
+            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
             None => PathBuf::from(&path),
         };
         let path = path.as_path();
@@ -1229,7 +1285,7 @@ impl Tool for DeleteFileTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
+        let path = resolve_tool_path(&path, self.boundary.as_deref(), FenceOpFamily::WriteDelete)?;
 
         if !path.exists() {
             return Err(format!("File not found: {}", path.display()));
@@ -1287,7 +1343,7 @@ impl Tool for CreateDirTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
+        let path = resolve_tool_path(&path, self.boundary.as_deref(), FenceOpFamily::WriteDelete)?;
 
         if path.exists() {
             return Err(format!("Path already exists: {}", path.display()));
@@ -1331,7 +1387,7 @@ impl Tool for DeleteDirTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
+        let path = resolve_tool_path(&path, self.boundary.as_deref(), FenceOpFamily::WriteDelete)?;
 
         if !path.exists() {
             return Err(format!("Directory not found: {}", path.display()));
@@ -6792,7 +6848,13 @@ fn grep_recursive(
         Ok(e) => e,
         Err(_) => return,
     };
-    for entry in entries.flatten() {
+    let mut kids: Vec<_> = entries.flatten().collect();
+    // 确定性走查序（2026-11-01）：`max` 截断让返回的命中子集依赖遍历序，
+    // 而 read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——每层
+    // 按文件名排序，同一目录树跨平台命中同一子集（同 history_search 的
+    // limit 截断先例）。
+    kids.sort_by_key(|e| e.file_name());
+    for entry in kids {
         if out.len() >= max {
             return;
         }

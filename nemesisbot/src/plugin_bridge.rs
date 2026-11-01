@@ -977,10 +977,15 @@ pub fn read_runtime_config(home: &std::path::Path) -> PluginRuntimeConfig {
         {
             out.limits.max_instances = n as usize;
         }
-        if let Some(n) =
-            take_u64("call_timeout_secs").filter(|n| *n > 0 && (*n * 1000) < defaults.timeout_ms)
+        // BUG-20261101-271：受检换算——`n * 1000` 对 config 手写巨值会溢出
+        // （debug panic / release 回绕可构造出小于默认值的小数，让「巨值 =
+        // 不收紧」语义翻转成意外收紧）。checked_mul 失败 = 跳过收紧用默认
+        // （与 cron.rs BUG-20261024-11「乘 1000 必须受检」同族习语）。
+        if let Some(ms) = take_u64("call_timeout_secs")
+            .and_then(|n| n.checked_mul(1000))
+            .filter(|ms| *ms > 0 && *ms < defaults.timeout_ms)
         {
-            out.limits.timeout_ms = n * 1000;
+            out.limits.timeout_ms = ms;
         }
         if let Some(n) = take_u64("max_host_calls_per_frame")
             .filter(|n| *n > 0 && (*n as u32) < defaults.host_call_budget)

@@ -16,6 +16,7 @@ use crate::context::RequestContext;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::FenceOpFamily;
 use super::WorkspaceBoundary;
 use super::validate_workspace_path;
 
@@ -53,6 +54,7 @@ fn boundary(root: &Path, restrict: bool) -> WorkspaceBoundary {
         root: root.to_path_buf(),
         restrict,
         extra_roots: Vec::new(),
+        editor_gate: None,
     }
 }
 
@@ -64,7 +66,12 @@ fn boundary(root: &Path, restrict: bool) -> WorkspaceBoundary {
 fn boundary_inside_absolute_ok() {
     let root = temp_dir("in");
     let target = root.join("file.txt");
-    let out = validate_workspace_path(&ps(&target), &boundary(&root, true)).unwrap();
+    let out = validate_workspace_path(
+        &ps(&target),
+        &boundary(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
     assert_eq!(out, target);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -74,7 +81,12 @@ fn boundary_outside_absolute_denied() {
     let root = temp_dir("out");
     let other = temp_dir("other_root");
     let target = other.join("secret.txt");
-    let err = validate_workspace_path(&ps(&target), &boundary(&root, true)).unwrap_err();
+    let err = validate_workspace_path(
+        &ps(&target),
+        &boundary(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     assert!(err.contains("outside the workspace"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
@@ -84,7 +96,12 @@ fn boundary_outside_absolute_denied() {
 #[test]
 fn boundary_relative_joined_under_root() {
     let root = temp_dir("rel");
-    let out = validate_workspace_path("sub/dir/file.txt", &boundary(&root, true)).unwrap();
+    let out = validate_workspace_path(
+        "sub/dir/file.txt",
+        &boundary(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
     assert_eq!(out, root.join("sub/dir/file.txt"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -95,7 +112,14 @@ fn boundary_deep_new_file_inside_ok() {
     // 必须把它判为界内，而不是 ENOENT 误拒。
     let root = temp_dir("deep");
     let target = root.join("a/b/c/new.txt");
-    assert!(validate_workspace_path(&ps(&target), &boundary(&root, true)).is_ok());
+    assert!(
+        validate_workspace_path(
+            &ps(&target),
+            &boundary(&root, true),
+            FenceOpFamily::WriteDelete
+        )
+        .is_ok()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -103,7 +127,12 @@ fn boundary_deep_new_file_inside_ok() {
 fn boundary_traversal_escape_denied() {
     let root = temp_dir("trav");
     let target = root.join("..").join("outside.txt");
-    let err = validate_workspace_path(&ps(&target), &boundary(&root, true)).unwrap_err();
+    let err = validate_workspace_path(
+        &ps(&target),
+        &boundary(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -114,7 +143,12 @@ fn boundary_restrict_false_allows_outside() {
     let root = temp_dir("norestrict");
     let other = temp_dir("other_root2");
     let target = other.join("ok.txt");
-    let out = validate_workspace_path(&ps(&target), &boundary(&root, false)).unwrap();
+    let out = validate_workspace_path(
+        &ps(&target),
+        &boundary(&root, false),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
     assert_eq!(out, target);
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&other);
@@ -127,7 +161,10 @@ fn boundary_case_insensitive_on_windows() {
     // （canonicalize_for_compare 归一化，裸字符串前缀比较会误拒）。
     let root = temp_dir("case");
     let target = root.join("file.txt").to_string_lossy().to_uppercase();
-    assert!(validate_workspace_path(&target, &boundary(&root, true)).is_ok());
+    assert!(
+        validate_workspace_path(&target, &boundary(&root, true), FenceOpFamily::WriteDelete)
+            .is_ok()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -144,10 +181,14 @@ fn boundary_symlink_inside_ok_and_escape_denied() {
 
     // symlink 指向界内 → 可达。
     let t1 = root.join("link").join("f.txt");
-    assert!(validate_workspace_path(&ps(&t1), &boundary(&root, true)).is_ok());
+    assert!(
+        validate_workspace_path(&ps(&t1), &boundary(&root, true), FenceOpFamily::WriteDelete)
+            .is_ok()
+    );
     // symlink 指向界外 → 解析后拒绝（不是被表面路径骗过）。
     let t2 = root.join("escape").join("x.txt");
-    let err = validate_workspace_path(&ps(&t2), &boundary(&root, true)).unwrap_err();
+    let err = validate_workspace_path(&ps(&t2), &boundary(&root, true), FenceOpFamily::WriteDelete)
+        .unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&outside);
@@ -453,6 +494,7 @@ fn boundary_with_extra(root: &Path, extra: &Path) -> WorkspaceBoundary {
         root: root.to_path_buf(),
         restrict: true,
         extra_roots: vec![extra.to_path_buf()],
+        editor_gate: None,
     }
 }
 
@@ -463,7 +505,12 @@ fn extra_root_inside_absolute_ok() {
     let home = temp_dir("x1_home");
     let target = home.join("IDENTITY.md");
     std::fs::write(&target, "persona").unwrap();
-    let out = validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap();
+    let out = validate_workspace_path(
+        &ps(&target),
+        &boundary_with_extra(&root, &home),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
     assert_eq!(out, target);
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);
@@ -476,7 +523,14 @@ fn extra_root_deep_new_file_ok() {
     let root = temp_dir("x2_main");
     let home = temp_dir("x2_home");
     let target = home.join("plans").join("new.md");
-    assert!(validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).is_ok());
+    assert!(
+        validate_workspace_path(
+            &ps(&target),
+            &boundary_with_extra(&root, &home),
+            FenceOpFamily::WriteDelete
+        )
+        .is_ok()
+    );
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -488,8 +542,12 @@ fn outside_both_roots_denied() {
     let home = temp_dir("x3_home");
     let other = temp_dir("x3_other");
     let target = other.join("secret.txt");
-    let err =
-        validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap_err();
+    let err = validate_workspace_path(
+        &ps(&target),
+        &boundary_with_extra(&root, &home),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     assert!(err.contains("outside the workspace"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
@@ -502,7 +560,12 @@ fn relative_path_still_anchors_main_root() {
     // 相对路径仍 join 主根（现状不变）：主根下的 plans/ 与第二根无关。
     let root = temp_dir("x4_main");
     let home = temp_dir("x4_home");
-    let out = validate_workspace_path("plans/todo.md", &boundary_with_extra(&root, &home)).unwrap();
+    let out = validate_workspace_path(
+        "plans/todo.md",
+        &boundary_with_extra(&root, &home),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
     assert_eq!(out, root.join("plans").join("todo.md"));
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);
@@ -514,8 +577,12 @@ fn traversal_escape_denied_with_extra_root() {
     let root = temp_dir("x5_main");
     let home = temp_dir("x5_home");
     let target = root.join("..").join("outside.txt");
-    let err =
-        validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap_err();
+    let err = validate_workspace_path(
+        &ps(&target),
+        &boundary_with_extra(&root, &home),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);
@@ -532,8 +599,12 @@ fn extra_root_symlink_escape_denied() {
     let outside = temp_dir("x6_out");
     symlink(&outside, home.join("escape")).unwrap();
     let target = home.join("escape").join("x.txt");
-    let err =
-        validate_workspace_path(&ps(&target), &boundary_with_extra(&root, &home)).unwrap_err();
+    let err = validate_workspace_path(
+        &ps(&target),
+        &boundary_with_extra(&root, &home),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);

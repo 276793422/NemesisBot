@@ -383,10 +383,18 @@ async fn gate_and_write(
     // 的绝对路径**进闸+落盘（相对路径锚定边界根）——预分只校验不替换落点
     // 的话，相对路径会写进进程 cwd（污染源树/丢文件，M3 实测抓到的缺陷）。
     // None 边界 = resolve 透传（行为同前）。
+    // 族 = WriteDelete（2026-11-01 复核修正）：rename 落盘是写操作（与
+    // 下方合成 `write_file` 安全闸同一口径）——围栏按写删族问闸，full-only
+    // 时界外照拒（与审批层回落判定同源），双开才放；误标 Read 会围栏比
+    // 审批层松（两层分叉）。
     let mut in_scope: Vec<(&AppliedFileEdit, std::path::PathBuf)> = Vec::with_capacity(files.len());
     let mut rejected = Vec::new();
     for f in files {
-        match crate::loop_tools::resolve_tool_path(&f.path, boundary) {
+        match crate::loop_tools::resolve_tool_path(
+            &f.path,
+            boundary,
+            crate::loop_tools::FenceOpFamily::WriteDelete,
+        ) {
             Ok(resolved) => in_scope.push((f, resolved)),
             Err(reason) => rejected.push((f.path.clone(), reason)),
         }
@@ -463,7 +471,12 @@ async fn gate_and_write(
     let mut in_scope: Vec<(&AppliedFileEdit, std::path::PathBuf)> = Vec::with_capacity(files.len());
     let mut rejected = Vec::new();
     for f in files {
-        match crate::loop_tools::resolve_tool_path(&f.path, boundary) {
+        // 族 = WriteDelete（同 security 形态口径）：rename 落盘是写操作。
+        match crate::loop_tools::resolve_tool_path(
+            &f.path,
+            boundary,
+            crate::loop_tools::FenceOpFamily::WriteDelete,
+        ) {
             Ok(resolved) => in_scope.push((f, resolved)),
             Err(reason) => rejected.push((f.path.clone(), reason)),
         }

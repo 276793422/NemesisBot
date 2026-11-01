@@ -265,6 +265,18 @@ pub enum FirewallAction {
     },
 }
 
+/// 默认节点显示名（`Bot <node_id 前 16 字节>`）：node_id 由 hostname 拼
+/// UUID 构成，而 hostname 来自 COMPUTERNAME/HOSTNAME 环境变量——Linux
+/// HOSTNAME 支持 UTF-8 中文（每汉字 3 字节），裸 `&s[..16]` 会在多字节
+/// 字符内部切片 panic（byte index is not a char boundary）。先落到边界
+/// 再切（与 commands/channel.rs token 显示同纪律）。
+fn default_node_display_name(node_id: &str) -> String {
+    format!(
+        "Bot {}",
+        &node_id[..nemesis_types::utils::floor_char_boundary(node_id, 16)]
+    )
+}
+
 pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
 
@@ -858,7 +870,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 .or_else(|_| std::env::var("HOSTNAME"))
                 .unwrap_or_else(|_| "node".to_string());
             let node_id = format!("node-{}-{}", hostname.to_lowercase(), uuid::Uuid::new_v4());
-            let default_name = format!("Bot {}", &node_id[..16.min(node_id.len())]);
+            let default_name = default_node_display_name(&node_id);
 
             // --- 写 config.cluster.json（系统参数 + token）---
             // config.cluster.json 不再含身份字段，只含系统参数 + token。

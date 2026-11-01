@@ -147,8 +147,17 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
     if retention_days == 0 {
         return 0;
     }
-    let cutoff =
-        std::time::SystemTime::now() - std::time::Duration::from_secs(retention_days * 24 * 3600);
+    // BUG-20261101-271：受检换算——typed config 字段 spill_retention_days
+    // 是无上限 i64，手写巨值会让 `days * 86400` 溢出（debug panic /
+    // release 回绕可构造出秒级小值 → cutoff 变「现在」 → 新鲜 spill 文件
+    // 被误判过期全删）。两级受检：saturating_mul 封顶乘积 + checked_sub
+    // 防 `SystemTime - Duration` 自身溢出——None = cutoff 早于可表示时间
+    // 下界 = 无文件可判过期 = 巨值 retention 语义正确落「什么都不删」。
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        retention_days.saturating_mul(24 * 3600),
+    )) else {
+        return 0;
+    };
     let mut deleted = 0usize;
 
     let sessions = match std::fs::read_dir(spill_root) {
