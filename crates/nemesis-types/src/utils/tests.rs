@@ -352,3 +352,86 @@ fn test_cosine_similarity_f64_accumulation() {
     let s = cosine_similarity_f32(&[1.0f32, 0.0, 1.0], &[1.0f32, 1.0, 0.0]);
     assert!((s - 0.5).abs() < 1e-9, "45-degree vectors: {s}");
 }
+
+// --- split_message（BUG-20261101-277：出站通道长消息拆分共用件）---
+
+#[test]
+fn test_split_message_short_content_single_chunk() {
+    assert_eq!(split_message("hi", 10), vec!["hi"]);
+    // 恰好等于预算：不拆。
+    assert_eq!(split_message("0123456789", 10), vec!["0123456789"]);
+}
+
+#[test]
+fn test_split_message_zero_budget_is_noop() {
+    // 非法预算不拆（防 max_chars==0 误用产生无限循环）。
+    assert_eq!(split_message("hello", 0), vec!["hello"]);
+}
+
+#[test]
+fn test_split_message_empty_content() {
+    assert_eq!(split_message("", 5), vec![""]);
+}
+
+#[test]
+fn test_split_message_prefers_newline_break() {
+    // 13 chars、预算 10：窗口内最后一个 \n 在 byte index 6，切点吃掉 \n。
+    let chunks = split_message("aaaaaa\nbbbbbb", 10);
+    assert_eq!(chunks, vec!["aaaaaa\n", "bbbbbb"]);
+}
+
+#[test]
+fn test_split_message_falls_back_to_space_break() {
+    let chunks = split_message("aaaaaa bbbbbb", 10);
+    assert_eq!(chunks, vec!["aaaaaa ", "bbbbbb"]);
+}
+
+#[test]
+fn test_split_message_hard_cut_when_no_separator() {
+    let s = "x".repeat(35);
+    let chunks = split_message(&s, 10);
+    let lens: Vec<usize> = chunks.iter().map(|c| c.chars().count()).collect();
+    assert_eq!(lens, vec![10, 10, 10, 5]);
+    assert_eq!(chunks.concat(), s);
+}
+
+#[test]
+fn test_split_message_char_budget_not_bytes_cjk() {
+    // 25 个 CJK 字符（75 字节）：预算按 char 计而非字节 → [10,10,5]。
+    let s = "你".repeat(25);
+    let chunks = split_message(&s, 10);
+    let lens: Vec<usize> = chunks.iter().map(|c| c.chars().count()).collect();
+    assert_eq!(lens, vec![10, 10, 5]);
+    assert_eq!(chunks.concat(), s);
+}
+
+#[test]
+fn test_split_message_multibyte_boundary_safe() {
+    // 🌍 4 字节：切点永不落字符中间（落在中间会 panic，测试即失败）。
+    let s = "🌍".repeat(7);
+    let chunks = split_message(&s, 3);
+    let lens: Vec<usize> = chunks.iter().map(|c| c.chars().count()).collect();
+    assert_eq!(lens, vec![3, 3, 1]);
+    assert_eq!(chunks.concat(), s);
+}
+
+#[test]
+fn test_split_message_leading_separator_no_empty_first_chunk() {
+    // 首字符就是 \n：rfind 命中 index 0 被 filter 掉——不得产出空首块
+    // （空首块 + 原样 rest = 死循环）。
+    let s = format!("\n{}", "a".repeat(15));
+    let chunks = split_message(&s, 10);
+    assert!(chunks.iter().all(|c| !c.is_empty()));
+    assert_eq!(chunks.concat(), s);
+}
+
+#[test]
+fn test_split_message_every_chunk_within_budget() {
+    // 混合文本（CJK + ASCII + 换行 + 空格）多轮拆分，逐块断言预算。
+    let s = "第一段内容\nsecond section here\n第三段 continues\n".repeat(20);
+    let chunks = split_message(&s, 30);
+    assert!(chunks.len() > 1);
+    for c in &chunks {
+        assert!(c.chars().count() <= 30, "chunk len {}", c.chars().count());
+    }
+}

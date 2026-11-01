@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
+use nemesis_types::utils::split_message;
 
 use crate::base::{BaseChannel, Channel};
 
@@ -521,8 +522,14 @@ impl Channel for BlueskyChannel {
         }
 
         self.base.record_sent();
-        debug!(reply_to = %msg.chat_id, "[BlueskyChannel] posting reply");
-        self.post_reply(&msg.chat_id, &msg.content).await?;
+
+        // BUG-20261101-277: bluesky 硬限 300 graphemes（服务端 400 拒收整条）。
+        // graphemes ≤ chars，char 预算 280 恒安全；长文拆成同父 sibling 回复链。
+        let chunks = split_message(&msg.content, 280);
+        for chunk in &chunks {
+            debug!(reply_to = %msg.chat_id, "[BlueskyChannel] posting reply");
+            self.post_reply(&msg.chat_id, chunk).await?;
+        }
         Ok(())
     }
 }

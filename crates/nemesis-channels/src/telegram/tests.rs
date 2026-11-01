@@ -713,3 +713,91 @@ async fn t7_voice_download_writes_success_body() {
     let content = std::fs::read_to_string(&target).unwrap();
     assert_eq!(content, "OGGDUMMYBYTES");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-277：send() 长消息分块——mock Telegram API 功能实跑
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn send_splits_long_message_into_multiple_api_calls() {
+    use std::io::{Read, Write};
+
+    // mock Telegram Bot API：恰好 3 轮 sendMessage 应答，记录请求体。
+    // 7500 'a' 字符按 3500 预算拆 [3500, 3500, 500] = 3 次 API 调用。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let addr = listener.local_addr().unwrap();
+    let bodies: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let bodies_srv = bodies.clone();
+    std::thread::spawn(move || {
+        for _ in 0..3 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+            if path.ends_with("/sendMessage") {
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                bodies_srv.lock().unwrap().push(body);
+            }
+            let resp_body = br#"{"ok":true,"result":{"message_id":1,"chat":{"id":123,"type":"private"},"text":"ok"}}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                resp_body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(resp_body);
+        }
+    });
+
+    let config = TelegramConfig {
+        api_base: format!("http://{addr}"),
+        token: "test-token".to_string(),
+        ..Default::default()
+    };
+    let (bus_tx, _bus_rx) = tokio::sync::broadcast::channel(16);
+    // no_proxy：测试环境可能带系统代理，loopback mock 必须直连。
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let channel = TelegramChannel::new_with_client(config, bus_tx, http).unwrap();
+    // send() 的 running 闸直接置位（子模块测试可访问私有字段），绕过 start()
+    // 的 getMe/polling 装配——本测例只验证投递分块行为。
+    *channel.running.write() = true;
+
+    let msg = OutboundMessage::new("telegram", "123", &"a".repeat(7500));
+    Channel::send(&channel, msg)
+        .await
+        .expect("send must succeed");
+
+    let recorded = bodies.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 3, "7500 字符必须拆成 3 次 sendMessage");
+    for body in &recorded {
+        assert!(
+            body.contains(r#""parse_mode":"HTML""#),
+            "每块都走 HTML 通道: {}",
+            &body[..body.len().min(120)]
+        );
+        // 提取 "text":"..." 字段（'a' 纯文本无转义）：serde 字段序
+        // chat_id→text→parse_mode，text 收尾于 `","parse_mode"`。
+        let start = body.find(r#""text":""#).expect("text field") + r#""text":""#.len();
+        let end = body[start..]
+            .find(r#"","parse_mode""#)
+            .expect("text field terminator")
+            + start;
+        let text = &body[start..end];
+        assert!(
+            text.chars().count() <= 4096,
+            "单块文本必须低于 Telegram 硬限 4096: {}",
+            text.chars().count()
+        );
+    }
+    let total: usize = recorded
+        .iter()
+        .map(|b| {
+            let start = b.find(r#""text":""#).unwrap() + r#""text":""#.len();
+            let end = b[start..].find(r#"","parse_mode""#).unwrap() + start;
+            end - start
+        })
+        .sum();
+    assert_eq!(total, 7500, "分块不得丢字：三块文本总长必须等于原文");
+}

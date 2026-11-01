@@ -12,6 +12,7 @@ use tracing::{info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
+use nemesis_types::utils::split_message;
 
 use crate::base::{BaseChannel, Channel};
 
@@ -407,7 +408,12 @@ impl Channel for MastodonChannel {
             Some(msg.chat_id.as_str())
         };
 
-        self.post_status(&msg.content, in_reply_to).await?;
+        // BUG-20261101-277: mastodon 硬限 500 字符（服务端 422 拒收整条），
+        // 预算 480 留余量；长文拆成多条回复（同父）。
+        let chunks = split_message(&msg.content, 480);
+        for chunk in &chunks {
+            self.post_status(chunk, in_reply_to).await?;
+        }
         Ok(())
     }
 }

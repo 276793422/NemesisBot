@@ -115,5 +115,44 @@ pub fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+/// 按字符预算拆分长消息（出站通道平台硬限共用件，BUG-20261101-277）。
+///
+/// 平台出站文本普遍有硬长度上限（telegram 4096 / LINE 5000 / mastodon
+/// 500 / bluesky 300 …），超限 = 服务端 400 拒收、整条投递失败。本件
+/// 把超长内容拆成多条：
+/// - 预算按 **char 计**（不是字节）——CJK 一字一 char，社交平台限值
+///   语义是字符数；
+/// - 优先在窗口内最后一个 `\n` 切，其次空格，都没有才硬切——不切断
+///   词句，且 `rfind`/`char_indices` 切点全部落在 char boundary；
+/// - 短于预算原样返回单条；`max_chars == 0` 视为非法预算，不拆。
+pub fn split_message(content: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 || content.chars().count() <= max_chars {
+        return vec![content.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut rest = content;
+    while rest.chars().count() > max_chars {
+        let limit = rest
+            .char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
+        let window = &rest[..limit];
+        // 切点优先换行、其次空格；filter(>0) 防空首块死循环。
+        let cut = window
+            .rfind('\n')
+            .filter(|&i| i > 0)
+            .or_else(|| window.rfind(' ').filter(|&i| i > 0))
+            .map(|i| i + 1) // 吃掉分隔符（\n、空格均 1 字节，边界安全）
+            .unwrap_or(limit);
+        chunks.push(rest[..cut].to_string());
+        rest = &rest[cut..];
+    }
+    if !rest.is_empty() {
+        chunks.push(rest.to_string());
+    }
+    chunks
+}
+
 #[cfg(test)]
 mod tests;
