@@ -1788,6 +1788,31 @@ async fn test_cron_tool_create_missing_schedule() {
     assert!(result.unwrap_err().contains("at_seconds"));
 }
 
+#[tokio::test]
+async fn test_cron_tool_create_at_seconds_overflow_honest_err() {
+    // BUG-20261101-285 回归钉：at_seconds = i64::MAX/1000（换算层
+    // checked_mul 过检的最大值），合成加法 now + ms 溢出 i64——修复前
+    // 裸 add 在 debug 构建 panic（打穿 gateway）、release 回绕负 at_ms
+    // 被 compute_next_run 的 ms > now 过滤 = 静默僵尸任务；修复后诚实
+    // Err 回灌，不 panic、不入库。
+    let svc = make_cron_service();
+    let tool = CronTool::new(svc);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "action": "create",
+        "name": "overflow-at",
+        "at_seconds": 9223372036854775u64,
+        "content": "never"
+    })
+    .to_string();
+    let result = tool.execute(&args, &ctx).await;
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("at_seconds too large"),
+        "expected honest overflow error, got: {err}"
+    );
+}
+
 #[test]
 fn test_cron_tool_set_context() {
     let svc = make_cron_service();

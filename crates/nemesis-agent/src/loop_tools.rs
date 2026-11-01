@@ -2843,7 +2843,18 @@ impl Tool for CronTool {
                 // compatibility. Priority: at_seconds > every_seconds >
                 // cron_expr > schedule.
                 let schedule = if let Some(secs) = val.get("at_seconds").and_then(|v| v.as_u64()) {
-                    let at_ms = chrono::Local::now().timestamp_millis() + secs_arg_to_ms(secs)?;
+                    // BUG-20261101-285：受检组合加法——secs_arg_to_ms 只受检
+                    // 换算（ms ≤ i64::MAX），与 now 的最终合成此前是裸 add：
+                    // at_seconds≈9.2233e15（schema 无上限；LLM 幻觉大整数是
+                    // 常态）时换算过检、合成溢出——debug panic 打穿 gateway，
+                    // release 回绕负值 at_ms 被 compute_next_run 的 ms > now
+                    // 过滤 = 静默僵尸任务（BUG-20261024-11「绝不回绕」禁的
+                    // 失败形态，换算层修了组合层漏网）。溢出 = 诚实 Err 回灌。
+                    let at_ms = secs_arg_to_ms(secs)?
+                        .checked_add(chrono::Local::now().timestamp_millis())
+                        .ok_or_else(|| {
+                            "at_seconds too large: scheduled time overflows".to_string()
+                        })?;
                     nemesis_cron::service::CronSchedule {
                         kind: "at".to_string(),
                         at_ms: Some(at_ms),
