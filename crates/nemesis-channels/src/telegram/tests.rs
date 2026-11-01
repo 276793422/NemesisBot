@@ -801,3 +801,24 @@ async fn send_splits_long_message_into_multiple_api_calls() {
         .sum();
     assert_eq!(total, 7500, "分块不得丢字：三块文本总长必须等于原文");
 }
+
+// --- BUG-20261101-280：入站 preview 截断必须字符安全 ---
+
+#[test]
+fn bug280_message_preview_multibyte_safe() {
+    // 修复前：&content[..50] 字节直切，50 字节落在多字节字符中间 panic
+    // （debug 日志开启 + 中文消息即触发）。
+    let chinese = "中".repeat(60); // 180 字节，第 50 字节在「中」的中间
+    let p = super::message_preview(&chinese); // 修复前这一行直接 panic
+    assert_eq!(p.chars().count(), 50);
+    assert!(p.starts_with(&"中".repeat(50)));
+
+    // 混合字符（emoji = 4 字节单 char）同样安全。
+    let mixed = "👍".repeat(30);
+    let p = super::message_preview(&mixed);
+    assert_eq!(p.chars().count(), 50.min(30));
+
+    // 短消息原样返回。
+    assert_eq!(super::message_preview("hi"), "hi");
+    assert_eq!(super::message_preview(""), "");
+}

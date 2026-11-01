@@ -381,3 +381,20 @@ async fn ranged_download_errors_on_body_stall_instead_of_hanging() {
         .expect_err("body 断流必须报错而非永久挂起");
     assert_stall_timeouts(err, started.elapsed());
 }
+
+// --- BUG-20261101-280：钉值诊断预览必须字符安全 ---
+
+#[test]
+fn bug280_pin_preview_multibyte_safe() {
+    // 修复前：&want_lc[..16] 字节直切——钉值来自用户可编辑的
+    // config.vm_qemu.json，validate 不校验格式，非 ASCII 钉值 panic。
+    let hex = "a".repeat(128);
+    assert_eq!(super::pin_preview(&hex), "a".repeat(16));
+
+    // 短钉值原样返回。
+    assert_eq!(super::pin_preview("abc"), "abc");
+
+    // 非 ASCII 钉值：get 非边界回落全串，不 panic。
+    let chinese = "中".repeat(10); // 30 字节，第 16 字节在「中」的中间
+    assert_eq!(super::pin_preview(&chinese), chinese);
+}

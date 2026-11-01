@@ -653,10 +653,14 @@ impl TelegramChannel {
             content = "[empty message]".to_string();
         }
 
+        // BUG-20261101-280：preview 截断必须按字符——`&content[..50]` 字节
+        // 直切在多字节字符中间 panic（debug 日志开启 + 中文消息即触发：
+        // 50 字节落在 16~17 个汉字的中间是常态不是边缘）。
+        let preview = message_preview(&content);
         debug!(
             sender_id = %sender_id,
             chat_id = %chat_id,
-            preview = &content[..content.len().min(50)],
+            preview = preview,
             "[TelegramChannel] received message"
         );
 
@@ -1155,6 +1159,12 @@ impl TelegramChannel {
 // ---------------------------------------------------------------------------
 // Markdown parsing helpers (line-by-line, no regex)
 // ---------------------------------------------------------------------------
+
+/// 入站消息 debug 预览截断（按字符；字节直切在多字节字符中间 panic，
+/// BUG-20261101-280——中文消息 50 字节落在 16~17 个汉字中间是常态）。
+fn message_preview(content: &str) -> String {
+    content.chars().take(50).collect()
+}
 
 fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")

@@ -513,6 +513,13 @@ async fn verify_len(path: &Path, expected: u64) -> Result<()> {
     Ok(())
 }
 
+/// 诊断文案里的钉值预览：`get(..16)` 非边界回落全串（钉值来自用户可编辑
+/// 的 config.vm_qemu.json，validate 不校验格式——非 hex/非 ASCII 钉值下
+/// 字节直切 `[..16]` 会 panic，BUG-20261101-280）。
+fn pin_preview(s: &str) -> &str {
+    s.get(..16).unwrap_or(s)
+}
+
 /// 取上游 sidecar SHA-512（`<url>.sha512`）。不可达 = Err（caller 决定
 /// 诚实拒绝或以显式 expected 继续）。
 pub async fn fetch_sha512_sidecar(url: &str) -> Result<String> {
@@ -564,11 +571,11 @@ async fn verify_installer(path: &Path, expected: &Option<String>, url: &str) -> 
                     "下载文件 SHA-512 与本仓钉值不符，但与上游 sidecar 一致——\
                      上游发行已更新（钉 {} / 实测 {actual}）。请确认新版本后更新钉值，\
                      或显式换源并给 expected_sha512",
-                    &want_lc[..16]
+                    pin_preview(&want_lc)
                 ),
                 _ => bail!(
                     "下载文件 SHA-512 校验失败：钉 {} / 实测 {actual}（sidecar 不可达或同样不符）",
-                    &want_lc[..16]
+                    pin_preview(&want_lc)
                 ),
             }
         }
