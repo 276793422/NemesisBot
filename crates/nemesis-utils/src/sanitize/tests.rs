@@ -1,4 +1,4 @@
-use super::{sanitize_csv, sanitize_path_segment};
+use super::{escape_like, sanitize_csv, sanitize_path_segment};
 
 #[test]
 fn plain_ids_pass_through() {
@@ -163,4 +163,21 @@ fn csv_special_chars_wrap_and_double_inner_quotes() {
     assert_eq!(sanitize_csv("line1\nline2"), "\"line1\nline2\"");
     // `\r` 也触发包裹（RFC 4180 须引号字符；比 audit_log 旧版多认）。
     assert_eq!(sanitize_csv("cr\rtail"), "\"cr\rtail\"");
+}
+
+// ---------- BUG-20261101-284：LIKE 通配符字面化（单一真相源出口） ----------
+
+#[test]
+fn escape_like_escapes_wildcards_and_backslash_first() {
+    // 三个通配/转义字符逐一（配 SQL `ESCAPE '\'` 子句消费）。
+    assert_eq!(escape_like("a%b"), "a\\%b");
+    assert_eq!(escape_like("a_b"), "a\\_b");
+    // `\` 必须最先转义（防二次解义：若先转义 `%`，已有 `\%` 里的 `\`
+    // 会在第二步被翻倍，语义漂移）。
+    assert_eq!(escape_like("a\\b"), "a\\\\b");
+    // 普通词直通。
+    assert_eq!(escape_like("glm-4.7"), "glm-4.7");
+    assert_eq!(escape_like(""), "");
+    // 混合：一次覆盖三字符 + 无关字符。
+    assert_eq!(escape_like("50_100\\200%"), "50\\_100\\\\200\\%");
 }

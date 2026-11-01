@@ -104,6 +104,19 @@ fn is_hash_suffix_form(out: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
 }
 
+/// LIKE 通配符转义（R221/BUG-163 口径，用户搜索词统一入口，配 SQL
+/// `ESCAPE '\'` 子句使用）：`\` → `\\`、`%` → `\%`、`_` → `\_`——不转义时
+/// `%`/`_` 按 LIKE 通配符解释（字面搜索错配；`\` 必须先转义防二次解义）。
+/// 单一真相源：nemesis-board issue/audit 搜索与本 crate usage_store
+/// request_logs 过滤（model/session_key）共用；**转义必须与 `ESCAPE '\'`
+/// 子句成对**——只转义不加子句会把 `\%` 解释成反斜杠+任意串。
+pub fn escape_like(needle: &str) -> String {
+    needle
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// FNV-1a 64-bit（零依赖确定性哈希，仅供超长段的区分后缀）。
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

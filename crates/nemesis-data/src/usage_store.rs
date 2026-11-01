@@ -329,22 +329,32 @@ impl DataStore {
 
         // WHERE 动态拼装：时间范围恒在（?1/?2），过滤条件按需追加。
         // 参数占位序号 = 绑定序（1-based），与 params_vec 压入顺序一致。
+        // BUG-20261101-284：用户搜索词 LIKE 字面化（对齐 R221/BUG-163 board
+        // 口径）——`%`/`_` 是 SQL LIKE 通配符，不转义时 `%q%` 包裹的搜索词
+        // 会按通配符解释（搜 `_` 命中全部单字符位、搜字面 `%` 变全量）。
+        // 转义与 `ESCAPE '\'` 子句成对（单一真相源 nemesis_utils::sanitize）。
         let mut conds: Vec<String> = vec![
             "created_at >= ?1".to_string(),
             "created_at < ?2".to_string(),
         ];
         let mut bind: Vec<Box<dyn ToSql>> = vec![Box::new(start_ts), Box::new(end_ts)];
         if let Some(m) = filter.model.as_deref().filter(|s| !s.is_empty()) {
-            bind.push(Box::new(format!("%{m}%")));
-            conds.push(format!("model LIKE ?{}", bind.len()));
+            bind.push(Box::new(format!(
+                "%{}%",
+                nemesis_utils::sanitize::escape_like(m)
+            )));
+            conds.push(format!("model LIKE ?{} ESCAPE '\\'", bind.len()));
         }
         if let Some(s) = filter.status {
             bind.push(Box::new(s));
             conds.push(format!("status_code = ?{}", bind.len()));
         }
         if let Some(sk) = filter.session_key.as_deref().filter(|s| !s.is_empty()) {
-            bind.push(Box::new(format!("%{sk}%")));
-            conds.push(format!("session_key LIKE ?{}", bind.len()));
+            bind.push(Box::new(format!(
+                "%{}%",
+                nemesis_utils::sanitize::escape_like(sk)
+            )));
+            conds.push(format!("session_key LIKE ?{} ESCAPE '\\'", bind.len()));
         }
         let where_clause = conds.join(" AND ");
 
