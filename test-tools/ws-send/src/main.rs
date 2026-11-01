@@ -1,7 +1,10 @@
 //! One-shot WebSocket sender for E2E testing.
 //!
-//! Connects to NemesisBot WebSocket, sends one message in the correct protocol
-//! format, waits for the bot response, prints it, and exits.
+//! Connects to the **web server `/ws` endpoint** (three-level protocol:
+//! `{type, module, cmd, data}` — NOT the standalone websocket-channel port,
+//! whose flat `{type, content}` protocol is a different integration surface),
+//! sends one chat.send message, waits for the **assistant reply** (user-echo
+//! frames are skipped), prints it, and exits.
 //!
 //! Usage:
 //!   ws-send --url ws://127.0.0.1:37300/ws --token 12345 --msg "hello"
@@ -126,6 +129,25 @@ async fn main() -> Result<()> {
 
                         match r#type {
                             "message" => {
+                                // BUG-20261101-287：chat.send 的入站回显帧
+                                // （role="user"）与 AI 回复帧（role="assistant"）
+                                // 同为 type=="message"，此前不区分——回显恒先到
+                                // （LLM 处理期间），ws-send 把用户自己的消息当
+                                // bot 回复打印退出，AI 回复从未被等待（E2E 假绿：
+                                // 只验证了入站链路，回复路径零覆盖）。按 role
+                                // 过滤：user = 回显继续等；其余 = 真回复。
+                                let role = resp.get("data")
+                                    .and_then(|d| d.get("role"))
+                                    .and_then(|r| r.as_str())
+                                    .unwrap_or("");
+                                if role == "user" {
+                                    if args.verbose {
+                                        eprintln!(
+                                            "[echo] user message echoed, waiting for assistant reply..."
+                                        );
+                                    }
+                                    continue;
+                                }
                                 let content = resp.get("data")
                                     .and_then(|d| d.get("content"))
                                     .and_then(|c| c.as_str())
@@ -143,6 +165,22 @@ async fn main() -> Result<()> {
                                 break;
                             }
                             "system" => {
+                                // BUG-20261101-287 同族：web 端点错误帧形态是
+                                // {type:"system", module:"error", cmd:"notify",
+                                // data:{content}}——此前落 default 分支被静默
+                                // 忽略（非 -v 时），客户端干等满 timeout 才退。
+                                // 识别后报错退出。
+                                let module =
+                                    resp.get("module").and_then(|m| m.as_str()).unwrap_or("");
+                                let cmd = resp.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
+                                if module == "error" && cmd == "notify" {
+                                    let content = resp.get("data")
+                                        .and_then(|d| d.get("content"))
+                                        .and_then(|c| c.as_str())
+                                        .unwrap_or("unknown error");
+                                    eprintln!("Error: {}", content);
+                                    break;
+                                }
                                 if args.verbose {
                                     eprintln!("[system] {}", resp.get("data").map(|d| d.to_string()).unwrap_or_default());
                                 }
