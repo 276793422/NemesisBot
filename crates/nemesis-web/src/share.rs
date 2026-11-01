@@ -210,14 +210,31 @@ pub async fn handle_api_share(
     let Some(entry) = resolve_share(&workspace, &token) else {
         return Err(not_found("分享不存在或已撤销"));
     };
+    // BUG-20261102-302：公开无鉴权端点——整会话 jsonl 全量读（usize::MAX）
+    // + session_title（scan_session_logs 全目录全量解析）同步直跑 tokio
+    // worker，分享链接被多人打开即放大占位。spawn_blocking 移出
+    // （read_chat_log_async 同款纪律）。
     let key = format!("agent:main:session:{}", entry.session_id);
-    let (rows, _total, _more, _oldest) =
-        nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
+    let sid = entry.session_id.clone();
+    let (rows, title) = {
+        let ws = workspace.clone();
+        tokio::task::spawn_blocking(move || {
+            let (rows, _total, _more, _oldest) =
+                nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
+            let title = session_title(&ws, &sid).unwrap_or_else(|| "会话分享".to_string());
+            (rows, title)
+        })
+        .await
+        .map_err(|_| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": "share fetch task join failed" })),
+            )
+        })?
+    };
     if rows.is_empty() {
         return Err(not_found("会话不存在或历史为空"));
     }
-    let title =
-        session_title(&workspace, &entry.session_id).unwrap_or_else(|| "会话分享".to_string());
     Ok(axum::Json(json!({
         "title": title,
         "created_at": entry.created_at,

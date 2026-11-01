@@ -1321,7 +1321,12 @@ impl LogsHandler {
         // File-based scan is the primary source — works even without the memory
         // manager (when enhanced memory / ONNX is disabled). Each *.jsonl is one
         // session. This decouples the dashboard's "对话历史" from the vector stack.
-        let mut sessions = scan_session_logs(workspace);
+        // BUG-20261102-302：全目录全量解析（逐行 JSON parse）直跑 tokio
+        // worker 会占住 worker，spawn_blocking 移出（sessions.list 同款纪律）。
+        let ws = workspace.to_string();
+        let mut sessions = tokio::task::spawn_blocking(move || scan_session_logs(&ws))
+            .await
+            .map_err(|e| format!("logs.session_list task join failed: {e}"))?;
 
         // When episodic memory is available, enrich file entries with metadata
         // (model, triggerCluster) the raw chat log does not carry. Match by both
@@ -1463,8 +1468,16 @@ impl LogsHandler {
         // jsonl（同 fs.rs tree_in 的 F7 闸，BUG-HUNT R7）。
         let path =
             session_log_dir(workspace).join(format!("{}.jsonl", sanitize_session_key(session)));
+        // BUG-20261102-302：整会话 jsonl 全量解析（逐行 JSON parse）在 wire
+        // 路径直跑 tokio worker，spawn_blocking 移出（sessions.export 同款
+        // 纪律）。
+        let raw_lines = {
+            tokio::task::spawn_blocking(move || read_jsonl_lines(&path))
+                .await
+                .map_err(|e| format!("logs.session_detail task join failed: {e}"))?
+        };
         #[cfg_attr(not(feature = "memory"), allow(unused_mut))]
-        let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
+        let mut messages: Vec<serde_json::Value> = raw_lines
             .into_iter()
             .map(|ln| {
                 let mut msg = serde_json::json!({

@@ -176,7 +176,16 @@ impl AgentLoop {
         force: bool,
     ) -> Result<serde_json::Value, String> {
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：非热路径不改变同步阻塞 IO 占住 tokio worker 的
+        // 机制（read_chat_log_async 同款纪律），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("rewind task join failed: {e}"))?
+        };
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
@@ -216,7 +225,16 @@ impl AgentLoop {
         &self,
         session_key: &str,
     ) -> Result<serde_json::Value, String> {
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 不改变占住 worker 的机制），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("rewind task join failed: {e}"))?
+        };
         // 截断点 = 最后一个 user 行（turn 边界，user 行即轮首；steer 注入行
         // 不是轮首，轮边界判定走单一真相源跳过——BUG-20261025-19，否则
         // 「撤销最后一轮」切在 steer 行上只删尾巴、轮残留在会话里）。没有
@@ -275,7 +293,16 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 不改变占住 worker 的机制），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("rewind task join failed: {e}"))?
+        };
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
@@ -663,7 +690,16 @@ impl AgentLoop {
         .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
 
         // 守卫 1：会话行数未变（undo 后没发过新消息）。
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 不改变占住 worker 的机制），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("redo task join failed: {e}"))?
+        };
         if rows.len() != entry.kept_count {
             return Err(format!(
                 "回退后产生了新消息，redo 已失效（期望 {} 行，实际 {} 行）",
