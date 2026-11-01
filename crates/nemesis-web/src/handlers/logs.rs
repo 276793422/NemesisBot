@@ -15,7 +15,6 @@ use chrono::NaiveDateTime;
 #[cfg(feature = "security")]
 use nemesis_security::integrity::AuditEvent;
 #[cfg(feature = "security")]
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub struct LogsHandler;
@@ -782,18 +781,17 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
     events
 }
 
-/// SHA-256 hash using the same field order as `AuditChain::append_with_sign`.
+/// 事件 hash 单一真相源委托（BUG-20261102-305：此处原是
+/// `AuditChain::append_with_sign` 七字段公式的手抄拷贝——v1 公式追加
+/// source+reason 后拷贝版对追加事件恒算出「hash mismatch」假阳性）。
+/// 未支持版本（hash_version>1）返回空串 → 与任何存 hash 不等 → 上层
+/// 诊断自然报 hash mismatch（与 verify_chain fail-closed 同语义）。
 #[cfg(feature = "security")]
 fn compute_audit_hash(ev: &AuditEvent) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(ev.prev_hash.as_bytes());
-    hasher.update(ev.timestamp.as_bytes());
-    hasher.update(ev.operation.as_bytes());
-    hasher.update(ev.tool_name.as_bytes());
-    hasher.update(ev.user.as_bytes());
-    hasher.update(ev.target.as_bytes());
-    hasher.update(ev.decision.as_bytes());
-    format!("{:x}", hasher.finalize())
+    if ev.hash_version > 1 {
+        return String::new();
+    }
+    nemesis_security::integrity::AuditChain::compute_event_hash(ev)
 }
 
 /// SAN-05：薄包装委托仓内单一真相源白名单消毒（原黑名单

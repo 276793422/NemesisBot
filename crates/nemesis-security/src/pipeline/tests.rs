@@ -293,6 +293,30 @@ fn test_mcp_discover_http_arm_ssrf_guarded() {
     assert!(err.unwrap().summary.contains("SSRF"));
 }
 
+// BUG-20261102-304：browser navigate 的 url 进 Layer 6 SSRF——MCP 浏览器
+// 导航 LLM 可控 URL 且页面内容回流（extract_text），与 web_fetch 同语义
+// 同判（此前 extract_url 无 browser 臂 → SSRF 对该工具整体失明，
+// BUG-20261102-296 横向扫描漏网）。deny 臂在 Layer 6 提前返回，纯 #[test]。
+#[test]
+fn test_browser_navigate_ssrf_guarded() {
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        dlp_enabled: false,
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "browser".to_string(),
+        args: serde_json::json!({"action": "navigate", "url": "http://127.0.0.1:49000/admin"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "loopback navigate must hit the SSRF guard");
+    assert!(err.unwrap().summary.contains("SSRF"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_register_rules() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {

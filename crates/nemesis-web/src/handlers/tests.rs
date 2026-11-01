@@ -4921,6 +4921,7 @@ fn make_audit_event(
         hash: String::new(),
         prev_hash: String::new(),
         sign: None,
+        hash_version: 0,
     }
 }
 

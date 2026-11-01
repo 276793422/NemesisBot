@@ -652,7 +652,12 @@ pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
         // SSRF 对该工具整体失明（LLM 可控 url 任指内网/metadata 端点）。
         // 与 web_fetch 同语义同闸；loopback 目标走 ssrf.allowed_hosts 例外
         // （web_fetch 先例）。stdio 臂无 url 字段 → 空串照常跳过。
-        | "install_skill" | "find_skills" | "mcp_discover" => args
+        // BUG-20261102-304：browser navigate 臂同族补齐（296 横向扫描漏网
+        // ）——MCP 浏览器在本机用户会话内导航 LLM 可控 url 且页面内容回流
+        // （extract_text），SSRF 失明 = web_fetch 拦得住的内网/metadata
+        // 目标 browser 拦不住。非 navigate 动作无 url 字段 → 空串照常跳过
+        // ；其他动作带多余 url 字段时被一并检查（保守方向）。
+        | "install_skill" | "find_skills" | "mcp_discover" | "browser" => args
             .get("url")
             .or_else(|| args.get("source"))
             .and_then(|v| v.as_str())
