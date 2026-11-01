@@ -567,6 +567,9 @@ async fn download_fails_when_temp_file_uncreatable() {
 #[tokio::test]
 async fn download_cancellation_aborts_mid_stream() {
     // 只回头不回体 → 客户端流挂起 → 取消令牌打断（cancel 臂）。
+    // 取消定在 100ms——早于测试态 read_timeout 的 400ms 窗（BUG-20261101-278
+    // 后客户端层也有 stall 检测：若拖到 400ms 才取消，超时错误臂会与取消臂
+    // 竞速假红；提前取消让 cancel 臂确定性胜出，两者覆盖面互不挤压）。
     let port = spawn_http_server(vec![Resp::Stall]).await;
 
     let engine = ClamAVEngine::new(ClamAVEngineConfig {
@@ -581,7 +584,7 @@ async fn download_cancellation_aborts_mid_stream() {
         let token = token.clone();
         async move { engine.download(dir.to_str().unwrap(), token, None).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     token.cancel();
     let err = tokio::time::timeout(std::time::Duration::from_secs(5), dl)
         .await

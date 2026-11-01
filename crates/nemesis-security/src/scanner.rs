@@ -22,6 +22,13 @@ use tracing::{debug, warn};
 // Status constants
 // ---------------------------------------------------------------------------
 
+/// 引擎库下载 stall 检测窗（BUG-20261101-278）——见 ClamAVEngine::download
+/// 内注释。测试态 400ms：stall 回归测试经真实 download() 跑，等待必须秒级。
+#[cfg(not(test))]
+const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(test)]
+const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Install status constants.
 pub const INSTALL_STATUS_PENDING: &str = "pending";
 pub const INSTALL_STATUS_INSTALLED: &str = "installed";
@@ -647,8 +654,19 @@ impl InstallableEngine for ClamAVEngine {
         // Create target directory
         std::fs::create_dir_all(dir).map_err(|e| format!("failed to create directory: {}", e))?;
 
-        // Download the archive with streaming (matching Go's progressive download)
-        let response = reqwest::get(&url)
+        // BUG-20261101-278：reqwest::get 内部 Client::new() 零超时——病毒库
+        // CDN 半死（TCP 已建但不发数据）时这里永久挂死，且在下方 cancel
+        // select 之外、取消令牌救不了。read_timeout 只惩罚响应分片间隔
+        // （stall 形态），慢速但流动的合法大文件下载（~200MB 的 main.cvd）
+        // 不被总超时误杀，故不设总超时。
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(DOWNLOAD_READ_TIMEOUT)
+            .build()
+            .map_err(|e| format!("download client build failed: {}", e))?;
+        let response = client
+            .get(&url)
+            .send()
             .await
             .map_err(|e| format!("download failed: {}", e))?;
 

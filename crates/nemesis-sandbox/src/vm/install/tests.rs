@@ -292,3 +292,92 @@ fn detect_linux_pm_matches_host_shape() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-278：零超时下载在半死上游上永久挂死——read_timeout 回归测试。
+// 头等待（HEAD 探测）原完全无保护，body 间隔靠 120s tokio 超时（测试等不
+// 起）；客户端层 read_timeout（测试态 400ms）两种形态都秒级兜住。经真实
+// ranged_download 跑，等待必须秒级以内。
+// ---------------------------------------------------------------------------
+
+/// 半死上游①：接受连接、收走请求、永不回响应头（连接保持打开）。
+async fn serve_head_stall() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            // s 刻意不 drop 不 write——客户端等响应头，直到 read_timeout 触发。
+            std::future::pending::<()>().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 半死上游②：对每个请求回完整响应头 + 半截 body 后断流（Content-Length
+/// 说谎、无 Accept-Ranges 头 → 单线回落路径，body 断流由 read_timeout 兜）。
+async fn serve_body_stall() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+            let _ = s.write_all(head).await;
+            let _ = s.write_all(&[0xABu8; 10]).await;
+            std::future::pending::<()>().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn assert_stall_timeouts(err: anyhow::Error, elapsed: std::time::Duration) {
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "必须在 read_timeout 窗内失败，实际耗时 {:?}",
+        elapsed
+    );
+    // reqwest 0.12 Display 不含 cause 链（超时细节在 source() 里），定性靠
+    // 「非成功形态」+ 耗时上界；传输层错误文案带 "error sending request"。
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("error sending request") || msg.contains("timed out") || msg.contains("error"),
+        "须是传输层错误而非其它: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn ranged_download_errors_on_head_stall_instead_of_hanging() {
+    let base = serve_head_stall().await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("qemu.7z");
+    let url = format!("{base}/qemu.7z");
+    let started = std::time::Instant::now();
+    let err = ranged_download(&url, &dest, 12)
+        .await
+        .expect_err("半死上游必须报错而非永久挂起");
+    assert_stall_timeouts(err, started.elapsed());
+}
+
+#[tokio::test]
+async fn ranged_download_errors_on_body_stall_instead_of_hanging() {
+    let base = serve_body_stall().await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("qemu.7z");
+    let url = format!("{base}/qemu.7z");
+    let started = std::time::Instant::now();
+    let err = ranged_download(&url, &dest, 12)
+        .await
+        .expect_err("body 断流必须报错而非永久挂起");
+    assert_stall_timeouts(err, started.elapsed());
+}

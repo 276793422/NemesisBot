@@ -3037,3 +3037,107 @@ async fn t11_eicar_png_content_scan_also_blocks() {
     assert!(!result.clean);
     assert!(result.blocked);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-278：零超时下载在半死上游上永久挂死——且挂死点在 download
+// 的 cancel select 之外（响应头等待/首块断流），取消令牌救不了。read_timeout
+// 回归测试：测试态 DOWNLOAD_READ_TIMEOUT=400ms，等待必须秒级以内。
+// ---------------------------------------------------------------------------
+
+/// 半死上游①：接受连接、收走请求、永不回响应头（连接保持打开）。
+async fn serve_head_stall() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            // s 刻意不 drop 不 write——客户端等响应头，直到 read_timeout 触发。
+            std::future::pending::<()>().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 半死上游②：回完整响应头 + 半截 body 后断流（Content-Length 说谎）。
+async fn serve_body_stall() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            // 声明 100 字节只发 10 字节，然后保持连接不发余量——bytes_stream
+            // 读半截 stall，read_timeout 必须兜住。
+            let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+            let _ = s.write_all(head).await;
+            let _ = s.write_all(&[0xABu8; 10]).await;
+            std::future::pending::<()>().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn clamav_download_errors_on_head_stall_instead_of_hanging() {
+    use crate::scanner::InstallableEngine;
+    let base = serve_head_stall().await;
+    let engine = ClamAVEngine::new(ClamAVEngineConfig {
+        url: format!("{base}/clamav.zip"),
+        ..Default::default()
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let err = engine
+        .download(
+            dir.path().to_str().unwrap(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect_err("半死上游必须报错而非永久挂起");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "必须在 read_timeout 窗内失败，实际耗时 {:?}",
+        started.elapsed()
+    );
+    assert!(err.contains("download failed"), "{err}");
+    assert!(
+        !err.contains("with status"),
+        "须是传输层超时而非 HTTP 状态: {err}"
+    );
+}
+
+#[tokio::test]
+async fn clamav_download_errors_on_body_stall_mid_stream() {
+    use crate::scanner::InstallableEngine;
+    let base = serve_body_stall().await;
+    let engine = ClamAVEngine::new(ClamAVEngineConfig {
+        url: format!("{base}/main.cvd"),
+        ..Default::default()
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let err = engine
+        .download(
+            dir.path().to_str().unwrap(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect_err("body 断流必须报错而非永久挂起");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "必须在 read_timeout 窗内失败，实际耗时 {:?}",
+        started.elapsed()
+    );
+    assert!(err.contains("download read failed"), "{err}");
+}
