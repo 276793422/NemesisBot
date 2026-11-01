@@ -725,7 +725,10 @@ async fn async_main() -> Result<()> {
     let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
-        println!("Local mode enabled: using ./.nemesisbot");
+        // BUG-20261101-281：提示行必须走 stderr——`run --format json` 的
+        // stdout 是纯 NDJSON 契约（`run` 文本模式 stdout 只承载最终回复、
+        // `acp` stdout 是 JSON-RPC 协议行），println 污染首行即炸消费方解析。
+        eprintln!("Local mode enabled: using ./.nemesisbot");
     }
 
     // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
@@ -880,7 +883,10 @@ fn main() -> Result<()> {
     let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
-        println!("Local mode enabled: using ./.nemesisbot");
+        // BUG-20261101-281：提示行必须走 stderr——`run --format json` 的
+        // stdout 是纯 NDJSON 契约（`run` 文本模式 stdout 只承载最终回复、
+        // `acp` stdout 是 JSON-RPC 协议行），println 污染首行即炸消费方解析。
+        eprintln!("Local mode enabled: using ./.nemesisbot");
     }
 
     // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
