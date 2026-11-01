@@ -3059,6 +3059,24 @@ impl Tool for CronTool {
                 if id.is_empty() {
                     return Err("Missing 'id' argument".to_string());
                 }
+                // Reserved-namespace guard (single truth source
+                // `reserved_prefix_hit`): board-ap:/memory-dreaming: jobs are
+                // owned by the board autopilot rules / memory.dreaming config
+                // respectively. Deleting one from this tool silently breaks
+                // the mount until the next gateway startup sync (the rule's
+                // "mounted" status keeps lying in the meantime) — management
+                // belongs to the board/memory surfaces, not the agent tool.
+                let reserved = svc
+                    .get_job(id)
+                    .map(|j| nemesis_cron::reserved_prefix_hit(&j.name).is_some())
+                    .unwrap_or(false);
+                if reserved {
+                    return Err(format!(
+                        "job {id} is a system-internal job (reserved namespace); \
+                         board autopilot rules are managed via board autopilot commands \
+                         and memory dreaming via memory config — it cannot be deleted here"
+                    ));
+                }
                 match svc.remove_job(id) {
                     Ok(true) => Ok(format!("Deleted cron job: {}", id)),
                     Ok(false) => Err(format!("Job not found: {}", id)),

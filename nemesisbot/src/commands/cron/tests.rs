@@ -657,3 +657,46 @@ fn add_huge_every_is_honest_error_and_not_created() {
         assert_eq!(store.jobs[0].schedule.every_ms, Some(5_000));
     });
 }
+
+// ===========================================================================
+// 保留命名空间 CLI 变更闸（BUG-20261101-293）：board-ap:/memory-dreaming:
+// 系统作业由 autopilot 规则 / memory.dreaming 配置拥有真相源，CLI 删除/停用
+// 后要到下次 gateway 启动同步才重建（期间规则侧「已挂载」状态说谎）——
+// loud 拒绝并指路专属管理面；普通任务的 Remove/Disable 语义不变。
+// ===========================================================================
+
+fn reserved_job_store_body(id: &str, name: &str) -> String {
+    format!(
+        r#"{{"version":1,"jobs":[{{"id":"{id}","name":"{name}","enabled":true,"schedule":{{"kind":"cron","at_ms":null,"every_ms":null,"expr":"0 4 * * *","tz":null}},"payload":{{"kind":"agent_turn","message":"","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null}},"state":{{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]}},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}}]}}"#
+    )
+}
+
+#[test]
+fn cli_remove_rejects_reserved_namespace_jobs() {
+    with_env_home(|home| {
+        write_store(&home, &reserved_job_store_body("ap1", "board-ap:7"));
+        let err = run(CronAction::Remove { id: "ap1".into() }, false)
+            .expect_err("保留命名空间删除必须 loud 拒绝");
+        assert!(err.to_string().contains("系统内部作业"), "err: {err}");
+        // 任务仍在盘上（未被删除）。
+        let store = read_store(&home);
+        assert_eq!(store.jobs.len(), 1);
+        assert_eq!(store.jobs[0].name, "board-ap:7");
+    });
+}
+
+#[test]
+fn cli_disable_rejects_reserved_namespace_jobs() {
+    with_env_home(|home| {
+        write_store(
+            &home,
+            &reserved_job_store_body("ap1", "memory-dreaming:sweep"),
+        );
+        let err = run(CronAction::Disable { id: "ap1".into() }, false)
+            .expect_err("保留命名空间停用必须 loud 拒绝");
+        assert!(err.to_string().contains("系统内部作业"), "err: {err}");
+        // enabled 保持 true（未被停用）。
+        let store = read_store(&home);
+        assert!(store.jobs[0].enabled);
+    });
+}

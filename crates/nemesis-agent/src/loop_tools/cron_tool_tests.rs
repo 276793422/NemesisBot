@@ -425,3 +425,48 @@ fn cron_schema_declares_real_interface() {
         "desc: {d}"
     );
 }
+
+// --- 保留命名空间 delete 闸（BUG-20261101-293）：board-ap:/memory-dreaming:
+// 系统作业的挂载真相源在 autopilot 规则与 memory.dreaming 配置，agent 经本
+// 工具删除会静默破坏挂载（下次 gateway 启动同步才自愈）——loud 拒绝；
+// 普通任务删除不受影响（schema 形态 happy path 已有专测）。 ---
+
+#[tokio::test]
+async fn cron_delete_rejects_reserved_namespace_jobs() {
+    let (tool, svc) = fresh_tool("cron-reserved-del");
+    svc.lock()
+        .unwrap()
+        .add_job_internal(
+            "board-ap:9",
+            nemesis_cron::service::CronSchedule {
+                kind: "cron".to_string(),
+                at_ms: None,
+                every_ms: None,
+                expr: Some("0 4 * * *".to_string()),
+                tz: None,
+            },
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let id = svc.lock().unwrap().list_jobs(true)[0].id.clone();
+
+    let err = tool
+        .execute(
+            &serde_json::json!({"action": "delete", "id": id}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("system-internal"), "err: {err}");
+    assert_eq!(
+        svc.lock().unwrap().list_jobs(true).len(),
+        1,
+        "内部作业必须仍在 store"
+    );
+}

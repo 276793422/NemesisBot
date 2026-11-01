@@ -136,6 +136,30 @@ impl ModuleHandler for TasksHandler {
     }
 }
 
+/// 系统内部作业的用户面变更闸（`board-ap:` / `memory-dreaming:` 保留命名
+/// 空间，单一真相源 [`nemesis_cron::reserved_prefix_hit`]）：这些作业由
+/// 看板 autopilot 规则与 `memory.dreaming` 配置各自拥有真相源，gateway
+/// 运行中经本页删除/停用/改排程会静默破坏挂载——启动同步（仅 gateway
+/// 启动时跑一次）之前规则/排程一直停摆，且规则侧「已挂载」状态按
+/// `cron_job_id` 判定会继续说谎。管理走专属面：看板 Autopilot 面板 /
+/// Memory 设置页（内部装配路径 arm/sync/disarm 直走 service 层，不经本闸）。
+/// 任务不存在时放行（由后续 remove/toggle/patch 给出既有的 not-found 语义）。
+fn ensure_user_job(svc: &Arc<std::sync::Mutex<CronService>>, id: &str) -> Result<(), String> {
+    let reserved = svc
+        .lock()
+        .unwrap()
+        .get_job(id)
+        .map(|j| nemesis_cron::reserved_prefix_hit(&j.name).is_some())
+        .unwrap_or(false);
+    if reserved {
+        return Err(format!(
+            "任务 {id} 是系统内部作业（保留命名空间），不能从定时任务页删除/停用/修改\
+             ——看板定时规则在 Autopilot 面板管理，记忆 dreaming 在 Memory 设置页管理"
+        ));
+    }
+    Ok(())
+}
+
 impl TasksHandler {
     fn get_file(
         &self,
@@ -210,6 +234,7 @@ impl TasksHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let id = get_str(data, "id")?;
+        ensure_user_job(svc, &id)?;
         let patch = CronJobPatch {
             name: data.get("name").and_then(|v| v.as_str()).map(String::from),
             schedule: data
@@ -253,6 +278,7 @@ impl TasksHandler {
         svc: &Arc<std::sync::Mutex<CronService>>,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
+        ensure_user_job(svc, id)?;
         match svc.lock().unwrap().remove_job(id) {
             Ok(true) => Ok(Some(serde_json::json!({ "deleted": true, "id": id }))),
             Ok(false) => Err(format!("cron job '{}' not found", id)),
@@ -265,6 +291,7 @@ impl TasksHandler {
         svc: &Arc<std::sync::Mutex<CronService>>,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
+        ensure_user_job(svc, id)?;
         let enabled = svc.lock().unwrap().toggle_job(id)?;
         Ok(Some(serde_json::json!({ "id": id, "enabled": enabled })))
     }

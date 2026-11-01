@@ -352,3 +352,109 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
     assert_eq!(job["cron"], "");
     assert_eq!(job["description"], "", "空 expr 必须 description 也为空");
 }
+
+// ============================================================
+// 保留命名空间用户面变更闸（BUG-20261101-293）：board-ap:/memory-dreaming:
+// 系统作业的挂载真相源在 autopilot 规则与 memory.dreaming 配置，gateway
+// 运行中经任务页 delete/toggle/update 会静默破坏挂载（下次启动同步才自愈，
+// 期间规则侧「已挂载」状态说谎）。内部作业经 add_job_internal 注入
+//（与 gateway 装配同路），三个变更命令一律 loud 拒绝；普通任务不受影响。
+// ============================================================
+
+async fn add_internal_job(ctx: &RequestContext, name: &str) -> String {
+    let svc = ctx.state.cron.as_ref().unwrap();
+    svc.lock()
+        .unwrap()
+        .add_job_internal(
+            name,
+            cron_expr_to_schedule("0 4 * * *"),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn cron_delete_rejects_reserved_namespace_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cron(&dir).await;
+    let h = TasksHandler;
+    let id = add_internal_job(&ctx, "board-ap:7").await;
+
+    let err = h
+        .handle_cmd("cron.delete", Some(serde_json::json!({ "id": id })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("系统内部作业"), "err: {err}");
+    // 任务仍在 store（未被删除）。
+    assert!(
+        ctx.state
+            .cron
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .get_job(&id)
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn cron_toggle_rejects_reserved_namespace_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cron(&dir).await;
+    let h = TasksHandler;
+    let id = add_internal_job(&ctx, "memory-dreaming:sweep").await;
+
+    let err = h
+        .handle_cmd("cron.toggle", Some(serde_json::json!({ "id": id })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("系统内部作业"), "err: {err}");
+    // enabled 保持 true（未被停用）。
+    let job = ctx
+        .state
+        .cron
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .get_job(&id)
+        .unwrap();
+    assert!(job.enabled);
+}
+
+#[tokio::test]
+async fn cron_update_rejects_reserved_namespace_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cron(&dir).await;
+    let h = TasksHandler;
+    let id = add_internal_job(&ctx, "board-ap:7").await;
+
+    let err = h
+        .handle_cmd(
+            "cron.update",
+            Some(serde_json::json!({ "id": id, "cron": "30 5 * * *" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("系统内部作业"), "err: {err}");
+    // 排程未被改。
+    let job = ctx
+        .state
+        .cron
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .get_job(&id)
+        .unwrap();
+    assert_eq!(job.schedule.expr.as_deref(), Some("0 4 * * *"));
+}
