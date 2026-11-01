@@ -1935,17 +1935,7 @@ impl WorkflowEngine {
             ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
         );
         let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
-            // BUG-20261024-13 同族：多等待节点并存时 checkpoint 的 waiting_node
-            // 取 id 最小者——HashMap 迭代序随机会让重启前后「当前等待节点」
-            // 漂移（可观测性字段，确定性优先）。
-            let mut ids: Vec<String> = wf_ctx
-                .get_all_node_results()
-                .iter()
-                .filter(|(_, r)| r.state == ExecutionState::Waiting)
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.sort();
-            ids.into_iter().next()
+            smallest_waiting_node_id(&wf_ctx.get_all_node_results())
         } else {
             None
         };
@@ -2525,13 +2515,9 @@ impl WorkflowEngine {
                 }
                 None => waiting_ids[0].clone(),
             };
-            let result = execution
-                .node_results
-                .get_mut(&waiting_id)
-                .expect("waiting_id 来自同一 map，必然存在");
-            result.output = serde_json::json!(review_result);
-            result.state = ExecutionState::Completed;
-            result.ended_at = Local::now();
+            // BUG-20261102-NN：结果覆写移出临界区——sub_workflow 等待节点的
+            // 评审要路由进子执行（需读原结果的 metadata.execution_id），错误
+            // 臂也要能把执行干净恢复回 Waiting（覆写过的结果无从恢复）。
             if let Some(approved) = review_result.get("approved")
                 && let Some(b) = approved.as_bool()
             {
@@ -2556,7 +2542,7 @@ impl WorkflowEngine {
             (snap, waiting_id, cancel_token)
         };
 
-        let (mut execution, _waiting_node_id, cancel_token) = execution_snapshot;
+        let (mut execution, waiting_node_id, cancel_token) = execution_snapshot;
 
         // Load the workflow definition (needed for schedule_resume). The
         // token was already armed inside the critical section — a failed
@@ -2565,6 +2551,10 @@ impl WorkflowEngine {
             Some(w) => w,
             None => {
                 self.cancel_tokens.remove(id);
+                // BUG-20261102-NN：状态翻 Running 发生在临界区，查找失败
+                // 必须翻回去——否则执行卡在 Running 且无 token，进程内
+                // 永远无法再 resume（重启才被 checkpoint 治愈）。
+                self.restore_waiting_after_failed_resume(id).await;
                 return Err(EngineError::WorkflowNotFound(
                     execution.workflow_name.clone(),
                 ));
@@ -2584,6 +2574,44 @@ impl WorkflowEngine {
                 );
             }
         }
+
+        // BUG-20261102-NN：sub_workflow 等待节点的评审路由。父执行停在
+        // sub_workflow 节点 = 子执行停在它自己的 human_review——评审必须
+        // 路由进子执行再按子执行终态同步父节点结果；旧实现把评审 JSON
+        // 直接覆写进父节点结果并放行父下游（子执行孤儿化、子下游永不
+        // 执行、父下游拿到覆写数据——探针实测三连）。运行期 Waiting 传播
+        // 语义不变（integration_nesting 钉住的既有设计），只修 resume 侧。
+        let waiting_node_type = workflow
+            .nodes
+            .iter()
+            .find(|n| n.id == waiting_node_id)
+            .map(|n| n.node_type.as_str())
+            .unwrap_or("");
+        execution = if waiting_node_type == "sub_workflow" {
+            let exec = self
+                .resume_subworkflow_node(execution, &waiting_node_id, review_result, &cancel_token)
+                .await?;
+            // 早期收口臂（Waiting/Failed/Cancelled）已在 settle_resume_outcome
+            // 完成账本/checkpoint/persist——直接返回，绝不落回下方尾段：
+            // schedule_resume 会把非 Completed 且依赖已满足的 sub_workflow
+            // 节点整个重跑（再 spawn 一个新子执行），Failed 被洗成 Waiting、
+            // 路由锚被换新。只有 Completed 臂（state 仍为临界区的 Running）
+            // 续走尾段 schedule_resume 跑父下游。
+            if exec.state != ExecutionState::Running {
+                return Ok(exec);
+            }
+            exec
+        } else {
+            // 常规节点：评审结果覆写进等待节点结果（既有语义）。
+            let result = execution
+                .node_results
+                .get_mut(&waiting_node_id)
+                .expect("waiting_id 来自同一 map，必然存在");
+            result.output = serde_json::json!(review_result);
+            result.state = ExecutionState::Completed;
+            result.ended_at = Local::now();
+            execution
+        };
 
         // Build context from the current execution state (carries the
         // just-resolved review_result through to downstream nodes).
@@ -2678,17 +2706,7 @@ impl WorkflowEngine {
             ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
         );
         let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
-            // BUG-20261024-13 同族：多等待节点并存时 checkpoint 的 waiting_node
-            // 取 id 最小者——HashMap 迭代序随机会让重启前后「当前等待节点」
-            // 漂移（可观测性字段，确定性优先）。
-            let mut ids: Vec<String> = wf_ctx
-                .get_all_node_results()
-                .iter()
-                .filter(|(_, r)| r.state == ExecutionState::Waiting)
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.sort();
-            ids.into_iter().next()
+            smallest_waiting_node_id(&wf_ctx.get_all_node_results())
         } else {
             None
         };
@@ -2719,6 +2737,232 @@ impl WorkflowEngine {
         }
 
         Ok(execution)
+    }
+
+    /// BUG-20261102-NN：sub_workflow 等待节点的评审路由（resume 侧）。
+    ///
+    /// 父执行的 sub_workflow 节点停在 Waiting = 子执行停在它自己的
+    /// human_review。评审路由进子执行（递归 [`resume_execution_node`]），
+    /// 再按子执行终态同步父节点结果：
+    /// - 子执行 Completed → 父节点结果覆写为子工作流真实输出投影
+    ///   （与 [`SubWorkflowNodeExecutor`] 产出同形），返回后公共尾段
+    ///   续跑父下游；
+    /// - 子执行再次 Waiting（嵌套审批）→ 父节点结果刷新为子工作流当前
+    ///   快照，父保持 Waiting 等下一次 resume（非终态 checkpoint、G3
+    ///   账本保持开账）；
+    /// - 子执行 Failed/Cancelled → 父诚实失败（错误点名子执行）。
+    ///
+    /// 用户取消与子执行结果竞态时取消优先（与调度器收臂纪律一致：
+    /// 失败尚未记入父执行前，用户取消赢）。
+    async fn resume_subworkflow_node(
+        &self,
+        mut execution: Execution,
+        waiting_node_id: &str,
+        review_result: HashMap<String, serde_json::Value>,
+        cancel_token: &CancellationToken,
+    ) -> Result<Execution, EngineError> {
+        let child_id = execution
+            .node_results
+            .get(waiting_node_id)
+            .and_then(|r| r.metadata.get("execution_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let Some(child_id) = child_id else {
+            self.cancel_tokens.remove(&execution.id);
+            self.restore_waiting_after_failed_resume(&execution.id)
+                .await;
+            return Err(EngineError::InvalidState(format!(
+                "sub_workflow 节点 {:?} 的等待结果缺少子执行 id（metadata.execution_id）——\
+                 无法路由评审；请对实际子执行直接 workflow.resume，或取消本执行重跑",
+                waiting_node_id
+            )));
+        };
+
+        // 子执行形态裁决：Waiting 才需要路由评审；已是终态（用户绕过父
+        // 执行直接 resume 过子执行）则按现状同步父节点结果。
+        let child = match self.get_execution(&child_id).await {
+            Some(c) => c,
+            None => {
+                self.cancel_tokens.remove(&execution.id);
+                self.restore_waiting_after_failed_resume(&execution.id)
+                    .await;
+                return Err(EngineError::ExecutionNotFound(format!(
+                    "子执行 {} 不存在（无法路由 sub_workflow 评审）",
+                    child_id
+                )));
+            }
+        };
+        let child = if child.state == ExecutionState::Waiting {
+            // 递归（resume_execution_node → 本方法 → resume_execution_node）
+            // 必须 Box::pin 打断未来尺寸的无限递归；嵌套深度由工作流自身
+            // 结构有界（每层一层 human_review）。
+            match Box::pin(self.resume_execution_node(&child_id, review_result, None)).await {
+                Ok(c) => c,
+                Err(e) => {
+                    self.cancel_tokens.remove(&execution.id);
+                    self.restore_waiting_after_failed_resume(&execution.id)
+                        .await;
+                    return Err(EngineError::InvalidState(format!(
+                        "子执行 {} 评审路由失败：{}（可先直接对子执行带 node_id resume，\
+                         再 resume 本执行）",
+                        child_id, e
+                    )));
+                }
+            }
+        } else {
+            child
+        };
+
+        // 用户取消与子执行结果竞态：取消优先。
+        if cancel_token.is_cancelled() {
+            self.cancel_tokens.remove(&execution.id);
+            execution.state = ExecutionState::Cancelled;
+            execution.ended_at = Some(Local::now());
+            return Ok(self.settle_resume_outcome(execution, None).await);
+        }
+
+        // 子执行 node_results 投影（与执行器产出同形，父下游
+        // `{{call.<child_node>.<field>}}` 拿到真实输出）。
+        let mut output_map = serde_json::Map::new();
+        for (nid, nr) in &child.node_results {
+            output_map.insert(nid.clone(), nr.output.clone());
+        }
+        let child_outputs = serde_json::Value::Object(output_map);
+
+        match child.state {
+            ExecutionState::Waiting => {
+                // 嵌套审批：父节点结果刷新为子工作流当前快照；state 保持
+                // Waiting、metadata.execution_id 保持原值——下一次 resume
+                // 继续路由同一子执行。
+                let result = execution
+                    .node_results
+                    .get_mut(waiting_node_id)
+                    .expect("waiting_id 来自同一 map，必然存在");
+                result.output = child_outputs;
+                self.cancel_tokens.remove(&execution.id);
+                execution.state = ExecutionState::Waiting;
+                execution.ended_at = None;
+                let waiting = smallest_waiting_node_id(&execution.node_results);
+                return Ok(self.settle_resume_outcome(execution, waiting).await);
+            }
+            ExecutionState::Completed => {
+                let result = execution
+                    .node_results
+                    .get_mut(waiting_node_id)
+                    .expect("waiting_id 来自同一 map，必然存在");
+                result.output = child_outputs;
+                result.state = ExecutionState::Completed;
+                result.error = None;
+                result.ended_at = Local::now();
+                // 返回后公共尾段：wf_ctx 重建 + schedule_resume 续跑父下游。
+            }
+            ExecutionState::Failed | ExecutionState::Cancelled => {
+                let msg = format!(
+                    "子工作流执行 {} 终态 {}：{}",
+                    child_id,
+                    child.state,
+                    child.error.as_deref().unwrap_or("(无错误信息)")
+                );
+                let result = execution
+                    .node_results
+                    .get_mut(waiting_node_id)
+                    .expect("waiting_id 来自同一 map，必然存在");
+                result.output = child_outputs;
+                result.state = ExecutionState::Failed;
+                result.error = Some(msg.clone());
+                result.ended_at = Local::now();
+                self.cancel_tokens.remove(&execution.id);
+                execution.state = ExecutionState::Failed;
+                execution.error = Some(msg);
+                execution.ended_at = Some(Local::now());
+                return Ok(self.settle_resume_outcome(execution, None).await);
+            }
+            ExecutionState::Pending | ExecutionState::Running => {
+                // 不可达（resume 只会返回终态或 Waiting），防御臂。
+                self.cancel_tokens.remove(&execution.id);
+                self.restore_waiting_after_failed_resume(&execution.id)
+                    .await;
+                return Err(EngineError::InvalidState(format!(
+                    "子执行 {} resume 后处于非终态 {:?}——父执行恢复 Waiting",
+                    child_id, child.state
+                )));
+            }
+        }
+
+        Ok(execution)
+    }
+
+    /// BUG-20261102-NN：resume 错误臂统一恢复——状态翻 Running 发生在
+    /// 临界区，任何错误返回前必须翻回 Waiting（旧实现 workflow 查找
+    /// 失败会留下 state=Running + 无 token 的卡死形态，进程内永远无法
+    /// 再 resume，重启才被 checkpoint 治愈）。
+    async fn restore_waiting_after_failed_resume(&self, id: &str) {
+        let mut execs = self.executions.write().await;
+        if let Some(execution) = execs.get_mut(id) {
+            execution.state = ExecutionState::Waiting;
+            execution.ended_at = None;
+        }
+    }
+
+    /// resume 早期收口（不经 schedule_resume 的臂）：G3 账本 + checkpoint +
+    /// persist + 内存回写。`waiting_node` 仅在父执行保持 Waiting 时传
+    /// （非终态 checkpoint 的 waiting_node 字段）；终态臂传 None。
+    async fn settle_resume_outcome(
+        &self,
+        execution: Execution,
+        waiting_node: Option<String>,
+    ) -> Execution {
+        // G3：resume 路径账本收口；再次 Waiting 保持开账等下一次 resume。
+        let ledger_run_id = nemesis_taskstore::ledger::workflow_run_id(&execution.id);
+        match execution.state {
+            ExecutionState::Completed => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None);
+            }
+            ExecutionState::Failed => {
+                let err = execution.error.as_deref();
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", err);
+            }
+            ExecutionState::Cancelled => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "cancelled", None);
+            }
+            _ => {}
+        }
+
+        let is_terminal = !matches!(execution.state, ExecutionState::Waiting);
+        let wf_ctx = {
+            let ctx = WorkflowContext::new(execution.input.clone());
+            for (k, v) in &execution.variables {
+                ctx.set_var(k, v.clone());
+            }
+            for (nid, nr) in &execution.node_results {
+                ctx.set_node_result(nid, nr.clone());
+            }
+            ctx
+        };
+        if let Err(e) = self
+            .save_checkpoint(
+                &execution.id,
+                &execution.workflow_name,
+                &wf_ctx,
+                waiting_node.as_deref(),
+                None,
+                is_terminal,
+            )
+            .await
+        {
+            warn!(
+                target: "nemesis_workflow::engine",
+                execution_id = %execution.id,
+                error = %e,
+                "failed to save checkpoint on early resume settle"
+            );
+        }
+        self.persist_execution(&execution).await;
+        {
+            let mut execs = self.executions.write().await;
+            execs.insert(execution.id.clone(), execution.clone());
+        }
+        execution
     }
 
     // -----------------------------------------------------------------------
@@ -2808,6 +3052,20 @@ impl Default for WorkflowEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// BUG-20261024-13 同族单一真相源：多等待节点并存时取 id 最小者作为
+/// 「当前等待节点」（checkpoint 的 waiting_node 可观测性字段）——HashMap
+/// 迭代序随机会让重启前后漂移，确定性优先。run 与 resume 两处 checkpoint
+/// 收口共用。
+fn smallest_waiting_node_id(results: &HashMap<String, NodeResult>) -> Option<String> {
+    let mut ids: Vec<String> = results
+        .iter()
+        .filter(|(_, r)| r.state == ExecutionState::Waiting)
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.sort();
+    ids.into_iter().next()
 }
 
 /// Validate that the node dependency graph has no cycles using Kahn's algorithm.
