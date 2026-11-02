@@ -158,7 +158,10 @@ async fn chat_success_via_fake_batch() {
 fn parse_response_is_error_returns_unknown() {
     let provider = provider_with("claude");
     let err = provider
-        .parse_response("{\"type\":\"result\",\"is_error\":true,\"result\":\"额度用尽\"}")
+        .parse_response(
+            "{\"type\":\"result\",\"is_error\":true,\"result\":\"额度用尽\"}",
+            &[],
+        )
         .unwrap_err();
     match err {
         FailoverError::Unknown { message, .. } => assert_eq!(message, "额度用尽"),

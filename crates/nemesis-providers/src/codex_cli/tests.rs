@@ -65,7 +65,7 @@ fn test_parse_jsonl_agent_message() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Hello!"}}
 {"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":5}}"#;
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     assert_eq!(resp.content, "Hello!");
     assert_eq!(resp.usage.unwrap().total_tokens, 17);
 }
@@ -74,7 +74,7 @@ fn test_parse_jsonl_agent_message() {
 fn test_parse_jsonl_error_only() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"error","message":"something went wrong"}"#;
-    let result = provider.parse_jsonl_events(output);
+    let result = provider.parse_jsonl_events(output, &[]);
     assert!(result.is_err());
 }
 
@@ -83,14 +83,14 @@ fn test_parse_jsonl_error_with_content() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Partial result"}}
 {"type":"turn.failed","error":{"message":"api error"}}"#;
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     assert_eq!(resp.content, "Partial result"); // content wins over error
 }
 
 #[test]
 fn test_parse_jsonl_empty() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
-    let resp = provider.parse_jsonl_events("").unwrap();
+    let resp = provider.parse_jsonl_events("", &[]).unwrap();
     assert_eq!(resp.content, "");
     assert!(resp.tool_calls.is_empty());
 }
@@ -99,7 +99,7 @@ fn test_parse_jsonl_empty() {
 fn test_parse_jsonl_malformed_lines_skipped() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = "not json\n{\"type\":\"item.completed\",\"item\":{\"id\":\"i1\",\"type\":\"agent_message\",\"text\":\"OK\"}}\nalso not json";
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     assert_eq!(resp.content, "OK");
 }
 
@@ -268,7 +268,7 @@ fn test_parse_jsonl_turn_completed_no_usage() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Hello!"}}
 {"type":"turn.completed"}"#;
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     assert_eq!(resp.content, "Hello!");
     assert!(resp.usage.is_none());
 }
@@ -278,7 +278,7 @@ fn test_parse_jsonl_turn_failed_no_error() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"turn.failed"}"#;
     // turn.failed without error field, no content - returns empty response (not error)
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     assert_eq!(resp.content, "");
 }
 
@@ -287,7 +287,7 @@ fn test_parse_jsonl_non_agent_message_item() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"item.completed","item":{"id":"i1","type":"tool_call","text":"ignored"}}
 {"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":2}}"#;
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     // Non agent_message items are skipped
     assert_eq!(resp.content, "");
 }
@@ -296,7 +296,7 @@ fn test_parse_jsonl_non_agent_message_item() {
 fn test_parse_jsonl_item_completed_empty_text() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":""}}"#;
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     // Empty text is skipped
     assert_eq!(resp.content, "");
 }
@@ -305,7 +305,7 @@ fn test_parse_jsonl_item_completed_empty_text() {
 fn test_parse_jsonl_cached_tokens_in_usage() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let output = r#"{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":5,"output_tokens":3}}"#;
-    let resp = provider.parse_jsonl_events(output).unwrap();
+    let resp = provider.parse_jsonl_events(output, &[]).unwrap();
     let usage = resp.usage.unwrap();
     // 账本不变量：CLI wire 的 input_tokens 本就是纯输入（加法语义），
     // 透传不折缓存；缓存读单列。

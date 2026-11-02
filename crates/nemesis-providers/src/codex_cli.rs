@@ -2,7 +2,7 @@
 
 use crate::failover::FailoverError;
 use crate::router::LLMProvider;
-use crate::tool_call_extract::{extract_tool_calls_from_text, strip_tool_calls_from_text};
+use crate::tool_call_extract::{extract_tool_calls_in_whitelist, strip_tool_calls_from_text};
 use crate::types::*;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -160,7 +160,11 @@ impl CodexCliProvider {
     }
 
     /// Parse JSONL events from codex exec --json output.
-    fn parse_jsonl_events(&self, output: &str) -> Result<LLMResponse, FailoverError> {
+    fn parse_jsonl_events(
+        &self,
+        output: &str,
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse, FailoverError> {
         let mut content_parts = Vec::new();
         let mut usage = None;
         let mut last_error = String::new();
@@ -222,7 +226,12 @@ impl CodexCliProvider {
         }
 
         let content = content_parts.join("\n");
-        let tool_calls = extract_tool_calls_from_text(&content);
+        // 白名单过滤（BUG-20261103-338，BUG-20261025-16 同款不变量）：提取器
+        // 对 `{"tool_calls"` 文本零校验，文档性 JSON 会被劫持成幻影工具调用
+        // + finish 强改 "tool_calls" + 正文剥离（用户要看的示例被静默删掉）。
+        // 恢出的名字必须命中本请求的 tools 白名单；全滤空 = 维持原 finish
+        // 与原文，宁可不修复不可误修复。
+        let tool_calls = extract_tool_calls_in_whitelist(&content, tools);
 
         let finish_reason = if !tool_calls.is_empty() {
             "tool_calls"
@@ -312,7 +321,7 @@ impl LLMProvider for CodexCliProvider {
 
         // Parse JSONL from stdout even if exit code is non-zero
         if !stdout.is_empty()
-            && let Ok(resp) = self.parse_jsonl_events(&stdout)
+            && let Ok(resp) = self.parse_jsonl_events(&stdout, tools)
             && (!resp.content.is_empty() || !resp.tool_calls.is_empty())
         {
             return Ok(resp);
@@ -332,7 +341,7 @@ impl LLMProvider for CodexCliProvider {
             });
         }
 
-        self.parse_jsonl_events(&stdout)
+        self.parse_jsonl_events(&stdout, tools)
     }
 
     fn default_model(&self) -> &str {

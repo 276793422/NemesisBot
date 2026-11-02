@@ -1,6 +1,6 @@
 //! Extract tool calls from text LLM responses (CLI-based providers).
 
-use crate::types::{FunctionCall, ToolCall};
+use crate::types::{FunctionCall, ToolCall, ToolDefinition};
 
 /// Extract tool calls from text that contains a `{"tool_calls":[...]}` JSON block.
 /// Both ClaudeCliProvider and CodexCliProvider use this to extract tool calls
@@ -60,6 +60,26 @@ pub fn extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
                 name: Some(tc.function.name),
                 arguments,
             }
+        })
+        .collect()
+}
+
+/// 白名单过滤提取（BUG-20261103-338，BUG-20261025-16 同款不变量）：提取器对
+/// `{"tool_calls"` 文本零校验，文档性 JSON（协议示例、配置样例等）会被劫持
+/// 成幻影工具调用 + finish 强改。恢复调用的不变量是「可执行」：名字必须
+/// ∈ 本请求的 tools 白名单（不在白名单的工具无论如何执行不了）；全滤空 =
+/// 不恢复，宁可不修复不可误修复。CLI lane 的文本信封是唯一工具调用通道
+/// （无 wire 级结构化字段可对照），过滤只拦名字不可执行的伪调用，不碰机制。
+pub fn extract_tool_calls_in_whitelist(
+    text: &str,
+    allowed_tools: &[ToolDefinition],
+) -> Vec<ToolCall> {
+    extract_tool_calls_from_text(text)
+        .into_iter()
+        .filter(|tc| {
+            tc.function
+                .as_ref()
+                .is_some_and(|f| allowed_tools.iter().any(|t| t.function.name == f.name))
         })
         .collect()
 }
