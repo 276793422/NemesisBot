@@ -3,7 +3,9 @@
 //! 调用面导出名：`get-metadata` / `execute`（tool world）、`observe`
 //! （observer world）、`get-policy-metadata` / `compact-check` /
 //! `judge-final` / `validate-args`（loop-policy world，2026-10-22 批 3）、
-//! `handle-ui-command`（panel world，2026-10-31 面板扩展批）。
+//! `handle-ui-command`（panel world，2026-10-31 面板扩展批）、
+//! `get-step-metadata` / `run-step`（flow-step world，2026-11-03 guest
+//! step 批）。
 //! 每调用 fresh store + fresh linker + 一次实例化
 //!（fresh-store-per-call 的宿主侧对齐形态）。
 
@@ -23,6 +25,8 @@ const OBSERVER_IFACE: &str = "nemesis:plugin/observer@0.1.0";
 const POLICY_IFACE: &str = "nemesis:plugin/loop-policy@0.1.0";
 /// panel world 导出接口全名（2026-10-31 面板扩展批）。
 const UI_IFACE: &str = "nemesis:plugin/ui@0.1.0";
+/// flow-step world 导出接口全名（2026-11-03 guest step 批）。
+const FLOW_STEP_IFACE: &str = "nemesis:plugin/flow-step@0.1.0";
 
 /// world 归属（组件只导出自己 world 的接口）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,7 @@ pub(crate) enum WorldKind {
     Observer,
     Policy,
     Panel,
+    FlowStep,
 }
 
 /// 编译产物 + world 导出索引（component_new 期一次性解析）。
@@ -45,6 +50,8 @@ pub(crate) struct CompiledComponent {
     pol_judge: Option<wasmtime::component::ComponentExportIndex>,
     pol_validate: Option<wasmtime::component::ComponentExportIndex>,
     ui_command: Option<wasmtime::component::ComponentExportIndex>,
+    step_meta: Option<wasmtime::component::ComponentExportIndex>,
+    step_run: Option<wasmtime::component::ComponentExportIndex>,
 }
 
 /// 编译 + world 识别。都不是已知 world = 诚实失败（非本合同组件拒收）。
@@ -54,6 +61,7 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
     let obs_iface = c.get_export_index(None, OBSERVER_IFACE);
     let pol_iface = c.get_export_index(None, POLICY_IFACE);
     let ui_iface = c.get_export_index(None, UI_IFACE);
+    let step_iface = c.get_export_index(None, FLOW_STEP_IFACE);
     let (
         world,
         tool_meta,
@@ -64,6 +72,8 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
         pol_judge,
         pol_validate,
         ui_command,
+        step_meta,
+        step_run,
     ) = if let Some(iface) = tool_iface {
         let meta = c
             .get_export_index(Some(&iface), "get-metadata")
@@ -81,6 +91,8 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             None,
             None,
             None,
+            None,
+            None,
         )
     } else if let Some(iface) = obs_iface {
         let obs = c
@@ -91,6 +103,8 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             None,
             None,
             Some(obs),
+            None,
+            None,
             None,
             None,
             None,
@@ -120,6 +134,8 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             Some(judge),
             Some(validate),
             None,
+            None,
+            None,
         )
     } else if let Some(iface) = ui_iface {
         let cmd = c
@@ -135,9 +151,31 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
             None,
             None,
             Some(cmd),
+            None,
+            None,
+        )
+    } else if let Some(iface) = step_iface {
+        let meta = c
+            .get_export_index(Some(&iface), "get-step-metadata")
+            .ok_or("flow-step world missing get-step-metadata export")?;
+        let run = c
+            .get_export_index(Some(&iface), "run-step")
+            .ok_or("flow-step world missing run-step export")?;
+        (
+            WorldKind::FlowStep,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(meta),
+            Some(run),
         )
     } else {
-        return Err("component exports neither plugin-tool, plugin-observer, plugin-loop-policy nor plugin-panel world".into());
+        return Err("component exports neither plugin-tool, plugin-observer, plugin-loop-policy, plugin-panel nor plugin-flow-step world".into());
     };
     Ok(CompiledComponent {
         component: Arc::new(c),
@@ -150,6 +188,8 @@ pub(crate) fn compile(engine: &wasmtime::Engine, wasm: &[u8]) -> Result<Compiled
         pol_judge,
         pol_validate,
         ui_command,
+        step_meta,
+        step_run,
     })
 }
 
@@ -249,25 +289,67 @@ pub(crate) fn call_export(
             .map_err(classify_call)?;
             unwrap_result_val(&results[0])
         }
+        // flow 步骤元数据自报（无参）。
+        ("get-step-metadata", WorldKind::FlowStep) => {
+            let idx = comp.step_meta.expect("validated at compile");
+            let func = instance
+                .get_func(&mut *store, idx)
+                .ok_or((status::INTERNAL, "get-step-metadata func missing".into()))?;
+            let mut results = val_results(&func, &mut *store, 1);
+            func.call(&mut *store, &[], &mut results)
+                .map_err(classify_call)?;
+            unwrap_result_val(&results[0])
+        }
+        // flow 步骤执行同形：单 json-string 进、result<json-string, host-error> 出。
+        ("run-step", WorldKind::FlowStep) => {
+            let idx = comp.step_run.expect("validated at compile");
+            let func = instance
+                .get_func(&mut *store, idx)
+                .ok_or((status::INTERNAL, "run-step func missing".into()))?;
+            let mut results = val_results(&func, &mut *store, 1);
+            func.call(
+                &mut *store,
+                &[Val::String(args_json.to_string())],
+                &mut results,
+            )
+            .map_err(classify_call)?;
+            unwrap_result_val(&results[0])
+        }
         // world 误配（拿别的 world 的导出名调用）诚实报错。
-        ("get-metadata" | "execute", WorldKind::Observer | WorldKind::Policy | WorldKind::Panel) => Err((
+        (
+            "get-metadata" | "execute",
+            WorldKind::Observer | WorldKind::Policy | WorldKind::Panel | WorldKind::FlowStep,
+        ) => Err((
             status::BAD_ARGS,
             "component is not a tool plugin (no tool exports)".into(),
         )),
-        ("observe", WorldKind::Tool | WorldKind::Policy | WorldKind::Panel) => Err((
+        (
+            "observe",
+            WorldKind::Tool | WorldKind::Policy | WorldKind::Panel | WorldKind::FlowStep,
+        ) => Err((
             status::BAD_ARGS,
             "component is not an observer plugin (no observe export)".into(),
         )),
         (
             "get-policy-metadata" | "compact-check" | "judge-final" | "validate-args",
-            WorldKind::Tool | WorldKind::Observer | WorldKind::Panel,
+            WorldKind::Tool | WorldKind::Observer | WorldKind::Panel | WorldKind::FlowStep,
         ) => Err((
             status::BAD_ARGS,
             "component is not a loop-policy plugin (no policy exports)".into(),
         )),
-        ("handle-ui-command", WorldKind::Tool | WorldKind::Observer | WorldKind::Policy) => Err((
+        (
+            "handle-ui-command",
+            WorldKind::Tool | WorldKind::Observer | WorldKind::Policy | WorldKind::FlowStep,
+        ) => Err((
             status::BAD_ARGS,
             "component is not a panel plugin (no ui exports)".into(),
+        )),
+        (
+            "get-step-metadata" | "run-step",
+            WorldKind::Tool | WorldKind::Observer | WorldKind::Policy | WorldKind::Panel,
+        ) => Err((
+            status::BAD_ARGS,
+            "component is not a flow-step plugin (no flow-step exports)".into(),
         )),
         (other, _) => Err((status::BAD_ARGS, format!("unknown export name: {other}"))),
     }

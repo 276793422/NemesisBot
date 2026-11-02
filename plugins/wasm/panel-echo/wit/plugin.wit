@@ -17,6 +17,11 @@
 //   插件出口：Dashboard【定制】分组页面的命令通道）。单入口 handle-ui-command
 //   抗命令演进（observer/loop-policy 单入口同纪律）；无状态请求-响应
 //   （fresh-store-per-call，guest 不驻留），编排归宿主 flow 引擎。
+// - 2026-11-03 guest step 批：新增 `flow-step` interface + `plugin-flow-step`
+//   world（flow 引擎插件步骤执行体：模板步骤 `kind = "plugin:<slug>:<op>"`
+//   引用组件，幂等/重试责任在插件，安装期审一次运行期不弹卡）。单 json-string
+//   进出单入口 run-step（observer/loop-policy/panel 单入口同纪律）。
+//   CONTRACT_API_VERSION 维持 1（minor 兼容新增，旧组件字节零影响）。
 package nemesis:plugin@0.1.0;
 
 /// 共享类型别名。
@@ -276,6 +281,46 @@ interface ui {
     handle-ui-command: func(input: json-string) -> result<json-string, host-error>;
 }
 
+/// flow 步骤插件出口（world plugin-flow-step；2026-11-03 guest step 批新增）。
+///
+/// flow 引擎的插件步骤执行体：flow 模板步骤以 `kind = "plugin:<slug>:<op>"`
+/// 引用本 world 组件（slug = 插件名，op = 本接口自报词表成员），宿主 flow
+/// tick 每轮投递 run-step。责任划分（2026-11-03 拍板）：幂等/重试防重由
+/// guest 自己负责（宿主只管投递与状态记账，入参带 attempts 计数供对账）；
+/// 审批一次在安装期（九步装配漏斗），运行期不逐次弹审批卡。
+///
+/// 单入口 run-step 抗步骤种类演进：步骤种类增减不改 WIT 形状，只改入参
+/// JSON 的 `op` 字段值域（observer/loop-policy/panel 单入口同纪律）。
+interface flow-step {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 步骤元数据（安装期对账 + flow 模板引用校验的真相源）。
+    record step-metadata {
+        /// 自报能跑的步骤 kind 词表（如 `"jira:fetch"`；安装期校验非空 +
+        /// 形态；运行期路由按此对账——模板引用的 op 必须在词表内）。
+        kinds: list<string>,
+    }
+
+    /// 元数据自报（安装期对账）。
+    get-step-metadata: func() -> result<step-metadata, host-error>;
+
+    /// 跑一步：入参 = 宿主渲染后的上下文投影，出参 = 状态投影。
+    ///
+    /// 入参投影（宿主构造，token 渲染复用六原语同源；不含图片字节与凭据）：
+    /// `{"op":"<op>","args":<token 渲染后的步骤 args>,"instance":{...},
+    /// "steps":{...},"board_issue":...,"attempts":<本次投递为第几次>}`。
+    ///
+    /// 出参投影（约定对象；业务失败不 trap 用 status 表达）：
+    /// `{"status":"done"|"running"|"failed"|"skipped", ...}` + 自由负载
+    /// （宿主原样存步骤 artifacts）。`done` = 同步完成；`running` = 未完
+    /// （宿主转 Running，下一 tick 重投 run-step——幂等防重由 guest 负责）；
+    /// `failed` = 失败（宿主走步骤 on_fail 链，负载可带 `"error"` 人读
+    /// 原因）；`skipped` = 跳过（对齐 when 假语义）。出参畸形 / 未知
+    /// status = 宿主按步骤失败处置（走 on_fail 链）。
+    run-step: func(input: json-string) -> result<json-string, host-error>;
+}
+
 /// 工具插件世界（一 manifest 一 kind 不混装）。
 world plugin-tool {
     import host;
@@ -298,4 +343,10 @@ world plugin-loop-policy {
 world plugin-panel {
     import host;
     export ui;
+}
+
+/// flow 步骤插件世界。
+world plugin-flow-step {
+    import host;
+    export flow-step;
 }

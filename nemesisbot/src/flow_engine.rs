@@ -1563,6 +1563,10 @@ pub struct FlowEngine {
     plugins_dir: PathBuf,
     config_dir: PathBuf,
     estop: Arc<EstopState>,
+    /// flow-step 插件注册表（2026-11-03 guest step 批）：`plugin:<slug>:<op>`
+    /// 步骤的执行通路。None = 子系统未装配（宿主壳缺席/总闸关），plugin 步骤
+    /// 投递诚实失败走 on_fail。
+    plugin_manager: Option<Arc<nemesis_plugins_wasm::PluginManager>>,
     #[allow(dead_code)] // 非 cluster 形态 ()；cluster 形态派发臂消费
     cluster: ClusterOwned,
     flows: FlowStore,
@@ -1597,6 +1601,7 @@ impl FlowEngine {
         workspace: PathBuf,
         home: PathBuf,
         estop: Arc<EstopState>,
+        plugin_manager: Option<Arc<nemesis_plugins_wasm::PluginManager>>,
         cluster: ClusterOwned,
     ) -> Self {
         let plugins_dir = nemesis_plugins_wasm::registry::resolve_plugins_wasm_dir();
@@ -1610,6 +1615,7 @@ impl FlowEngine {
             home,
             plugins_dir,
             estop,
+            plugin_manager,
             cluster,
             flows,
             actions: tokio::sync::Mutex::new(()),
@@ -1913,6 +1919,14 @@ impl FlowEngine {
     /// 发起当前步骤（Pending → Running，或同步完成/失败）。
     async fn start_step(&self, inst: &mut FlowInstance, cur: &StepRun) {
         inst.updated_at_ms = now_ms();
+        // plugin 步骤（guest step，2026-11-03 批）：专管路径全权处置——
+        // 同步 done 同 tick 完成（board_land 形态）、running 转 Running 逐
+        // tick 轮询、failed/skipped 立即记账。estop 冻结由 tick loop 承担，
+        // 这里天然继承。
+        if nemesis_plugins_wasm::manifest::parse_plugin_step_ref(&cur.kind).is_some() {
+            self.run_plugin_step(inst, cur).await;
+            return;
+        }
         enum Out {
             Done(Value),
             Start,
@@ -1948,6 +1962,13 @@ impl FlowEngine {
     /// 观察当前步骤（Running → 完成/失败/继续）。
     async fn poll_step(&self, inst: &mut FlowInstance, cur: &StepRun) {
         inst.updated_at_ms = now_ms();
+        // plugin 步骤（guest step）：与 start 同一专管路径——running 出态
+        // 保持 Running，下轮 tick 重投 run-step（轮询 = 重跑，幂等由 guest
+        // 负责，拍板 1）。
+        if nemesis_plugins_wasm::manifest::parse_plugin_step_ref(&cur.kind).is_some() {
+            self.run_plugin_step(inst, cur).await;
+            return;
+        }
         let result: Result<Value, String> = match cur.kind.as_str() {
             KIND_FIXLOOP => poll_outcome(poll_fixloop(&self.store, inst)),
             KIND_REGRESS => poll_outcome(regress_outcome(&self.store, inst)),
@@ -1973,6 +1994,52 @@ impl FlowEngine {
         match result {
             Ok(a) => complete_step(&self.flows, inst, &a),
             Err(e) => fail_step(&self.flows, inst, &e),
+        }
+    }
+
+    /// plugin 步骤执行（guest step 专管路径）：投递 run-step + 四态映射。
+    ///
+    /// start（Pending）与 poll（Running）共用同一方法——running 出态不做
+    /// 任何记账（fail_step 哨兵同语义），下轮 tick 重投；done/skipped 同
+    /// tick 推进；failed 走 on_fail 既有链（Retry 账本由 fail_step 记，
+    /// 投递本身不推计数避免双计）。
+    async fn run_plugin_step(&self, inst: &mut FlowInstance, cur: &StepRun) {
+        let Some((slug, op)) = nemesis_plugins_wasm::manifest::parse_plugin_step_ref(&cur.kind)
+        else {
+            fail_step(
+                &self.flows,
+                inst,
+                &format!("plugin 步骤 kind 解析失败: {}", cur.kind),
+            );
+            return;
+        };
+        let Some(manager) = self.plugin_manager.as_ref() else {
+            fail_step(
+                &self.flows,
+                inst,
+                &format!(
+                    "plugin:{slug}:{op} 投递失败: flow-step 插件子系统未装配（宿主壳缺席/总闸关）"
+                ),
+            );
+            return;
+        };
+        let session_key = format!("flow:{}/{}", inst.template, inst.instance);
+        let input = plugin_step_input(inst, cur, op, &session_key);
+        match manager.run_flow_step(slug, op, input).await {
+            Err(e) => fail_step(
+                &self.flows,
+                inst,
+                &format!("plugin:{slug}:{op} 投递失败: {e}"),
+            ),
+            Ok(out_json) => match plugin_step_outcome(&out_json) {
+                PluginOutcome::Done(artifacts) => complete_step(&self.flows, inst, &artifacts),
+                PluginOutcome::Running => {} // 保持 Running，下轮重投
+                PluginOutcome::Skipped(artifacts) => {
+                    skip_step_with_payload(&self.flows, inst, artifacts)
+                }
+                PluginOutcome::Failed(err) => fail_step(&self.flows, inst, &err),
+                PluginOutcome::Malformed(err) => fail_step(&self.flows, inst, &err),
+            },
         }
     }
 
@@ -2348,6 +2415,124 @@ fn skip_step(flows: &FlowStore, inst: &mut FlowInstance, rendered_when: &str) {
     let _ = flows.save(inst);
 }
 
+/// plugin 步骤 guest 自报 skipped：when 假语义同款（Skipped + 游标同 tick
+/// 推进，不走 on_fail），artifacts 存 guest 自由负载（原样落盘）。
+fn skip_step_with_payload(flows: &FlowStore, inst: &mut FlowInstance, payload: Value) {
+    if let Some(step) = inst.steps.get_mut(inst.current_step) {
+        step.status = StepStatus::Skipped;
+        step.artifacts = payload;
+        step.finished_at_ms = Some(now_ms());
+    }
+    inst.current_step += 1;
+    inst.updated_at_ms = now_ms();
+    let _ = flows.save(inst);
+}
+
+// ---------------------------------------------------------------------------
+// plugin 步骤（guest step）：入参投影构造 + 出参四态解析（自由函数，单测钉死）
+// ---------------------------------------------------------------------------
+
+/// run-step 出参四态（status 词表 done/running/failed/skipped + 自由负载）。
+#[derive(Debug, PartialEq)]
+enum PluginOutcome {
+    /// 同步完成：负载 = artifacts 落盘。
+    Done(Value),
+    /// 保持 Running，下轮 tick 重投（轮询 = 重跑，幂等由 guest 负责）。
+    Running,
+    /// guest 自报跳过：Skipped 同款推进，负载 = artifacts。
+    Skipped(Value),
+    /// guest 自报失败：走 on_fail 既有链。
+    Failed(String),
+    /// 出参畸形/未知 status：按失败走 on_fail（诚实不静默）。
+    Malformed(String),
+}
+
+/// run-step 出参解析：`{"status": <词表>, ...自由负载}`。畸形（非 JSON /
+/// 缺 status / 未知 status）= Malformed；failed 的错误文本取负载 `error`
+/// 字段（缺省 = status 原文）。负载 = 去 status 键后的对象（done/skipped
+/// 落 artifacts；failed 不落——错误文本进 step.error 走 ERR_SNIPPET 截断）。
+fn plugin_step_outcome(out_json: &str) -> PluginOutcome {
+    let Ok(mut v) = serde_json::from_str::<Value>(out_json.trim()) else {
+        return PluginOutcome::Malformed(format!("run-step 出参非 JSON: {}", snippet_of(out_json)));
+    };
+    let Some(status) = v.get("status").and_then(Value::as_str).map(str::to_string) else {
+        return PluginOutcome::Malformed("run-step 出参缺 status 字段".to_string());
+    };
+    let payload = match v.as_object_mut() {
+        Some(o) => {
+            o.remove("status");
+            Value::Object(o.clone())
+        }
+        None => json!({}),
+    };
+    match status.as_str() {
+        "done" => PluginOutcome::Done(payload),
+        "running" => PluginOutcome::Running,
+        "failed" => {
+            let err = payload
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("guest 自报 failed（无 error 明细）");
+            PluginOutcome::Failed(err.to_string())
+        }
+        "skipped" => PluginOutcome::Skipped(payload),
+        other => PluginOutcome::Malformed(format!("run-step 出参未知 status: {other}")),
+    }
+}
+
+/// 错误文本摘要（ERR_SNIPPET 同长度，畸形出参回灌用）。
+fn snippet_of(s: &str) -> String {
+    s.trim().chars().take(ERR_SNIPPET).collect()
+}
+
+/// run-step 入参投影（宿主构造）：op + token 渲染后 args + 实例身份 +
+/// steps 状态投影 + board_issue 锚点 + attempts 计数 + session_key（审计
+/// 归因键）。token 渲染与六原语同源（substitute_tokens_value；未知 token
+/// 原样保留可见）。attempts = 本轮重试序号（宿主 fail_step 的 Retry 账本
+/// 记失败，投递本身不推计数避免双计；轮询重跑幂等由 guest 负责，guest
+/// 对账用 instance + 自身 data 目录状态）。不含图片字节与凭据。
+fn plugin_step_input(inst: &FlowInstance, cur: &StepRun, op: &str, session_key: &str) -> String {
+    let mut steps = serde_json::Map::new();
+    for s in &inst.steps {
+        steps.insert(
+            s.id.clone(),
+            json!({
+                "status": s.status.as_str(),
+                "error": s.error.clone().unwrap_or_default(),
+                "attempts": s.attempts,
+            }),
+        );
+    }
+    // board_issue 锚点：board_land 产物账面（数字化；缺席 = null）。
+    let board_issue = latest_artifact_str(inst, "board_issue")
+        .parse::<i64>()
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let args_raw: Value = cur
+        .args
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
+    let args = substitute_tokens_value(&args_raw, inst, &json!({}));
+    json!({
+        "op": op,
+        "args": args,
+        "instance": {
+            "template": inst.template,
+            "instance": inst.instance,
+            "ext_key": inst.ext_key,
+            "title": inst.title,
+            "origin_type": inst.origin_type,
+            "origin_id": inst.origin_id,
+        },
+        "steps": Value::Object(steps),
+        "board_issue": board_issue,
+        "attempts": cur.attempts + 1,
+        "session_key": session_key,
+    })
+    .to_string()
+}
+
 /// 条件求值（决策 B）：单比较 `左 <op> 右`。op 词表 `==`/`!=`/`>=`/`<=`/
 /// `>`/`<`（两字符 op 先于单字符命中——按首次出现位置取最早，同位取长）。
 /// 两侧 trim + 成对引号剥离；两侧均可解析为数字按数值比，否则按字符串比
@@ -2454,6 +2639,12 @@ fn validate_template(t: &FlowTemplate) -> Result<(), String> {
         return Err(format!("模板首步必须是 {KIND_FETCH}"));
     }
     for s in &t.steps {
+        // plugin 步骤（guest step，2026-11-03 批）：`plugin:<slug>:<op>` 引用
+        // 形态合法即过声明面校验（slug/op 词表与安装期对账在运行期路由闸——
+        // 未装载/越权 op 诚实失败走 on_fail，不在模板校验期猜注册表）。
+        if nemesis_plugins_wasm::manifest::parse_plugin_step_ref(&s.kind).is_some() {
+            continue;
+        }
         if !matches!(
             s.kind.as_str(),
             KIND_FETCH | KIND_LAND | KIND_FIXLOOP | KIND_REGRESS | KIND_PUBLISH | KIND_REPORT

@@ -456,6 +456,7 @@ fn takeover_owner_resolves_enabled_tool_plugin_only() {
             1,
             Some(meta),
             None,
+            None,
         )
         .expect("register");
     // 注册面缺省启用（开关记录的「默认不加载」由 installer 装载层裁决，
@@ -499,6 +500,7 @@ fn takeover_owner_multi_declarer_arbitration_is_deterministic() {
             PluginTrustState::ReviewRequired,
             1,
             Some(meta),
+            None,
             None,
         )
         .expect("register")
@@ -835,7 +837,14 @@ async fn panel_declarative_register_and_invoke_honest_error() {
         .0;
     // 声明式面板：component=0 哨兵直注册（无宿主壳依赖，纯注册面测试）。
     let reg = mgr
-        .register(manifest, PluginTrustState::ReviewRequired, 0, None, None)
+        .register(
+            manifest,
+            PluginTrustState::ReviewRequired,
+            0,
+            None,
+            None,
+            None,
+        )
         .expect("register");
     assert_eq!(reg.manifest.kind.as_str(), "panel");
     assert_eq!(reg.component, 0);
@@ -858,14 +867,14 @@ fn panel_route_collision_rejected_across_plugins() {
     let a = PluginManifest::parse(&panel_manifest_raw("panel-a", "main", false))
         .expect("parse")
         .0;
-    mgr.register(a, PluginTrustState::ReviewRequired, 0, None, None)
+    mgr.register(a, PluginTrustState::ReviewRequired, 0, None, None, None)
         .expect("first register");
     // 同路由第二家 → 拒绝（/panel/<route> 动态挂载键全局唯一）。
     let b = PluginManifest::parse(&panel_manifest_raw("panel-b", "main", false))
         .expect("parse")
         .0;
     let err = mgr
-        .register(b, PluginTrustState::ReviewRequired, 0, None, None)
+        .register(b, PluginTrustState::ReviewRequired, 0, None, None, None)
         .err()
         .expect("duplicate route must be rejected");
     assert!(
@@ -876,6 +885,90 @@ fn panel_route_collision_rejected_across_plugins() {
     let c = PluginManifest::parse(&panel_manifest_raw("panel-b", "other", false))
         .expect("parse")
         .0;
-    mgr.register(c, PluginTrustState::ReviewRequired, 0, None, None)
+    mgr.register(c, PluginTrustState::ReviewRequired, 0, None, None, None)
         .expect("other route ok");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 guest step 批：`plugin:<slug>:<op>` 引用解析纯函数矩阵
+// （valid_slug / valid_step_op / parse_plugin_step_ref）。安装期空词表/
+// 非法词表的对账闸在 probe_and_reconcile FlowStep 臂，其 fixture 级覆盖
+// 受 probe_frame 固定 InstanceConfig::default() 限制（无法经 config 种子
+// 注入空词表组件），与 policy「至少一个策略点」闸同先例——纯函数矩阵 +
+// e2e 全链（e2e_guest.rs stepdemo）作为覆盖面，诚实注记不装假绿。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plugin_step_ref_parse_matrix() {
+    use nemesis_plugins_wasm::manifest::{parse_plugin_step_ref, valid_slug, valid_step_op};
+
+    // 合法形态：slug+op 基础款。
+    assert_eq!(
+        parse_plugin_step_ref("plugin:stepdemo:echo"),
+        Some(("stepdemo", "echo"))
+    );
+    // op 段允许冒号（域内二级命名）；首个冒号切 slug，其余全归 op。
+    assert_eq!(
+        parse_plugin_step_ref("plugin:acme-jira:issue:fetch"),
+        Some(("acme-jira", "issue:fetch"))
+    );
+    // slug 允许数字与内嵌连字符。
+    assert_eq!(
+        parse_plugin_step_ref("plugin:2fa-helper:t2"),
+        Some(("2fa-helper", "t2"))
+    );
+
+    // 非本形态：缺前缀 / 缺 op 段 / 缺 slug 段。
+    assert_eq!(parse_plugin_step_ref("fetch"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:stepdemo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin::echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:"), None);
+
+    // slug 词表 [a-z0-9-]（不以 - 开头结尾、非 all）：大写/下划线/点号全拒。
+    assert_eq!(parse_plugin_step_ref("plugin:Bad_Slug:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:acme.jira:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:-lead:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:trail-:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:all:echo"), None);
+
+    // op 词表：非空、≤64、无空白/控制字符；冒号/中文/符号在界内合法。
+    assert_eq!(parse_plugin_step_ref("plugin:s:has space"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:s:\t"), None);
+    let long_op = "x".repeat(65);
+    assert_eq!(parse_plugin_step_ref(&format!("plugin:s:{long_op}")), None);
+    let max_op = "x".repeat(64);
+    assert_eq!(
+        parse_plugin_step_ref(&format!("plugin:s:{max_op}")),
+        Some(("s", max_op.as_str()))
+    );
+    assert_eq!(
+        parse_plugin_step_ref("plugin:s:拉取工单"),
+        Some(("s", "拉取工单"))
+    );
+
+    // valid_slug / valid_step_op 直查边界。
+    assert!(valid_slug("stepdemo"));
+    assert!(!valid_slug(""));
+    assert!(!valid_slug("STEPDEMO"));
+    assert!(!valid_slug("a.b"));
+    assert!(valid_step_op("issue:fetch"));
+    assert!(!valid_step_op(""));
+}
+
+#[test]
+fn flow_step_manifest_rejects_empty_kinds_at_probe_level_shape() {
+    // 结构面：kind=flow-step 的 manifest 本体不带 kinds（词表来自 guest
+    // 自报 get-step-metadata，manifest 只声明 kind）——parse 通过即声名
+    // 面 ok；词表对账在 probe_and_reconcile（运行 probe 才能拿到 guest
+    // 自报，fixture 级覆盖见 e2e_guest.rs stepdemo 全链 + 上方矩阵注记）。
+    let raw = "wasm-sha256 = \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n\
+               api-version = 1\n\
+               slug = \"flowstep-demo\"\n\
+               kind = \"flow-step\"\n\
+               name = \"FS\"\n\
+               version = \"0.1.0\"\n\
+               description = \"shape probe\"\n";
+    let (m, _) = PluginManifest::parse(raw).expect("flow-step manifest parses");
+    assert_eq!(m.kind.as_str(), "flow-step");
+    assert_eq!(m.slug, "flowstep-demo");
 }

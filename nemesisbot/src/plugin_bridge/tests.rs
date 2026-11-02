@@ -968,6 +968,7 @@ async fn reconcile_takeover_wraps_flips_and_releases() {
             1,
             Some(stub_meta("plugin.reconer.base")),
             None,
+            None,
         )
         .expect("register");
     assert!(
@@ -1059,6 +1060,7 @@ async fn apply_takeovers_gate_and_rebuild_semantics() {
             nemesis_plugins_wasm::PluginTrustState::ReviewRequired,
             1,
             Some(stub_meta("plugin.applyer.base")),
+            None,
             None,
         )
         .expect("register");
@@ -1183,6 +1185,7 @@ async fn supply_faces_follow_runtime_master_gate() {
             nemesis_plugins_wasm::PluginTrustState::ReviewRequired,
             1,
             Some(stub_meta("plugin.supplier.base")),
+            None,
             None,
         )
         .expect("register");

@@ -1039,6 +1039,7 @@ pub(crate) async fn init_post_agent(
                 home.join("workspace"),
                 home.clone(),
                 shared_resources.estop.clone(),
+                shared_resources.plugin_manager.clone(),
                 #[cfg(feature = "cluster")]
                 cluster_arc_ref.clone(),
                 #[cfg(not(feature = "cluster"))]

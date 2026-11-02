@@ -67,6 +67,11 @@ pub enum PluginKind {
     /// 通道 `handle-ui-command`；流程剧本由 `[[flow]]` 段声明、宿主 flow
     /// 引擎执行。可带 guest 载荷（动作翻译），也可纯声明式（无载荷）。
     Panel,
+    /// flow 步骤插件（world `plugin-flow-step`；2026-11-03 guest step 批）
+    /// ——flow 模板步骤的插件执行体：模板步骤 `kind = "plugin:<slug>:<op>"`
+    /// 引用，宿主 flow tick 每轮投递 run-step。幂等责任在插件（拍板 1）；
+    /// 安装期审一次运行期不弹卡（拍板 2）。
+    FlowStep,
 }
 
 impl PluginKind {
@@ -78,6 +83,7 @@ impl PluginKind {
             Self::Observer => "observer",
             Self::Policy => "policy",
             Self::Panel => "panel",
+            Self::FlowStep => "flow-step",
         }
     }
 
@@ -433,8 +439,9 @@ impl<'de> Deserialize<'de> for PluginKindSerde {
             "observer" => Ok(Self(PluginKind::Observer)),
             "policy" => Ok(Self(PluginKind::Policy)),
             "panel" => Ok(Self(PluginKind::Panel)),
+            "flow-step" => Ok(Self(PluginKind::FlowStep)),
             other => Err(serde::de::Error::custom(format!(
-                "invalid kind '{other}' (expected tool | observer | policy | panel)"
+                "invalid kind '{other}' (expected tool | observer | policy | panel | flow-step)"
             ))),
         }
     }
@@ -464,6 +471,29 @@ pub fn valid_slug(slug: &str) -> bool {
 #[must_use]
 pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 插件步骤 op 形态（guest 自报 kind 词表成员）：非空、≤64 字节、无空白
+/// 与控制字符。op 段允许冒号（域内二级命名如 `"jira:fetch"`）。
+#[must_use]
+pub fn valid_step_op(op: &str) -> bool {
+    !op.is_empty() && op.len() <= 64 && op.chars().all(|c| !c.is_whitespace() && !c.is_control())
+}
+
+/// 解析 flow 模板步骤的插件步骤引用 `plugin:<slug>:<op>`。
+///
+/// slug 段不允许冒号（[`valid_slug`] 词表），op 段允许（[`valid_step_op`]，
+/// guest kind 词表如 `"jira:fetch"`）——因此解析无歧义：第一个冒号前为
+/// slug，其余全为 op。返回 `(slug, op)`；非本形态或任一段非法 = `None`
+/// （调用方回退内置六原语词表校验）。
+#[must_use]
+pub fn parse_plugin_step_ref(kind: &str) -> Option<(&str, &str)> {
+    let rest = kind.strip_prefix("plugin:")?;
+    let (slug, op) = rest.split_once(':')?;
+    if !valid_slug(slug) || !valid_step_op(op) {
+        return None;
+    }
+    Some((slug, op))
 }
 
 impl PluginManifest {
@@ -713,9 +743,14 @@ impl PluginManifest {
                             tpl.id, step.id
                         )));
                     }
-                    if !FLOW_STEP_KINDS.contains(&step.kind.as_str()) {
+                    // 内置六原语词表，或插件步骤引用 plugin:<slug>:<op>
+                    // （2026-11-03 guest step 批；引用目标存在性与 op 词表
+                    // 成员资格在运行期路由对账——manifest 期只校验形态）。
+                    if !FLOW_STEP_KINDS.contains(&step.kind.as_str())
+                        && parse_plugin_step_ref(&step.kind).is_none()
+                    {
                         return Err(PluginError::Manifest(format!(
-                            "flow.template '{}' step '{}': invalid kind '{}' (allowed: {})",
+                            "flow.template '{}' step '{}': invalid kind '{}' (allowed: {} | plugin:<slug>:<op>)",
                             tpl.id,
                             step.id,
                             step.kind,

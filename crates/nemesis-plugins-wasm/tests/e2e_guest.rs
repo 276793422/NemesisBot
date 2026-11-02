@@ -986,3 +986,176 @@ async fn panel_llm_missing_declaration_stays_denied() {
         "未声明 x-llm 的面板即使总闸开也不得拿到 llm 面: {reply}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 guest step 批：stepdemo 夹具（kind=flow-step）全链
+// install → enable → run_flow_step 八行为面：echo done（中文 CABI）/
+// tally running×2→done（guest 数据目录记账幂等）/ chaos failed / chaos
+// skipped 形态透传 / 越权 op 对账拒绝 / unknown slug / host-error → Trap /
+// disable 真摘除 + 审计链。
+// ---------------------------------------------------------------------------
+
+const STEPDEMO_TOML: &str = r#"api-version = 1
+slug = "stepdemo"
+kind = "flow-step"
+name = "StepDemo"
+version = "0.1.0"
+description = "e2e fixture flow step"
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flow_step_install_roundtrip_and_run() {
+    let Some(wasm) = fixture_wasm("stepdemo", "stepdemo_plugin") else {
+        eprintln!("{}", skip_reason("stepdemo"));
+        return;
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let audit_dir = tempfile::tempdir().expect("audit tmp");
+    let logger = nemesis_security::audit_log::AuditLogger::new(
+        nemesis_security::audit_log::AuditLogConfig {
+            audit_log_dir: audit_dir.path().to_path_buf(),
+            enabled: true,
+        },
+    )
+    .expect("audit logger");
+    mgr.set_audit(Arc::new(std::sync::Mutex::new(logger)));
+
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), STEPDEMO_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let outcome = installer.install(&src, true).await.expect("install");
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    let reg = installer
+        .set_enabled("stepdemo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+
+    // 安装期对账快照：kinds 词表自报（echo/tally/chaos）。
+    let kinds = reg.step_meta.as_ref().expect("step meta").kinds.clone();
+    assert_eq!(kinds, vec!["echo", "tally", "chaos"], "kinds: {kinds:?}");
+
+    // ① echo：同步 done，args 回显带中文（CABI 串跨界）。
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "echo",
+            r#"{"op":"echo","args":{"text":"流程你好"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("echo");
+    assert!(out.contains("流程你好"), "out: {out}");
+    assert!(out.contains("\"status\":\"done\""), "out: {out}");
+
+    // ② tally：前两次 running（guest 数据目录记账幂等），第三次 done。
+    let tally_input = r#"{"op":"tally","instance":{"instance":"e2e-i"},"session_key":"flow:t/i"}"#;
+    for n in 1..3 {
+        let out = mgr
+            .run_flow_step("stepdemo", "tally", tally_input.into())
+            .await
+            .expect("tally running");
+        assert!(out.contains("\"status\":\"running\""), "poll {n}: {out}");
+    }
+    let out = mgr
+        .run_flow_step("stepdemo", "tally", tally_input.into())
+        .await
+        .expect("tally done");
+    assert!(out.contains("\"status\":\"done\""), "out: {out}");
+    assert!(out.contains("\"polls\":3"), "out: {out}");
+
+    // ③ failed：业务失败形态透传（四态解析归 flow 引擎，宿主只投递）。
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"failed"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("failed passthrough");
+    assert!(out.contains("注定失败"), "out: {out}");
+
+    // ④ skipped 形态透传；malformed 字符串出参同样原样（畸形判定归 flow 引擎）。
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"skipped"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("skipped passthrough");
+    assert!(out.contains("\"status\":\"skipped\""), "out: {out}");
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"malformed"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("malformed passthrough");
+    assert_eq!(out, "not-json-at-all");
+
+    // ⑤ 越权 op：词表外 = 安装期对账拒绝（MetadataMismatch）。
+    let err = mgr
+        .run_flow_step(
+            "stepdemo",
+            "not_in_kinds",
+            r#"{"op":"not_in_kinds"}"#.into(),
+        )
+        .await
+        .expect_err("unauthorized op");
+    assert!(
+        matches!(err, PluginError::MetadataMismatch(ref m) if m.contains("not in plugin 'stepdemo'")),
+        "err: {err:?}"
+    );
+
+    // ⑥ 未知 slug：未装载 = NotAvailable。
+    let err = mgr
+        .run_flow_step("ghost", "echo", r#"{"op":"echo"}"#.into())
+        .await
+        .expect_err("unknown slug");
+    assert!(
+        matches!(err, PluginError::NotAvailable(ref m) if m.contains("not loaded: ghost")),
+        "err: {err:?}"
+    );
+
+    // ⑦ host-error：guest Err 经 wire err 载荷 = Trap（策略点同款 decode
+    // 前缀惯例 + host-error Debug 形态携带 guest 报错原文）。
+    let err = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"err"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect_err("host error");
+    assert!(
+        matches!(err, PluginError::Trap(ref m) if m.contains("unavailable") && m.contains("guest 侧异常（mode=err）")),
+        "err: {err:?}"
+    );
+
+    // 审计链：每次投递落 plugin_flow_step allow 事件。
+    let body = audit_body(audit_dir.path());
+    assert!(body.contains("plugin_flow_step"), "audit body: {body}");
+
+    // ⑧ disable = 真摘除（2026-10-22 纪律）→ 投递诚实报 not loaded。
+    installer
+        .set_enabled("stepdemo", false)
+        .await
+        .expect("disable");
+    let err = mgr
+        .run_flow_step("stepdemo", "echo", r#"{"op":"echo"}"#.into())
+        .await
+        .expect_err("after disable");
+    assert!(
+        matches!(err, PluginError::NotAvailable(ref m) if m.contains("not loaded")),
+        "err: {err:?}"
+    );
+    let _ = ws;
+}

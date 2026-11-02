@@ -1,0 +1,21 @@
+# stepdemo 安装清单模板——拷为 plugin.toml 与 plugin.wasm 同放一个目录后安装：
+#   1. cargo build --target wasm32-wasip2 --release
+#   2. sha256sum target/wasm32-wasip2/release/stepdemo_plugin.wasm
+#   3. 把哈希填进下方 wasm-sha256（必须位于文件头，TOML 根键须在任何 table 段之前）
+#   4. nemesisbot plugin install <该目录> --yes --allow-unsigned
+#      （或 Dashboard 插件页安装——带审批卡；签名发布流程见三方开发指南 §7）
+# 装好后 flow 模板步骤即可引用：kind = "plugin:stepdemo:echo"（echo/tally/chaos）。
+wasm-sha256 = "<sha256(plugin.wasm)>"
+api-version = 1
+slug = "stepdemo"
+kind = "flow-step"
+name = "StepDemo"
+version = "0.1.0"
+description = "flow 步骤示例插件（SDK dogfood）：echo 同步完成 / tally 轮询幂等 / chaos 四态驱动器"
+
+[permissions]
+# 本插件零出站、零凭据：空 permissions = 默认零权限
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000

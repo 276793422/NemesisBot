@@ -22,7 +22,9 @@ use sha2::{Digest, Sha256};
 use crate::error::PluginError;
 use crate::host_impl::SecretResolver;
 use crate::manifest::{PluginKind, PluginManifest, valid_slug};
-use crate::registry::{PluginManager, PolicyMetaSnapshot, RegisteredPlugin, ToolMetaSnapshot};
+use crate::registry::{
+    PluginManager, PolicyMetaSnapshot, RegisteredPlugin, StepMetaSnapshot, ToolMetaSnapshot,
+};
 use crate::trust::{PluginTrustState, VerificationOutcome, trust_state_for, verify_manifest};
 
 /// wasm 载荷字节上限（64MiB；wasm 二进制正常在几百 KB~几 MB）。
@@ -130,6 +132,8 @@ pub struct ApprovedInstall {
     pub tool_meta: Option<ToolMetaSnapshot>,
     /// 策略面快照（kind=policy 时非空）。
     pub policy_meta: Option<PolicyMetaSnapshot>,
+    /// flow 步骤面快照（kind=flow-step 时非空；2026-11-03 guest step 批）。
+    pub step_meta: Option<StepMetaSnapshot>,
 }
 
 /// `install` 的返回（第⑨步结果：装载与否由开关决定，调用方按此展示）。
@@ -242,6 +246,7 @@ impl PluginInstaller {
                         approved.component,
                         approved.tool_meta,
                         approved.policy_meta,
+                        approved.step_meta,
                     )
                     .map_err(|e| {
                         tracing::warn!(
@@ -356,14 +361,14 @@ impl PluginInstaller {
         }
 
         // ⑥ 编译 + 元数据对账（纯声明式跳过——无组件；component=0 无效哨兵）
-        let (component, tool_meta, policy_meta) = if declarative {
-            (0u64, None, None)
+        let (component, tool_meta, policy_meta, step_meta) = if declarative {
+            (0u64, None, None, None)
         } else {
             let component = self.manager.runtime().compile_component(&wasm_bytes)?;
-            let (tool_meta, policy_meta) = self
+            let (tool_meta, policy_meta, step_meta) = self
                 .probe_and_reconcile(&manifest, component, trust_state)
                 .await?;
-            (component, tool_meta, policy_meta)
+            (component, tool_meta, policy_meta, step_meta)
         };
 
         // ⑦ lockfile（lockfile-first：落位之前写——失败 = 零突变干净中止，
@@ -404,6 +409,7 @@ impl PluginInstaller {
             component,
             tool_meta,
             policy_meta,
+            step_meta,
         })
     }
 
@@ -439,17 +445,26 @@ impl PluginInstaller {
     /// policy = probe get-policy-metadata + ≥1 接管点校验（2026-10-22 批 4）；
     /// panel = 只编译验证（2026-10-31 面板扩展批——壳 compile 期已验 world +
     /// `handle-ui-command` 导出在场；页面/路由合法性是声明面，归 manifest
-    /// validate，无运行期元数据可探）。
+    /// validate，无运行期元数据可探）；
+    /// flow-step = probe get-step-metadata + kind 词表非空 + 形态校验
+    /// （2026-11-03 guest step 批——运行期路由按此对账）。
     #[allow(clippy::type_complexity)]
     async fn probe_and_reconcile(
         &self,
         manifest: &PluginManifest,
         component: u64,
         trust_state: PluginTrustState,
-    ) -> Result<(Option<ToolMetaSnapshot>, Option<PolicyMetaSnapshot>), PluginError> {
+    ) -> Result<
+        (
+            Option<ToolMetaSnapshot>,
+            Option<PolicyMetaSnapshot>,
+            Option<StepMetaSnapshot>,
+        ),
+        PluginError,
+    > {
         let _ = trust_state;
         if *manifest.kind == PluginKind::Observer || *manifest.kind == PluginKind::Panel {
-            return Ok((None, None));
+            return Ok((None, None, None));
         }
         if *manifest.kind == PluginKind::Policy {
             let frame = probe_frame(self.manager.as_ref(), manifest);
@@ -470,7 +485,32 @@ impl PluginInstaller {
                         .into(),
                 ));
             }
-            return Ok((None, Some(pm)));
+            return Ok((None, Some(pm), None));
+        }
+        // flow 步骤对账（2026-11-03 guest step 批）：探针 get-step-metadata
+        // （紧超时同 validation 口径）；kind 词表非空 + 形态校验（1-64 字符
+        // 无空白/控制字符）——模板 `plugin:<slug>:<op>` 引用的 op 必须在词
+        // 表内，安装期就把越权引用拦在门外。
+        if *manifest.kind == PluginKind::FlowStep {
+            let frame = probe_frame(self.manager.as_ref(), manifest);
+            let meta = self
+                .manager
+                .runtime()
+                .probe_step_metadata(component, frame)
+                .await?;
+            if meta.kinds.is_empty() {
+                return Err(PluginError::MetadataMismatch(
+                    "flow-step component must report at least one step kind".into(),
+                ));
+            }
+            for k in &meta.kinds {
+                if !crate::manifest::valid_step_op(k) {
+                    return Err(PluginError::MetadataMismatch(format!(
+                        "invalid step kind '{k}' (1-64 chars, no whitespace/control)"
+                    )));
+                }
+            }
+            return Ok((None, None, Some(StepMetaSnapshot { kinds: meta.kinds })));
         }
         let frame = probe_frame(self.manager.as_ref(), manifest);
         let meta = self
@@ -520,6 +560,7 @@ impl PluginInstaller {
                 operation_type: meta.operation_type,
                 min_tier: manifest.min_tier.clone(),
             }),
+            None,
             None,
         ))
     }
@@ -738,7 +779,9 @@ impl PluginInstaller {
         // 可编译；component=0 无效哨兵（壳对 0 容忍；invoke 侧对 0 诚实
         // 报「无载荷」）。
         if manifest.wasm_sha256.is_none() {
-            return self.manager.register(manifest, trust_state, 0, None, None);
+            return self
+                .manager
+                .register(manifest, trust_state, 0, None, None, None);
         }
         ensure_plain_filename(&manifest.wasm)?;
         let wasm_path = pdir.join(&manifest.wasm);
@@ -752,11 +795,17 @@ impl PluginInstaller {
             )));
         }
         let component = self.manager.runtime().compile_component(&wasm_bytes)?;
-        let (tool_meta, policy_meta) = self
+        let (tool_meta, policy_meta, step_meta) = self
             .probe_and_reconcile(&manifest, component, trust_state)
             .await?;
-        self.manager
-            .register(manifest, trust_state, component, tool_meta, policy_meta)
+        self.manager.register(
+            manifest,
+            trust_state,
+            component,
+            tool_meta,
+            policy_meta,
+            step_meta,
+        )
     }
 }
 

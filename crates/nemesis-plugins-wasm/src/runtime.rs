@@ -350,10 +350,63 @@ impl PluginRuntime {
         })
         .await
     }
+
+    /// 安装期对账：探针 get-step-metadata（flow-step 组件；fresh-store）。
+    pub(crate) async fn probe_step_metadata(
+        &self,
+        comp: u64,
+        mut frame: CallFrame,
+    ) -> Result<crate::bindings::StepMetadata, PluginError> {
+        frame.observer_frame = false;
+        frame.kind = PluginKind::FlowStep;
+        frame.invoker = None;
+        frame.llm = None;
+        // 探针与 validation 同口径紧超时（纯自报元数据，不该耗时长）。
+        let timeout_ms = frame.limits.policy_call_timeout_ms(PolicyPoint::Validation);
+        self.run_call(comp, frame, timeout_ms, move |session| {
+            let out = session.call("get-step-metadata", "{}", timeout_ms)?;
+            bindings::parse_step_metadata(&out).map_err(|he| {
+                PluginError::MetadataMismatch(format!("get-step-metadata host-error: {he:?}"))
+            })
+        })
+        .await
+    }
+
+    /// 投递一次 flow 步骤执行（flow-step.run-step；JSON 进出，墙钟同通用上限）。
+    ///
+    /// 帧纪律：非观察者帧；llm 恒 None（build_frame 对 FlowStep 不授予——
+    /// v1 边界：flow-step 帧不开 llm-complete，要 LLM 的编排用 agent_fixloop）；
+    /// session key 从入参投影抽取（flow 实例键，审计 user 字段，策略点同源）。
+    /// 幂等/重试防重责任在 guest（拍板 1）：宿主每 tick 重投 run-step，
+    /// 入参带 attempts 计数；运行期无审批卡（拍板 2），闸门全在安装期漏斗。
+    pub(crate) async fn call_flow_step(
+        &self,
+        comp: u64,
+        mut frame: CallFrame,
+        input_json: String,
+    ) -> Result<String, PluginError> {
+        frame.observer_frame = false;
+        frame.kind = PluginKind::FlowStep;
+        frame.session_key = extract_session_key(&input_json);
+        let timeout_ms = frame.limits.timeout_ms;
+        let name = "run-step";
+        self.run_call(comp, frame, timeout_ms, move |session| {
+            let out = session.call(name, &input_json, timeout_ms)?;
+            // 与策略点同形 result<json-string, host-error>；出参 = guest 状态
+            // 投影 JSON（status 词表由 flow 引擎消费），host-error 走宿主错误面。
+            match bindings::parse_json_string_result(&out)
+                .map_err(|he| PluginError::Trap(format!("{name} decode: {he}")))?
+            {
+                Ok(status_json) => Ok(status_json),
+                Err(he) => Err(PluginError::Trap(format!("{name} host-error: {he}"))),
+            }
+        })
+        .await
+    }
 }
 
 /// 从策略投影 JSON 抽 session_key（审计 user 字段；无键 = 空串）。
-fn extract_session_key(input_json: &str) -> String {
+pub(crate) fn extract_session_key(input_json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(input_json)
         .ok()
         .and_then(|v| {

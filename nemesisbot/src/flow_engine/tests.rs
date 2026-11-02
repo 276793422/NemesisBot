@@ -1490,3 +1490,140 @@ fn eval_filter_json_path_and_literal() {
     // 畸形 = false（fetch 前置校验已拦，此处为兜底）。
     assert!(!eval_filter(&e, "no-op"));
 }
+
+// ---------------------------------------------------------------------------
+// plugin 步骤（guest step，2026-11-03 批）：出参四态解析 + 入参投影 +
+// 模板校验 plugin 引用面（自由函数级）。投递链路真组件 e2e 归
+// nemesis-plugins-wasm 的 stepdemo 夹具（tests/e2e_guest.rs）；estop 冻结
+// 由 flow tick loop 天然继承（无新闸），不另设用例。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plugin_step_outcome_four_states() {
+    // done：status 剥离，其余负载 = artifacts。
+    let o = plugin_step_outcome(r#"{"status":"done","report_path":"/x/r.md","n":3}"#);
+    assert_eq!(
+        o,
+        PluginOutcome::Done(serde_json::json!({"report_path":"/x/r.md","n":3}))
+    );
+    // 纯 status 出参 = 空对象负载。
+    assert_eq!(
+        plugin_step_outcome(r#"{"status":"done"}"#),
+        PluginOutcome::Done(json!({}))
+    );
+    // running：无负载语义（下轮重投）。
+    assert_eq!(
+        plugin_step_outcome(r#"{"status":"running"}"#),
+        PluginOutcome::Running
+    );
+    // failed：错误文本取负载 error 字段。
+    let o = plugin_step_outcome(r#"{"status":"failed","error":"上游 502"}"#);
+    assert_eq!(o, PluginOutcome::Failed("上游 502".to_string()));
+    // failed 无 error 明细 = 缺省文案（诚实不猜）。
+    let o = plugin_step_outcome(r#"{"status":"failed"}"#);
+    assert!(
+        matches!(o, PluginOutcome::Failed(ref m) if m.contains("guest 自报 failed")),
+        "o: {o:?}"
+    );
+    // skipped：负载 = artifacts（when 假语义同款推进由 skip_step_with_payload 做）。
+    let o = plugin_step_outcome(r#"{"status":"skipped","why":"已存在"}"#);
+    assert_eq!(o, PluginOutcome::Skipped(json!({"why":"已存在"})));
+}
+
+#[test]
+fn plugin_step_outcome_malformed_faces() {
+    // 非 JSON。
+    let o = plugin_step_outcome("not-json-at-all");
+    assert!(
+        matches!(o, PluginOutcome::Malformed(ref m) if m.contains("非 JSON")),
+        "o: {o:?}"
+    );
+    // 缺 status。
+    let o = plugin_step_outcome(r#"{"payload":1}"#);
+    assert!(
+        matches!(o, PluginOutcome::Malformed(ref m) if m.contains("缺 status")),
+        "o: {o:?}"
+    );
+    // status 非字符串。
+    let o = plugin_step_outcome(r#"{"status":3}"#);
+    assert!(matches!(o, PluginOutcome::Malformed(_)), "o: {o:?}");
+    // 未知 status（词表外诚实失败，不静默归类）。
+    let o = plugin_step_outcome(r#"{"status":"wip"}"#);
+    assert!(
+        matches!(o, PluginOutcome::Malformed(ref m) if m.contains("未知 status: wip")),
+        "o: {o:?}"
+    );
+    // 畸形长出参截断（ERR_SNIPPET 同长度，回灌不炸账本）。
+    let long = format!("x{}", "y".repeat(ERR_SNIPPET * 3));
+    let o = plugin_step_outcome(&long);
+    assert!(
+        matches!(o, PluginOutcome::Malformed(ref m) if m.chars().count() < ERR_SNIPPET + 60),
+        "截断失败: {o:?}"
+    );
+}
+
+#[test]
+fn plugin_step_input_projection_shape() {
+    let mut inst = inst_with_steps(
+        "bugfix",
+        &[
+            ("fetch", KIND_FETCH, "", ""),
+            ("run", "plugin:stepdemo:echo", "", ""),
+        ],
+    );
+    // 前一步已完成带 board_issue 产物；当前 plugin 步带 args（token 渲染）。
+    inst.steps[0].status = StepStatus::Ok;
+    inst.steps[0].attempts = 1;
+    inst.steps[0].error = Some("曾失败一次".to_string());
+    // board_land 真实产物形态：Issue.number 是 String（账面字符串，投影时数字化）。
+    inst.steps[0].artifacts = json!({"board_issue": "42"});
+    inst.steps[1].args = [("who".to_string(), "{{ext_key}}".to_string())]
+        .into_iter()
+        .collect();
+    inst.origin_type = "gitea".to_string();
+    inst.origin_id = "acme/repo#7".to_string();
+
+    let input = plugin_step_input(&inst, &inst.steps[1], "echo", "flow:bugfix/I-1");
+    let v: Value = serde_json::from_str(&input).expect("input json");
+    assert_eq!(v["op"], "echo");
+    // args 经 token 渲染（ext_key → EXT-1）。
+    assert_eq!(v["args"]["who"], "EXT-1");
+    // 实例身份投影。
+    assert_eq!(v["instance"]["template"], "bugfix");
+    assert_eq!(v["instance"]["instance"], "I-1");
+    assert_eq!(v["instance"]["ext_key"], "EXT-1");
+    assert_eq!(v["instance"]["origin_type"], "gitea");
+    assert_eq!(v["instance"]["origin_id"], "acme/repo#7");
+    // steps 状态投影（id → {status,error,attempts}）。
+    assert_eq!(v["steps"]["fetch"]["status"], "ok");
+    assert_eq!(v["steps"]["fetch"]["error"], "曾失败一次");
+    assert_eq!(v["steps"]["fetch"]["attempts"], 1);
+    assert_eq!(v["steps"]["run"]["status"], "pending");
+    // board_issue 锚点（board_land 产物数字化）。
+    assert_eq!(v["board_issue"], 42);
+    // attempts = 步账本 +1（宿主 Retry 账本记失败，投递不双计）。
+    assert_eq!(v["attempts"], 1);
+    assert_eq!(v["session_key"], "flow:bugfix/I-1");
+    // board_issue 缺席 = null（诚实不造 0）。
+    let bare = inst_with_steps("bugfix", &[("run", "plugin:stepdemo:echo", "", "")]);
+    let v: Value =
+        serde_json::from_str(&plugin_step_input(&bare, &bare.steps[0], "echo", "k")).unwrap();
+    assert!(v["board_issue"].is_null(), "v: {v}");
+    assert_eq!(v["attempts"], 1, "首次投递 = 账本 0 + 1");
+}
+
+#[test]
+fn validate_template_accepts_plugin_refs() {
+    // plugin 引用形态合法即过声明面校验（词表对账在安装期 + 运行期路由闸）。
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:stepdemo:echo"])).is_ok());
+    // op 段允许冒号（专业参数化同款语法；slug 词表 [a-z0-9-] 无点号）。
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:acme-jira:issue:fetch"])).is_ok());
+    // 坏形态照拒（无 op 段 / 坏 slug / 坏 op / 缺前缀）。
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:stepdemo"])).is_err());
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:Bad_Slug:echo"])).is_err());
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:stepdemo:has space"])).is_err());
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, "stepdemo:echo"])).is_err());
+    // plugin 引用不作 fetch（fetch 唯一性/首步约束不受影响）。
+    assert!(validate_template(&tpl("t", &["plugin:stepdemo:fetch"])).is_err());
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, KIND_LAND, "plugin:x:y"])).is_ok());
+}
