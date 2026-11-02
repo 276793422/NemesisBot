@@ -1651,6 +1651,31 @@ fn test_session_manager_cleanup_expired_with_timeout_expired() {
     assert!(mgr.is_empty());
 }
 
+/// BUG-20261102-326 红证：时钟回拨（last_active 在未来）不得误清活跃会话。
+/// 修复前 `elapsed.num_seconds() as u64` 把负差值回绕成巨值恒真——NTP 步进
+/// 校正、跨机 workspace 迁移恢复（他机时钟超前）场景下，刚活跃的会话被
+/// cleanup_expired_with_timeout 立即摘除（对话上下文丢失）。与
+/// BUG-20261024-11（cron next_run 裸加法回绕）同族：有符号差值严禁塞进
+/// 无符号比较。保号比较后负差值 → false（保留）。
+#[test]
+fn test_session_manager_cleanup_keeps_session_with_future_last_active() {
+    let mgr = SessionManager::new(Duration::from_secs(30));
+    mgr.get_or_create("web:chat1", "web", "chat1");
+
+    // 时钟回拨场景：last_active 在「本地 now」之后 1 小时。
+    {
+        let mut s = mgr.sessions.get_mut("web:chat1").unwrap();
+        s.last_active = Local::now() + chrono::Duration::hours(1);
+    }
+
+    let removed = mgr.cleanup_expired_with_timeout(Duration::from_secs(30));
+    assert!(
+        removed.is_empty(),
+        "last_active 在未来的会话（时钟回拨/跨机迁移）不得被误清"
+    );
+    assert!(mgr.contains("web:chat1"));
+}
+
 #[test]
 fn test_session_manager_multiple_sessions() {
     let mgr = SessionManager::with_default_timeout();

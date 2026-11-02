@@ -148,7 +148,11 @@ impl SessionManager {
             .iter()
             .filter(|entry| {
                 let elapsed = now - entry.value().last_active;
-                elapsed.num_seconds() as u64 > timeout.as_secs()
+                // BUG-20261102-326：保号比较。`num_seconds() as u64` 会把负
+                // 差值（时钟回拨 / 跨机迁移恢复时 last_active 在未来）回绕成
+                // 巨值恒真——刚活跃的会话被立即误清。与 BUG-20261024-11
+                // （裸加法回绕）同族：有符号差值严禁塞进无符号比较。
+                elapsed.num_seconds() > timeout.as_secs() as i64
             })
             .map(|entry| entry.key().clone())
             .collect();
