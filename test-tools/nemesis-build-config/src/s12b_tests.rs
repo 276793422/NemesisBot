@@ -58,8 +58,10 @@ default = false
     .unwrap();
     let problems = check_problems(&scan, &manifest);
     // 1 stale (ghost-feature) + 3 missing (channels-rpc/migrate/sandbox absent
-    // from the manifest) — both directions fire on a partial manifest.
-    assert_eq!(problems.len(), 4, "got: {problems:?}");
+    // from the manifest) — both directions fire on a partial manifest. Plus 2
+    // DEFAULT-DRIFT (channels-web/migrate are in the Cargo default array but
+    // the manifest has no `default = true` row — BUG-20261102-307 contract).
+    assert_eq!(problems.len(), 6, "got: {problems:?}");
     let stale: Vec<&String> = problems
         .iter()
         .filter(|p| p.starts_with("STALE:"))
@@ -87,14 +89,18 @@ default = "release"
     )
     .unwrap();
     let problems = check_problems(&scan, &manifest);
+    // 3 missing (sandbox+migrate+channels-rpc) + 2 DEFAULT-DRIFT (channels-web
+    // and migrate are in the Cargo default array but not manifest-true).
     assert_eq!(
         problems.len(),
-        3,
+        5,
         "sandbox+migrate+channels-rpc missing: {problems:?}"
     );
     assert!(
-        problems.iter().all(|p| p.starts_with("MISSING:")),
-        "got: {problems:?}"
+        problems
+            .iter()
+            .all(|p| p.starts_with("MISSING:") || p.starts_with("DEFAULT-DRIFT:")),
+        "enum rows must not leak STALE/bool drift: {problems:?}"
     );
 }
 
@@ -113,7 +119,13 @@ default = true
     )
     .unwrap();
     let problems = check_problems(&scan, &manifest);
-    assert_eq!(problems.len(), 4, "1 stale + 3 missing: {problems:?}");
+    // 1 stale + 3 missing + 1 DEFAULT-DRIFT (channels-web is in the Cargo
+    // default array but the manifest rows are ghost=false / migrate=true).
+    assert_eq!(
+        problems.len(),
+        5,
+        "1 stale + 3 missing + 1 drift: {problems:?}"
+    );
     assert_eq!(
         problems.iter().filter(|p| p.starts_with("STALE:")).count(),
         1

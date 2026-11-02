@@ -190,6 +190,33 @@ fn check_problems(scan: &cargo_scan::ScanResult, manifest: &FeatureManifest) -> 
             ));
         }
     }
+
+    // Default-set reconciliation (BUG-20261102-307): the manifest's
+    // `default = true` bool features must exactly match the Cargo
+    // `default = [...]` array — the manifest default seeds the TUI's
+    // from-scratch `.config`, the Cargo array is what an uncustomized
+    // `cargo build` turns on; a divergence means the two "default full
+    // build" entries produce different feature surfaces. vm-display
+    // shipped with such a divergence that the id-only check above never
+    // saw. Enum defaults (build-profile) are strings — excluded.
+    let cargo_defaults: std::collections::BTreeSet<String> =
+        scan.default_enabled().into_iter().collect();
+    let manifest_defaults: std::collections::BTreeSet<String> = manifest
+        .features
+        .iter()
+        .filter(|f| !f.is_enum() && f.default.as_bool() == Some(true))
+        .map(|f| f.id.clone())
+        .collect();
+    for id in manifest_defaults.difference(&cargo_defaults) {
+        problems.push(format!(
+            "DEFAULT-DRIFT: manifest `default = true` for `{id}` but nemesisbot/Cargo.toml `default` does not enable it"
+        ));
+    }
+    for id in cargo_defaults.difference(&manifest_defaults) {
+        problems.push(format!(
+            "DEFAULT-DRIFT: nemesisbot/Cargo.toml `default` enables `{id}` but manifest `default` is not true (run `init`)"
+        ));
+    }
     problems
 }
 
@@ -344,6 +371,8 @@ fn main() -> Result<()> {
     dispatch(cli.cmd, &root)
 }
 
+#[cfg(test)]
+mod default_sync_tests;
 #[cfg(test)]
 mod preset_tests;
 #[cfg(test)]
