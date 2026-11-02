@@ -325,6 +325,131 @@ impl LlmProvider for FailingStreamProvider {
     }
 }
 
+/// 重试桩（BUG-20261102-309）：首次 chat_streamed 送增量后失败（复刻
+/// recovery.rs 瞬态重试环拓扑——同一 wrapper/sink 跨首捕+重试两次调用）。
+struct RetryThenSuccessProvider {
+    failed_once: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl LlmProvider for RetryThenSuccessProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        unreachable!()
+    }
+
+    async fn chat_streamed(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<LlmResponse, String> {
+        if !self
+            .failed_once
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            on_delta("first-attempt-partial".to_string());
+            return Err("transient upstream failure".to_string());
+        }
+        on_delta("second-attempt-full".to_string());
+        Ok(LlmResponse {
+            content: "second-attempt-full".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            finish_reason: None,
+            escalated_to: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// BUG-20261102-309 回归锁：recovery.rs 五调用点共享同一 wrapper/sink，
+/// 重试 = 新流（recovery.rs 模块注释钦定契约：seq 归零 + start 帧重置
+/// 前端缓冲）——第二次 chat() 必须以 start 开新流（前端卡片唯一 reset
+/// 信号），且本 attempt 文本纯净（上一 attempt 残尾不渗入）。
+#[tokio::test]
+async fn retry_on_shared_sink_restarts_stream_with_start_frame() {
+    let (tx, _) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
+    let mut rx = tx.subscribe();
+    let sink = std::sync::Arc::new(ProviderStreamSink::new(
+        tx,
+        "web:main:r1".to_string(),
+        "web:conn1".to_string(),
+        "m".to_string(),
+    ));
+    let wrapper = StreamingLlmProvider::new(
+        std::sync::Arc::new(RetryThenSuccessProvider {
+            failed_once: std::sync::atomic::AtomicBool::new(false),
+        }),
+        sink.clone(),
+    );
+    let (messages, options, tools) = empty_args();
+
+    // attempt 1：瞬态失败（wrapper Err 臂发 error 帧）
+    let e1 = wrapper
+        .chat("m", messages.clone(), options.clone(), tools.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(e1, "transient upstream failure");
+
+    // attempt 2：重试成功——必须以 start 开新流
+    let r2 = wrapper.chat("m", messages, options, tools).await.unwrap();
+    assert_eq!(r2.content, "second-attempt-full");
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec!["start", "delta", "error", "start", "delta", "end"],
+        "重试必须以 start 开新流（共享 sink 不重置时该帧缺席）"
+    );
+    // attempt-2 delta 纯净：不携带 attempt-1 残尾
+    assert_eq!(texts(&events)[4], "second-attempt-full");
+}
+
+/// BUG-20261102-309 对称臂：非流式 provider（trait 缺省 chat_streamed）
+/// 跨两次 chat()——合成全量增量的判据 deltas_emitted 必须按 attempt 判定
+/// （重试成功的回复文本不得被上一 attempt 的 delta 历史短路丢失）。
+#[tokio::test]
+async fn retry_non_stream_provider_synthesis_not_short_circuited() {
+    let (tx, _) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
+    let mut rx = tx.subscribe();
+    let sink = std::sync::Arc::new(ProviderStreamSink::new(
+        tx,
+        "web:main:r2".to_string(),
+        "web:conn2".to_string(),
+        "m".to_string(),
+    ));
+    let wrapper = StreamingLlmProvider::new(
+        std::sync::Arc::new(NonStreamProvider { content: "ok" }),
+        sink.clone(),
+    );
+    let (messages, options, tools) = empty_args();
+
+    wrapper
+        .chat("m", messages.clone(), options.clone(), tools.clone())
+        .await
+        .unwrap();
+    wrapper.chat("m", messages, options, tools).await.unwrap();
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec!["start", "delta", "end", "start", "delta", "end"],
+        "第二次调用仍须合成全量增量（deltas_emitted 按 attempt 判定）"
+    );
+    assert_eq!(texts(&events)[4], "ok");
+}
+
 #[tokio::test]
 async fn wrapper_error_path_emits_error_frame() {
     let (tx, _) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
