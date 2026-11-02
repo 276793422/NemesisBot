@@ -302,7 +302,10 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                     .trim_matches('"')
                     .trim_matches('\'');
                 if !model_name.is_empty() {
-                    model_list.push(serde_json::json!({ "model": model_name, "key": "" }));
+                    // BUG-20261103-340：条目字段对齐 ModelConfig schema——旧
+                    // "key" 是 schema 外死键（权威字段 api_key，serde default
+                    // 缺省即空），死键只污染用户 config 的 extra 面。
+                    model_list.push(serde_json::json!({ "model": model_name }));
                 }
             }
         }
@@ -374,10 +377,20 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     .filter_map(|(label, name)| resolve_persona_src(&openclaw_home, name).map(|src| (*label, src)))
     .collect();
 
+    // BUG-20261103-340：门清单与 fallback 消费清单同源——convert_config_fallback
+    // 消费 config.yaml/config.yml/openclaw.yaml/openclaw.yml + models.yaml，
+    // 旧门清单漏 openclaw.yml 与 models.yaml，纯该形态安装的配置被静默跳过
+    // （[Config] 不进计划、fallback 对应分支永远走不到）。
     let has_config = nemesis_migrate::find_openclaw_config(&openclaw_home).is_ok()
-        || openclaw_home.join("config.yaml").exists()
-        || openclaw_home.join("config.yml").exists()
-        || openclaw_home.join("openclaw.yaml").exists();
+        || [
+            "config.yaml",
+            "config.yml",
+            "openclaw.yaml",
+            "openclaw.yml",
+            "models.yaml",
+        ]
+        .iter()
+        .any(|name| openclaw_home.join(name).exists());
 
     let migrate_config = !options.workspace_only && has_config;
     let migrate_workspace = !options.config_only

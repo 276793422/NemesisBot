@@ -274,6 +274,26 @@ fn test_convert_config_fallback_yml_extension() {
 }
 
 #[test]
+fn test_convert_config_fallback_model_entries_use_schema_fields() {
+    // BUG-20261103-340：model_list 条目只含 schema 字段（model）——旧形态写
+    // schema 外死键 "key"（权威字段是 api_key，ModelConfig #[serde(default)]
+    // 缺省即空，死键只污染用户 config 的 extra 面）。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("models.yaml"),
+        "- name: \"provider/model-1\"\n- model: \"provider/model-2\"\n",
+    )
+    .unwrap();
+
+    let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
+    let models = config["model_list"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    for m in models {
+        assert!(m.get("key").is_none(), "schema 外死键 key 不得出现: {}", m);
+    }
+}
+
+#[test]
 fn test_migrate_options_default() {
     let opts = MigrateOptions {
         dry_run: false,
@@ -719,6 +739,61 @@ fn run_empty_openclaw_reports_nothing_to_migrate() {
     let target = tmp.path().join("nb");
     run(opts(&src, &target), false).expect("空源 → Nothing to migrate + Ok");
     assert!(!target.exists());
+}
+
+#[test]
+fn run_openclaw_yml_only_triggers_config_migration() {
+    // BUG-20261103-340：has_config 门漏 openclaw.yml（fallback 消费清单有它）
+    // → 纯 openclaw.yml 形态安装的配置被静默跳过，[Config] 不进计划、
+    // convert_config_fallback 的 yml 分支永远走不到。
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("openclaw.yml"), "default_model: 'yml-model'\n").unwrap();
+    let target = tmp.path().join("nb");
+
+    run(opts(&src, &target), false).expect("openclaw.yml-only 形态须触发配置迁移");
+
+    let cfg = target.join("config.json");
+    assert!(
+        cfg.exists(),
+        "config.json 未生成——has_config 门漏 openclaw.yml（静默跳过配置迁移）"
+    );
+    let content = std::fs::read_to_string(&cfg).unwrap();
+    assert!(
+        content.contains("yml-model"),
+        "default_model 未迁移: {}",
+        content
+    );
+}
+
+#[test]
+fn run_models_yaml_only_triggers_config_migration() {
+    // BUG-20261103-340：has_config 门漏 models.yaml → legacy models.yaml-only
+    // 形态的模型清单静默不迁移。
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("models.yaml"),
+        "- name: legacy/model-a\n- name: legacy/model-b\n",
+    )
+    .unwrap();
+    let target = tmp.path().join("nb");
+
+    run(opts(&src, &target), false).expect("models.yaml-only 形态须触发配置迁移");
+
+    let cfg = target.join("config.json");
+    assert!(
+        cfg.exists(),
+        "config.json 未生成——has_config 门漏 models.yaml（静默跳过配置迁移）"
+    );
+    let content = std::fs::read_to_string(&cfg).unwrap();
+    assert!(
+        content.contains("legacy/model-a"),
+        "models.yaml 模型未迁移: {}",
+        content
+    );
 }
 
 #[test]
