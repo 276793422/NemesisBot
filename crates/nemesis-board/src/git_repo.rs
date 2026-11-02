@@ -311,8 +311,11 @@ pub fn push_branch(
 ///
 /// 失败语义（全部确定失败，仓库零残留）：
 /// - 工作区有未提交/未跟踪改动 = Err（发布不混入无关改动）；
-/// - 目标分支已存在 = Err（发布幂等在交付 payload 的 pr_number 判断，git
-///   层不静默复用旧分支）；
+/// - 目标分支已存在：校验「单父 == 当前 HEAD 且内容与同一 patch 应用到同一
+///   HEAD 的 tree 一致」→ **幂等复用**既有 commit（2026-11-02 复评 F1：push/
+///   PR 阶段失败后重试续作，git 层不再被自己上次的分支挡死）；校验不过 =
+///   Err（分支内容与本次交付不匹配，拒绝覆盖转人工——不静默吞下异源分支）；
+///   探测经 index 旁路完成、工作区零触碰；
 /// - patch 应用后零变更 = Err（空交付不产空 PR）；
 /// - apply/commit 中途失败 = 回滚新建分支后 Err。
 pub fn apply_patch_new_branch(
@@ -339,9 +342,27 @@ pub fn apply_patch_new_branch(
         .map_err(|e| format!("仓库无 HEAD: {e}"))?
         .peel_to_commit()
         .map_err(|e| format!("HEAD 解析 commit 失败: {e}"))?;
-    if repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+    if let Ok(existing) = repo.find_branch(branch, git2::BranchType::Local) {
+        // 重试续作路径：分支已存在 = 上次发布的 git 半边可能已完成。校验
+        // 通过（父基线一致 + 内容一致）→ 幂等复用既有 commit（上层续作
+        // push/PR）；校验不过 → 维持拒绝（人工核查，不覆盖）。
+        let commit = existing.get().peel_to_commit().map_err(|e| {
+            format!("分支 {branch} 解析 commit 失败: {e}——上次发布残留异常，请人工核查")
+        })?;
+        let same_baseline = commit.parent_count() == 1
+            && commit.parent_id(0).map(|p| p == head.id()).unwrap_or(false);
+        let same_content =
+            same_baseline && patch_tree_over_head(&repo, &head, patch)? == commit.tree_id();
+        if same_content {
+            tracing::info!(
+                branch = %branch,
+                commit = %commit.id(),
+                "[git_repo] 交付分支已存在且与本次交付一致——幂等复用"
+            );
+            return Ok(commit.id().to_string());
+        }
         return Err(format!(
-            "分支 {branch} 已存在——上次发布的 git 半边可能未清理，请人工核查"
+            "分支 {branch} 已存在且与本次交付不一致（父基线或内容不匹配）——拒绝覆盖，请人工核查"
         ));
     }
     let branch_ref = format!("refs/heads/{branch}");
@@ -388,6 +409,36 @@ pub fn apply_patch_new_branch(
             Err(e)
         }
     }
+}
+
+/// 纯探测：计算把 patch 应用到 head 之后的目标 tree id（**不触碰工作区**
+/// ——index 从 head 树重建、应用后写 tree、随后还原 index 到 head 树）。
+/// 供分支已存在时的幂等复用校验（「同一 patch 应用到同一基线 = 同一 tree」）。
+fn patch_tree_over_head(
+    repo: &Repository,
+    head: &git2::Commit<'_>,
+    patch: &[u8],
+) -> Result<git2::Oid, String> {
+    let diff = git2::Diff::from_buffer(patch)
+        .map_err(|e| format!("patch 解析失败: {e}（交付 patch 已损坏？）"))?;
+    let head_tree = head.tree().map_err(|e| format!("读 HEAD tree 失败: {e}"))?;
+    let mut index = repo.index().map_err(|e| format!("读 index 失败: {e}"))?;
+    index
+        .read_tree(&head_tree)
+        .map_err(|e| format!("index 重建失败: {e}"))?;
+    index.write().map_err(|e| format!("写 index 失败: {e}"))?;
+    repo.apply(&diff, git2::ApplyLocation::Index, None)
+        .map_err(|e| format!("patch 应用失败: {e}（副本基线与交付基线漂移？）"))?;
+    let mut index = repo.index().map_err(|e| format!("重读 index 失败: {e}"))?;
+    let tree_id = index
+        .write_tree()
+        .map_err(|e| format!("写 tree 失败: {e}"))?;
+    // 还原 index 到 HEAD 树（探测不留痕；失败无害——工作区本就停在 HEAD，
+    // 下次 add_all 会重建）。
+    let mut index = repo.index().map_err(|e| format!("重读 index 失败: {e}"))?;
+    let _ = index.read_tree(&head_tree);
+    let _ = index.write();
+    Ok(tree_id)
 }
 
 // ---------------------------------------------------------------------------

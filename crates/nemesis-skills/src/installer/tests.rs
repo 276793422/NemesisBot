@@ -1780,6 +1780,45 @@ fn r118_rollback_recover_restores_orphans_and_drops_stale() {
     assert!(installer.recover_stale_rollbacks().is_empty());
 }
 
+// F4（2026-11-02 复评）回归锁：恢复式清扫跳过在册 in-flight 备份——
+// 本进程正在更新的活备份不得被并发安装的清扫误判遗孤搬回原位；注销后
+// （守卫 Drop 统一出口）真遗孤语义照常。登记表键 = 备份完整路径，不同
+// workspace 的同 slug 备份互不误伤。
+#[test]
+fn r_f4_recover_skips_registered_inflight_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+
+    // 现场：skills/live 缺失（force 更新进行中，备份刚挪走）+ 备份在册。
+    let backup = installer.rollback_root().join("live.old-1-2");
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("SKILL.md"), "# live old").unwrap();
+    SkillInstaller::register_inflight_backup(&backup);
+    assert!(SkillInstaller::inflight_backup_registered(&backup));
+
+    // 在册 → 清扫跳过（不恢复、不删除）。
+    assert!(
+        installer.recover_stale_rollbacks().is_empty(),
+        "in-flight backup must not be adopted by the sweep"
+    );
+    assert!(backup.exists(), "in-flight backup must stay untouched");
+    assert!(
+        !dir.path().join("skills/live").exists(),
+        "target stays absent while update is in flight"
+    );
+
+    // 注销（Drop 出口）→ 下次清扫照常收编（进程死后的真遗孤语义）。
+    SkillInstaller::unregister_inflight_backup(&backup);
+    assert!(!SkillInstaller::inflight_backup_registered(&backup));
+    let recovered = installer.recover_stale_rollbacks();
+    assert_eq!(recovered, vec![dir.path().join("skills").join("live")]);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("skills/live/SKILL.md")).unwrap(),
+        "# live old"
+    );
+}
+
 // BUG-20261029-150 回归锁：含点 slug（validate_skill_identifier 允许）的回滚
 // 备份——解析必须按**最后一个** ".old-" 分隔，而非 split('.') 首段切分。
 #[test]

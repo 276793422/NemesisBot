@@ -5,6 +5,195 @@
 
 use super::*;
 
+#[tokio::test]
+async fn review_nov02_label_filtered_first_page_still_scans_matching_second_page() {
+    let source = ExternalSourceConfig {
+        owner: "o".into(),
+        repo: "r".into(),
+        labels: vec!["agent-ready".into()],
+        clone: false,
+        auto_dispatch: false,
+        ..Default::default()
+    };
+    let first: Vec<_> = (1..=20)
+        .map(|number| {
+            serde_json::json!({
+                "number":number, "labels":[{"name":"human-only"}]
+            })
+        })
+        .collect();
+    let second: Vec<_> = (21..=40)
+        .map(|number| {
+            serde_json::json!({
+                "number":number, "labels":[{"name":"agent-ready"}]
+            })
+        })
+        .collect();
+    assert!(first.iter().all(|e| !labels_match(&source, e)));
+    assert!(second.iter().all(|e| labels_match(&source, e)));
+    let (rt, _dir, calls) = review_nov02_runtime(vec![
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&second).unwrap(),
+    ]);
+    poll_source(&rt, &source, None).await;
+    let queried = calls.lock().unwrap().clone();
+    println!(
+        "REVIEW first_page_matches=0 second_page_matches={} queried_pages={queried:?} status={:?}",
+        second.len(),
+        rt.statuses.lock()
+    );
+    // F5（2026-11-02 复评）：满页零新导入（全被标签滤掉）不再停页——第 2/3 页
+    // 照扫，第 2 页匹配条目照常导入；第 3 页返回空数组（不足一页）= 末页停。
+    assert_eq!(queried, vec![1, 2, 3]);
+    assert!(rt.statuses.lock()[0].last_error.is_none());
+    assert!(
+        !rt.store
+            .list_issues_by_origin("gitea", "gitea/o/r#21", 1)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(rt.statuses.lock()[0].imported_total, 20);
+}
+
+struct ReviewNov02SourceProvider;
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for ReviewNov02SourceProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        panic!("no model calls")
+    }
+}
+struct ReviewNov02Pages {
+    pages: Vec<String>,
+    calls: Arc<std::sync::Mutex<Vec<i64>>>,
+}
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::Tool for ReviewNov02Pages {
+    async fn execute(
+        &self,
+        args: &str,
+        _: &nemesis_agent::context::RequestContext,
+    ) -> Result<String, String> {
+        let value: serde_json::Value = serde_json::from_str(args).unwrap();
+        let page = value["args"]["page"].as_i64().unwrap();
+        self.calls.lock().unwrap().push(page);
+        Ok(self
+            .pages
+            .get((page - 1) as usize)
+            .cloned()
+            .unwrap_or_else(|| "[]".into()))
+    }
+}
+fn review_nov02_runtime(
+    pages: Vec<String>,
+) -> (
+    ExternalSourceRuntime,
+    tempfile::TempDir,
+    Arc<std::sync::Mutex<Vec<i64>>>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(BoardStore::open(&dir.path().join("board.db"), "NB").unwrap());
+    let calls = Arc::new(std::sync::Mutex::new(vec![]));
+    let mut agent = AgentLoop::new(
+        Box::new(ReviewNov02SourceProvider),
+        nemesis_agent::types::AgentConfig {
+            model: "test".into(),
+            ..Default::default()
+        },
+    );
+    agent.register_tool(
+        "connector_invoke".into(),
+        Box::new(ReviewNov02Pages {
+            pages,
+            calls: calls.clone(),
+        }),
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let rt = ExternalSourceRuntime {
+        agent_loop: Arc::new(agent),
+        store,
+        workspace: dir.path().to_path_buf(),
+        home: dir.path().to_path_buf(),
+        estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+        #[cfg(feature = "cluster")]
+        cluster: None,
+        #[cfg(not(feature = "cluster"))]
+        cluster: (),
+        statuses: parking_lot::Mutex::new(vec![SourceStatus {
+            source: "gitea/o/r".into(),
+            enabled: true,
+            last_poll: None,
+            last_error: None,
+            last_warning: None,
+            imported_total: 0,
+            last_imported: vec![],
+            clone_base_sha: None,
+            writeback_ok: 0,
+            writeback_failed: 0,
+            watermark: None,
+        }]),
+        writeback_tx: tx,
+    };
+    (rt, dir, calls)
+}
+
+#[tokio::test]
+async fn review_nov02_partial_issue_page_imports_salvaged_entries_with_warning() {
+    let source = ExternalSourceConfig {
+        connector: "gitea".into(),
+        owner: "o".into(),
+        repo: "r".into(),
+        clone: false,
+        auto_dispatch: false,
+        ..Default::default()
+    };
+    let small = serde_json::json!({"number":1,"title":"complete first issue","body":"small"});
+    let (control, _control_dir, _) =
+        review_nov02_runtime(vec![serde_json::to_string(&vec![small.clone()]).unwrap()]);
+    poll_source(&control, &source, None).await;
+    assert_eq!(
+        control.statuses.lock()[0].imported_total,
+        1,
+        "normal complete response must import"
+    );
+    let full =
+        serde_json::to_string(&serde_json::json!([small,{"number":2,"body":"x".repeat(9000)}]))
+            .unwrap();
+    let capped: String = full.chars().take(8192).collect();
+    assert_eq!(parse_issue_list(&capped).0.len(), 1);
+    let (rt, _dir, calls) = review_nov02_runtime(vec![capped]);
+    for _ in 0..3 {
+        poll_source(&rt, &source, None).await;
+    }
+    let status = rt.statuses.lock();
+    println!(
+        "REVIEW partial_page_salvaged=1 queried_pages={:?} status={status:?}",
+        calls.lock().unwrap()
+    );
+    // F5（2026-11-02 复评）：截断页抢救出的完整条目照常导入（不再提前
+    // return 丢弃），带 warning 收轮；截断页 fetched 不可信 → 不作末页判定
+    // ——但截断即收轮，下轮从首页重扫（去重幂等），每轮恰好 1 次请求。
+    assert_eq!(status[0].imported_total, 1);
+    assert!(status[0].last_warning.is_some());
+    assert!(status[0].last_error.is_none());
+    assert!(
+        !rt.store
+            .list_issues_by_origin("gitea", "gitea/o/r#1", 1)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![1, 1, 1],
+        "truncated page ends the round; next round rescans from page 1"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // parse_issue_list：8K 截断抢救
 // ---------------------------------------------------------------------------
@@ -231,14 +420,13 @@ fn page_args_carries_paging_params() {
 
 #[test]
 fn should_stop_paging_decision() {
-    // 末页（返回不足一页）即停——即使有新导入（对端已取尽）。
-    assert!(should_stop_paging(5, true));
-    assert!(should_stop_paging(0, false));
-    // 满页但零新导入 = 前沿已过，停（修复前该场景不存在：翻页根本不会
-    // 发生——本锁把「稳态 1 请求/轮」钉死）。
-    assert!(should_stop_paging(20, false));
-    // 满页且有新导入 = 继续翻（回填推进的核心判定）。
-    assert!(!should_stop_paging(20, true));
+    // F5（2026-11-02 复评）：停页只认可证明条件——末页（返回不足一页，
+    // 对端已取尽）。
+    assert!(should_stop_paging(5));
+    assert!(should_stop_paging(0));
+    // 满页恒续翻：标签过滤/全熟/PR 混入的满页零新导入不证明后续页没有
+    // 可导入条目（旧逻辑在此停 = 深页永不扫描漏任务）；MAX_POLL_PAGES 兜底。
+    assert!(!should_stop_paging(20));
 }
 
 #[test]

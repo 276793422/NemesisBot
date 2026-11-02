@@ -12,6 +12,164 @@
 use super::*;
 use crate::chat_log::{append_chat_log, clear_chat_log, delete_chat_log, read_chat_log};
 
+#[cfg(windows)]
+#[tokio::test]
+async fn review_nov02_original_rewind_commit_failure_keeps_checkpoint() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (al, key, dir) = stage_two_turns("nov02-old-rewind").await;
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(&key);
+    let log = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{safe}.jsonl"));
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&log)
+        .unwrap();
+    let result = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(result["reason"], "commit_failed");
+    assert_eq!(result["checkpoint_retained"], true);
+    assert!(al.checkpoint_list().iter().any(|c| c.turn == 2));
+    assert_eq!(read_chat_log(&key, 100, None).1, 4);
+    drop(lock);
+    let retry = al.rewind_to_message(&key, 0, false).await.unwrap();
+    println!("REVIEW old_rewind_failure={result} retry={retry}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("ws/code.txt")).unwrap(),
+        "v2"
+    );
+    assert_eq!(read_chat_log(&key, 100, None).1, 2);
+    delete_chat_log(&key);
+}
+
+/// F2 续作（2026-11-02 复评）回归锁：redo 前向恢复失败 = 零推进 + 条目
+/// 还栈可重试，对齐 rewind 侧对称失败契约（BUG-20261028-120）。旧形态
+/// （探针钉住的缺陷）：失败只注记、行回填照常、条目被消耗——文件没恢
+/// 复、对话已回填、重试撞「没有可重做的回退」三输。
+#[cfg(windows)]
+#[tokio::test]
+async fn review_nov02_redo_file_failure_blocks_and_retains_retry_entry() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (al, key, dir) = stage_two_turns_git("nov02-redo-lock").await;
+    let code = dir.path().join("ws/code.txt");
+    let rewind = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(rewind["file_restore"], "applied");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&code)
+        .unwrap();
+    let result = al.redo_rewind(&key).await.unwrap();
+    let file = std::fs::read_to_string(&code).unwrap();
+    let (_, rows, _, _) = read_chat_log(&key, 100, None);
+    println!("REVIEW redo={result} file={file} rows={rows}");
+    assert_eq!(result["blocked"], true, "{result}");
+    assert_eq!(result["reason"], "restore_failed");
+    assert_eq!(result["file_restore"], "failed");
+    assert!(
+        result["restore_failures"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "失败清单非空: {result}"
+    );
+    assert_eq!(file, "v2", "文件保持回退态，未半途推进");
+    assert_eq!(rows, 2, "行回填未做（零推进）");
+    drop(lock);
+    let retry = al.redo_rewind(&key).await.unwrap();
+    println!("REVIEW redo_retry={retry}");
+    assert_eq!(retry["file_restore"], "applied", "{retry}");
+    assert_eq!(
+        std::fs::read_to_string(&code).unwrap(),
+        "v3",
+        "重试完成前向恢复"
+    );
+    assert_eq!(read_chat_log(&key, 100, None).1, 4, "重试完成行回填");
+    delete_chat_log(&key);
+}
+
+/// F2 续作半途失败摆法：code.txt 两轮变更（v1→v2→v3）+ side.txt 在
+/// turn 2 被删（rewind 恢复它、redo 又要删它）。redo 只锁 side.txt——
+/// checkout（code→v3）成功、side 删除失败 = partial blocked；重试时盘面
+/// code=v3 与 undo 盘面（v2）的 diff 即自恢复面，冲突预检必须豁免。
+/// （checkout 是单次调用整体成败——纯 Modified 锁一个文件只会整单失败
+/// =failed；partial 只能走 checkout 成功 + remove 失败的组合。）
+#[cfg(windows)]
+async fn stage_redo_partial_fixture(tag: &str) -> (AgentLoop, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    std::fs::write(root.join("side.txt"), "s").unwrap();
+
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(None, root.clone()));
+    al.set_checkpoint_store(store);
+    let key = e3_uniq_key(tag);
+    delete_chat_log(&key);
+
+    let cp = al.attached_checkpoint().unwrap();
+
+    cp.begin(1, "turn 1");
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    e3_append(&key, "user", "turn 1 q", Some(1));
+    e3_append(&key, "assistant", "turn 1 a", None);
+
+    cp.begin(2, "turn 2");
+    let _ = std::fs::remove_file(root.join("side.txt"));
+    std::fs::write(root.join("code.txt"), "v3").unwrap();
+    e3_append(&key, "user", "turn 2 q", Some(2));
+    e3_append(&key, "assistant", "turn 2 a", None);
+
+    (al, key, dir)
+}
+
+/// F2 续作（2026-11-02 复评）回归锁：redo 前向恢复**半途失败** = 零推进
+/// + 条目还栈（带自恢复面记录），重试豁免自漂移续补成功。不豁免的话重
+/// 试的冲突预检会把 code.txt 的已恢复状态 diff 成外部改动，dishonestly
+/// 逼用户 force 自己的操作。
+#[cfg(windows)]
+#[tokio::test]
+async fn review_nov02_redo_partial_restore_blocks_and_retry_exempts_self_drift() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (al, key, dir) = stage_redo_partial_fixture("nov02-redo-partial").await;
+    let code = dir.path().join("ws/code.txt");
+    let side = dir.path().join("ws/side.txt");
+
+    let rewind = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(rewind["file_restore"], "applied", "{rewind}");
+    assert!(side.exists(), "rewind 恢复被删的 side.txt");
+
+    // 只锁 side.txt：redo checkout（code→v3）成功、side 删除失败 → partial。
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&side)
+        .unwrap();
+    let result = al.redo_rewind(&key).await.unwrap();
+    println!("REVIEW redo_partial={result}");
+    assert_eq!(result["blocked"], true, "{result}");
+    assert_eq!(result["reason"], "restore_failed");
+    assert_eq!(result["file_restore"], "partial");
+    assert_eq!(
+        std::fs::read_to_string(&code).unwrap(),
+        "v3",
+        "code 已恢复到前向态"
+    );
+    assert!(side.exists(), "side 删除失败保持原状");
+    assert_eq!(read_chat_log(&key, 100, None).1, 2, "行回填未做（零推进）");
+    drop(lock);
+
+    // 重试：冲突预检豁免 code.txt 的自恢复面（盘面上它是本操作自己写的
+    // 半成品，不是外部漂移），恢复续补 side 删除、行回填完成。
+    let retry = al.redo_rewind(&key).await.unwrap();
+    println!("REVIEW redo_retry={retry}");
+    assert_eq!(retry["file_restore"], "applied", "{retry}");
+    assert_eq!(std::fs::read_to_string(&code).unwrap(), "v3");
+    assert!(!side.exists(), "重试完成 side 删除");
+    assert_eq!(read_chat_log(&key, 100, None).1, 4);
+    delete_chat_log(&key);
+}
+
 // —— 空 provider：编排测试不走 dispatch/LLM ——
 
 struct E3NoopProvider;

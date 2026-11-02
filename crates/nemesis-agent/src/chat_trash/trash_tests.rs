@@ -13,6 +13,144 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// F3 回归锁（2026-11-02 复评，probe 转正）：恢复中途失败（boundary 被
+/// share-mode 锁卡死）后——①改道改名恢复 = 材料分裂，诚实拒绝而非假成功
+/// 会话分裂；②解除锁后同目标重试 = 按事务标记续作完成，而非 conflict:true
+/// 永久卡死。Windows 形态（share_mode 锁 + rename 目标存在即败）。
+#[cfg(windows)]
+#[test]
+fn review_nov02_partial_restore_resumes_and_rename_switch_refused() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let t = TempTrash::new("nov02-partial-restore");
+    let key = web_key("partial");
+    put_msg(&t, &key, "user", "keep this history");
+    put_boundary(&t, &key, "turn_end");
+    let entry = trash_chat_log_in(&t.loc, &key, "single").unwrap().unwrap();
+    let boundary = t.entry_dir(&entry).join("boundary.jsonl");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&boundary)
+        .unwrap();
+
+    // 首次恢复：chat 移成功、boundary rename 重试耗尽 → 诚实 Err，条目保留。
+    let first = trash_restore_in(&t.loc, &entry, None).unwrap_err();
+    assert!(t.loc.log_path(&key).exists(), "chat 已半途移到目标");
+    assert!(
+        !t.entry_dir(&entry).join("chat.jsonl").exists(),
+        "条目内 chat 已走，first={first}"
+    );
+    assert!(
+        t.entry_dir(&entry).join(RESTORE_MARKER_FILE).is_file(),
+        "事务标记随失败保留"
+    );
+
+    // 回归①（旧行为：假成功，chat 留原键、boundary/meta 去新键 = 会话分裂）。
+    let elsewhere = format!(
+        "{WEB_SESSION_KEY_PREFIX}{}",
+        SessionStore::sanitize_session_id("nov02-elsewhere")
+    );
+    let err = trash_restore_in(&t.loc, &entry, Some("nov02-elsewhere")).unwrap_err();
+    assert!(err.contains("分裂"), "拒绝文案须点名分裂: {err}");
+    assert!(
+        !t.loc.boundary_path(&elsewhere).exists() && !t.loc.log_path(&elsewhere).exists(),
+        "拒绝路径不移动任何材料"
+    );
+    assert!(t.loc.log_path(&key).exists(), "chat 留在原键");
+
+    // 回归②（旧行为：重试 conflict:true 被自己的半成品永久卡死）。
+    drop(lock);
+    let retry = trash_restore_in(&t.loc, &entry, None).expect("同目标重试须续作完成");
+    assert_eq!(retry["restored"], serde_json::json!(key));
+    assert_eq!(read_msgs(&t, &key).len(), 1, "消息完整");
+    assert!(t.loc.boundary_path(&key).exists(), "boundary 补齐");
+    assert!(
+        !t.entry_dir(&entry).exists(),
+        "成功后条目整目录清掉（标记随之消失）"
+    );
+}
+
+/// F3 回归锁（便携形态，不依赖 Windows 锁）：手工构造半成品状态（chat 已到
+/// 目标键 + 事务标记在条目内），恢复须续作完成而非报 conflict。
+#[test]
+fn review_nov02_trash_marker_resume_completes_instead_of_conflict() {
+    let t = TempTrash::new("nov02-resume");
+    let key = make_session(&t, "resume", "半途恢复", &["half moved"]);
+    let entry = trash_chat_log_in(&t.loc, &key, "single").unwrap().unwrap();
+    std::fs::rename(t.entry_dir(&entry).join("chat.jsonl"), t.loc.log_path(&key)).unwrap();
+    std::fs::write(
+        t.entry_dir(&entry).join(RESTORE_MARKER_FILE),
+        serde_json::json!({ "target_key": key }).to_string(),
+    )
+    .unwrap();
+
+    let out = trash_restore_in(&t.loc, &entry, None).expect("续作须完成而非 conflict");
+    assert_eq!(out["restored"], serde_json::json!(key));
+    assert_eq!(read_msgs(&t, &key).len(), 1);
+    assert!(
+        std::fs::read_to_string(t.loc.meta_path(&key))
+            .unwrap()
+            .contains("半途恢复"),
+        "meta 补齐回原键"
+    );
+    assert!(!t.entry_dir(&entry).exists(), "条目清掉");
+}
+
+/// F3 回归锁（便携）：材料已分裂（chat 在标记目标、其余在条目）时换键恢复
+/// 诚实拒绝，且拒绝不锁死条目——同目标重试仍可完成。
+#[test]
+fn review_nov02_trash_split_materials_refuse_target_switch() {
+    let t = TempTrash::new("nov02-split");
+    let key = make_session(&t, "split", "分裂前", &["s1"]);
+    let entry = trash_chat_log_in(&t.loc, &key, "single").unwrap().unwrap();
+    std::fs::rename(t.entry_dir(&entry).join("chat.jsonl"), t.loc.log_path(&key)).unwrap();
+    std::fs::write(
+        t.entry_dir(&entry).join(RESTORE_MARKER_FILE),
+        serde_json::json!({ "target_key": key }).to_string(),
+    )
+    .unwrap();
+
+    let err = trash_restore_in(&t.loc, &entry, Some("nov02-elsewhere")).expect_err("换键须拒绝");
+    assert!(err.contains("分裂"), "{err}");
+    let elsewhere = format!(
+        "{WEB_SESSION_KEY_PREFIX}{}",
+        SessionStore::sanitize_session_id("nov02-elsewhere")
+    );
+    assert!(
+        !t.loc.log_path(&elsewhere).exists() && !t.loc.meta_path(&elsewhere).exists(),
+        "拒绝路径不移动任何材料"
+    );
+    assert!(t.entry_dir(&entry).join("meta.json").is_file(), "条目保留");
+
+    // 拒绝 ≠ 锁死：同目标重试照常续作完成。
+    let out = trash_restore_in(&t.loc, &entry, None).unwrap();
+    assert_eq!(out["restored"], serde_json::json!(key));
+    assert!(!t.entry_dir(&entry).exists());
+}
+
+/// F3 区分锁（2026-11-02 复评）：meta-only（真实空会话）改名恢复 = 全部材料
+/// 一致地到新键、原键清空——与「半途分裂」是两回事，不得误伤。
+#[test]
+fn review_nov02_meta_only_rename_restore_is_consistent_not_split() {
+    let t = TempTrash::new("nov02-metaonly");
+    let key = web_key("metaonly");
+    put_meta(&t, &key, "只有 meta");
+    assert!(!t.loc.log_path(&key).exists(), "前置：无 chat");
+    let entry = trash_chat_log_in(&t.loc, &key, "single").unwrap().unwrap();
+
+    let out = trash_restore_in(&t.loc, &entry, Some("nov02-metaonly-new")).unwrap();
+    let new_key = out["restored"].as_str().unwrap();
+    assert!(
+        new_key.ends_with("nov02-metaonly-new"),
+        "改名恢复 {new_key}"
+    );
+    assert_eq!(out["title"], serde_json::json!("只有 meta"), "投影照常");
+    assert!(t.loc.meta_path(new_key).is_file(), "meta 到新键");
+    assert!(!t.loc.log_path(new_key).exists(), "无 chat 不造假");
+    assert!(!t.loc.meta_path(&key).exists(), "原键清空");
+    assert!(!t.entry_dir(&entry).exists(), "条目清掉");
+}
+
 /// web 形态测试键（真实前缀 + 无 `_` 的 sid 段：反推无损、display 剥前缀、
 /// 改名闸全走真语义）。hex 段让跨 run 残留 tempdir 也不撞名。
 fn web_key(tag: &str) -> String {

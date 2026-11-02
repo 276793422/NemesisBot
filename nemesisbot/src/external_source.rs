@@ -316,7 +316,9 @@ async fn poll_source(
         };
         // ② 翻页拉取 + 去重导入（BUG-20261028-122：此前固定首页 limit=20，
         //    第 21 条起的 issue 永远导入不了；issues_list 默认按最新更新序
-        //    返回，新 issue 恒在首页——满页零新导入即停，稳态 1 请求/轮）。
+        //    返回，新 issue 恒在首页。F5 2026-11-02 复评：停页只认可证明
+        //    条件——末页（不足一页）；满页零新导入不再停页（标签过滤/全熟
+        //    前沿不证明后续页没有可导入条目），深页照扫，上限兜底）。
         let mut imported = Vec::new();
         // 本轮已导入的最大外部 issue 号（水位投影，跨轮取 max）。
         let mut watermark: Option<i64> = None;
@@ -332,8 +334,7 @@ async fn poll_source(
                     head(&text, 200)
                 ));
             }
-            // 截断诚实化（BUG-20261028-122：旧实现「下轮重取」是空头支票
-            // ——下轮还是同一个被截断的首页）：一条都抢救不出来 = 轮询失败
+            // 截断诚实化（BUG-20261028-122）：一条都抢救不出来 = 轮询失败
             // 状态（外部可见 last_error），绝不伪造成功。
             if truncation_blocked(truncated, entries.len()) {
                 return Err(format!(
@@ -341,17 +342,21 @@ async fn poll_source(
                     text.len()
                 ));
             }
+            // F5（2026-11-02 复评）截断诚实化：抢救出的完整条目**先照常
+            // 导入**再带 warning 结束本轮——旧实现在此提前 return，把本页
+            // 明明完整的条目一并丢弃。截断页 fetched 不可信（8K 斩断处可能
+            // 还有更多条目）→ 不作末页判定：导入完本页即收，下轮从首页
+            // 重扫，MAX_POLL_PAGES 兜底。
+            let mut truncation_warning: Option<String> = None;
             if truncated {
                 let msg = format!(
-                    "第 {page} 页响应超 8K 截断，抢救出 {} 条完整条目（页内尾部丢失；同参数下轮同样截断=不自愈，需调大 HTTP_BODY_CAP 或等结构化通道）",
+                    "第 {page} 页响应超 8K 截断，抢救出 {} 条完整条目并照常导入（页内尾部丢失；同参数下轮同样截断=不自愈，需调大 HTTP_BODY_CAP 或等结构化通道）",
                     entries.len()
                 );
                 tracing::warn!("[ExternalSource] {key}: {msg}");
-                // 部分截断 ≠ 错误轮：导入照常推进，警告落独立槽（外部可见）。
-                return Ok((imported, watermark, Some(msg)));
+                truncation_warning = Some(msg);
             }
             // ④ 去重导入 + 自动派发（沿页推进）。
-            let mut newly_imported = false;
             for entry in &entries {
                 if entry.get("pull_request").is_some() {
                     continue; // Gitea issues_list 混入 PR——不导入
@@ -374,7 +379,6 @@ async fn poll_source(
                 match import_entry(rt, src, &project, entry, &origin_id, cluster) {
                     Ok(board_no) => {
                         imported.push(board_no);
-                        newly_imported = true;
                         watermark = Some(watermark.map_or(number, |w| w.max(number)));
                     }
                     Err(e) => {
@@ -382,15 +386,20 @@ async fn poll_source(
                     }
                 }
             }
-            // 停页判定（纯函数 [`should_stop_paging`]，回归锁钉死）：末页
-            // （返回不足一页）或满页但零新导入（前沿已过）。
-            if should_stop_paging(entries.len() as i64, newly_imported) {
+            // F5：截断页到此为止（fetched 不可信，不作末页判定），带 warning 收轮。
+            if let Some(msg) = truncation_warning {
+                return Ok((imported, watermark, Some(msg)));
+            }
+            // 停页判定（F5 2026-11-02 复评）：只认可证明条件——末页（返回不足
+            // 一页，对端已取尽）。满页零新导入不再停页：标签过滤/全熟/PR 混入
+            // 不证明后续页没有可导入条目（旧逻辑深页永不扫描 = 漏任务）。
+            if should_stop_paging(entries.len() as i64) {
                 break;
             }
             page += 1;
             if page > MAX_POLL_PAGES {
                 tracing::warn!(
-                    "[ExternalSource] {key}: 翻页达硬上限 {MAX_POLL_PAGES} 页，本轮停止（对端未取尽——若常态出现请检查去重/水位）"
+                    "[ExternalSource] {key}: 翻页达硬上限 {MAX_POLL_PAGES} 页，本轮停止（对端未取尽属常态时，请收窄 labels 或调大上限）"
                 );
                 break;
             }
@@ -437,12 +446,12 @@ fn page_args(src: &ExternalSourceConfig, page: i64) -> serde_json::Value {
     })
 }
 
-/// 翻页停页判定（BUG-20261028-122 回归锁锚点）：末页（返回不足一页，
-/// 对端已取尽）或满页但零新导入（前沿已过——全熟/全被标签滤掉）即停。
-/// 前提：issues_list 默认最新更新序，新 issue 恒出现在首页——满页有新
-/// 导入才值得继续翻。
-fn should_stop_paging(fetched: i64, newly_imported: bool) -> bool {
-    fetched < POLL_PAGE_LIMIT || !newly_imported
+/// 翻页停页判定（F5 2026-11-02 复评回归锁锚点）：只认可证明条件——末页
+/// （返回不足一页 = 对端已取尽）。旧逻辑「满页零新导入即停」在标签过滤/
+/// 全熟/PR 混入场景并不证明后续页没有可导入条目，深页永不扫描 = 漏任务；
+/// 改为满页恒续翻，MAX_POLL_PAGES 兜底防失控。
+fn should_stop_paging(fetched: i64) -> bool {
+    fetched < POLL_PAGE_LIMIT
 }
 
 /// 截断诚实化判定（BUG-20261028-122 回归锁锚点）：响应被 8K 截断且一条

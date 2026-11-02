@@ -274,6 +274,7 @@ fn test_status_auth_no_credentials() {
     assert!(!auth_path.exists());
 }
 
+#[cfg(feature = "auth")]
 #[test]
 fn test_status_auth_with_credentials() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -427,7 +428,7 @@ mod run_arm {
         .await;
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(all(windows, feature = "auth"))] // Windows-form + nemesis_auth 随 auth feature 进出
     #[tokio::test]
     async fn auth_file_with_all_credential_states() {
         with_env_home(|home| async move {
