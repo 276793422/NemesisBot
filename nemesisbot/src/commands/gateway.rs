@@ -304,6 +304,16 @@ pub async fn run(
             .as_ref()
             .and_then(|p| p.ssrf_guard().cloned()),
     );
+    // workflow http 节点 SSRF 闸（BUG-20261102-324 同族接线）：url 支持
+    // {{var}} 运行时注入 + 此前默认自动跟随重定向，威胁面与 web_fetch 同级。
+    // Guard Clone 共享 inner，闸配置热更新对节点执行同效；None（workflow 开
+    // + security 关 / ssrf 层关）= 无闸直通，重定向纪律仍生效。
+    #[cfg(all(feature = "security", feature = "workflow"))]
+    nemesis_workflow::nodes::set_http_ssrf_guard(
+        security_plugin
+            .as_ref()
+            .and_then(|p| p.ssrf_guard().cloned()),
+    );
     // web_server &mut 绑定恢复——推迟到本点：init_agent 以 &WebWiring 借读
     // 整体（board_event_hub），部分移动后不可再整体借用。
     let mut web_server = web_wiring.web_server;

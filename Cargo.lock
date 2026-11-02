@@ -4615,6 +4615,7 @@ dependencies = [
  "nemesis-prompts",
  "nemesis-providers",
  "nemesis-sandbox",
+ "nemesis-security",
  "nemesis-taskstore",
  "nemesis-tools",
  "nemesis-types",
