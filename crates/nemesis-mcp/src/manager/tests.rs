@@ -1159,3 +1159,34 @@ fn r47_save_config_atomic_no_tmp_residue_and_round_trips() {
     assert_eq!(reloaded.servers[0].name, "atomic-srv");
     assert_eq!(reloaded, config, "round-trip must be lossless");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-336 回归锁：one-shot 探测的内层逐请求超时必须跟随外层预算
+// （+1s 让位宽限）。此前两处 one-shot（stdio / HTTP）走裸 McpClient::new()，
+// 内层硬编码 30s——调用方传 timeout>30 放宽预算被内层静默截断（外层形同
+// 虚设，报错形态是内层 -3 timeout）。2026-10-15 第十二轮只修了
+// from_server_config 注册路径，本位点同族漏配。红证（CLI 实跑）：31s 慢
+// server + --timeout 35 → 修复前 32s 失败于内层；修复后 ~31s 成功。
+// 行为级区分度需 >30s 墙钟（不可入 CI），接线咬合以纯函数断言钉死：
+// 两处 one-shot 构造点消费 one_shot_request_timeout_ms（编译器强制存在），
+// 推导值与 from_server_config_with_profile 的「外层+1s」纪律同源。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r336_one_shot_budget_defaults_to_15s_on_zero() {
+    assert_eq!(super::one_shot_budget(0).as_secs(), 15);
+    assert_eq!(super::one_shot_budget(15).as_secs(), 15);
+    assert_eq!(super::one_shot_budget(35).as_secs(), 35);
+}
+
+#[test]
+fn r336_one_shot_inner_timeout_follows_outer_budget_plus_grace() {
+    // 缺省/零 → 外层 15s → 内层 16s
+    assert_eq!(super::one_shot_request_timeout_ms(0), 16_000);
+    assert_eq!(super::one_shot_request_timeout_ms(15), 16_000);
+    // 临界：外层 30s（旧硬编码值）→ 内层 31s（恒大于外层，不再平齐）
+    assert_eq!(super::one_shot_request_timeout_ms(30), 31_000);
+    // 缺陷显形区间：外层 >30s → 内层跟随，不再被旧 30s 硬编码截断
+    assert_eq!(super::one_shot_request_timeout_ms(35), 36_000);
+    assert_eq!(super::one_shot_request_timeout_ms(120), 121_000);
+}
