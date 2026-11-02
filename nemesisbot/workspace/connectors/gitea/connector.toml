@@ -14,6 +14,9 @@ name = "Gitea"
 version = "0.1.0"
 kind = "rest"
 description = "自托管 Gitea 仓库的 issue/PR 只读与受限写动作"
+# 任务专属副本 clone 源（域剥离批 C：外循环 ensure_issue_project 从这里起副本）。
+# 改成你的 Gitea 实例仓库 http 地址（与 base 同主机）。
+clone_url = "http://127.0.0.1:3000/p0admin/durfmt.git"
 
 [connector.http]
 base = "http://127.0.0.1:3000/api/v1"

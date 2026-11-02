@@ -174,6 +174,60 @@ fn composite_routes_cluster_to_default_and_fires_board_notifier() {
     assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
+/// 2026-11-02 publish 审批卡不可见根修：flow publish 的 connector invoke
+/// 用合成通道名 `flow-engine`（不在 ChannelManager allowed 白名单），旧
+/// 路由把卡片发往无投递面的通道 = 静默丢弃、ask 无声等满超时（journal
+/// 实证三卡 broker='channel'，M5-3 cluster 同族）。注入出站白名单后：
+/// 合成通道名 → 默认管理器（Dashboard 卡，approval.respond 可达）；在册
+/// IM 通道照旧走通道卡片。未注入 = 维持旧语义（既有测试覆盖）。
+#[test]
+fn composite_routes_unregistered_synth_channel_to_default_when_whitelist_armed() {
+    let mock = Arc::new(RecordingMock::default());
+    let bus = Arc::new(MessageBus::new());
+    let composite =
+        CompositeApprovalManager::new(mock.clone(), Arc::new(ChannelApprovalManager::new(bus)));
+
+    // 注入出站白名单（web + telegram 在册；flow-engine 合成名不在）。
+    composite.set_outbound_channels(vec!["web".to_string(), "telegram".to_string()]);
+
+    // 合成通道名 → 默认管理器即时裁决（Dashboard 卡面，非通道超时）。
+    let v = composite
+        .request_approval_sync_ctx(
+            "r-flow",
+            "file_write",
+            "/tmp/x",
+            "HIGH",
+            "flow publish create_pull ask",
+            5,
+            &ctx_of("flow-engine", "flow-engine"),
+        )
+        .unwrap();
+    assert!(
+        v.approved,
+        "合成通道名 ask 必须即时走默认管理器（Dashboard 卡）"
+    );
+    assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // 在册 IM 通道仍走通道卡片（默认管理器不被触达；1s 超时自动拒兜底）。
+    let v2 = composite
+        .request_approval_sync_ctx(
+            "r-tg",
+            "file_write",
+            "/tmp/x",
+            "HIGH",
+            "im ask",
+            1,
+            &ctx_of("telegram", "chat-9"),
+        )
+        .unwrap();
+    assert!(!v2.approved, "在册 IM 通道仍走通道卡片（1s 超时自动拒）");
+    assert_eq!(
+        mock.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "默认管理器未被 IM ask 触达"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ④/⑤ 端到端往返 + 超时（真 MessageBus）
 // ---------------------------------------------------------------------------

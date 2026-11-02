@@ -455,6 +455,89 @@ fn finish_debug_only_tree_is_zero_diff() {
     assert!(read_changeset(&payload).is_none(), "纯调试产物不得产变更集");
 }
 
+/// is_build_artifact 边界：只排顶层 `target/`（含深层内容）；形近名
+/// （targets/、target_dir/）不算；子目录内的同名不排（S-O3「无争议名」
+/// 纪律的有实证收窄发生在管线层，不动通用剪枝语义）。
+#[test]
+fn is_build_artifact_boundary() {
+    assert!(super::is_build_artifact("target"));
+    assert!(super::is_build_artifact("target/debug/x.pdb"));
+    assert!(super::is_build_artifact("target/release/lib.d"));
+    assert!(!super::is_build_artifact("targets"), "形近名不算");
+    assert!(!super::is_build_artifact("target_dir/x"), "形近名不算");
+    assert!(
+        !super::is_build_artifact("src/target/data.bin"),
+        "子目录内的同名不在顶层语义内"
+    );
+}
+
+/// diff_tree 双向排除顶层 `target/`：worker 构建产物不进 upserts；基线
+/// 残留产物缺失不报删除；`src/target` 深层同名不受牵连照常进变更集
+/// （BUG 2026-11-01：68MB/405 文件构建垃圾进变更集实录）。
+#[test]
+fn diff_tree_excludes_top_level_target_both_ways() {
+    let ws = Ws::new("targetdiff");
+    let exec = exec_dir_for(&ws.root, "t-tgt-1");
+    std::fs::create_dir_all(exec.join("target").join("debug")).unwrap();
+    std::fs::write(exec.join("target/debug/app.exe"), b"MZfake").unwrap();
+    std::fs::create_dir_all(exec.join("src/target")).unwrap();
+    std::fs::write(exec.join("src/target/data.bin"), b"deep-v2\n").unwrap();
+    std::fs::create_dir_all(exec.join("src")).unwrap();
+    std::fs::write(exec.join("src/a.h"), b"alpha-v2\n").unwrap();
+
+    let baseline = vec![
+        TransferFileEntry {
+            path: "src/a.h".into(),
+            size: 8,
+            sha256: sha256_hex(b"alpha-v1"),
+        },
+        // 基线里残留的历史构建产物，工作副本已不存在——不报删除。
+        TransferFileEntry {
+            path: "target/debug/old.pdb".into(),
+            size: 5,
+            sha256: sha256_hex(b"oldpd"),
+        },
+    ];
+    let (upserts, contents, deletions, _skipped) = super::diff_tree(&exec, &baseline).unwrap();
+    let paths: Vec<&str> = upserts.iter().map(|u| u.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["src/a.h", "src/target/data.bin"],
+        "顶层 target/ 双向排除、深层同名照常: {paths:?}"
+    );
+    assert_eq!(contents.len(), 2);
+    assert!(
+        deletions.is_empty(),
+        "基线残留构建产物缺失不得报删除: {deletions:?}"
+    );
+}
+
+/// 只写 `target/` 的工作副本 = 零差异交付（纯记录，不产变更集）——顶层
+/// 排除在 finish 生产路径生效（镜像 finish_debug_only_tree_is_zero_diff）。
+#[test]
+fn finish_target_only_tree_is_zero_diff() {
+    let ws = Ws::new("finish-tgtonly");
+    let task = "t-ftgt-1";
+    ws.seed_logs(task);
+    let exec = exec_dir_for(&ws.root, task);
+    std::fs::create_dir_all(exec.join("target/debug")).unwrap();
+    std::fs::write(exec.join("target/debug/app.exe"), b"MZfake").unwrap();
+    write_sidecar(
+        &exec,
+        &BaselineSidecar {
+            baseline_commit: "b".into(),
+            files: vec![],
+        },
+    )
+    .unwrap();
+
+    let ob = ws.outbox();
+    assert!(finish_task_exec(&ws.root, &ob, task, "node-a").unwrap());
+    let payload = ob.outbox_root().join(task).join("payload");
+    assert!(payload.join("log.md").exists());
+    assert!(read_changeset(&payload).is_none(), "纯构建产物不得产变更集");
+}
+
 // ---------------------------------------------------------------------------
 // BUG-2026-10-15（NB-120）：残留进程清扫（A）+ 不可读文件韧性跳过（B）+
 // 周期兜底护栏（D）

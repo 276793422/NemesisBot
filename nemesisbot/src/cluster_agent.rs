@@ -378,6 +378,22 @@ async fn execute_new_task(
     let content_preview = truncate_str(&task.content, 200);
     nemesis_cluster::logger::log_task("exec_start", &task.task_id, &content_preview);
     let context = build_context(agent_loop, task);
+    // 交付捕获前置：档案任务在 exec 副本内定格 git 基线（BUG 2026-11-01
+    // 根修——副本是裸文件树，无基线则成功交付的捕获恒缺席）。基线 SHA
+    // 接住透传给交付捕获——重入靠持久化锚点取回真基线，HEAD 会被 worker
+    // 合法提交移动（BUG C 后半，T1 实证）。失败 warn 后任务照常（交付
+    // 证据缺席可观测，不阻断主链路）。
+    let mut exec_baseline_sha: Option<String> = None;
+    if let Some(dir) = context.tool_path_base.as_ref() {
+        match crate::delivery_gate::ensure_exec_repo(dir) {
+            Ok(sha) => exec_baseline_sha = Some(sha),
+            Err(e) => tracing::warn!(
+                task_id = %task.task_id,
+                error = %e,
+                "[ClusterAgent] exec 基线仓库就绪失败（交付证据将缺席，回调主链路不受影响）"
+            ),
+        }
+    }
     let trace_id = format!("cluster-{}", &task.task_id);
     // Per-task AgentInstance：稳定前缀（装配期 system_prompt）+ 任务职能
     // 后缀（M3）。职能文本从不跨 RPC——slug 随任务走，契约本节点本地渲染。
@@ -587,17 +603,32 @@ async fn execute_new_task(
     // P4 交付门：成功交付才捕获分支（error/取消没有交付物可捕获）。
     // 失败 = None（交付门是增强证据面，绝不阻断回调主链路）。
     let delivery = if status.1 == "success" {
-        // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
-        // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
-        let checks_head_tree = delivery_base_tree(agent_loop);
-        capture_task_delivery(
-            agent_loop,
-            &task.task_id,
-            delivery_base.as_deref(),
-            self_node_id,
-            checks,
-            checks_head_tree.as_deref(),
-        )
+        // 交付捕获路由（BUG 2026-11-01 根修）：档案任务（tool_path_base =
+        // exec 副本）从副本就地 diff——主 workspace 影子库 JSON 形态捕获恒
+        // 缺席，改动与捕获对象错位；非 exec 任务走原主路径不变。
+        match (context.tool_path_base.as_ref(), agent_loop.workspace_root()) {
+            (Some(exec_dir), Some(ws)) => crate::delivery_gate::capture_task_delivery_exec(
+                exec_dir,
+                &ws,
+                &task.task_id,
+                self_node_id,
+                checks,
+                exec_baseline_sha.as_deref(),
+            ),
+            _ => {
+                // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
+                // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
+                let checks_head_tree = delivery_base_tree(agent_loop);
+                capture_task_delivery(
+                    agent_loop,
+                    &task.task_id,
+                    delivery_base.as_deref(),
+                    self_node_id,
+                    checks,
+                    checks_head_tree.as_deref(),
+                )
+            }
+        }
     } else {
         None
     };
@@ -664,6 +695,21 @@ async fn resume_task(
     instance.replace_tool_result(tool_call_id, callback_result);
 
     let context = build_context(agent_loop, task);
+    // 交付捕获前置：档案任务 exec 副本基线就绪（续行/重派重入 = 优先读
+    // 持久化锚点取回定格基线，幂等；HEAD 已可能被 worker 合法提交移动——
+    // BUG 2026-11-01 C 后半）。基线 SHA 接住透传给交付捕获。失败 warn 后
+    // 任务照常（交付证据缺席可观测，不阻断主链路）。
+    let mut exec_baseline_sha: Option<String> = None;
+    if let Some(dir) = context.tool_path_base.as_ref() {
+        match crate::delivery_gate::ensure_exec_repo(dir) {
+            Ok(sha) => exec_baseline_sha = Some(sha),
+            Err(e) => tracing::warn!(
+                task_id = %task.task_id,
+                error = %e,
+                "[ClusterAgent] exec 基线仓库就绪失败（交付证据将缺席，回调主链路不受影响）"
+            ),
+        }
+    }
     let trace_id = format!("cluster-resume-{}", &task.task_id);
 
     // W2 P4 per-task cancel：resume 路径同样注册令牌（token 透传给
@@ -813,17 +859,32 @@ async fn resume_task(
     // P4 交付门：同 execute_new_task——成功才捕获（diff 基线 = 本轮续行前
     // 快照）；失败 = None 不阻断回调主链路。
     let delivery = if status.1 == "success" {
-        // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
-        // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
-        let checks_head_tree = delivery_base_tree(agent_loop);
-        capture_task_delivery(
-            agent_loop,
-            &task.task_id,
-            delivery_base.as_deref(),
-            self_node_id,
-            checks,
-            checks_head_tree.as_deref(),
-        )
+        // 交付捕获路由（BUG 2026-11-01 根修）：档案任务（tool_path_base =
+        // exec 副本）从副本就地 diff——主 workspace 影子库 JSON 形态捕获恒
+        // 缺席，改动与捕获对象错位；非 exec 任务走原主路径不变。
+        match (context.tool_path_base.as_ref(), agent_loop.workspace_root()) {
+            (Some(exec_dir), Some(ws)) => crate::delivery_gate::capture_task_delivery_exec(
+                exec_dir,
+                &ws,
+                &task.task_id,
+                self_node_id,
+                checks,
+                exec_baseline_sha.as_deref(),
+            ),
+            _ => {
+                // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
+                // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
+                let checks_head_tree = delivery_base_tree(agent_loop);
+                capture_task_delivery(
+                    agent_loop,
+                    &task.task_id,
+                    delivery_base.as_deref(),
+                    self_node_id,
+                    checks,
+                    checks_head_tree.as_deref(),
+                )
+            }
+        }
     } else {
         None
     };

@@ -1847,6 +1847,7 @@ fn test_autopilot_cron_bookkeeping_and_run_history() {
     ni.origin = Some(crate::models::TaskOrigin {
         origin_type: "autopilot".into(),
         origin_id: ap.id.to_string(),
+        origin_meta: Default::default(),
     });
     let r1 = store.create_issue(ni).unwrap();
     store.mark_autopilot_run(ap.id).unwrap();
@@ -4734,57 +4735,6 @@ fn ensure_default_channels_includes_team() {
     store.ensure_default_channels().unwrap();
     let team = store.get_channel_by_name("#team").unwrap();
     assert!(team.is_some(), "#team 默认频道必须种子化");
-    cleanup(&dir);
-}
-
-// ---------------------------------------------------------------------------
-// P1 外循环（状态回写）：转移观察者——账面安全后触发、None 零波及
-// ---------------------------------------------------------------------------
-
-#[test]
-fn transition_observer_fires_after_commit_with_snapshot() {
-    let (store, dir) = temp_store("observer");
-    let issue = store.create_issue(new_issue("外部导入单")).unwrap();
-    let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>> = Default::default();
-    let seen_cb = seen.clone();
-    store.set_transition_observer(std::sync::Arc::new(move |iss, from, to| {
-        seen_cb.lock().unwrap().push((
-            format!("{}|{}", iss.number, iss.title),
-            from.to_string(),
-            to.to_string(),
-        ));
-    }));
-    store
-        .transition_issue(issue.id, IssueStatus::Todo, &admin())
-        .unwrap();
-    store
-        .transition_issue(issue.id, IssueStatus::InProgress, &admin())
-        .unwrap();
-    let got = seen.lock().unwrap();
-    assert_eq!(got.len(), 2, "两次转移各触发一次");
-    assert_eq!(
-        got[0],
-        (
-            "NB-1|外部导入单".to_string(),
-            "backlog".to_string(),
-            "todo".to_string()
-        )
-    );
-    assert_eq!(got[1].1, "todo");
-    assert_eq!(got[1].2, "in_progress");
-    drop(got);
-    cleanup(&dir);
-}
-
-#[test]
-fn transition_observer_absent_is_zero_impact() {
-    // 未装观察者 = 旧行为字节不变（单测/CLI 零波及）。
-    let (store, dir) = temp_store("observer-absent");
-    let issue = store.create_issue(new_issue("普通单")).unwrap();
-    let moved = store
-        .transition_issue(issue.id, IssueStatus::InProgress, &admin())
-        .unwrap();
-    assert_eq!(moved.status.as_str(), "in_progress");
     cleanup(&dir);
 }
 

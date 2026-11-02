@@ -4,6 +4,7 @@
 //! Unix 秒（i64，与 nemesis-data::RequestLog 一致）。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // 枚举
@@ -227,6 +228,11 @@ pub struct TaskOrigin {
     pub origin_type: String,
     /// 来源 id（cron job id、通道消息 id 等）。
     pub origin_id: String,
+    /// 来源坐标映射（JSON 落 origin_meta 列；flow 模板 land 时写入）。
+    /// 语义由来源方定义（如 `{"owner":..,"repo":..,"number":..}`），board
+    /// 只存取不解释；v1 旧单无此字段（DEFAULT 空 map）。
+    #[serde(default)]
+    pub origin_meta: BTreeMap<String, String>,
 }
 
 /// 评论（表 `comment`；`parent_id` 支持一层线程，P3 UI 展开）。

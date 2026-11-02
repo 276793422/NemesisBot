@@ -93,8 +93,10 @@ export function statusLabel(s: string): string {
 }
 
 /** P1 外循环（2026-10-25）：内置来源族（不显示外部来源徽标）；集外类型
- *  = 外部 connector 来源（gitea/github/…），看板卡片亮 🔗 徽标。与后端
- *  external_source 回写过滤清单同口径（后端是裁决面，前端只是展示）。 */
+ *  = flow 模板声明 origin_type 的外部 connector 来源，看板卡片亮 🔗 徽标。
+ *  与后端回写订阅面同口径——flow 模板 on_transition 按 origin_type 订阅，
+ *  内置类型永不匹配模板 = 天然不回写（模板绑定即过滤，无宿主端清单；
+ *  前端只是展示侧镜像）。 */
 const INTERNAL_ORIGINS = new Set(['autopilot', 'cron', 'channel', 'cli', 'board', 'manual'])
 
 export function isInternalOrigin(t: string): boolean {

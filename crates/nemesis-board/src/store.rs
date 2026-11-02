@@ -29,11 +29,6 @@ pub struct BoardStore {
     /// 所有 dispatch 函数已持有 store，资产段渲染零参数蔓延）。None =
     /// 本节点未配资产签发——派发 prompt 不带「## 任务资产」段。
     asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
-    /// P1 外循环（状态回写）：转移后观察者槽。None = 无观察者（单测/CLI
-    /// 零波及）。
-    transition_observer: std::sync::OnceLock<
-        std::sync::Arc<dyn Fn(&crate::models::Issue, &str, &str) + Send + Sync>,
-    >,
 }
 
 /// 送达失败标记（F2，2026-10-13）——评论即账本的单一真相源：RPC 送达
@@ -107,7 +102,6 @@ impl BoardStore {
         Ok(Self {
             conn: Mutex::new(conn),
             asset_signing: std::sync::OnceLock::new(),
-            transition_observer: std::sync::OnceLock::new(),
         })
     }
 
@@ -119,18 +113,6 @@ impl BoardStore {
     /// dispatch 签发上下文（未注入 → None，派发 prompt 不带资产段）。
     pub fn asset_signing(&self) -> Option<crate::asset_token::AssetSignContext> {
         self.asset_signing.get().cloned()
-    }
-
-    /// P1 外循环（状态回写，2026-10-25）：转移后观察者槽（gateway 装配
-    /// set 一次，asset_signing 同款 OnceLock 语义；重复 set 忽略）。
-    /// 签名 = `(转移后 issue 快照, from_status, to_status)`。触发点在事务
-    /// 提交**之后**——观察者故障绝不影响账面；实现方自律不阻塞不 panic
-    /// （外部回写走通道异步消费，本回调只做入队）。
-    pub fn set_transition_observer(
-        &self,
-        f: std::sync::Arc<dyn Fn(&crate::models::Issue, &str, &str) + Send + Sync>,
-    ) {
-        let _ = self.transition_observer.set(f);
     }
 
     fn now() -> i64 {
@@ -231,14 +213,23 @@ impl BoardStore {
         } else {
             Some(serde_json::to_string(&new.required_capabilities).map_err(|e| e.to_string())?)
         };
+        // 来源坐标映射（外循环域剥离批 C-1，v21）：JSON TEXT 形态，空 map
+        // 落 ''（列 DEFAULT 同形；board 只存取不解释）。origin 缺席同样落
+        // ''——列 NOT NULL，绑 NULL 会让所有无 origin 建单撞约束。
+        let origin_meta_json = new
+            .origin
+            .as_ref()
+            .map(|o| serde_json::to_string(&o.origin_meta).map_err(|e| e.to_string()))
+            .transpose()?
+            .unwrap_or_default();
         tx.execute(
             "INSERT INTO issue (number, title, description, status, priority,
                 assignee_type, assignee_id, creator_type, creator_id,
                 parent_issue_id, project_id, due_date, position,
-                acceptance_criteria, origin_type, origin_id,
+                acceptance_criteria, origin_type, origin_id, origin_meta,
                 required_role, required_tags, required_profession, required_capabilities,
                 required_backend, requires_evidence, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?23)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?24)",
             params![
                 number,
                 new.title,
@@ -256,6 +247,7 @@ impl BoardStore {
                 new.acceptance_criteria,
                 new.origin.as_ref().map(|o| o.origin_type.as_str()),
                 new.origin.as_ref().map(|o| o.origin_id.as_str()),
+                origin_meta_json,
                 new.required_role
                     .as_deref()
                     .filter(|s| !s.trim().is_empty()),
@@ -776,12 +768,6 @@ impl BoardStore {
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
         let issue = self.get_issue(id)?;
-        // P1 外循环（状态回写）：转移已落账，观察者在账面安全后触发。
-        // 观察者自带自律（不阻塞不 panic）；store 侧不包裹——触发点是
-        // 纯通知位，故障向上炸 = 实现方违约应修实现方。
-        if let Some(cb) = self.transition_observer.get() {
-            cb(&issue, old.status.as_str(), to.as_str());
-        }
         Ok(issue)
     }
 
@@ -2972,6 +2958,29 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// run 历史（只按 origin_type，不钉 origin_id）：flow 模板 on_transition
+    /// 回写订阅的数据源——按模板 origin_type 拉「来源单」全量（时间降序截断），
+    /// 逐单比对回写状态文件决定是否补发。外循环域剥离批 C-2（2026-11-02）。
+    pub fn list_issues_by_origin_type(
+        &self,
+        origin_type: &str,
+        limit: usize,
+    ) -> Result<Vec<Issue>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM issue
+                 WHERE origin_type = ?1
+                 ORDER BY created_at DESC, id DESC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![origin_type, limit as i64], row_to_issue)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     // -----------------------------------------------------------------------
     // 统计（看板列计数 / P1 验收）
     // -----------------------------------------------------------------------
@@ -4209,6 +4218,12 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let required_capabilities = required_capabilities_json
         .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
         .unwrap_or_default();
+    // 来源坐标映射（v21）：JSON TEXT → map（坏 JSON/''/NULL 宽容为空）。
+    let origin_meta_json: Option<String> = row.get("origin_meta")?;
+    let origin_meta = origin_meta_json
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&s).ok())
+        .unwrap_or_default();
     Ok(Issue {
         id: row.get("id")?,
         number: row.get("number")?,
@@ -4231,6 +4246,7 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
             (Some(t), Some(i)) => Some(crate::models::TaskOrigin {
                 origin_type: t,
                 origin_id: i,
+                origin_meta,
             }),
             _ => None,
         },

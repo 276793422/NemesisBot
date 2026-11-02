@@ -84,6 +84,7 @@ fn test_issue_serde_roundtrip() {
         origin: Some(TaskOrigin {
             origin_type: "autopilot".into(),
             origin_id: "cron-1".into(),
+            origin_meta: Default::default(),
         }),
         required_role: Some("worker".into()),
         required_tags: vec!["rust".into()],

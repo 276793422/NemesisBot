@@ -578,11 +578,23 @@ pub struct BoardAskNotice {
 /// Dashboard 卡片），IM 通道 → [`ChannelApprovalManager`]；cluster 通道 →
 /// 默认管理器 + [`BoardAskNotice`] 通知（M5-3：审批卡落本节点 Dashboard
 /// SSE 可见 + 看板注记，不再无声等超时）。
+///
+/// 出站投递面判定（2026-11-02 publish 审批卡不可见根修）：flow publish 的
+/// connector invoke 用 `RequestContext::new("flow-engine", ...)`——合成通道
+/// 名不在 ChannelManager 的 allowed-channels 白名单里，卡片 `bus.publish_
+/// outbound("flow-engine", ...)` 无投递面 = 静默丢弃，ask 无声等满超时被拒
+/// （journal 实证三卡 broker='channel'，与 M5-3 的 cluster 通道同族问题）。
+/// 装配点注入出站白名单后：**不在册的通道名一律落默认管理器**（Dashboard
+/// 卡，approval.pending/respond 可达），安全语义不旁路；未注入 = 维持旧
+/// 白名单语义（测试形态兼容）。
 pub struct CompositeApprovalManager {
     default: std::sync::Arc<dyn ApprovalManager>,
     channel: std::sync::Arc<ChannelApprovalManager>,
     /// M5-3：cluster ask 观察者（gateway 装配时安装；None = 只改路由不通知）。
     board_notifier: std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&BoardAskNotice) + Send + Sync>>>,
+    /// 出站投递面名单（ChannelManager allowed-channels 白名单投影；
+    /// None = 未注入 = 旧语义）。
+    outbound_channels: std::sync::Mutex<Option<std::collections::HashSet<String>>>,
 }
 
 impl CompositeApprovalManager {
@@ -594,6 +606,32 @@ impl CompositeApprovalManager {
             default,
             channel,
             board_notifier: std::sync::Mutex::new(None),
+            outbound_channels: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// 注入出站投递面名单（ChannelManager allowed-channels 白名单，gateway
+    /// 装配点调用一次）。注入后：ask 上下文的 channel 不在名单 → 默认管理器
+    /// （Dashboard 卡）。名单含 "web" 无碍（web 已先行特判走默认）。
+    pub fn set_outbound_channels(&self, names: Vec<String>) {
+        *self
+            .outbound_channels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(names.into_iter().collect());
+    }
+
+    /// IM 通道卡片路由判定：名单已注入且 channel 不在册 = 无出站投递面
+    /// （合成通道名）→ false 落默认管理器；未注入（None）或在册 → true
+    /// （IM 卡，未注入形态维持旧语义）。
+    fn routed_via_channel_card(&self, channel: &str) -> bool {
+        match self
+            .outbound_channels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            Some(set) => set.contains(channel),
+            None => true,
         }
     }
 
@@ -681,8 +719,14 @@ impl ApprovalManager for CompositeApprovalManager {
         }
         // web 通道 = Dashboard 卡片（默认管理器的领地）；空 channel/chat =
         // 无可寻址对话 → 默认管理器。其余（telegram/feishu/discord/...）
-        // → 通道卡片。
-        if ctx.channel.is_empty() || ctx.chat_id.is_empty() || ctx.channel == "web" {
+        // → 通道卡片；**不在出站白名单的合成通道名**（flow-engine 等，
+        // 2026-11-02 publish 审批卡不可见根修）→ 默认管理器——卡片发 bus
+        // 无投递面只会静默丢弃、ask 无声等满超时（M5-3 的 cluster 同族）。
+        if ctx.channel.is_empty()
+            || ctx.chat_id.is_empty()
+            || ctx.channel == "web"
+            || !self.routed_via_channel_card(&ctx.channel)
+        {
             self.default.request_approval_sync(
                 request_id,
                 operation,

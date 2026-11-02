@@ -3401,6 +3401,7 @@ fn planner_child(
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".to_string(),
                 origin_id: "NB-1".to_string(),
+                origin_meta: Default::default(),
             }),
             ..Default::default()
         })
@@ -4089,6 +4090,7 @@ fn no_parent(store: &Arc<BoardStore>) -> i64 {
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".to_string(),
                 origin_id: "NB-1".to_string(),
+                origin_meta: Default::default(),
             }),
             ..Default::default()
         })
@@ -4189,6 +4191,7 @@ async fn fallback_role_depth_keeps_role_discipline() {
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".to_string(),
                 origin_id: "NB-1".to_string(),
+                origin_meta: Default::default(),
             }),
             ..Default::default()
         })
@@ -4426,6 +4429,7 @@ async fn fallback_role_relaxed_ordering() {
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".to_string(),
                 origin_id: "NB-1".to_string(),
+                origin_meta: Default::default(),
             }),
             ..Default::default()
         })
@@ -4997,6 +5001,7 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
                 origin: Some(nemesis_board::TaskOrigin {
                     origin_type: "planner".to_string(),
                     origin_id: "NB-1".to_string(),
+                    origin_meta: Default::default(),
                 }),
                 ..Default::default()
             })
@@ -7983,6 +7988,7 @@ async fn agt_sweep_and_rebalance_offline_arms() {
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".into(),
                 origin_id: "NB-1".into(),
+                origin_meta: Default::default(),
             }),
             ..Default::default()
         })

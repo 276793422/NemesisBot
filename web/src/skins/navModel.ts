@@ -67,14 +67,14 @@ export const NAV_GROUPS: NavGroupModel[] = [
   },
   {
     // 多智能体协作三件套（2026-10-25 用户拍板独立成组）：集群=执行入口、
-    // 看板=任务派发入口、交付=交付账本人审 + PR 发布。三者同一工作域，
+    // 看板=任务派发入口、交付=交付账本人审 + 发布留痕。三者同一工作域，
     // 原「配置」组混排语义不清。
     title: '团队',
     items: [
       { id: 'cluster', label: '集群', route: '/cluster', icon: 'M6 3v18 M18 3v18 M3 6h18 M3 18h18 M3 12h18' },
       // W2 P1 (2026-08-31)：托管 Agent 看板（board feature 门控，VITE_FEATURE_BOARD）。
       { id: 'board', label: '看板', route: '/board', icon: 'M4 4h4v10H4zM10 4h4v16h-4zM16 4h4v7h-4z' },
-      // 交付（P4 人审闭环，2026-10-25 从「交付审核」更名并移入本组）：交付账本裁决 + PR 发布。
+      // 交付（P4 人审闭环，2026-10-25 从「交付审核」更名并移入本组）：交付账本裁决 + 发布留痕。
       { id: 'deliveries', label: '交付', route: '/deliveries', icon: 'M12 2l4 4-4 4V7H8v10H6V7H2V3h4V2h6zm5 7h5v13H9v-5h2v3h7V11h-1V9z' },
     ],
   },

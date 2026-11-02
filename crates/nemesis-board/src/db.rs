@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 20;
+const SCHEMA_VERSION: i32 = 21;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -394,6 +394,14 @@ const SCHEMA_V20: &str = r#"
 ALTER TABLE issue ADD COLUMN required_backend TEXT;
 "#;
 
+/// v21（外循环域剥离批 C-1，2026-11-02）：issue 加 origin_meta 列（TEXT，
+/// JSON object 字符串；`''` = 空 map）。来源坐标映射（owner/repo/number 等）
+/// 在建单时由来源方写入，board 只存取不解释；v1 旧单空 map → 消费方（flow
+/// 模板 on_transition 回写）按模板 parse 表达式兜底。
+const SCHEMA_V21: &str = r#"
+ALTER TABLE issue ADD COLUMN origin_meta TEXT NOT NULL DEFAULT '';
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -577,6 +585,13 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 20,
             "[BoardStore] Database migrated to v20 (P6-R1 backend dispatch gate: issue.required_backend)"
+        );
+    }
+    if current_version < 21 {
+        migrate_step(&conn, 21, "v21", SCHEMA_V21)?;
+        tracing::info!(
+            version = 21,
+            "[BoardStore] Database migrated to v21 (task origin_meta coordinates: issue.origin_meta)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

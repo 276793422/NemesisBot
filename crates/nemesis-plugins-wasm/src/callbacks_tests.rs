@@ -94,7 +94,7 @@ fn r70_tool_frame_llm_complete_denied() {
     assert!(
         detail
             .unwrap_or_default()
-            .contains("only available in policy frames")
+            .contains("only available in policy or panel frames")
     );
 }
 

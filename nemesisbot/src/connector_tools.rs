@@ -78,6 +78,26 @@ const MIRROR_LIST_CAP: usize = 64;
 /// 形态以 invoke 期 R4 校验回灌为准）。
 const MIRROR_SCHEMA_CAP_BYTES: usize = 4 * 1024;
 
+/// connector op 执行失败的统一判别（工具结果文本前缀）：`Tool error: ` 是
+/// invoke 通路的失败回灌形态，`⛔` 是安全/审批拦截形态。消费方 = flow 引擎
+/// fetch/publish 步（失败即 fail-outcome，不把失败文本当数据处理）。
+pub(crate) fn is_tool_error(text: &str) -> bool {
+    text.starts_with("Tool error: ") || text.starts_with('⛔')
+}
+
+/// 「请求确定未发出」判别（publish.rs create 臂错误分流消费）：只有 `⛔`
+/// dispatch 层拒（estop/审批/安全层——dispatch 瀑布在工具执行前就拦了，
+/// connector op 从未发出）算确定未发出。其余一切 `Tool error: ` 文本
+/// （超时/传输断/远程 RPC 未知/HTTP 4xx/5xx/连接失败/凭据缺失/绑定异常）
+/// **不**视为确定未发出——publish 据此走 unknown 对账收敛臂（按幂等键回
+/// 查既有条目，409 duplicate 即该臂的服务端形态），不做「未发出」的确定
+/// 性断言。口径刻意只锚 `⛔` 一个前缀：错误文本形态（honest_err 各 producer）
+/// 演进不破分类；改判别语义必须同步复核 publish.rs create 臂。
+pub(crate) fn error_text_dispatch_rejected(text: &str) -> bool {
+    let body = text.strip_prefix("Tool error: ").unwrap_or(text);
+    body.starts_with('⛔')
+}
+
 // ---------------------------------------------------------------------------
 // op_type slug 投影（工具侧单一真相源）
 // ---------------------------------------------------------------------------
@@ -248,6 +268,9 @@ fn receipt_card(
     s
 }
 
+/// 失败回灌统一形态（生产方）：`Tool error: {msg}`。消费方按前缀分类——
+/// `⛔`（dispatch 拒）= 确定未发出；其余 = publish 对账臂口径（见
+/// [`error_text_dispatch_rejected`]）。改本形态前先核对该分类契约。
 fn honest_err(msg: impl std::fmt::Display) -> String {
     format!("Tool error: {msg}")
 }
@@ -994,6 +1017,11 @@ impl ConnectorInvokeTool {
         // R4 执行前强制（单点，本地/远程同覆盖）：args_schema 校验 + 资金
         // 参数形态强制——必须在出网（本地 dispatch / 远程 RPC）之前拒绝，
         // 且不消耗任何额度（reserve 之前）。
+        // 校验前先做 schema 驱动的 wire 规整（coerce_op_args）：flow 引擎
+        // 等字符串传输调用方的 args 值恒为字符串，类型事实只在 schema——
+        // 整串可解析才转换，不可解析保持字符串落到下方类型错诚实浮出。
+        let op_args =
+            nemesis_connectors::registry::coerce_op_args(op.args_schema.as_ref(), &op_args);
         if let Err(e) = validate_op_args(op.args_schema.as_ref(), &op_args) {
             return (
                 Err(honest_err(format!(
@@ -1609,7 +1637,7 @@ impl ConnectorInvokeTool {
         }
 
         // 凭据注入：别名 connector/<id>/<slot>，真值只进请求，不进回执/日志。
-        // header 形态支持 prefix（认证头惯用形态：Gitea `token <PAT>`）。
+        // header 形态支持 prefix（认证头惯用形态：如 `token <PAT>` 前缀）。
         // vault 解析器随 security feature 门控（vault_runtime 模块同闸）——
         // 无 security 构建 = 必填槽位诚实报「解析器未安装」，可选槽位跳过
         // 注入（与缺凭据同路：无 key 走公开路径）。
@@ -1649,12 +1677,12 @@ impl ConnectorInvokeTool {
                             // 通道）。两判据：`cluster` = worker LLM 任务执行
                             // （cluster_agent build_context）；`cluster-connector`
                             // = 远程执行面 RPC handler（gateway/runtime.rs 构造）；
-                            // `external-source` = P1 外循环轮询（external_source
-                            // 构造，无人值守——vault 缺凭据同诚实报错）。
+                            // `flow-engine` = flow 模板周期 tick（无人值守导入
+                            // 循环——vault 缺凭据同诚实报错，不挂 tick）。
                             // 与 channel_approval M5-3 的 cluster 判定同族。
                             if matches!(
                                 context.channel.as_str(),
-                                "cluster" | "cluster-connector" | "external-source"
+                                "cluster" | "cluster-connector" | "flow-engine"
                             ) {
                                 return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
                             }

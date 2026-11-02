@@ -182,9 +182,9 @@ useBoardChanged(() => load(true))
         >
           <div class="kanban-card-top">
             <code>{{ issue.number }}</code>
-            <!-- P1 外循环（2026-10-25）：外部来源徽标（gitea owner/repo#N）；
-                 链接回跳需仓库 base URL（issue JSON 未携带）——v1 只标识，
-                 详情模态已有完整来源行。 -->
+            <!-- P1 外循环（2026-10-25）：外部来源徽标（模板声明 origin 的
+                 owner/repo#N 形态标识）；链接回跳需仓库 base URL（issue JSON
+                 未携带）——v1 只标识，详情模态已有完整来源行。 -->
             <span
               v-if="issue.origin && !isInternalOrigin(issue.origin.origin_type)"
               class="badge badge-info"

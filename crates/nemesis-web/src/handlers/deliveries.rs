@@ -62,11 +62,12 @@ pub struct DeliveryInfo {
     /// 执行前 base tree（diff 的锚点侧；与 head_tree 一起构成可复验的
     /// 变更区间标识）。
     pub base_tree: Option<String>,
-    // -- P3 发布留痕（payload 键；未发布 = null）--
-    /// PR 号（`pr_number`）。
-    pub pr_number: Option<i64>,
-    /// PR 链接（`pr_url`）。
-    pub pr_url: Option<String>,
+    // -- 发布留痕（payload 键；未发布 = null；域剥离批 2026-11-02 键改
+    //    通用 external_*，旧 pr_* 由账本投影垫片兜底读取）--
+    /// 外部条目引用号（payload 键 `external_ref`）。
+    pub external_ref: Option<i64>,
+    /// 外部条目人读链接（payload 键 `external_url`）。
+    pub external_url: Option<String>,
     /// 发布时间（`published_at`，RFC3339 本地时区）。
     pub published_at: Option<String>,
 }
@@ -131,7 +132,7 @@ pub(crate) static DELIVERIES_BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_
 /// git push + 状态机落账），实现落 nemesisbot 侧（本 crate 不能反向依赖
 /// ——同 [`DeliveriesBridge`] 依赖反转模式）。请求/响应按 JSON 值透传：
 /// 参数解析权在实现侧（task_id/connector/owner/repo/base/copy_path/title/
-/// body），返回 `{status, pr_number, pr_url, commit, branch, detail}`。
+/// body），返回 `{status, external_ref, external_url, commit, branch, detail}`。
 #[async_trait::async_trait]
 pub trait DeliveryPublishBridge: Send + Sync {
     async fn publish(&self, args: &serde_json::Value) -> Result<serde_json::Value, String>;

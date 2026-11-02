@@ -121,8 +121,8 @@ fn fake_info(key: &str, with_patch: bool) -> DeliveryInfo {
         commit: Some("abc123".to_string()),
         head_tree: Some("tree-42".to_string()),
         base_tree: Some("tree-41".to_string()),
-        pr_number: None,
-        pr_url: None,
+        external_ref: None,
+        external_url: None,
         published_at: None,
     }
 }

@@ -1104,6 +1104,13 @@ async fn takeover_wrapper_master_gate_routes_to_builtin_and_recovers() {
         inner: inner.clone(),
         bridge,
         active: active.clone(),
+        builtin: "mg".to_string(),
+        // 生产构造点同形：broker 快照（本测试无 loop 注入面 → None）+ wrapper
+        // 自有防滥用占位表（stub 凭据槽恒空，不参与断言，仅补全字段）。
+        credential_broker: None,
+        credential_guard: Arc::new(
+            nemesis_agent::r#loop::credential_injection::CredentialCardGuard::new(),
+        ),
     };
     let ctx = nemesis_agent::context::RequestContext::new("test", "c1", "tester", "");
 

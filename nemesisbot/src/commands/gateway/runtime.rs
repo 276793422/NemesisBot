@@ -176,6 +176,11 @@ pub(crate) struct RuntimeHandoff {
     #[cfg(not(feature = "plugins-wasm"))]
     #[allow(dead_code)]
     pub plugin_install_gate: (),
+    /// 出站投递面名单（WebWiring.enabled_channels = ChannelManager
+    /// allowed-channels 白名单，同源移交）：审批组合分流器注入后，不在册的
+    /// 合成通道名（flow-engine 等）的审批卡落 Dashboard 而非静默丢弃
+    /// （2026-11-02 publish 审批卡不可见根修）。
+    pub enabled_channels: Vec<String>,
 }
 
 /// Step 18–24 运行期与关停（计划 §4.2 B7）。
@@ -443,6 +448,10 @@ pub(crate) async fn run_runtime(
                 web_mgr.clone(),
                 channel_mgr,
             );
+            // 出站投递面名单注入（2026-11-02 publish 审批卡不可见根修）：
+            // 不在 ChannelManager allowed 白名单的合成通道名（flow-engine 等）
+            // 的 ask 落 Dashboard 卡，不再经 bus 发往无投递面的通道静默丢弃。
+            composite.set_outbound_channels(runtime_handoff.enabled_channels.clone());
             // M5-3（2026-10-10 机制加固）：cluster 通道 ask 看板注记——
             // worker 执行看板任务的审批等待向 master 权威 issue 线程投系统
             // 评论（路由侧已在 Composite 内改走默认管理器=本节点 Dashboard

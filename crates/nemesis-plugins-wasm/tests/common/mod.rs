@@ -56,15 +56,14 @@ fn build_host_dll() -> Option<PathBuf> {
     // 依赖套件报 "wasm host engine init failed: "（旧壳未落错误槽=空详情），
     // 本地全量红 27 例而 CI 全新 checkout 无缓存不受影响。改为：产物缺席
     // 或任一源文件比产物新（checkout/提交都会刷新 mtime，方向恒安全）→ 重建。
-    if !out.exists() || dll_is_stale(&out, &crate_dir) {
-        if build_shell(crate_dir.as_path(), None).is_none() {
-            // Windows：开发路径 DLL 是 loader 候选序末端，运行中的 gateway
-            // 进程（开发树起的服务）会把它锁住（链接期 os error 5 拒绝访问）
-            // ——回落独立 target-dir 重建（同源同 flags，仅输出路径不同），
-            // 测试不必杀用户现场服务。
-            let fallback_root = crate_dir.join("target/host-dll-fallback");
-            return build_shell(crate_dir.as_path(), Some(&fallback_root));
-        }
+    let needs_build = !out.exists() || dll_is_stale(&out, &crate_dir);
+    if needs_build && build_shell(crate_dir.as_path(), None).is_none() {
+        // Windows：开发路径 DLL 是 loader 候选序末端，运行中的 gateway
+        // 进程（开发树起的服务）会把它锁住（链接期 os error 5 拒绝访问）
+        // ——回落独立 target-dir 重建（同源同 flags，仅输出路径不同），
+        // 测试不必杀用户现场服务。
+        let fallback_root = crate_dir.join("target/host-dll-fallback");
+        return build_shell(crate_dir.as_path(), Some(&fallback_root));
     }
     out.exists().then_some(out)
 }

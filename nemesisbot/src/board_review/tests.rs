@@ -5194,25 +5194,23 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
         "## 结论\n交付完成",
     );
     seed_dispatch(&deps.store, "t-evidence-hit", issue.id, "node-b");
-    // worker 回调已落账（A 端 handle_task_complete 同款：kind=cluster_result、
-    // 幂等键=task_id、落库即 delivered）。F5：夹具镜像真实 wire 形态——
-    // payload 必须带 delivery 结构（capture：commit/tree 不可变交付点 +
-    // patch_path 留底），空壳行不再满足闸。
+    // worker 回调已落账（生产真相源 = peer_chat 回调收据的 branch_delivery_inner：
+    // kind=branch、幂等键=`{task_id}:branch`、payload = delivery JSON **直接形态**
+    // ——BUG 2026-11-01 B 根修：旧夹具想象的 cluster_result+嵌套形态在生产
+    // 从未成立，on_complete 零接线）。capture：commit/tree 不可变交付点 +
+    // patch_path 留底，空壳行不满足闸。
     deps.cluster
         .task_db()
         .unwrap()
         .record_delivery(
-            "cluster_result",
+            "branch",
             None,
-            "t-evidence-hit",
+            "t-evidence-hit:branch",
             &serde_json::json!({
-                "node": "node-b",
-                "delivery": {
-                    "commit": "evidencecommit01",
-                    "tree": "evidencetree01",
-                    "patch_truncated": false,
-                    "patch_path": "logs/deliveries/t-evidence-hit.patch"
-                }
+                "commit": "evidencecommit01",
+                "tree": "evidencetree01",
+                "patch_truncated": false,
+                "patch_path": "logs/deliveries/t-evidence-hit.patch"
             }),
             false,
         )
@@ -5244,15 +5242,19 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
         "在场时不得落降级留痕评论"
     );
     // anchor_summary 注记：锚点双检结果已合并进交付 payload（审计单行可
-    // 读），且浅合并不覆盖既有键。
+    // 读），且浅合并不覆盖既有键（读生产真相源 branch 行——BUG 2026-11-01
+    // A 根修：裸键查不到 branch 行，注记自上线起从未工作过）。
     let rec = deps
         .cluster
         .task_db()
         .unwrap()
-        .delivery_by_key("t-evidence-hit")
+        .delivery_by_key("t-evidence-hit:branch")
         .unwrap()
         .expect("交付记录在场");
-    assert_eq!(rec.payload["node"], "node-b", "浅合并保留既有 payload 键");
+    assert_eq!(
+        rec.payload["commit"], "evidencecommit01",
+        "浅合并保留既有 payload 键"
+    );
     assert_eq!(
         rec.payload["anchor_summary"]["passed"],
         serde_json::Value::Bool(true),

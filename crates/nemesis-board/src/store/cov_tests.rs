@@ -656,6 +656,7 @@ fn dispatch_park_candidates_filter_by_origin_and_marker() {
     let planner_origin = crate::models::TaskOrigin {
         origin_type: "planner".into(),
         origin_id: "p1".into(),
+        origin_meta: Default::default(),
     };
     let mut planner_issue = new_issue("planner 拆解子单");
     planner_issue.origin = Some(planner_origin);
@@ -667,6 +668,7 @@ fn dispatch_park_candidates_filter_by_origin_and_marker() {
     manual.origin = Some(crate::models::TaskOrigin {
         origin_type: "cli".into(),
         origin_id: "c1".into(),
+        origin_meta: Default::default(),
     });
     let c = store.create_issue(manual).unwrap();
     store
@@ -684,6 +686,7 @@ fn dispatch_park_candidates_filter_by_origin_and_marker() {
     done_planner.origin = Some(crate::models::TaskOrigin {
         origin_type: "planner".into(),
         origin_id: "p2".into(),
+        origin_meta: Default::default(),
     });
     let d = store.create_issue(done_planner).unwrap();
     store

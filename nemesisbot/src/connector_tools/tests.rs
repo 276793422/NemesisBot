@@ -868,6 +868,29 @@ http = { method = "GET", path = "/ping" }
         receipts.iter().all(|r| r.outcome != "executed"),
         "缺失即拒绝，不得执行: {receipts:?}"
     );
+
+    // 同判据族：flow-engine（flow 模板周期 tick，无人值守导入循环）——
+    // 同样必须立即诚实报错不发卡（域剥离批：external-source 轮询通道
+    // 退役后由模板 tick 通道承接同一契约）。
+    let flow_ctx = RequestContext::new("flow-engine", "chat-1", "user-1", "session-1");
+    let started = std::time::Instant::now();
+    let err = tool
+        .execute(
+            r#"{"connector":"credproof","op":"ping","args":{}}"#,
+            &flow_ctx,
+        )
+        .await
+        .expect_err("flow tick context: missing credential must error immediately");
+    assert!(
+        err.contains("凭据槽位 `tok` 缺失"),
+        "flow tick 上下文应走原错误路径字节，msg: {err}"
+    );
+    assert!(
+        started.elapsed().as_secs() < 15,
+        "flow tick 上下文凭据缺失必须立即返回（实测 {:?}）——发卡阻塞会挂死周期 tick",
+        started.elapsed()
+    );
+
     unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
@@ -4219,4 +4242,54 @@ async fn test_find_lists_mirror_ops_for_exclusive_connector() {
         0,
         "无 loop = 不假列调不到的镜像"
     );
+}
+
+// ---------------------------------------------------------------------------
+// error_text_dispatch_rejected（publish create 臂错误分流契约）：只有 ⛔
+// dispatch 层拒 = 确定未发出；其余一切错误文本一律走对账收敛口径。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dispatch_rejected_only_for_estop_prefix() {
+    use super::error_text_dispatch_rejected;
+    // ⛔ 开头（dispatch 瀑布拦直出形态）= 确定未发出。
+    assert!(error_text_dispatch_rejected(
+        "⛔ 操作已被安全层拦截（工作区边界）"
+    ));
+    // honest_err 包装后的 ⛔（is_tool_error 双前缀并存形态）同判。
+    assert!(error_text_dispatch_rejected(
+        "Tool error: ⛔ estop 已触发，工具调用被拒绝"
+    ));
+}
+
+#[test]
+fn dispatch_rejected_false_for_unknown_and_server_error_texts() {
+    use super::error_text_dispatch_rejected;
+    // 三种 unknown 形态（run_http 超时 / 传输断 / 远程 RPC）——请求可能已送达。
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: HTTP 请求超时（30s）：结果未知——请求可能已送达并被对端处理，外部写可能已生效；预算占用保留。错误: deadline"
+    ));
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: HTTP 传输层失败（非超时）：结果未知——请求可能已送达并被对端处理，外部写可能已生效；预算占用保留。错误: channel closed"
+    ));
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: connector gitea op create_pull [远程@node-b] RPC 失败（结果未知）: connection refused"
+    ));
+    // 服务端已应答（Failed 形态：HTTP {status}: {body}）——409 duplicate 即对账收敛的服务端形态。
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: HTTP 409 Conflict: pull request already exists for these targets"
+    ));
+    // 连接失败（确定性但「对端不可证」口径）——不作未发出断言。
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: HTTP 请求失败: error trying to connect: tcp connect error"
+    ));
+    // 凭据/绑定/参数类本地错误——同样落对账（对账自身失败会诚实 Inconclusive）。
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: 凭据槽位缺失（headers.Authorization 声明了 vault 别名但 vault 无对应条目）"
+    ));
+    assert!(!error_text_dispatch_rejected(
+        "Tool error: args JSON 非法: expected value at line 1"
+    ));
+    // 成功结果文本 = false。
+    assert!(!error_text_dispatch_rejected("{\"number\":7}"));
 }

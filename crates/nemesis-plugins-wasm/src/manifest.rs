@@ -124,10 +124,10 @@ pub const CHART_TYPES: &[&str] = &["line", "bar", "pie"];
 /// flow step 原语词表（v1 六种；宿主 flow 引擎的绑定面）。
 pub const FLOW_STEP_KINDS: &[&str] = &[
     "connector_fetch", // connector op 拉外部条目 → 建实例
-    "board_land",      // board 建单 + 任务副本（external_source 同源链）
+    "board_land",      // board 建单 + 任务副本（origin 三件套声明）
     "agent_fixloop",   // 派发执行 + 交付捕获（测试⇄分析⇄改码循环）
     "check_regress",   // 锚点双检 + 必检对账 + 评审
-    "publish",         // publish.rs：分支推送 + PR + unknown 对账
+    "publish",         // publish 协议执行（模板声明：推送 + 建外部引用 + unknown 对账）
     "report",          // dossier 导出 + connector 回帖
 ];
 
@@ -255,8 +255,29 @@ pub struct FlowStep {
     pub when: String,
 }
 
+/// flow 模板状态回写声明（`[flow.template.on-transition]` 表；2026-11-02
+/// 外循环域剥离批 C-2）。board 单状态转移 → 按声明拼 connector op——op 名
+/// 与 args 形状（`issue_comment` + `{owner,repo,index,body}` 之类）全部是
+/// 域知识，只在模板里；宿主只提供 token 插值与 origin 坐标解析原语。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct FlowTransition {
+    /// connector op 名（空 = 本模板不订阅回写）。
+    #[serde(default)]
+    pub op: String,
+    /// op args（值过 token 插值：`{{transition.*}}` / `{{origin_meta.<key>}}` /
+    /// `{{origin_id.<name>}}`）。
+    #[serde(default)]
+    pub args: BTreeMap<String, String>,
+    /// v1 旧单 origin_meta 缺席时的 origin_id 切分表达式表
+    /// （`name = "segment '/' 1 | after '#'"` 形态；宿主通用字符串切分
+    /// 原语，分隔符/段序=域知识在模板）。
+    #[serde(default, rename = "parse-origin-id")]
+    pub parse_origin_id: BTreeMap<String, String>,
+}
+
 /// flow 剧本模板声明（`[[flow.template]]`）。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct FlowTemplate {
     /// 模板 id（`[a-z0-9-]{1,64}`；flow:// 绑定与实例落账的命名空间）。
@@ -268,6 +289,22 @@ pub struct FlowTemplate {
     /// 报「needs at least one step」人读错误，而非 TOML 层 missing field）。
     #[serde(default)]
     pub steps: Vec<FlowStep>,
+    /// 本模板绑定的来源类型（TaskOrigin.origin_type；回写订阅匹配键 + 导入
+    /// 建单的 origin_type 透传。空 = 不参与回写订阅。2026-11-02 外循环域
+    /// 剥离批 C-1/C-2）。
+    #[serde(default)]
+    pub origin_type: String,
+    /// 建单 origin_id 模板（token 插值：`{{connector}}` / `{{arg.<name>}}` /
+    /// `{{key}}`；board 去重键 = 整串精确匹配）。
+    #[serde(default)]
+    pub origin_id: String,
+    /// 建单 origin_meta 映射（键 → `$.<path>` 取条目字段，否则当 token
+    /// 字面插值；回写坐标落库载体）。
+    #[serde(default)]
+    pub origin_meta: BTreeMap<String, String>,
+    /// 状态回写声明（op 空 = 不订阅）。
+    #[serde(default)]
+    pub on_transition: FlowTransition,
 }
 
 /// manifest 根结构（`signature` 表不在此——由验签器从原始文档剥离）。
@@ -653,6 +690,12 @@ impl PluginManifest {
                 if tpl.steps.is_empty() {
                     return Err(PluginError::Manifest(format!(
                         "flow.template '{}' needs at least one step",
+                        tpl.id
+                    )));
+                }
+                if !tpl.on_transition.op.is_empty() && tpl.origin_type.is_empty() {
+                    return Err(PluginError::Manifest(format!(
+                        "flow.template '{}': on-transition.op requires origin-type",
                         tpl.id
                     )));
                 }

@@ -1,14 +1,16 @@
 //! P4 bugfix-flow 样板工程全链真机验收（面板 + flow 剧本 + connector 三件套）。
 //!
 //! 单节点 gateway（cluster 关 / security 开但四层放行 / 无 MockAi——本链零 LLM，
-//! fixloop 只观察不生成）+ 手搓 mock Jira（TcpListener 按路由回 JSON）：
+//! fixloop 只观察不生成）+ 手搓 mock Gitea（TcpListener 按路由回 JSON，wire
+//! 形态镜像真实 gitea connector：顶层数组 issues_list / 单对象 issue_get）：
 //!
 //! 1. **装配**：样板载荷拷进 %TEMP% 插件目录（`NEMESIS_WASM_PLUGINS_DIR` 进程级
 //!    注入，CLI 与 gateway 子进程继承同一解析）→ CLI `plugin install --yes
 //!    --allow-unsigned`（九步漏斗，lockfile trust=review-required → 启动装载豁免
 //!    无签名）→ CLI `plugin enable`（盘上开关；安装≠加载）→ mock connector 写进
-//!    `<workspace>/connectors/jira/`（v1 插件装配不自动注册 connector——样板 README
-//!    诚实边界，测试手工照做）→ spawn gateway（load_all 装载 enabled 插件 +
+//!    `<workspace>/connectors/gitea/`（v1 插件装配不自动注册 connector——样板 README
+//!    诚实边界，测试手工照做）→ board 项目建档（模板 land 步 `project` 绑定的
+//!    同名项目，与活体环境同构）→ spawn gateway（load_all 装载 enabled 插件 +
 //!    flow 引擎桥装配）。
 //! 2. **声明面锚点**：`ui.registry` → slug/route/payload/7 视图全中（P4 钉死）。
 //! 3. **六步剧本全链**（ui.invoke 全串透传宿主引擎）：手动 fetch（幂等）→
@@ -17,9 +19,9 @@
 //!    → fixloop 观察态流转（in_review → Completed(delivered)）→ regress（done →
 //!    accepted）→ confirm 发布闸 → publish 单节点诚实缺口（无派发记录，
 //!    on_fail=continue 落 gap 账）→ report（dossier 导出 + `{{token}}` 回帖
-//!    mock Jira）→ 实例 done。
-//! 4. **guest 血肉面**：`jira_get` 走 wasm32-wasip2 guest → host tool-invoke →
-//!    dispatch 瀑布 → connector → mock Jira（字段投影断言）。
+//!    mock Gitea）→ 实例 done。
+//! 4. **guest 血肉面**：`gitea_get` 走 wasm32-wasip2 guest → host tool-invoke →
+//!    dispatch 瀑布 → connector → mock Gitea（字段投影断言）。
 //!
 //! 纪律：live_gate 互斥闸（与 r9/scenario 组同闸）；home 隔离 `--local`+tempdir；
 //! web 端口 0；宿主壳 DLL / 样板载荷缺席 = 诚实 SKIP（前置检查，不假红）。
@@ -48,8 +50,9 @@ const PLUGIN_SLUG: &str = "bugfix-flow";
 /// 剧本模板 id（flow:// 绑定的 template 段）。
 const TEMPLATE: &str = "bugfix-pipeline";
 
-/// 外部条目键（mock Jira 固定回这一条）。
-const EXT_KEY: &str = "PROJ-1";
+/// 外部条目键（mock Gitea 固定回这一条的 issue 序号；key_field="number" →
+/// 实例名 = 序号安全化，本值即实例寻址键）。
+const EXT_KEY: &str = "42";
 
 /// 安全配置（connector_flow.rs e2e 先例同款姿势）：SSRF 层**开着**带
 /// allowed_hosts 白名单放行回环 mock——层关 = guard=None = connector http
@@ -65,69 +68,66 @@ const SECURITY_CFG: &str = r#"{
 }"#;
 
 // ---------------------------------------------------------------------------
-// mock Jira（std TcpListener 阻塞线程；按 (method, path) 路由回固定 JSON）
+// mock Gitea（std TcpListener 阻塞线程；按 (method, path) 路由回固定 JSON）
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
-struct MockJiraLog {
+struct MockGiteaLog {
     /// "METHOD path"（query 剥掉）。
     requests: Vec<String>,
     /// issue_comment 的原始请求 body。
     comment_bodies: Vec<String>,
 }
 
-struct MockJira {
+struct MockGitea {
     port: u16,
-    log: Arc<StdMutex<MockJiraLog>>,
+    log: Arc<StdMutex<MockGiteaLog>>,
 }
 
-fn jira_search_body() -> String {
-    // parse_entries 解包 "issues" 数组；title 取 fields.summary。
-    json!({
-        "startAt": 0,
-        "maxResults": 20,
-        "total": 1,
-        "issues": [{
-            "key": EXT_KEY,
-            "fields": {
-                "summary": "流水线验收样例缺陷",
-                "status": { "name": "Open" },
-                "assignee": { "displayName": "flow-tester" },
-            },
-        }],
-    })
-    .to_string()
-}
-
-fn jira_detail_body() -> String {
-    json!({
-        "key": EXT_KEY,
-        "fields": {
-            "summary": "流水线验收样例缺陷",
-            "status": { "name": "Open" },
-            "assignee": { "displayName": "flow-tester" },
+/// issues_list 应答：Gitea REST **顶层数组**（元素 number/title/state 顶层）。
+/// fetch key_field="number"/title_field="title" 直取。
+fn gitea_issues_body() -> String {
+    json!([
+        {
+            "number": 42,
+            "title": "流水线验收样例缺陷",
+            "state": "open",
+            "user": { "login": "flow-tester" },
+            "assignee": { "login": "flow-tester" },
         },
+    ])
+    .to_string()
+}
+
+/// issue_get 应答：单对象形态（guest 投影取 title/state/assignee.login）。
+fn gitea_issue_body() -> String {
+    json!({
+        "number": 42,
+        "title": "流水线验收样例缺陷",
+        "state": "open",
+        "user": { "login": "flow-tester" },
+        "assignee": { "login": "flow-tester" },
     })
     .to_string()
 }
 
-fn start_mock_jira() -> MockJira {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock jira");
+fn start_mock_gitea() -> MockGitea {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock gitea");
     let port = listener.local_addr().expect("local addr").port();
-    let log = Arc::new(StdMutex::new(MockJiraLog::default()));
+    let log = Arc::new(StdMutex::new(MockGiteaLog::default()));
     let log_t = log.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let log_t = log_t.clone();
-            std::thread::spawn(move || handle_jira_conn(&mut stream, &log_t));
+            std::thread::spawn(move || handle_gitea_conn(&mut stream, &log_t));
         }
     });
-    MockJira { port, log }
+    MockGitea { port, log }
 }
 
 /// 一次 HTTP 请求的读取-路由-应答（Connection: close，一连接一请求）。
-fn handle_jira_conn(stream: &mut std::net::TcpStream, log: &Arc<StdMutex<MockJiraLog>>) {
+fn handle_gitea_conn(stream: &mut std::net::TcpStream, log: &Arc<StdMutex<MockGiteaLog>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -164,16 +164,19 @@ fn handle_jira_conn(stream: &mut std::net::TcpStream, log: &Arc<StdMutex<MockJir
     let body = text.get(header_end + 4..).unwrap_or_default().to_string();
 
     log.lock()
-        .expect("mock jira log")
+        .expect("mock gitea log")
         .requests
         .push(format!("{method} {path}"));
 
     let (status, reason, resp): (u16, &str, String) = match (method.as_str(), path.as_str()) {
-        ("GET", "/rest/api/2/search") => (200, "OK", jira_search_body()),
-        ("GET", "/rest/api/2/issue/PROJ-1") => (200, "OK", jira_detail_body()),
-        ("POST", "/rest/api/2/issue/PROJ-1/comment") => {
-            log.lock().expect("mock jira log").comment_bodies.push(body);
-            (200, "OK", r#"{"id":"10001"}"#.to_string())
+        ("GET", "/repos/p0admin/durfmt/issues") => (200, "OK", gitea_issues_body()),
+        ("GET", "/repos/p0admin/durfmt/issues/42") => (200, "OK", gitea_issue_body()),
+        ("POST", "/repos/p0admin/durfmt/issues/42/comments") => {
+            log.lock()
+                .expect("mock gitea log")
+                .comment_bodies
+                .push(body);
+            (200, "OK", r#"{"id":10001,"body":null}"#.to_string())
         }
         _ => (404, "Not Found", "{}".to_string()),
     };
@@ -262,48 +265,50 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// 手工 connector 装配（v1 诚实边界：插件装配不自动注册 connector——样板
-/// README 同款步骤）。**不含 `[connector.credentials]`**：缺凭据会触发 B4
-/// 阻塞审批卡，mock Jira 无需鉴权。base 指向本测试 mock 端口。
-fn write_test_connector(ws: &TestWorkspace, jira_port: u16) {
-    let dir = ws.home().join("workspace").join("connectors").join("jira");
-    std::fs::create_dir_all(&dir).expect("mkdir connectors/jira");
+/// README 同款步骤）。op 定义镜像真实 `workspace/connectors/gitea/`（wire
+/// 形态逐字节同源：path/index 整数 schema/receipt），**不含
+/// `[connector.credentials]`**：缺凭据会触发 B4 阻塞审批卡，mock 无需鉴权。
+/// base 指向本测试 mock 端口。
+fn write_test_connector(ws: &TestWorkspace, gitea_port: u16) {
+    let dir = ws.home().join("workspace").join("connectors").join("gitea");
+    std::fs::create_dir_all(&dir).expect("mkdir connectors/gitea");
     let toml = format!(
         r#"[connector]
-id = "jira"
-name = "Jira"
+id = "gitea"
+name = "Gitea"
 version = "0.1.0"
 kind = "rest"
-description = "flow_live_tests mock Jira（无凭据形态）"
+description = "flow_live_tests mock Gitea（无凭据形态）"
 
 [connector.http]
-base = "http://127.0.0.1:{jira_port}"
+base = "http://127.0.0.1:{gitea_port}"
 [connector.http.headers]
 Content-Type = "application/json"
 
 [[op]]
 id = "issues_list"
-intent = ["列出 Jira issue"]
+intent = ["列出 issue"]
 risk = "low"
 class = "network"
-http = {{ method = "GET", path = "/rest/api/2/search" }}
-args_schema = {{ type = "object", properties = {{ jql = {{ type = "string" }}, maxResults = {{ type = "integer" }} }} }}
+http = {{ method = "GET", path = "/repos/{{owner}}/{{repo}}/issues" }}
+args_schema = {{ type = "object", required = ["owner", "repo"], properties = {{ owner = {{ type = "string" }}, repo = {{ type = "string" }}, state = {{ type = "string", enum = ["open", "closed", "all"] }}, limit = {{ type = "integer" }}, page = {{ type = "integer" }} }} }}
 
 [[op]]
 id = "issue_get"
-intent = ["查看 Jira issue"]
+intent = ["查看 issue"]
 risk = "low"
 class = "network"
-http = {{ method = "GET", path = "/rest/api/2/issue/{{key}}" }}
-args_schema = {{ type = "object", required = ["key"], properties = {{ key = {{ type = "string" }} }} }}
+http = {{ method = "GET", path = "/repos/{{owner}}/{{repo}}/issues/{{index}}" }}
+args_schema = {{ type = "object", required = ["owner", "repo", "index"], properties = {{ owner = {{ type = "string" }}, repo = {{ type = "string" }}, index = {{ type = "integer" }} }} }}
 
 [[op]]
 id = "issue_comment"
-intent = ["评论 Jira issue"]
+intent = ["评论 issue"]
 risk = "medium"
 class = "write"
 receipt = "id"
-http = {{ method = "POST", path = "/rest/api/2/issue/{{key}}/comment" }}
-args_schema = {{ type = "object", required = ["key", "body"], properties = {{ key = {{ type = "string" }}, body = {{ type = "string" }} }} }}
+http = {{ method = "POST", path = "/repos/{{owner}}/{{repo}}/issues/{{index}}/comments" }}
+args_schema = {{ type = "object", required = ["owner", "repo", "index", "body"], properties = {{ owner = {{ type = "string" }}, repo = {{ type = "string" }}, index = {{ type = "integer" }}, body = {{ type = "string" }} }} }}
 "#
     );
     std::fs::write(dir.join("connector.toml"), toml).expect("write connector.toml");
@@ -437,8 +442,8 @@ async fn flow_live_full_chain() {
     };
     let bin = resolve_nemesisbot_bin().expect("resolve nemesisbot binary");
     let ws = TestWorkspace::new().expect("temp workspace");
-    let jira = start_mock_jira();
-    write_test_connector(&ws, jira.port);
+    let gitea = start_mock_gitea();
+    write_test_connector(&ws, gitea.port);
     let plugins_dir = stage_plugins_dir(&payload);
 
     let token = format!("flw-{}", std::process::id());
@@ -568,6 +573,19 @@ async fn flow_live_full_chain() {
         Some("流水线验收样例缺陷"),
         "title 投影: {list}"
     );
+
+    // ---- A3.5 board 项目建档：模板 land 步声明 `project =
+    // "gitea/p0admin/durfmt"`——项目不存在 = land 诚实失败（宿主不猜）。
+    // 与活体环境同构：先建档再 land。auto_start 缺省 false：只建档不触发
+    // plan/派发链（本链零 LLM）。
+    wsapi(
+        &mut ws_stream,
+        "board",
+        "project.create",
+        json!({ "name": "gitea/p0admin/durfmt" }),
+    )
+    .await
+    .expect("project.create (land 绑定)");
 
     // ---- A4 board_land 落单（首 tick ~20s 启动延迟 + tick 5s）----
     let d = poll_detail(
@@ -732,14 +750,14 @@ async fn flow_live_full_chain() {
         "board_issue projection: {list}"
     );
 
-    // ---- A14 mock Jira 收到回帖：token 全替换（零 {{ 残留）----
+    // ---- A14 mock Gitea 收到回帖：token 全替换（零 {{ 残留）----
     {
-        let log = jira.log.lock().expect("mock jira log");
+        let log = gitea.log.lock().expect("mock gitea log");
         assert!(
             log.requests
                 .iter()
-                .any(|r| r.contains("/rest/api/2/search")),
-            "search GET never reached mock: {:?}",
+                .any(|r| r.contains("/repos/p0admin/durfmt/issues")),
+            "issues_list GET never reached mock: {:?}",
             log.requests
         );
         let comment = log
@@ -787,9 +805,9 @@ async fn flow_live_full_chain() {
     );
 
     // ---- A17 guest 血肉面：wasm guest → host tool-invoke → connector ----
-    let g = ui_invoke(&mut ws_stream, "jira_get", json!({ "key": EXT_KEY }))
+    let g = ui_invoke(&mut ws_stream, "gitea_get", json!({ "key": EXT_KEY }))
         .await
-        .expect("guest jira_get");
+        .expect("guest gitea_get");
     assert!(
         g.get("error").is_none(),
         "guest reply must not be business-error: {g}"

@@ -6171,6 +6171,7 @@ async fn run_runtime_pipeline(
         cluster_adapter: pa.cluster_adapter.clone(),
         skills_install_gate: None,
         plugin_install_gate: None,
+        enabled_channels: Vec::new(),
     };
 
     run_runtime(

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // 交付审核页（P4 人审闭环，2026-10-25）：分支/评审/档案交付的账本查询 +
-// 裁决（确认/拒绝）+ PR 发布（P3 外循环 delivery.publish）。
-// 数据全部来自 WSAPI：deliveries.list/patch（账本桥）+ board.delivery.publish
-// （发布桥，实现在 nemesisbot 侧，走 agent loop 完整 dispatch 瀑布）。
+// 裁决（确认/拒绝）。
+// 数据全部来自 WSAPI：deliveries.list/patch（账本桥）。
 // 列表不带 patch 体（单条可达 1MB）——详情模态按需拉 deliveries.patch。
-// 裁决语义（后端状态机权威）：rejected = 终态不可再 confirm；confirm 幂等；
-// 发布幂等（payload 已带 pr_number 短路回 already_published）。
+// 裁决语义（后端状态机权威）：rejected = 终态不可再 confirm；confirm 幂等。
+// 域剥离批（2026-11-02）：发布表单随域退役——发布动作由 flow 模板
+// publish 步声明驱动（域知识只在模板），本页保留发布留痕链接展示。
 import { computed, ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
@@ -36,19 +36,9 @@ interface DeliveryRow {
   commit: string | null
   head_tree: string | null
   base_tree: string | null
-  pr_number: number | null
-  pr_url: string | null
+  external_ref: number | null
+  external_url: string | null
   published_at: string | null
-}
-
-interface PublishOutcome {
-  task_id?: string
-  status?: string // published / already_published / failed
-  pr_number?: number | null
-  pr_url?: string | null
-  commit?: string | null
-  branch?: string
-  detail?: string
 }
 
 const { request } = useWSAPI()
@@ -100,11 +90,6 @@ function kindLabel(k: string): string {
 // 可裁决 = 未进终态（rejected/published 均终态；confirmed 只剩拒绝反转合法）。
 function decidable(d: DeliveryRow): boolean {
   return d.status === 'recorded' || d.status === 'delivered' || d.status === 'confirmed'
-}
-
-// 可发布 = 分支交付且未发布未拒绝（recorded/delivered/confirmed）。
-function publishable(d: DeliveryRow): boolean {
-  return d.kind === 'branch' && d.status !== 'rejected' && d.status !== 'published'
 }
 
 function formatTs(ts: string | null): string {
@@ -180,78 +165,6 @@ async function submitReject() {
   }
 }
 
-// ── PR 发布（board.delivery.publish；发布是重活，给 10 分钟超时） ──────
-const showPublish = ref(false)
-const pubTaskId = ref('')
-const pubConnector = ref('gitea')
-const pubOwner = ref('')
-const pubRepo = ref('')
-const pubBase = ref('main')
-const pubCopyPath = ref('')
-const pubError = ref('')
-const publishing = ref(false)
-// 最近一次发布结果（成功/幂等/失败 都在页面诚实展示，不只靠 toast）
-const lastOutcome = ref<PublishOutcome | null>(null)
-const lastOutcomeKey = ref('')
-
-function openPublish(d: DeliveryRow) {
-  // branch 交付幂等键形态 = `{task_id}:branch`（P2 交付管线钉死）。
-  pubTaskId.value = d.idempotency_key.replace(/:branch$/, '')
-  pubConnector.value = 'gitea'
-  pubOwner.value = ''
-  pubRepo.value = ''
-  pubBase.value = 'main'
-  pubCopyPath.value = ''
-  pubError.value = ''
-  showPublish.value = true
-}
-
-function validatePublishForm(): string {
-  if (!pubConnector.value.trim()) return '请填写 connector id'
-  if (!pubOwner.value.trim()) return '请填写 owner（仓库归属者）'
-  if (!pubRepo.value.trim()) return '请填写 repo（仓库名）'
-  if (!pubBase.value.trim()) return '请填写 base（目标分支）'
-  return ''
-}
-
-async function submitPublish() {
-  pubError.value = ''
-  const invalid = validatePublishForm()
-  if (invalid) {
-    pubError.value = invalid
-    return
-  }
-  if (publishing.value) return
-  publishing.value = true
-  try {
-    const data: Record<string, string> = {
-      task_id: pubTaskId.value.trim(),
-      connector: pubConnector.value.trim(),
-      owner: pubOwner.value.trim(),
-      repo: pubRepo.value.trim(),
-      base: pubBase.value.trim(),
-    }
-    if (pubCopyPath.value.trim()) data.copy_path = pubCopyPath.value.trim()
-    const outcome: PublishOutcome = await request('board', 'delivery.publish', data, 600_000)
-    lastOutcome.value = outcome
-    lastOutcomeKey.value = data.task_id
-    if (outcome.status === 'published') {
-      toast.success(`已发布：PR #${outcome.pr_number ?? '?'}`)
-      showPublish.value = false
-    } else if (outcome.status === 'already_published') {
-      toast.success(outcome.detail ?? '该交付已发布（幂等跳过）')
-      showPublish.value = false
-    } else {
-      pubError.value = outcome.detail ?? '发布失败（详情见响应）'
-    }
-    await refreshAll()
-  } catch (e) {
-    pubError.value = errMsg(e)
-  } finally {
-    publishing.value = false
-  }
-}
-
 // ── 详情模态（patch 按需拉取） ────────────────────────────────────────
 const showDetail = ref(false)
 const detailRow = ref<DeliveryRow | null>(null)
@@ -309,25 +222,7 @@ async function openDetail(d: DeliveryRow) {
               <option v-for="(label, k) in KIND_LABELS" :key="k" :value="k">{{ label }}</option>
             </select>
           </label>
-          <span class="filter-hint">裁决语义：拒绝 = 终态不可撤销；确认幂等；发布走完整安全管线（高危会弹审批卡）。</span>
-        </div>
-
-        <!-- 最近一次发布结果（成功/失败都诚实留在页面上） -->
-        <div
-          v-if="lastOutcome"
-          class="card"
-          data-test="publish-outcome"
-          :class="{ 'outcome-failed': lastOutcome.status === 'failed' }"
-        >
-          <div class="card-body outcome-body">
-            <strong>
-              {{ lastOutcome.status === 'published' ? `已发布 PR #${lastOutcome.pr_number}`
-                : lastOutcome.status === 'already_published' ? '已发布过（幂等跳过）'
-                : '发布失败' }}
-            </strong>
-            <a v-if="lastOutcome.pr_url" :href="safeExternalUrl(lastOutcome.pr_url) || undefined" target="_blank" rel="noopener" style="margin-left: var(--space-2);">{{ lastOutcome.pr_url }}</a>
-            <div class="outcome-detail">{{ lastOutcome.detail }}</div>
-          </div>
+          <span class="filter-hint">裁决语义：拒绝 = 终态不可撤销；确认幂等。</span>
         </div>
 
         <!-- 列表 -->
@@ -355,13 +250,13 @@ async function openDetail(d: DeliveryRow) {
                   <td>
                     <span class="badge" :class="statusBadge(d.status).cls" data-test="dl-status">{{ statusBadge(d.status).text }}</span>
                     <a
-                      v-if="d.pr_url"
-                      :href="safeExternalUrl(d.pr_url) || undefined"
+                      v-if="d.external_url"
+                      :href="safeExternalUrl(d.external_url) || undefined"
                       target="_blank"
                       rel="noopener"
                       class="pr-link"
                       data-test="dl-pr-link"
-                    >PR #{{ d.pr_number }}</a>
+                    >#{{ d.external_ref }}</a>
                   </td>
                   <td>
                     <code class="dl-key" :title="d.idempotency_key">{{ d.branch || d.idempotency_key }}</code>
@@ -392,12 +287,6 @@ async function openDetail(d: DeliveryRow) {
                       :disabled="busyKey === d.idempotency_key"
                       @click="openReject(d)"
                     >拒绝</button>
-                    <button
-                      v-if="publishable(d)"
-                      class="btn btn-sm"
-                      data-test="dl-publish"
-                      @click="openPublish(d)"
-                    >发布 PR</button>
                   </td>
                 </tr>
               </tbody>
@@ -430,34 +319,6 @@ async function openDetail(d: DeliveryRow) {
         </div>
       </div>
 
-      <!-- 发布模态（PR 参数表单） -->
-      <div v-if="showPublish" class="modal-backdrop" data-test="publish-modal" @click.self="publishing ? null : (showPublish = false)">
-        <div class="modal dl-modal">
-          <div class="modal-header"><h3 style="margin: 0;">发布交付 PR</h3></div>
-          <div class="modal-body">
-            <p style="margin-top: 0; font-size: var(--text-sm);">
-              从任务副本推送交付分支 <code>nemesis/task-{{ pubTaskId }}</code> 并创建 PR。
-              前置核验（基线一致/patch 完整/未拒绝）在后端执行；发布幂等——重复点击不会重复建 PR。
-            </p>
-            <div class="form-grid">
-              <label>task_id<input v-model="pubTaskId" data-test="pub-task-id" disabled></label>
-              <label>connector<input v-model="pubConnector" data-test="pub-connector" placeholder="gitea"></label>
-              <label>owner *<input v-model="pubOwner" data-test="pub-owner" placeholder="仓库归属者/组织"></label>
-              <label>repo *<input v-model="pubRepo" data-test="pub-repo" placeholder="仓库名"></label>
-              <label>base *<input v-model="pubBase" data-test="pub-base" placeholder="main"></label>
-              <label>copy_path（缺省走派发链）<input v-model="pubCopyPath" data-test="pub-copy-path" placeholder="任务副本目录绝对路径（可选）"></label>
-            </div>
-            <div v-if="pubError" class="publish-error" data-test="publish-error">{{ pubError }}</div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn" data-test="publish-cancel" :disabled="publishing" @click="showPublish = false">取消</button>
-            <button class="btn primary" data-test="publish-submit" :disabled="publishing" @click="submitPublish">
-              {{ publishing ? '发布中…（走安全管线，高危操作会弹审批卡）' : '发布' }}
-            </button>
-          </div>
-        </div>
-      </div>
-
       <!-- 详情模态（patch 按需拉取） -->
       <div v-if="showDetail" class="modal-backdrop" data-test="detail-modal" @click.self="showDetail = false">
         <div class="modal dl-modal dl-detail-modal">
@@ -475,7 +336,7 @@ async function openDetail(d: DeliveryRow) {
                 <tr v-if="detailRow.commit"><th>commit</th><td><code>{{ detailRow.commit }}</code></td></tr>
                 <tr v-if="detailRow.head_tree"><th>head tree</th><td><code>{{ detailRow.head_tree }}</code></td></tr>
                 <tr v-if="detailRow.base_tree"><th>base tree</th><td><code>{{ detailRow.base_tree }}</code></td></tr>
-                <tr v-if="detailRow.pr_url"><th>PR</th><td><a :href="safeExternalUrl(detailRow.pr_url) || undefined" target="_blank" rel="noopener">PR #{{ detailRow.pr_number }}</a>（{{ formatTs(detailRow.published_at) }}）</td></tr>
+                <tr v-if="detailRow.external_url"><th>发布条目</th><td><a :href="safeExternalUrl(detailRow.external_url) || undefined" target="_blank" rel="noopener">#{{ detailRow.external_ref }}</a>（{{ formatTs(detailRow.published_at) }}）</td></tr>
                 <tr><th>创建</th><td>{{ formatTs(detailRow.created_at) }}</td></tr>
                 <tr v-if="detailRow.delivered_at"><th>送达</th><td>{{ formatTs(detailRow.delivered_at) }}</td></tr>
                 <tr v-if="detailRow.confirmed_at"><th>确认</th><td>{{ formatTs(detailRow.confirmed_at) }}</td></tr>
@@ -531,14 +392,6 @@ async function openDetail(d: DeliveryRow) {
 .filter-hint {
   color: var(--text-muted);
   font-size: var(--text-xs);
-}
-
-.outcome-body { font-size: var(--text-sm); }
-.outcome-failed { border-color: rgba(239, 68, 68, 0.4); }
-.outcome-detail {
-  margin-top: var(--space-1);
-  color: var(--text-secondary);
-  word-break: break-all;
 }
 
 .dl-table {
@@ -607,37 +460,6 @@ async function openDetail(d: DeliveryRow) {
   width: 100%;
   resize: vertical;
   font-size: var(--text-sm);
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-}
-
-.form-grid label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.form-grid input {
-  padding: 4px 8px;
-  font-size: var(--text-sm);
-}
-
-.form-grid input:disabled { opacity: 0.6; }
-
-.publish-error {
-  margin-top: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.08);
-  border-radius: var(--radius-md);
-  color: var(--error, #ef4444);
-  font-size: var(--text-sm);
-  word-break: break-all;
 }
 
 .detail-table {

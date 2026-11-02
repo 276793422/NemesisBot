@@ -133,7 +133,7 @@ pub(crate) mod r9_live_tests;
 mod scenario_tests;
 
 /// 插件 UI 面板 + flow 剧本全链真机 E2E（2026-10-31 P4 样板工程批）：
-/// 手搓 mock Jira + CLI 装配漏斗 + ui.registry 锚点 + 六步剧本（双人工闸 +
+/// 手搓 mock connector 服务 + CLI 装配漏斗 + ui.registry 锚点 + 六步剧本（双人工闸 +
 /// publish 诚实缺口）+ guest 血肉面，经 plugins.ui.invoke 全串透传宿主 flow
 /// 引擎逐段断言。零 LLM 链（模型指死端口），Windows 进程边界形态，与 R9 组
 /// 同门控同互斥闸。
@@ -457,6 +457,7 @@ pub async fn run(
         cluster_adapter: cluster_slot,
         skills_install_gate: skills_gate_slot,
         plugin_install_gate: plugin_gate_slot,
+        enabled_channels: web_wiring.enabled_channels.clone(),
     };
     run_runtime(
         &ctx,

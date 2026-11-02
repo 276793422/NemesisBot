@@ -31,7 +31,7 @@ describe('router 批次新增路由', () => {
     expect(typeof r!.components!.default).toBe('function')
   })
 
-  // 交付审核（2026-10-25 P4 人审闭环）：账本裁决 + PR 发布。
+  // 交付审核（2026-10-25 P4 人审闭环）：账本裁决 + 发布留痕。
   it('/deliveries 存在，name=deliveries，懒加载组件', () => {
     const r = router.getRoutes().find(r => r.path === '/deliveries')
     expect(r).toBeTruthy()

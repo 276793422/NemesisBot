@@ -806,3 +806,34 @@ fn exclusive_mcp_rejects_blank_entry() {
     let err = parse_connector_manifest(&text).expect_err("空白 server 名");
     assert!(err.contains("exclusive_mcp 不能含空项"), "got: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// 域剥离批 C：clone_url（任务副本 clone 源声明）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clone_url_missing_defaults_none() {
+    let c = parse_connector_manifest(VALID_LOCAL).expect("valid local manifest");
+    assert!(c.clone_url.is_none(), "缺省 = 不提供副本源（诚实缺声明）");
+}
+
+#[test]
+fn clone_url_parses_and_trims() {
+    let text = VALID_LOCAL.replace(
+        "kind = \"local\"",
+        "kind = \"local\"\nclone_url = \"  http://127.0.0.1:3000/o/r.git  \"",
+    );
+    let c = parse_connector_manifest(&text).expect("clone_url 形态");
+    assert_eq!(
+        c.clone_url.as_deref(),
+        Some("http://127.0.0.1:3000/o/r.git"),
+        "trim 落库"
+    );
+}
+
+#[test]
+fn clone_url_empty_is_loud_reject() {
+    let text = VALID_LOCAL.replace("kind = \"local\"", "kind = \"local\"\nclone_url = \"   \"");
+    let err = parse_connector_manifest(&text).expect_err("空 clone_url");
+    assert!(err.contains("clone_url 不能为空"), "got: {err}");
+}
