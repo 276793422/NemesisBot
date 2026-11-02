@@ -98,16 +98,25 @@ impl<T: Send + Sync + 'static> FilterChain<T> {
                 FilterDecision::Pass => {
                     tracing::trace!(filter = f.name(), "[FilterChain] pass");
                 }
-                decision @ (FilterDecision::Intercepted | FilterDecision::Rejected(_)) => {
-                    let reason = match &decision {
-                        FilterDecision::Rejected(r) => format!(" rejected: {r}"),
-                        _ => String::new(),
-                    };
+                FilterDecision::Intercepted => {
+                    // BUG-20261102-321：可观测性契约分级兑现——Intercepted=
+                    // info（过滤器有意消费的正常业务路径）；Rejected=warn
+                    // （链终止拒绝、挂载点回错的异常路径）。实现此前自诞生
+                    // 起两分支都 info，docstring 承诺的 warn 未兑现，
+                    // warn+ 日志级别下链终止拒绝事件不可见。
                     tracing::info!(
                         filter = f.name(),
-                        "[FilterChain] intercepted{reason}（消息未进入扇出）"
+                        "[FilterChain] intercepted（消息未进入扇出）"
                     );
-                    return decision;
+                    return FilterDecision::Intercepted;
+                }
+                FilterDecision::Rejected(reason) => {
+                    tracing::warn!(
+                        filter = f.name(),
+                        reason = %reason,
+                        "[FilterChain] rejected（消息未进入扇出）"
+                    );
+                    return FilterDecision::Rejected(reason);
                 }
             }
         }
