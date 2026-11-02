@@ -295,8 +295,26 @@ fn count_zombie_children() -> usize {
 /// 装（全部既有会话级测试均为单连接形态，已逐个核 compat），他测先装
 /// （max=4）则沿用——循环连满对两种配置都成立；nextest 每测独立进程时
 /// 本测试配置恒自装生效。
+///
+/// Windows hosted runner 同 bug234 双保险闸（取证史：2026-11-02 0828e85bb
+/// CI shard8 本测试 SLOW>68min 楔死整 run，服务端路径即 spawn→kill→拒注册，
+/// connect_pty 侧 connect_async 无超时永久悬等；当晚 pty 模块 13 提交零
+/// 改动、同晨 3fb49d9f CI 全绿=非回归，estop ConPTY kill 四连楔死同家族
+/// 病理）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
+    #[cfg(windows)]
+    {
+        if !std::env::var("NEMESISBOT_PTY_CAPACITY_TESTS").is_ok_and(|v| v == "1")
+            && std::env::var("CI").is_ok_and(|v| v == "true")
+        {
+            eprintln!(
+                "SKIP: capacity→ConPTY spawn/kill 路径在 hosted windows runner 上楔死（取证史 2026-11-02 shard8 SLOW>68min，同 estop 四连楔死家族）— 补跑命令：设 NEMESISBOT_PTY_CAPACITY_TESTS=1"
+            );
+            return;
+        }
+    }
+
     let _g = TEST_LOCK.lock().await;
     let _ = TEST_TERMINAL_CFG.set(Some(nemesis_config::TerminalConfig {
         enabled: true,
