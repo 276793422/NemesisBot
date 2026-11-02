@@ -250,3 +250,22 @@ fn test_pair_written_key_is_literal_for_dotted_and_colon_ids() {
         "不得再落 sanitize 有损键：{content}"
     );
 }
+
+// -- BUG-20261103-334 横向排查定性钉（非缺陷修复）--------------------------
+
+/// 记事本（带 BOM 的 UTF-8）手工维护的 peers.toml，配对回读断言照常解析。
+/// 实测 toml crate parse 容忍前导 BOM（与 JSON 位点 serde_json 不同）——
+/// 本测试把容忍行为钉死，crate 升级若翻转此处先行红出来。
+#[test]
+fn assert_pair_written_tolerates_bom() {
+    let (_dir, path) = temp_peers_path("bom");
+    seed_peers_file(&path);
+    // 给手维护文件前置 BOM（记事本保存形态）。
+    let body = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("\u{feff}{body}")).unwrap();
+
+    assert!(
+        assert_pair_written(&path, "existing", "10.0.0.1:11950", "", 0).is_ok(),
+        "BUG-20261103-334: BOM 前缀不得让合法 peers.toml 回读断言误报失败"
+    );
+}

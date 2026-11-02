@@ -320,6 +320,26 @@ fn runtime_gate_malformed_master_falls_to_shell_switch() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// BUG-20261103-334：记事本（带 BOM UTF-8）保存的 config.json——主装载器
+/// 剥 BOM 照常解析，总闸读必须同口径（旧形态裸 read_to_string：BOM →
+/// parse 失败 → 该源按缺省 true 跳过 → 用户 `plugins.wasm.enabled=false`
+/// 被静默忽略、WASM 子系统照常运行）。
+#[test]
+fn runtime_gate_bom_config_json_still_honors_master_switch() {
+    let home = runtime_gate_home("bom_master");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        "\u{feff}{\"plugins\":{\"wasm\":{\"enabled\":false}}}",
+    )
+    .unwrap();
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "BUG-20261103-334: BOM config.json 的总闸值必须被读取（不得按缺省 true 放行）"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 // ==================== 面板 LLM 总闸 panel_llm（2026-11-01 决策 C） ====================
 //
 // 真相源 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`

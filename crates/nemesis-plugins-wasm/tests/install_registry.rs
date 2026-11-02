@@ -972,3 +972,21 @@ fn flow_step_manifest_rejects_empty_kinds_at_probe_level_shape() {
     assert_eq!(m.kind.as_str(), "flow-step");
     assert_eq!(m.slug, "flowstep-demo");
 }
+
+// BUG-20261103-334 横向排查定性钉（非缺陷修复）：三方开发者以记事本
+// （带 BOM UTF-8）手写 plugin.toml 后，manifest 装载照常解析（canonical
+// loader 单点：load_from_dir）。实测 toml crate parse 容忍前导 BOM——
+// 本测试把容忍行为钉死，crate 升级若翻转此处先行红出来。
+#[test]
+fn bom_prefixed_manifest_parses_via_load_from_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = format!(
+        "\u{feff}wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"bom-plugin\"\nkind = \"tool\"\n\
+         name = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nwasm = \"bom-plugin.wasm\"\n\
+         \n[config-schema]\ngreeting = \"string\"\n",
+        "a".repeat(64)
+    );
+    std::fs::write(dir.path().join("plugin.toml"), manifest).expect("write manifest");
+    let (m, _) = PluginManifest::load_from_dir(dir.path()).expect("BOM 前缀不得拒绝合法 manifest");
+    assert_eq!(m.slug, "bom-plugin");
+}
