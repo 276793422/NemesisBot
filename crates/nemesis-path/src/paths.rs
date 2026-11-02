@@ -740,8 +740,9 @@ pub fn resolve_config_path() -> PathBuf {
 }
 
 /// Fallback home directory when `resolve_home_dir()` fails.
-/// Exposed for testability.
-pub(crate) fn fallback_home_dir(_: String) -> PathBuf {
+/// Exposed for testability；BUG-20261102-316 起主 crate `common::resolve_home`
+/// 委托 [`resolve_home_dir`] 时同款兜底（home 解析单一真相源的组成部分）。
+pub fn fallback_home_dir(_: String) -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(DEFAULT_HOME_DIR))
         .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
