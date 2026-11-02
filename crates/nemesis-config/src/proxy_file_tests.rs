@@ -187,3 +187,55 @@ fn selfupdate_proxy_empty_is_none() {
     assert_eq!(load_selfupdate_proxy(&dir), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ==================== BUG-20261103-333 回归锁 ====================
+//
+// save_env/save_selfupdate 旧形态的 config_write_lock 只罩 write() 落盘段，
+// RMW 的 read_for_write 在锁外——两个并发 proxy.save 请求（WSAPI 每帧独立
+// spawn）交错时后写者以自己读的旧底整体覆盖先写者（CONFIG_WRITE_LOCK 纪律
+// 注释明文描述的丢失更新形态）。修复 = 锁提到 save 臂首行覆盖整段 RMW
+// （对齐 plugin_wasm::set_enabled 形态）。两线程并发各保存一段，断言两段
+// 最终值都是各自线程的最后写入。
+
+#[test]
+fn concurrent_section_saves_do_not_lose_updates() {
+    let dir = temp_config_dir("concurrent");
+    let rounds = 200u32;
+    let env_handle = std::thread::spawn({
+        let dir = dir.clone();
+        move || {
+            for i in 0..rounds {
+                save_env(
+                    &dir,
+                    &EnvProxyConfig {
+                        http_proxy: format!("http://e{i}:1"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+        }
+    });
+    let su_handle = std::thread::spawn({
+        let dir = dir.clone();
+        move || {
+            for i in 0..rounds {
+                save_selfupdate(&dir, &format!("socks5://s{i}:2")).unwrap();
+            }
+        }
+    });
+    env_handle.join().unwrap();
+    su_handle.join().unwrap();
+    let final_cfg = load(&dir).unwrap().unwrap();
+    assert_eq!(
+        final_cfg.env.http_proxy,
+        format!("http://e{}:1", rounds - 1),
+        "BUG-20261103-333: env 段最后写入不得被并发 selfupdate 保存的旧底覆盖"
+    );
+    assert_eq!(
+        final_cfg.selfupdate.proxy,
+        format!("socks5://s{}:2", rounds - 1),
+        "BUG-20261103-333: selfupdate 段最后写入不得被并发 env 保存的旧底覆盖"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // set_enabled/set_config/remove 走 config_write_lock（进程级串行锁）；
-// 读路径迁移写不罩锁——BUG-20261025-45 修复后写侧走 write_file_atomic
-// 唯一临时名（.tmp-{pid}-{seq}-{nanos}），同毫秒撞名已消除；
-// 此锁保留为廉价的串行卫生。
+// BUG-20261103-333 起读路径迁移写（load_switches/switch）同样全程罩锁
+// （迁移是 RMW+删旧文件，零锁时与开关写互相以旧底覆盖、迁移数据不可恢复）；
+// 写侧走 write_file_atomic 唯一临时名（BUG-20261025-45 同毫秒撞名已消除）。
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn temp_config_dir(tag: &str) -> PathBuf {
@@ -381,5 +381,65 @@ fn panel_llm_key_shape_stable_for_existing_files() {
     assert!(!raw.contains("panel_llm"), "关闸后键整体省略");
     assert!(raw.contains("\"alpha\""), "既有条目仍保留");
     assert!(raw.ends_with('\n'), "尾随换行形态稳定");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ==================== BUG-20261103-333 回归锁 ====================
+//
+// load_switches/switch 读路径的迁移写（读旧实例文件→并入→整体写主文件→删旧
+// 文件）不罩 config_write_lock——与 set_enabled/set_config/remove（全程罩锁
+// 的 RMW）并发时互相以旧底覆盖：开关写丢 = 用户切换静默回退；迁移写丢更重
+// ——旧实例文件已删，迁移数据不可恢复。对照组 plugins_native 的迁移是
+// rename 原子形态天然免疫。修复 = 迁移写路径全程罩锁。并发触发迁移与开关
+// 写，断言两边效果并存（多轮重建现场提高交错命中率）。
+
+#[test]
+fn concurrent_migration_and_set_enabled_do_not_lose_each_other() {
+    let dir = temp_config_dir("concurrent_migrate");
+    let rounds = 30u32;
+    for r in 0..rounds {
+        // 每轮重建现场：主文件含 resident，旧实例文件含 migrated
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_enabled(&dir, "resident", true).unwrap();
+        legacy_instance(&dir, "migrated", r#"{"k":"v"}"#);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let h_migrate = {
+            let dir = dir.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let all = load_switches(&dir);
+                assert!(
+                    all.contains_key("migrated"),
+                    "迁移读返回值必须含并入条目（内存态完整性前置检查）"
+                );
+            })
+        };
+        let h_toggle = {
+            let dir = dir.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                set_enabled(&dir, "toggled", true).unwrap();
+            })
+        };
+        h_migrate.join().unwrap();
+        h_toggle.join().unwrap();
+        // 盘上终态重读（此时迁移已收敛，纯读）：两边效果必须并存
+        let final_all = load_switches(&dir);
+        assert!(
+            final_all.contains_key("migrated"),
+            "BUG-20261103-333(第{r}轮): 迁移条目不得被并发开关写的旧底覆盖（旧文件已删、丢失不可恢复）"
+        );
+        assert!(
+            final_all.get("toggled").is_some_and(|s| s.enabled),
+            "BUG-20261103-333(第{r}轮): 开关写不得被并发迁移写的旧底覆盖"
+        );
+        assert!(
+            final_all.get("resident").is_some_and(|s| s.enabled),
+            "现场既有条目必须保留"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

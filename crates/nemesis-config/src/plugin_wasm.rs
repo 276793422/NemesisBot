@@ -132,7 +132,14 @@ const LEGACY_INSTANCE_DIR: &str = "plugins";
 
 /// 全量读开关（列出/启动装载用）。文件缺席 = 空；损坏 = 空（fail-closed）
 /// + WARN。迁移旧实例文件后把合并结果写回。
+///
+/// BUG-20261103-333：迁移写（并入主文件的 RMW + 删旧文件）全程罩
+/// config_write_lock——旧形态读路径迁移写零锁，与 set_enabled/set_config/
+/// remove（全程罩锁）并发互相以旧底覆盖；开关写丢 = 用户切换静默回退，
+/// 迁移写丢更重（旧实例文件已删、数据不可恢复）。本函数非纯读（可能迁移
+/// 落盘），不入「读路径不入锁」豁免。
 pub fn load_switches(config_dir: &Path) -> BTreeMap<String, WasmSwitch> {
+    let _serial = crate::config_write_lock();
     let mut file = read_switch_file(config_dir);
     if migrate_legacy_instances(config_dir, &mut file) {
         // 读路径的迁移写失败不阻塞读（WARN 在写函数内部；下次读再试）。
@@ -142,7 +149,9 @@ pub fn load_switches(config_dir: &Path) -> BTreeMap<String, WasmSwitch> {
 }
 
 /// 读单个 slug 的开关（文件无该 slug 且旧实例文件在场 → 先迁移再读）。
+/// 锁纪律同 load_switches（BUG-20261103-333：迁移写全程罩锁）。
 pub fn switch(config_dir: &Path, slug: &str) -> WasmSwitch {
+    let _serial = crate::config_write_lock();
     let mut file = read_switch_file(config_dir);
     if !file.plugins.contains_key(slug) && migrate_legacy_instances(config_dir, &mut file) {
         let _ = write_switch_file(config_dir, &file);
