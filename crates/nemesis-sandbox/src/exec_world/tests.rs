@@ -398,3 +398,58 @@ async fn spawn_pipes_stdin_to_child() {
         out.stdout
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-337 同族回归锁：超管道缓冲的 stdin 载荷 + 不读 stdin 的
+// 子进程——stdin 写不得绕过超时保护。修复前 inline write_all 先阻塞
+// （64MB >> 任何管道/内核缓冲；Windows 实测 1MB 会被内核缓冲吃掉写不
+// 阻塞——红证载荷必须远超缓冲），子进程 ~5s 内不消费 stdin 也不退出，
+// timeout 只包 wait_with_output 管不到写侧 → 整段卡到子进程自然退出且
+// timed_out=false（写侧断管错误后 wait 正常返回，超时形态丢失）。修复后
+// （BUG-20261102-312 同款：stdin 写放独立任务）timeout 按预算 ~2s 返回
+// timed_out=true。
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn stdin_ignore_sleeper() -> SpawnOp {
+    SpawnOp {
+        program: "sh".into(),
+        args: vec!["-c".into(), "sleep 5".into()],
+        cwd: None,
+        stdin: Some("x".repeat(64 * 1024 * 1024)),
+        timeout_secs: Some(2),
+    }
+}
+#[cfg(windows)]
+fn stdin_ignore_sleeper() -> SpawnOp {
+    SpawnOp {
+        program: "cmd".into(),
+        args: vec!["/C".into(), "ping -n 5 127.0.0.1 >nul".into()],
+        cwd: None,
+        stdin: Some("x".repeat(64 * 1024 * 1024)),
+        timeout_secs: Some(2),
+    }
+}
+
+#[tokio::test]
+async fn spawn_stdin_write_honors_timeout_budget() {
+    let root = tmp();
+    let start = std::time::Instant::now();
+    let out = guarded_direct_spawn(&stdin_ignore_sleeper(), &[root])
+        .await
+        .expect("timeout is an outcome, not Err");
+    let elapsed = start.elapsed();
+    // 预算 2s，子进程寿命 ~5s：写侧受预算 → 必须按 timed_out 收场，且
+    // 墙钟远小于子进程寿命（放宽到 10s 容 CI 慢机 spawn 抖动；修复前
+    // 形态 = 卡满 ~5s 且 timed_out=false，两个断言都抓得住）。
+    assert!(
+        out.timed_out,
+        "expected timed_out, got exit={:?} stderr={}",
+        out.exit_code, out.stderr
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "stdin 写未受超时预算保护：墙钟 {:?}（= 卡到子进程自然退出的修复前形态）",
+        elapsed
+    );
+}

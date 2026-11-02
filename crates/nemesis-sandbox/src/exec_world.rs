@@ -251,13 +251,23 @@ pub async fn guarded_direct_spawn(
         .map_err(|e| format!("spawn {:?}: {}", job.program, e))?;
 
     if let Some(stdin_data) = &job.stdin
-        && let Some(mut stdin) = child.stdin.take()
+        && let Some(stdin) = child.stdin.take()
     {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(stdin_data.as_bytes()).await;
-        let _ = stdin.shutdown().await;
+        // BUG-20261103-337 同族（BUG-20261102-312 修复模式）：stdin 写放
+        // 独立任务——payload 超管道缓冲且 spawned 进程不读 stdin 时，
+        // inline write_all 会阻塞到对方退出，下方 timeout 只包
+        // wait_with_output 管不到这里，等于超时保护整段失效。独立任务
+        // 写：写完 shutdown+drop 关写端（脚本型子进程依赖 EOF 退出）；
+        // 超时 kill 后管道断裂，write 返回错误、任务自然结束，无泄漏。
+        let data = stdin_data.as_bytes().to_vec();
+        tokio::spawn(async move {
+            let mut stdin = stdin;
+            let _ = stdin.write_all(&data).await;
+            let _ = stdin.shutdown().await;
+        });
     }
-    // stdin drop（take 后离开作用域）= EOF，脚本型子进程正常退出。
+    // stdin drop（写任务结束）= EOF，脚本型子进程正常退出。
 
     let fut = child.wait_with_output();
     match tokio::time::timeout(timeout, fut).await {
