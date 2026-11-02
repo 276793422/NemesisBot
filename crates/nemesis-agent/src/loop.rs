@@ -321,6 +321,11 @@ pub(crate) struct SecurityState {
     /// 未装配 = `None`，Auth 臂走原「停止重试」终局零回归。
     pub(crate) credential_broker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::CredentialBroker>>>,
+    /// L25（2026-11-02）：凭据发卡防滥用占位表（同 `(session_key, alias)`
+    /// TTL 窗内至多一张卡）。纯内存态随 loop 重建清零；与 broker 同族，
+    /// dispatch 注入失败臂与 TakeoverToolBridge 回退态共用（wrapper 持
+    /// 自有实例，语义等价）。
+    pub(crate) credential_card_guard: Arc<crate::r#loop::credential_injection::CredentialCardGuard>,
     /// §2 免打扰运行时态（无人值守计划 Part 2，security feature）：gateway
     /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
     /// 真相源同款双注入）。（2026-10-24 循环干预阶梯起 `check_escalation`
@@ -581,6 +586,12 @@ pub struct AgentLoop {
     agent_event_tx: parking_lot::RwLock<
         Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
     >,
+    /// L14（2026-11-01）：会话执行统计 sink——loop 内部计数（LLM 重试/
+    /// 校验失败回灌/压缩成功）经 [`crate::session_stats::SessionStatsSink`]
+    /// 上抛宿主聚合器（nemesisbot `session_stats` 装配注入）。`None`
+    /// （standalone / 未注入）= 不统计，调用点零开销。
+    session_stats:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn crate::session_stats::SessionStatsSink>>>,
     /// Work 时间线累加器（2026-10-30 ChatPanel 长任务时间线改造）：turn
     /// 级「叙述+工具」按真实时序收拢，落盘随行（turn.rs 最终回复行）+
     /// `chat.work_current` 活查询。Arc 与 ToolEventHook 共享同一实例
@@ -901,6 +912,9 @@ impl AgentLoop {
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
                 credential_broker: parking_lot::RwLock::new(None),
+                credential_card_guard: Arc::new(
+                    crate::r#loop::credential_injection::CredentialCardGuard::new(),
+                ),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
             },
@@ -935,6 +949,7 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             mode: std::sync::Arc::new(parking_lot::RwLock::new(crate::types::AgentMode::Build)),
             agent_event_tx: parking_lot::RwLock::new(None),
+            session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
@@ -1374,6 +1389,11 @@ mod recovery_classifier_tests;
 // 令牌是唯一出口）。
 #[cfg(test)]
 mod recovery_stop_tests;
+// 恢复环 tool_defs 供给闸回归锁（BUG-20261102-306）：三恢复环重试请求的
+// 工具面必须与主链路 effective_tool_defs 同源（hidden/tier 等供给闸在
+// 恢复重试上同样生效）。
+#[cfg(test)]
+mod recovery_supply_gate_tests;
 // R1 (2026-09-21)：中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]

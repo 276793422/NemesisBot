@@ -236,13 +236,19 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
     let mut events: CcEvents = serde_json::from_value(events_value.clone())
         .map_err(|e| format!("unsupported hooks.json format: {e}"))?;
     // 只认 type=="command"（方言唯一类型）；未知的跳过并统计。
+    // 必须覆盖全部 12 个事件组（BUG-20261102-314：漏组 = type 写错的条目
+    // 在该组照跑 command，「只认 command」契约失效）。
     let mut skipped = 0usize;
     for groups in [
         &mut events.pre_tool_use,
         &mut events.post_tool_use,
+        &mut events.post_tool_use_failure,
         &mut events.session_start,
+        &mut events.session_end,
         &mut events.user_prompt_submit,
         &mut events.stop,
+        &mut events.pre_compact,
+        &mut events.post_compact,
         &mut events.subagent_start,
         &mut events.subagent_stop,
         &mut events.notification,
@@ -265,13 +271,18 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
 // ---------------------------------------------------------------------------
 
 /// 我们的工具名 → 方言工具名。方言脚本 matcher / payload 里用的是右边。
+/// 覆盖方言生态高频工具（BUG-20261102-313：缺别名 = 方言 matcher 对该工具
+/// 静默不命中，PreToolUse 审计面漏触发）。
 pub fn cc_tool_alias(raw: &str) -> Option<&'static str> {
     Some(match raw {
         "exec" | "async_shell" => "Bash",
         "edit" | "edit_file" => "Edit",
+        "multiedit" => "MultiEdit",
         "write_file" => "Write",
         "read_file" => "Read",
         "grep" => "Grep",
+        "spawn" => "Task",
+        "web_fetch" => "WebFetch",
         _ => return None,
     })
 }
@@ -469,11 +480,18 @@ pub async fn run_hook_script(
             };
         }
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        // hook payload 都是小 JSON（KB 级），inline 写完即关——脚本不读
-        // stdin 也不会挂住写端。
-        let _ = stdin.write_all(payload.as_bytes()).await;
-        drop(stdin);
+    // stdin 写入放独立任务（BUG-20261102-312）：payload 大于 pipe buffer
+    // （PostToolUse 的 tool_response 可达数 MB）且脚本不读 stdin 时，inline
+    // write_all 会阻塞到脚本退出——timeout 只包下面的 wait，管不到这里，
+    // 等于超时保护整段失效（agent loop 挂死面）。独立任务写：写完 drop 关
+    // 写端（脚本读到 EOF）；超时 kill 后管道断裂，write 返回错误、任务自然
+    // 结束，无泄漏。
+    if let Some(stdin) = child.stdin.take() {
+        let payload_bytes = payload.as_bytes().to_vec();
+        tokio::spawn(async move {
+            let mut stdin = stdin;
+            let _ = stdin.write_all(&payload_bytes).await;
+        });
     }
 
     let fut = child.wait_with_output();

@@ -427,3 +427,98 @@ fn resolve_model_files_zero_byte_model_is_not_installed() {
         "zero-byte debris must not resolve as installed, got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-278：零超时下载在半死上游上永久挂死——总超时回归测试
+// （blocking::ClientBuilder 无 read_timeout，走总超时兜底；测试态
+// DOWNLOAD_TOTAL_TIMEOUT=400ms，等待必须秒级以内）。
+// ---------------------------------------------------------------------------
+
+/// 半死上游①：接受连接、收走请求、永不回响应头（连接保持打开）。
+fn serve_head_stall() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // 单请求 mock：accept 一次后 park 挂住（park 永不返回 → 连接保持打开，
+    // 客户端等响应头直到总超时触发）。
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let Ok((mut s, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = s.read(&mut buf);
+        loop {
+            std::thread::park();
+        }
+    });
+    port
+}
+
+/// 半死上游②：回完整响应头 + 半截 body 后断流（Content-Length 说谎）。
+fn serve_body_stall() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // 单请求 mock：响应头 + 10/100 字节后 park 挂住（连接保持不发余量——
+    // body 读半截 stall，总超时必须兜住）。
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let Ok((mut s, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = s.read(&mut buf);
+        let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+        let _ = s.write_all(head);
+        let _ = s.write_all(&[0xABu8; 10]);
+        let _ = s.flush();
+        loop {
+            std::thread::park();
+        }
+    });
+    port
+}
+
+fn assert_stall_timeout(err: &str, elapsed: std::time::Duration) {
+    // 下界 ≥300ms：证明确实等了 400ms 超时窗（连接被拒等瞬时错误毫秒级
+    // 就返回，属别的失败形态）；上界 <5s：证明没有永久挂死（修复前此
+    // 测试会挂死到测试框架超时）。reqwest 0.12 的 Display 不含 cause 链，
+    // 「超时」细节断不了言，用耗时上下界代替。
+    assert!(
+        elapsed >= std::time::Duration::from_millis(300),
+        "耗时 {:?} 过短，不像是等了超时窗（瞬时失败属别的错误形态）",
+        elapsed
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "必须在总超时窗内失败，实际耗时 {:?}",
+        elapsed
+    );
+    assert!(
+        err.contains("download request failed") || err.contains("failed to read download response"),
+        "须是传输层错误而非其它错误: {err}"
+    );
+}
+
+#[test]
+fn download_file_errors_on_head_stall_instead_of_hanging() {
+    let port = serve_head_stall();
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("model.onnx");
+    let started = std::time::Instant::now();
+    let err = download_file(&format!("http://127.0.0.1:{}/model.onnx", port), &dest)
+        .expect_err("半死上游必须报错而非永久挂起");
+    assert_stall_timeout(&err, started.elapsed());
+    assert!(!dest.exists(), "失败不得落盘");
+}
+
+#[test]
+fn download_file_errors_on_body_stall_instead_of_hanging() {
+    let port = serve_body_stall();
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("model.onnx");
+    let started = std::time::Instant::now();
+    let err = download_file(&format!("http://127.0.0.1:{}/model.onnx", port), &dest)
+        .expect_err("body 断流必须报错而非永久挂起");
+    assert_stall_timeout(&err, started.elapsed());
+    assert!(!dest.exists(), "失败不得落盘");
+}

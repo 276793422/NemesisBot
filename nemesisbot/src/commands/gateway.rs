@@ -312,6 +312,16 @@ pub async fn run(
             .as_ref()
             .and_then(|p| p.ssrf_guard().cloned()),
     );
+    // workflow http 节点 SSRF 闸（BUG-20261102-324 同族接线）：url 支持
+    // {{var}} 运行时注入 + 此前默认自动跟随重定向，威胁面与 web_fetch 同级。
+    // Guard Clone 共享 inner，闸配置热更新对节点执行同效；None（workflow 开
+    // + security 关 / ssrf 层关）= 无闸直通，重定向纪律仍生效。
+    #[cfg(all(feature = "security", feature = "workflow"))]
+    nemesis_workflow::nodes::set_http_ssrf_guard(
+        security_plugin
+            .as_ref()
+            .and_then(|p| p.ssrf_guard().cloned()),
+    );
     // web_server &mut 绑定恢复——推迟到本点：init_agent 以 &WebWiring 借读
     // 整体（board_event_hub），部分移动后不可再整体借用。
     let mut web_server = web_wiring.web_server;
@@ -326,6 +336,10 @@ pub async fn run(
     let skills_install_gate = if ctx.cfg.skills.as_ref().is_none_or(|s| s.install_approval) {
         let gate = std::sync::Arc::new(crate::web_approval::LateWebSkillsGate::new(300));
         web_server.set_skills_install_gate(gate.clone());
+        // BUG-20261101-295：同一门填进 SharedResources 共享槽——agent 的
+        // `install_skill` 工具经此走 P13 审批（旧形态工具面绕过全漏斗，
+        // 是 web/CLI 之外的唯一旁路）。槽 Arc 早于 loop 构建，晚填可见。
+        *shared_resources.skills_install_gate_slot.write() = Some(gate.clone());
         Some(gate)
     } else {
         tracing::info!(

@@ -589,3 +589,17 @@ fn migrate_vault_residue_cleanup_fires_when_vault_has_alias() {
     assert!(!creds.keys.contains_key("legacy"), "明文彻底离盘");
     cleanup(&dir);
 }
+
+/// L26（2026-11-02）oracle 契约 pin：`UnknownAlias` 的 Display 以
+/// 「别名不存在」开头——nemesis-agent 注入层凭这个字面量 marker 识别
+/// 「别名不存在」根因并改写为通用文案（不给存在性 oracle）。thiserror
+/// 文案漂移会静默拆闸，这里钉死。
+#[test]
+fn unknown_alias_display_marker_pinned_for_credential_oracle() {
+    let e = VaultError::UnknownAlias("some-alias".to_string());
+    let text = e.to_string();
+    assert!(
+        text.starts_with("别名不存在"),
+        "UnknownAlias Display marker drifted (L26 oracle contract): {text}"
+    );
+}

@@ -210,6 +210,62 @@ fn test_extract_target_multiedit_reads_first_edit_path() {
     assert_eq!(extract_target("multiedit", &serde_json::json!({})), "");
 }
 
+// BUG-20261102-296：mcp_discover stdio 臂投影 process_exec 后，target 必须
+// 取命令行本体（command + args 拼接）让 Layer 2 命令守卫 / process_rules /
+// 审计链照常工作（run_script 同款先例）；HTTP 臂（无 command）取 url。
+#[test]
+fn test_extract_target_mcp_discover_command_and_url() {
+    let stdio = serde_json::json!({
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-everything"]
+    });
+    assert_eq!(
+        extract_target("mcp_discover", &stdio),
+        "npx -y @modelcontextprotocol/server-everything"
+    );
+    // 无 args 数组 = 纯命令。
+    assert_eq!(
+        extract_target(
+            "mcp_discover",
+            &serde_json::json!({"command": "mcp-server"})
+        ),
+        "mcp-server"
+    );
+    // args 含非字符串项时跳过（unwrap 慎重——不过滤会 panic）。
+    let mixed = serde_json::json!({"command": "run", "args": ["a", 3, "b"]});
+    assert_eq!(extract_target("mcp_discover", &mixed), "run a b");
+    // HTTP 臂 = url 作 target；两者皆缺 = 空串不 panic。
+    assert_eq!(
+        extract_target(
+            "mcp_discover",
+            &serde_json::json!({"url": "http://localhost:8080/mcp"})
+        ),
+        "http://localhost:8080/mcp"
+    );
+    assert_eq!(extract_target("mcp_discover", &serde_json::json!({})), "");
+}
+
+// BUG-20261102-296：mcp_discover 的 url 进 Layer 6 SSRF（与 web_fetch 同
+// 语义同闸）。
+#[test]
+fn test_extract_url_mcp_discover_reads_url() {
+    assert_eq!(
+        extract_url(
+            "mcp_discover",
+            &serde_json::json!({"url": "http://169.254.169.254/latest"})
+        ),
+        "http://169.254.169.254/latest"
+    );
+    // stdio 臂无 url → 空串（SSRF 层跳过，命令面由 extract_target 承载）。
+    assert_eq!(
+        extract_url(
+            "mcp_discover",
+            &serde_json::json!({"command": "npx", "args": ["-y", "srv"]})
+        ),
+        ""
+    );
+}
+
 #[test]
 fn test_is_safe_command() {
     assert!(is_safe_command("ls -la").0);

@@ -1092,6 +1092,14 @@ pub(crate) async fn init_post_agent(
     web_server.set_agent_event_rx(agent_event_rx);
     info!("[Gateway] Agent tool-event receiver injected into web server");
 
+    // L14 会话执行统计：读侧移交——sessions.stats 命令经此把 pending 增量
+    // flush 落盘后读盘返回（读盘不读内存：重启后聚合器清零而持久层保留）。
+    // None（headless 等无聚合器形态）= 命令诚实报错。
+    if let Some(agg) = shared_resources.session_stats.clone() {
+        web_server.set_session_stats(agg);
+        info!("[Gateway] Session stats reader injected into web server");
+    }
+
     // Inject the runtime CronService (so tasks.cron.* calls the live scheduler)
     // and the ConvRouter (shared with the cron fire handler for Opt 2 live
     // delivery). CronService is cloned because gateway still owns a handle to

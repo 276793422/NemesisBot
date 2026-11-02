@@ -36,6 +36,19 @@ pub const DEFAULT_PARALLEL: usize = 12;
 /// 单块读超时（连接假死检测——每读一段 120s 无进展即失败重试整块）。
 const CHUNK_READ_TIMEOUT_SECS: u64 = 120;
 
+/// BUG-20261101-278：客户端层 stall 检测窗（reqwest read_timeout）——覆盖
+/// 响应头**等待**（probe_range 的 HEAD / 各 send()，原完全无保护：TCP 已建
+/// 但对端不发数据 = `vm install` 永久挂死）与 body 间隔两种形态。下方
+/// CHUNK_READ_TIMEOUT_SECS 的 per-chunk tokio 超时只包得住 body 读，头等待
+/// 罩不到；两层并存读超时（60s）先行触发，tokio 层作冗余保险。不设总超时
+/// 是刻意的：慢速但流动的合法大下载（weilnetz 单连接 ~20KB/s，197MB 量级）
+/// 不能被总超时误杀。
+#[cfg(not(test))]
+const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(test)]
+// 测试态 400ms：stall 回归测试经真实 ranged_download 跑，等待必须秒级以内。
+const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// 安装目录集合（caller 从 workspace 解析路径；URL/包名/二进制名单已矩阵化，
 /// 不再是安装输入）。
 #[derive(Debug, Clone)]
@@ -354,6 +367,7 @@ async fn download_chunk(
 pub async fn ranged_download(url: &str, dest: &Path, parallel: usize) -> Result<u64> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(DOWNLOAD_READ_TIMEOUT)
         .build()
         .context("build http client")?;
 
@@ -499,6 +513,13 @@ async fn verify_len(path: &Path, expected: u64) -> Result<()> {
     Ok(())
 }
 
+/// 诊断文案里的钉值预览：`get(..16)` 非边界回落全串（钉值来自用户可编辑
+/// 的 config.vm_qemu.json，validate 不校验格式——非 hex/非 ASCII 钉值下
+/// 字节直切 `[..16]` 会 panic，BUG-20261101-280）。
+fn pin_preview(s: &str) -> &str {
+    s.get(..16).unwrap_or(s)
+}
+
 /// 取上游 sidecar SHA-512（`<url>.sha512`）。不可达 = Err（caller 决定
 /// 诚实拒绝或以显式 expected 继续）。
 pub async fn fetch_sha512_sidecar(url: &str) -> Result<String> {
@@ -550,11 +571,11 @@ async fn verify_installer(path: &Path, expected: &Option<String>, url: &str) -> 
                     "下载文件 SHA-512 与本仓钉值不符，但与上游 sidecar 一致——\
                      上游发行已更新（钉 {} / 实测 {actual}）。请确认新版本后更新钉值，\
                      或显式换源并给 expected_sha512",
-                    &want_lc[..16]
+                    pin_preview(&want_lc)
                 ),
                 _ => bail!(
                     "下载文件 SHA-512 校验失败：钉 {} / 实测 {actual}（sidecar 不可达或同样不符）",
-                    &want_lc[..16]
+                    pin_preview(&want_lc)
                 ),
             }
         }

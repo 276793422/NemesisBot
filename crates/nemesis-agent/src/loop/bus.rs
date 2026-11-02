@@ -147,6 +147,7 @@ impl AgentLoop {
             config,
             outbound_tx: Some(outbound_tx),
             registry: Some(registry),
+            session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
             state_manager: None,
             session_store: Some(session_store),
@@ -200,6 +201,9 @@ impl AgentLoop {
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
                 credential_broker: parking_lot::RwLock::new(None),
+                credential_card_guard: Arc::new(
+                    crate::r#loop::credential_injection::CredentialCardGuard::new(),
+                ),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
             },
@@ -330,6 +334,11 @@ impl AgentLoop {
                 let provider = self.provider.read().clone();
                 let model = self.active_model.read().clone();
                 let tools = self.tools.read().clone();
+                // L28：续行 cap 与主循环 chat_opts 同源（per-model
+                // max_output_tokens > agents.defaults > DEFAULT_MAX_TOKENS）。
+                let max_tokens_cap = self
+                    .current_max_tokens_override(Some(&model))
+                    .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
 
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -339,6 +348,7 @@ impl AgentLoop {
                     task_error,
                     provider.as_ref(),
                     &model,
+                    max_tokens_cap,
                     &tools,
                     tx,
                     self.observer_manager.clone(),
@@ -362,6 +372,10 @@ impl AgentLoop {
             let semaphore = self.continuation_semaphore.clone().unwrap();
             // F-F：vision 解析在 spawn 前取值（闭包外，self 不可 move 进去）。
             let vision_supported = self.current_vision().supported;
+            // L28：cap 同样在 spawn 前解析（与主循环 chat_opts 同源）。
+            let max_tokens_cap = self
+                .current_max_tokens_override(Some(&model))
+                .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
 
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
@@ -376,6 +390,7 @@ impl AgentLoop {
                         task_error.as_deref(),
                         provider.as_ref(),
                         &model,
+                        max_tokens_cap,
                         &tools,
                         tx,
                         observer_manager,
@@ -959,6 +974,10 @@ impl AgentLoop {
             // Clone provider and model before .await (RwLock guards are not Send).
             let cont_provider = self.provider.read().clone();
             let cont_model = self.active_model.read().clone();
+            // L28：续行 cap 与主循环 chat_opts 同源。
+            let max_tokens_cap = self
+                .current_max_tokens_override(Some(&cont_model))
+                .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
             if let Some(ref tx) = self.outbound_tx {
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -968,6 +987,7 @@ impl AgentLoop {
                     task_error,
                     cont_provider.as_ref(),
                     &cont_model,
+                    max_tokens_cap,
                     &self.tools,
                     tx,
                     self.observer_manager.clone(),

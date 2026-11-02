@@ -174,6 +174,16 @@ pub enum AgentEvent {
         impact: Option<String>,
         #[serde(default)]
         reject_note: Option<String>,
+        /// L07（2026-11-01）审批卡 diff 预览：将要发生的变化（unified diff
+        /// 或命令现场文本），挂起点生成（args 只在那里可见）。None = 不适用
+        /// （args 缺失/非白名单形态/读盘失败且无新内容）——卡片无预览区，
+        /// 旧事件流零破坏。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<String>,
+        /// 渲染提示：`"diff"` = 按 unified diff 行首字符染色；`"text"` =
+        /// 等宽纯文本。随 preview 缺省。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview_format: Option<String>,
     },
     /// 审批已裁决事件（F6，devtool-upgrade 阶段 5）。任一前端 respond 成功
     /// 或服务端超时自动 deny 后由 WebApprovalManager 发布；web pump 转 SSE
@@ -444,6 +454,19 @@ pub trait ApprovalResponder: Send + Sync {
 
     /// 当前等待裁决的审批请求元数据列表（前端刷新/恢复用）。
     fn pending(&self) -> Vec<serde_json::Value>;
+
+    /// L07（2026-11-01）终局清理：关闭**全部**未决卡（estop 触发 / agent
+    /// loop 停止）。每张卡效果恒等于拒绝（清理绝不产生批准）+ 审计留痕。
+    /// 返回关闭数。默认空实现 = 既有实现（IM 卡 / 测试 stub）零改动。
+    fn resolve_orphans(&self, _reason: &str) -> usize {
+        0
+    }
+
+    /// L07 终局清理（定向版）：只关闭指定会话的未决卡（会话 clear）。
+    /// session_key 为空的卡不命中（空键卡只在全量清理时关闭）。
+    fn resolve_orphans_for_session(&self, _session_key: &str, _reason: &str) -> usize {
+        0
+    }
 }
 
 /// B8（提问两形态）：表单字段定义（question 工具 form 形态的单个字段）。

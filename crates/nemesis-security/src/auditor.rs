@@ -162,6 +162,10 @@ pub struct ApprovalContext {
     /// bus，项目会话经 ProjectLoopManager 归属转发，同一 session_key 两种
     /// 归宿都命中）。空 = 旧链路/无会话上下文，补裁退化为纯记账。
     pub session_key: String,
+    /// L07（2026-11-01）审批卡 diff 预览数据源：触发审批的工具调用原始
+    /// args（pipeline 从 `ToolInvocation.args` 透传）。`Value::Null`
+    /// （Default）= 无 args（旧调用方 / limits 直发路径），预览不产。
+    pub tool_args: serde_json::Value,
 }
 
 pub trait ApprovalManager: Send + Sync {
@@ -648,6 +652,137 @@ impl SecurityAuditor {
         }
     }
 
+    /// L26（2026-11-02）：审批通道在场判定——dispatch 凭据闸的跳过条件。
+    /// headless / 裸装配无通道时闸不启用（行为与闸落地前一致）；与
+    /// [`Self::request_limit_approval`] 的无通道 fail-closed 是有意分歧
+    /// （limits 基线=超限异常必须人裁，闸基线=现状合法调用，见 L26 设计
+    /// 文档 §9.2）。
+    pub fn has_approval_channel(&self) -> bool {
+        self.approval_manager
+            .read()
+            .as_ref()
+            .map(|m| m.is_running())
+            .unwrap_or(false)
+    }
+
+    /// L26（2026-11-02）：凭据引用出域审批——dispatch 链凭据闸的直卡
+    /// 通道（真值注入前的人工同意面，管线对解析后真值不可见的时序空隙
+    /// 收口）。镜像 [`Self::request_limit_approval`]：无通道/未运行
+    /// fail-closed 落审计（A-F5 语义）；有通道经 `request_approval_sync_ctx`
+    /// 出卡（`credential_use` 操作名 / HIGH / auditor 配置超时，Web/Channel
+    /// 管理器零改动），裁决落审计。op_type 占位 ProcessExec 同 limits
+    /// （真实工具名在 target、来源在 source，可追溯不依赖 op_type）。
+    pub fn request_credential_use_approval(
+        &self,
+        tool: &str,
+        reason: &str,
+        ctx: Option<&ApprovalContext>,
+    ) -> Result<ApprovalVerdict, String> {
+        let mgr_opt = self.approval_manager.read().clone();
+        let Some(mgr) = mgr_opt.as_ref() else {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: format!("creduse-{}", uuid::Uuid::new_v4()),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "credential_gate".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: "denied".to_string(),
+                reason: format!(
+                    "credential use ({reason}); fail-closed: no approval manager is available"
+                ),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.credential_gate".to_string(),
+            });
+            return Err("credential gate: no approval manager is available".to_string());
+        };
+        if !mgr.is_running() {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: format!("creduse-{}", uuid::Uuid::new_v4()),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "credential_gate".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: "denied".to_string(),
+                reason: format!(
+                    "credential use ({reason}); fail-closed: the approval manager is not running"
+                ),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.credential_gate".to_string(),
+            });
+            return Err("credential gate: the approval manager is not running".to_string());
+        }
+        let request_id = format!("creduse-{}", uuid::Uuid::new_v4());
+        let verdict = match ctx {
+            Some(c) => mgr.request_approval_sync_ctx(
+                &request_id,
+                "credential_use",
+                tool,
+                "HIGH",
+                reason,
+                self.config.approval_timeout_secs,
+                c,
+            ),
+            None => mgr.request_approval_sync(
+                &request_id,
+                "credential_use",
+                tool,
+                "HIGH",
+                reason,
+                self.config.approval_timeout_secs,
+            ),
+        };
+        // 审批裁决落审计（limit/guardian 同款 A-F5 语义）。
+        let audit_verdict = |decision: &str, why: String| {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: request_id.clone(),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "credential_gate".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: decision.to_string(),
+                reason: why,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.credential_gate".to_string(),
+            });
+        };
+        match verdict {
+            Ok(v) => {
+                let why = if v.approved {
+                    format!("credential use on {tool} approved by user ({reason})")
+                } else {
+                    let note = v.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                    match note {
+                        Some(n) => format!("credential use on {tool} rejected: {n} ({reason})"),
+                        None => format!(
+                            "credential use on {tool} rejected or approval timeout ({reason})"
+                        ),
+                    }
+                };
+                audit_verdict(if v.approved { "approved" } else { "denied" }, why);
+                Ok(v)
+            }
+            Err(e) => {
+                audit_verdict(
+                    "denied",
+                    format!("credential use on {tool}: approval unavailable: {e} ({reason})"),
+                );
+                Err(e)
+            }
+        }
+    }
+
     pub fn request_guardian_verdict_approval(
         &self,
         tool: &str,
@@ -930,20 +1065,56 @@ impl SecurityAuditor {
                 &req.target,
                 &req.danger_level.to_string(),
             ) {
-                self.allowed_count.fetch_add(1, Ordering::SeqCst);
-                let event = AuditEvent {
-                    event_id: uuid::Uuid::new_v4().to_string(),
-                    request: req.clone(),
-                    decision: "allowed".to_string(),
-                    reason: format!(
-                        "auto allowed by approval rule ({} {})",
-                        rule.op, rule.pattern
-                    ),
-                    timestamp: chrono::Local::now().to_rfc3339(),
-                    policy_rule: format!("auto_by_rule:{}", rule.pattern),
+                // L01 敏感 flag 放行臂二次校验：记忆规则的归约形态
+                // （exec `git push *`）不区分破坏性 flag——已批准
+                // `git push origin main` 的记忆不得静默放行 --force
+                // 变体。命中 = 留痕 flag_hit 后**跳过本条自动放行**
+                // （fall through 到后续臂/人工卡）。仅命令行 op；会话
+                // allow-all / 免打扰开关是用户显式无人值守意志，
+                // 刻意不受本闸约束（显式意图优先）。
+                let flag_blocked = matches!(
+                    req.op_type,
+                    OperationType::ProcessExec | OperationType::ProcessSpawn
+                ) && {
+                    let flags =
+                        matcher::scan_dangerous_flags(&matcher::exec_rule_segments(&req.target));
+                    if flags.is_empty() {
+                        false
+                    } else {
+                        let event = AuditEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            request: req.clone(),
+                            decision: "require_approval".to_string(),
+                            reason: format!(
+                                "sensitive flag_hit={} blocked auto-allow rule ({})",
+                                flags.join(","),
+                                rule.pattern
+                            ),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                            policy_rule: "sensitive_flag".to_string(),
+                        };
+                        self.log_audit_event(&event);
+                        true
+                    }
                 };
-                self.log_audit_event(&event);
-                return (true, None, None);
+                if !flag_blocked {
+                    self.allowed_count.fetch_add(1, Ordering::SeqCst);
+                    let event = AuditEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        request: req.clone(),
+                        decision: "allowed".to_string(),
+                        reason: format!(
+                            "auto allowed by approval rule ({} {})",
+                            rule.op, rule.pattern
+                        ),
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        policy_rule: format!("auto_by_rule:{}", rule.pattern),
+                    };
+                    self.log_audit_event(&event);
+                    return (true, None, None);
+                }
+                // flag_blocked：fall through（会话 allow-all / 免打扰 /
+                // 人工卡照常接力）。
             }
         }
 
@@ -1671,6 +1842,30 @@ impl SecurityAuditor {
                     continue;
                 }
                 if rule_matches("allow", rule) {
+                    // L01 敏感 flag 放行臂二次校验：规则表 allow 的
+                    // pattern 归约（`git push *`）不区分破坏性 flag，
+                    // 命中 = 不放行，降级弹卡 + reason 带 flag_hit 供
+                    // 审计链检索。仅命令行 op（kill/suspend 的 target
+                    // 是 PID 非命令行）。
+                    if matches!(
+                        req.op_type,
+                        OperationType::ProcessExec | OperationType::ProcessSpawn
+                    ) {
+                        let flags = matcher::scan_dangerous_flags(&matcher::exec_rule_segments(
+                            &req.target,
+                        ));
+                        if !flags.is_empty() {
+                            return (
+                                SecurityDecision::RequireApproval,
+                                format!(
+                                    "sensitive flag_hit={} behind allow rule `{}` (需要重新确认)",
+                                    flags.join(","),
+                                    rule.pattern
+                                ),
+                                "sensitive_flag".to_string(),
+                            );
+                        }
+                    }
                     return (
                         normalize_decision(&rule.action),
                         format!("rule matched: pattern={}", rule.pattern),

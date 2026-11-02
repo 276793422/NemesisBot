@@ -198,8 +198,30 @@ pub fn fork_session_opts(
             source_key
         ));
     }
-    let at = at_turn.unwrap_or(turns).min(turns).max(1);
+    // BUG-20261101-292：at_turn=0 此前被 `.max(1)` 静默 clamp 成 fork 1 轮
+    // ——同命令族 interactive_pick 显式拒 0（「无效轮次」），CLI --at 0 与
+    // WSAPI at_turn 0 两个入口却静默改义，行为分裂。0 无合法语义（上方
+    // turns >= 1 恒成立，空 fork 无意义），诚实拒绝；超界 min(turns)=全量
+    // 是文档化宽松行为（「N >= turn count keeps the whole log」），保留。
+    let at = match at_turn {
+        None => turns,
+        Some(0) => {
+            return Err("无效轮次 0（--at/at_turn 从 1 起；全量分支请省略该参数）".to_string());
+        }
+        Some(n) => n.min(turns),
+    };
     let cut = row_turn_cut(&rows, at);
+
+    // BUG-20261101-292 横向同族：--new-key 空/空白值会经 unique_key 直接
+    // 产出空名会话文件（sanitize_path_segment("") 仍为空 → `.jsonl` 点文
+    // 件，session list 无法正常渲染成垃圾残留）。与上方 at_turn 0 同款
+    // loud 纪律：非法值诚实拒绝，不静默纠偏。
+    if requested_new_key
+        .as_ref()
+        .is_some_and(|k| k.trim().is_empty())
+    {
+        return Err("new_key 不能为空（使用默认 {源会话}__fork 请省略该参数）".to_string());
+    }
 
     let new_key = unique_key(store, source_key, requested_new_key);
 

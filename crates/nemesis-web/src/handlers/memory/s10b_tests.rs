@@ -86,6 +86,7 @@ fn build_state(ws: &str, memory_manager: Option<Arc<MemoryManager>>) -> AppState
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     }

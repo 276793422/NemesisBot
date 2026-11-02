@@ -74,6 +74,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });
@@ -148,7 +149,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
     let reg = build_registry();
-    // 26 个无条件模块必须全在；10 个 feature 门控模块按 cfg 计入下限。
+    // 28 个无条件模块必须全在；12 个 feature 门控模块按 cfg 计入下限。
     // （cfg! 的 feature 参数必须是字面量，无法循环展开——逐个列出。）
     let gated_on = [
         cfg!(feature = "cluster"),
@@ -162,6 +163,7 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "skins"),
         cfg!(feature = "board"), // 2026-10-17 起 nemesis-board 转 optional
         cfg!(feature = "connectors"), // 2026-10-17 起，同时带 paperbroker，两个模块
+        cfg!(feature = "ziwei"), // 2026-11-01 起进下限清单（BUG-20261101-289：紫微管理面 feature 门控，此前漏列）
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
@@ -347,7 +349,8 @@ fn docs_generation_writes_wsapi_commands_md() {
     // SKIP 并注明，不写盘。board/connectors/paperbroker 2026-10-17 起 feature
     // 门控（board/connectors 整包进出），coding 行的 lsp_* 随 `lsp` feature
     // 进出——三者缺一都会静默冲掉命令行（真实发生：只带 12 feature 不带 lsp
-    // 跑，coding 3 命令被冲成 1）。
+    // 跑，coding 3 命令被冲成 1）。ziwei 2026-11-01 起进闸（BUG-20261101-289
+    // 真实发生：不带 ziwei 重跑，紫微 23 命令整模块冲没且旧闸放行不 SKIP）。
     const GATED_DOC_MODULES: &[&str] = &[
         "cluster",
         "outbox",
@@ -363,6 +366,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "board",
         "connectors",
         "paperbroker",
+        "ziwei",
     ];
     let missing_module = GATED_DOC_MODULES
         .iter()
@@ -381,7 +385,7 @@ fn docs_generation_writes_wsapi_commands_md() {
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
-             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm\" docs_generation"
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei\" docs_generation"
         );
         return;
     }
@@ -393,7 +397,7 @@ fn docs_generation_writes_wsapi_commands_md() {
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
-security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm\
+security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei\
 \" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );

@@ -181,7 +181,7 @@ async fn force_compression_auto_path_stays_on_main() {
     al.set_small_model(Some(small_slot(small, "cheap-mini")));
 
     let instance = instance_with(10);
-    al.force_compression(&instance).await;
+    al.force_compression(&instance, "test-session").await;
     assert_eq!(
         instance.get_summary_cache().expect("cache set").text,
         "MAIN SUMMARY"
@@ -205,7 +205,8 @@ async fn force_compression_opts_false_explicitly_uses_main() {
     al.set_small_model(Some(small_slot(small, "cheap-mini")));
 
     let instance = instance_with(10);
-    al.force_compression_opts(&instance, false).await;
+    al.force_compression_opts(&instance, false, "test-session")
+        .await;
     assert_eq!(
         instance.get_summary_cache().expect("cache set").text,
         "MAIN SUMMARY"

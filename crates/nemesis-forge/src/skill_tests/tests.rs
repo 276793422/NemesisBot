@@ -93,6 +93,55 @@ fn parse_rejects_oversized_fixture() {
 }
 
 #[test]
+fn parse_rejects_flow_nesting_bomb() {
+    // BUG-20261101-276：远端技能不可信内容——flow 集合深嵌套炸弹在
+    // serde_yaml 递归下降里栈溢出（abort 不可捕获），必须被词法闸
+    // 先行诚实拒绝（喂给 serde_yaml 之前）。
+    let bomb = format!(
+        "name: d\ntests: {}",
+        "[".repeat(FRONTMATTER_MAX_NESTING_DEPTH + 1)
+    );
+    let content = format!("---\n{bomb}\n---\nbody");
+    let err = parse_skill_tests(&content).unwrap_err();
+    assert!(err.contains("nesting depth"), "{err}");
+}
+
+#[test]
+fn parse_rejects_block_indent_bomb() {
+    // 块式缩进炸弹：逐行加深缩进（每行 2 空格），flow 括号为零也必须
+    // 触闸——缩进宽度 / 2 计深度。
+    let mut fm = String::from("name: d\nroot:\n");
+    let levels = FRONTMATTER_MAX_NESTING_DEPTH * 2 + 4;
+    for i in 0..levels {
+        fm.push_str(&format!("{}x:\n", " ".repeat(i * 2 + 2)));
+    }
+    let content = format!("---\n{fm}---\nbody");
+    let err = parse_skill_tests(&content).unwrap_err();
+    assert!(err.contains("nesting depth"), "{err}");
+}
+
+#[test]
+fn parse_depth_guard_counts_brackets_inside_quotes_not() {
+    // 引号内的 `[`/`{` 是字面量不计深度：含 >64 个引号内括号的合法
+    // 描述字段不触闸（正常解析路径继续走，最终因 tests 缺失返 None）。
+    let desc = "[".repeat(FRONTMATTER_MAX_NESTING_DEPTH + 10);
+    let content = format!("---\nname: d\ndescription: \"{desc}\"\n---\nbody");
+    assert!(parse_skill_tests(&content).unwrap().is_none());
+}
+
+#[test]
+fn parse_deep_but_legal_nesting_passes() {
+    // 64 层以内的深嵌套（合法但罕见形态）不误伤：50 层 flow 数组 +
+    // 底部合法 tests 段。tests 段在括号之后仍可解析。
+    let deep = format!("payload: {}", "[".repeat(50) + &"]".repeat(50));
+    let content = format!(
+        "---\nname: d\n{deep}\ntests:\n  - name: t\n    turns:\n      - user: x\n    expect:\n      max_llm_turns: 1\n---\nbody"
+    );
+    let spec = parse_skill_tests(&content).unwrap().expect("some");
+    assert_eq!(spec.tests.len(), 1);
+}
+
+#[test]
 fn parse_rejects_fixture_path_traversal() {
     let content = "---\nname: d\ntests:\n  - name: t\n    fixtures:\n      - path: ../evil.txt\n        content: x\n    expect:\n      max_llm_turns: 1\n---\nbody";
     let err = parse_skill_tests(content).unwrap_err();

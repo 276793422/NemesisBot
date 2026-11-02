@@ -16,7 +16,7 @@
 //! - 2810 maybe_update_summary 的超阈值推进（长历史 + mock 摘要）。
 
 use super::*;
-use crate::test_support::capture_logs;
+use crate::test_support::{capture_logs, capture_logs_to_buf};
 use async_trait::async_trait;
 
 // ---------- 本地 mock（与 loop/tests.rs 同构，模块私有不可共享） ----------
@@ -292,7 +292,9 @@ async fn force_compression_advances_summary_cache() {
         Box::new(MockLlmProvider::new(vec![resp("S9 summary of the prefix")])),
         test_config(),
     );
-    agent_loop.force_compression(&instance).await;
+    agent_loop
+        .force_compression(&instance, "test-session")
+        .await;
     let cache = instance.get_summary_cache();
     let cache = cache.expect("summary cache must be set by force_compression");
     assert!(
@@ -1427,7 +1429,7 @@ async fn summarize_bare_concat_owned_error_arm() {
 /// stuck warn + paused。
 #[tokio::test]
 async fn maybe_update_summary_compaction_stuck_marks_paused() {
-    let _logs = capture_logs();
+    let (_guard, buf) = capture_logs_to_buf();
     let instance = AgentInstance::new(test_config());
     let mut hist = vec![turn("system", "sys prompt")];
     let body = "y".repeat(1500);
@@ -1437,6 +1439,23 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
     instance.set_history(hist);
 
     let agent_loop = AgentLoop::new(Box::new(ErrProvider), test_config());
+    // W2：窗口未知时 auto-summarization 整体被抑制（BUG-20261102-322 实证：
+    // 旧测试连 stuck 分支都没进过——capture 里只有 suppression warn）。挂
+    // config 文件给 model_list 条目带 context_window=100 解除抑制
+    // （先例：loop/tests.rs keep_tokens_config_file 的 W2 注记）。
+    let cfg_path = std::env::temp_dir().join(format!(
+        "nemesis_test_s9_stuck_cfg_{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg_path.clone());
     {
         let mut states = agent_loop.compact_state.lock();
         let st = states.entry("agent:test/s9stuck".to_string()).or_default();
@@ -1445,10 +1464,31 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
     }
     // stuck 判定在 summarize LLM 调用**之前**（纯 token 数比较）：大 tail →
     // will_summarize → ineffective → 计数到顶 → warn + paused_stuck 提前
-    // return，provider 永不被调。只需不 panic 即覆盖。
+    // return，provider 永不被调。
     agent_loop
         .maybe_update_summary(&instance, "agent:test/s9stuck", "web", "chat1")
         .await;
+    // BUG-20261102-322：名字承诺 marks_paused——此前零断言，计数到顶的
+    // warn + paused 闩回归（阈值比错/闩没置）测试照绿。
+    let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    assert!(
+        !captured.contains("context window unknown"),
+        "config 已提供窗口，不得再被 W2 抑制\n--- captured ---\n{captured}"
+    );
+    assert!(
+        captured.contains("compaction stuck"),
+        "计数到顶必须发出 compaction stuck 警告并暂停自动压缩\n--- captured ---\n{captured}"
+    );
+    let states = agent_loop.compact_state.lock();
+    let st = states
+        .get("agent:test/s9stuck")
+        .expect("compact state entry");
+    assert!(
+        st.consecutive_failures >= 2,
+        "失败计数必须到达 COMPACT_STUCK_LIMIT(2)，实际 {}",
+        st.consecutive_failures
+    );
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 // ============================================================================

@@ -23,6 +23,13 @@ pub struct AuditEvent {
     /// Optional Ed25519 signature of the event hash.
     #[serde(default)]
     pub sign: Option<String>,
+    /// Hash formula version. 0 = legacy（prev/timestamp/operation/tool/user/
+    /// target/decision 七字段）；1 = v1（追加 source + reason——审计叙述与
+    /// 来源进防篡改覆盖）。serde default 让旧链照常加载与验证（BUG-
+    /// 20261102-305：旧公式不含 reason，篡改「为何放行/拒绝」的取证叙述
+    /// 不破坏链验证）。
+    #[serde(default)]
+    pub hash_version: u8,
 }
 
 /// Audit chain configuration.
@@ -142,6 +149,7 @@ impl AuditChain {
         let prev_hash = self.last_hash.lock().clone();
 
         // Hash: prev_hash + timestamp + operation + tool + user + target + decision
+        // （v1 追加 source + reason——见 AuditEvent::hash_version 注释）。
         hasher.update(prev_hash.as_bytes());
         hasher.update(timestamp.as_bytes());
         hasher.update(operation.as_bytes());
@@ -149,6 +157,8 @@ impl AuditChain {
         hasher.update(user.as_bytes());
         hasher.update(target.as_bytes());
         hasher.update(decision.as_bytes());
+        hasher.update(source.as_bytes());
+        hasher.update(reason.as_bytes());
         let hash = format!("{:x}", hasher.finalize());
 
         let event = AuditEvent {
@@ -164,6 +174,7 @@ impl AuditChain {
             hash: hash.clone(),
             prev_hash: prev_hash.clone(),
             sign,
+            hash_version: 1,
         };
 
         // 盘先行（BUG 2026-10-29 横扫角度 A）：磁盘是审计链的真相源——只有
@@ -261,23 +272,39 @@ impl AuditChain {
         }
     }
 
+    /// Canonical per-event hash computation（单一真相源：append 与 verify
+    /// 及 Dashboard 诊断同源）。按事件自带 `hash_version` 选公式——0=旧
+    /// 七字段公式（存量链）；1=追加 source+reason；未知版本按旧公式算但
+    /// `verify_chain`/消费方必须先做版本守卫（fail-closed）。
+    pub fn compute_event_hash(event: &AuditEvent) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(event.prev_hash.as_bytes());
+        hasher.update(event.timestamp.as_bytes());
+        hasher.update(event.operation.as_bytes());
+        hasher.update(event.tool_name.as_bytes());
+        hasher.update(event.user.as_bytes());
+        hasher.update(event.target.as_bytes());
+        hasher.update(event.decision.as_bytes());
+        if event.hash_version >= 1 {
+            hasher.update(event.source.as_bytes());
+            hasher.update(event.reason.as_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
     /// Verify chain integrity from a list of events.
     pub fn verify_chain(events: &[AuditEvent]) -> bool {
-        for i in 1..events.len() {
-            if events[i].prev_hash != events[i - 1].hash {
+        for (i, event) in events.iter().enumerate() {
+            if i > 0 && event.prev_hash != events[i - 1].hash {
                 return false;
             }
-            // Verify hash computation
-            let mut hasher = Sha256::new();
-            hasher.update(events[i].prev_hash.as_bytes());
-            hasher.update(events[i].timestamp.as_bytes());
-            hasher.update(events[i].operation.as_bytes());
-            hasher.update(events[i].tool_name.as_bytes());
-            hasher.update(events[i].user.as_bytes());
-            hasher.update(events[i].target.as_bytes());
-            hasher.update(events[i].decision.as_bytes());
-            let computed = format!("{:x}", hasher.finalize());
-            if computed != events[i].hash {
+            // 未知 hash_version = 覆盖面契约不可判定 → fail-closed（宁可报
+            // 断链也不静默按旧公式放行新版本事件）。
+            if event.hash_version > 1 {
+                return false;
+            }
+            let computed = Self::compute_event_hash(event);
+            if computed != event.hash {
                 return false;
             }
         }

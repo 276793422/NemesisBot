@@ -160,6 +160,36 @@ impl WebCredentialBroker {
             })
             .collect()
     }
+
+    /// L06 复核点③（2026-11-01）：急停挂点——了结全部在途凭据卡（审批卡
+    /// `resolve_orphans` 同款语义，estop watcher 在 gateway runtime 装配）。
+    /// 先摘后清（drain）：被摘出的卡不可能再被 respond 命中，两侧互斥；
+    /// 清理**只送 Denied 不落 vault**（清理绝不产生存储，审批卡清理同纪律）。
+    /// 单点广播纪律的清理侧延伸：等待方在场（send 成功）→ 由等待方正常
+    /// 路径广播 Resolved；等待方已亡（send 失败，estop 冻结下 loop task
+    /// 被放弃的形态）→ 清理侧补广播摘卡。两臂每卡恰好一次广播，前端不
+    /// 留悬空卡。返回关闭张数。
+    pub fn close_all(&self, reason: &str) -> usize {
+        let entries: Vec<(String, PendingEntry)> = {
+            let mut map = self.pending.lock();
+            map.drain().collect()
+        };
+        let closed = entries.len();
+        for (id, e) in entries {
+            let waiter_alive = e.tx.send(CredentialOutcome::Denied).is_ok();
+            tracing::warn!(
+                "[CredentialBroker] estop: closed pending credential card request_id={} alias={} service={} waiter_alive={} reason={reason}（值不落日志）",
+                id,
+                e.key_name,
+                e.service,
+                waiter_alive
+            );
+            if !waiter_alive {
+                self.broadcast_resolved(&id, &CredentialOutcome::Denied);
+            }
+        }
+        closed
+    }
 }
 
 // ---------------------------------------------------------------------------

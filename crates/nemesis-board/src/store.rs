@@ -4187,14 +4187,10 @@ fn row_to_notification(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notification
     })
 }
 
-/// LIKE 通配符转义（R221 起用户搜索词统一入口，配 SQL `ESCAPE '\'`
-/// 子句使用）：`\` → `\\`、`%` → `\%`、`_` → `\_`——不转义时 `%`/`_`
-/// 按 LIKE 通配符解释（字面搜索错配；`\` 必须先转义防二次解义）。
+/// LIKE 通配符转义已提升为 crate 间单一真相源 `nemesis_utils::sanitize::escape_like`
+/// （R221/BUG-163 口径；usage_store request_logs 过滤同源消费）——本 crate 原地委托，语义不变。
 fn escape_like(needle: &str) -> String {
-    needle
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+    nemesis_utils::sanitize::escape_like(needle)
 }
 
 fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {

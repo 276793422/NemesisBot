@@ -793,6 +793,11 @@ impl AgentLoop {
                 let p = &pc[batch_idx];
                 if p.validation_failed {
                     st.validation_failures += 1;
+                    // L14：校验失败回灌计入会话统计。
+                    self.bump_session_stats(
+                        &context.session_key,
+                        crate::session_stats::StatCounter::ValidationFailures,
+                    );
                     self.record_tool_validation_stats(true);
                 } else {
                     st.validation_failures = 0;
@@ -847,6 +852,11 @@ impl AgentLoop {
                         }
                         crate::args_validator::Outcome::Invalid { message, class } => {
                             st.validation_failures += 1;
+                            // L14：校验失败回灌计入会话统计（串行臂）。
+                            self.bump_session_stats(
+                                &context.session_key,
+                                crate::session_stats::StatCounter::ValidationFailures,
+                            );
                             self.record_tool_validation_stats(true);
                             warn!(
                                 "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",

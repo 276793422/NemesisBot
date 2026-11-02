@@ -153,6 +153,10 @@ pub struct AppState {
     /// AlwaysAllow 语义直装——headless/测试装配），`install_approval` 的
     /// 消费点在 gateway 注入侧。
     pub skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
+    /// L14（2026-11-01）：会话执行统计读侧（flush 未落盘增量 + 读持久层
+    /// 总数）。gateway 注入 nemesisbot 聚合器；None = 未装配（`sessions.stats`
+    /// 诚实返回 unavailable）。
+    pub session_stats: Option<Arc<dyn nemesis_agent::SessionStatsReader>>,
 }
 
 impl AppState {
@@ -1384,7 +1388,21 @@ pub async fn handle_api_chat_session_turns(
     // cuts on and the Dashboard renders. Counting on any other store would
     // re-create the coordinate-mismatch bug this round fixed.
     let key = chat_session_key(&session_id);
-    let (rows, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
+    // BUG-20261102-302：整会话全量读（usize::MAX）同步阻塞 IO 直跑 tokio
+    // worker，spawn_blocking 移出（read_chat_log_async 同款纪律）。
+    let (rows, total, _, _) = {
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None)
+        })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "session turns task join failed"})),
+            )
+        })?
+    };
     if rows.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1514,7 +1532,20 @@ pub async fn handle_api_chat_session_fork(
     // existence = a non-empty chat_log jsonl (the fork's truth source);
     // the store json may legitimately be gone (7-day TTL) — that must NOT
     // make a live session unforkable.
-    let (_, log_total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 1, None);
+    // BUG-20261102-302：read_chat_log 即使 limit=1 也要全文件逐行扫描才
+    // 能报 total（单遍读完整个 jsonl），同步阻塞 IO 直跑 tokio worker，
+    // spawn_blocking 移出。
+    let (_, log_total, _, _) = {
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || nemesis_agent::chat_log::read_chat_log(&key, 1, None))
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "fork precheck task join failed"})),
+                )
+            })?
+    };
     if log_total == 0 {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1524,14 +1555,25 @@ pub async fn handle_api_chat_session_fork(
         ));
     }
 
-    let info =
+    // BUG-20261102-302：fork 本体 = 整会话全量读 + 行拷贝落盘（全 jsonl
+    // 体量 IO），同步直跑 tokio worker——spawn_blocking 移出（precheck 同
+    // 款纪律；「一次性管理操作非热路径」不改变占住 worker 的机制）。
+    let info = tokio::task::spawn_blocking(move || {
         nemesis_agent::session_fork::fork_session_opts(&store, &key, None, at_turn, independent)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": e})),
-                )
-            })?;
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "fork task join failed"})),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        )
+    })?;
     // Optional title for the new session's meta (same call the sessions
     // WSAPI rename uses).
     if let Some(t) = title {

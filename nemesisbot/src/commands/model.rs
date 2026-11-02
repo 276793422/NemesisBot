@@ -565,13 +565,15 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let cfg: serde_json::Value = serde_json::from_str(&data)?;
 
-            // Check agents.defaults.llm first (like Go's GetEffectiveLLM), then fall back to default_model
+            // 默认模型唯一真相源 agents.defaults.llm（get_effective_llm 同源）。
+            // BUG-20261101-290：旧版这里回退读顶层 default_model 键——该键
+            // 装配层从不消费（写侧 CLI/dashboard/migrate/模板零来源），手写
+            // 会被显示误导（Default: X 而实际跑 fallback 模型）。显示不谎报。
             let default_model = cfg
                 .get("agents")
                 .and_then(|a| a.get("defaults"))
                 .and_then(|d| d.get("llm"))
                 .and_then(|v| v.as_str())
-                .or_else(|| cfg.get("default_model").and_then(|v| v.as_str()))
                 .unwrap_or("(none)");
 
             println!("  Default: {}", default_model);
@@ -692,11 +694,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            // Also check top-level default_model for backward compatibility
-            let default_model_compat = cfg
-                .get("default_model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            // BUG-20261101-290：顶层 default_model 兼容读取已删——装配层
+            // （get_effective_llm）不读该键，防误删判定与装配同源，不再让
+            // 手写死键莫名拒绝删除。
 
             let model_list = cfg
                 .get("model_list")
@@ -705,15 +705,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 .unwrap_or_default();
 
             let is_default = name == default_model
-                || name == default_model_compat
                 || model_list.iter().any(|m| {
                     let full_model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
                     let alias = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
                     (full_model == name || full_model.ends_with(&format!("/{}", name)))
-                        && (full_model == default_model
-                            || alias == default_model
-                            || full_model == default_model_compat
-                            || alias == default_model_compat)
+                        && (full_model == default_model || alias == default_model)
                 });
 
             if is_default {
@@ -769,13 +765,14 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let cfg: serde_json::Value = serde_json::from_str(&data)?;
-            // Check agents.defaults.llm first (like Go's GetEffectiveLLM), then fall back to default_model
+            // BUG-20261101-290：默认模型唯一真相源 agents.defaults.llm（与
+            // 装配 get_effective_llm 同源）；顶层 default_model 兼容回退已删
+            // （装配层不读，显示不谎报）。
             let default_model = cfg
                 .get("agents")
                 .and_then(|a| a.get("defaults"))
                 .and_then(|d| d.get("llm"))
-                .and_then(|v| v.as_str())
-                .or_else(|| cfg.get("default_model").and_then(|v| v.as_str()));
+                .and_then(|v| v.as_str());
             match default_model {
                 Some(m) => println!("Default model: {}", m),
                 None => println!("No default model configured."),

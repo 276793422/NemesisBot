@@ -18,6 +18,9 @@
 mod report;
 mod scenarios;
 
+#[cfg(test)]
+mod main_tests;
+
 use anyhow::{Result, anyhow, bail};
 use futures::StreamExt;
 use report::Scorecard;
@@ -231,6 +234,32 @@ impl WsApi {
 // 环境装配
 // ---------------------------------------------------------------------------
 
+/// 基准依赖的全部 TestAI 模型（**单一真相源**）：write_bench_config 的
+/// model_list 与 precheck_ai_models 契约探针共用此表。新增场景模型时只改
+/// 这里——config 条目自动跟随，探针自动覆盖。缺此探针时 TestAIServer
+/// 二进制过期（Go 源有新模型、exe 未重建）会让对应场景以 60/120s 纯超时
+/// +「N 项回退」假报告形态失败，误导为产品代码回归（2026-11-02 实录：
+/// 10-22 旧 exe 缺 L21 断流/chain 模型，3 场景 100%→0%，排查 10 分钟）。
+const REQUIRED_AI_MODELS: &[&str] = &[
+    "testai-1.1",
+    "testai-9.3",
+    "testai-sum-1.0",
+    "testai-2.1",
+    "testai-5.0",
+    "testai-vision-1.0",
+    "testai-codemode-1.0",
+    "testai-docslift-1.0",
+    "testai-lenbreak-1.0",
+    "testai-chain-step-1.0",
+    "testai-chain-code-1.0",
+    "testai-break-1.0",
+    "testai-heal-1.0",
+];
+
+/// 需强制流式（config 条目 `stream: "yes"`）的模型子集：openai 兼容 lane
+/// auto=非流式，不强制则断流契约无从触发。
+const STREAM_FORCED_MODELS: &[&str] = &["testai-break-1.0", "testai-heal-1.0"];
+
 /// 基准专用 config.json：6 个确定性模型 + restrict_to_workspace（安全场景
 /// 依赖边界硬围栏）。onboard 先行提取 workspace 模板，再整体覆写 config。
 fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
@@ -249,19 +278,20 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
             "enabled": true,
         })
     };
+    let model_list: Vec<Value> = REQUIRED_AI_MODELS
+        .iter()
+        .map(|alias| {
+            let mut m = model(alias);
+            if STREAM_FORCED_MODELS.contains(alias) {
+                m["stream"] = json!("yes");
+            }
+            m
+        })
+        .collect();
     let config = json!({
         "version": "1.0",
         "default_model": "test/testai-1.1",
-        "model_list": [
-            model("testai-1.1"),
-            model("testai-9.3"),
-            model("testai-sum-1.0"),
-            model("testai-2.1"),
-            model("testai-5.0"),
-            model("testai-vision-1.0"),
-            model("testai-codemode-1.0"),
-            model("testai-docslift-1.0"),
-        ],
+        "model_list": model_list,
         "channels": {
             "web": {"enabled": true, "host": "127.0.0.1", "port": WS_PORT as i64, "auth_token": AUTH_TOKEN},
             // 独立 websocket 通道保持关（同 integration-test：SEC-001 拒裸绑定）。
@@ -291,6 +321,38 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
         "cluster": {"enabled": false}
     });
     std::fs::write(ws.config_path(), serde_json::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
+/// 差集纯函数：served 中缺 REQUIRED_AI_MODELS 的哪些项（契约探针判定核，
+/// 独立成纯函数供单测钉死判定语义）。
+fn missing_models(served: &[&str]) -> Vec<&'static str> {
+    REQUIRED_AI_MODELS
+        .iter()
+        .filter(|required| !served.contains(required))
+        .copied()
+        .collect()
+}
+
+/// TestAIServer 契约探针（启动期 fail-fast，2026-11-02 实录闭环）：
+/// `/v1/models` 必须覆盖 REQUIRED_AI_MODELS 全集。旧二进制缺新模型时
+/// 场景会以 60/120s 纯超时 +「N 项回退」假报告形态失败（误导为产品回归），
+/// 此处在 spawn AI Server 后立即拦截并给出重建指引。
+async fn precheck_ai_models(port: u16) -> Result<()> {
+    let url = format!("http://127.0.0.1:{port}/v1/models");
+    let v = test_harness::http_get_json(&url, Duration::from_secs(10)).await?;
+    let served: Vec<&str> = v["data"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
+        .ok_or_else(|| anyhow!("/v1/models 响应缺 data 数组: {url}"))?;
+    let missing = missing_models(&served);
+    if !missing.is_empty() {
+        bail!(
+            "TestAIServer 缺基准依赖模型：{:?}（testaiserver.exe 过期——Go 源已更新但二进制未重建）\
+             → 重建：cd test-tools/TestAIServer && go build -o testaiserver.exe .",
+            missing
+        );
+    }
     Ok(())
 }
 
@@ -335,6 +397,11 @@ async fn run_scenario(
         "codemode_orchestration" => scenarios::run_codemode_orchestration(ctx, runs, ws).await,
         "docs_lift" => scenarios::run_docs_lift(ctx, runs, ws).await,
         "disconnect_resume" => scenarios::run_disconnect_resume(ctx, runs).await,
+        "stream_break" => scenarios::run_stream_break(ctx, runs).await,
+        "length_continuation" => scenarios::run_length_continuation(ctx, runs).await,
+        "codemode_chain" => scenarios::run_codemode_chain(ctx, runs, ws).await,
+        // gateway_restart 不走本调度：它要吃掉/交还 gateway 进程所有权，
+        // 在 main() 场景循环特判。
         other => {
             println!("  未知场景 {other}，跳过");
             Vec::new()
@@ -423,6 +490,7 @@ async fn main() -> Result<()> {
         Duration::from_secs(10),
     )
     .await?;
+    precheck_ai_models(ai_server_port()).await?;
 
     println!("[4/4] 启动 Gateway（health 端口 {HEALTH_PORT}）...");
     let mut gateway = ManagedProcess::spawn(
@@ -466,7 +534,18 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        let results = run_scenario(spec.name, ctx, spec.runs, &ws, &security_target).await;
+        // gateway_restart 在场景内部完成优雅重启：吃掉 gateway 进程
+        // 所有权、交还新句柄（本循环持有方更新，收尾停机不漏进程）；
+        // 其余场景走统一入口。
+        let results = if spec.name == "gateway_restart" {
+            let (res, gw) =
+                scenarios::run_gateway_restart(ctx, spec.runs, &ws, &cfg.gateway_bin, gateway)
+                    .await;
+            gateway = gw;
+            res
+        } else {
+            run_scenario(spec.name, ctx, spec.runs, &ws, &security_target).await
+        };
         let score = card.score(spec.name);
         for r in results {
             match r {
@@ -488,6 +567,9 @@ async fn main() -> Result<()> {
             score.passed,
             score.total()
         );
+        // 场景后重连 WSAPI：gateway_restart 换过进程，旧连接已死；
+        // 无条件重连对其他场景是廉价幂等（比按场景特判更鲁棒）。
+        api = WsApi::connect().await?;
     }
     card.bench_wall_secs = bench_start.elapsed().as_secs();
 

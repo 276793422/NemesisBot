@@ -356,7 +356,7 @@ label = "VM 显示通道（VNC）"
 desc = "带界面 VM 屏幕查看（executor.vm.display=vnc + plugin-vm 插件 + Dashboard 屏幕 modal）。依赖 vm；关 = /ws/vm-display 不编译、显示入口消失"
 category = "subsystems"
 depends = ["vm"]
-default = true
+default = false
 
 # NOTE: `eval` 依赖 sandbox+security（复合 feature），提供 `nemesisbot eval`
 # prompt/skill 安全行为评估（沙盒真跑 + 四记录点 + LLM 代理脱敏）。

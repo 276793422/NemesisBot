@@ -65,6 +65,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });
@@ -108,6 +109,8 @@ fn projection_record(
         voice_append: None,
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     }
 }
 

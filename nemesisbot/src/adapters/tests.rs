@@ -1,5 +1,9 @@
 use super::*;
 
+// F6（2026-11-02 复评）：测试与辅助函数按生产实现同款 feature 条件门控
+// ——裁剪构建（无 health/heartbeat）下本模块其余测试照常编译运行。
+
+#[cfg(feature = "health")]
 fn make_health_config(port: u16) -> nemesis_health::server::HealthServerConfig {
     nemesis_health::server::HealthServerConfig {
         listen_addr: format!("127.0.0.1:{}", port),
@@ -7,6 +11,7 @@ fn make_health_config(port: u16) -> nemesis_health::server::HealthServerConfig {
     }
 }
 
+#[cfg(feature = "heartbeat")]
 fn make_heartbeat_config() -> nemesis_heartbeat::HeartbeatConfig {
     nemesis_heartbeat::HeartbeatConfig::new(
         30,
@@ -19,6 +24,7 @@ fn make_heartbeat_config() -> nemesis_heartbeat::HeartbeatConfig {
 // HealthServerAdapter construction
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "health")]
 #[tokio::test]
 async fn test_health_server_adapter_initial_state() {
     let health_server = Arc::new(nemesis_health::server::HealthServer::new(
@@ -28,6 +34,7 @@ async fn test_health_server_adapter_initial_state() {
     assert!(adapter.start().is_ok());
 }
 
+#[cfg(feature = "health")]
 #[test]
 fn test_health_server_adapter_stop() {
     let health_server = Arc::new(nemesis_health::server::HealthServer::new(
@@ -37,6 +44,7 @@ fn test_health_server_adapter_stop() {
     assert!(adapter.stop().is_ok());
 }
 
+#[cfg(feature = "health")]
 #[tokio::test]
 async fn test_health_server_adapter_start_idempotent() {
     let health_server = Arc::new(nemesis_health::server::HealthServer::new(
@@ -52,6 +60,7 @@ async fn test_health_server_adapter_start_idempotent() {
 // HeartbeatServiceAdapter construction
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "heartbeat")]
 #[tokio::test]
 async fn test_heartbeat_adapter_initial_state() {
     let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
@@ -61,6 +70,7 @@ async fn test_heartbeat_adapter_initial_state() {
     assert!(adapter.start().is_ok());
 }
 
+#[cfg(feature = "heartbeat")]
 #[test]
 fn test_heartbeat_adapter_stop() {
     let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
@@ -70,6 +80,7 @@ fn test_heartbeat_adapter_stop() {
     assert!(adapter.stop().is_ok());
 }
 
+#[cfg(feature = "heartbeat")]
 #[tokio::test]
 async fn test_heartbeat_adapter_start_idempotent() {
     let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
@@ -139,6 +150,7 @@ fn test_atomic_bool_swap_behavior() {
 // LifecycleService trait tests
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "health")]
 #[tokio::test]
 async fn test_health_server_adapter_trait_object() {
     let health_server = Arc::new(nemesis_health::server::HealthServer::new(
@@ -149,6 +161,7 @@ async fn test_health_server_adapter_trait_object() {
     assert!(adapter.start().is_ok());
 }
 
+#[cfg(feature = "heartbeat")]
 #[tokio::test]
 async fn test_heartbeat_adapter_trait_object() {
     let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
@@ -529,6 +542,7 @@ mod r10 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
+    #[cfg(feature = "health")]
     #[tokio::test]
     async fn r10_health_server_adapter_bind_conflict_error_arm() {
         crate::common::ensure_default_logger();

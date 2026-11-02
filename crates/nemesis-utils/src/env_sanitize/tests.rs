@@ -69,3 +69,71 @@ fn sanitize_disabled_is_noop() {
 
     set_child_env_sanitize_enabled(true);
 }
+
+// ---------------------------------------------------------------------------
+// 窄版闸（改进项二期 L27）：只剥 bot 命名空间，保留第三方 CLI 自身 auth key
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nemesisbot_namespace_detection() {
+    assert!(is_nemesisbot_namespaced("NEMESISBOT_VAULT_PASSPHRASE"));
+    assert!(is_nemesisbot_namespaced("nemesisbot_role"));
+    assert!(is_nemesisbot_namespaced("NemesisBot_Executor_Pipe"));
+    // 同近前缀异词根（NMB_*）不算——命名空间边界是全前缀字面量。
+    assert!(!is_nemesisbot_namespaced("NMB_COV_TEST"));
+    assert!(!is_nemesisbot_namespaced("ANTHROPIC_API_KEY"));
+    assert!(!is_nemesisbot_namespaced(""));
+}
+
+#[test]
+fn narrow_strips_bot_namespace_keeps_keyword_sensitive() {
+    let _g = FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_child_env_sanitize_enabled(true);
+
+    // 预置一对变量：命名空间内（窄版必剥）+ 关键词敏感但命名空间外（窄版
+    // 必留，全词表版会剥——窄/全分界钉死在这对变量上）。set/remove 成对，
+    // 用后即撤（预置期间两函数枚举同一环境，口径可比）。
+    unsafe { std::env::set_var("NEMESISBOT_COV_L27_NS", "x") };
+    unsafe { std::env::set_var("NMBT_COV_L27_SENSITIVE_KEY", "x") };
+    let mut cmd = std::process::Command::new("cmd");
+    let narrow = sanitize_command_narrow(&mut cmd);
+    let mut cmd_wide = std::process::Command::new("cmd");
+    let wide = sanitize_command(&mut cmd_wide);
+    unsafe {
+        std::env::remove_var("NEMESISBOT_COV_L27_NS");
+        std::env::remove_var("NMBT_COV_L27_SENSITIVE_KEY");
+    }
+
+    // 窄版至少剥掉预置的 NEMESISBOT_COV_L27_NS（进程环境可能自带其他
+    // NEMESISBOT_*，下限断言）；同一环境下全词表剥除面 ⊇ 窄版（关键词
+    // 敏感面是命名空间面的超集——白名单不含 NEMESISBOT_* 前缀名）。
+    assert!(narrow >= 1, "至少剥掉预置的 NEMESISBOT_COV_L27_NS");
+    assert!(wide >= narrow, "全词表剥除面必须 ⊇ 窄版");
+}
+
+#[test]
+fn sanitize_narrow_disabled_is_noop() {
+    let _g = FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_child_env_sanitize_enabled(false);
+    unsafe { std::env::set_var("NEMESISBOT_COV_L27_NS", "x") };
+    let mut cmd = std::process::Command::new("cmd");
+    let stripped = sanitize_command_narrow(&mut cmd);
+    unsafe { std::env::remove_var("NEMESISBOT_COV_L27_NS") };
+    assert_eq!(stripped, 0, "开关关闭必须零剥除零改动");
+    set_child_env_sanitize_enabled(true);
+}
+
+#[test]
+fn narrow_tokio_variant_matches_std_semantics() {
+    let _g = FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_child_env_sanitize_enabled(true);
+    unsafe { std::env::set_var("NEMESISBOT_COV_L27_NS", "x") };
+    unsafe { std::env::set_var("NMBT_COV_L27_SENSITIVE_KEY", "x") };
+    let mut cmd = tokio::process::Command::new("cmd");
+    let stripped = sanitize_tokio_command_narrow(&mut cmd);
+    unsafe {
+        std::env::remove_var("NEMESISBOT_COV_L27_NS");
+        std::env::remove_var("NMBT_COV_L27_SENSITIVE_KEY");
+    }
+    assert!(stripped >= 1, "tokio 窄版与 std 同语义：剥命名空间变量");
+}

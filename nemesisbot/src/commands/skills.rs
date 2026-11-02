@@ -779,6 +779,10 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
 }
 
 fn cmd_show(skills_dir: &std::path::Path, name: &str) -> Result<()> {
+    // 路径安全（BUG-20261101-295）：裸 join 无闸——读任意 `<target>/SKILL.md`
+    //，且无 SKILL.md 时列任意目录文件清单。与 web detail/open_dir 同源同闸。
+    nemesis_skills::types::validate_skill_identifier(name)
+        .map_err(|e| anyhow::anyhow!("skill name '{}' 非法：{}", name, e))?;
     let skill_dir = skills_dir.join(name);
     if !skill_dir.exists() {
         println!("Skill '{}' not found.", name);
@@ -1240,6 +1244,10 @@ async fn cmd_install_clawhub(
     output_name: Option<&str>,
 ) -> Result<()> {
     let out_name = output_name.unwrap_or(skill_name);
+    // 路径安全（BUG-20261101-295 同族）：out_name 裸拼落盘目录——
+    // `--output-name ../..` 形态可把远端内容写出 skills/ 边界。
+    nemesis_skills::types::validate_skill_identifier(out_name)
+        .map_err(|e| anyhow::anyhow!("output name '{}' 非法：{}", out_name, e))?;
     println!("Installing from ClawHub: {}/{}", author, skill_name);
     println!(
         "  Note: This is a legacy command. Use 'nemesisbot skills install clawhub/{}' instead.",

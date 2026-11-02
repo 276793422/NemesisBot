@@ -265,6 +265,17 @@ fn normalize_repo_ref(repo: &str, ref_field: Option<&str>) -> Result<String, Str
     }
 }
 
+/// BUG-20261101-295：skills 面 name 参数路径安全闸——复用 R35 技能 slug
+/// 验证器单一真相源（拒空串/路径分隔符/`..`/Windows 保留名/尾点尾空格）。
+/// detail/open_dir 此前裸拼 `skills/<name>`：detail 读任意
+/// `*/SKILL.md`、open_dir explorer 打开 workspace 外任意目录（且报错
+/// 泄露绝对路径 = 存在性 oracle）。与 uninstall/learned_remove/install
+/// 同源同闸。
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    nemesis_skills::types::validate_skill_identifier(name)
+        .map_err(|e| format!("invalid skill name '{}': {}", name, e))
+}
+
 /// BUG-20261028-118 取消窗口兜底：force 更新在「备份已挪走、新版未落位」
 /// 的窗口内 future 被 drop（任务取消/超时）时，Drop 同步触发把备份复位回
 /// 原位。显式成功/失败路径先 `disarm()` 再走自己的消费/回滚逻辑，guard
@@ -278,6 +289,10 @@ struct RollbackGuard {
 
 impl RollbackGuard {
     fn new(backup: PathBuf, target: PathBuf) -> Self {
+        // F4（2026-11-02 复评）：构造即登记——登记表是
+        // `recover_stale_rollbacks` 区分「活备份/真遗孤」的唯一依据，
+        // 这里是备份守卫的单一出生点，所有 force 备份都经此入册。
+        nemesis_skills::installer::SkillInstaller::register_inflight_backup(&backup);
         Self {
             backup,
             target,
@@ -295,6 +310,9 @@ impl Drop for RollbackGuard {
         if self.armed && self.backup.exists() && !self.target.exists() {
             let _ = std::fs::rename(&self.backup, &self.target);
         }
+        // F4：无条件注销——成功消费 / 显式回滚 / 取消复位 / 回滚失败
+        // （备份留待下轮恢复）四态全走 Drop，此点是登记表的统一出口。
+        nemesis_skills::installer::SkillInstaller::unregister_inflight_backup(&self.backup);
     }
 }
 
@@ -334,10 +352,24 @@ impl SkillsHandler {
             }
         }
 
+        // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+        // 哈希序），列表直回前端而前端无客户端排序 → 已装技能面板顺序跨平台
+        // 不稳定。显式排序钉死。
+        skills.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        });
+
         Ok(Some(serde_json::json!({ "skills": skills })))
     }
 
     fn detail(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        // 路径安全（BUG-20261101-295，与 uninstall/learned_remove 同源同闸）：
+        // name 直接拼 `skills/<name>/SKILL.md`，无闸时 workspace 内任意
+        // `*/SKILL.md` 可读（如 `../config` 形态越出 skills/ 语义边界）。
+        validate_skill_name(name)?;
         let relative = format!("skills/{}/SKILL.md", name);
         let content = read_workspace_file(workspace, &relative)?;
         Ok(Some(serde_json::json!({
@@ -350,6 +382,11 @@ impl SkillsHandler {
     /// skills open_dir 的路径拼接 + 存在性校验，happy 路径单测只测这里。
     /// pub(crate)：skills_extra_tests（同 crate 兄弟模块）是它的消费者。
     pub(crate) fn resolve_skill_dir(workspace: &str, name: &str) -> Result<PathBuf, String> {
+        // 路径安全（BUG-20261101-295）：裸 join 无 resolve_path 兜底——
+        // `name="../.."` 会 explorer 打开 workspace 外任意目录（且报错
+        // 泄露绝对路径 = 存在性 oracle）。单一闸口放这里，open_dir 与
+        // 未来新增消费者共用。
+        validate_skill_name(name)?;
         let skill_dir = PathBuf::from(workspace).join("skills").join(name);
         if !skill_dir.exists() {
             return Err(format!(
@@ -593,43 +630,48 @@ impl SkillsHandler {
             )?),
             None => None,
         };
-        // 恢复式清扫：只在此点调（无 in-flight 备份），见 recover_stale_rollbacks 注。
+        // F4（2026-11-02 复评）：无效参数校验前移到动恢复材料之前——registry
+        // 名不存在是纯校验失败，不该先跑一轮恢复式清扫再报错（清扫是变更
+        // 操作，失败请求不该有副作用）。
+        if force && repo.is_none() {
+            let config = load_registry_config(&skills_config_path(workspace));
+            let probe = nemesis_skills::registry::RegistryManager::from_config(config);
+            let registry_name = registry
+                .as_deref()
+                .expect("validated above when repo is none");
+            if probe.get_registry(registry_name).is_none() {
+                return Err(format!("源 '{}' 不存在", registry_name));
+            }
+        }
+        // 恢复式清扫：in-flight 备份经登记表识别跳过（F4，见
+        // recover_stale_rollbacks 注），真遗孤照常收编。
         installer.recover_stale_rollbacks();
         let mut backup: Option<PathBuf> = None;
         let mut rollback_guard: Option<RollbackGuard> = None;
-        if force {
-            if repo.is_none() {
-                let config = load_registry_config(&skills_config_path(workspace));
-                let probe = nemesis_skills::registry::RegistryManager::from_config(config);
-                let registry_name = registry
-                    .as_deref()
-                    .expect("validated above when repo is none");
-                if probe.get_registry(registry_name).is_none() {
-                    return Err(format!("源 '{}' 不存在", registry_name));
-                }
-            }
-            if target_dir.is_dir() {
-                let suffix = format!(
-                    "old-{}-{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-                let backup_dir = PathBuf::from(workspace)
-                    .join(".skill-rollback")
-                    .join(format!("{}.{}", slug, suffix));
-                std::fs::create_dir_all(backup_dir.parent().unwrap())
-                    .map_err(|e| format!("备份目录创建失败（未做任何改动）: {}", e))?;
-                std::fs::rename(&target_dir, &backup_dir)
-                    .map_err(|e| format!("备份旧版本失败（未做任何改动）: {}", e))?;
-                backup = Some(backup_dir.clone());
-                // 取消窗口兜底：future 在任何 await 点被 drop（任务取消/超时）
-                // 时 Drop 触发复位；显式成功/失败路径先 disarm 再走自己的
-                // 消费/回滚逻辑。
-                rollback_guard = Some(RollbackGuard::new(backup_dir, target_dir.clone()));
-            }
+        if force && target_dir.is_dir() {
+            let suffix = format!(
+                "old-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            let backup_dir = PathBuf::from(workspace)
+                .join(".skill-rollback")
+                .join(format!("{}.{}", slug, suffix));
+            std::fs::create_dir_all(backup_dir.parent().unwrap())
+                .map_err(|e| format!("备份目录创建失败（未做任何改动）: {}", e))?;
+            // 取消窗口兜底：future 在任何 await 点被 drop（任务取消/超时）
+            // 时 Drop 触发复位；显式成功/失败路径先 disarm 再走自己的
+            // 消费/回滚逻辑。
+            // F4：守卫（=登记）先行于 rename——并发安装的恢复式清扫
+            // 从此刻起就视本备份为活物，不留「备份已落盘、登记未跟上」
+            // 的窗口；rename 失败提前返回时守卫 Drop 无条件注销。
+            rollback_guard = Some(RollbackGuard::new(backup_dir.clone(), target_dir.clone()));
+            std::fs::rename(&target_dir, &backup_dir)
+                .map_err(|e| format!("备份旧版本失败（未做任何改动）: {}", e))?;
+            backup = Some(backup_dir);
         }
 
         let install_result: Result<Option<serde_json::Value>, String> = async {

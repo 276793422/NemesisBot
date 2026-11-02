@@ -41,6 +41,12 @@ pub fn ai_server_port() -> u16 {
 /// cluster-uat 节点重启会在 IT 的 precheck 之后、bind 之前的秒级窗口抢占 37300
 /// （IT 的 WS 全打到 cluster-uat 节点 = 6 个假 FAIL）。41300 与 cluster-uat
 /// 全段（373xx/484xx/1879x/37105）不相交，并行跑也不再撞。
+///
+/// ⚠ 本端口的**串行复跑间隔 ≥4 分钟**（2026-11-01 agent-bench --compare 假红
+/// 实录）：上一轮进程的连接进 TIME_WAIT（Windows 默认 240s），本轮 gateway
+/// spawn 重绑 41300 撞 WSAEADDRINUSE → 重试拖 ~25s → gateway_restart 场景
+/// p50 延迟假回退（对照门 +30% 必红）。pass_rate 不受影响；间隔拉开或等
+/// `netstat` 无 41300 残留再跑即绿。
 pub const WEB_PORT: u16 = 41300;
 pub const WS_PORT: u16 = WEB_PORT;
 /// Gateway/health port for spawned gateways. NOT 18790 — that value is the
@@ -672,6 +678,22 @@ pub fn http_client() -> reqwest::Client {
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap()
+}
+
+/// 单次 GET 并把 2xx 响应体解析为 JSON（非 2xx / 超时 / 非 JSON = Err）。
+/// 供契约探针类前置检查使用（如 agent-bench 的 /v1/models 模型面核查）。
+pub async fn http_get_json(url: &str, timeout: Duration) -> Result<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .context("build http client")?;
+    let resp = client.get(url).send().await.context(format!("GET {url}"))?;
+    let status = resp.status();
+    let body = resp.text().await.context("read response body")?;
+    if !status.is_success() {
+        bail!("GET {url} -> {status}: {}", &body[..body.len().min(200)]);
+    }
+    serde_json::from_str(&body).context(format!("parse JSON from {url}"))
 }
 
 /// Poll an HTTP endpoint until it returns 200 or timeout.

@@ -66,11 +66,14 @@ pub fn push_chunk_incremental(buffer: &mut String, pending: &mut Vec<u8>, bytes:
 /// Consume a lane's `chat_stream` receiver and aggregate into a non-streaming
 /// `LLMResponse`.
 ///
-/// 流中途 `Err` → 原样上抛（lane 已做诚实分类）。流断且无终态 chunk
-/// （channel 关闭仍无 `finish_reason`，生产者 panic 等异常路径）→
-/// `Timeout`（可重试/可故障转移），与 codex lane「流断无终态」既有约定同门。
-/// `raw_request_body` / `raw_response_body` 恒 `None`——流式路径没有完整
-/// 响应体快照（请求日志器对 None 字段本就省略，非流式路径不受影响）。
+/// 流中途 `Err` / channel 关闭无终态（生产者 panic 等异常路径）时：
+/// 已聚合文本为空 → 维持旧语义（原错误原样上抛 / `Timeout`——lane 已做
+/// 诚实分类，错误值不吞）；**非空 → `StreamInterrupted`**（partial 是模型
+/// 已产出的一等工作成果，随错误值携带不丢——L02，消费方是 recovery 重试
+/// 环与终局通知）。tool_calls 出现过由 `has_partial_tool_calls` 旗标声明
+/// （半截不可当纯文本续用）。`raw_request_body` / `raw_response_body` 恒
+/// `None`——流式路径没有完整响应体快照（请求日志器对 None 字段本就省略，
+/// 非流式路径不受影响）。
 pub async fn collect_stream_response(
     provider: &str,
     model: &str,
@@ -99,7 +102,20 @@ pub async fn collect_stream_response(
                     finish_reason = chunk.finish_reason;
                 }
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                // L02：已聚合文本/工具调用非空 → partial 随错误携带不丢；
+                // 空 → lane 原错误原样上抛（诚实分类不吞）。
+                if content.trim().is_empty() && tool_calls.is_empty() {
+                    return Err(e);
+                }
+                return Err(FailoverError::StreamInterrupted {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    reason: e.to_string(),
+                    partial_content: content,
+                    has_partial_tool_calls: !tool_calls.is_empty(),
+                });
+            }
         }
     }
 
@@ -114,10 +130,23 @@ pub async fn collect_stream_response(
             raw_request_body: None,
             raw_response_body: None,
         }),
-        None => Err(FailoverError::Timeout {
-            provider: provider.to_string(),
-            model: model.to_string(),
-        }),
+        // 流断无终态（codex lane 既有约定同门）：空 → Timeout（可重试/可
+        // 故障转移）；非空 → StreamInterrupted 携带 partial。
+        None => {
+            if content.trim().is_empty() && tool_calls.is_empty() {
+                return Err(FailoverError::Timeout {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                });
+            }
+            Err(FailoverError::StreamInterrupted {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                reason: "stream closed without finish_reason".to_string(),
+                partial_content: content,
+                has_partial_tool_calls: !tool_calls.is_empty(),
+            })
+        }
     }
 }
 
@@ -142,3 +171,7 @@ pub fn next_event_boundary(buffer: &str) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests;
+
+// L02（2026-11-01）collect_stream_response 两臂改造回归钉。
+#[cfg(test)]
+mod collect_tests;

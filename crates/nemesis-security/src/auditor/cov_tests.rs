@@ -111,6 +111,7 @@ fn ctx_of(channel: &str) -> ApprovalContext {
         chat_id: "chat-1".into(),
         sender_id: "user-1".into(),
         session_key: String::new(),
+        tool_args: serde_json::Value::Null,
     }
 }
 
@@ -372,6 +373,178 @@ fn guardian_verdict_manager_error_propagates() {
 }
 
 // ---------------------------------------------------------------------------
+// request_credential_use_approval / has_approval_channel（L26 凭据闸）——全臂
+// ---------------------------------------------------------------------------
+
+/// 带临时 JSONL 审计目录的 auditor（get_audit_log 从盘上 audit.jsonl 读——
+/// 断言 fail-closed/裁决落审计必须先给事件一个落盘去处）。
+fn creduse_auditor_with_audit_dir(tag: &str) -> (SecurityAuditor, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-creduse-audit-{}-{}",
+        tag,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.to_string_lossy().to_string()),
+        ..Default::default()
+    });
+    (auditor, dir)
+}
+
+fn creduse_gate_audit_events(auditor: &SecurityAuditor) -> Vec<AuditEvent> {
+    auditor.get_audit_log(AuditFilter {
+        source: Some("credential_gate".into()),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn creduse_has_approval_channel_states() {
+    let auditor = enabled_auditor();
+    // 无 manager → false（闸跳过条件）。
+    assert!(!auditor.has_approval_channel());
+    // manager 在场且运行 → true。
+    auditor.set_approval_manager(MockMgr::running());
+    assert!(auditor.has_approval_channel());
+    // manager 在场但未运行 → false。
+    auditor.set_approval_manager(MockMgr::not_running());
+    assert!(!auditor.has_approval_channel());
+}
+
+#[test]
+fn creduse_no_manager_fail_closed_with_audit() {
+    let (auditor, dir) = creduse_auditor_with_audit_dir("no-mgr");
+    let err = auditor
+        .request_credential_use_approval("web_fetch", "headers slot carries vault: ref", None)
+        .unwrap_err();
+    assert!(err.contains("no approval manager"), "{err}");
+    let events = creduse_gate_audit_events(&auditor);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        events.len(),
+        1,
+        "fail-closed must land exactly one audit event"
+    );
+    assert_eq!(events[0].decision, "denied");
+    assert_eq!(events[0].request.target, "web_fetch");
+    assert_eq!(events[0].request.source, "credential_gate");
+    assert_eq!(events[0].policy_rule, "security.credential_gate");
+    assert!(events[0].reason.contains("credential use"));
+}
+
+#[test]
+fn creduse_manager_not_running_fail_closed_with_audit() {
+    let (auditor, dir) = creduse_auditor_with_audit_dir("not-running");
+    auditor.set_approval_manager(MockMgr::not_running());
+    let err = auditor
+        .request_credential_use_approval("web_fetch", "headers slot carries vault: ref", None)
+        .unwrap_err();
+    assert!(err.contains("not running"), "{err}");
+    let n = creduse_gate_audit_events(&auditor).len();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn creduse_ctx_none_approved() {
+    let mgr = MockMgr::running();
+    let auditor = enabled_auditor();
+    auditor.set_approval_manager(mgr.clone());
+
+    let v = auditor
+        .request_credential_use_approval("web_fetch", "headers slot carries vault: ref", None)
+        .unwrap();
+    assert!(v.approved);
+    assert!(mgr.called("sync:credential_use:web_fetch:HIGH"));
+}
+
+#[test]
+fn creduse_ctx_route_denied_with_note() {
+    let (auditor, dir) = creduse_auditor_with_audit_dir("denied-note");
+    let mgr = MockMgr::with(
+        Ok(ApprovalVerdict::approved()),
+        Ok(denied_with(Some("not for that host"))),
+    );
+    auditor.set_approval_manager(mgr.clone());
+    let c = ctx_of("web");
+
+    let v = auditor
+        .request_credential_use_approval("web_fetch", "headers slot carries vault: ref", Some(&c))
+        .unwrap();
+    assert!(!v.approved);
+    assert_eq!(v.note.as_deref(), Some("not for that host"));
+    assert!(mgr.called("ctx:credential_use:web_fetch:HIGH"));
+    // 裁决落审计：denied 且 reason 带 note。
+    let events = creduse_gate_audit_events(&auditor);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].decision, "denied");
+    assert!(events[0].reason.contains("not for that host"));
+}
+
+#[test]
+fn creduse_denied_without_note_means_timeout_wording() {
+    let (auditor, dir) = creduse_auditor_with_audit_dir("denied-blank");
+    let mgr = MockMgr::with(Ok(denied_with(None)), Ok(denied_with(None)));
+    auditor.set_approval_manager(mgr);
+
+    let v = auditor
+        .request_credential_use_approval("web_fetch", "headers slot carries vault: ref", None)
+        .unwrap();
+    assert!(!v.approved);
+    let events = creduse_gate_audit_events(&auditor);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        events[0].reason.contains("rejected or approval timeout"),
+        "{}",
+        events[0].reason
+    );
+}
+
+#[test]
+fn creduse_ctx_route_approved_lands_audit() {
+    let (auditor, dir) = creduse_auditor_with_audit_dir("approved");
+    let mgr = MockMgr::with(
+        Ok(ApprovalVerdict::approved()),
+        Ok(ApprovalVerdict::approved()),
+    );
+    auditor.set_approval_manager(mgr.clone());
+
+    let v = auditor
+        .request_credential_use_approval(
+            "web_fetch",
+            "headers slot carries vault: ref",
+            Some(&ctx_of("rpc")),
+        )
+        .unwrap();
+    assert!(v.approved);
+    assert!(mgr.called("ctx:credential_use:web_fetch:HIGH"));
+    let events = creduse_gate_audit_events(&auditor);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].decision, "approved");
+}
+
+#[test]
+fn creduse_manager_error_propagates_with_audit() {
+    let (auditor, dir) = creduse_auditor_with_audit_dir("mgr-err");
+    let mgr = MockMgr::with(Err("card delivery failed".into()), Err("x".into()));
+    auditor.set_approval_manager(mgr);
+
+    let err = auditor
+        .request_credential_use_approval("web_fetch", "headers slot carries vault: ref", None)
+        .unwrap_err();
+    assert!(err.contains("card delivery failed"), "{err}");
+    let events = creduse_gate_audit_events(&auditor);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(events.len(), 1);
+    assert!(events[0].reason.contains("approval unavailable"));
+}
+
+// ---------------------------------------------------------------------------
 // request_permission_with_ctx —— 审批 ctx 路由 + 拒绝 + 管理器失败回落
 // ---------------------------------------------------------------------------
 
@@ -492,6 +665,12 @@ fn permission_with_ctx_falls_back_to_trait_default_delegation() {
 
 #[test]
 fn audit_jsonl_empty_dir_skips_file_write() {
+    // BUG-20261102-322：名字承诺 skips_file_write——实现契约（auditor.rs
+    // 空串 dir 守卫注释）是「不得穿透成 CWD 相对路径落盘」；回归（守卫
+    // 被删）会把 Path::new("").join("audit.jsonl") 落到 CWD。哨兵断言收口。
+    let cwd_audit = std::env::current_dir().unwrap().join("audit.jsonl");
+    let existed_before = cwd_audit.exists();
+
     let auditor = enabled_auditor();
     auditor.set_audit_jsonl_log(true, String::new());
     auditor.log_audit_event(&AuditEvent {
@@ -502,6 +681,13 @@ fn audit_jsonl_empty_dir_skips_file_write() {
         timestamp: chrono::Local::now().to_rfc3339(),
         policy_rule: "cov".into(),
     });
+
+    assert_eq!(
+        cwd_audit.exists(),
+        existed_before,
+        "空 dir 不得穿透成 CWD 相对路径落盘（{}）",
+        cwd_audit.display()
+    );
 }
 
 #[test]

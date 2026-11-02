@@ -18,6 +18,11 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
+/// 单块原始文本字符预算（BUG-20261101-277）：Telegram Bot API 硬限 4096，
+/// 预算留 ~600 给 markdown→HTML 的转义/标签膨胀；纯文本回退落在原始块
+/// 上恒 < 4096。
+const TELEGRAM_SPLIT_BUDGET: usize = 3500;
+
 // ---------------------------------------------------------------------------
 // Thinking cancel mechanism
 // ---------------------------------------------------------------------------
@@ -648,10 +653,14 @@ impl TelegramChannel {
             content = "[empty message]".to_string();
         }
 
+        // BUG-20261101-280：preview 截断必须按字符——`&content[..50]` 字节
+        // 直切在多字节字符中间 panic（debug 日志开启 + 中文消息即触发：
+        // 50 字节落在 16~17 个汉字的中间是常态不是边缘）。
+        let preview = message_preview(&content);
         debug!(
             sender_id = %sender_id,
             chat_id = %chat_id,
-            preview = &content[..content.len().min(50)],
+            preview = preview,
             "[TelegramChannel] received message"
         );
 
@@ -1151,6 +1160,12 @@ impl TelegramChannel {
 // Markdown parsing helpers (line-by-line, no regex)
 // ---------------------------------------------------------------------------
 
+/// 入站消息 debug 预览截断（按字符；字节直切在多字节字符中间 panic，
+/// BUG-20261101-280——中文消息 50 字节落在 16~17 个汉字中间是常态）。
+fn message_preview(content: &str) -> String {
+    content.chars().take(50).collect()
+}
+
 fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1360,45 +1375,67 @@ impl Channel for TelegramChannel {
         // before sending the actual response.
         self.stop_thinking_animation(&msg.chat_id);
 
-        let html_content = Self::markdown_to_telegram_html(&msg.content);
+        // Telegram Bot API sendMessage/editMessageText 硬限 4096 字符——超长
+        // 回复 HTML 与纯文本两次尝试全 400，整条投递失败（BUG-20261101-277）。
+        // 预算 3500 留 HTML 转义/标签膨胀余量；即便病理转义内容把 HTML 版
+        // 顶过 4096，纯文本回退落在原始块（≤3500 < 4096）上恒可达。
+        let raw_chunks = nemesis_types::utils::split_message(&msg.content, TELEGRAM_SPLIT_BUDGET);
+        let html_chunks: Vec<String> = raw_chunks
+            .iter()
+            .map(|c| Self::markdown_to_telegram_html(c))
+            .collect();
 
-        // Try to edit placeholder first
+        // Send one chunk: HTML first, plain-text fallback on parse failure.
+        async fn send_chunk(
+            me: &TelegramChannel,
+            chat_id: i64,
+            html: &str,
+            raw: &str,
+        ) -> Result<()> {
+            let send_params = SendMessageParams {
+                chat_id,
+                text: html.to_string(),
+                parse_mode: Some("HTML".to_string()),
+                ..Default::default()
+            };
+            match me.send_message(send_params).await {
+                Ok(_) => Ok(()),
+                Err(_) => {
+                    warn!("[TelegramChannel] HTML parse failed, falling back to plain text");
+                    let plain_params = SendMessageParams {
+                        chat_id,
+                        text: raw.to_string(),
+                        ..Default::default()
+                    };
+                    me.send_message(plain_params).await?;
+                    Ok(())
+                }
+            }
+        }
+
+        // Try to edit placeholder first（首块走占位编辑；剩余块照常新消息）
         let placeholder_msg_id = self.placeholders.write().remove(&msg.chat_id);
         if let Some(message_id) = placeholder_msg_id {
             let edit_params = EditMessageParams {
                 chat_id,
                 message_id,
-                text: html_content.clone(),
+                text: html_chunks[0].clone(),
                 parse_mode: Some("HTML".to_string()),
             };
 
             if self.edit_message_text(edit_params).await.is_ok() {
+                for (html, raw) in html_chunks.iter().zip(raw_chunks.iter()).skip(1) {
+                    send_chunk(self, chat_id, html, raw).await?;
+                }
                 return Ok(());
             }
-            // Fall through to new message if edit fails
+            // Fall through to new messages if edit fails
         }
 
-        let send_params = SendMessageParams {
-            chat_id,
-            text: html_content,
-            parse_mode: Some("HTML".to_string()),
-            ..Default::default()
-        };
-
-        match self.send_message(send_params).await {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                // Retry without parse_mode (plain text fallback)
-                warn!("[TelegramChannel] HTML parse failed, falling back to plain text");
-                let plain_params = SendMessageParams {
-                    chat_id,
-                    text: msg.content,
-                    ..Default::default()
-                };
-                self.send_message(plain_params).await?;
-                Ok(())
-            }
+        for (html, raw) in html_chunks.iter().zip(raw_chunks.iter()) {
+            send_chunk(self, chat_id, html, raw).await?;
         }
+        Ok(())
     }
 }
 

@@ -90,6 +90,11 @@ enum Preflight {
         patch: String,
         expected_base: String,
         title: String,
+        /// 交付 payload 的 `publish_stage`（F1 续作留痕）：`pr_pending` =
+        /// 上次已到达 PR 创建阶段（进程崩溃/落账失败），重试先对账防重复
+        /// 建 PR；其余值（commit_generated/push_completed/published/缺省）
+        /// 走常规路径。
+        stage: Option<String>,
     },
 }
 
@@ -172,14 +177,22 @@ fn preflight(
     {
         return Err(PREFLIGHT_PATCH_TRUNCATED.to_string());
     }
+    // 2026-11-02 复评 F1：空白判定用 `trim().is_empty()`，但**存储/解析
+    // 保留原始字节**——`.map(str::trim)` 会剥掉 patch 末尾换行，而末尾换行
+    // 是标准文本 diff 解析格式的一部分（实测 git2::Diff::from_buffer 拒绝
+    // 「无尾换行」的合法 patch）。
     let patch = rec
         .payload
         .get("patch")
         .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| PREFLIGHT_NO_PATCH.to_string())?
         .to_string();
+    let stage = rec
+        .payload
+        .get("publish_stage")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     let issue_title = resolve_issue_title(store, task_id);
     let title = arg_str(args, "title")
@@ -193,6 +206,7 @@ fn preflight(
         patch,
         expected_base,
         title,
+        stage,
     })
 }
 
@@ -242,12 +256,16 @@ pub(crate) async fn publish_task_delivery(
         patch,
         expected_base,
         title,
+        stage,
     } = pre
     else {
         unreachable!("preflight 只产 Already/Proceed 两形态");
     };
+    let pr_pending_retry = stage.as_deref() == Some("pr_pending");
 
-    // ③ git 半边：副本内建分支 + 应用 patch + commit。
+    // ③ git 半边：副本内建分支 + 应用 patch + commit。分支已存在时
+    // `apply_patch_new_branch` 校验内容一致即幂等复用既有 commit（F1：
+    // push/PR 阶段失败后的重试续作，不再被自己上次的分支挡死）。
     let commit_hex = match nemesis_board::git_repo::apply_patch_new_branch(
         &copy_dir,
         &branch,
@@ -263,6 +281,19 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
+    // 阶段留痕（F1 续作；best-effort——留痕写失败不阻断发布本身，只降级
+    // 重试续作的精确度，warn 可观测）。**阶段单调不回退**：pr_pending 现场
+    // 续作时跳过中间态——把 pr_pending 覆盖成 commit_generated/push_completed
+    // 后，若本次重试又在对账/创建窗口中断，下次重试丢失 pr_pending 语义 →
+    // 不对账直建 PR = 重复建 PR 风险（stage 只前进不后退）。
+    if !pr_pending_retry
+        && let Err(e) = db.merge_delivery_payload(
+            &branch_key,
+            &json!({ "publish_stage": "commit_generated", "published_commit": commit_hex }),
+        )
+    {
+        tracing::warn!(task_id = %task_id, "[Publish] commit_generated 留痕失败: {e}");
+    }
     let body = arg_str(args, "body").unwrap_or_else(|_| {
         format!(
             "NemesisBot 外循环自动交付\n\n- 任务: `{task_id}`\n- 交付分支: `{branch}`\n- 交付 commit: `{commit_hex}`\n- 基于基线: `{expected_base}`"
@@ -283,12 +314,64 @@ pub(crate) async fn publish_task_delivery(
             format!("分支推送失败（确定失败，可重试——重推同内容幂等）: {e}"),
         ));
     }
+    if !pr_pending_retry
+        && let Err(e) = db.merge_delivery_payload(
+            &branch_key,
+            &json!({ "publish_stage": "push_completed", "published_commit": commit_hex }),
+        )
+    {
+        tracing::warn!(task_id = %task_id, "[Publish] push_completed 留痕失败: {e}");
+    }
 
-    // ⑤ PR 创建 + unknown 对账。
+    // ⑤ PR 创建 + unknown 对账。上次若已到达 PR 阶段（publish_stage =
+    // pr_pending：进程崩溃/落账失败留下），**先对账再决定**——已建成 PR
+    // 直接收敛落账（不重复建）；扫尽确认不在才安全重建；扫不尽维持保守
+    // 失败（重复建 PR 风险不静默承担）。
+    if pr_pending_retry {
+        match reconcile_pr_by_head(agent_loop, &connector, &owner, &repo, &branch).await {
+            ReconcileOutcome::Found(n, u) => {
+                return finish_published(
+                    db,
+                    &branch_key,
+                    &task_id,
+                    &branch,
+                    n,
+                    u,
+                    &commit_hex,
+                    &owner,
+                    &repo,
+                    "对账发现上次已建成的 PR——重试续作收敛，未重复创建",
+                );
+            }
+            // 扫尽确认不在：重建安全，落入常规创建。
+            ReconcileOutcome::Absent => {}
+            ReconcileOutcome::Inconclusive => {
+                return Ok(fail_outcome(
+                    &task_id,
+                    &branch,
+                    format!(
+                        "上次发布到达 PR 阶段后中断，对账未能扫尽（页数封顶/响应不可解析/查询失败），无法排除已建成 PR——保守判失败可重试，但重复建 PR 风险自担（可人工到仓库按分支 {branch} 核实）"
+                    ),
+                ));
+            }
+        }
+    }
     let create_args = json!({
         "owner": owner, "repo": repo, "head": branch, "base": base,
         "title": title, "body": body,
     });
+    // 阶段留痕：pr_pending 在 create_pull **之前**落账——创建请求发出后
+    // 结果丢失（进程崩溃/响应不可解析）时，重试凭此先对账防重复建 PR。
+    if let Err(e) = db.merge_delivery_payload(
+        &branch_key,
+        &json!({
+            "publish_stage": "pr_pending",
+            "published_commit": commit_hex,
+            "pr_target": format!("{owner}/{repo}:{base}"),
+        }),
+    ) {
+        tracing::warn!(task_id = %task_id, "[Publish] pr_pending 留痕失败: {e}");
+    }
     let (pr_number, pr_url) = match invoke(agent_loop, &connector, "create_pull", create_args).await
     {
         Ok(resp) => match parse_pr_response(&resp) {
@@ -309,13 +392,13 @@ pub(crate) async fn publish_task_delivery(
                         ));
                     }
                     // 未能扫尽（页数封顶/响应不可解析/查询失败）：可能已建成
-                    // ——重试有重复建 PR 风险，操作者文案如实告知。
+                    // ——留 pr_pending 阶段，下次重试先对账收敛，不盲目重建。
                     ReconcileOutcome::Inconclusive => {
                         return Ok(fail_outcome(
                             &task_id,
                             &branch,
                             format!(
-                                "PR 创建未确认且对账未能扫尽（页数封顶/响应不可解析/查询失败），无法排除已建成 PR——保守判失败可重试，但重复建 PR 风险自担（可人工到仓库按分支 {branch} 核实）。原始响应: {}",
+                                "PR 创建未确认且对账未能扫尽（页数封顶/响应不可解析/查询失败），无法排除已建成 PR——保守判失败，**重试会先对账收敛**（不重复建 PR；也可人工到仓库按分支 {branch} 核实）。原始响应: {}",
                                 head_chars(&resp, 400)
                             ),
                         ));
@@ -332,12 +415,41 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
-
-    // ⑥ 落账：published 终态 + PR 留痕。
-    db.mark_delivery_published(&branch_key)?;
-    db.merge_delivery_payload(
+    finish_published(
+        db,
         &branch_key,
+        &task_id,
+        &branch,
+        pr_number,
+        pr_url,
+        &commit_hex,
+        &owner,
+        &repo,
+        "已推送交付分支并创建 PR",
+    )
+}
+
+/// ⑥ 落账收敛：published 终态 + PR 留痕 + 阶段标记（**单事务**——状态与
+/// 留痕要么同落要么都不落，杜绝「状态已 published 而 payload 无 pr_number」
+/// 的半行账）。正常创建与 pr_pending 对账续作共用此出口。`pr_url` 允许
+/// None（对账只拿到 number 没拿到 URL），落账为 null、响应同形。
+#[allow(clippy::too_many_arguments)]
+fn finish_published(
+    db: &Arc<TaskDb>,
+    branch_key: &str,
+    task_id: &str,
+    branch: &str,
+    pr_number: i64,
+    pr_url: Option<String>,
+    commit_hex: &str,
+    owner: &str,
+    repo: &str,
+    detail: &str,
+) -> Result<Value, String> {
+    db.mark_delivery_published_with_payload(
+        branch_key,
         &json!({
+            "publish_stage": "published",
             "pr_number": pr_number,
             "pr_url": pr_url,
             "published_at": chrono::Local::now().to_rfc3339(),
@@ -360,7 +472,7 @@ pub(crate) async fn publish_task_delivery(
         "commit": commit_hex,
         "branch": branch,
         "remote": format!("{owner}/{repo}"),
-        "detail": "已推送交付分支并创建 PR",
+        "detail": detail,
     }))
 }
 

@@ -312,6 +312,18 @@ where
         && !expected.is_empty()
         && resp.call_id != expected
     {
+        // BUG-20261102-308 carve-out：空 call_id + ok=false = 子进程在任何
+        // 请求读取前失败的会话级全局错误（P5-2 `emit_error_response`——如
+        // strict 拒绝 engage），不是错位的请求应答。透传拒绝原因原文，不再
+        // 泛化成 mismatch（P5-2「让模型/用户看到拒绝原因」的意图在
+        // persistent 路径同样成立）。非空 call_id 失配（含 ok=false 的错位
+        // 错误应答）行为不变——串话 / journal replay 防线不削弱。
+        if resp.call_id.is_empty() && !resp.ok && !resp.error.is_empty() {
+            return Err(TransportError::Protocol(format!(
+                "executor failed before first request: {}",
+                resp.error
+            )));
+        }
         return Err(TransportError::Protocol(format!(
             "response call_id mismatch: expected {expected}, got {}",
             resp.call_id

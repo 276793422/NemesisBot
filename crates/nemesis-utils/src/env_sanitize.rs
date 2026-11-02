@@ -8,6 +8,12 @@
 //! 白名单是安全底座（PATH/SYSTEMROOT/COMSPEC 等——Windows `cmd /C` 缺了
 //! 起不来）：当前黑名单模式均不与其相交，列入只为防御未来模式扩充时误杀
 //! 运行底座。
+//!
+//! **窄版闸**（`*_narrow`，改进项二期 L27）：只剥 bot 内部命名空间
+//! （`NEMESISBOT_*`），**不碰关键词黑名单**——消费场景是第三方 CLI 委派
+//! （nemesis-agent `loop_tools::run_cli_delegation`）：第三方 CLI 自身
+//! auth 依赖的 env key（如 `*_API_KEY*`）必须保留，全词表剥离会砍掉其
+//! 登录态。受同一进程级开关门控（关=什么都不剥）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -55,6 +61,12 @@ const WHITELIST: &[&str] = &[
 const BLACKLIST_SUBSTRINGS: &[&str] =
     &["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"];
 
+/// 变量名是否属 bot 内部命名空间（`NEMESISBOT_` 前缀，大小写不敏感）。
+/// 全词表闸与窄版闸共享的判定单点（两处前缀字面量不漂移）。
+pub fn is_nemesisbot_namespaced(name: &str) -> bool {
+    name.to_uppercase().starts_with("NEMESISBOT_")
+}
+
 /// 变量名是否敏感（应剥）。大小写不敏感；白名单优先。
 pub fn is_sensitive_env_name(name: &str) -> bool {
     let upper = name.to_uppercase();
@@ -63,7 +75,7 @@ pub fn is_sensitive_env_name(name: &str) -> bool {
     }
     // 执行体运输层内部变量（NEMESISBOT_ROLE / EXECUTOR_WORKSPACE /
     // EXECUTOR_PIPE 等）一律剥——子进程不需要知道自己是执行体。
-    if upper.starts_with("NEMESISBOT_") {
+    if is_nemesisbot_namespaced(name) {
         return true;
     }
     BLACKLIST_SUBSTRINGS.iter().any(|s| upper.contains(s))
@@ -96,6 +108,38 @@ pub fn sanitize_tokio_command(cmd: &mut tokio::process::Command) -> usize {
     let mut stripped = 0;
     for (name, _) in std::env::vars_os() {
         if is_sensitive_env_name(&name.to_string_lossy()) {
+            cmd.env_remove(&name);
+            stripped += 1;
+        }
+    }
+    stripped
+}
+
+/// std Command 窄版清洗（备用形态，当前生产消费点是 tokio 版）：只剥 bot
+/// 内部命名空间（`NEMESISBOT_*`），不碰关键词黑名单——第三方 CLI 委派
+/// 场景（见模块文档「窄版闸」）。返回剥除数（开关关时恒 0，且不做任何改动）。
+pub fn sanitize_command_narrow(cmd: &mut std::process::Command) -> usize {
+    if !child_env_sanitize_enabled() {
+        return 0;
+    }
+    let mut stripped = 0;
+    for (name, _) in std::env::vars_os() {
+        if is_nemesisbot_namespaced(&name.to_string_lossy()) {
+            cmd.env_remove(&name);
+            stripped += 1;
+        }
+    }
+    stripped
+}
+
+/// tokio Command 窄版清洗（同 [`sanitize_command_narrow`]）。
+pub fn sanitize_tokio_command_narrow(cmd: &mut tokio::process::Command) -> usize {
+    if !child_env_sanitize_enabled() {
+        return 0;
+    }
+    let mut stripped = 0;
+    for (name, _) in std::env::vars_os() {
+        if is_nemesisbot_namespaced(&name.to_string_lossy()) {
             cmd.env_remove(&name);
             stripped += 1;
         }

@@ -1194,6 +1194,16 @@ fn test_expand_tilde_relative() {
 }
 
 #[test]
+fn test_expand_tilde_backslash_prefix() {
+    // BUG-20261102-319：`~\` 反斜杠形态（Windows 用户手写惯例，save_config /
+    // adjust_paths 的默认拼法判定均已承认该形态）此前不展开——与 log.rs 的
+    // 本地 expand_tilde（认 `~\`）分叉，同义两形态异判。
+    let result = expand_tilde("~\\custom\\path");
+    assert!(!result.starts_with("~"));
+    assert!(result.ends_with("custom\\path") || result.ends_with("custom/path"));
+}
+
+#[test]
 fn test_save_config_creates_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("deep/nested/config.json");
@@ -1518,6 +1528,26 @@ fn test_config_workspace_path_tilde() {
         agents: AgentsConfig {
             defaults: AgentDefaults {
                 workspace: "~/custom/path".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let ws = config.workspace_path();
+    assert!(!ws.starts_with("~"));
+    assert!(ws.contains("custom"));
+}
+
+#[test]
+fn test_config_workspace_path_tilde_backslash() {
+    // BUG-20261102-319：`~\` 形态 workspace 此前原样返回字面量（MCP/security/
+    // skills/scanner 四个配置路径解析消费方拿到后落 cwd 下 `~` 目录）——与
+    // `~/` 形态正确展开分叉。
+    let config = Config {
+        agents: AgentsConfig {
+            defaults: AgentDefaults {
+                workspace: "~\\custom\\path".to_string(),
                 ..Default::default()
             },
             ..Default::default()

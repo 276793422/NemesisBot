@@ -213,6 +213,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })
@@ -322,6 +323,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });

@@ -63,6 +63,7 @@ fn build_state(ws: &str, forge: Option<Arc<nemesis_forge::forge::Forge>>) -> App
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     }

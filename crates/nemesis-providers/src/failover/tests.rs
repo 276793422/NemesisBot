@@ -358,3 +358,60 @@ fn test_retry_after_from_headers_parses() {
     map.insert("retry-after", "bogus".parse().unwrap());
     assert_eq!(retry_after_from_headers(&map), None);
 }
+
+// -- L02（2026-11-01）StreamInterrupted --------------------------------------
+
+#[test]
+fn stream_interrupted_is_retriable_and_maps_timeout_reason() {
+    let e = FailoverError::StreamInterrupted {
+        provider: "openai".to_string(),
+        model: "gpt-4".to_string(),
+        reason: "stream closed without finish_reason".to_string(),
+        partial_content: "partial".to_string(),
+        has_partial_tool_calls: false,
+    };
+    assert!(
+        e.is_retriable(),
+        "流中断与 Timeout 同门（瞬态可重试）——fallback 链必须照常轮转"
+    );
+    assert_eq!(e.reason(), FailoverReason::Timeout);
+    // retry_after_hint 非 RateLimit 恒 None（既有约定不破）。
+    assert_eq!(e.retry_after_hint(), None);
+}
+
+#[test]
+fn stream_interrupted_display_headline_prefix_and_tail_full_partial() {
+    // Display 是跨层契约：头行（首个 \n 之前）以 "stream interrupted from
+    // provider " 开头 = recovery / llm_error_class 的前缀锚判据；尾段携带
+    // partial 全文；chars 计数按字符数非字节数（CJK 诚实）。
+    let partial = "第一段\n第二段";
+    let e = FailoverError::StreamInterrupted {
+        provider: "anthropic".to_string(),
+        model: "glm-5".to_string(),
+        reason: "connection reset by peer".to_string(),
+        partial_content: partial.to_string(),
+        has_partial_tool_calls: true,
+    };
+    let display = e.to_string();
+    let headline = display.lines().next().unwrap_or("");
+    assert!(
+        headline.starts_with("stream interrupted from provider anthropic/glm-5"),
+        "头行前缀锚: {headline:?}"
+    );
+    assert!(
+        !headline.contains("第一段"),
+        "头行不携带 partial（前缀锚不可被内容伪造的前提）: {headline:?}"
+    );
+    assert!(
+        display.ends_with(partial),
+        "尾段携带 partial 全文（多行半截文本完整保留，对抗 A4）: {display:?}"
+    );
+    assert!(
+        headline.contains("已接收 7 字符"),
+        "chars 计数按字符数（7 字符非 22 字节）: {headline:?}"
+    );
+    assert!(
+        display.contains("connection reset by peer"),
+        "根因链不丢（诚实化纪律）: {display:?}"
+    );
+}

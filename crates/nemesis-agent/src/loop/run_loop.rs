@@ -70,8 +70,15 @@ const MAX_LENGTH_CONTINUATIONS: u32 = 5;
 
 /// M4-B（A13）：空内容撞 cap 的续写容忍上限——第 1 次按截断续写（偶发
 /// 瞬态），连续第 2 次提前停轮（诚实报错），不再烧剩余 length-continuation
-/// 预算。
-const MAX_EMPTY_LENGTH_CONTINUATIONS: u32 = 2;
+/// 预算。集群续行循环（loop_continuation）同值复用——截断续写语义一处
+/// 定义，两处不漂移。
+pub(crate) const MAX_EMPTY_LENGTH_CONTINUATIONS: u32 = 2;
+
+/// 器官 6 的续写提示（单轮追加在截断正文后的 user 消息）。集群续行循环
+/// （loop_continuation）同文复用——续写语义一处定义，两处提示不漂移。
+pub(crate) const LENGTH_CONTINUE_PROMPT: &str = "Output limit reached. Continue exactly where you left off — \
+     no recap, no apology. If you were writing a large file, \
+     break it into smaller writes.";
 
 impl AgentLoop {
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
@@ -451,11 +458,7 @@ impl AgentLoop {
                     Vec::new(),
                     response.reasoning_content.clone(),
                 );
-                instance.add_user_message(
-                    "Output limit reached. Continue exactly where you left off — \
-                     no recap, no apology. If you were writing a large file, \
-                     break it into smaller writes.",
-                );
+                instance.add_user_message(LENGTH_CONTINUE_PROMPT);
                 return Some(TurnFlow::Continue);
             }
             // Budget exhausted: clear, non-misleading error.
@@ -1196,6 +1199,15 @@ impl AgentLoop {
                     turns_used
                 ),
             );
+            // L24: content-addressed snapshots of the instruction/tool faces
+            // this round actually sent (persona edits later must not blur
+            // what a historical round saw). Best-effort store; the hashes
+            // are recorded either way.
+            let system_prompt_sha256 = messages
+                .first()
+                .filter(|m| m.role == "system")
+                .map(|m| crate::replay::snapshot_system_prompt(&m.content));
+            let tools_sha256 = crate::replay::snapshot_tool_defs(&tool_defs);
             crate::replay::append_projection_record(&crate::replay::RequestProjectionRecord {
                 trace_id: trace_id.to_string(),
                 session_key: context.session_key.clone(),
@@ -1208,6 +1220,8 @@ impl AgentLoop {
                 voice_append: replay_voice,
                 summary_as_of: build_annotation.summary_as_of.clone(),
                 vision_projected: build_annotation.vision_projected,
+                system_prompt_sha256,
+                tools_sha256,
             });
         }
 

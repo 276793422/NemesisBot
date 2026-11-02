@@ -260,6 +260,15 @@ pub struct TakeoverToolBridge {
     bridge: PluginToolBridge,
     /// 接管开关（侧表持有同 Arc；热同步翻位）。
     active: Arc<AtomicBool>,
+    /// 内置工具名（注册表键；发卡 service 字段与日志定位用）。
+    builtin: String,
+    /// L25：回退态发卡恢复面——broker 由 loop 构造期快照（`None` =
+    /// headless/裸构建走原错误串零回归）。接管态不经过：guest 恒见别名
+    /// 原文，发卡恢复只在回退态 wrapper 内与 dispatch 层发生。
+    credential_broker: Option<Arc<dyn nemesis_types::agent::CredentialBroker>>,
+    /// L25：发卡防滥用占位表（wrapper 自有实例——生命周期独立于 loop 级
+    /// 窗口，防的是同一会话对同一别名刷卡轰炸，语义等价）。
+    credential_guard: Arc<nemesis_agent::r#loop::credential_injection::CredentialCardGuard>,
 }
 
 #[async_trait::async_trait]
@@ -299,11 +308,30 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
             // ——单一快照决定整条路径，无混合态：load=false → 注入后的
             // 明文只进内置执行体；load=true → 未注入的别名原文才进 wasm。
             // 注入失败 = 与 dispatch 层注入同语义（Err 直接作为工具结果，
-            // 本轮不执行）。
-            let injected = nemesis_agent::r#loop::credential_injection::inject_credential_aliases(
+            // 本轮不执行）；差异面：broker 在场时先走 L25 发卡恢复（发凭据
+            // 卡 → Stored 后原地重注入续行），缺席/被拒/超时回落原错误串。
+            let injected = match nemesis_agent::r#loop::credential_injection::inject_credential_aliases_structured(
                 self.inner.as_ref(),
                 args,
-            )?;
+            ) {
+                Ok(a) => a,
+                Err(inj_err) => {
+                    match nemesis_agent::r#loop::credential_injection::try_card_recovery(
+                        self.credential_broker.clone(),
+                        &self.credential_guard,
+                        self.inner.as_ref(),
+                        args,
+                        &context.session_key,
+                        &self.builtin,
+                        &inj_err,
+                    )
+                    .await
+                    {
+                        Some(retried) => retried,
+                        None => return Err(inj_err.to_string()),
+                    }
+                }
+            };
             self.inner.execute(&injected, context).await
         }
     }
@@ -467,6 +495,12 @@ pub fn reconcile_takeover(
             inner,
             bridge: PluginToolBridge::new(meta, manager.clone()),
             active: active.clone(),
+            builtin: builtin.to_string(),
+            // L25：构造期快照 loop 的 broker（None = headless 走原错误串）。
+            credential_broker: agent_loop.credential_broker(),
+            credential_guard: Arc::new(
+                nemesis_agent::r#loop::credential_injection::CredentialCardGuard::new(),
+            ),
         }),
     );
     debug_assert_eq!(

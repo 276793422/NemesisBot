@@ -1048,11 +1048,19 @@ mod resolver_extra {
 
     #[test]
     fn test_parse_url_empty_host_rejected() {
-        // A URL with only scheme and path (no host) should be rejected
-        let result = parse_url("http:///path");
-        // May or may not be an error depending on how url crate handles it
-        // Just verify the function doesn't panic
-        let _ = result;
+        // BUG-20261102-322：名字承诺 rejected——此前 `let _ = result;` 零断言。
+        // 真正的空 host 形态是 `http:///`（url crate EmptyHost → Err）。
+        let err = parse_url("http:///").expect_err("bare empty host must be rejected");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("host") || msg.contains("parse"),
+            "拒绝原因必须指向 host 解析: {err}"
+        );
+        // WHATWG 语义钉住：`http:///path` 的额外斜杠被吞，"path" 成为
+        // 主机名——不是空 host，解析成功且必须过后续 host 校验
+        // （SSRF 视角：这种形态不能绕过 host 检查）。
+        let parsed = parse_url("http:///path").expect("WHATWG 语义下解析成功");
+        assert_eq!(parsed.host, "path", "额外斜杠不是空 host——'path' 是主机名");
     }
 
     #[test]

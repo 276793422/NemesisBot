@@ -732,6 +732,7 @@ async fn test_handle_cluster_continuation_no_data() {
         None,
         &MockContinuationProvider::new(vec![]),
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -783,6 +784,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -838,6 +840,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         Some("Task execution failed"),
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -919,6 +922,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         None,
         &provider,
         "test-model",
+        4096,
         &tools,
         &outbound_tx,
         None,
@@ -961,6 +965,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1030,6 +1035,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1346,6 +1352,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         None, // No error message
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1426,6 +1433,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1506,6 +1514,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1574,6 +1583,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1727,6 +1737,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1870,6 +1881,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         None,
         &provider,
         "model",
+        4096,
         &tools,
         &outbound_tx,
         Some(Arc::clone(&observer)),
@@ -1924,6 +1936,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         None,
         &provider,
         "model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1933,8 +1946,18 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
     )
     .await;
 
-    // The session was created and the assistant reply recorded.
-    let _session = store.get_or_create("persist_session");
+    // BUG-20261102-322：名字承诺 persists_to_session_store——此前
+    // `let _session` 丢弃、零断言，持久化分支（add_message/save）回归时
+    // 测试照绿。assistant 回复必须真进 session_store。
+    let session = store.get_or_create("persist_session");
+    assert!(
+        session
+            .messages
+            .iter()
+            .any(|m| m.role == "assistant" && m.content.contains("Persisted reply")),
+        "assistant 回复必须持久化进 session_store: {:?}",
+        session.messages
+    );
 }
 
 #[tokio::test]
@@ -2523,6 +2546,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -2581,6 +2605,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         Some(Arc::new(nemesis_observer::Manager::new())),
@@ -3145,6 +3170,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         None,
         &provider_no_vision,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3199,6 +3225,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         None,
         &provider_vision,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3442,6 +3469,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3510,6 +3538,7 @@ async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3565,6 +3594,7 @@ async fn test_cluster_continuation_no_source_node_meta_absent() {
         None,
         &provider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

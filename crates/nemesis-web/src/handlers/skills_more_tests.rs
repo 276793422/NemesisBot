@@ -67,6 +67,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });
@@ -181,7 +182,9 @@ async fn test_skills_detail_nonexistent_errors() {
 
 #[tokio::test]
 async fn test_skills_detail_path_traversal_name() {
-    // A skill name like "../escape" must be rejected by resolve_path.
+    // A skill name like "../escape" must be rejected by the slug gate
+    // (BUG-20261101-295: validation moved ahead of read_workspace_file —
+    // the slug validator fires before resolve_path's traversal check).
     let handler = SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -191,7 +194,9 @@ async fn test_skills_detail_path_traversal_name() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
-        err.contains("path traversal denied") || err.contains("absolute paths not allowed"),
+        err.contains("invalid skill name")
+            || err.contains("path traversal denied")
+            || err.contains("absolute paths not allowed"),
         "got: {}",
         err
     );

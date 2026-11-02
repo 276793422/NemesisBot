@@ -4,6 +4,12 @@ version.workspace = true
 license.workspace = true
 edition.workspace = true
 
+# BUG-20261102-324：SSRF 闸槽随 security feature（optional dep，关 security
+# 时整块 cfg 掉——workflow 引擎本体不拖 nemesis-security，IoT 裁剪树不受扰；
+# 关 = http 节点无闸直通，但重定向纪律仍生效）。
+[features]
+security = ["dep:nemesis-security", "nemesis-security/security"]
+
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
@@ -12,6 +18,7 @@ nemesis-tools = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-sandbox = { workspace = true }
 nemesis-config = { workspace = true }
+nemesis-security = { workspace = true, optional = true }
 nemesis-utils = { workspace = true }
 nemesis-taskstore = { workspace = true }
 tokio = { workspace = true }

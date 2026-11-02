@@ -1760,11 +1760,24 @@ async fn run_node(
     }
 
     // Start RPC server
-    // P0 vault fail-closed：token 引用解析失败 → 拒绝 bind（宁可没有 RPC，
-    // 不可无认证 RPC）。`cluster node` 整体退出，让运维当场看到错误。
-    if cluster.rpc_reference_broken() {
+    // P0 vault fail-closed（BUG-20261102-297 扩展）：token 引用解析失败**或**
+    // 为空 → 拒绝 bind（宁可没有 RPC，不可无认证 RPC）。`cluster node` 整体
+    // 退出，让运维当场看到错误。空 token 不看旗标（旗标带 enabled 闸——
+    // 子系统关着不置位），node 子命令是显式起 B 端 worker，直接查真值。
+    if cluster.rpc_auth_unavailable() {
+        if cluster.rpc_reference_broken() {
+            anyhow::bail!(
+                "Cluster RPC auth token 引用解析失败 —— fail-closed：RPC 服务拒绝启动（请修复引用或运行 `nemesisbot vault set <alias>` 后重试）"
+            );
+        } else {
+            anyhow::bail!(
+                "Cluster RPC auth token 为空 —— fail-closed：RPC 服务拒绝启动（无认证 RPC = 局域网任意主机可驱动本节点 agent）。请运行 `nemesisbot cluster token generate --save`（或重跑 `nemesisbot cluster enable`）后重试"
+            );
+        }
+    }
+    if cluster_app_cfg.token.trim().is_empty() {
         anyhow::bail!(
-            "Cluster RPC auth token 引用解析失败 —— fail-closed：RPC 服务拒绝启动（请修复引用或运行 `nemesisbot vault set <alias>` 后重试）"
+            "Cluster RPC auth token 为空 —— fail-closed：RPC 服务拒绝启动（无认证 RPC = 局域网任意主机可驱动本节点 agent）。请运行 `nemesisbot cluster token generate --save`（或重跑 `nemesisbot cluster enable`）后重试"
         );
     }
     let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();

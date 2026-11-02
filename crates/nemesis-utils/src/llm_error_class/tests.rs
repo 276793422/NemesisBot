@@ -86,6 +86,35 @@ fn status_504_maps_to_timeout() {
 }
 
 #[test]
+fn http_status_line_form_is_classified() {
+    // BUG-20261102-317 红证锚：`extract_http_status` 的 "HTTP[/\s]+..."
+    // 模式写的是大写字面 "HTTP"，而 classify_llm_error / providers
+    // classify_error 传给它的都是 to_lowercase() 后的文本——纯状态行形态
+    // （"HTTP/1.1 503 Service Unavailable"，reqwest 常见 Display 之一）在
+    // classify 语境下 extract 恒 miss，词表又无裸 "503"/"502"，分类落 None
+    // → fallback 不轮转；同一输入直调 extract_http_status 却能拿 Some(503)
+    // （providers tests 钉住的形态）——同一 pub 函数两语境分叉。
+    assert_eq!(
+        classify_llm_error("HTTP/1.1 503 Service Unavailable"),
+        Some(LlmErrorClass::Overloaded)
+    );
+    // lowercase 后仍带 "http/1.1" 前缀的形态同样必须命中（修复前同死）。
+    assert_eq!(
+        classify_llm_error("http/2 502 bad gateway"),
+        Some(LlmErrorClass::Overloaded)
+    );
+    // 状态行里的 429 也应经 extract → RateLimit（修复前落文案词表恰好
+    // 含裸 "429" 误打误撞命中——钉住走的是 extract 通道而非词表巧合）。
+    assert_eq!(
+        classify_llm_error("HTTP/1.1 429 Too Many Requests"),
+        Some(LlmErrorClass::RateLimit)
+    );
+    // 首字母大写 "Status:" 形态（原始大小写文本直调 pub 函数）——修复前
+    // pattern 1 只认小写 "status"，同样 miss。
+    assert_eq!(extract_http_status("Status: 429"), Some(429));
+}
+
+#[test]
 fn image_errors_are_format_class() {
     assert_eq!(
         classify_llm_error("image dimensions exceed max 8000px"),
@@ -218,4 +247,44 @@ fn error_chain_msg_preserves_source_chain_for_connect_detection() {
     assert!(is_connect_error(&chain), "链拼接后应命中连接词表：{chain}");
     // 裸顶层（无链）不应命中——词表纪律保持。
     assert!(!is_connect_error(&w.to_string()));
+}
+
+// -- L02（2026-11-01）流中断入口短路（对抗用例 A1/A2/A4）----------------------
+
+/// 构造 StreamInterrupted 的真实 Display 形态（头行 + 注记框架 + partial）。
+fn stream_interrupted_display(partial: &str) -> String {
+    format!(
+        "stream interrupted from provider openai/gpt-4: connection reset（已接收 {} 字符，中断前部分文本随错误通知保留）\n\n--- 以下为中断前已生成的部分内容 ---\n{}",
+        partial.chars().count(),
+        partial
+    )
+}
+
+#[test]
+fn l02_prefix_short_circuits_to_timeout_despite_polluted_partial() {
+    // A1：partial 全文含 429 / token / expired / unauthorized 污染词——
+    // 入口前缀短路必须恒 Timeout 类，状态码提取与全部词表不许碰到 partial。
+    let display = stream_interrupted_display(
+        "上游返回 status: 429 且 token 计数异常，授权已 expired (unauthorized)，rate limit exceeded",
+    );
+    assert_eq!(classify_llm_error(&display), Some(LlmErrorClass::Timeout));
+}
+
+#[test]
+fn l02_multiline_partial_with_fake_error_line_short_circuits() {
+    // A4：多行 partial 内嵌完整 "Error: fake ..." 伪行——前缀锚只认头行，
+    // 尾段内容不参与分类。
+    let display = stream_interrupted_display(
+        "第一行\nError: fake context length overflow 999999 tokens\ninvalid request",
+    );
+    assert_eq!(classify_llm_error(&display), Some(LlmErrorClass::Timeout));
+}
+
+#[test]
+fn l02_non_prefixed_text_with_stream_word_not_short_circuited() {
+    // 短路只认头行前缀锚（starts_with）——普通错误文本里恰好含
+    // "stream interrupted" 字样不享受短路（词表照常工作）。
+    let msg = "upstream error: stream interrupted budget; invalid request format";
+    // "invalid request" → Format（词表既有行为，不被 L02 短路劫持）。
+    assert_eq!(classify_llm_error(msg), Some(LlmErrorClass::Format));
 }

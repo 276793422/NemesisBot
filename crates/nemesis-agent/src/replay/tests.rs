@@ -209,6 +209,8 @@ fn test_rebuild_byte_exact_with_ledger_and_later_history() {
         voice_append: None,
         summary_as_of: annotation.summary_as_of.clone(),
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     // Store history has grown past the round (post-round assistant + new user).
@@ -326,6 +328,8 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
         }),
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     // Hand-authored expected request bytes: system, digest, user+suffix.
@@ -402,6 +406,8 @@ fn test_trace_id_disambiguates_equal_rounds_across_turns() {
         voice_append: None,
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     };
     let digest_a = "<system-reminder>\nTRACE-A digest\n</system-reminder>".to_string();
     let digest_b = "<system-reminder>\nTRACE-B digest\n</system-reminder>".to_string();
@@ -549,6 +555,8 @@ fn test_trimmed_history_reports_unavailable() {
         voice_append: None,
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
@@ -689,6 +697,45 @@ async fn test_full_turn_replay_byte_exact() {
             other => panic!("round {} expected Rebuilt, got {:?}", round, other),
         }
     }
+
+    // L24: the instruction/tool faces this turn sent are snapshotted —
+    // hashes recorded per round + content-addressed objects on disk whose
+    // bytes re-hash to the recorded values (acceptance #1).
+    let sp = records[0]
+        .system_prompt_sha256
+        .as_deref()
+        .expect("system prompt hash recorded");
+    let sys_content = captured[0][0]
+        .get("content")
+        .and_then(|c| c.as_str())
+        .expect("system head in recorded request");
+    assert_eq!(sp, sha256_hex(sys_content), "hash = face actually sent");
+    let sp_obj = nemesis_path::default_path_manager()
+        .boundary_events_dir()
+        .join("objects")
+        .join("system_prompt")
+        .join(format!("{}.txt", sp));
+    assert_eq!(
+        std::fs::read_to_string(&sp_obj).unwrap(),
+        sys_content,
+        "snapshot object byte-exact"
+    );
+
+    let th = records[0]
+        .tools_sha256
+        .as_deref()
+        .expect("tools hash recorded");
+    let th_obj = nemesis_path::default_path_manager()
+        .boundary_events_dir()
+        .join("objects")
+        .join("tool_defs")
+        .join(format!("{}.json", th));
+    let th_bytes = std::fs::read_to_string(&th_obj).unwrap();
+    assert_eq!(sha256_hex(&th_bytes), th, "tool defs object hash matches");
+    assert!(
+        th_bytes.contains("calculator"),
+        "tool defs snapshot carries the registered tool"
+    );
 
     cleanup_sidecars(&key);
     let _ = std::fs::remove_dir_all(dir);
@@ -898,6 +945,8 @@ fn append_projection_record_open_failure_warns() {
         voice_append: None,
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
     assert!(load_projection_records(&key).is_empty(), "nothing written");
 
@@ -934,6 +983,8 @@ fn rebuild_pushes_injection_beyond_view_end_and_applies_voice() {
         }),
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     match rebuild_request_messages(&store, &key, 1).expect("rebuild") {
@@ -1032,6 +1083,8 @@ fn verify_session_round_rebuilt_path_byte_exact() {
         voice_append: None,
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     let recorded: Vec<serde_json::Value> = ["sys prompt", "hello"]
@@ -1169,6 +1222,8 @@ fn test_rebuild_reapplies_vision_projection() {
         voice_append: None,
         summary_as_of: annotation.summary_as_of.clone(),
         vision_projected: true,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     // store 保存的是**原始历史**（refs 原样保留——投影视图不落盘）。
@@ -1259,6 +1314,8 @@ fn test_rebuild_vision_projection_truncates_before_projecting() {
         voice_append: None,
         summary_as_of: annotation.summary_as_of.clone(),
         vision_projected: true,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     });
 
     // store 保存原始历史，随后**追加 build 之后的轮次**（F-D 场景核心：
@@ -1282,4 +1339,304 @@ fn test_rebuild_vision_projection_truncates_before_projecting() {
     cleanup_sidecars(&key);
     let _ = std::fs::remove_dir_all(sdir);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// L24: 内容寻址快照库（system prompt + tool defs）
+// ---------------------------------------------------------------------------
+
+/// sha256_hex 基准向量（FIPS 空串 / "abc" 标准值）。
+#[test]
+fn l24_sha256_hex_known_vectors() {
+    assert_eq!(
+        sha256_hex(""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        sha256_hex("abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
+/// store_object：内容寻址幂等（同内容单文件）+ 对象名 hex-only（名域封闭，
+/// 路径注入无门）。
+#[test]
+fn l24_store_object_idempotent_and_hex_named() {
+    let tmp = tempfile::tempdir().unwrap();
+    let boundary = tmp.path().join("boundary");
+    std::fs::create_dir_all(&boundary).unwrap();
+
+    store_object(
+        &boundary,
+        "system_prompt",
+        "alpha",
+        &sha256_hex("alpha"),
+        "txt",
+    );
+    store_object(
+        &boundary,
+        "system_prompt",
+        "alpha",
+        &sha256_hex("alpha"),
+        "txt",
+    );
+    store_object(
+        &boundary,
+        "system_prompt",
+        "beta",
+        &sha256_hex("beta"),
+        "txt",
+    );
+
+    let dir = boundary.join("objects").join("system_prompt");
+    let mut entries: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    entries.sort();
+    assert_eq!(entries.len(), 2, "content addressing dedups: {entries:?}");
+    for name in &entries {
+        let stem = name.strip_suffix(".txt").expect("txt suffix");
+        assert_eq!(stem.len(), 64, "canonical hash name: {name}");
+        assert!(
+            stem.bytes().all(|b| b.is_ascii_hexdigit()),
+            "hex-only name: {name}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join(format!("{}.txt", sha256_hex("alpha")))).unwrap(),
+        "alpha"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join(format!("{}.txt", sha256_hex("beta")))).unwrap(),
+        "beta"
+    );
+}
+
+/// 台账记录 serde 兼容双向：旧形态（缺新字段）解析 = None；新形态往返保真。
+#[test]
+fn l24_record_serde_backward_and_forward_compat() {
+    // 旧形态：没有 system_prompt_sha256 / tools_sha256 键。
+    let old = r#"{"trace_id":"t","session_key":"s","round":1,"ts":"x","messages_count":1,"roles":["user"],"history_len_at_build":1,"injections":[],"voice_append":null,"summary_as_of":null,"vision_projected":false}"#;
+    let rec: RequestProjectionRecord = serde_json::from_str(old).unwrap();
+    assert_eq!(rec.system_prompt_sha256, None);
+    assert_eq!(rec.tools_sha256, None);
+
+    // 新形态：往返后哈希保真。
+    let rec = RequestProjectionRecord {
+        trace_id: "t".to_string(),
+        session_key: "s".to_string(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 2,
+        roles: vec!["system".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+        vision_projected: false,
+        system_prompt_sha256: Some("aa".to_string()),
+        tools_sha256: Some("bb".to_string()),
+    };
+    let back: RequestProjectionRecord =
+        serde_json::from_value(serde_json::to_value(&rec).unwrap()).unwrap();
+    assert_eq!(back.system_prompt_sha256.as_deref(), Some("aa"));
+    assert_eq!(back.tools_sha256.as_deref(), Some("bb"));
+}
+
+/// load_object_by_hash 拒绝非规范哈希（台账文件是数据——路径穿越门在读侧
+/// 之前关死）。
+#[test]
+fn l24_load_object_rejects_non_canonical_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(
+        load_object_by_hash(tmp.path(), "system_prompt", &"a".repeat(64), "txt"),
+        None,
+        "canonical hex but no file = None"
+    );
+    assert_eq!(
+        load_object_by_hash(tmp.path(), "system_prompt", "../../escape", "txt"),
+        None,
+        "path traversal shape rejected"
+    );
+    assert_eq!(
+        load_object_by_hash(
+            tmp.path(),
+            "system_prompt",
+            &format!("{}x", "a".repeat(64)),
+            "txt"
+        ),
+        None,
+        "wrong length rejected"
+    );
+}
+
+/// rebuild 三态之一：快照在场且完整性通过 → store 首条漂移后仍还原为
+/// 快照字节（P0 判据：人格文件变更不污染历史轮重建）。
+#[test]
+fn l24_rebuild_restores_system_prompt_from_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let boundary = tmp.path().join("logs").join("boundary");
+    std::fs::create_dir_all(&boundary).unwrap();
+    let ledger = boundary.join("l24_restore.replay.jsonl");
+
+    let key = "l24:restore";
+    let store = SessionStore::new_with_storage(tmp.path().join("sessions"));
+    store.get_or_create(key);
+    // store 首条是**当前**人格（set_history 加载语义），已偏离当轮快照。
+    store.set_history(
+        key,
+        vec![
+            (&turn("system", "CURRENT persona (drifted)")).into(),
+            (&turn("user", "q")).into(),
+        ],
+    );
+
+    let snap = "PERSONA AS-OF ROUND ONE";
+    let hash = sha256_hex(snap);
+    let obj_dir = boundary.join("objects").join("system_prompt");
+    std::fs::create_dir_all(&obj_dir).unwrap();
+    std::fs::write(obj_dir.join(format!("{}.txt", hash)), snap).unwrap();
+
+    let rec = RequestProjectionRecord {
+        trace_id: "l24".to_string(),
+        session_key: key.to_string(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 2,
+        roles: vec!["system".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+        vision_projected: false,
+        system_prompt_sha256: Some(hash),
+        tools_sha256: None,
+    };
+    std::fs::write(
+        &ledger,
+        format!("{}\n", serde_json::to_string(&rec).unwrap()),
+    )
+    .unwrap();
+
+    match rebuild_request_messages_in(&store, &ledger, 1, None).expect("rebuild") {
+        RebuildOutcome::Rebuilt(view) => {
+            assert_eq!(
+                view[0].content, snap,
+                "snapshot bytes restored despite store drift"
+            );
+            assert_eq!(view[1].content, "q");
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+}
+
+/// rebuild 三态之二：对象在场但内容被改（完整性破坏）→ 保留 store 视图，
+/// 不 fabricate。
+#[test]
+fn l24_rebuild_tampered_snapshot_keeps_store_view() {
+    let tmp = tempfile::tempdir().unwrap();
+    let boundary = tmp.path().join("logs").join("boundary");
+    std::fs::create_dir_all(&boundary).unwrap();
+    let ledger = boundary.join("l24_tamper.replay.jsonl");
+
+    let key = "l24:tamper";
+    let store = SessionStore::new_with_storage(tmp.path().join("sessions"));
+    store.get_or_create(key);
+    store.set_history(
+        key,
+        vec![
+            (&turn("system", "CURRENT persona (drifted)")).into(),
+            (&turn("user", "q")).into(),
+        ],
+    );
+
+    // 对象文件挂在旧哈希名下，内容却是伪造的——sha256 对不上。
+    let hash = sha256_hex("PERSONA AS-OF ROUND ONE");
+    let obj_dir = boundary.join("objects").join("system_prompt");
+    std::fs::create_dir_all(&obj_dir).unwrap();
+    std::fs::write(obj_dir.join(format!("{}.txt", hash)), "TAMPERED").unwrap();
+
+    let rec = RequestProjectionRecord {
+        trace_id: "l24".to_string(),
+        session_key: key.to_string(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 2,
+        roles: vec!["system".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+        vision_projected: false,
+        system_prompt_sha256: Some(hash),
+        tools_sha256: None,
+    };
+    std::fs::write(
+        &ledger,
+        format!("{}\n", serde_json::to_string(&rec).unwrap()),
+    )
+    .unwrap();
+
+    match rebuild_request_messages_in(&store, &ledger, 1, None).expect("rebuild") {
+        RebuildOutcome::Rebuilt(view) => {
+            assert_eq!(
+                view[0].content, "CURRENT persona (drifted)",
+                "integrity failure keeps store-derived view, never fabricated"
+            );
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+}
+
+/// rebuild 三态之三：对象缺席（写失败/人工清理/旧会话）→ 诚实降级保留
+/// store 视图。
+#[test]
+fn l24_rebuild_missing_snapshot_keeps_store_view() {
+    let tmp = tempfile::tempdir().unwrap();
+    let boundary = tmp.path().join("logs").join("boundary");
+    std::fs::create_dir_all(&boundary).unwrap();
+    let ledger = boundary.join("l24_missing.replay.jsonl");
+
+    let key = "l24:missing";
+    let store = SessionStore::new_with_storage(tmp.path().join("sessions"));
+    store.get_or_create(key);
+    store.set_history(
+        key,
+        vec![
+            (&turn("system", "CURRENT persona (drifted)")).into(),
+            (&turn("user", "q")).into(),
+        ],
+    );
+
+    let rec = RequestProjectionRecord {
+        trace_id: "l24".to_string(),
+        session_key: key.to_string(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 2,
+        roles: vec!["system".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+        vision_projected: false,
+        system_prompt_sha256: Some(sha256_hex("never stored")),
+        tools_sha256: None,
+    };
+    std::fs::write(
+        &ledger,
+        format!("{}\n", serde_json::to_string(&rec).unwrap()),
+    )
+    .unwrap();
+
+    match rebuild_request_messages_in(&store, &ledger, 1, None).expect("rebuild") {
+        RebuildOutcome::Rebuilt(view) => {
+            assert_eq!(
+                view[0].content, "CURRENT persona (drifted)",
+                "missing object keeps store view (honest degrade)"
+            );
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
 }

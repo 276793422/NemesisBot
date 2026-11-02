@@ -201,6 +201,13 @@ pub(crate) fn scenario_model(name: &str) -> &'static str {
         "codemode_orchestration" => "testai-codemode-1.0",
         "docs_lift" => "testai-docslift-1.0",
         "disconnect_resume" => "testai-2.1",
+        // stream_break 双臂各自臂内 set_default（break/heal 交替）；此处
+        // 是 main() 逐场景预切值 = 首臂（终局臂）模型。
+        "stream_break" => "testai-break-1.0",
+        "gateway_restart" => "testai-9.3",
+        "length_continuation" => "testai-lenbreak-1.0",
+        // codemode_chain 双臂臂间自切（steps 臂先行 = 此处预切值）。
+        "codemode_chain" => "testai-chain-step-1.0",
         _ => "testai-1.1",
     }
 }

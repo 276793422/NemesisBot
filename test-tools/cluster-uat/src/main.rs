@@ -12418,7 +12418,12 @@ async fn main() {
         if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
             return fail("T43", format!("issue.dispatch unexpected: {disp}"));
         }
-        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 30).await {
+        // 60s 而非 30s：worker 拾取派发走 dispatch sweep（默认 interval=20s，
+        // 重启后计时器重置首拍最多 +20s），满载 runner 上 30s 余量不足
+        // （CI 41273770830 attempt2 T46 40.5min 龄真红实录：30s 现态仍
+        // ["dispatched"]）；60s = 3 个 sweep 拍的余量，与 10405/13003 两处
+        // 既有 60s 先例对齐。冻结/击杀窗口锚在 running 之后，不削弱断言。
+        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 60).await {
             return fail("T43", e);
         }
 
@@ -12784,6 +12789,16 @@ async fn main() {
             return fail("T46", format!("hot-set sweep failed: {e}"));
         }
 
+        // 1. sweep 超时热调 90s（显式接管 T43 遗留的 30s：那 30s 为 T43 的
+        //    快击杀场景服务，而本场景 0b 刚重启 B——冷启动 + 30s 延迟模型
+        //    初始化，慢批 CI 下认领+started 回报可超 30s 被 sweep 抢杀，
+        //    等 running 窗只见 ["failed"]（ET16 a2 19:20Z 实录）。90s 仍被
+        //    3b 的 150s 派发超时等窗覆盖：冻结最晚发生在 dispatch+90s，
+        //    击杀紧随其后。收尾恢复见步骤 6。）
+        if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 90) {
+            return fail("T46", format!("hot-set sweep failed: {e}"));
+        }
+
         // 2. 建单 + 派 Node-B → 等 running。
         let created = match ws_api_request(
             &mut ws, "board", "issue.create",
@@ -12810,7 +12825,10 @@ async fn main() {
         if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
             return fail("T46", format!("issue.dispatch unexpected: {disp}"));
         }
-        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 30).await {
+        // 120s 而非 60s：盖过上面 90s 的 sweep 阈值（worker 慢认领时窗口
+        // 内仍见 running；真死派发则 ~92s 见 failed 的清晰讯号，而非 60s
+        // 处半途而废的 ["dispatched"]）。
+        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 120).await {
             return fail("T46", e);
         }
 
@@ -12862,7 +12880,8 @@ async fn main() {
             return fail("T46", format!("冻结段断言失败（已解冻无残留）: {}", frozen_result.unwrap_err()));
         };
 
-        // 6. 恢复 sweep 600（套件级卫生——30s sweep 会误杀后续场景的健康派发，T21 教训）。
+        // 6. 恢复 sweep 600（套件级卫生——本场景 90s 短 sweep 会误杀后续
+        //    场景的健康派发，T21 教训）。
         if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 600) {
             return fail("T46", format!("restore sweep failed: {e}"));
         }

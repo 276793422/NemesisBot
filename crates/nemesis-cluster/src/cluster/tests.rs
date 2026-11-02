@@ -6254,13 +6254,16 @@ fn test_load_rpc_auth_token_invalid_json_is_tolerated() {
     cluster.stop();
 }
 
+/// 空 token：BUG-20261102-297 起 fail-closed——置位 rpc_token_missing、
+/// rpc_auth_unavailable 统一裁决为 true（节点本体照常运行，只有 RPC/
+/// discovery 拒绝启动；绑定点消费统一裁决）。
 #[test]
-fn test_load_rpc_auth_token_empty_token_runs_without_auth() {
+fn test_load_rpc_auth_token_empty_token_fails_closed() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::write(
         dir.path().join("config").join("config.cluster.json"),
-        serde_json::json!({"token": ""}).to_string(),
+        serde_json::json!({"enabled": true, "token": ""}).to_string(),
     )
     .unwrap();
     let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
@@ -6273,6 +6276,18 @@ fn test_load_rpc_auth_token_empty_token_runs_without_auth() {
     cluster.set_rpc_server(server);
     cluster.start();
     assert!(cluster.is_running());
+    assert!(
+        cluster.rpc_token_missing(),
+        "空 token 必须置位 token_missing（fail-closed）"
+    );
+    assert!(
+        !cluster.rpc_reference_broken(),
+        "空字面量不是坏引用——broken 旗标不置位"
+    );
+    assert!(
+        cluster.rpc_auth_unavailable(),
+        "统一裁决：空 token = 认证不可用，绑定点据此拒绝 bind"
+    );
     cluster.stop();
 }
 
@@ -9005,19 +9020,45 @@ fn test_load_rpc_auth_token_broken_reference_sets_fail_closed_flag() {
     nemesis_config::clear_global_vault_resolver();
 }
 
-/// 空字面量 token：不置位 fail-closed（维持"无 token = 无认证"既有语义）。
+/// 空字面量 token：BUG-20261102-297 起置位 rpc_token_missing（与坏引用
+/// 同款 fail-closed），但 broken 旗标不置位——两因可区分，统一裁决收敛
+/// 于 rpc_auth_unavailable。
 #[test]
-fn test_empty_literal_token_does_not_trip_fail_closed() {
+fn test_empty_literal_token_trips_token_missing_flag() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::write(
         dir.path().join("config").join("config.cluster.json"),
-        serde_json::json!({"token": ""}).to_string(),
+        serde_json::json!({"enabled": true, "token": ""}).to_string(),
     )
     .unwrap();
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.start();
-    assert!(!cluster.rpc_reference_broken());
+    assert!(!cluster.rpc_reference_broken(), "空字面量不是坏引用");
+    assert!(
+        cluster.rpc_token_missing(),
+        "空 token 必须置位 missing 旗标"
+    );
+    assert!(cluster.rpc_auth_unavailable(), "统一裁决为 true");
+    cluster.stop();
+}
+
+/// 子系统未启用（enabled 非 true）+ 空 token：不置位——disabled 集群本就
+/// 不 bind，置位只会污染 Dashboard 闸链快照（抢在「未启用」前误报
+/// 「token 异常」）。
+#[test]
+fn test_empty_token_disabled_subsystem_does_not_trip_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"enabled": false, "token": ""}).to_string(),
+    )
+    .unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+    assert!(!cluster.rpc_token_missing());
+    assert!(!cluster.rpc_auth_unavailable());
     cluster.stop();
 }
 
@@ -9053,6 +9094,38 @@ fn test_start_discovery_broken_reference_fails_closed() {
     nemesis_config::clear_global_vault_resolver();
 }
 
+/// BUG-20261102-297：空 token 的 start_discovery 同款 fail-closed（不存
+/// discovery 服务、running 标志不置位）——推翻 L3「空 token = 明文广播
+/// 运行」兼容臂：RPC 已拒绝启动，明文 announce 继续跑只会把一个无法
+/// 接受 peer_chat 的节点广播出去，且伪造面与坏引用一致。
+#[test]
+fn test_start_discovery_empty_token_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"enabled": true, "token": ""}).to_string(),
+    )
+    .unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.set_ports(0, 0);
+    cluster.set_broadcast_interval(Duration::from_secs(600));
+    cluster.start();
+    let arc: Arc<Cluster> = Arc::new(cluster);
+    let cb: Arc<dyn ClusterCallbacks> = arc.clone();
+    arc.start_discovery(cb);
+    assert!(arc.rpc_token_missing());
+    assert!(
+        arc.discovery.lock().is_none(),
+        "fail-closed：discovery 服务不得创建"
+    );
+    assert!(
+        !arc.discovery_running
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    arc.stop();
+}
+
 // -------------------------------------------------------------------------
 // resolve_auto_node_name：CJK node_id 显示名截断（2026-10-11 横扫修复）
 // -------------------------------------------------------------------------
@@ -9065,6 +9138,7 @@ fn auto_node_name_cjk_node_id_truncates_at_char_boundary() {
     assert!(!from_config);
     assert_eq!(name, "Bot 中中");
 }
+
 // ---------------------------------------------------------------------------
 // 探针身份回传（TCP fallback，2026-10-10）：UDP 静默拓扑里身份传播唯一
 // 可靠通道——ping 响应携带自报 announce，探针成功方 apply 入册。
@@ -10547,5 +10621,85 @@ async fn interval_missed_tick_delay_reanchors_after_gap() {
         tokio::time::Instant::now() - t0,
         std::time::Duration::from_millis(100),
         "Delay：下一 tick 从当前时刻重排，无突发"
+    );
+}
+
+// --- BUG-20261101-282：peers.toml 损坏身份漂移必须可观测 -------------------
+// `.ok()` 吞掉 load_static_config 的解析失败后，node_id 走新生成，
+// ensure_node_id 对不可解析文件整体序列化覆盖——身份静默漂移 +
+// [peers.*] 静态表丢失且零日志。修复 = 损坏 loud WARN（NotFound 首次
+// 启动不打扰）；覆盖写语义保留（构造器不可 fail）。
+
+#[derive(Clone)]
+struct Bug282Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Bug282Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for Bug282Capture {
+    type Writer = Bug282Capture;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[test]
+fn test_bug282_corrupt_peers_toml_warns_and_drift_is_visible() {
+    // ① 损坏文件：必须 warn + 身份重新生成 + peers.toml 被重写为合法 TOML。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        b"[node
+id = broken ===",
+    )
+    .unwrap();
+
+    let mut cfg = make_config();
+    cfg.node_id = String::new(); // 生产形态：无显式 id → 生成（漂移才会发生）
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(Bug282Capture(captured.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let cluster = Cluster::with_workspace(cfg, dir.path().to_path_buf());
+
+    let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("failed to parse"),
+        "peers.toml 损坏必须有可见信号（warn），实际日志: {logs}"
+    );
+    assert!(!cluster.node_id().is_empty());
+    // ensure_node_id 覆盖后文件回到可解析态（后续重启身份稳定）。
+    let rescanned = crate::cluster_config::load_static_config(&cluster_dir.join("peers.toml"))
+        .expect("覆盖写后 peers.toml 必须可解析");
+    assert!(!rescanned.node.id.is_empty());
+    drop(_guard);
+
+    // ② 文件不存在（首次启动）：不得产生该 warn（正常路径不打扰）。
+    let dir2 = tempfile::tempdir().unwrap();
+    let captured2 = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber2 = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(Bug282Capture(captured2.clone()))
+        .finish();
+    let _guard2 = tracing::subscriber::set_default(subscriber2);
+    let _cluster2 = Cluster::with_workspace(make_config(), dir2.path().to_path_buf());
+    let logs2 = String::from_utf8(captured2.lock().unwrap().clone()).unwrap();
+    assert!(
+        !logs2.contains("failed to parse"),
+        "首次启动（无 peers.toml）不得 warn，实际日志: {logs2}"
     );
 }

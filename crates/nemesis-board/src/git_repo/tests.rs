@@ -890,15 +890,82 @@ fn apply_patch_new_branch_rejects_dirty_worktree() {
 }
 
 #[test]
-fn apply_patch_new_branch_rejects_existing_branch() {
-    let root = seeded_repo("apply-exists");
+fn apply_patch_new_branch_existing_same_content_reuses_commit() {
+    let root = seeded_repo("apply-reuse");
+    write(&root, "src/main.rs", "fn main() { a }\n");
+    let patch = workdir_patch(&root);
+    reset_worktree_to_head(&root);
+    let first = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
+    // F1 续作：同基线 + 同内容 → 幂等复用既有 commit（push/PR 阶段失败后
+    // 重试不被自己上次的分支挡死）。
+    let again = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
+    assert_eq!(again, first, "同内容重放必须复用同一 commit，不新建");
+    // 复用路径同样不遗留脏工作区。
+    let on_head = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+    assert_eq!(on_head, "fn main() {}\n", "工作区必须回基线形态");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn apply_patch_new_branch_existing_mismatch_refuses_overwrite() {
+    let root = seeded_repo("apply-mismatch");
     write(&root, "src/main.rs", "fn main() { a }\n");
     let patch = workdir_patch(&root);
     reset_worktree_to_head(&root);
     apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
-    // 幂等撞 git 层：分支已存在 = Err（诚实人工核查，不静默复用）。
+    // 内容不同（换 patch）→ 拒绝覆盖，维持人工核查语义。
+    write(&root, "src/main.rs", "fn main() { b }\n");
+    let other = workdir_patch(&root);
+    reset_worktree_to_head(&root);
+    let err = apply_patch_new_branch(&root, "nemesis/task-x", &other, "m").unwrap_err();
+    assert!(err.contains("拒绝覆盖"), "{err}");
+    // 原交付分支未被第二笔内容污染。
+    let repo = Repository::open(&root).unwrap();
+    let delivered = repo
+        .find_branch("nemesis/task-x", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
+    let entry = delivered
+        .tree()
+        .unwrap()
+        .get_path(Path::new("src/main.rs"))
+        .unwrap();
+    let blob = repo.find_blob(entry.id()).unwrap();
+    assert_eq!(
+        std::str::from_utf8(blob.content()).unwrap(),
+        "fn main() { a }\n",
+        "拒绝覆盖路径原分支内容必须原样保留"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn apply_patch_new_branch_existing_new_baseline_refuses_reuse() {
+    let root = seeded_repo("apply-newbase");
+    write(&root, "src/main.rs", "fn main() { a }\n");
+    let patch = workdir_patch(&root);
+    reset_worktree_to_head(&root);
+    apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
+    // 基线前移后同 patch 重放：父基线不一致 → 不复用、拒绝覆盖（旧分支
+    // 基于旧基线，续作推送会形成错误谱系）。
+    write(&root, "src/other.rs", "pub fn b() {}\n");
+    {
+        // index 必须挂在存活的 repo 上（临时表达式 drop 后 libgit2 报
+        // "Index is not backed up by an existing repository"）。
+        let repo = Repository::open(&root).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("src/other.rs")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "advance base", &tree, &[&parent])
+            .unwrap();
+    }
     let err = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap_err();
-    assert!(err.contains("已存在"), "{err}");
+    assert!(err.contains("拒绝覆盖"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

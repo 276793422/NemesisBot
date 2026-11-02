@@ -18,6 +18,34 @@ pub(crate) fn capture_logs() -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(subscriber)
 }
 
+/// [`capture_logs`] 的捕获形态：输出进共享缓冲而非丢弃，供断言日志级别
+/// 与文案（BUG-20261102-322：测试名承诺「warns_loudly / logged」就必须真
+/// 断言，不得只求值）。返回 (guard, 缓冲句柄)；guard 持有至测试结束。
+pub(crate) fn capture_logs_to_buf() -> (
+    tracing::subscriber::DefaultGuard,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer_buf = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || SharedBuf(writer_buf.clone()))
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    (guard, buf)
+}
+
 /// 绕过 libtest 输出捕获直接写进程 stderr。
 ///
 /// 为什么需要：println!/eprintln! 的输出被 libtest 捕获进 per-test 缓冲，

@@ -7,6 +7,310 @@
 //! git_repo tests 与 IT/UAT 面覆盖）。
 
 use super::*;
+
+struct ReviewNov02NoopProvider;
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for ReviewNov02NoopProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        panic!("review must never call a real model")
+    }
+}
+
+/// connector_invoke 桩：按 op 配置响应/失败；全部调用记账——「未调用」断言
+/// 走记账而非桩内 panic（dispatch 有 panic 隔离，桩 panic 会变成 Tool error
+/// 文本被上层吞掉，测试不会失败）。
+struct StubConnector {
+    create_pull: Option<String>,
+    pr_list: Option<String>,
+    pr_list_err: Option<String>,
+    calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl StubConnector {
+    fn new(
+        create_pull: Option<String>,
+        pr_list: Option<String>,
+        pr_list_err: Option<String>,
+    ) -> (Self, Arc<std::sync::Mutex<Vec<String>>>) {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                create_pull,
+                pr_list,
+                pr_list_err,
+                calls: calls.clone(),
+            },
+            calls,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::Tool for StubConnector {
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let v: Value = serde_json::from_str(args).map_err(|e| e.to_string())?;
+        let op = v["op"].as_str().unwrap_or_default().to_string();
+        self.calls.lock().unwrap().push(op.clone());
+        match op.as_str() {
+            "create_pull" => self
+                .create_pull
+                .clone()
+                .ok_or_else(|| "create_pull 未在桩中配置".to_string()),
+            "pr_list" if self.pr_list_err.is_some() => Err(self.pr_list_err.clone().unwrap()),
+            "pr_list" => self
+                .pr_list
+                .clone()
+                .ok_or_else(|| "pr_list 未在桩中配置".to_string()),
+            other => Err(format!("op {other} 未在桩中配置")),
+        }
+    }
+
+    // connector_invoke 是动态投影工具：静态表查不到 → 管线 fail-closed 成
+    // ProcessExec（CRITICAL）。桩投影 internal 档过管线——投影机制与生产
+    // 同源（connector_tools op_slug_for），档位是桩的测试豁免。
+    fn operation_override(&self, _args: &str) -> Option<nemesis_agent::r#loop::OperationOverride> {
+        Some(nemesis_agent::r#loop::OperationOverride {
+            op_type: "internal".into(),
+            force_approval: None,
+            receipt_ctx: None,
+        })
+    }
+}
+
+fn stub_agent(stub: StubConnector) -> Arc<AgentLoop> {
+    let mut lp = AgentLoop::new(
+        Box::new(ReviewNov02NoopProvider),
+        nemesis_agent::types::AgentConfig {
+            model: "test".into(),
+            ..Default::default()
+        },
+    );
+    lp.register_tool(
+        crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
+        Box::new(stub),
+    );
+    Arc::new(lp)
+}
+
+/// 给副本配 origin（file:// bare）并建 bare——push 真跑通。
+fn wire_remote(f: &PreflightFixture) {
+    let remote = f.copy_root.parent().unwrap().join("remote.git");
+    let remote_url = format!("file:///{}", remote.to_string_lossy().replace('\\', "/"));
+    git2::Repository::open(&f.copy_root)
+        .unwrap()
+        .remote("origin", &remote_url)
+        .unwrap();
+    git2::Repository::init_bare(&remote).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// F1 续作回归（2026-11-02 外部复评）：push/PR 阶段失败后的重试续作 +
+// preflight 原始 patch 保真。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn review_nov02_publish_push_failure_retry_continues_after_remote_repaired() {
+    let f = PreflightFixture::new();
+    f.db.record_delivery(
+        "branch",
+        None,
+        "task-1:branch",
+        &f.payload(json!({})),
+        false,
+    )
+    .unwrap();
+    let remote = f.copy_root.parent().unwrap().join("remote.git");
+    let remote_url = format!("file:///{}", remote.to_string_lossy().replace('\\', "/"));
+    git2::Repository::open(&f.copy_root)
+        .unwrap()
+        .remote("origin", &remote_url)
+        .unwrap();
+    let (stub, _) = StubConnector::new(None, None, None);
+    let agent = stub_agent(stub);
+    // 第一次发布：git 半边成功（分支/commit 生成），推送失败（对端 bare 不存在）。
+    let first = publish_task_delivery(&f.db, &f.store, &agent, &f.copy_root, &f.args())
+        .await
+        .unwrap();
+    assert_eq!(first["status"], "failed");
+    assert!(
+        first["detail"].as_str().unwrap().contains("分支推送失败"),
+        "{}",
+        first["detail"]
+    );
+    // 现场留痕：commit_generated + published_commit 在案（重试凭此续作）。
+    let rec = f.db.delivery_by_key("task-1:branch").unwrap().unwrap();
+    assert_eq!(rec.payload["publish_stage"], "commit_generated");
+    let first_commit = rec.payload["published_commit"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // 远端修复（bare 建好）+ create_pull 可用 → 重试续作到 published，且
+    // 复用同一 commit——不被自己上次的交付分支挡死。
+    git2::Repository::init_bare(&remote).unwrap();
+    let (stub, calls) = StubConnector::new(
+        Some(json!({"number": 7, "html_url": "https://x/pr/7"}).to_string()),
+        None,
+        None,
+    );
+    let agent = stub_agent(stub);
+    let retry = publish_task_delivery(&f.db, &f.store, &agent, &f.copy_root, &f.args())
+        .await
+        .unwrap();
+    assert_eq!(retry["status"], "published", "{retry}");
+    assert_eq!(retry["pr_number"], 7);
+    assert_eq!(
+        retry["commit"],
+        first_commit.as_str(),
+        "重试必须复用首次生成的 commit（分支幂等复用），不新建"
+    );
+    let rec = f.db.delivery_by_key("task-1:branch").unwrap().unwrap();
+    assert_eq!(rec.payload["publish_stage"], "published");
+    assert_eq!(rec.payload["pr_number"], 7);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["create_pull"],
+        "重试直奔 PR 创建（分支复用，非 pr_pending 现场无对账）"
+    );
+}
+
+#[tokio::test]
+async fn review_nov02_publish_preflight_preserves_valid_patch_bytes() {
+    let f = PreflightFixture::new();
+    let payload = f.payload(json!({}));
+    let original = payload["patch"].as_str().unwrap();
+    assert!(git2::Diff::from_buffer(original.as_bytes()).is_ok());
+    f.db.record_delivery("branch", None, "task-1:branch", &payload, false)
+        .unwrap();
+    // preflight 保真：合法 patch 原样透传（不被 trim 剥坏末尾换行）。
+    let pre = preflight(&f.db, &f.store, "task-1", &f.args()).unwrap();
+    let Preflight::Proceed { patch, stage, .. } = pre else {
+        panic!("expected Proceed")
+    };
+    assert_eq!(stage, None, "首次发布无阶段现场");
+    assert_eq!(patch, original, "preflight 必须保留 patch 原始字节");
+    assert!(patch.ends_with('\n'));
+    assert!(git2::Diff::from_buffer(patch.as_bytes()).is_ok());
+    // 全链发布到 published（push 真跑，PR 走桩）。
+    wire_remote(&f);
+    let (stub, _) = StubConnector::new(
+        Some(json!({"number": 7, "html_url": "https://x/pr/7"}).to_string()),
+        None,
+        None,
+    );
+    let agent = stub_agent(stub);
+    let result = publish_task_delivery(&f.db, &f.store, &agent, &f.copy_root, &f.args())
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "published", "{result}");
+    // 效果面：交付分支内容 = patch 真实应用结果。
+    let repo = git2::Repository::open(&f.copy_root).unwrap();
+    let delivered = repo
+        .find_branch("nemesis/task-task-1", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
+    let entry = delivered
+        .tree()
+        .unwrap()
+        .get_path(Path::new("f.txt"))
+        .unwrap();
+    let blob = repo.find_blob(entry.id()).unwrap();
+    assert_eq!(std::str::from_utf8(blob.content()).unwrap(), "x\ny\n");
+}
+
+#[tokio::test]
+async fn review_nov02_publish_pr_pending_retry_reconciles_existing_pr() {
+    let f = PreflightFixture::new();
+    // 上次运行到达 PR 阶段后中断：pr_pending 现场在案。
+    f.db.record_delivery(
+        "branch",
+        None,
+        "task-1:branch",
+        &f.payload(json!({
+            "publish_stage": "pr_pending",
+            "published_commit": "deadbeef",
+            "pr_target": "o/r:main",
+        })),
+        false,
+    )
+    .unwrap();
+    wire_remote(&f);
+    // 对端已有同 head PR（上次其实建成了）——对账命中即收敛，绝不重复建。
+    let (stub, calls) = StubConnector::new(
+        None, // create_pull 未配置：误调用即 Err，测试必红
+        Some(
+            r#"[{"number": 9, "head": {"ref": "nemesis/task-task-1"}, "html_url": "https://x/pr/9"}]"#
+                .to_string(),
+        ),
+        None,
+    );
+    let agent = stub_agent(stub);
+    let retry = publish_task_delivery(&f.db, &f.store, &agent, &f.copy_root, &f.args())
+        .await
+        .unwrap();
+    assert_eq!(retry["status"], "published", "{retry}");
+    assert_eq!(retry["pr_number"], 9);
+    assert!(
+        retry["detail"].as_str().unwrap().contains("未重复创建"),
+        "{}",
+        retry["detail"]
+    );
+    assert!(
+        !calls.lock().unwrap().iter().any(|c| c == "create_pull"),
+        "对账命中后绝不能再发 create_pull"
+    );
+    let rec = f.db.delivery_by_key("task-1:branch").unwrap().unwrap();
+    assert_eq!(rec.payload["publish_stage"], "published");
+    assert_eq!(rec.payload["pr_number"], 9);
+}
+
+#[tokio::test]
+async fn review_nov02_publish_pr_pending_retry_inconclusive_stays_conservative() {
+    let f = PreflightFixture::new();
+    f.db.record_delivery(
+        "branch",
+        None,
+        "task-1:branch",
+        &f.payload(json!({
+            "publish_stage": "pr_pending",
+            "published_commit": "deadbeef",
+            "pr_target": "o/r:main",
+        })),
+        false,
+    )
+    .unwrap();
+    wire_remote(&f);
+    // pr_list 查询失败 → 对账未能扫尽 → 保守判失败，绝不盲建 PR；且中间态
+    // 留痕不得把 pr_pending 覆盖回去（阶段单调不回退），下次重试仍先对账。
+    let (stub, calls) = StubConnector::new(None, None, Some("connector 不可达".to_string()));
+    let agent = stub_agent(stub);
+    let retry = publish_task_delivery(&f.db, &f.store, &agent, &f.copy_root, &f.args())
+        .await
+        .unwrap();
+    assert_eq!(retry["status"], "failed");
+    assert!(
+        retry["detail"].as_str().unwrap().contains("对账未能扫尽"),
+        "{}",
+        retry["detail"]
+    );
+    assert!(
+        !calls.lock().unwrap().iter().any(|c| c == "create_pull"),
+        "对账未扫尽时不得发起 create_pull"
+    );
+    let rec = f.db.delivery_by_key("task-1:branch").unwrap().unwrap();
+    assert_eq!(
+        rec.payload["publish_stage"], "pr_pending",
+        "pr_pending 现场必须保留（阶段单调不回退）"
+    );
+}
 use nemesis_board::assignment::Actor;
 use nemesis_board::models::NewIssue;
 use nemesis_board::store::BoardStore;
@@ -475,6 +779,7 @@ fn preflight_happy_path_proceeds_with_issue_title() {
             patch,
             expected_base,
             title,
+            stage: _,
         } => {
             assert_eq!(copy_dir, f.copy_root);
             assert_eq!(expected_base, f.base_sha);

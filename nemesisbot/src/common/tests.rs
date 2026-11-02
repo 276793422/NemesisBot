@@ -1318,3 +1318,26 @@ fn panic_hook_routes_panic_info_through_tracing() {
         "panic hook must include thread/location details, got: {out:?}"
     );
 }
+
+#[test]
+fn test_resolve_home_env_tilde_expands() {
+    // BUG-20261102-316：common::resolve_home 非 local 分支委托
+    // nemesis_path::resolve_home_dir 后，env 值的 `~/` 前缀必须展开——
+    // 旧平行实现按字面量处理，`NEMESISBOT_HOME=~` 会把数据落进 cwd 下的
+    // `~` 目录（与 crate 侧展开语义分叉）。行为锁：展开后不含字面量 `~`
+    // 前缀、含自定义段与 .nemesisbot 后缀。
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "~/r408-tilde-home");
+    }
+    let home = resolve_home(false);
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
+    let s = home.to_string_lossy().to_string();
+    assert!(!s.starts_with('~'), "tilde must expand, got: {s}");
+    assert!(s.contains("r408-tilde-home"), "custom segment lost: {s}");
+    assert!(s.contains(".nemesisbot"), "suffix lost: {s}");
+}

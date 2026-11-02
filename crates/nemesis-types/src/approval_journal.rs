@@ -24,6 +24,9 @@ pub mod status {
     pub const APPROVED: &str = "approved";
     pub const DENIED: &str = "denied";
     pub const EXPIRED: &str = "expired";
+    /// L07（2026-11-01）：孤儿卡系统清理——请求已终局（estop/会话清空/
+    /// loop 停止）而卡未决，系统代关。效果恒等于拒绝（清理绝不产生批准）。
+    pub const ORPHANED: &str = "orphaned";
 }
 
 /// 一条审批记录（pending 或已裁决）。
@@ -54,6 +57,9 @@ pub enum ApprovalDecision {
     Approved,
     Denied,
     Expired,
+    /// L07：孤儿卡系统清理（estop/会话清空/loop 停止）——记账性质，
+    /// 效果恒等于拒绝。
+    Orphaned,
 }
 
 impl ApprovalDecision {
@@ -62,6 +68,7 @@ impl ApprovalDecision {
             ApprovalDecision::Approved => status::APPROVED,
             ApprovalDecision::Denied => status::DENIED,
             ApprovalDecision::Expired => status::EXPIRED,
+            ApprovalDecision::Orphaned => status::ORPHANED,
         }
     }
 }

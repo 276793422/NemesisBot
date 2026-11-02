@@ -85,6 +85,18 @@ pub fn sanitize_path_segment(raw: &str) -> String {
 /// CSV 错位移列（BUG-20261024-06）。比原 audit_log 版多认 `\r` 触发
 /// （RFC 4180 同属须引号字符，审计链历史输出域无裸 CR，行为不变）。
 pub fn sanitize_csv(s: &str) -> String {
+    // 公式前缀守卫（BUG-20261102-328）：= + - @ \t 开头的字段在 Excel/
+    // WPS/LibreOffice 打开 CSV 时会被当公式求值（OWASP CSV Injection /
+    // CWE-1236：=HYPERLINK 外呼、=cmd| 形态本地命令注入）。前置 `'`
+    // （Excel 文本标记，显示时隐藏）消除求值；非 Excel 消费者（pandas
+    // 等）读到的 ' 前缀是已知代价。守卫先行——复合形态（公式前缀且含
+    // 逗号/换行）随后照常走 RFC 4180 包裹分支。
+    let guarded = if s.starts_with(['=', '+', '-', '@', '\t']) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    };
+    let s = guarded.as_str();
     if s.contains('"') || s.contains(',') || s.contains('\n') || s.contains('\r') {
         let escaped = s.replace('"', "\"\"");
         format!("\"{escaped}\"")
@@ -102,6 +114,19 @@ fn is_hash_suffix_form(out: &str) -> bool {
         && out.as_bytes()[62..]
             .iter()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+}
+
+/// LIKE 通配符转义（R221/BUG-163 口径，用户搜索词统一入口，配 SQL
+/// `ESCAPE '\'` 子句使用）：`\` → `\\`、`%` → `\%`、`_` → `\_`——不转义时
+/// `%`/`_` 按 LIKE 通配符解释（字面搜索错配；`\` 必须先转义防二次解义）。
+/// 单一真相源：nemesis-board issue/audit 搜索与本 crate usage_store
+/// request_logs 过滤（model/session_key）共用；**转义必须与 `ESCAPE '\'`
+/// 子句成对**——只转义不加子句会把 `\%` 解释成反斜杠+任意串。
+pub fn escape_like(needle: &str) -> String {
+    needle
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// FNV-1a 64-bit（零依赖确定性哈希，仅供超长段的区分后缀）。

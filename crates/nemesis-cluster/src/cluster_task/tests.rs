@@ -1012,3 +1012,65 @@ fn queue_outcome_tag(o: &DequeueOutcome) -> &'static str {
         DequeueOutcome::Started(_) => "Started",
     }
 }
+
+// --- BUG-20261101-282：conv 文件损坏恢复必须有可见信号 --------------------
+// 写侧 write_file_atomic 原子，读侧遇到的损坏只剩外部篡改/历史残留/磁盘问题
+// （session 坏档 WARN 同族口径，BUG-20261025-44 的漏网点）。跳过语义不变：
+// 任务照常恢复（不炸、不带半吊子上下文），但 WARN 必须在。
+
+#[derive(Clone)]
+struct Bug282Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Bug282Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for Bug282Capture {
+    type Writer = Bug282Capture;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[test]
+fn test_bug282_corrupt_conversation_file_warns_and_restores_without_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+
+    // 索引条目无内嵌 conversation + 盘上快照是坏 JSON（外部篡改/磁盘问题形态）。
+    let task = make_task("t-bug282", TaskStatus::WaitingRemote);
+    std::fs::write(
+        cluster_dir.join("tasks.json"),
+        serde_json::to_string(&vec![task]).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(cluster_dir.join("t-bug282.json"), b"{not valid json!!").unwrap();
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(Bug282Capture(captured.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let list = ClusterTaskList::new(dir.path());
+    list.restore_from_disk().unwrap();
+
+    let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("Corrupt conversation file"),
+        "损坏 conv 必须有可见信号（warn），实际日志: {logs}"
+    );
+    // 跳过语义不变：任务照常恢复，不带半吊子上下文。
+    let restored = list.get_task("t-bug282").unwrap();
+    assert_eq!(restored.status, TaskStatus::WaitingRemote);
+    assert!(restored.conversation.is_none());
+}

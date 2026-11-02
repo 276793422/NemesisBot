@@ -1192,3 +1192,52 @@ fn bootstrap_roots_skip_heartbeat_mode_multi_root() {
     let project_pos = hb.find("hb-project-user").unwrap();
     assert!(home_pos < project_pos, "heartbeat 路径顺序同 home 在前");
 }
+
+// --- BUG-20261101-279：load_skills 顺序契约锁 ---
+
+#[test]
+fn bug279_load_skills_sorts_by_name() {
+    // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序），技能增删
+    // 后哈希序还会洗牌——skills 段渲染进 system prompt，字节漂移打穿
+    // prompt cache 前缀纪律。NTFS 上枚举本就字典序，本测是契约锁；
+    // Linux nightly（ext4 哈希序）是真回归网。
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+    // 刻意非字典序创建（zeta → mid → alpha）：哈希序平台上枚举序与
+    // 字典序脱钩，创建序不代表输出序。
+    for name in ["zeta", "mid", "alpha"] {
+        let dir = skills_dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), format!("# {} skill\n", name)).unwrap();
+    }
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+
+    let names: Vec<&str> = builder
+        .get_skills_info()
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+}
+
+#[test]
+fn bug279_skills_section_render_order_stable() {
+    // 端到端形态：system prompt 的 skills bullet 序随 skills_info 序。
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+    for name in ["zeta", "alpha"] {
+        let dir = skills_dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), format!("# {} skill\n", name)).unwrap();
+    }
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+    let prompt = builder.build_system_prompt(false);
+
+    let alpha_pos = prompt.find("**alpha**").expect("alpha bullet rendered");
+    let zeta_pos = prompt.find("**zeta**").expect("zeta bullet rendered");
+    assert!(alpha_pos < zeta_pos, "skills 段必须按名字典序渲染");
+}

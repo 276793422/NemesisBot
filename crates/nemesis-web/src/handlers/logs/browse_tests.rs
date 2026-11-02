@@ -57,6 +57,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });
@@ -459,6 +460,41 @@ async fn session_list_bm25_query_filters_and_ranks() {
         .unwrap()
         .unwrap();
     assert_eq!(miss["total"], 0);
+}
+
+/// BUG-20261102-325 红证：scan_session_logs 必须按 lastTime **降序**返回
+/// （最近活跃在前）。前端侧栏「组内保持原排序」直接消费此序——无排序 =
+/// read_dir 平台序（NTFS 字典序 / ext4 哈希序）直通，ext4 上每次启动列表
+/// 漂移，且与新建会话乐观行 unshift 置顶（最近在前）语义矛盾。文件名字典
+/// 序刻意与时间序相反（aaa 最旧 / zzz 最新）：NTFS 枚举升序 → 修复前恒红；
+/// 同刻两文件以 id 升序破平（确定性次级键）。timestamp 用生产形态
+/// （chat_log 写 Local offset RFC3339）。
+#[tokio::test]
+async fn session_list_sorted_by_lasttime_desc() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().join("logs/session_logs");
+    std::fs::create_dir_all(&d).unwrap();
+    let mk = |id: &str, ts: &str| {
+        std::fs::write(
+            d.join(format!("{id}.jsonl")),
+            format!(r#"{{"role":"user","content":"hi","timestamp":"{ts}"}}"#) + "\n",
+        )
+        .unwrap();
+    };
+    mk("aaa_oldest", "2026-08-01T07:00:00.123456+08:00");
+    mk("zzz_newest", "2026-09-01T07:00:00+08:00");
+    mk("mmm_mid", "2026-08-15T07:00:00+08:00");
+    // 同刻破平对：期望 id 升序（p 在前）；与最新单一时间戳的 zzz 再隔一刻。
+    mk("q_tie", "2026-09-02T07:00:00+08:00");
+    mk("p_tie", "2026-09-02T07:00:00+08:00");
+
+    let out = scan_session_logs(&dir.path().to_string_lossy());
+    let ids: Vec<&str> = out.iter().map(|e| e["id"].as_str().unwrap_or("")).collect();
+    assert_eq!(
+        ids,
+        vec!["p_tie", "q_tie", "zzz_newest", "mmm_mid", "aaa_oldest"],
+        "会话列表必须 lastTime 降序（同刻 id 升序破平）"
+    );
 }
 
 #[tokio::test]

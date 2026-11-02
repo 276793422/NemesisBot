@@ -37,6 +37,12 @@ pub(crate) struct RewindUndoEntry {
     /// 把合法回退误报成漂移。JSON 形态 / store 未挂载 / tree 写失败 = None
     /// （扫描诚实跳过）。
     undo_disk_tree: Option<String>,
+    /// F2 续作（2026-11-02 复评）：redo 自身已写到前向态的路径（restore
+    /// 的 written+deleted）。重试时冲突预检豁免这些路径——上次重试恢复
+    /// 半途失败还栈后，盘面上留着的是本操作自己写的半成品；不豁免会把自
+    /// 恢复面误报成外部漂移，逼用户 force 自己的操作。条目本身是内存态，
+    /// 崩溃即同生共死，无额外一致性负担。
+    redo_partial_written: Vec<String>,
 }
 
 /// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json::to_string` 后
@@ -176,7 +182,16 @@ impl AgentLoop {
         force: bool,
     ) -> Result<serde_json::Value, String> {
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：非热路径不改变同步阻塞 IO 占住 tokio worker 的
+        // 机制（read_chat_log_async 同款纪律），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("rewind task join failed: {e}"))?
+        };
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
@@ -216,7 +231,16 @@ impl AgentLoop {
         &self,
         session_key: &str,
     ) -> Result<serde_json::Value, String> {
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 不改变占住 worker 的机制），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("rewind task join failed: {e}"))?
+        };
         // 截断点 = 最后一个 user 行（turn 边界，user 行即轮首；steer 注入行
         // 不是轮首，轮边界判定走单一真相源跳过——BUG-20261025-19，否则
         // 「撤销最后一轮」切在 steer 行上只删尾巴、轮残留在会话里）。没有
@@ -275,7 +299,16 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 不改变占住 worker 的机制），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("rewind task join failed: {e}"))?
+        };
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
@@ -565,6 +598,7 @@ impl AgentLoop {
                 post_tree,
                 kept_rows_hash,
                 undo_disk_tree,
+                redo_partial_written: Vec::new(),
             });
             while stack.len() > REWIND_UNDO_STACK_CAP {
                 stack.pop_front();
@@ -663,7 +697,16 @@ impl AgentLoop {
         .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
 
         // 守卫 1：会话行数未变（undo 后没发过新消息）。
-        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 不改变占住 worker 的机制），spawn_blocking 移出。
+        let (rows, _total, _, _) = {
+            let key = session_key.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::chat_log::read_chat_log(&key, usize::MAX, None)
+            })
+            .await
+            .map_err(|e| format!("redo task join failed: {e}"))?
+        };
         if rows.len() != entry.kept_count {
             return Err(format!(
                 "回退后产生了新消息，redo 已失效（期望 {} 行，实际 {} 行）",
@@ -698,11 +741,18 @@ impl AgentLoop {
         // blocked 回执，对齐 rewind 冲突块形态）；force 强过（审计留痕）。
         // 基线不可用（JSON 形态 / tree 写失败）= None，诚实跳过（前向
         // 恢复本就带不完整注记，best-effort 语义不变）。
-        let drifted = match (entry.undo_disk_tree.as_deref(), self.attached_checkpoint()) {
+        let mut drifted = match (entry.undo_disk_tree.as_deref(), self.attached_checkpoint()) {
             (Some(hex), Some(cp)) => cp.conflict_scan_since_tree(hex),
             _ => None,
         }
         .unwrap_or_default();
+        // F2 续作（2026-11-02 复评）：redo 自身已写到前向态的路径不算外部
+        // 漂移——上次重试恢复半途失败还栈后，盘面上留着的是本操作自己写
+        // 的半成品；不豁免会把自恢复面误报成外部改动，逼用户 force 自己
+        // 的操作。诚实边界：恰好落在这些路径上的真外部改动与之不可分辨
+        // ——豁免是刻意的（恢复本就要把它们覆盖到前向态，覆盖语义与
+        // force 一致）。
+        drifted.retain(|p| !entry.redo_partial_written.contains(p));
         if !drifted.is_empty() && !force {
             // 条目还栈：冲突拒绝是「等用户确认」的可重试阻塞点，不是终态
             // ——上面弹出的条目必须 push_back（pop_back/push_back 同端，
@@ -735,11 +785,13 @@ impl AgentLoop {
             );
         }
 
-        // 1) 文件前向恢复（best-effort——失败只注记，行回填照常进行；
-        // R3：失败项现在带原因进 file_note/restore_failures，不再静默空转）。
+        // 1) 文件前向恢复（F2 续作：恢复不完整走 blocked 提前返回，见下；
+        // R3：失败项带原因进 blocked 回执，不再静默空转）。
         let mut file_restore = "skipped";
         let mut file_note: Option<String> = None;
-        let mut restore_failures: Vec<(String, String)> = Vec::new();
+        // 成功路径恒空（失败走上方 blocked 提前返回）——字段保留为响应形状
+        // 稳定性（前端/工具可统一读取）。
+        let restore_failures: Vec<(String, String)> = Vec::new();
         let mut written: Vec<String> = Vec::new();
         let mut deleted: Vec<String> = Vec::new();
         match (entry.forward_tree.as_deref(), self.attached_checkpoint()) {
@@ -750,22 +802,45 @@ impl AgentLoop {
                         deleted = report.deleted;
                         file_restore = "applied";
                     } else {
-                        file_restore = if report.written.is_empty() && report.deleted.is_empty() {
-                            "failed"
-                        } else {
-                            "partial"
-                        };
-                        restore_failures = report.failures.clone();
-                        file_note = Some(format!(
-                            "前向恢复不完整（{} 失败）：{}",
-                            report.failures.len(),
+                        // F2 续作（2026-11-02 复评）：前向恢复不完整 = 零推进，
+                        // 对齐 rewind 侧对称失败契约（BUG-20261028-120）——旧
+                        // 形态吞掉失败后照常回填：文件没恢复、对话已回填、条
+                        // 目被消耗，三态错位且不可重试。现在：条目还栈（带自
+                        // 恢复面记录，重试时冲突预检豁免），回填不做，结构化
+                        // blocked 回执。重试安全：已恢复到位的文件 restore 见
+                        // 内容一致 → 跳过，剩余路径续补。
+                        let partial = !report.written.is_empty() || !report.deleted.is_empty();
+                        let restore_turn = entry.restore_turn;
+                        let mut entry = entry;
+                        entry.redo_partial_written.extend(
                             report
-                                .failures
+                                .written
                                 .iter()
-                                .map(|(p, e)| format!("{p}: {e}"))
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ));
+                                .cloned()
+                                .chain(report.deleted.iter().cloned()),
+                        );
+                        self.rewind_undo_stacks
+                            .lock()
+                            .entry(session_key.to_string())
+                            .or_default()
+                            .push_back(entry);
+                        warn!(
+                            "[AgentLoop] redo 前向恢复不完整（{} 成功 / {} 失败）——行回填未做、undo 条目已还栈可重试：session={session_key} 失败项={:?}",
+                            report.written.len() + report.deleted.len(),
+                            report.failures.len(),
+                            report.failures,
+                        );
+                        return Ok(serde_json::json!({
+                            "blocked": true,
+                            "reason": "restore_failed",
+                            "session_key": session_key,
+                            "restore_turn": restore_turn,
+                            "file_restore": if partial { "partial" } else { "failed" },
+                            "restore_failures": report.failures.iter().map(|(p, e)| {
+                                serde_json::json!({ "path": p, "error": e })
+                            }).collect::<Vec<_>>(),
+                            "note": "文件恢复不完整，会话对话未改动——解决失败原因后可重试本操作",
+                        }));
                     }
                 }
                 Err(e) => file_note = Some(e),
@@ -785,6 +860,13 @@ impl AgentLoop {
             // 写回失败是可重试阻塞点（文件占用/磁盘瞬时问题），不是终态
             // ——与上方冲突路径同语义：条目必须还栈（removed_rows 是被回
             // 退对话行的唯一副本，丢了 = 永久丢失且无法重试）。
+            // F2 续作：文件恢复此番已生效（written/deleted），还栈时记录
+            // 自恢复面——重试的冲突预检豁免这些路径（盘面上的它们是本操
+            // 作自己写的，不是外部漂移）。
+            let mut entry = entry;
+            entry
+                .redo_partial_written
+                .extend(written.iter().cloned().chain(deleted.iter().cloned()));
             self.rewind_undo_stacks
                 .lock()
                 .entry(session_key.to_string())

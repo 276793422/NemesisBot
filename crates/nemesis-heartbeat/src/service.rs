@@ -274,6 +274,13 @@ impl HeartbeatService {
                 // interval_at 恢复同一节奏。
                 let mut ticker =
                     tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+                // BUG-20261102-301：默认 Burst 在 handler 执行墙钟超过 interval
+                // 后把错过的 tick 逐个补发——本循环的 tick 消费者是完整 agent
+                // loop（gateway 侧 block_in_place+block_on 跑 LLM+工具轮次），
+                // 每次补拍 = 一次完整心跳执行（LLM 成本 + HEARTBEAT.md 任务
+                // 重复副作用）。Delay = 错过即从当前时刻重排（transport/
+                // conn.rs 心跳先例，BUG-20261101-264 同族）。
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     // 臂序铁律：cancelled 第一。select! 按书写顺序 poll——
                     // tick 在前的话，停机后被唤醒的任务会先 poll tick（注册

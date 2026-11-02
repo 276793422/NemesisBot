@@ -146,6 +146,16 @@ pub struct RequestProjectionRecord {
     /// `false` = 无投影，向后兼容）。
     #[serde(default)]
     pub vision_projected: bool,
+    /// L24：本请求 system prompt 的内容寻址哈希（sha256 hex；正文快照在
+    /// objects/system_prompt/<hash>.txt）。None = 请求无 system 首条（诚实
+    /// 留空）。豁免轮（cron/heartbeat/internal）不落台账故无此字段。
+    #[serde(default)]
+    pub system_prompt_sha256: Option<String>,
+    /// L24：本请求 tool defs 数组（tier 过滤 + 按名排序后的
+    /// `Vec<ToolDefinition>`）的 `serde_json::to_string` 字节 sha256（快照在
+    /// objects/tool_defs/<hash>.json）。
+    #[serde(default)]
+    pub tools_sha256: Option<String>,
 }
 
 /// Resolve the replay-ledger sidecar path. Lives in the boundary-events dir
@@ -157,6 +167,111 @@ fn replay_ledger_path(session_key: &str) -> PathBuf {
     default_path_manager()
         .boundary_events_dir()
         .join(format!("{}.replay.jsonl", safe_key))
+}
+
+// ---------------------------------------------------------------------------
+// L24: content-addressed snapshot store (system prompt + tool defs)
+// ---------------------------------------------------------------------------
+
+/// sha256 hex digest of `content` (L24 snapshot addressing; same inline
+/// pattern as `image_attach.rs`).
+fn sha256_hex(content: &str) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Store one snapshot object under `<boundary_dir>/objects/<kind>/<hash>.<ext>`
+/// (content-addressed, idempotent: present → skip; absent → tmp + rename so a
+/// concurrent same-content writer races harmlessly). Best-effort: failures
+/// warn and never touch the request path — the hash is recorded in the ledger
+/// either way (it is the fact of what was sent; a missing object degrades
+/// honestly in rebuild). `hash` must be the digest of `content` — the caller
+/// computes it, this function trusts it only for naming.
+fn store_object(boundary_dir: &std::path::Path, kind: &str, content: &str, hash: &str, ext: &str) {
+    let dir = boundary_dir.join("objects").join(kind);
+    let path = dir.join(format!("{}.{}", hash, ext));
+    if path.exists() {
+        return;
+    }
+    if let Err(e) = fs::create_dir_all(&dir) {
+        tracing::warn!(
+            "[replay] snapshot dir create failed {}: {}",
+            dir.display(),
+            e
+        );
+        return;
+    }
+    let tmp = dir.join(format!("{}.tmp", hash));
+    if let Err(e) = fs::write(&tmp, content) {
+        tracing::warn!("[replay] snapshot write failed {}: {}", tmp.display(), e);
+        return;
+    }
+    if let Err(e) = fs::rename(&tmp, &path) {
+        // Loser of a same-content race (winner already renamed) — cleanup and
+        // move on; bytes are identical by construction.
+        let _ = fs::remove_file(&tmp);
+        tracing::debug!(
+            "[replay] snapshot rename raced/failed {}: {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+/// L24: snapshot the system prompt actually sent this round into the
+/// content-addressed store; returns its sha256 hex (recorded in the ledger
+/// regardless of whether the object landed).
+pub fn snapshot_system_prompt(content: &str) -> String {
+    let hash = sha256_hex(content);
+    store_object(
+        &default_path_manager().boundary_events_dir(),
+        "system_prompt",
+        content,
+        &hash,
+        "txt",
+    );
+    hash
+}
+
+/// L24: snapshot the tool defs actually sent this round (canonical
+/// `serde_json::to_string` of the tier-filtered, name-sorted array —
+/// deterministic derivation, same def set ⇒ same hash). Serialization
+/// failure → None (defensive; the request itself is unaffected).
+pub fn snapshot_tool_defs(defs: &[crate::types::ToolDefinition]) -> Option<String> {
+    let json = serde_json::to_string(defs).ok()?;
+    let hash = sha256_hex(&json);
+    store_object(
+        &default_path_manager().boundary_events_dir(),
+        "tool_defs",
+        &json,
+        &hash,
+        "json",
+    );
+    Some(hash)
+}
+
+/// Load one snapshot object by hash. The store tree is derived from the
+/// EXPLICIT ledger path's parent (the boundary dir) so the dashboard
+/// workspace form stays self-consistent. Rejects non-canonical hashes
+/// (hex-only, 64 chars) — the name comes from the ledger file, which is
+/// data, and this closes the path-traversal door before the integrity
+/// check ever runs.
+pub(crate) fn load_object_by_hash(
+    ledger_parent: &std::path::Path,
+    kind: &str,
+    hash: &str,
+    ext: &str,
+) -> Option<String> {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let path = ledger_parent
+        .join("objects")
+        .join(kind)
+        .join(format!("{}.{}", hash, ext));
+    fs::read_to_string(path).ok()
 }
 
 /// Append one projection record to the session's replay ledger (best-effort:
@@ -362,6 +477,36 @@ pub fn rebuild_request_messages_in(
         && let Some(m) = view.get_mut(va.index)
     {
         m.content.push_str(&va.suffix);
+    }
+
+    // L24: system-prompt snapshot restoration. The store's history[0] may
+    // carry the CURRENT persona (set_history re-injects the up-to-date prompt
+    // on load), while the recorded round saw the prompt as-of that request —
+    // the content-addressed snapshot is the only byte-exact source. Restore
+    // only when the object is present AND its integrity checks out (sha256
+    // matches the ledger hash); otherwise keep the store-derived view —
+    // honest degrade, never fabricate.
+    if let Some(boundary_dir) = ledger_path.parent()
+        && let Some(hash) = rec.system_prompt_sha256.as_deref()
+        && let Some(snapshot) = load_object_by_hash(boundary_dir, "system_prompt", hash, "txt")
+    {
+        if sha256_hex(&snapshot) == hash {
+            if view.first().is_some_and(|m| m.role == "system") {
+                view[0].content = snapshot;
+            } else {
+                tracing::debug!(
+                    "[replay] round {} record has system snapshot but rebuilt view has no \
+                     system head — snapshot skipped",
+                    rec.round
+                );
+            }
+        } else {
+            tracing::debug!(
+                "[replay] round {} system-prompt snapshot integrity check failed (object \
+                 modified?) — store-derived view kept",
+                rec.round
+            );
+        }
     }
 
     Ok(RebuildOutcome::Rebuilt(view))

@@ -148,7 +148,10 @@ impl AnthropicProvider {
     fn get_api_key(&self) -> Result<String, FailoverError> {
         if let Some(ref ts) = self.token_source {
             ts().map_err(|_| FailoverError::Auth {
-                provider: self.config.default_model.clone(),
+                // provider 槽 = lane 名（对齐 codex lane token_source 同款
+                // 与本 lane 全部 from_status 调用；此前误填 default_model，
+                // 模型名进了 provider 槽——Display 把 auth 失败归因给模型）。
+                provider: "anthropic".to_string(),
                 model: self.config.default_model.clone(),
                 status: 0,
             })
@@ -517,7 +520,12 @@ impl AnthropicProvider {
                                 tool_calls: parsed.tool_calls,
                                 finish_reason: Some(parsed.finish_reason),
                                 usage: parsed.usage,
-                                reasoning_content: None,
+                                // reasoning 同源透传：parse_response 已从
+                                // thinking 块提取，合成流不再丢弃（对齐
+                                // HttpProvider 合成流同款修复——该字段是
+                                // 多轮回放的功能性输入，硬编码 None 会
+                                // 静默丢 thinking）。
+                                reasoning_content: parsed.reasoning_content,
                             }))
                             .await;
                     }

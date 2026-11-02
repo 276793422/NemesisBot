@@ -231,6 +231,17 @@ impl ModuleHandler for ChatHandler {
                     .await?
             }
             "clear" => {
+                // L07（2026-11-01）孤儿卡配对清理：会话清空 = 该会话的请求
+                // 已终局——同 loop responder 槽的未决审批卡定向关闭（trait
+                // 默认空实现 = 无审批面/非交互形态零开销；槽空静默跳过）。
+                if let Some(responder) = agent_loop.approval_responder() {
+                    let n = responder.resolve_orphans_for_session(&session_key, "session cleared");
+                    if n > 0 {
+                        tracing::info!(
+                            "[Web/chat] session {session_key} cleared: closed {n} pending approval card(s)"
+                        );
+                    }
+                }
                 agent_loop
                     .under_history_gate(&session_key, "清空", || {
                         agent_loop.clear_session(&session_key)

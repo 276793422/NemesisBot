@@ -4,6 +4,7 @@
 //! finish_reason / [DONE] (handler still emits its own done event).
 
 use crate::sse_chat::handle_chat_stream;
+use nemesis_providers::failover::FailoverError;
 use nemesis_providers::http_provider::{HttpProvider, HttpProviderConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,6 +56,7 @@ fn make_state(
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })
@@ -148,4 +150,138 @@ async fn unterminated_backend_stream_still_gets_done_event() {
         "handler appends its own done marker: {body}"
     );
     assert!(!body.contains("event: error"), "{body}");
+}
+
+// -- L02（2026-11-01）error 帧 retained_partial -------------------------------
+
+/// 受控流 mock：chat_stream 按脚本回放 chunk/Err 序列（直触发 SSE 代理的
+/// Err 臂——wiremock 无法做「先发 delta 再断流」）。
+struct ScriptedStream {
+    script: Vec<Result<nemesis_providers::http_provider::StreamChunk, FailoverError>>,
+}
+
+#[async_trait::async_trait]
+impl nemesis_providers::router::LLMProvider for ScriptedStream {
+    async fn chat(
+        &self,
+        _messages: &[nemesis_providers::types::Message],
+        _tools: &[nemesis_providers::types::ToolDefinition],
+        _model: &str,
+        _options: &nemesis_providers::types::ChatOptions,
+    ) -> Result<nemesis_providers::types::LLMResponse, FailoverError> {
+        Err(FailoverError::Unknown {
+            provider: "scripted".to_string(),
+            message: "chat not used in these tests".to_string(),
+        })
+    }
+
+    fn chat_stream(
+        &self,
+        _messages: &[nemesis_providers::types::Message],
+        _tools: &[nemesis_providers::types::ToolDefinition],
+        _model: &str,
+        _options: &nemesis_providers::types::ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<
+        Result<nemesis_providers::http_provider::StreamChunk, FailoverError>,
+    > {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        for item in &self.script {
+            let _ = tx.try_send(item.clone());
+        }
+        rx
+    }
+
+    fn name(&self) -> &str {
+        "scripted"
+    }
+
+    fn default_model(&self) -> &str {
+        "scripted-m"
+    }
+}
+
+fn delta_chunk(
+    delta: &str,
+) -> Result<nemesis_providers::http_provider::StreamChunk, FailoverError> {
+    Ok(nemesis_providers::http_provider::StreamChunk {
+        delta: delta.to_string(),
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn error_frame_carries_retained_partial_after_forwarded_deltas() {
+    let state = make_state(Some(Arc::new(ScriptedStream {
+        script: vec![
+            delta_chunk("第一段"),
+            delta_chunk("第二段"),
+            Err(FailoverError::Unknown {
+                provider: "scripted".to_string(),
+                message: "mid-stream failure".to_string(),
+            }),
+        ],
+    })));
+    let body = post_stream(
+        state,
+        serde_json::json!({"messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+
+    assert!(body.contains("event: error"), "错误帧必须发出: {body}");
+    assert!(
+        body.contains("\"retained_partial\":\"第一段第二段\""),
+        "error 帧携带已转发增量的累积: {body}"
+    );
+    assert!(body.contains("mid-stream failure"), "根因文案保留: {body}");
+    // chunk 事件先于 error 事件（SSE 追加语义——已收 chunk 不被撤回）。
+    let chunk_pos = body.find("event: chunk").expect("chunk event must exist");
+    let err_pos = body.find("event: error").unwrap();
+    assert!(chunk_pos < err_pos, "error 帧追加在 chunk 之后: {body}");
+}
+
+#[tokio::test]
+async fn error_frame_without_accumulated_deltas_keeps_legacy_shape() {
+    // 无累积（首消息即 Err）维持纯 {"error": …} 旧形态（兼容）。
+    let state = make_state(Some(Arc::new(ScriptedStream {
+        script: vec![Err(FailoverError::Unknown {
+            provider: "scripted".to_string(),
+            message: "immediate failure".to_string(),
+        })],
+    })));
+    let body = post_stream(
+        state,
+        serde_json::json!({"messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+
+    assert!(body.contains("event: error"), "{body}");
+    assert!(
+        !body.contains("retained_partial"),
+        "无累积不得出现 retained_partial 字段: {body}"
+    );
+}
+
+#[tokio::test]
+async fn error_frame_whitespace_only_deltas_treated_as_no_accumulation() {
+    // 空白增量视同无累积（与 stream_util trim 判空口径一致）。
+    let state = make_state(Some(Arc::new(ScriptedStream {
+        script: vec![
+            delta_chunk("  \n"),
+            Err(FailoverError::Unknown {
+                provider: "scripted".to_string(),
+                message: "after whitespace".to_string(),
+            }),
+        ],
+    })));
+    let body = post_stream(
+        state,
+        serde_json::json!({"messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+
+    assert!(body.contains("event: error"), "{body}");
+    assert!(
+        !body.contains("retained_partial"),
+        "空白增量不触发 retained_partial: {body}"
+    );
 }

@@ -5,14 +5,36 @@
 //! for our filename, and verify the downloaded installer against it.
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
+/// 下载 stall 检测窗（BUG-20261101-278）：reqwest::get 内部 Client::new()
+/// 零超时——半死源（TCP 已建但不发数据）让 `sandbox install` 永久挂死。
+/// 不设总超时是刻意的：GitHub 直链实测低至 ~10KB/s，安装器 ~4.5MB 的合法
+/// 慢速流不能被总超时误杀；read_timeout 只惩罚响应分片间隔超窗的 stall。
+#[cfg(not(test))]
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(test)]
+// 测试态 400ms：stall 回归测试经真实公开函数跑，等待必须秒级以内。
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_millis(400);
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn download_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .read_timeout(DOWNLOAD_READ_TIMEOUT)
+        .build()
+        .expect("download http client build")
+}
+
 /// Download `filename`'s expected SHA-256 from the checksums file.
 /// Format per line: `<sha256>  <filename>` (two-space separated).
 pub async fn fetch_expected_sha256(checksums_url: &str, filename: &str) -> Result<String> {
-    let text = reqwest::get(checksums_url)
+    let text = download_client()
+        .get(checksums_url)
+        .send()
         .await
         .with_context(|| format!("fetch checksums {checksums_url}"))?
         .text()
@@ -46,7 +68,9 @@ pub async fn download_and_verify(
             .await
             .with_context(|| format!("create dir {}", parent.display()))?;
     }
-    let bytes = reqwest::get(url)
+    let bytes = download_client()
+        .get(url)
+        .send()
         .await
         .with_context(|| format!("fetch {url}"))?
         .bytes()

@@ -530,7 +530,18 @@ fn test_get_api_key_with_failing_token_source() {
     let ts: Box<dyn Fn() -> Result<String, String> + Send + Sync> =
         Box::new(|| Err("token refresh failed".to_string()));
     let provider = AnthropicProvider::with_token_source(AnthropicConfig::default(), ts);
-    assert!(provider.get_api_key().is_err());
+    let err = provider.get_api_key().unwrap_err();
+    // provider 槽 = lane 名，不是 default_model（BUG-20261102-303 回归锁：
+    // 此前误填 default_model——模型名进了 provider 槽，Display 把 auth
+    // 失败归因给模型）。
+    assert!(
+        matches!(err, crate::failover::FailoverError::Auth { ref provider, .. } if provider == "anthropic")
+    );
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("anthropic"),
+        "display must name the lane: {msg}"
+    );
 }
 
 #[test]
@@ -793,6 +804,40 @@ async fn test_stream_auto_keeps_non_streaming_wire() {
         .await
         .unwrap();
     assert_eq!(resp.content, "plain");
+}
+
+/// stream=yes 撞上忽略 stream 的端点（回 200 application/json 完整消息）：
+/// 合成流的终态 chunk 必须透传 parse_response 提取的 reasoning_content
+///（thinking 块）——此前硬编码 None 静默丢 thinking（BUG-20261102-303，
+/// 对齐 HttpProvider 合成流同款修复）。
+#[tokio::test]
+async fn test_stream_yes_json_wrapped_body_carries_reasoning() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [
+                {"type": "thinking", "thinking": "consider carefully"},
+                {"type": "text", "text": "wrapped"}
+            ],
+            "stop_reason": "end_turn"
+        })))
+        .mount(&server)
+        .await;
+
+    let mut cfg = anth_config(&server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = AnthropicProvider::new(cfg);
+    let resp = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "wrapped");
+    assert_eq!(
+        resp.reasoning_content.as_deref(),
+        Some("consider carefully"),
+        "JSON-wrapped synth path must carry thinking blocks into reasoning_content"
+    );
 }
 
 // ===========================================================================

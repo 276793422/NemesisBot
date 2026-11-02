@@ -60,6 +60,7 @@ fn make_ctx_with_gate(
         estop: None,
         signature_verify: None,
         skills_install_gate: gate,
+        session_stats: None,
         cron: None,
         board: None,
     });

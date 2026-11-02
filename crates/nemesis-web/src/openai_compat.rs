@@ -549,7 +549,11 @@ fn bare_error_status(
 ) -> (axum::http::StatusCode, &'static str) {
     use nemesis_providers::failover::FailoverError as FE;
     match e {
-        FE::Timeout { .. } => (axum::http::StatusCode::GATEWAY_TIMEOUT, "timeout"),
+        FE::Timeout { .. }
+        // L02：流中断与 Timeout 同门（瞬态可重试）——同映射 504。
+        | FE::StreamInterrupted { .. } => {
+            (axum::http::StatusCode::GATEWAY_TIMEOUT, "timeout")
+        }
         FE::RateLimit { .. } => (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "rate_limit_error",

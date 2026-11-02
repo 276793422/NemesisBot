@@ -374,6 +374,18 @@ fn test_expand_home_no_tilde() {
 }
 
 #[test]
+fn test_expand_home_backslash_prefix() {
+    // BUG-20261102-319：OpenClaw 侧路径 `~\` 反斜杠形态（Windows 手写惯例）
+    // 此前原样穿透——与 `~/` 形态展开分叉。home 不可用的环境展开退回原样
+    // （dirs_home Err 分支），断言仅在 home 可用时生效。
+    if dirs_home().is_ok() {
+        let result = expand_home("~\\test");
+        assert!(!result.starts_with('~'));
+        assert!(result.ends_with("test"));
+    }
+}
+
+#[test]
 fn test_run_full_migration_refresh_flag() {
     let dir = tempfile::tempdir().unwrap();
     let openclaw_home = dir.path().join(".openclaw");

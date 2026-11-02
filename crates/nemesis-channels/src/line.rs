@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
+use nemesis_types::utils::split_message;
 
 use crate::base::{BaseChannel, Channel};
 
@@ -446,13 +447,24 @@ impl Channel for LineChannel {
 
         self.base.record_sent();
 
+        // BUG-20261101-277: LINE 硬限 5000 字符（服务端 400 拒收整条），预算
+        // 4900 留余量。reply token 一次性——首块走 reply()，其余块走 push。
+        let chunks = split_message(&msg.content, 4900);
+
         // Prefer reply token if available
         if let Some((_, reply_token)) = self.reply_tokens.remove(&msg.chat_id) {
-            return self.reply(&reply_token, &msg.content).await;
+            self.reply(&reply_token, &chunks[0]).await?;
+            for chunk in &chunks[1..] {
+                self.push_message(&msg.chat_id, chunk).await?;
+            }
+            return Ok(());
         }
 
         // Fall back to push message
-        self.push_message(&msg.chat_id, &msg.content).await
+        for chunk in &chunks {
+            self.push_message(&msg.chat_id, chunk).await?;
+        }
+        Ok(())
     }
 }
 

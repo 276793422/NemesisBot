@@ -113,10 +113,16 @@ pub async fn handle_chat_stream(
 
         let mut rx = provider.chat_stream(&messages, &[], &model, &options);
 
+        // L02（2026-11-01）：已转发增量的自累积——error 帧据此携带
+        // retained_partial，客户端已收到的 chunk 不因错误作废（SSE 追加
+        // 语义下错误帧在 chunk 之后追加，累积值 = 可恢复的半截文本）。
+        let mut forwarded = String::new();
+
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(chunk) => {
                     let is_done = chunk.finish_reason.is_some();
+                    forwarded.push_str(&chunk.delta);
 
                     let event = ChatStreamEvent {
                         delta: chunk.delta,
@@ -137,7 +143,14 @@ pub async fn handle_chat_stream(
                     }
                 }
                 Err(e) => {
-                    let error_json = serde_json::json!({"error": e.to_string()});
+                    // L02：error 帧携带 retained_partial（仅累积非空白时
+                    // 出现——空白增量无恢复价值，与 stream_util 判空口径
+                    // 一致）；无累积维持纯 {"error": …} 旧形态（兼容）。
+                    let mut error_json = serde_json::json!({ "error": e.to_string() });
+                    if !forwarded.trim().is_empty() {
+                        error_json["retained_partial"] =
+                            serde_json::Value::String(forwarded.clone());
+                    }
                     yield Ok(SseEvent::default()
                         .event("error")
                         .data(error_json.to_string()));

@@ -20,6 +20,9 @@ parking_lot = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 tracing-subscriber = { workspace = true }
+# BUG-20261102-301 回归锁用：tokio::time::advance + start_paused（错过拍
+# 补发行为的确定性验证，真实时间下时序噪声不可断言）。
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

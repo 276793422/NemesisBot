@@ -384,4 +384,30 @@ describe('useApprovals', () => {
     })
     expect(pendingRemoteApprovals).toHaveLength(0)
   })
+
+  // ---- L07（2026-11-01：审批卡 diff 预览透传）----
+
+  it('L07: SSE payload 的 preview/preview_format 入列；非法格式归 undefined', () => {
+    const { pendingApprovals, initApprovals } = useApprovals()
+    initApprovals()
+
+    fireApproval(
+      makePayload('l07-pv', {
+        preview: '--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+        preview_format: 'diff',
+      }),
+    )
+    expect(pendingApprovals[0].preview).toContain('+new')
+    expect(pendingApprovals[0].preview_format).toBe('diff')
+
+    // 非法格式值（后端只产 diff/text，防御性归一）。
+    fireApproval(makePayload('l07-bad', { preview: 'x', preview_format: 'html' }))
+    const bad = pendingApprovals.find(a => a.request_id === 'l07-bad')!
+    expect(bad.preview).toBe('x')
+    expect(bad.preview_format).toBeUndefined()
+
+    // 无 preview 键（旧链路/无 args）= undefined，卡片无预览区。
+    fireApproval(makePayload('l07-none'))
+    expect(pendingApprovals.find(a => a.request_id === 'l07-none')!.preview).toBeUndefined()
+  })
 })

@@ -876,3 +876,64 @@ async fn test_w1b_fire_loop_appends_history_entries() {
         Some(after.state.history.last().unwrap().at_ms)
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261102-315：触发循环落盘失败存活语义
+// ---------------------------------------------------------------------------
+// 此前三处 `let _ = save_store_to_path`（pause_job / collect_and_reset_due /
+// 执行后状态写回）静默吞错。修复为 warn 留痕（不改控制流）。本测试锁住
+// 失败路径的**存活语义**：store 落盘持续失败（路径被同名目录顶替）时，
+// 触发循环必须照常收集 due、调用 handler、推进内存状态、完成单发收尾
+// （retain 删除）——落盘失败不得阻断调度循环，也不得 panic。
+
+#[tokio::test]
+async fn test_fire_loop_survives_persist_failure() {
+    let (_dir, path) = tmp_store_path("cron_persist_fail.json");
+    let svc = CronService::new(&path);
+
+    let fired = Arc::new(AtomicUsize::new(0));
+    let fired_c = fired.clone();
+    svc.set_on_job(move |_j| {
+        fired_c.fetch_add(1, Ordering::SeqCst);
+        Ok("ok".to_string())
+    });
+
+    // at 单发（delete_after_run 派生 true）：落盘失败的路径上，本次触发的
+    // 完整收尾（last_status=ok → retain 删除）必须仍然在内存层面完成。
+    let at_ms = chrono::Local::now().timestamp_millis() + 200;
+    let job = svc
+        .add_job(
+            "one_shot_persist_fail",
+            at_schedule(at_ms),
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(job.state.next_run_at_ms.is_some());
+
+    svc.arm();
+    svc.start().await.unwrap();
+
+    // 服务已 start（初始 save 成功）后把 store 文件顶替成同名目录——
+    // write_file_atomic 从此恒失败（create_dir_all 目标被文件占位 / open 失败）。
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    // tick 间隔 1s；等 2.5s 保证至少一次 tick 扫到 due（at_ms=+200ms 早过期）。
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    svc.stop();
+
+    // 存活语义三断言：handler 被调、单发收尾（内存删除）完成、服务状态健康。
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "落盘失败必须不阻断触发（handler 恰好执行一次）"
+    );
+    assert!(
+        svc.get_job(&job.id).is_none(),
+        "成功单发的内存收尾（delete_after_run retain）必须在落盘失败下照常完成"
+    );
+    assert_eq!(svc.status()["enabled"], false, "stop 后服务必须停机");
+}

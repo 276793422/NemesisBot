@@ -68,12 +68,15 @@ pub fn ensure_exe_in_path() -> bool {
 
 /// Resolve the NemesisBot home directory.
 ///
-/// Priority:
-/// 1. `--local` flag → `{cwd}/.nemesisbot`
-/// 2. `NEMESISBOT_HOME` env → `{NEMESISBOT_HOME}/.nemesisbot`
-/// 3. Auto-detect cwd → if `{cwd}/.nemesisbot` exists
-/// 4. Exe directory → if `{exe_dir}/.nemesisbot` exists
-/// 5. Default → `~/.nemesisbot`
+/// BUG-20261102-316 收敛：非 `--local` 分支委托
+/// [`nemesis_path::resolve_home_dir`]（单一真相源）——此前此处是一份平行
+/// 实现，与 crate 侧三处分叉：env 值不展开 `~/`（`NEMESISBOT_HOME=~` 按
+/// 字面量落 cwd 下 `~` 目录）、`{exe_dir,cwd}/.nemesisbot` 用 `exists()`
+/// 判定（文件占位也误认 home），doc 优先级序还与代码写反。crate 侧版本
+/// 修复过 `~<多字节>` panic 且有测试锁，主入口链（CLI/gateway 全部 72 处
+/// `resolve_home(` 调用）统一走它。`--local` 分支保留显式传参语义（与
+/// 进程级 LOCAL_MODE 全局标志解耦——main.rs 靠它把 `--local` 缝进单例，
+/// 见 main.rs set_home_dir 注释）。
 pub fn resolve_home(local: bool) -> PathBuf {
     // Priority 1: --local flag
     if local {
@@ -81,26 +84,7 @@ pub fn resolve_home(local: bool) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(".nemesisbot");
     }
-    // Priority 2: NEMESISBOT_HOME env var
-    if let Ok(home) = std::env::var("NEMESISBOT_HOME") {
-        return PathBuf::from(home).join(".nemesisbot");
-    }
-    // Priority 3: Exe directory
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-        && exe_dir.join(".nemesisbot").exists()
-    {
-        return exe_dir.join(".nemesisbot");
-    }
-    // Priority 4: Auto-detect cwd
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if cwd.join(".nemesisbot").exists() {
-        return cwd.join(".nemesisbot");
-    }
-    // Priority 5: Default ~/.nemesisbot
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nemesisbot")
+    nemesis_path::resolve_home_dir().unwrap_or_else(nemesis_path::fallback_home_dir)
 }
 
 /// Get the config file path.

@@ -294,6 +294,10 @@ pub(crate) async fn init_agent(
         #[cfg(feature = "lsp")]
         lsp_manager,
         agent_event_tx: Some(agent_event_tx.clone()),
+        // L14 会话执行统计：聚合器订阅同一 broadcast（observe 侧消费
+        // ToolStarted/ToolFinished/ApprovalRequested/ApprovalResolved 四事件），
+        // Arc 同时挂在 SharedResources 供 web_server 读侧（sessions.stats）取用。
+        session_stats: Some(crate::session_stats::spawn_session_stats(&agent_event_tx)),
         background_registry,
         plugin_manager,
         // 全自动流转 P3/D1：board_issue 工具依赖（注册点在 build_agent_loop
@@ -320,6 +324,9 @@ pub(crate) async fn init_agent(
         question_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_types::agent::QuestionAsker>>,
         )),
+        // WS4（P13）/BUG-20261101-295：install_skill 工具审批门槽（先建空
+        // 槽，gateway.rs 建门后填 LateWebSkillsGate；同一 Arc 晚填可见）。
+        skills_install_gate_slot: Default::default(),
     };
 
     let shared_resources = Arc::new(shared_resources);

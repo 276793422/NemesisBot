@@ -216,6 +216,7 @@ async fn claim_failure_early_returns_without_processing() {
         None,
         &NeverProvider,
         "test-model",
+        4096,
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

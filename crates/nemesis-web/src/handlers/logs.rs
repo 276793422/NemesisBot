@@ -14,8 +14,9 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use chrono::NaiveDateTime;
 #[cfg(feature = "security")]
 use nemesis_security::integrity::AuditEvent;
-#[cfg(feature = "security")]
-use sha2::{Digest, Sha256};
+// 无 feature 门：下方目录 helper（request/cluster/security/session/boundary）
+// 全部无门控使用 Path/PathBuf——门在导入上会让无 security 构建炸出 46 错
+// 级联（2026-11-02 Windows 分片实录：Linux 带 security 绿、Windows 裸 feature 红）。
 use std::path::{Path, PathBuf};
 
 pub struct LogsHandler;
@@ -425,6 +426,26 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             "ancestors": ancestors,
         });
     }
+    // BUG-20261102-325：会话列表确定性 + 最近活跃优先。read_dir 顺序是平台
+    // 实现细节（NTFS 字典序 vs ext4 哈希序），前端侧栏「组内保持原排序」
+    // 直接消费此序——无排序 = ext4 上每次启动列表漂移，且与新建会话乐观行
+    // unshift 置顶（最近在前）语义矛盾。lastTime 是 Local offset RFC3339
+    // 且 chrono 秒内小数位自适应（`22+08:00` 裸字典序会错压 `22.5+08:00`），
+    // 必须解析成时间戳比较；解析失败（空/坏行/无偏移旧行）视为最旧沉底
+    // （仅向前语义：无时间锚不参与排序红利）。同刻按 id 升序破平——全键
+    // 有序 = 跨平台逐位一致。
+    let rank = |e: &serde_json::Value| -> i64 {
+        e["lastTime"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.timestamp_millis())
+            .unwrap_or(i64::MIN)
+    };
+    sessions.sort_by(|a, b| {
+        rank(b)
+            .cmp(&rank(a))
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
     sessions
 }
 
@@ -782,18 +803,17 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
     events
 }
 
-/// SHA-256 hash using the same field order as `AuditChain::append_with_sign`.
+/// 事件 hash 单一真相源委托（BUG-20261102-305：此处原是
+/// `AuditChain::append_with_sign` 七字段公式的手抄拷贝——v1 公式追加
+/// source+reason 后拷贝版对追加事件恒算出「hash mismatch」假阳性）。
+/// 未支持版本（hash_version>1）返回空串 → 与任何存 hash 不等 → 上层
+/// 诊断自然报 hash mismatch（与 verify_chain fail-closed 同语义）。
 #[cfg(feature = "security")]
 fn compute_audit_hash(ev: &AuditEvent) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(ev.prev_hash.as_bytes());
-    hasher.update(ev.timestamp.as_bytes());
-    hasher.update(ev.operation.as_bytes());
-    hasher.update(ev.tool_name.as_bytes());
-    hasher.update(ev.user.as_bytes());
-    hasher.update(ev.target.as_bytes());
-    hasher.update(ev.decision.as_bytes());
-    format!("{:x}", hasher.finalize())
+    if ev.hash_version > 1 {
+        return String::new();
+    }
+    nemesis_security::integrity::AuditChain::compute_event_hash(ev)
 }
 
 /// SAN-05：薄包装委托仓内单一真相源白名单消毒（原黑名单
@@ -962,7 +982,12 @@ impl LogsHandler {
 
         let local = local_node_id(ctx);
         let device_dirs: Vec<PathBuf> = if let Some(ref dev) = device_filter {
-            vec![root.join(dev)]
+            // SAN-05 家族契约：id 形参数进路径前过白名单消毒（同文件
+            // cluster_task_detail 的 task_id、request_detail 的 id 同纪律）。
+            // device_id 来自 WSAPI 参数，穿越/绝对路径形态不消毒会把树外
+            // 目录当 device 行列出来（列表泄漏 + 语义错乱）；消毒后不存在的
+            // 名字与「无此设备」同语义，自然落到空 entries。
+            vec![root.join(sanitize_session_key(dev))]
                 .into_iter()
                 .filter(|p| p.exists())
                 .collect()
@@ -1316,7 +1341,12 @@ impl LogsHandler {
         // File-based scan is the primary source — works even without the memory
         // manager (when enhanced memory / ONNX is disabled). Each *.jsonl is one
         // session. This decouples the dashboard's "对话历史" from the vector stack.
-        let mut sessions = scan_session_logs(workspace);
+        // BUG-20261102-302：全目录全量解析（逐行 JSON parse）直跑 tokio
+        // worker 会占住 worker，spawn_blocking 移出（sessions.list 同款纪律）。
+        let ws = workspace.to_string();
+        let mut sessions = tokio::task::spawn_blocking(move || scan_session_logs(&ws))
+            .await
+            .map_err(|e| format!("logs.session_list task join failed: {e}"))?;
 
         // When episodic memory is available, enrich file entries with metadata
         // (model, triggerCluster) the raw chat log does not carry. Match by both
@@ -1458,8 +1488,16 @@ impl LogsHandler {
         // jsonl（同 fs.rs tree_in 的 F7 闸，BUG-HUNT R7）。
         let path =
             session_log_dir(workspace).join(format!("{}.jsonl", sanitize_session_key(session)));
+        // BUG-20261102-302：整会话 jsonl 全量解析（逐行 JSON parse）在 wire
+        // 路径直跑 tokio worker，spawn_blocking 移出（sessions.export 同款
+        // 纪律）。
+        let raw_lines = {
+            tokio::task::spawn_blocking(move || read_jsonl_lines(&path))
+                .await
+                .map_err(|e| format!("logs.session_detail task join failed: {e}"))?
+        };
         #[cfg_attr(not(feature = "memory"), allow(unused_mut))]
-        let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
+        let mut messages: Vec<serde_json::Value> = raw_lines
             .into_iter()
             .map(|ln| {
                 let mut msg = serde_json::json!({
@@ -1566,7 +1604,7 @@ impl LogsHandler {
                 })
                 .collect();
             total_injections += injections.len();
-            rounds.push(serde_json::json!({
+            let mut round = serde_json::json!({
                 "round": rec.round,
                 "trace_id": rec.trace_id,
                 "ts": rec.ts,
@@ -1577,7 +1615,17 @@ impl LogsHandler {
                 "summary_used": rec.summary_as_of.is_some(),
                 "summary_covers_up_to":
                     rec.summary_as_of.as_ref().map(|s| s.covers_up_to),
-            }));
+            });
+            // L24: snapshot hashes when recorded (hash-only — the bodies live
+            // in the content-addressed store, the panel stays a visibility
+            // aid, not a second copy of the prompt bytes).
+            if let Some(h) = &rec.system_prompt_sha256 {
+                round["system_prompt_sha256"] = serde_json::json!(h);
+            }
+            if let Some(h) = &rec.tools_sha256 {
+                round["tools_sha256"] = serde_json::json!(h);
+            }
+            rounds.push(round);
         }
 
         Ok(Some(serde_json::json!({

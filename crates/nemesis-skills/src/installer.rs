@@ -41,6 +41,14 @@ static LOCKFILE_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(())
 /// 技能安装是低频管理操作，全局一把锁足够（毫秒级落位段）。
 static INSTALL_COMMIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
+/// F4（2026-11-02 复评）：进程内 in-flight 回滚备份登记表。键 = 备份目录
+/// **完整路径**（非 slug——并发测试/多 workspace 下同名 slug 的备份互不
+/// 误伤）。进程退出登记表随之消失，「上次进程死在窗口内的备份」自动变回
+/// 真遗孤，下次启动的恢复式清扫照常收编——跨重启语义不变。
+static INFLIGHT_BACKUPS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashSet<PathBuf>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+
 /// GitHub 安装结果（P12 pinned 路径）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallOutcome {
@@ -61,7 +69,10 @@ pub struct InstallOutcome {
 /// Skill installer that manages downloading and installing skills from registries.
 pub struct SkillInstaller {
     workspace: PathBuf,
-    registry_manager: Option<crate::registry::RegistryManager>,
+    // Arc 包装：agent `install_skill` 工具持 `Arc<RegistryManager>` 共享
+    // 句柄（BUG-20261101-295 漏斗接线），经 `set_registry_manager_shared`
+    // 注入同一实例；`set_registry_manager` 对 owned 值透明包 Arc。
+    registry_manager: Option<std::sync::Arc<crate::registry::RegistryManager>>,
     github_base_url: String,
     /// GitHub API base（P12 commit 解析；测试 seam 可换 wiremock）。
     github_api_url: String,
@@ -97,6 +108,16 @@ impl SkillInstaller {
 
     /// Set the registry manager for advanced installation features.
     pub fn set_registry_manager(&mut self, manager: crate::registry::RegistryManager) {
+        self.registry_manager = Some(std::sync::Arc::new(manager));
+    }
+
+    /// Inject an already-shared registry manager (agent `install_skill` tool
+    /// holds the same `Arc` as the loop's find_skills tools — same instance,
+    /// same registries).
+    pub fn set_registry_manager_shared(
+        &mut self,
+        manager: std::sync::Arc<crate::registry::RegistryManager>,
+    ) {
         self.registry_manager = Some(manager);
     }
 
@@ -154,7 +175,7 @@ impl SkillInstaller {
     /// Returns `Some(&RegistryManager)` if a registry manager has been set,
     /// or `None` otherwise.
     pub fn get_registry_manager(&self) -> Option<&crate::registry::RegistryManager> {
-        self.registry_manager.as_ref()
+        self.registry_manager.as_deref()
     }
 
     /// Get the result from the most recent security check.
@@ -243,6 +264,28 @@ impl SkillInstaller {
         self.workspace.join(".skill-rollback")
     }
 
+    /// F4（2026-11-02 复评）：进程内 in-flight 回滚备份登记表（键与语义见
+    /// 模块级 [`INFLIGHT_BACKUPS`]）。[`Self::recover_stale_rollbacks`] 借此
+    /// 区分「本进程正在更新的活备份」与「上次进程死在窗口内的真遗孤」：
+    /// 在册 = 跳过，未登记 = 照常恢复。登记表随进程消失，跨重启语义不变。
+    /// F4：登记 in-flight 备份（handler 建**新**备份时调，先于建备份的
+    /// rename——并发恢复式清扫从此刻起就视本备份为活物，不留「备份已
+    /// 落盘、登记未跟上」的窗口）。重复登记幂等。
+    pub fn register_inflight_backup(backup: &Path) {
+        INFLIGHT_BACKUPS.lock().insert(backup.to_path_buf());
+    }
+
+    /// F4：注销（`RollbackGuard` Drop 统一出口：成功消费 / 显式回滚 /
+    /// 取消复位 / 回滚失败留待下轮恢复，四态全走这里）。未登记也幂等。
+    pub fn unregister_inflight_backup(backup: &Path) {
+        INFLIGHT_BACKUPS.lock().remove(backup);
+    }
+
+    /// F4：恢复式清扫的在册判定。
+    pub fn inflight_backup_registered(backup: &Path) -> bool {
+        INFLIGHT_BACKUPS.lock().contains(backup)
+    }
+
     /// BUG-20261028-118：回滚备份**恢复优先**清扫——处理上次失败/取消
     /// 遗孤（进程死在「备份已挪走、新版未落位」窗口，或任务取消 Drop
     /// guard 的 rename 也失败时）：
@@ -252,9 +295,10 @@ impl SkillInstaller {
     /// 返回恢复的原位路径（可观测/测试断言用）。best-effort：单项失败不
     /// 中断整轮。
     ///
-    /// ⚠ 调用时机约束：只允许在「本进程没有任何 in-flight force 备份」时
-    /// 调（生产挂点是 skills.rs install_with_ctx 建**新备份之前**）——
-    /// in-flight 备份期间调用会把刚建的新备份误判遗孤搬回原位。
+    /// F4（2026-11-02 复评）：in-flight 备份经 [`INFLIGHT_BACKUPS`] 登记表
+    /// 识别并跳过——调用时机约束由**代码强制**（此前只是注释约定，并发安装
+    /// 期间调用会把刚建的新备份误判遗孤搬回原位、毁掉在途更新）。真遗孤 =
+    /// 本进程未登记（上次进程死在窗口内，登记表随进程消失）→ 照常恢复。
     pub fn recover_stale_rollbacks(&self) -> Vec<PathBuf> {
         let mut recovered = Vec::new();
         let Ok(entries) = std::fs::read_dir(self.rollback_root()) else {
@@ -262,6 +306,13 @@ impl SkillInstaller {
         };
         for ent in entries.flatten() {
             let backup = ent.path();
+            if Self::inflight_backup_registered(&backup) {
+                debug!(
+                    "skipping in-flight skill rollback backup: {}",
+                    backup.display()
+                );
+                continue;
+            }
             // 备份命名 `<slug>.old-<pid>-<millis>`；按**最后一个** ".old-" 分隔
             // 取 slug 段（BUG-20261029-150：split('.') 首段切分对含点 slug
             // 错误——"my.skill.old-…" 被解析成 "my"，恢复错名 / 误删唯一备份；

@@ -4,9 +4,15 @@
 //! 里只有别名，真值只到达工具 execute）。
 
 use super::credential_injection::inject_credential_aliases;
+use super::credential_injection::{
+    CredentialCardGuard, find_declared_vault_references, inject_credential_aliases_structured,
+    try_card_recovery,
+};
 use super::*;
+use nemesis_types::agent::{CredentialBroker, CredentialOutcome, CredentialRequest};
 use parking_lot::Mutex as PlMutex;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// 本文件专用 mock provider（s9_tests 同款：测试文件自包含）。
 struct MockLlmProvider {
@@ -420,4 +426,363 @@ async fn loop_unknown_alias_blocks_execution() {
             .any(|r| r.contains("CREDENTIAL REFERENCE FAILED") && r.contains("vault set")),
         "工具结果应是带指引的错误: {tool_results:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// L25（2026-11-02）：结构化错误 + 发卡恢复 + 防滥用占位
+// ---------------------------------------------------------------------------
+
+/// 结构化错误：字段（field/alias/message）齐全，Display 与 legacy 错误串
+/// 字节一致（模型可读契约零回归）。L26 oracle 改写生效后 message 为
+/// 通用文案（无「别名不存在」marker、无别名回显）——存在性信号收敛。
+#[test]
+fn structured_error_display_matches_legacy_byte_exact() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        Err(format!("别名不存在: {alias}"))
+    }));
+    let tool = SlotTool::new(vec!["credential"]);
+    let args = r#"{"credential":"vault:ghost"}"#;
+    let legacy = inject_credential_aliases(&tool, args).unwrap_err();
+    let structured = inject_credential_aliases_structured(&tool, args).unwrap_err();
+    nemesis_config::clear_global_vault_resolver();
+    assert_eq!(structured.field, "credential");
+    assert_eq!(
+        structured.alias, "ghost",
+        "alias 取自槽位值（L25 发卡不受改写影响）"
+    );
+    assert!(
+        structured.message.contains("凭据引用无效"),
+        "marker 根因应改写为通用文案: {}",
+        structured.message
+    );
+    assert!(
+        !structured.message.contains("别名不存在"),
+        "通用文案不得含存在性 marker: {}",
+        structured.message
+    );
+    assert!(
+        !structured.message.contains("ghost"),
+        "通用文案不得回显别名: {}",
+        structured.message
+    );
+    assert_eq!(
+        legacy,
+        structured.to_string(),
+        "Display 必须与 legacy 错误串字节一致"
+    );
+}
+
+/// guard：占位/释放/TTL 过期/跨 session 与跨 alias 隔离。
+#[test]
+fn guard_acquire_release_ttl_and_isolation() {
+    let g = CredentialCardGuard::new();
+    let now = Instant::now();
+    assert!(g.try_acquire_at("s1", "a1", now), "首次应可占位");
+    assert!(
+        !g.try_acquire_at("s1", "a1", now + Duration::from_secs(1)),
+        "TTL 窗内不得再占"
+    );
+    assert!(g.try_acquire_at("s2", "a1", now), "跨 session 隔离");
+    assert!(g.try_acquire_at("s1", "a2", now), "跨 alias 隔离");
+    g.release("s1", "a1");
+    assert!(g.try_acquire_at("s1", "a1", now), "release 后应可再占");
+    // (s2, a1) 占位于 now：599s 仍占位、601s 已过期可再占。
+    assert!(!g.try_acquire_at("s2", "a1", now + Duration::from_secs(599)));
+    assert!(g.try_acquire_at("s2", "a1", now + Duration::from_secs(601)));
+}
+
+/// guard：空别名恒拒绝；硬顶拒绝 + 过期清扫恢复（内存上界契约）。
+#[test]
+fn guard_empty_alias_and_hard_cap() {
+    let g = CredentialCardGuard::new();
+    assert!(!g.try_acquire("s", ""), "空别名发不出卡");
+    let now = Instant::now();
+    for i in 0..4096 {
+        assert!(g.try_acquire_at(&format!("s{i}"), "busy", now));
+    }
+    assert!(
+        !g.try_acquire_at("overflow", "x", now),
+        "硬顶（清扫后仍满）应拒绝发卡"
+    );
+    assert!(
+        g.try_acquire_at("overflow", "x", now + Duration::from_secs(601)),
+        "过期清扫后应恢复可卡"
+    );
+}
+
+/// mock broker：返回指定裁决；可选把 key_name 写进共享集合（模拟 respond
+/// 落 vault——解析器同集合现查，Stored 后即可解析）。
+struct MockBroker {
+    outcome: CredentialOutcome,
+    store_into: Option<Arc<Mutex<std::collections::HashSet<String>>>>,
+    calls: Arc<Mutex<usize>>,
+}
+
+impl CredentialBroker for MockBroker {
+    fn request_credential(&self, request: &CredentialRequest) -> Result<CredentialOutcome, String> {
+        *self.calls.lock().unwrap() += 1;
+        // 卡载荷契约：request_id 非空、key_name=裸别名（无 vault: 前缀）、
+        // reason 无值（此 mock 场景值只在解析器闭包里）。
+        assert!(!request.request_id.is_empty());
+        assert!(
+            !request.key_name.starts_with("vault:"),
+            "key_name 应为裸别名: {}",
+            request.key_name
+        );
+        assert!(!request.reason.contains(SECRET), "卡载荷不得含值");
+        if let Some(set) = &self.store_into {
+            set.lock().unwrap().insert(request.key_name.clone());
+        }
+        Ok(self.outcome.clone())
+    }
+}
+
+/// panic 探针 broker：被调即炸——证明 early-return 臂没碰 broker。
+struct PanickingBroker;
+
+impl CredentialBroker for PanickingBroker {
+    fn request_credential(
+        &self,
+        _request: &CredentialRequest,
+    ) -> Result<CredentialOutcome, String> {
+        panic!("broker must not be called on this path");
+    }
+}
+
+/// broker 缺席（headless/裸构建）：不发卡、不占位，None 回落原错误串。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn card_recovery_none_broker_returns_none() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        Err(format!("别名不存在: {alias}"))
+    }));
+    let tool = SlotTool::new(vec!["credential"]);
+    let args = r#"{"credential":"vault:ghost"}"#;
+    let err = inject_credential_aliases_structured(&tool, args).unwrap_err();
+    nemesis_config::clear_global_vault_resolver();
+    let guard = CredentialCardGuard::new();
+    let out = try_card_recovery(None, &guard, &tool, args, "s1", "credtool", &err).await;
+    assert!(out.is_none(), "broker 缺席应走原错误路径");
+    assert!(
+        guard.try_acquire("s1", "ghost"),
+        "broker 缺席不应占 guard 位"
+    );
+}
+
+/// 发卡 → Stored → 重跑整 args 注入：真值进续行参数、卡只发一张、
+/// guard 占位清除（立即可再卡）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn card_recovery_stored_reinjects_full_args() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    let store = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    {
+        let store = store.clone();
+        nemesis_config::set_global_vault_resolver(std::sync::Arc::new(move |alias| {
+            if store.lock().unwrap().contains(alias) {
+                Ok(SECRET.to_string())
+            } else {
+                Err(format!("别名不存在: {alias}"))
+            }
+        }));
+    }
+    let tool = SlotTool::new(vec!["credential"]);
+    let args = r#"{"target":"http://x","credential":"vault:card-alias"}"#;
+    let err = inject_credential_aliases_structured(&tool, args).unwrap_err();
+    assert_eq!(err.alias, "card-alias", "结构化 alias 应为裸别名");
+    let calls = Arc::new(Mutex::new(0usize));
+    let broker = Arc::new(MockBroker {
+        outcome: CredentialOutcome::Stored,
+        store_into: Some(store.clone()),
+        calls: calls.clone(),
+    });
+    let guard = CredentialCardGuard::new();
+    let out = try_card_recovery(Some(broker), &guard, &tool, args, "s1", "credtool", &err).await;
+    nemesis_config::clear_global_vault_resolver();
+    let recovered = out.expect("Stored 应恢复成功");
+    assert!(
+        recovered.contains(SECRET) && recovered.contains(r#""target":"http://x""#),
+        "重注入应含真值且保留其余字段: {recovered}"
+    );
+    assert_eq!(*calls.lock().unwrap(), 1, "应恰好发一张卡");
+    assert!(
+        guard.try_acquire("s1", "card-alias"),
+        "Stored 应清占位（立即可再卡）"
+    );
+}
+
+/// Denied：原错误串回落 + guard 占位保留（TTL 窗内不再发卡，过期恢复）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn card_recovery_denied_keeps_guard_occupancy() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        Err(format!("别名不存在: {alias}"))
+    }));
+    let tool = SlotTool::new(vec!["credential"]);
+    let args = r#"{"credential":"vault:denied-alias"}"#;
+    let err = inject_credential_aliases_structured(&tool, args).unwrap_err();
+    nemesis_config::clear_global_vault_resolver();
+    let calls = Arc::new(Mutex::new(0usize));
+    let broker = Arc::new(MockBroker {
+        outcome: CredentialOutcome::Denied,
+        store_into: None,
+        calls: calls.clone(),
+    });
+    let guard = CredentialCardGuard::new();
+    let out = try_card_recovery(Some(broker), &guard, &tool, args, "s1", "credtool", &err).await;
+    let t1 = Instant::now();
+    assert!(out.is_none(), "Denied 应回落原错误串");
+    assert_eq!(*calls.lock().unwrap(), 1);
+    assert!(
+        !guard.try_acquire_at("s1", "denied-alias", t1),
+        "Denied 应保占位"
+    );
+    assert!(
+        guard.try_acquire_at("s1", "denied-alias", t1 + Duration::from_secs(601)),
+        "TTL 过期后应恢复可卡"
+    );
+}
+
+/// 空 `vault:` 引用（alias 空）：不发卡（panic 探针 broker 证明没碰）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn card_recovery_empty_alias_skips_broker() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::clear_global_vault_resolver();
+    let tool = SlotTool::new(vec!["credential"]);
+    let args = r#"{"credential":"vault:"}"#;
+    let err = inject_credential_aliases_structured(&tool, args).unwrap_err();
+    assert_eq!(err.alias, "", "空引用的结构化 alias 应为空");
+    let guard = CredentialCardGuard::new();
+    let out = try_card_recovery(
+        Some(Arc::new(PanickingBroker)),
+        &guard,
+        &tool,
+        args,
+        "s1",
+        "credtool",
+        &err,
+    )
+    .await;
+    assert!(out.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// L26（2026-11-02）：oracle 收敛 + 闸面探测（find_declared_vault_references）
+// ---------------------------------------------------------------------------
+
+/// oracle 收敛：非 marker 根因（vault 已锁定）原文透传——环境级差分对任意
+/// 别名同形，无逐别名存在性信号，模型可转述给用户做环境修复。
+#[test]
+fn oracle_non_marker_error_preserved_verbatim() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|_alias| {
+        Err("vault 已锁定：argon2 模式需先 unlock".to_string())
+    }));
+    let tool = SlotTool::new(vec!["credential"]);
+    let err =
+        inject_credential_aliases_structured(&tool, r#"{"credential":"vault:any"}"#).unwrap_err();
+    nemesis_config::clear_global_vault_resolver();
+    assert_eq!(
+        err.message, "vault 已锁定：argon2 模式需先 unlock",
+        "非 marker 根因应原文透传"
+    );
+}
+
+/// oracle 收敛：空 `vault:` 引用文案保留（无解析器安装的根因串不含
+/// marker → 原样透传；alias 空 → L25 发卡不发）。
+#[test]
+fn oracle_empty_alias_message_preserved() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::clear_global_vault_resolver();
+    let tool = SlotTool::new(vec!["credential"]);
+    let err =
+        inject_credential_aliases_structured(&tool, r#"{"credential":"vault:"}"#).unwrap_err();
+    assert_eq!(err.alias, "");
+    assert!(
+        !err.message.contains("凭据引用无效"),
+        "空引用根因不是「别名不存在」家族，不得被改写: {}",
+        err.message
+    );
+    assert!(!err.message.is_empty(), "空引用应带根因串");
+}
+
+/// 闸面探测六形态：顶层 string 槽 / 对象叶（键.叶键 路径）/ 未声明槽里的
+/// vault: 忽略（闸位精确性——不扩大到字面量明文管辖面）/ 非 JSON → 空 /
+/// 槽缺席 → 空 / 空 alias 保留（空引用也是引用）。
+#[test]
+fn find_declared_vault_references_six_forms() {
+    let tool = SlotTool::new(vec!["credential", "headers"]);
+
+    // ① 顶层 string 槽。
+    let refs = find_declared_vault_references(
+        &tool,
+        r#"{"credential":"vault:corp-key","target":"http://x"}"#,
+    );
+    assert_eq!(
+        refs,
+        vec![("credential".to_string(), "corp-key".to_string())]
+    );
+
+    // ② 对象叶：field 路径 = 键.叶键。
+    let refs = find_declared_vault_references(
+        &tool,
+        r#"{"url":"http://x","headers":{"Authorization":"vault:corp-key","X-Trace":"plain"}}"#,
+    );
+    assert_eq!(
+        refs,
+        vec![("headers.Authorization".to_string(), "corp-key".to_string())]
+    );
+
+    // ③ 未声明槽里的 vault: 忽略（闸只看声明槽——精确性）。
+    let refs = find_declared_vault_references(
+        &tool,
+        r#"{"undeclared":"vault:sneaky","target":"http://x"}"#,
+    );
+    assert!(refs.is_empty(), "未声明槽不得进闸面: {refs:?}");
+
+    // ④ 非 JSON args → 空（与注入透传语义同构）。
+    assert!(find_declared_vault_references(&tool, "not-json").is_empty());
+
+    // ⑤ 声明槽缺席 → 空。
+    assert!(find_declared_vault_references(&tool, r#"{"target":"http://x"}"#).is_empty());
+
+    // ⑥ 空 alias 保留（`vault:` 前缀即引用，别名空也是引用形态）。
+    let refs = find_declared_vault_references(&tool, r#"{"credential":"vault:"}"#);
+    assert_eq!(refs, vec![("credential".to_string(), String::new())]);
+}
+
+/// 闸面探测：多别名一次调用全量收集（guard 合成键一次裁决罩整次调用的
+/// 依据）；无槽位声明工具恒空（零新增摩擦）。
+#[test]
+fn find_declared_vault_references_multi_and_no_slots() {
+    let tool = SlotTool::new(vec!["credential", "headers"]);
+    let refs = find_declared_vault_references(
+        &tool,
+        r#"{"credential":"vault:a1","headers":{"Authorization":"vault:a2"}}"#,
+    );
+    assert_eq!(
+        refs,
+        vec![
+            ("credential".to_string(), "a1".to_string()),
+            ("headers.Authorization".to_string(), "a2".to_string()),
+        ]
+    );
+    let bare = NoSlotTool;
+    assert!(find_declared_vault_references(&bare, r#"{"credential":"vault:x"}"#).is_empty());
+}
+
+/// guard 合成键（L26 闸冷却键 `gate:{tool}:{aliases}`）非空语义——绕开
+/// guard 空别名恒 false 规则；同键占位/释放/TTL 与普通键同生命周期。
+#[test]
+fn guard_composite_gate_key_lifecycle() {
+    let g = CredentialCardGuard::new();
+    let key = "gate:web_fetch:corp-key";
+    assert!(g.try_acquire("s1", key), "合成键恒非空应可占位");
+    assert!(!g.try_acquire("s1", key), "窗内同键不得再占（冷却生效）");
+    g.release("s1", key);
+    assert!(g.try_acquire("s1", key), "批准 release 后同键应可再卡");
 }

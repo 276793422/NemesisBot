@@ -109,7 +109,8 @@ impl AgentLoop {
                 used,
                 budget
             );
-            self.force_compression_opts(instance, false).await;
+            self.force_compression_opts(instance, false, session_key)
+                .await;
         }
         None
     }

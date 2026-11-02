@@ -43,6 +43,7 @@ impl ModuleHandler for SessionsHandler {
             "trash_restore",
             "trash_purge",
             "trash_purge_all",
+            "stats",
         ]
     }
 
@@ -54,8 +55,17 @@ impl ModuleHandler for SessionsHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
             "list" => {
-                let workspace = require_workspace(ctx)?;
-                let all = scan_session_logs(workspace);
+                let workspace = require_workspace(ctx)?.to_string();
+                // BUG-20261102-302：scan_session_logs 对目录内每个 jsonl 全量
+                // 解析（read_jsonl_lines 逐行 JSON parse）——侧栏热路径的同步
+                // 阻塞 IO 直跑 tokio worker 会占住 worker（read_chat_log_async
+                // 同款纪律），spawn_blocking 移出。
+                let all = {
+                    let ws = workspace.clone();
+                    tokio::task::spawn_blocking(move || scan_session_logs(&ws))
+                        .await
+                        .map_err(|e| format!("sessions.list task join failed: {e}"))?
+                };
                 // Web multi-session conversations only: files are named
                 // `agent_main_session_{sid}.jsonl` (session_key
                 // `agent:main:session:{sid}` with `:`→`_`). Strip the prefix
@@ -102,7 +112,7 @@ impl ModuleHandler for SessionsHandler {
                 // B（2026-09-23 多会话并行清账）：回带绑定表（仅存活绑定，
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
                 // 上移服务端。
-                let bindings = crate::session_bindings::live_bindings(workspace);
+                let bindings = crate::session_bindings::live_bindings(&workspace);
                 Ok(Some(
                     serde_json::json!({ "sessions": web, "bindings": bindings }),
                 ))
@@ -237,12 +247,24 @@ impl ModuleHandler for SessionsHandler {
                     let title = explicit_title.clone().unwrap_or_else(|| {
                         nemesis_agent::chat_log::DEFAULT_SESSION_TITLE.to_string()
                     });
-                    let outcome = crate::session_bindings::get_or_create_session(
-                        workspace,
-                        &binding_key,
-                        &title,
-                        explicit_title.is_some(),
-                    )?;
+                    // BUG-20261102-302：get_or_create_session 在 BINDING_LOCK
+                    // 持锁段内做全目录扫描（session_title→scan_session_logs）
+                    // ——持锁 + 阻塞 IO 双重占位，spawn_blocking 整体移出
+                    // （锁在阻塞线程内自旋，不占 tokio worker）。
+                    let has_explicit = explicit_title.is_some();
+                    let outcome = {
+                        let ws = workspace.to_string();
+                        tokio::task::spawn_blocking(move || {
+                            crate::session_bindings::get_or_create_session(
+                                &ws,
+                                &binding_key,
+                                &title,
+                                has_explicit,
+                            )
+                        })
+                        .await
+                        .map_err(|e| format!("sessions.create task join failed: {e}"))??
+                    };
                     return Ok(Some(serde_json::json!({
                         "session_id": outcome.session_id,
                         "title": outcome.title,
@@ -441,8 +463,17 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                let (messages, total, _, _) =
-                    nemesis_agent::chat_log::read_chat_log(&session_key, 100_000, None);
+                // BUG-20261102-302：export 全量读会话日志（100_000 ≥ whole_log
+                // 阈值 = 整文件解析），同步阻塞 IO 直跑 tokio worker，spawn_
+                // blocking 移出（read_chat_log_async 同款纪律）。
+                let (messages, total, _, _) = {
+                    let key = session_key;
+                    tokio::task::spawn_blocking(move || {
+                        nemesis_agent::chat_log::read_chat_log(&key, 100_000, None)
+                    })
+                    .await
+                    .map_err(|e| format!("sessions.export task join failed: {e}"))?
+                };
                 Ok(Some(serde_json::json!({
                     "session_id": session_id,
                     "messages": messages,
@@ -611,21 +642,28 @@ impl ModuleHandler for SessionsHandler {
                 })))
             }
             "share_list" => {
-                let workspace = require_workspace(ctx)?;
+                let workspace = require_workspace(ctx)?.to_string();
                 // 标题实时解析（会话改名/删除跟随 live 语义）。
-                let shares: Vec<serde_json::Value> = crate::share::list_shares(workspace)
-                    .into_iter()
-                    .map(|s| {
-                        let title = crate::share::session_title(workspace, &s.session_id);
-                        serde_json::json!({
-                            "token": s.token,
-                            "session_id": s.session_id,
-                            "created_at": s.created_at,
-                            "revoked": s.revoked,
-                            "title": title,
+                // BUG-20261102-302：list_shares + 每条 session_title（每次 =
+                // scan_session_logs 全目录全量解析）——N 条分享 = N 次全目录
+                // 扫描，同步阻塞 IO 直跑 tokio worker，spawn_blocking 整体移出。
+                let shares: Vec<serde_json::Value> = tokio::task::spawn_blocking(move || {
+                    crate::share::list_shares(&workspace)
+                        .into_iter()
+                        .map(|s| {
+                            let title = crate::share::session_title(&workspace, &s.session_id);
+                            serde_json::json!({
+                                "token": s.token,
+                                "session_id": s.session_id,
+                                "created_at": s.created_at,
+                                "revoked": s.revoked,
+                                "title": title,
+                            })
                         })
-                    })
-                    .collect();
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|e| format!("sessions.share_list task join failed: {e}"))?;
                 Ok(Some(serde_json::json!({ "shares": shares })))
             }
             "share_revoke" => {
@@ -714,6 +752,38 @@ impl ModuleHandler for SessionsHandler {
             "trash_purge_all" => {
                 let n = nemesis_agent::chat_trash::trash_purge_all()?;
                 Ok(Some(serde_json::json!({ "purged": n })))
+            }
+            // L14 会话执行统计：8 字段只读视图（工具调用/失败/重试/校验失败/
+            // 压缩/审批三面）。读盘不读内存——先经聚合器 flush pending 增量
+            // 落盘再读 sidecar meta，进程重启后统计不归零。聚合器未装配
+            // （headless 形态或老 gateway）= 诚实报错。
+            "stats" => {
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                // 双形态兼容：LogsView 会话浏览器传文件 stem
+                // （`agent_main_session_*`，logs.session_list 口径），侧栏传
+                // 裸 sid——统一剥前缀后走 sanitize。
+                let bare = session_id
+                    .strip_prefix("agent_main_session_")
+                    .unwrap_or(session_id);
+                let sid = nemesis_agent::session::SessionStore::sanitize_session_id(bare);
+                let session_key = format!("agent:main:session:{sid}");
+                if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
+                    return Err(format!("会话不存在: {sid}"));
+                }
+                let reader = ctx
+                    .state
+                    .session_stats
+                    .as_ref()
+                    .ok_or_else(|| "会话执行统计未装配（聚合器未运行）".to_string())?;
+                let s = reader.flush_and_read(&session_key);
+                Ok(Some(serde_json::json!({
+                    "session_id": sid,
+                    "stats": s,
+                })))
             }
             _ => Err(format!("unknown sessions cmd: {}", cmd)),
         }

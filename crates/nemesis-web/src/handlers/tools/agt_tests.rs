@@ -54,6 +54,7 @@ async fn agt_tools_with_session_id_resolves_loop_and_bails_without_one() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     });

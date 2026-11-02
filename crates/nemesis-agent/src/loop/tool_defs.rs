@@ -177,8 +177,8 @@ impl AgentLoop {
     /// prompt-pack pro（M3）：工具描述分档取值单点。Pro 体系查
     /// [`crate::prompt::tool_description`] 档位表（mini→lean、normal/big→
     /// full 优先否则 lean，未命中回落注册表原文）；Classic 体系恒回落
-    /// 原文（字节不变）。`build_tool_defs` 与 `rebuild_full_tool_defs`
-    /// （三处恢复环共用）都走这里。
+    /// 原文（字节不变）。`build_tool_defs`（含恢复环经
+    /// `effective_tool_defs` 的重建）都走这里。
     pub(crate) fn description_for(&self, name: &str, tool: &dyn Tool) -> String {
         if *self.prompt_system.read() != crate::prompt::PromptSystem::Pro {
             return tool.description();
@@ -599,32 +599,6 @@ impl AgentLoop {
             let _ = instance;
             defs
         }
-    }
-
-    /// 器官 4e（docs/PLAN §4.2）：三处恢复环共用的**全量** tool_defs 重建（原
-    /// context 压缩环 / 429 环 / transient 环各内联一份的 map/collect 三连——
-    /// 三处合一，语义保持全量不过折叠闸）。
-    pub(crate) fn rebuild_full_tool_defs(&self) -> Vec<crate::types::ToolDefinition> {
-        let tools_guard = self.tools.read();
-        // Sort by name, same as build_tool_defs: recovery requests (post-
-        // compaction / 429 / transient retry) are trying to reuse the
-        // prompt-cache prefix of the failed request — an unsorted
-        // (HashMap-iteration-order) tool array would break that prefix on
-        // every recovery. 2026-10-21 自查 #6 根修。
-        let mut names: Vec<&String> = tools_guard.keys().collect();
-        names.sort();
-        names
-            .into_iter()
-            .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
-            .map(|(name, tool)| crate::types::ToolDefinition {
-                tool_type: "function".to_string(),
-                function: crate::types::ToolFunctionDef {
-                    name: name.clone(),
-                    description: self.description_for(name, tool.as_ref()),
-                    parameters: tool.parameters(),
-                },
-            })
-            .collect()
     }
 }
 

@@ -462,4 +462,59 @@ describe('ApprovalCard', () => {
     expect(w.text()).toContain('rule: exec-publish')
     w.unmount()
   })
+  // ---- L07（2026-11-01：操作预览区——diff 染色 / 命令现场 / 无预览）----
+
+  it('L07: diff 预览渲染 + 行首染色（+增/-删/文件头 meta），无预览键时无预览区', async () => {
+    const w = await mounted()
+    fireApproval(
+      makePayload('r-pv-diff', {
+        operation: 'file_write',
+        target: 'C:/proj/config.toml',
+        preview: '--- a/C:/proj/config.toml\n+++ b/C:/proj/config.toml\n@@ -1,2 +1,2 @@\n keep\n-old = 1\n+new = 2\n',
+        preview_format: 'diff',
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pv = w.find('.approval-preview')
+    expect(pv.exists()).toBe(true)
+    expect(pv.text()).toContain('变更预览')
+
+    const lines = pv.findAll('.approval-preview-body div')
+    expect(lines[0].classes()).toContain('pv-meta') // --- 文件头
+    expect(lines[1].classes()).toContain('pv-meta') // +++ 文件头
+    expect(lines[2].classes()).toContain('pv-hunk') // @@
+    expect(lines[3].classes()).toContain('pv-plain') // 上下文
+    expect(lines[4].classes()).toContain('pv-del') // -old = 1
+    expect(lines[5].classes()).toContain('pv-add') // +new = 2
+
+    // 无 preview 的卡不渲染预览区。
+    fireApproval(makePayload('r-pv-none'))
+    await vi.advanceTimersByTimeAsync(0)
+    const cards = w.findAll('.approval-card')
+    expect(cards.length).toBe(2)
+    expect(cards[1].find('.approval-preview').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('L07: text 预览（命令现场）渲染为纯文本 pv-plain + 「操作预览」标题', async () => {
+    const w = await mounted()
+    fireApproval(
+      makePayload('r-pv-text', {
+        preview: '将执行命令：\n```\nrm -rf build/\n```\n工作目录：C:/proj',
+        preview_format: 'text',
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pv = w.find('.approval-preview')
+    expect(pv.exists()).toBe(true)
+    expect(pv.text()).toContain('操作预览')
+    expect(pv.text()).toContain('rm -rf build/')
+    // text 形态全行不染色（避免命令行首 `+` 误判为 diff 增行）。
+    for (const line of pv.findAll('.approval-preview-body div')) {
+      expect(line.classes()).toContain('pv-plain')
+    }
+    w.unmount()
+  })
 })

@@ -53,6 +53,10 @@ mod board_claim_tool;
 mod board_discuss_tool;
 // M3 同因失败签名熔断账本已移 nemesis-board 公开（§6.4D：nemesis-web 手动
 // 重派清账与评审链共用同一 JSON，nemesis_board::fail_streak 消费）。
+/// L07（2026-11-01）：审批卡 diff 预览生成（挂起点把「将要发生的变化」算
+/// 成 unified diff / 命令现场）。同 web_approval 门（唯一消费方）。
+#[cfg(feature = "security")]
+mod approval_preview;
 /// 评审取证自取（evidence-on-demand）：board_evidence_read 工具（仅注册进
 /// 主 agent——评审链 EvidenceOnly/ReadOnly 白名单消费；档案根围栏只读）。
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -224,6 +228,8 @@ mod security_setup;
 /// 人类闸=编排内 CRITICAL 审批卡）。主 loop 专属注册，编译闸=selfupdate。
 #[cfg(feature = "selfupdate")]
 mod selfupdate_tool;
+/// L14（2026-11-01）：会话执行统计聚合器（事件泵 + loop sink + 读侧）。
+mod session_stats;
 /// P0 vault（B1，2026-09-22 计划）：进程级 `vault:<alias>` 解析器注入。
 /// 门控随 nemesis-security（security feature off 时 `vault:` 引用诚实报
 /// "解析器未安装"，明文/env/yaml 链路不受影响）。
@@ -734,7 +740,10 @@ async fn async_main() -> Result<()> {
     let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
-        println!("Local mode enabled: using ./.nemesisbot");
+        // BUG-20261101-281：提示行必须走 stderr——`run --format json` 的
+        // stdout 是纯 NDJSON 契约（`run` 文本模式 stdout 只承载最终回复、
+        // `acp` stdout 是 JSON-RPC 协议行），println 污染首行即炸消费方解析。
+        eprintln!("Local mode enabled: using ./.nemesisbot");
     }
 
     // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
@@ -889,7 +898,10 @@ fn main() -> Result<()> {
     let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
-        println!("Local mode enabled: using ./.nemesisbot");
+        // BUG-20261101-281：提示行必须走 stderr——`run --format json` 的
+        // stdout 是纯 NDJSON 契约（`run` 文本模式 stdout 只承载最终回复、
+        // `acp` stdout 是 JSON-RPC 协议行），println 污染首行即炸消费方解析。
+        eprintln!("Local mode enabled: using ./.nemesisbot");
     }
 
     // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——

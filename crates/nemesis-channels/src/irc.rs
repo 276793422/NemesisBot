@@ -72,7 +72,13 @@ pub struct IRCChannel {
     /// 落 `_ => {}` 静默丢弃，收件面整体缺失。
     bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
     /// Writer for sending raw IRC commands.
-    writer: parking_lot::Mutex<Option<IRCWriter>>,
+    ///
+    /// Arc 共享进连接任务：连接建立后由任务把写半部装载进槽，send_raw
+    /// 与读循环（PONG/JOIN/QUIT）全走同一写槽（take-写-放回串行化）。
+    /// BUG-20261102-299：此前槽只在 new 时初始化 None、连接任务从不装载
+    /// （写半部是任务本地变量），send_raw 恒走「IRC not connected」——
+    /// 出站死路。
+    writer: Arc<parking_lot::Mutex<Option<IRCWriter>>>,
     /// Cancellation channel for the read loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -122,7 +128,7 @@ impl IRCChannel {
             },
             running: Arc::new(parking_lot::RwLock::new(false)),
             bus_sender,
-            writer: parking_lot::Mutex::new(None),
+            writer: Arc::new(parking_lot::Mutex::new(None)),
             cancel_tx: parking_lot::Mutex::new(None),
         })
     }
@@ -187,14 +193,17 @@ impl IRCChannel {
     }
 
     /// Builds IRC registration commands.
-    pub fn build_registration(&self) -> Vec<String> {
+    ///
+    /// 关联函数形态：连接任务里只有 config 没有 self（注册写与此处
+    /// 单一真相源，连接循环直接复用，不再 inline 重复）。
+    pub fn build_registration(config: &IRCConfig) -> Vec<String> {
         let mut commands = Vec::new();
 
-        if let Some(ref pass) = self.config.password {
+        if let Some(ref pass) = config.password {
             commands.push(format!("PASS {pass}"));
         }
-        commands.push(format!("NICK {}", self.config.nick));
-        commands.push(format!("USER {} 0 * :NemesisBot", self.config.nick));
+        commands.push(format!("NICK {}", config.nick));
+        commands.push(format!("USER {} 0 * :NemesisBot", config.nick));
 
         commands
     }
@@ -240,25 +249,102 @@ impl IRCChannel {
         Some((parts[0], parts[1]))
     }
 
+    /// 出站写超时（BUG-20261102-300）：manager 出站派发是单任务串行
+    /// await（一条通道 send 无界挂起 = 全部通道出站停摆且零错误零日志，
+    /// 见 base.rs 串行派发纪律），TCP write 必须有界——HTTP 35s / email
+    /// 30s 同族先例，此处对齐 email 的 30s。
+    const WRITE_TIMEOUT_SECS: u64 = 30;
+    /// take-写-放回形态下拿不到 writer 的重试窗：读循环 PONG/JOIN 与
+    /// dispatch send 并发 take 竞态的消解窗（拿 None ≠ 未连接，短窗
+    /// 轮询区分「他人正在写」与「真未连接」）。QoS：真未连接时 send
+    /// 至多延迟此窗后诚实报错，不改变错误语义。
+    const WRITE_SLOT_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// 从写槽取 writer（带重试窗）：None 可能是他人正在写（瞬态持有）
+    /// 或未连接（持久），短窗轮询消解瞬态形态。
+    async fn take_writer(
+        slot: &parking_lot::Mutex<Option<IRCWriter>>,
+    ) -> std::io::Result<IRCWriter> {
+        let deadline = std::time::Instant::now() + Self::WRITE_SLOT_RETRY;
+        loop {
+            if let Some(w) = slot.lock().take() {
+                return Ok(w);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "IRC not connected",
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 带超时的单命令写（write_all + flush 一体，超时映射 TimedOut，
+    /// email io_timeout 同形态）。泛型形态：生产传 TcpStream 写半部，
+    /// 测试传 mock writer（Windows loopback TCP 缓冲自调连显式收窄都
+    /// 不认——内核行为不可依赖，停摆面用 mock 驱动超时机制）。
+    async fn write_command_bounded<W: tokio::io::AsyncWrite + Unpin>(
+        writer: &mut W,
+        command: &str,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        let payload = format!("{command}\r\n");
+        let write_fut = async {
+            writer.write_all(payload.as_bytes()).await?;
+            writer.flush().await
+        };
+        match tokio::time::timeout(timeout, write_fut).await {
+            Ok(r) => r,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("IRC write timed out after {}s", timeout.as_secs()),
+            )),
+        }
+    }
+
+    /// 单一写路径：取 writer → 带超时写 → 成功放回。写失败/超时不放回
+    /// ——写半部状态未知（超时 = future 被取消，可能只写了半个 line），
+    /// 半残 writer 回场会让后续写继续撞死连接；断线重连环装载新 writer
+    /// 后自然恢复。
+    async fn write_line_with_timeout(
+        slot: &parking_lot::Mutex<Option<IRCWriter>>,
+        command: &str,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        let mut w = Self::take_writer(slot).await?;
+        match Self::write_command_bounded(&mut w.writer, command, timeout).await {
+            Ok(()) => {
+                *slot.lock() = Some(w);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Sends a raw IRC command through the connection.
     pub async fn send_raw(&self, command: &str) -> Result<()> {
-        // Take the writer out of the mutex to avoid holding the lock across await
-        let writer_opt = self.writer.lock().take();
-        if let Some(mut w) = writer_opt {
-            w.writer
-                .write_all(format!("{command}\r\n").as_bytes())
-                .await
-                .map_err(|e| NemesisError::Channel(format!("IRC write failed: {e}")))?;
-            w.writer
-                .flush()
-                .await
-                .map_err(|e| NemesisError::Channel(format!("IRC flush failed: {e}")))?;
-            debug!(command = %command, "[IRCChannel] sent command");
-            // Put writer back
-            *self.writer.lock() = Some(w);
-            Ok(())
-        } else {
-            Err(NemesisError::Channel("IRC not connected".to_string()))
+        Self::send_raw_with_timeout(
+            &self.writer,
+            command,
+            std::time::Duration::from_secs(Self::WRITE_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    /// send_raw 的可注入超时形态（测试用短窗验证 BUG-20261102-300 的
+    /// 有界性；生产走 WRITE_TIMEOUT_SECS）。
+    async fn send_raw_with_timeout(
+        slot: &parking_lot::Mutex<Option<IRCWriter>>,
+        command: &str,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        match Self::write_line_with_timeout(slot, command, timeout).await {
+            Ok(()) => {
+                debug!(command = %command, "[IRCChannel] sent command");
+                Ok(())
+            }
+            Err(e) => Err(NemesisError::Channel(format!("IRC send failed: {e}"))),
         }
     }
 
@@ -269,6 +355,9 @@ impl IRCChannel {
         // BUG-20261031-247：收件发布面需要 allow-list 与 bus，一并共享进任务。
         let base = Arc::clone(&self.base);
         let bus_sender = self.bus_sender.clone();
+        // BUG-20261102-299：写槽共享进任务——连接建立后装载写半部，
+        // send_raw 才有 writer 可用（此前任务从不装载，出站恒死）。
+        let writer_slot = Arc::clone(&self.writer);
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
@@ -290,23 +379,24 @@ impl IRCChannel {
                 let stream_result = TcpStream::connect(&config.server).await;
                 match stream_result {
                     Ok(stream) => {
-                        let (reader, mut writer) = tokio::io::split(stream);
+                        let (reader, writer) = tokio::io::split(stream);
 
-                        // Send registration commands
-                        if let Some(ref pass) = config.password {
-                            let _ = writer
-                                .write_all(format!("PASS {pass}\r\n").as_bytes())
-                                .await;
-                        }
-                        let _ = writer
-                            .write_all(format!("NICK {}\r\n", config.nick).as_bytes())
-                            .await;
-                        let _ = writer
-                            .write_all(
-                                format!("USER {} 0 * :NemesisBot\r\n", config.nick).as_bytes(),
+                        // BUG-20261102-299：写半部装载进共享写槽（此前是
+                        // 任务本地变量，send_raw 的槽永远 None——出站死路）。
+                        // 注册与后续 PONG/JOIN/QUIT 全走同一写槽单一写路径
+                        // （take-写-放回串行化，与 dispatch send 并发安全）。
+                        *writer_slot.lock() = Some(IRCWriter { writer });
+
+                        // Send registration commands（build_registration 单一
+                        // 真相源；写失败/超时不放回，外层重连环会重装）
+                        for command in IRCChannel::build_registration(&config) {
+                            let _ = IRCChannel::write_line_with_timeout(
+                                &writer_slot,
+                                &command,
+                                std::time::Duration::from_secs(IRCChannel::WRITE_TIMEOUT_SECS),
                             )
                             .await;
-                        let _ = writer.flush().await;
+                        }
 
                         // Read loop
                         let mut reader = BufReader::new(reader);
@@ -316,13 +406,22 @@ impl IRCChannel {
                             tokio::select! {
                                 _ = &mut cancel_rx => {
                                     info!("[IRCChannel] connection loop cancelled");
-                                    let _ = writer.write_all(b"QUIT :NemesisBot shutting down\r\n").await;
+                                    // QUIT 用短超时：停机不被死连接拖满 30s
+                                    // （base.rs sync-target 3s 先例）
+                                    let _ = IRCChannel::write_line_with_timeout(
+                                        &writer_slot,
+                                        "QUIT :NemesisBot shutting down",
+                                        std::time::Duration::from_secs(3),
+                                    )
+                                    .await;
+                                    *writer_slot.lock() = None;
                                     return;
                                 }
                                 result = reader.read_line(&mut line) => {
                                     match result {
                                         Ok(0) => {
                                             warn!("[IRCChannel] connection closed");
+                                            *writer_slot.lock() = None;
                                             break;
                                         }
                                         Ok(_) => {
@@ -334,8 +433,14 @@ impl IRCChannel {
 
                                             // PING/PONG
                                             if let Some(data) = trimmed.strip_prefix("PING ") {
-                                                let _ = writer.write_all(format!("PONG {data}\r\n").as_bytes()).await;
-                                                let _ = writer.flush().await;
+                                                let _ = IRCChannel::write_line_with_timeout(
+                                                    &writer_slot,
+                                                    &format!("PONG {data}"),
+                                                    std::time::Duration::from_secs(
+                                                        IRCChannel::WRITE_TIMEOUT_SECS,
+                                                    ),
+                                                )
+                                                .await;
                                                 line.clear();
                                                 continue;
                                             }
@@ -345,13 +450,26 @@ impl IRCChannel {
                                             match command {
                                                 "001" => {
                                                     info!(channel = %config.channel, "[IRCChannel] registered, joining");
-                                                    let _ = writer.write_all(format!("JOIN {}\r\n", config.channel).as_bytes()).await;
-                                                    let _ = writer.flush().await;
+                                                    let _ = IRCChannel::write_line_with_timeout(
+                                                        &writer_slot,
+                                                        &format!("JOIN {}", config.channel),
+                                                        std::time::Duration::from_secs(
+                                                            IRCChannel::WRITE_TIMEOUT_SECS,
+                                                        ),
+                                                    )
+                                                    .await;
                                                 }
                                                 "433" => {
                                                     let new_nick = format!("{current_nick}_");
                                                     current_nick = new_nick.clone();
-                                                    let _ = writer.write_all(format!("NICK {new_nick}\r\n").as_bytes()).await;
+                                                    let _ = IRCChannel::write_line_with_timeout(
+                                                        &writer_slot,
+                                                        &format!("NICK {new_nick}"),
+                                                        std::time::Duration::from_secs(
+                                                            IRCChannel::WRITE_TIMEOUT_SECS,
+                                                        ),
+                                                    )
+                                                    .await;
                                                 }
                                                 "PRIVMSG" => {
                                                     // BUG-20261031-247：收件必须发布到总线进
@@ -405,10 +523,18 @@ impl IRCChannel {
                                                 }
                                                 "KICK" => {
                                                     warn!("[IRCChannel] kicked, rejoining");
-                                                    let _ = writer.write_all(format!("JOIN {}\r\n", config.channel).as_bytes()).await;
+                                                    let _ = IRCChannel::write_line_with_timeout(
+                                                        &writer_slot,
+                                                        &format!("JOIN {}", config.channel),
+                                                        std::time::Duration::from_secs(
+                                                            IRCChannel::WRITE_TIMEOUT_SECS,
+                                                        ),
+                                                    )
+                                                    .await;
                                                 }
                                                 "ERROR" => {
                                                     error!(params = %params, "[IRCChannel] error");
+                                                    *writer_slot.lock() = None;
                                                     break;
                                                 }
                                                 _ => {}
@@ -417,6 +543,7 @@ impl IRCChannel {
                                         }
                                         Err(e) => {
                                             error!(error = %e, "[IRCChannel] read error");
+                                            *writer_slot.lock() = None;
                                             break;
                                         }
                                     }

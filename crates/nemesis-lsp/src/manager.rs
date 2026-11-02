@@ -919,14 +919,17 @@ fn is_transport_error(e: &str) -> bool {
 /// 20261027-93): a timed-out request's future may have been dropped
 /// mid-read leaving half-consumed bytes in the BufReader (every later
 /// request on this session then reads desynced frames), a `without
-/// Content-Length`/`exceeds cap` reader consumed an unknown amount of the
-/// stream, and `bad JSON body` means the server's framing can't be
-/// trusted either. Unlike transport death these don't respawn in-call
-/// (retrying into a cold server doubles the wall clock) — the session is
-/// evicted so the NEXT query starts fresh.
+/// Content-Length`/`bad Content-Length`/`exceeds cap` reader consumed an
+/// unknown amount of the stream (BUG-20261102-311: the parse-failure form
+/// was missing from this list — same "unknown amount consumed" family as
+/// BUG-20261029-136's header cap), and `bad JSON body` means the server's
+/// framing can't be trusted either. Unlike transport death these don't
+/// respawn in-call (retrying into a cold server doubles the wall clock) —
+/// the session is evicted so the NEXT query starts fresh.
 fn is_session_poisoning(e: &str) -> bool {
     e.contains("timed out")
         || e.contains("without Content-Length")
+        || e.contains("bad Content-Length")
         || e.contains("bad JSON body")
         || e.contains("exceeds cap")
 }

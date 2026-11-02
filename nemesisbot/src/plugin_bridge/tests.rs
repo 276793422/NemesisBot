@@ -762,6 +762,11 @@ async fn takeover_wrapper_routes_by_switch_and_hides_credential_slots() {
         inner: inner.clone(),
         bridge,
         active: active.clone(),
+        builtin: "plugin.p.base".to_string(),
+        credential_broker: None,
+        credential_guard: Arc::new(
+            nemesis_agent::r#loop::credential_injection::CredentialCardGuard::new(),
+        ),
     };
     let ctx = nemesis_agent::context::RequestContext::new("test", "c1", "tester", "");
 
@@ -872,6 +877,11 @@ async fn takeover_credential_injection_atomic_with_path_decision() {
         inner,
         bridge,
         active: active.clone(),
+        builtin: "plugin.p.base".to_string(),
+        credential_broker: None,
+        credential_guard: Arc::new(
+            nemesis_agent::r#loop::credential_injection::CredentialCardGuard::new(),
+        ),
     };
     let ctx = nemesis_agent::context::RequestContext::new("test", "c1", "tester", "");
     let alias_args = r#"{"headers":{"x-token":"vault:bughunt-r17-absent"}}"#;
@@ -1239,4 +1249,138 @@ fn read_runtime_config_call_timeout_secs_normal_tighten_applies() {
     .unwrap();
     let out = read_runtime_config(tmp.path());
     assert_eq!(out.limits.timeout_ms, 5_000);
+}
+
+// ── L25（2026-11-02）：回退态发卡恢复 ──────────────────────────────
+
+/// mock broker：卡载荷契约断言（request_id 非空 / key_name=裸别名 /
+/// reason 无值）+ key_name 写进共享集合（模拟 respond 落 vault），恒回
+/// Stored。记录发卡次数供「接管态不发卡」断言。
+struct CardBroker {
+    store: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    keys_seen: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl nemesis_types::agent::CredentialBroker for CardBroker {
+    fn request_credential(
+        &self,
+        request: &nemesis_types::agent::CredentialRequest,
+    ) -> Result<nemesis_types::agent::CredentialOutcome, String> {
+        assert!(!request.request_id.is_empty());
+        assert!(
+            !request.key_name.starts_with("vault:"),
+            "key_name 应为裸别名: {}",
+            request.key_name
+        );
+        assert!(
+            !request.reason.contains("CARD-SECRET-VALUE"),
+            "卡载荷不得含值: {}",
+            request.reason
+        );
+        assert_eq!(request.service, "web_fetch", "service 应为内置工具名");
+        self.store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(request.key_name.clone());
+        self.keys_seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(request.key_name.clone());
+        Ok(nemesis_types::agent::CredentialOutcome::Stored)
+    }
+}
+
+/// L25 回归锁（回退态）：注入失败 → 发卡 → Stored → 原地重注入 → 内置
+/// 执行体收到真值；接管态（active=true）不经过注入/发卡——别名原文进
+/// wasm 桥（诚实 Err），零新卡。broker 缺席形态由
+/// takeover_credential_injection_atomic_with_path_decision（None broker
+/// → 原错误串）覆盖。
+#[tokio::test]
+// temp_home 的 std 锁是测试 home 隔离串行（守卫必须活满用例）；被 await 的
+// execute 只读 AtomicBool 不取该锁，无死锁面——测试内刻意持有，非生产形态。
+#[allow(clippy::await_holding_lock)]
+async fn takeover_fallback_raises_card_and_retries_with_truth() {
+    let (_lock, _dir, home) = temp_home();
+    // 全局 vault 解析器卫生（R17 用例同款：temp_home 串行锁保证本二进制
+    // 内无并发写者）。
+    nemesis_config::clear_global_vault_resolver();
+    let store = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    {
+        let store = store.clone();
+        nemesis_config::set_global_vault_resolver(std::sync::Arc::new(move |alias| {
+            if store
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(alias)
+            {
+                Ok("CARD-SECRET-VALUE".to_string())
+            } else {
+                Err(format!("别名不存在: {alias}"))
+            }
+        }));
+    }
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let inner = Arc::new(RecordingBuiltin {
+        tag: "v1",
+        cred_keys: &["headers"],
+        seen: seen.clone(),
+    });
+    let bridge = PluginToolBridge::new(stub_meta("plugin.p.base"), manager);
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let keys_seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let wrapper = super::TakeoverToolBridge {
+        inner,
+        bridge,
+        active: active.clone(),
+        builtin: "web_fetch".to_string(),
+        credential_broker: Some(Arc::new(CardBroker {
+            store: store.clone(),
+            keys_seen: keys_seen.clone(),
+        })),
+        credential_guard: Arc::new(
+            nemesis_agent::r#loop::credential_injection::CredentialCardGuard::new(),
+        ),
+    };
+    let ctx = nemesis_agent::context::RequestContext::new("test", "c1", "tester", "sess-1");
+    let args = r#"{"url":"http://x","headers":{"Authorization":"vault:card-alias"}}"#;
+
+    // 回退态：注入失败 → 发卡 → Stored → 重注入 → 内置收到真值。
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, args, &ctx).await;
+    nemesis_config::clear_global_vault_resolver();
+    let out = out.expect("Stored 后重注入应成功续行");
+    assert_eq!(out, "builtin:v1");
+    let cap = seen.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(cap.len(), 1, "内置应执行一次");
+    assert!(
+        cap[0].contains("CARD-SECRET-VALUE"),
+        "内置应收到真值: {}",
+        cap[0]
+    );
+    drop(cap);
+    assert_eq!(
+        keys_seen.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        1,
+        "应恰好发一张卡"
+    );
+
+    // 接管态：别名原文进 wasm 桥（无插件 = 诚实 Err），不注入不发卡。
+    active.store(true, std::sync::atomic::Ordering::SeqCst);
+    let out = nemesis_agent::r#loop::Tool::execute(&wrapper, args, &ctx).await;
+    assert!(out.is_err(), "接管态走 wasm 桥（无插件 = 诚实报错）");
+    let cap = seen.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(cap.len(), 1, "接管态不触达内置执行体");
+    drop(cap);
+    assert_eq!(
+        keys_seen.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        1,
+        "接管态不得发卡"
+    );
 }

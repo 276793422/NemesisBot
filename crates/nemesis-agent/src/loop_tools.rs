@@ -29,7 +29,7 @@ use crate::background_registry::{
     BackgroundKillTool, BackgroundOutputTool, BackgroundProcessRegistry, BackgroundStartTool,
 };
 use crate::context::RequestContext;
-use crate::r#loop::{FileChange, FileChangeKind, McpToolSnapshotEntry, Tool};
+use crate::r#loop::{FileChange, FileChangeKind, McpToolSnapshotEntry, OperationOverride, Tool};
 // ===========================================================================
 // Basic file/message tools
 // ===========================================================================
@@ -2843,7 +2843,18 @@ impl Tool for CronTool {
                 // compatibility. Priority: at_seconds > every_seconds >
                 // cron_expr > schedule.
                 let schedule = if let Some(secs) = val.get("at_seconds").and_then(|v| v.as_u64()) {
-                    let at_ms = chrono::Local::now().timestamp_millis() + secs_arg_to_ms(secs)?;
+                    // BUG-20261101-285：受检组合加法——secs_arg_to_ms 只受检
+                    // 换算（ms ≤ i64::MAX），与 now 的最终合成此前是裸 add：
+                    // at_seconds≈9.2233e15（schema 无上限；LLM 幻觉大整数是
+                    // 常态）时换算过检、合成溢出——debug panic 打穿 gateway，
+                    // release 回绕负值 at_ms 被 compute_next_run 的 ms > now
+                    // 过滤 = 静默僵尸任务（BUG-20261024-11「绝不回绕」禁的
+                    // 失败形态，换算层修了组合层漏网）。溢出 = 诚实 Err 回灌。
+                    let at_ms = secs_arg_to_ms(secs)?
+                        .checked_add(chrono::Local::now().timestamp_millis())
+                        .ok_or_else(|| {
+                            "at_seconds too large: scheduled time overflows".to_string()
+                        })?;
                     nemesis_cron::service::CronSchedule {
                         kind: "at".to_string(),
                         at_ms: Some(at_ms),
@@ -3047,6 +3058,24 @@ impl Tool for CronTool {
                 let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 if id.is_empty() {
                     return Err("Missing 'id' argument".to_string());
+                }
+                // Reserved-namespace guard (single truth source
+                // `reserved_prefix_hit`): board-ap:/memory-dreaming: jobs are
+                // owned by the board autopilot rules / memory.dreaming config
+                // respectively. Deleting one from this tool silently breaks
+                // the mount until the next gateway startup sync (the rule's
+                // "mounted" status keeps lying in the meantime) — management
+                // belongs to the board/memory surfaces, not the agent tool.
+                let reserved = svc
+                    .get_job(id)
+                    .map(|j| nemesis_cron::reserved_prefix_hit(&j.name).is_some())
+                    .unwrap_or(false);
+                if reserved {
+                    return Err(format!(
+                        "job {id} is a system-internal job (reserved namespace); \
+                         board autopilot rules are managed via board autopilot commands \
+                         and memory dreaming via memory config — it cannot be deleted here"
+                    ));
                 }
                 match svc.remove_job(id) {
                     Ok(true) => Ok(format!("Deleted cron job: {}", id)),
@@ -5264,9 +5293,17 @@ impl Tool for FindSkillsTool {
 ///
 /// Mirrors Go's `InstallSkillTool`. Downloads and installs a skill from the
 /// specified registry to the local workspace skills directory.
+///
+/// BUG-20261101-295：执行面走 [`nemesis_skills::installer::SkillInstaller`]
+/// WS4 全漏斗（staging → 验签 P11 → 安全扫描 P15 → 版本龄 P16 → 审批门
+/// P13 → 落位 + lockfile P14）。旧形态裸 `RegistryManager::install` 直落
+/// skills/，绕过全部供应链闸——web/CLI 同操作均走漏斗，工具面是唯一旁路
+/// （prompt-injected LLM 可装恶意技能 → 重启被 loader 加载 → 持久后门）。
 pub struct InstallSkillTool {
     registry: Arc<nemesis_skills::registry::RegistryManager>,
     workspace: String,
+    /// P13 审批门槽（gateway 晚填）。None 槽 / 槽内 None 门 = 无审批面直装。
+    install_gate_slot: Option<SkillsInstallGateSlot>,
 }
 
 impl InstallSkillTool {
@@ -5274,10 +5311,12 @@ impl InstallSkillTool {
     pub fn new(
         registry: Arc<nemesis_skills::registry::RegistryManager>,
         workspace: String,
+        install_gate_slot: Option<SkillsInstallGateSlot>,
     ) -> Self {
         Self {
             registry,
             workspace,
+            install_gate_slot,
         }
     }
 }
@@ -5308,31 +5347,45 @@ impl Tool for InstallSkillTool {
             .map_err(|e| format!("invalid slug: {}", e))?;
 
         let registry_name = val["registry"].as_str().unwrap_or("github");
-        let _version = val["version"].as_str().unwrap_or("latest");
+        let version = val["version"].as_str().unwrap_or("latest");
         let force = val["force"].as_bool().unwrap_or(false);
 
+        // WS4 漏斗（BUG-20261101-295）：与 web install_with_ctx 同源走
+        // SkillInstaller（staging → 验签 P11 → 安全扫描 P15 → 版本龄 P16 →
+        // 审批门 P13 → 落位 + lockfile P14）。审批门经共享槽晚绑；P11/P16
+        // 主配置消费点在 gateway 侧（槽同款），工具面无 home 语境按缺省
+        // （allow_unsigned=true、age 关）——与改造前工具语义一致，非本轮收缩。
+        let mut installer = nemesis_skills::installer::SkillInstaller::new(&self.workspace);
+        installer.set_registry_manager_shared(self.registry.clone());
+        if let Some(slot) = &self.install_gate_slot
+            && let Some(gate) = slot.read().clone()
+        {
+            installer.set_install_gate(gate);
+        }
+
         // Check if skill already exists locally (unless force)
-        if !force {
-            let skill_dir = std::path::Path::new(&self.workspace)
-                .join("skills")
-                .join(slug);
-            if skill_dir.exists() {
+        let skill_dir = std::path::Path::new(&self.workspace)
+            .join("skills")
+            .join(slug);
+        if skill_dir.exists() {
+            if !force {
                 return Err(format!(
                     "skill '{}' already exists locally at {}. Use force=true to reinstall.",
                     slug,
                     skill_dir.display()
                 ));
             }
+            // force = 先卸旧再装。经 installer.uninstall：边界校验 + P14
+            // lockfile 记账同步移除（与 web force 的 .skill-rollback 事务化
+            // 同族语义；卸失败诚实报错，旧技能不动）。
+            installer
+                .uninstall(slug)
+                .map_err(|e| format!("failed to remove existing skill '{}': {}", slug, e))?;
         }
 
-        // Install from registry
-        let target_dir = Path::new(&self.workspace)
-            .join("skills")
-            .to_string_lossy()
-            .to_string();
-
-        self.registry
-            .install(registry_name, slug, &target_dir)
+        // Install through the WS4 funnel.
+        installer
+            .install(registry_name, slug, version)
             .await
             .map_err(|e| format!("failed to install skill '{}': {}", slug, e))?;
 
@@ -5367,6 +5420,15 @@ pub type ApprovalManagerSlot =
 /// writes (no approval middleware). All `Option<ApprovalManagerSlot>` fields
 /// stay `None`-compatible via this `()` alias.
 pub type ApprovalManagerSlot = ();
+
+/// WS4（P13）：`install_skill` 工具的装前审批门共享槽——gateway 在 agent
+/// loop 建好后填 `LateWebSkillsGate`（approval_slot/question_slot 同款
+/// 「先建槽后填」；重启重建的 loop 共享同一槽 Arc，晚填也可见）。
+/// 槽缺席（`None`）或槽内为空 = 无审批面直装（headless / 测试装配 /
+/// `skills.install_approval=false` 显式关卡——三种形态同语义）；漏斗其余
+/// 闸（staging / 验签 P11 / 安全扫描 P15 / lockfile P14）与门无关，恒生效。
+pub type SkillsInstallGateSlot =
+    Arc<parking_lot::RwLock<Option<nemesis_skills::install_gate::SharedInstallGate>>>;
 
 #[cfg_attr(not(feature = "security"), allow(dead_code))]
 pub struct SkillManageTool {
@@ -7299,6 +7361,30 @@ impl Tool for McpDiscoverTool {
             Err(e) => Err(e),
         }
     }
+
+    /// BUG-20261102-296：stdio 臂（`command` 参数）是 LLM 可控的任意进程
+    /// spawn（`discover_server_metadata` → `StdioTransport` → 直接
+    /// `Command::spawn`）——效果面与 exec 同级，静态 NetworkRequest
+    /// （MEDIUM）档让 exec 族全部闸失配：默认配置的 `process_rules.exec`
+    /// 危险命令 deny 规则（rm -rf / format / del /s / remove-item
+    /// -recurse…）、Layer 2 命令守卫、preexec 扫描、guardian 危级全部照
+    /// 不到本工具。dispatch 嗅探本投影把 stdio 形态投成 process_exec
+    /// （CRITICAL，与 exec 同管线同闸）；HTTP 臂（url）维持静态
+    /// NetworkRequest（SSRF 由 nemesis-security `extract_url` 的
+    /// mcp_discover 臂覆盖）。args 非对象 / command 缺席或空白 = None
+    /// （旧行为，connector 投影同款 None 语义）。
+    fn operation_override(&self, args: &str) -> Option<OperationOverride> {
+        let v: serde_json::Value = serde_json::from_str(args).ok()?;
+        let command = v.get("command")?.as_str()?.trim();
+        if command.is_empty() {
+            return None;
+        }
+        Some(OperationOverride {
+            op_type: "process_exec".to_string(),
+            force_approval: None,
+            receipt_ctx: None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8132,6 +8218,9 @@ pub struct SharedToolConfig {
     pub approval_manager: Option<ApprovalManagerSlot>,
     /// Whether skill_manage writes require interactive approval.
     pub skills_manage_approval: bool,
+    /// WS4（P13）：`install_skill` 工具的装前审批门槽（gateway 晚填
+    /// `LateWebSkillsGate`；None = 无审批面直装——headless/测试装配）。
+    pub skills_install_gate_slot: Option<SkillsInstallGateSlot>,
     /// J2a（2026-09-04）：SSRF 闸宿主（SecurityPlugin），web_fetch 重定向
     /// 循环逐跳复查用。None = 闸不生效（跳数上限仍生效）。执行体子进程按
     /// 设计不注入（哑执行——判断在 gateway，且 web_fetch 不在 MOVE_TOOLS，
@@ -8228,6 +8317,13 @@ impl std::fmt::Debug for SharedToolConfig {
                     .map(|_| "ApprovalManagerSlot"),
             )
             .field("skills_manage_approval", &self.skills_manage_approval)
+            .field(
+                "skills_install_gate_slot",
+                &self
+                    .skills_install_gate_slot
+                    .as_ref()
+                    .map(|_| "SkillsInstallGateSlot"),
+            )
             .field("todo", &self.todo)
             .field(
                 "question_broker",
@@ -8421,7 +8517,11 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         if let Some(ref workspace) = config.workspace {
             tools.insert(
                 "install_skill".to_string(),
-                Box::new(InstallSkillTool::new(registry.clone(), workspace.clone())),
+                Box::new(InstallSkillTool::new(
+                    registry.clone(),
+                    workspace.clone(),
+                    config.skills_install_gate_slot.clone(),
+                )),
             );
         }
     }
@@ -9100,6 +9200,7 @@ pub fn register_extended_tools(
         workflow_engine: None,
         approval_manager: None,
         skills_manage_approval: false,
+        skills_install_gate_slot: None,
         security: None,
         workspace_boundary: None,
         todo: None,
@@ -9138,6 +9239,10 @@ mod exec_timeout_tests;
 mod loop_tools_extra_tests;
 #[cfg(test)]
 mod skill_manage_tests;
+// BUG-20261101-295：install_skill 工具 WS4 漏斗接线回归（lockfile/origin
+// 记账凭证 + P13 门晚填槽时序 + slug/exists/force 语义）。
+#[cfg(test)]
+mod install_skill_funnel_tests;
 // CronTool schema↔impl 一致性回归（2026-10-19）：schema 形态调用是
 // 一等公民，死参（command/deliver）不再声明，schedule 字符串仅作回退。
 #[cfg(test)]

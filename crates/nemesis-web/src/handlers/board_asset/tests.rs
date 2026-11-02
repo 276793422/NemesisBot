@@ -89,6 +89,7 @@ fn make_state(with_asset_cfg: bool) -> AssetFixture {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: Some(service),
     });

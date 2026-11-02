@@ -705,15 +705,34 @@ fn cmd_rules_test(
 
     match matched {
         Some((i, pattern, action)) => {
-            let (icon, label) = match action.as_str() {
-                "allow" | "allowed" => ("ALLOWED", "allowed"),
-                "ask" | "require_approval" => ("ASK", "requires approval"),
-                _ => ("DENIED", "denied"),
+            // L01 敏感 flag 放行臂二次校验：allow 命中后与 auditor 同源
+            // 跑扫描（预览与运行时判定不分叉——D12 教训）。命中显示
+            // ASK + flag_hit，与运行时降级弹卡一致。
+            let flags = if (action == "allow" || action == "allowed") && is_command_op {
+                let segs = nemesis_security::matcher::exec_rule_segments(target);
+                nemesis_security::matcher::scan_dangerous_flags(&segs)
+            } else {
+                Vec::new()
             };
-            println!("  Matched rule [{}]: {} -> {}", i, pattern, action);
-            println!();
-            println!("  Result:  {}", icon);
-            println!("  Reason:  Matched rule ({})", label);
+            if !flags.is_empty() {
+                println!("  Matched rule [{}]: {} -> {}", i, pattern, action);
+                println!();
+                println!("  Result:  ASK");
+                println!(
+                    "  Reason:  sensitive flag_hit={} behind allow rule (需要重新确认)",
+                    flags.join(",")
+                );
+            } else {
+                let (icon, label) = match action.as_str() {
+                    "allow" | "allowed" => ("ALLOWED", "allowed"),
+                    "ask" | "require_approval" => ("ASK", "requires approval"),
+                    _ => ("DENIED", "denied"),
+                };
+                println!("  Matched rule [{}]: {} -> {}", i, pattern, action);
+                println!();
+                println!("  Result:  {}", icon);
+                println!("  Reason:  Matched rule ({})", label);
+            }
         }
         None => {
             let default_action = cfg

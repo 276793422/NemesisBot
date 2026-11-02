@@ -13,6 +13,21 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
+// BUG-20261101-278：download_file 超时——reqwest::blocking::get 内部
+// Client::new() 零超时，模型 CDN 半死（TCP 已建但不发数据）时 Dashboard
+// 安装按钮永久挂死。reqwest 0.12.28 的 blocking::ClientBuilder **没有
+// read_timeout**（只有总 timeout/connect_timeout），对齐同族先例
+// nemesis-voice model.rs（BUG-20261029-146）用总超时 600s 兜底：嵌入模型
+// 实际只有几十 MB（hf-mirror 实测 ~3.6MB/s，合法下载远低于 600s），
+// write_file_atomic 保证超时中途失败不落半截残骸（重装幂等重下）。
+#[cfg(not(test))]
+const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+#[cfg(test)]
+// 测试态 400ms：stall 回归测试经真实 download_file 跑，等待必须秒级以内。
+const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+// ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
 
@@ -541,7 +556,16 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let response = reqwest::blocking::get(url)
+    // BUG-20261101-278：blocking::get 内部 Client::new() 零超时 → 换带
+    // connect/total timeout 的显式客户端，半死 CDN 上诚实报错不挂死。
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .timeout(DOWNLOAD_TOTAL_TIMEOUT)
+        .build()
+        .map_err(|e| format!("download client build failed for {}: {}", url, e))?;
+    let response = client
+        .get(url)
+        .send()
         .map_err(|e| format!("download request failed for {}: {}", url, e))?;
 
     if !response.status().is_success() {

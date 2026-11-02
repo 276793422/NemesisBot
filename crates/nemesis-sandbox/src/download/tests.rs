@@ -176,3 +176,90 @@ async fn download_and_verify_uncreatable_parent_bails_with_context() {
     let msg = format!("{err:#}");
     assert!(msg.contains("create dir"), "{msg}");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-278：零超时下载在半死上游上永久挂死——read_timeout 回归测试。
+// 经真实公开函数跑（测试态 DOWNLOAD_READ_TIMEOUT=400ms），等待必须秒级内。
+// ---------------------------------------------------------------------------
+
+/// 半死上游①：接受连接、收走请求、永不回响应头（连接保持打开）。
+async fn serve_head_stall() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            // s 刻意不 drop 不 write——客户端等响应头，直到 read_timeout 触发。
+            std::future::pending::<()>().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 半死上游②：回完整响应头 + 半截 body 后断流（Content-Length 说谎）。
+async fn serve_body_stall() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            // 声明 100 字节只发 10 字节，然后保持连接不发余量——body 读
+            // 半截 stall，read_timeout 必须兜住。
+            let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+            let _ = s.write_all(head).await;
+            let _ = s.write_all(&[0xABu8; 10]).await;
+            std::future::pending::<()>().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn assert_timeout_err(err: anyhow::Error) {
+    let timed_out = err
+        .downcast_ref::<reqwest::Error>()
+        .map(|e| e.is_timeout())
+        .unwrap_or(false);
+    assert!(timed_out, "期望 read_timeout 超时错误，实际: {err}");
+}
+
+#[tokio::test]
+async fn checksums_fetch_errors_on_head_stall_instead_of_hanging() {
+    let base = serve_head_stall().await;
+    let started = std::time::Instant::now();
+    let err = fetch_expected_sha256(&format!("{base}/sha256-checksums.txt"), "installer.exe")
+        .await
+        .expect_err("半死上游必须报错而非永久挂起");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "必须在 read_timeout 窗内失败，实际耗时 {:?}",
+        started.elapsed()
+    );
+    assert_timeout_err(err);
+}
+
+#[tokio::test]
+async fn installer_download_errors_on_body_stall_instead_of_hanging() {
+    let base = serve_body_stall().await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("installer.exe");
+    let started = std::time::Instant::now();
+    let err = download_and_verify(&format!("{base}/installer.exe"), None, &dest)
+        .await
+        .expect_err("body 断流必须报错而非永久挂起");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "必须在 read_timeout 窗内失败，实际耗时 {:?}",
+        started.elapsed()
+    );
+    assert_timeout_err(err);
+}

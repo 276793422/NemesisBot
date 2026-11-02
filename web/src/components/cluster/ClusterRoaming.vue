@@ -41,7 +41,7 @@ const gateTokenBroken = computed(() => status.value?.cluster_gate?.token_broken 
 const gateHint = computed(() => {
   if (!enabled.value || active.value) return ''
   if (gateTokenBroken.value) {
-    return 'RPC 引用 token 异常（vault 凭据缺失或不一致）——网关启动时集群装配被跳过，漫游层未随之装配。请修复集群 token 后重启网关。'
+    return 'RPC token 异常（为空或 vault 引用解析失败）——网关启动时集群 RPC fail-closed 不启动，漫游层未随之装配。请运行 nemesisbot cluster token generate --save（或修复引用）后重启网关。'
   }
   if (gateClosed.value) {
     return '集群本体未启用（config.json cluster.enabled 或 config.cluster.json enabled 未开，两道闸）——漫游层随集群装配，仅重启不会生效。请先打开上方「启用集群」并在【集群概览】启动集群（或 CLI nemesisbot cluster enable 一步开全），再重启网关。'

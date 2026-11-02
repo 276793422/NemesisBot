@@ -35,6 +35,27 @@ pub enum FailoverError {
     Billing { provider: String },
     #[error("timeout calling provider {provider}/{model}")]
     Timeout { provider: String, model: String },
+    // L02（2026-11-01）流式中断部分输出保留：流中途 Err / channel 关闭无终态
+    // 且已聚合文本非空时，partial 不再丢弃——一等公民随错误值携带。
+    // Display 结构是**契约**：头行（首个 \n 之前）以 "stream interrupted from
+    // provider " 开头 = 下游（llm_error_class 入口短路 / recovery 词表短路）
+    // 的前缀锚判据，尾段携带 partial 全文（agent loop 侧 LlmProvider trait
+    // 不见 providers 类型，Display 文本是唯一跨层通道——设计文档 §2 关键
+    // 约束）。头行只含 reason 不含 partial——分类器对整段文本 contains 匹配
+    // 会被模型生成的任意内容污染（对抗用例 A1/A2），前缀锚 + 头行根因隔离
+    // 是分类诚实性的前提。
+    #[error("stream interrupted from provider {provider}/{model}: {reason}（已接收 {} 字符，中断前部分文本随错误通知保留）\n\n--- 以下为中断前已生成的部分内容 ---\n{partial_content}", .partial_content.chars().count())]
+    StreamInterrupted {
+        provider: String,
+        model: String,
+        /// 原始根因（Err 臂 = lane 原错误 to_string()；None 臂 = 固定说明）。
+        /// 根因链不丢（10-13 传输错误诚实化同门纪律）。
+        reason: String,
+        /// 已聚合的文本增量（模型已产出的工作成果）。
+        partial_content: String,
+        /// tool_calls 出现过 = 半截不可当纯文本续用（本期仅携带供消费方判定）。
+        has_partial_tool_calls: bool,
+    },
     #[error("format error from provider {provider}: {message}")]
     Format { provider: String, message: String },
     #[error("provider {provider} is overloaded (status: {status})")]
@@ -49,6 +70,9 @@ impl FailoverError {
         match self {
             FailoverError::RateLimit { .. }
             | FailoverError::Timeout { .. }
+            // L02：流中断与 Timeout 同门（瞬态可重试）——重试=全新请求，
+            // partial 不进重试请求由结构性保证。
+            | FailoverError::StreamInterrupted { .. }
             | FailoverError::Overloaded { .. } => true,
             // 2026-10-13 诚实化配套：`transport_error` 的传输层连接失败
             // （DNS/连接拒绝/SYN 黑洞/中途断流）落 Unknown 但带 "connect
@@ -69,7 +93,11 @@ impl FailoverError {
             FailoverError::Auth { .. } => FailoverReason::Auth,
             FailoverError::RateLimit { .. } => FailoverReason::RateLimit,
             FailoverError::Billing { .. } => FailoverReason::Billing,
-            FailoverError::Timeout { .. } => FailoverReason::Timeout,
+            FailoverError::Timeout { .. }
+            // L02：轮转语义同门（瞬态可 fallback）——不新增 FailoverReason
+            // 枚举值，波及面最小（设计文档 §9 拍板④）。
+            | FailoverError::StreamInterrupted { .. }
+            => FailoverReason::Timeout,
             FailoverError::Format { .. } => FailoverReason::Format,
             FailoverError::Overloaded { .. } => FailoverReason::Overloaded,
             FailoverError::Unknown { .. } => FailoverReason::Unknown,

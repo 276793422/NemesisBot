@@ -94,17 +94,24 @@ fn eval_expression(expr: &str) -> Result<bool, String> {
 }
 
 /// Split an expression by a logical operator, respecting parentheses.
+///
+/// 循环全程以 `char_indices` 的**字节偏移**为索引单位（`expr[a..b]` 直接
+/// 可用）。BUG-20261102-323：旧实现用 `chars().collect()` 的 char 下标
+/// 按字节切片 `expr[current_start..i]`，多字节字符（CJK）在逻辑算子前时
+/// 切点落在字符中间——`完成 == 完成 or 失败 == 失败` 即
+/// `not a char boundary` panic；另有 mis-split 臂产出裸词 → Err。
+/// 与 BUG-20261031-240（find_operator 同族病）同文件，当时漏扫。
 fn split_logical<'a>(expr: &'a str, op: &str) -> Vec<&'a str> {
     let mut parts = Vec::new();
     let mut depth = 0;
-    let mut current_start = 0;
+    let mut current_start = 0usize; // 字节偏移
     let mut in_quote = false;
-    let chars: Vec<char> = expr.chars().collect();
+    let chars: Vec<(usize, char)> = expr.char_indices().collect();
     let op_chars: Vec<char> = op.chars().collect();
 
     let mut i = 0;
     while i < chars.len() {
-        let ch = chars[i];
+        let ch = chars[i].1;
 
         if ch == '"' {
             in_quote = !in_quote;
@@ -122,10 +129,16 @@ fn split_logical<'a>(expr: &'a str, op: &str) -> Vec<&'a str> {
         } else if ch == ')' {
             depth -= 1;
         } else if depth == 0 && i + op_chars.len() <= chars.len() {
-            let slice: String = chars[i..i + op_chars.len()].iter().collect();
+            let slice: String = chars[i..i + op_chars.len()]
+                .iter()
+                .map(|(_, c)| *c)
+                .collect();
             if slice == op {
-                parts.push(expr[current_start..i].trim());
-                current_start = i + op_chars.len();
+                let op_start = chars[i].0;
+                let op_end =
+                    chars[i + op_chars.len() - 1].0 + chars[i + op_chars.len() - 1].1.len_utf8();
+                parts.push(expr[current_start..op_start].trim());
+                current_start = op_end;
                 i += op_chars.len();
                 continue;
             }
@@ -328,15 +341,20 @@ fn eval_matches(left: &str, right: &str) -> Result<bool, String> {
 }
 
 /// Find the closing paren that matches the opening paren at position start.
+/// 返回值是**字节偏移**（调用方与 `expr.len() - 1` 字节长度直接比较，
+/// 命中位自身是 ')' 的起始字节，边界保证）。BUG-20261102-323：旧实现
+/// `chars().enumerate()` 返回 char 下标，含多字节字符的括号表达式与
+/// 字节长度永不相等 → 括号解包永不生效（`(完成 == 完成)` 静默错判）。
+/// 与 BUG-20261031-240（find_operator 同族病）同文件，当时漏扫。
 fn find_matching_paren(expr: &str, start: usize) -> usize {
     let mut depth = 0;
-    for (i, ch) in expr.chars().enumerate().skip(start) {
+    for (i, ch) in expr[start..].char_indices() {
         if ch == '(' {
             depth += 1;
         } else if ch == ')' {
             depth -= 1;
             if depth == 0 {
-                return i;
+                return start + i;
             }
         }
     }

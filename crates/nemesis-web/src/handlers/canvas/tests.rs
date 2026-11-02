@@ -39,6 +39,7 @@ fn make_ctx() -> RequestContext {
         board: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
     });
     RequestContext {
         session_id: "s".to_string(),

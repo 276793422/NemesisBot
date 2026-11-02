@@ -36,6 +36,12 @@ export interface ApprovalRequest {
   why?: string
   impact?: string
   reject_note?: string
+  /** L07（2026-11-01）：操作预览快照（unified diff / 命令现场）。缺省 =
+   * 该操作不产预览（无 args 或非白名单形态），卡片无预览区。 */
+  preview?: string
+  /** preview 的格式：`diff` = unified diff（按行首字符染色）；
+   * `text` = 等宽纯文本。 */
+  preview_format?: 'diff' | 'text'
   /** 本地到期时刻（ms epoch）= 接收时刻 + (timeout_secs - age_secs) * 1000 */
   expiresAt: number
 }
@@ -86,6 +92,12 @@ function upsertFromPayload(data: any) {
     why: data.why ? String(data.why) : undefined,
     impact: data.impact ? String(data.impact) : undefined,
     reject_note: data.reject_note ? String(data.reject_note) : undefined,
+    // L07：预览透传（后端在场才下发——skip_serializing_if）。
+    preview: typeof data.preview === 'string' ? data.preview : undefined,
+    preview_format:
+      data.preview_format === 'diff' || data.preview_format === 'text'
+        ? data.preview_format
+        : undefined,
     expiresAt: Date.now() + Math.max(0, timeout - age) * 1000,
   }
   if (existing === -1) {

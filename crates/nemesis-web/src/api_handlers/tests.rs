@@ -423,6 +423,7 @@ fn test_app_state_session_manager_ref() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     };
@@ -652,6 +653,7 @@ fn test_app_state_default_values() {
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     };
@@ -787,6 +789,7 @@ fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState>
         estop: None,
         signature_verify: None,
         skills_install_gate: None,
+        session_stats: None,
         cron: None,
         board: None,
     })

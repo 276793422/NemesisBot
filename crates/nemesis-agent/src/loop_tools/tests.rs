@@ -1788,6 +1788,31 @@ async fn test_cron_tool_create_missing_schedule() {
     assert!(result.unwrap_err().contains("at_seconds"));
 }
 
+#[tokio::test]
+async fn test_cron_tool_create_at_seconds_overflow_honest_err() {
+    // BUG-20261101-285 回归钉：at_seconds = i64::MAX/1000（换算层
+    // checked_mul 过检的最大值），合成加法 now + ms 溢出 i64——修复前
+    // 裸 add 在 debug 构建 panic（打穿 gateway）、release 回绕负 at_ms
+    // 被 compute_next_run 的 ms > now 过滤 = 静默僵尸任务；修复后诚实
+    // Err 回灌，不 panic、不入库。
+    let svc = make_cron_service();
+    let tool = CronTool::new(svc);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "action": "create",
+        "name": "overflow-at",
+        "at_seconds": 9223372036854775u64,
+        "content": "never"
+    })
+    .to_string();
+    let result = tool.execute(&args, &ctx).await;
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("at_seconds too large"),
+        "expected honest overflow error, got: {err}"
+    );
+}
+
 #[test]
 fn test_cron_tool_set_context() {
     let svc = make_cron_service();
@@ -2801,7 +2826,7 @@ async fn test_cron_tool_list_after_create() {
 #[tokio::test]
 async fn test_install_skill_tool_missing_slug() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"name": "test"}"#, &ctx).await;
@@ -2820,7 +2845,7 @@ async fn test_install_skill_tool_missing_slug() {
 #[tokio::test]
 async fn test_install_skill_tool_empty_slug() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"slug": ""}"#, &ctx).await;
@@ -2831,7 +2856,7 @@ async fn test_install_skill_tool_empty_slug() {
 #[tokio::test]
 async fn test_install_skill_tool_invalid_json() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute("not json", &ctx).await;
@@ -2842,7 +2867,7 @@ async fn test_install_skill_tool_invalid_json() {
 #[tokio::test]
 async fn test_install_skill_tool_path_traversal() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"slug": "../evil"}"#, &ctx).await;
@@ -2859,7 +2884,7 @@ async fn test_install_skill_tool_already_exists() {
     std::fs::create_dir_all(&skill_dir).unwrap();
 
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, workspace);
+    let tool = InstallSkillTool::new(registry, workspace, None);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let result = tool.execute(r#"{"slug": "existing-skill"}"#, &ctx).await;
@@ -2919,7 +2944,7 @@ async fn test_find_skills_tool_description_and_params() {
 #[test]
 fn test_install_skill_tool_description_and_params() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
-    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+    let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string(), None);
     assert!(!tool.description().is_empty());
     assert!(tool.parameters().is_object());
 }
@@ -3608,6 +3633,38 @@ fn test_format_discovery_result_empty() {
     let output = format_discovery_result(&result);
     assert!(output.contains("unknown"));
     assert!(output.contains("None"));
+}
+
+// BUG-20261102-296：stdio 臂（command 参数）投影 process_exec 过 exec
+// 同款管线；HTTP 臂 / 空 command / 非对象 args 维持静态档（None）。
+#[test]
+fn test_mcp_discover_operation_override_command_projects_process_exec() {
+    let tool = McpDiscoverTool::new();
+    let ov = tool
+        .operation_override(r#"{"command": "npx", "args": ["-y", "@modelcontextprotocol/server"]}"#)
+        .expect("command form must project an override");
+    assert_eq!(ov.op_type, "process_exec");
+    assert!(ov.force_approval.is_none());
+    assert!(ov.receipt_ctx.is_none());
+}
+
+#[test]
+fn test_mcp_discover_operation_override_url_form_none() {
+    let tool = McpDiscoverTool::new();
+    assert!(
+        tool.operation_override(r#"{"url": "http://localhost:8080/mcp"}"#)
+            .is_none()
+    );
+}
+
+#[test]
+fn test_mcp_discover_operation_override_empty_or_bad_args_none() {
+    let tool = McpDiscoverTool::new();
+    // 空 command / 非字符串 / 非对象 / 烂 JSON 都落 None（旧行为）。
+    assert!(tool.operation_override(r#"{"command": "  "}"#).is_none());
+    assert!(tool.operation_override(r#"{"command": 42}"#).is_none());
+    assert!(tool.operation_override(r#""just a string""#).is_none());
+    assert!(tool.operation_override("not json at all").is_none());
 }
 
 // =========================================================================

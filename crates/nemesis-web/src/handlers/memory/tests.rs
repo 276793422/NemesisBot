@@ -297,3 +297,39 @@ fn env_check_local_model_paths_mark_ready() {
     // active model not ready → still degraded.
     assert_eq!(out["overall"], "degraded");
 }
+
+// --- BUG-20261101-279：collect_files 遍历顺序契约锁 ---
+
+#[test]
+fn bug279_collect_files_dfs_lexicographic_order() {
+    // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——文件
+    // 浏览器列表直回前端。修复语义：DFS + 层内字典序 = 输出全局确定。
+    let ws = tempfile::tempdir().unwrap();
+    let memory = ws.path().join("memory");
+    // 刻意打乱创建序：先建 z 目录、再建根文件、再建 a 目录。
+    std::fs::create_dir_all(memory.join("b_dir")).unwrap();
+    std::fs::write(memory.join("b_dir").join("file2.txt"), "b").unwrap();
+    std::fs::write(memory.join("aaa.txt"), "root").unwrap();
+    std::fs::create_dir_all(memory.join("a_dir")).unwrap();
+    std::fs::write(memory.join("a_dir").join("file1.txt"), "a").unwrap();
+
+    let workspace = ws.path().to_str().unwrap();
+    let mut out = Vec::new();
+    super::collect_files(workspace, "memory", &mut out).unwrap();
+
+    let paths: Vec<String> = out
+        .iter()
+        .map(|d| d["path"].as_str().unwrap().to_string())
+        .collect();
+    // DFS + 层内字典序：根层文件/目录混排按名排，目录先序进入再递归。
+    // collect_files 输出的 path 带 base_relative 前缀。
+    assert_eq!(
+        paths,
+        // 字节序：'_'(0x5F) < 'a'(0x61)，a_dir 在 aaa.txt 之前。
+        vec![
+            "memory/a_dir/file1.txt".to_string(),
+            "memory/aaa.txt".to_string(),
+            "memory/b_dir/file2.txt".to_string(),
+        ]
+    );
+}

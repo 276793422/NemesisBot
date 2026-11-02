@@ -104,7 +104,7 @@ fn test_build_registration() {
         ..Default::default()
     };
     let ch = IRCChannel::new(config, test_sender()).unwrap();
-    let cmds = ch.build_registration();
+    let cmds = IRCChannel::build_registration(&ch.config);
     assert_eq!(cmds[0], "PASS secret");
     assert_eq!(cmds[1], "NICK TestBot");
     assert_eq!(cmds[2], "USER TestBot 0 * :NemesisBot");
@@ -201,7 +201,7 @@ fn test_build_registration_no_password() {
         ..Default::default()
     };
     let ch = IRCChannel::new(config, test_sender()).unwrap();
-    let cmds = ch.build_registration();
+    let cmds = IRCChannel::build_registration(&ch.config);
     assert_eq!(cmds[0], "NICK TestBot");
     assert_eq!(cmds[1], "USER TestBot 0 * :NemesisBot");
 }
@@ -387,4 +387,283 @@ async fn test_privmsg_blocked_by_allow_list() {
     );
 
     ch.stop().await.unwrap();
+}
+
+// ---- BUG-20261102-299：出站死路（连接任务从不装载共享写槽，send 恒报 not connected） ----
+
+/// 起一个「读注册 → 回 001 → 持续收命令」的假 IRC 服务器，收工时把见过的
+/// 全部客户端命令行回传（断言顺序不敏感：注册/JOIN/PRIVMSG 任意交错都算过）。
+async fn spawn_fake_irc_interactive() -> (
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Receiver<Vec<String>>,
+) {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = match listener.accept().await {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = tx.send(Vec::new());
+                return;
+            }
+        };
+        let (rd, mut wr) = stream.into_split();
+        let mut reader = BufReader::new(rd);
+        let mut commands = Vec::new();
+        let mut welcomed = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let mut line = String::new();
+            let n = match tokio::time::timeout_at(deadline, reader.read_line(&mut line)).await {
+                Ok(Ok(n)) => n,
+                _ => break,
+            };
+            if n == 0 {
+                break;
+            }
+            let trimmed = line.trim_end().to_string();
+            if (trimmed.starts_with("NICK ") || trimmed.starts_with("USER ")) && !welcomed {
+                welcomed = true;
+                let _ = wr.write_all(b":srv.test 001 nb :Welcome\r\n").await;
+            }
+            let is_privmsg = trimmed.starts_with("PRIVMSG");
+            commands.push(trimmed);
+            if is_privmsg {
+                break;
+            }
+        }
+        let _ = tx.send(commands);
+    });
+    (addr, rx)
+}
+
+/// 红绿证：修复前连接任务的写半部是任务本地变量、共享写槽恒 None，
+/// send() 恒报「IRC not connected」（出站从未通过）；修复后连接建立即装载
+/// 写槽，PRIVMSG 必须原样到达服务器。
+#[tokio::test]
+async fn test_bug299_send_delivers_privmsg_over_real_connection() {
+    let (addr, cmd_rx) = spawn_fake_irc_interactive().await;
+    let ch = IRCChannel::new(irc_config_for(addr, Vec::new()), test_sender()).unwrap();
+    ch.start().await.unwrap();
+
+    // chat_id 空 → target=频道名（send() 缺省语义）；连接建立有竞态窗口
+    // （start 返回 ≠ 连接已建立），失败短退避重试直至可写。
+    let msg = OutboundMessage {
+        channel: "irc".to_string(),
+        chat_id: String::new(),
+        content: "hello from test".to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    let mut sent = false;
+    for _ in 0..60 {
+        if ch.send(msg.clone()).await.is_ok() {
+            sent = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        sent,
+        "BUG-20261102-299: send must succeed once the connection loop loads the shared writer slot"
+    );
+
+    let commands = tokio::time::timeout(std::time::Duration::from_secs(10), cmd_rx)
+        .await
+        .expect("server must see PRIVMSG within 10s")
+        .unwrap();
+    assert!(
+        commands.iter().any(|c| c.starts_with("NICK ")),
+        "registration NICK missing: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|c| c.starts_with("USER ")),
+        "registration USER missing: {commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| c == "PRIVMSG #test :hello from test"),
+        "PRIVMSG must reach the server verbatim: {commands:?}"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+// ---- BUG-20261102-300：停摆对端写必须有界（串行派发管线冻结面） ----
+
+/// 永不完成的 writer（poll_write 恒 Pending）——停摆对端的确定性替身。
+/// Windows loopback TCP 的缓冲自调连显式 SO_SNDBUF/SO_RCVBUF 收窄都不认
+/// （实测 256MB 载荷都被整体吃下，stall 不成立）——内核行为面不可依赖，
+/// 超时机制用 mock 驱动（全平台确定性）；真实 TCP 停摆面由下方 cfg(unix)
+/// 用例在 Linux nightly 兜底（Linux 尊重缓冲收窄）。
+struct NeverWritableWriter;
+
+impl tokio::io::AsyncWrite for NeverWritableWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Pending
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// 即写即成的 writer（成功臂 sanity：write_all+flush 全通过 → Ok）。
+struct AlwaysWritableWriter;
+
+impl tokio::io::AsyncWrite for AlwaysWritableWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// 核心机制（全平台确定性）：停摆 writer 上带超时写必须在注入窗内
+/// 诚实报 TimedOut——旧代码此处是裸 write_all+flush，无界挂起。
+#[tokio::test]
+async fn test_bug300_write_command_bounded_times_out_on_never_writable() {
+    let mut w = NeverWritableWriter;
+    let t0 = std::time::Instant::now();
+    let result = IRCChannel::write_command_bounded(
+        &mut w,
+        "PRIVMSG #test :hi",
+        std::time::Duration::from_millis(400),
+    )
+    .await;
+    let elapsed = t0.elapsed();
+
+    let err = result.expect_err("never-writable write must surface a timeout, not hang");
+    assert!(err.to_string().contains("timed out"), "error: {err}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "timeout must bound the write, took {elapsed:?}"
+    );
+}
+
+/// 成功臂 sanity：可写 writer 上 write_all+flush 全通过 → Ok（有界写
+/// 不得改变正常路径行为）。
+#[tokio::test]
+async fn test_bug300_write_command_bounded_ok_on_writable() {
+    let mut w = AlwaysWritableWriter;
+    let result = IRCChannel::write_command_bounded(
+        &mut w,
+        "PRIVMSG #test :hi",
+        std::time::Duration::from_millis(400),
+    )
+    .await;
+    assert!(result.is_ok());
+}
+
+/// 真实 TCP 停摆面（Linux nightly 兜底）：对端 accept 后不读 + 256MB
+/// 载荷（理论极限口径超限一切现实默认缓冲）→ write 必然挂起，短注入
+/// 超时内诚实报错且 writer 不回场（半残不回槽）。Windows loopback 缓冲
+/// 自调不认收窄（stall 不成立），故 cfg(unix)。
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bug300_send_raw_timeout_bounded_on_stalled_peer() {
+    // 显式收窄两侧缓冲（SO_RCVBUF 必须 bind 前设置才参与窗口缩放协商；
+    // Linux 尊重收窄——4KB SNDBUF + 4KB 窗口 << 256MB 载荷 → 必然挂起）。
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    socket
+        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .unwrap();
+    let listener = socket.listen(1).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _holder = tokio::spawn(async move {
+        let (_sock, _) = listener.accept().await.unwrap();
+        // 握住 socket 故意不读（停摆形态），存活到测试运行时结束
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+    let stream = {
+        let client = tokio::net::TcpSocket::new_v4().unwrap();
+        client.set_send_buffer_size(4096).unwrap();
+        client.connect(addr).await.unwrap()
+    };
+    let (_rd, wr) = tokio::io::split(stream);
+    let cfg = IRCConfig {
+        server: addr.to_string(),
+        use_tls: false,
+        nick: "nb".to_string(),
+        password: None,
+        channel: "#test".to_string(),
+        allow_from: Vec::new(),
+        reconnect_backoff_secs: 1,
+        max_reconnect_backoff_secs: 2,
+    };
+    let ch = IRCChannel::new(cfg, test_sender()).unwrap();
+    *ch.writer.lock() = Some(IRCWriter { writer: wr });
+
+    let big = "x".repeat(256 * 1024 * 1024);
+    let t0 = std::time::Instant::now();
+    let result =
+        IRCChannel::send_raw_with_timeout(&ch.writer, &big, std::time::Duration::from_millis(400))
+            .await;
+    let elapsed = t0.elapsed();
+
+    let err = result.expect_err("stalled write must surface a timeout, not hang");
+    assert!(err.to_string().contains("timed out"), "error: {err}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "timeout must bound the write, took {elapsed:?}"
+    );
+    assert!(
+        ch.writer.lock().is_none(),
+        "writer must stay consumed after timeout (half-written state must not re-enter the slot)"
+    );
+}
+
+/// 未连接形态：拿不到 writer 有界退避（500ms 重试窗 + 余量）后诚实报错，
+/// 不得无限挂起——出站派发管线面对「从未连接」同样保持有界。
+#[tokio::test]
+async fn test_bug300_send_raw_not_connected_errors_within_retry_window() {
+    let cfg = IRCConfig {
+        server: "127.0.0.1:1".to_string(),
+        use_tls: false,
+        nick: "nb".to_string(),
+        password: None,
+        channel: "#test".to_string(),
+        allow_from: Vec::new(),
+        reconnect_backoff_secs: 1,
+        max_reconnect_backoff_secs: 2,
+    };
+    let ch = IRCChannel::new(cfg, test_sender()).unwrap();
+    let t0 = std::time::Instant::now();
+    let result = ch.send_raw("PRIVMSG #test :hi").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not connected"));
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(5),
+        "not-connected path must fail within the bounded retry window"
+    );
 }

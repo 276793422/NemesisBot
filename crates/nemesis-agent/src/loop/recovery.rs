@@ -1,9 +1,11 @@
 //! LLM 调用恢复环（P2-1 器官 4 自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
 //! 2026-09-23_agentloop-god-object-decomposition.md §4.2 表行 4/4a-4e）。
 //! 语义零变化：首呼 select 超时包装、context 压缩环（4a）、429 预算环（4b）、
-//! transient 退避环（4c）、LLM post-hooks 受守卫重呼（4d）；三处全量
-//! tool_defs 重建合一为 [`AgentLoop::rebuild_full_tool_defs`]（4e，落
-//! tool_defs.rs，语义保持全量）。
+//! transient 退避环（4c）、LLM post-hooks 受守卫重呼（4d）；四处 tool_defs
+//! 重建（4a/4b/4c/B4 凭据卡重试）统一走 [`AgentLoop::effective_tool_defs`]——
+//! 与主调用同源同闸（BUG-20261102-306 根修：此前走 rebuild_full_tool_defs
+//! 全量无闸重建，恢复重试请求绕过 tier/hidden/plan/connector 供给闸，且
+//! 过滤激活场景 prompt cache 前缀断裂）。
 //!
 //! 器官出口约定（§4.3 对照表）：原 `events.push(..) + break/ break 'turn`
 //! 的六个终局出口统一改为 `Err(终局事件)` 返回，骨架（run_llm_loop）统一
@@ -186,8 +188,18 @@ impl AgentLoop {
                 // 归宿是 transient 环（带退避、不动压缩状态）。分类器
                 // Timeout 判定对压缩环此前兑现不到（它只在下方 else 臂
                 // 取并集）——此闸补齐「双保险」的最后一臂。
+                // L02（2026-11-01）StreamInterrupted 前缀短路：必须先于全部
+                // 词表判定——这类错误的 Display 尾段携带模型生成的任意文本
+                // （partial 全文），context 词表（"token"/"invalid"）、限流
+                // 词表（"429"/"rate limit"）、auth 词表（"expired"）对整段
+                // contains 匹配都会被内容污染误路由（对抗用例 A1/A2，设计
+                // 文档 §5.1）。用 starts_with 头行前缀锚——头行只含 provider
+                // /model/reason 字段，不可被 partial 内容伪造。
+                let is_stream_interrupted =
+                    err_lower.starts_with("stream interrupted from provider");
                 let is_transport_connect_error = err_lower.contains("connect error");
-                let is_context_error = !is_transport_connect_error
+                let is_context_error = !is_stream_interrupted
+                    && !is_transport_connect_error
                     && ["token", "context", "length", "invalid"]
                         .iter()
                         .any(|keyword| err_lower.contains(keyword));
@@ -241,6 +253,11 @@ impl AgentLoop {
                         // error_classifier::classify_by_status 早已把 500 归
                         // Overloaded（可重试），loop 侧词表必须同口径。
                         "status 500",
+                        // L02（2026-11-01）：流中断兜底——前缀短路之外的
+                        // 词表双保险（与 "connect error" 同款）：词表判定
+                        // 不依赖 classify_llm_error 的入口短路也能独立命中
+                        // transient 环。
+                        "stream interrupted",
                     ]
                     .iter()
                     .any(|k| err_lower.contains(k));
@@ -248,10 +265,14 @@ impl AgentLoop {
                     // ③a 429 限流重试环（2026-09-17 BUG 文档裁决④⑧）：
                     // 分类词表对齐 provider 侧。与 context-compression 环
                     // 互斥（限流文案不含 token/context/length/invalid），
-                    // 与 transient 词表不重叠——三环不互吞。
-                    let is_rate_limit_error = RATE_LIMIT_ERROR_KEYWORDS
-                        .iter()
-                        .any(|k| err_lower.contains(k));
+                    // 与 transient 词表不重叠——三环不互吞。L02 起对
+                    // StreamInterrupted 显式排除：其 Display 尾段携带的
+                    // partial 全文可能含 "429"/"rate limit" 字样（模型
+                    // 任意输出），误入限流环会把退避逻辑错用在流中断上。
+                    let is_rate_limit_error = !is_stream_interrupted
+                        && RATE_LIMIT_ERROR_KEYWORDS
+                            .iter()
+                            .any(|k| err_lower.contains(k));
 
                     // T2a：分类器命中与词表判定取并集（RateLimit 优先序
                     // 不变；Overloaded 按 llm_error_class 既有口径：
@@ -282,6 +303,7 @@ impl AgentLoop {
                     } else if is_transient_error || classified_transient {
                         self.retry_transient(
                             instance,
+                            context,
                             &active_provider,
                             active_model,
                             chat_opts,
@@ -313,8 +335,19 @@ impl AgentLoop {
                             raw_response_body: None,
                         })
                         .await;
+                        // L02：StreamInterrupted 终局 history 瘦身——只取
+                        // Display 头行（首个 \n 之前，仅 provider/model/reason
+                        // 元信息）进 history；partial 全文不进模型上下文
+                        // （半截文本永不单独成为 assistant turn，设计文档
+                        // §4.2）。出站文本（下方 formatted）保留全文给用户；
+                        // observer/capture 是观测面同样保留全文。
+                        let history_err = if is_stream_interrupted {
+                            last_err.lines().next().unwrap_or("").to_string()
+                        } else {
+                            last_err.clone()
+                        };
                         instance.add_assistant_message(
-                            &format!("Error: {}", last_err),
+                            &format!("Error: {}", history_err),
                             Vec::new(),
                             None,
                         );
@@ -389,10 +422,15 @@ impl AgentLoop {
 
         while retry_count < max_retries {
             retry_count += 1;
+            // L14：上下文错误环每次重试发起计入会话统计（三环同口径）。
+            self.bump_session_stats(
+                &context.session_key,
+                crate::session_stats::StatCounter::Retries,
+            );
 
             // Force-compress: advance the summary cache (tail → SMALL_K_FORCE,
             // then → 0 on a second pass). History is not mutated.
-            self.force_compression(instance).await;
+            self.force_compression(instance, &context.session_key).await;
 
             // Rebuild messages from compressed history.
             let mut compressed_messages = self.build_messages(instance);
@@ -412,7 +450,7 @@ impl AgentLoop {
                 compressed_messages.len()
             );
 
-            let retry_tool_defs = self.rebuild_full_tool_defs();
+            let retry_tool_defs = self.effective_tool_defs(instance);
 
             // ②A：压缩重试环内调用同样包超时（挂死连接有限
             // 重试后终局，不无限挂）。
@@ -560,7 +598,7 @@ impl AgentLoop {
         // estop 臂与首呼同构（臂序先 cancel 再 estop；两处 select 均未加
         // biased，随机轮询语义一致）。
         let r_msgs = self.build_messages(instance);
-        let r_tools = self.rebuild_full_tool_defs();
+        let r_tools = self.effective_tool_defs(instance);
         let mut estop_rx = self.security.subscribe();
         let stream_sink = self.provider_stream_sink(context, active_model);
         let active_provider: Arc<dyn LlmProvider> = match &stream_sink {
@@ -722,6 +760,11 @@ impl AgentLoop {
                 break;
             }
             retries += 1;
+            // L14：限流环每次重试发起计入会话统计（同 transient 环口径）。
+            self.bump_session_stats(
+                &context.session_key,
+                crate::session_stats::StatCounter::Retries,
+            );
             let wait = rate_limit_wait_secs(&last_err, retries);
             let label = rate_limit_display_label(&last_err);
             // 裁决③「显式进度」：每次重试对用户可见；B 端
@@ -774,7 +817,7 @@ impl AgentLoop {
             // 消息 + tool_defs 重建（首捕值已随失败调用
             // move，同 transient 环纪律）。
             let r_msgs = self.build_messages(instance);
-            let r_tools = self.rebuild_full_tool_defs();
+            let r_tools = self.effective_tool_defs(instance);
             // BUG 2026-09-21 ②A：单次调用包超时（统一走
             // chat_call_bounded）——上游 429 后连接挂起
             // （不回响应体）时不再无限等待（实测挂死 27
@@ -830,6 +873,7 @@ impl AgentLoop {
     pub(crate) async fn retry_transient(
         &self,
         instance: &AgentInstance,
+        context: &RequestContext,
         active_provider: &Arc<dyn LlmProvider>,
         active_model: &str,
         chat_opts: &crate::types::ChatOptions,
@@ -875,6 +919,12 @@ impl AgentLoop {
                 );
             }
             retries += 1;
+            // L14：transient 环每次重试发起计入会话统计（含最终失败的重试
+            // ——重试次数语义 = 发起数，不是成功数）。
+            self.bump_session_stats(
+                &context.session_key,
+                crate::session_stats::StatCounter::Retries,
+            );
             // 429 文档关联隐患 1（可重试类统一设计）：transient
             // 环对真网络等待加 1s/2s/4s 小退避——此前无 sleep
             // 立即重发，对上游抖动基本无效。立即拒绝（见
@@ -902,7 +952,7 @@ impl AgentLoop {
                 }
             }
             let r_msgs = self.build_messages(instance);
-            let r_tools = self.rebuild_full_tool_defs();
+            let r_tools = self.effective_tool_defs(instance);
             let attempt_start = std::time::Instant::now();
             match self
                 .chat_call_escalating(

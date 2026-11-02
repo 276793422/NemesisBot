@@ -105,9 +105,8 @@ impl AgentLoop {
     }
 
     /// B4：取凭据 broker（未装配 = `None`——Auth 臂走原终局零回归）。
-    pub(crate) fn credential_broker(
-        &self,
-    ) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
+    /// L25 起对外可见：TakeoverToolBridge 构造期快照捕获（回退态发卡面）。
+    pub fn credential_broker(&self) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
         self.security.credential_broker.read().clone()
     }
 
@@ -393,6 +392,26 @@ impl AgentLoop {
         tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
     ) {
         *self.agent_event_tx.write() = tx;
+    }
+
+    /// L14（2026-11-01）：注入会话执行统计 sink（nemesisbot
+    /// `session_stats::SessionStatsAggregator` 装配）。`None` = 不统计。
+    pub fn set_session_stats_sink(
+        &self,
+        sink: Option<std::sync::Arc<dyn crate::session_stats::SessionStatsSink>>,
+    ) {
+        *self.session_stats.write() = sink;
+    }
+
+    /// L14：sink 上抛单点——槽空静默跳过（未装配路径零开销）。
+    pub(crate) fn bump_session_stats(
+        &self,
+        session_key: &str,
+        counter: crate::session_stats::StatCounter,
+    ) {
+        if let Some(sink) = self.session_stats.read().as_ref() {
+            sink.bump(session_key, counter);
+        }
     }
 
     /// ASM-08（2026-09-16 横扫存量加固）：关键接线面快照。
