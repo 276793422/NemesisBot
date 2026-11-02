@@ -583,10 +583,38 @@ fn is_database_stale_fresh_and_stale_cvd_files() {
     assert!(u2.is_database_stale(Duration::from_secs(3600)));
 }
 
+/// 日志捕获（thread-local subscriber；BUG-20261102-322：名字承诺
+/// reports_failure，此前零断言——失败臂日志降级/消失测试照绿）。
+fn capture_logs_to_buf() -> (
+    tracing::subscriber::DefaultGuard,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer_buf = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || SharedBuf(writer_buf.clone()))
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    (guard, buf)
+}
+
 #[tokio::test]
 async fn auto_update_loop_reports_failure_and_stops() {
     // 5ms interval + missing freshclam → each cycle fails fast and logs the
     // auto-update-failed arm; stop() breaks the loop.
+    let (_guard, buf) = capture_logs_to_buf();
     let u = Arc::new(Updater::new(UpdaterConfig {
         clamav_path: r"Z:\definitely\missing".to_string(),
         database_dir: String::new(),
@@ -600,5 +628,19 @@ async fn auto_update_loop_reports_failure_and_stops() {
     });
     tokio::time::sleep(Duration::from_millis(120)).await;
     u.stop();
-    let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+    // BUG-20261102-322：stops 承诺此前被 `let _ = timeout(...)` 整个丢弃——
+    // 循环挂死（stop 旗标失效）时测试照绿。现在必须真终止且不 panic。
+    tokio::time::timeout(Duration::from_secs(2), h)
+        .await
+        .expect("auto-update loop must stop after stop()")
+        .expect("auto-update task must not panic");
+    let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    assert!(
+        captured.contains("[Scanner] Auto-update failed"),
+        "每个失败周期必须记录失败臂\n--- captured ---\n{captured}"
+    );
+    assert!(
+        captured.contains("[Scanner] Auto-update stopped"),
+        "stop() 后必须记录停止臂\n--- captured ---\n{captured}"
+    );
 }

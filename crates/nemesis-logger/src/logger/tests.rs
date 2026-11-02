@@ -186,14 +186,32 @@ fn test_logger_structured_fields() {
 
 #[test]
 fn test_logger_level_filtering() {
+    // BUG-20261102-322：名字承诺 filtering、消息文案承诺「should not appear /
+    // should appear」，此前零验证。enable_file 落盘读回（同文件
+    // test_file_logging_multiple_messages 先例）收口双边界。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("filter.log").to_string_lossy().to_string();
     let logger = NemesisLogger::new();
     logger.set_level(LogLevel::Warn);
+    logger.enable_file(&path).unwrap();
     // Debug and Info should be suppressed
     logger.debug("should not appear");
     logger.info("should not appear");
     // Warn and Error should pass
     logger.warn("should appear");
     logger.error("should appear");
+    logger.disable_file();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !content.contains("should not appear"),
+        "低于阈值的 debug/info 必须被过滤\n--- content ---\n{content}"
+    );
+    assert_eq!(
+        content.matches("should appear").count(),
+        2,
+        "warn + error 都必须落盘（恰 2 处）\n--- content ---\n{content}"
+    );
 }
 
 #[test]
@@ -673,24 +691,55 @@ fn test_logger_all_field_methods() {
 
 #[test]
 fn test_logger_level_filtering_all_levels() {
+    // BUG-20261102-322：阈值矩阵此前零验证。每档阈值 × 5 级消息唯一化落盘，
+    // 读回精确核对成员关系（Debug<Info<Warn<Error<Fatal 升序）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("filter_all.log")
+        .to_string_lossy()
+        .to_string();
     let logger = NemesisLogger::new();
+    logger.enable_file(&path).unwrap();
 
-    // Test each level as minimum threshold
-    for min_level in [
+    let levels = [
         LogLevel::Debug,
         LogLevel::Info,
         LogLevel::Warn,
         LogLevel::Error,
         LogLevel::Fatal,
-    ] {
+    ];
+    for min_level in levels {
         logger.set_level(min_level);
+        for lvl in levels {
+            logger.log(
+                lvl,
+                "",
+                &format!("{}|{}", min_level.name(), lvl.name()),
+                None,
+            );
+        }
+    }
+    logger.disable_file();
 
-        // Only levels >= min_level should pass
-        logger.debug("debug test");
-        logger.info("info test");
-        logger.warn("warn test");
-        logger.error("error test");
-        logger.fatal("fatal test");
+    let content = std::fs::read_to_string(&path).unwrap();
+    for (min_idx, min_level) in levels.iter().enumerate() {
+        for (lvl_idx, lvl) in levels.iter().enumerate() {
+            let line = format!("{}|{}", min_level.name(), lvl.name());
+            let should_pass = lvl_idx >= min_idx;
+            assert_eq!(
+                content.contains(&line),
+                should_pass,
+                "阈值 {} 时 {} 消息{}（恰出现一次）:\n--- content ---\n{content}",
+                min_level.name(),
+                lvl.name(),
+                if should_pass {
+                    "必须通过"
+                } else {
+                    "必须被过滤"
+                }
+            );
+        }
     }
 }
 

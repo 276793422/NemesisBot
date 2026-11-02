@@ -1505,18 +1505,25 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
         });
     }
 
-    // The receiver should be able to receive but may have missed messages
-    // This exercises the send error path in the broadcast channel
+    // BUG-20261102-322：名字承诺 send_failure——20 条灌进容量 3 的广播道、
+    // 接收端零消费，tokio broadcast 语义保证 Lagged（落后超过容量必报）。
+    // 此前「exercised the send operation」零验证，Lagged 计数路径回归照绿。
+    let mut saw_lagged = false;
     loop {
         match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
             Ok(Ok(_)) => continue,
-            Ok(Err(_)) => break, // Lagged error
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                saw_lagged = true;
+                break;
+            }
+            Ok(Err(_)) => break, // Closed
             Err(_) => break,     // Timeout
         }
     }
-
-    // At least we attempted to receive, and sends were attempted
-    // The key is that the code exercised the send operation
+    assert!(
+        saw_lagged,
+        "超容量灌入 + 零消费的接收端必须收到 Lagged 错误（send 失败路径）"
+    );
 }
 
 #[tokio::test]
