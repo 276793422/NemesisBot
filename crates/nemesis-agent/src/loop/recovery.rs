@@ -1,9 +1,11 @@
 //! LLM 调用恢复环（P2-1 器官 4 自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
 //! 2026-09-23_agentloop-god-object-decomposition.md §4.2 表行 4/4a-4e）。
 //! 语义零变化：首呼 select 超时包装、context 压缩环（4a）、429 预算环（4b）、
-//! transient 退避环（4c）、LLM post-hooks 受守卫重呼（4d）；三处全量
-//! tool_defs 重建合一为 [`AgentLoop::rebuild_full_tool_defs`]（4e，落
-//! tool_defs.rs，语义保持全量）。
+//! transient 退避环（4c）、LLM post-hooks 受守卫重呼（4d）；四处 tool_defs
+//! 重建（4a/4b/4c/B4 凭据卡重试）统一走 [`AgentLoop::effective_tool_defs`]——
+//! 与主调用同源同闸（BUG-20261102-306 根修：此前走 rebuild_full_tool_defs
+//! 全量无闸重建，恢复重试请求绕过 tier/hidden/plan/connector 供给闸，且
+//! 过滤激活场景 prompt cache 前缀断裂）。
 //!
 //! 器官出口约定（§4.3 对照表）：原 `events.push(..) + break/ break 'turn`
 //! 的六个终局出口统一改为 `Err(终局事件)` 返回，骨架（run_llm_loop）统一
@@ -448,7 +450,7 @@ impl AgentLoop {
                 compressed_messages.len()
             );
 
-            let retry_tool_defs = self.rebuild_full_tool_defs();
+            let retry_tool_defs = self.effective_tool_defs(instance);
 
             // ②A：压缩重试环内调用同样包超时（挂死连接有限
             // 重试后终局，不无限挂）。
@@ -596,7 +598,7 @@ impl AgentLoop {
         // estop 臂与首呼同构（臂序先 cancel 再 estop；两处 select 均未加
         // biased，随机轮询语义一致）。
         let r_msgs = self.build_messages(instance);
-        let r_tools = self.rebuild_full_tool_defs();
+        let r_tools = self.effective_tool_defs(instance);
         let mut estop_rx = self.security.subscribe();
         let stream_sink = self.provider_stream_sink(context, active_model);
         let active_provider: Arc<dyn LlmProvider> = match &stream_sink {
@@ -815,7 +817,7 @@ impl AgentLoop {
             // 消息 + tool_defs 重建（首捕值已随失败调用
             // move，同 transient 环纪律）。
             let r_msgs = self.build_messages(instance);
-            let r_tools = self.rebuild_full_tool_defs();
+            let r_tools = self.effective_tool_defs(instance);
             // BUG 2026-09-21 ②A：单次调用包超时（统一走
             // chat_call_bounded）——上游 429 后连接挂起
             // （不回响应体）时不再无限等待（实测挂死 27
@@ -950,7 +952,7 @@ impl AgentLoop {
                 }
             }
             let r_msgs = self.build_messages(instance);
-            let r_tools = self.rebuild_full_tool_defs();
+            let r_tools = self.effective_tool_defs(instance);
             let attempt_start = std::time::Instant::now();
             match self
                 .chat_call_escalating(
