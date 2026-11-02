@@ -51,8 +51,13 @@ impl NodeRole {
     /// 解析角色字符串（单一真相源：peers.toml `[node].role`、UDP 广播、
     /// 身份更新都走这里）。接受现行词表 `coordinator` 与旧值
     /// `master`/`manager`（向后兼容），其余一律回落 Worker。
+    /// BUG-20261102-318：大小写不敏感——serde 直解路径有 `alias = "Master"`
+    /// 兜存量旧 JSON 词（同文件上方变体定义），字符串路径却大小写敏感，
+    /// 同一存量词 "Master" 两路径分叉（serde=Coordinator / 字符串=Worker）：
+    /// peers.toml 手写 "Master" 的节点被 Worker 化（看板权威职责丢失 +
+    /// coordinator 角色派发匹配失灵）。词表是封闭三词，大小写宽容零误伤。
     pub fn from_role_str(s: &str) -> Self {
-        match s {
+        match s.trim().to_lowercase().as_str() {
             "master" | "manager" | "coordinator" => NodeRole::Coordinator,
             _ => NodeRole::Worker,
         }
