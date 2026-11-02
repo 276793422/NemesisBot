@@ -1624,6 +1624,32 @@ async fn test_plugin_execute_layer7_blocks_infected_multiedit_content() {
     assert!(e.summary.contains("new_text"), "{}", e.summary);
 }
 
+// BUG-20261102-310 红证：edit_file 待写内容是顶层 new_text（edit.rs schema
+// required 键，execute 落 tokio::fs::write）——Layer 7 内容键循环
+// ["content","data","body","html"] 不含 new_text，multiedit 特判只覆盖
+// edits[] 数组 = edit_file 写盘内容完全绕过病毒扫描（write_file/multiedit
+// 拦得住的 edit_file 拦不住；BUG-20261029-171 同族漂移在扫描面复发）。
+// content-only 引擎隔离内容臂：file 臂恒干净，命中必来自 new_text 扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_blocks_infected_edit_file_new_text() {
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "edit_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/out.txt", "old_text": "", "new_text": "X5O!P%@AP[EICAR]"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("virus scanner"), "{}", e.summary);
+    assert!(e.summary.contains("new_text"), "{}", e.summary);
+}
+
 #[tokio::test]
 #[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_detects_threat() {
