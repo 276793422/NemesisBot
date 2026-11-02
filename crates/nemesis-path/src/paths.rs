@@ -253,12 +253,13 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
     Ok(home.join(DEFAULT_HOME_DIR))
 }
 
-/// Expand ~ to home directory. 只认 `~/...` 前缀与裸 `~`；`~x`（无斜杠）
-/// 按字面量处理——与 `config::expand_tilde`/`migrate` 同口径。旧守卫
-/// `starts_with('~') && len>1` 配 `&path[2..]` 在 `~<多字节字符>`（如
+/// Expand ~ to home directory. 只认 `~/...`/`~\...` 前缀与裸 `~`；`~x`
+/// （无斜杠）按字面量处理——与 `config::expand_tilde`/`migrate` 同口径。
+/// 旧守卫 `starts_with('~') && len>1` 配 `&path[2..]` 在 `~<多字节字符>`（如
 /// `~中`，NEMESISBOT_HOME 环境变量可达）时字节 2 落续字节上直接 panic。
+/// BUG-20261102-319：`~\` 反斜杠形态（Windows 手写惯例）与 `~/` 同判。
 pub fn expand_home(path: &str) -> PathBuf {
-    if (path.starts_with("~/") || path == "~")
+    if (path.starts_with("~/") || path.starts_with("~\\") || path == "~")
         && let Some(home) = dirs::home_dir()
     {
         if path == "~" {
@@ -712,7 +713,10 @@ impl MinimalConfig {
         if ws.is_empty() {
             return None;
         }
-        if ws.starts_with("~/")
+        // BUG-20261102-319：`~\` 反斜杠形态与 `~/` 同判（展开）——本函数
+        // 是 MCP/security/skills/scanner 四个 resolve_*_config_path 的
+        // workspace 来源，字面量穿透会把配置路径落到 cwd 下 `~` 目录。
+        if (ws.starts_with("~/") || ws.starts_with("~\\"))
             && let Some(home) = dirs::home_dir()
         {
             return Some(home.join(&ws[2..]));

@@ -5312,7 +5312,12 @@ impl Config {
     /// Get the workspace path from config.
     pub fn workspace_path(&self) -> String {
         let ws = &self.agents.defaults.workspace;
-        if ws.starts_with("~/")
+        // BUG-20261102-319：`~\` 反斜杠形态与 `~/` 同判（展开）——此前只认
+        // `~/`，nemesis-path 四个 resolve_*_config_path 消费方对 `~\mybots`
+        // 拿到字面量落 cwd 下 `~` 目录。默认拼法 `~\.nemesisbot\workspace`
+        // 在加载期已被 adjust_paths_for_environment 换成绝对路径，这里兜的
+        // 是非默认自定义形态。
+        if (ws.starts_with("~/") || ws.starts_with("~\\"))
             && let Some(home) = dirs::home_dir()
         {
             return home.join(&ws[2..]).to_string_lossy().to_string();
@@ -5782,8 +5787,13 @@ fn default_mcp_timeout() -> i64 {
 
 /// Expand ~ in a path to the user's home directory.
 /// Mirrors Go's `ExpandHome` function.
+/// BUG-20261102-319：`~\` 反斜杠形态（Windows 手写惯例）与 `~/` 同判——
+/// 此前只认 `~/`，与 nemesisbot/src/commands/log.rs 的本地 expand_tilde
+/// （认 `~\`）分叉，同义两形态异判。`~\` 前两字节是 ASCII，`&path[2..]`
+/// 切片安全（`~x` 无斜杠仍按字面量，多字节 panic 面与 paths::expand_home
+/// 同源已封）。
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if (path.starts_with("~/") || path == "~")
+    if (path.starts_with("~/") || path.starts_with("~\\") || path == "~")
         && let Some(home) = dirs::home_dir()
     {
         if path == "~" {
