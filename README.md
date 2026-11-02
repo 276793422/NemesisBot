@@ -187,7 +187,7 @@ NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两
 
 ### 其他
 
-- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，依赖树无 GPL/AGPL/LGPL 强 copyleft（仅 3 处文件级 MPL）；ClamAV 走网络协议、Sandboxie / QEMU 为运行时按需自装——均不打包、不传染。
+- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，依赖树无 GPL/AGPL/LGPL 强 copyleft（仅 2 处文件级 MPL）；ClamAV 走网络协议、Sandboxie / QEMU 为运行时按需自装——均不打包、不传染。
 - **贡献者**：外部 PR 须接受 [CLA.md](CLA.md)，以维持双授权能力。
 
 ---
