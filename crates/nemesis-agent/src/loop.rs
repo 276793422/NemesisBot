@@ -321,6 +321,11 @@ pub(crate) struct SecurityState {
     /// 未装配 = `None`，Auth 臂走原「停止重试」终局零回归。
     pub(crate) credential_broker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::CredentialBroker>>>,
+    /// L25（2026-11-02）：凭据发卡防滥用占位表（同 `(session_key, alias)`
+    /// TTL 窗内至多一张卡）。纯内存态随 loop 重建清零；与 broker 同族，
+    /// dispatch 注入失败臂与 TakeoverToolBridge 回退态共用（wrapper 持
+    /// 自有实例，语义等价）。
+    pub(crate) credential_card_guard: Arc<crate::r#loop::credential_injection::CredentialCardGuard>,
     /// §2 免打扰运行时态（无人值守计划 Part 2，security feature）：gateway
     /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
     /// 真相源同款双注入）。（2026-10-24 循环干预阶梯起 `check_escalation`
@@ -907,6 +912,9 @@ impl AgentLoop {
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
                 credential_broker: parking_lot::RwLock::new(None),
+                credential_card_guard: Arc::new(
+                    crate::r#loop::credential_injection::CredentialCardGuard::new(),
+                ),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
             },

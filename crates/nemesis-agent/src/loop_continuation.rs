@@ -20,7 +20,9 @@ use tokio::sync::{Mutex, Notify};
 use tracing::{debug, info, warn};
 
 use crate::context::RequestContext;
-use crate::r#loop::{LlmMessage, LlmProvider, Tool};
+use crate::r#loop::{
+    LENGTH_CONTINUE_PROMPT, LlmMessage, LlmProvider, MAX_EMPTY_LENGTH_CONTINUATIONS, Tool,
+};
 use crate::session::SessionStore;
 use crate::types::{TOOL_OUTCOME_UNKNOWN, ToolCallInfo};
 
@@ -1190,6 +1192,22 @@ pub(crate) fn merge_real_tool_result(
     messages
 }
 
+/// L28：max_tokens 长度截断判定（纯函数，双路径对齐主循环器官 6）。
+///
+/// - 有 usage：数值判定 `completion_tokens >= cap`（精确）。`escalated_to`
+///   优先——provider 翻倍重试发生过的形态，事实 cap 以其为准，防「config
+///   小值 + 大 usage」对完整响应误判（§6.2 同因）。
+/// - 无 usage（上游剥离 usage 的代理/流形态）：回落 `finish_reason ==
+///   "length"`（provider 的权威截断信号）。CLI lane 恒非 length，此回落对
+///   它们诚实无效——无法检测就不假装检测。
+fn is_length_truncated(response: &crate::r#loop::LlmResponse, max_tokens_cap: u32) -> bool {
+    let token_cap = response.escalated_to.unwrap_or(max_tokens_cap as u64);
+    match response.usage.as_ref() {
+        Some(u) => (u.completion_tokens as u64) >= token_cap,
+        None => response.finish_reason.as_deref() == Some("length"),
+    }
+}
+
 /// Handle a cluster continuation callback.
 ///
 /// This function:
@@ -1206,6 +1224,12 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     task_error: Option<&str>,
     provider: &dyn LlmProvider,
     model: &str,
+    // L28（改进项二期）：与主循环 chat_opts 同源的输出 cap（per-model
+    // `max_output_tokens` > agents.defaults.max_tokens > DEFAULT_MAX_TOKENS，
+    // 解析在 loop 侧 `current_max_tokens_override` 完成——本函数不重读
+    // config）。provider.chat 从 None（lane 默认）改显式 Some(ChatOptions)，
+    // 截断判定与续写预算锚在同一可知值上。
+    max_tokens_cap: u32,
     tools: &T,
     outbound_tx: &tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -1370,6 +1394,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // 5. Run the continuation LLM + tool loop.
     let max_iterations = 20;
     let mut final_content = String::new();
+    // L28：连续空内容撞 cap 计数（主循环器官 6 同款守卫，阈值复用
+    // MAX_EMPTY_LENGTH_CONTINUATIONS）。
+    let mut empty_length_streak: u32 = 0;
 
     for iteration in 1..=max_iterations {
         debug!(
@@ -1401,7 +1428,15 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         }
 
         let round_start = std::time::Instant::now();
-        let mut response = match provider.chat(model, messages.clone(), None, vec![]).await {
+        // L28：options 显式带 cap（此前 None = lane 默认，截断不可知）。
+        let chat_options = crate::types::ChatOptions {
+            max_tokens: Some(max_tokens_cap),
+            ..Default::default()
+        };
+        let mut response = match provider
+            .chat(model, messages.clone(), Some(chat_options), vec![])
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => {
                 warn!("[Continuation] Continuation LLM call failed: {}", e);
@@ -1439,6 +1474,74 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             .to_conversation_event();
             let mgr = Arc::clone(mgr);
             tokio::spawn(async move { mgr.emit(event).await });
+        }
+
+        // L28（改进项二期）：max_tokens 截断判定 + 续写——对齐主循环器官 6
+        // （run_loop::handle_length_continuation）。此前裸调把截断半截正文
+        // 直接当终局回复持久化+出站。三道纪律同源：①截断响应带 tool_calls
+        // 一律丢弃（执行半截 args 是写坏文件事故），只保留正文；②空内容撞
+        // cap 不烧预算（M4-B 同款 2 连守卫）；③续写轮消耗同一 1..=20 迭代
+        // 预算，耗尽仍截断 → 半截正文 + 诚实注记终局（不再无声冒充完整）。
+        if is_length_truncated(&response, max_tokens_cap) {
+            let token_cap = response.escalated_to.unwrap_or(max_tokens_cap as u64);
+            if response.content.trim().is_empty() {
+                empty_length_streak += 1;
+            } else {
+                empty_length_streak = 0;
+            }
+            // 空内容 2 连守卫：零产出继续喂续写提示只会每轮烧一次全量
+            // prefill，提前停轮给诚实注记。
+            if empty_length_streak >= MAX_EMPTY_LENGTH_CONTINUATIONS {
+                warn!(
+                    "[Continuation] task {task_id} empty content at token cap {token_cap} \
+                     consecutive round(s); stopping early to save prefill budget"
+                );
+                final_content = format!(
+                    "模型连续 {} 轮空输出且撞 max_tokens 上限（{token_cap}），续行回复未产出内容。\
+                     请为该模型条目配置 max_output_tokens（真实输出上限），或调大 \
+                     agents.defaults.max_tokens；若为思考型模型，思考 token 也计入该上限。\
+                     也可检查模型健康度。",
+                    empty_length_streak
+                );
+                break;
+            }
+            // 预算耗尽（同一 1..=20 池的最后一轮）仍截断 → 半截正文 +
+            // 诚实注记终局。
+            if iteration == max_iterations {
+                warn!(
+                    "[Continuation] task {task_id} continuation budget exhausted while \
+                     truncated at max_tokens cap ({token_cap})"
+                );
+                final_content = format!(
+                    "{}\n\n[输出反复超过 max_tokens 上限（{token_cap}）被截断，续行预算已耗尽。\
+                     请调大该模型条目的 max_output_tokens，或让任务分段输出。]",
+                    response.content
+                );
+                break;
+            }
+            // 续写：截断正文 assistant 入对话（丢弃 tool_calls），追加续写
+            // 提示（与主循环同文），下一迭代接着生成。
+            debug!(
+                "[Continuation] task {task_id} truncated at max_tokens cap ({token_cap}); \
+                 continue-generation {iteration}/{max_iterations}"
+            );
+            messages.push(LlmMessage {
+                role: "assistant".to_string(),
+                content: response.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: response.reasoning_content.clone(),
+                images: Vec::new(),
+            });
+            messages.push(LlmMessage {
+                role: "user".to_string(),
+                content: LENGTH_CONTINUE_PROMPT.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+                images: Vec::new(),
+            });
+            continue;
         }
 
         if response.tool_calls.is_empty() {
@@ -1692,3 +1795,8 @@ mod cov2_tests;
 // 不进 pending）。
 #[cfg(test)]
 mod r14_atomic_save_tests;
+
+// 改进项二期 L28：max_tokens 截断判定纯函数三态 + 续写循环行为面
+// （续写追加 / 空内容 2 连停 / 预算耗尽注记 / 截断带 tool_calls 丢弃）。
+#[cfg(test)]
+mod truncation_tests;

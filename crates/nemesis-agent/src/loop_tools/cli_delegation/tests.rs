@@ -234,3 +234,67 @@ async fn test_run_cli_delegation_spawn_failure_is_err() {
 fn test_find_cli_on_path_missing_command_is_none() {
     assert!(find_cli_on_path("nemesis-no-such-cli-xyz").is_none());
 }
+
+// ---------------------------------------------------------------------------
+// L27 env 窄版闸：第三方 CLI 子进程不继承 NEMESISBOT_*（行为面 E2E）
+// ---------------------------------------------------------------------------
+
+/// 行为面断言：委派子进程 env 里 `NEMESISBOT_*` 已剥、命名空间外变量保留
+/// （窄版闸的契约——第三方 CLI 自身 auth 依赖的 env key 必须活着）。
+/// 变量名全仓唯一（COV_L27 段），防并行测试互踩；set/remove 成对用后即撤。
+#[tokio::test]
+async fn test_run_cli_delegation_env_narrow_sanitize() {
+    unsafe { std::env::set_var("NEMESISBOT_COV_L27_NS_VAR", "topsecret") };
+    unsafe { std::env::set_var("NMBT_L27_KEEP_VAR", "alive") };
+
+    let dir = tempfile::tempdir().unwrap();
+    let script = if cfg!(windows) {
+        let p = dir.path().join("fake_env_probe.bat");
+        std::fs::write(
+            &p,
+            "@echo off\r\n\
+             if defined NEMESISBOT_COV_L27_NS_VAR (echo NS_PRESENT) else (echo NS_ABSENT)\r\n\
+             if defined NMBT_L27_KEEP_VAR (echo KEEP_PRESENT) else (echo KEEP_ABSENT)\r\n",
+        )
+        .unwrap();
+        p
+    } else {
+        let p = dir.path().join("fake_env_probe.sh");
+        std::fs::write(
+            &p,
+            "#!/bin/sh\n\
+             if [ -n \"${NEMESISBOT_COV_L27_NS_VAR:-}\" ]; then echo NS_PRESENT; else echo NS_ABSENT; fi\n\
+             if [ -n \"${NMBT_L27_KEEP_VAR:-}\" ]; then echo KEEP_PRESENT; else echo KEEP_ABSENT; fi\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    };
+
+    let spec = CliDelegationSpec {
+        cli: &script.to_string_lossy(),
+        cli_label: "env-probe",
+        args: vec![],
+        timeout_secs: 30,
+        cwd: dir.path(),
+    };
+    let out = run_cli_delegation(spec).await.unwrap();
+
+    unsafe {
+        std::env::remove_var("NEMESISBOT_COV_L27_NS_VAR");
+        std::env::remove_var("NMBT_L27_KEEP_VAR");
+    }
+
+    assert!(
+        out.contains("NS_ABSENT"),
+        "NEMESISBOT_* must be stripped from delegated child env: {out}"
+    );
+    assert!(
+        out.contains("KEEP_PRESENT"),
+        "non-namespaced vars must survive narrow sanitize: {out}"
+    );
+}

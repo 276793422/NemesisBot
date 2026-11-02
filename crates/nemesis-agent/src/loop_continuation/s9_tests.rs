@@ -195,6 +195,7 @@ async fn continuation_final_response_logs_info_fields() {
         None,
         &provider,
         "test-model",
+        4096,
         &std::collections::HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

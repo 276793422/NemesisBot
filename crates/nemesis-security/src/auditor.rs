@@ -652,6 +652,137 @@ impl SecurityAuditor {
         }
     }
 
+    /// L26（2026-11-02）：审批通道在场判定——dispatch 凭据闸的跳过条件。
+    /// headless / 裸装配无通道时闸不启用（行为与闸落地前一致）；与
+    /// [`Self::request_limit_approval`] 的无通道 fail-closed 是有意分歧
+    /// （limits 基线=超限异常必须人裁，闸基线=现状合法调用，见 L26 设计
+    /// 文档 §9.2）。
+    pub fn has_approval_channel(&self) -> bool {
+        self.approval_manager
+            .read()
+            .as_ref()
+            .map(|m| m.is_running())
+            .unwrap_or(false)
+    }
+
+    /// L26（2026-11-02）：凭据引用出域审批——dispatch 链凭据闸的直卡
+    /// 通道（真值注入前的人工同意面，管线对解析后真值不可见的时序空隙
+    /// 收口）。镜像 [`Self::request_limit_approval`]：无通道/未运行
+    /// fail-closed 落审计（A-F5 语义）；有通道经 `request_approval_sync_ctx`
+    /// 出卡（`credential_use` 操作名 / HIGH / auditor 配置超时，Web/Channel
+    /// 管理器零改动），裁决落审计。op_type 占位 ProcessExec 同 limits
+    /// （真实工具名在 target、来源在 source，可追溯不依赖 op_type）。
+    pub fn request_credential_use_approval(
+        &self,
+        tool: &str,
+        reason: &str,
+        ctx: Option<&ApprovalContext>,
+    ) -> Result<ApprovalVerdict, String> {
+        let mgr_opt = self.approval_manager.read().clone();
+        let Some(mgr) = mgr_opt.as_ref() else {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: format!("creduse-{}", uuid::Uuid::new_v4()),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "credential_gate".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: "denied".to_string(),
+                reason: format!(
+                    "credential use ({reason}); fail-closed: no approval manager is available"
+                ),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.credential_gate".to_string(),
+            });
+            return Err("credential gate: no approval manager is available".to_string());
+        };
+        if !mgr.is_running() {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: format!("creduse-{}", uuid::Uuid::new_v4()),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "credential_gate".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: "denied".to_string(),
+                reason: format!(
+                    "credential use ({reason}); fail-closed: the approval manager is not running"
+                ),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.credential_gate".to_string(),
+            });
+            return Err("credential gate: the approval manager is not running".to_string());
+        }
+        let request_id = format!("creduse-{}", uuid::Uuid::new_v4());
+        let verdict = match ctx {
+            Some(c) => mgr.request_approval_sync_ctx(
+                &request_id,
+                "credential_use",
+                tool,
+                "HIGH",
+                reason,
+                self.config.approval_timeout_secs,
+                c,
+            ),
+            None => mgr.request_approval_sync(
+                &request_id,
+                "credential_use",
+                tool,
+                "HIGH",
+                reason,
+                self.config.approval_timeout_secs,
+            ),
+        };
+        // 审批裁决落审计（limit/guardian 同款 A-F5 语义）。
+        let audit_verdict = |decision: &str, why: String| {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: request_id.clone(),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "credential_gate".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: decision.to_string(),
+                reason: why,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.credential_gate".to_string(),
+            });
+        };
+        match verdict {
+            Ok(v) => {
+                let why = if v.approved {
+                    format!("credential use on {tool} approved by user ({reason})")
+                } else {
+                    let note = v.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                    match note {
+                        Some(n) => format!("credential use on {tool} rejected: {n} ({reason})"),
+                        None => format!(
+                            "credential use on {tool} rejected or approval timeout ({reason})"
+                        ),
+                    }
+                };
+                audit_verdict(if v.approved { "approved" } else { "denied" }, why);
+                Ok(v)
+            }
+            Err(e) => {
+                audit_verdict(
+                    "denied",
+                    format!("credential use on {tool}: approval unavailable: {e} ({reason})"),
+                );
+                Err(e)
+            }
+        }
+    }
+
     pub fn request_guardian_verdict_approval(
         &self,
         tool: &str,

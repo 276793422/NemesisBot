@@ -944,6 +944,18 @@ impl AgentLoop {
         let hook_boundary = self.workspace_boundary.read().clone();
         // D3：本 turn 声明式文件变更的收集桶（Arc 捕获进 'static Fn 闭包）。
         let turn_fc = Arc::clone(&self.turn_file_changes);
+        // L25：凭据发卡恢复面（broker = None 的 headless/裸构建走原错误
+        // 串零回归；guard 是 loop 级防滥用占位表）。同 hook_boundary
+        // 「启动期装配、运行期不变」纪律——dispatch 时刻快照捕获。
+        let cred_broker = self.security.credential_broker.read().clone();
+        let cred_guard = Arc::clone(&self.security.credential_card_guard);
+        // L26：凭据闸面（安全插件快照——闸经其 auditor 出卡，见 chain 内
+        // 闸块）。plugin 不在场（feature 关/未装配）= 闸跳过。
+        #[cfg(feature = "security")]
+        let cred_gate = self.security.security_plugin.clone();
+        #[cfg(not(feature = "security"))]
+        #[allow(unused_variables)]
+        let cred_gate: Option<()> = None;
         type NextExec = std::sync::Arc<
             dyn Fn(
                     HookToolCall,
@@ -960,6 +972,10 @@ impl AgentLoop {
             let format_cfg_path = format_cfg_path.clone();
             let turn_fc = turn_fc.clone();
             let hook_boundary = hook_boundary.clone();
+            let cred_broker = cred_broker.clone();
+            let cred_guard = Arc::clone(&cred_guard);
+            #[cfg(feature = "security")]
+            let cred_gate = cred_gate.clone();
             std::sync::Arc::new(move |call: HookToolCall| {
                 // Fn 闭包：捕获的 Arc 每次调用克隆一份（不能 move 出 Fn）。
                 let ctx = ctx.clone();
@@ -969,9 +985,125 @@ impl AgentLoop {
                 let format_cfg_path = format_cfg_path.clone();
                 let turn_fc = turn_fc.clone();
                 let hook_boundary = hook_boundary.clone();
+                let cred_broker = cred_broker.clone();
+                let cred_guard = Arc::clone(&cred_guard);
+                #[cfg(feature = "security")]
+                let cred_gate = cred_gate.clone();
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();
                     let tool_was_registered = tool_opt.is_some();
+                    // L26（2026-11-02）：凭据引用前置轻闸（管线后、注入前——
+                    // 管线看别名原文、注入在最内层，真值出域（如 web_fetch
+                    // headers 随首跳外发）无人工裁决点的时序空隙收口）。
+                    // 闸位精确性：只查声明槽位（credential_arg_keys），未声明
+                    // 槽位里的 vault: 子串不进闸面（字面量明文是凭据扫描层
+                    // 管辖）。无审批通道（headless/裸装配）= 闸跳过（行为与
+                    // 落地前一致，L26 设计文档 §9.2）；有通道但请求失败 =
+                    // fail-closed。闸拒绝的调用在 preview 之前返回——零
+                    // checkpoint/turn 记录残留。
+                    #[cfg(feature = "security")]
+                    {
+                        if let Some(tool) = tool_opt.as_ref() {
+                            let gate_refs = credential_injection::find_declared_vault_references(
+                                tool.as_ref(),
+                                &call.arguments,
+                            );
+                            if !gate_refs.is_empty()
+                                && let Some(ref security) = cred_gate
+                            {
+                                let auditor = security.auditor();
+                                if !auditor.has_approval_channel() {
+                                    debug!(
+                                        "[AgentLoop] credential gate skipped for {}: no approval channel（值不落日志）",
+                                        call.name
+                                    );
+                                } else {
+                                    let fields_csv = gate_refs
+                                        .iter()
+                                        .map(|(f, _)| f.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    let gate_key = format!(
+                                        "gate:{}:{}",
+                                        call.name,
+                                        gate_refs
+                                            .iter()
+                                            .map(|(_, a)| a.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(",")
+                                    );
+                                    // 冷却窗（拒绝/超时后同键 600s）：静默拒绝
+                                    // 不出卡——卡轰炸限速 + doom-loop 收敛加速
+                                    // （复用 USER REJECTED 文案保持 turn_guard
+                                    // (tool,error) 签名稳定，设计意图非巧合）。
+                                    if !cred_guard.try_acquire(&ctx.session_key, &gate_key) {
+                                        debug!(
+                                            "[AgentLoop] credential gate cooldown for {} ({} refs)（值不落日志）",
+                                            call.name,
+                                            gate_refs.len()
+                                        );
+                                        return format!(
+                                            "⛔ CREDENTIAL USE — USER REJECTED [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，用户未放行。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
+                                            call.name
+                                        );
+                                    }
+                                    let reason = format!(
+                                        "本调用将把声明槽位（{fields_csv}）中的 vault: 凭据引用解析为真值后随本次 {} 调用发出（如 HTTP 首跳）。若目标是外部地址，凭据可能外泄。批准=本次调用携带凭据执行；拒绝=调用不执行。",
+                                        call.name
+                                    );
+                                    let approval_ctx = nemesis_security::auditor::ApprovalContext {
+                                        channel: ctx.channel.clone(),
+                                        chat_id: ctx.chat_id.clone(),
+                                        sender_id: ctx.user.clone(),
+                                        session_key: ctx.session_key.clone(),
+                                        tool_args: serde_json::from_str(&call.arguments)
+                                            .unwrap_or(serde_json::Value::Null),
+                                    };
+                                    match auditor.request_credential_use_approval(
+                                        &call.name,
+                                        &reason,
+                                        Some(&approval_ctx),
+                                    ) {
+                                        Ok(av) if av.approved => {
+                                            cred_guard.release(&ctx.session_key, &gate_key);
+                                            info!(
+                                                "[AgentLoop] credential gate approved for {} ({} refs)（值不落日志）",
+                                                call.name,
+                                                gate_refs.len()
+                                            );
+                                        }
+                                        Ok(av) => {
+                                            let note = av
+                                                .note
+                                                .as_deref()
+                                                .map(str::trim)
+                                                .filter(|n| !n.is_empty())
+                                                .map(|n| format!(" 用户备注: {n}"))
+                                                .unwrap_or_default();
+                                            warn!(
+                                                "[AgentLoop] credential gate rejected for {}（值不落日志）",
+                                                call.name
+                                            );
+                                            return format!(
+                                                "⛔ CREDENTIAL USE — USER REJECTED [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，用户未放行。工具未执行。Do NOT retry the same call unchanged. Inform the user.{note}",
+                                                call.name
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "[AgentLoop] credential gate channel error for {}: {}（值不落日志）",
+                                                call.name, e
+                                            );
+                                            return format!(
+                                                "⛔ CREDENTIAL USE — NO APPROVAL CHANNEL [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，无可用审批通道，fail-closed 拒绝。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
+                                                call.name
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // A7：preview_all = checkpoint 预检多点版（multiedit
                     // 一次 dispatch 快照全部待改文件；单文件工具恰好一条，
                     // 与旧 preview 行为逐字节等价）。
@@ -999,16 +1131,34 @@ impl AgentLoop {
                         // P0 vault（C2，2026-09-22 计划 §3）：凭据别名最后
                         // 一刻注入——副本改写，上游四个表面（pre-hooks/
                         // args_preview/会话历史/observer）全部只见别名。
-                        // 注入失败（别名不存在/vault 锁定）→ 错误串即工具
-                        // 结果，工具不执行（fail loud）。
+                        // 注入失败（别名不存在/vault 锁定）→ L25 发卡恢复
+                        // （broker 在场：发凭据卡 → Stored 后原地重注入续行；
+                        // 缺席/被拒/超时 = 原错误串即工具结果，工具不执行，
+                        // fail loud 零回归）。
                         Some(tool) => {
-                            let exec_args = match credential_injection::inject_credential_aliases(
-                                tool.as_ref(),
-                                &call.arguments,
-                            ) {
-                                Ok(a) => a,
-                                Err(errmsg) => return errmsg,
-                            };
+                            let exec_args =
+                                match credential_injection::inject_credential_aliases_structured(
+                                    tool.as_ref(),
+                                    &call.arguments,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(inj_err) => {
+                                        match credential_injection::try_card_recovery(
+                                            cred_broker.clone(),
+                                            &cred_guard,
+                                            tool.as_ref(),
+                                            &call.arguments,
+                                            &ctx.session_key,
+                                            &call.name,
+                                            &inj_err,
+                                        )
+                                        .await
+                                        {
+                                            Some(a) => a,
+                                            None => return inj_err.to_string(),
+                                        }
+                                    }
+                                };
                             // M1（2026-10-27 整改批次一）：工具 panic 隔离。
                             // 工具在 agent loop task 内联执行，release
                             // panic=unwind 下任一工具 panic 会沿 unwind 炸掉整

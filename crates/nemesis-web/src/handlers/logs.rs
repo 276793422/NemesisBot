@@ -1584,7 +1584,7 @@ impl LogsHandler {
                 })
                 .collect();
             total_injections += injections.len();
-            rounds.push(serde_json::json!({
+            let mut round = serde_json::json!({
                 "round": rec.round,
                 "trace_id": rec.trace_id,
                 "ts": rec.ts,
@@ -1595,7 +1595,17 @@ impl LogsHandler {
                 "summary_used": rec.summary_as_of.is_some(),
                 "summary_covers_up_to":
                     rec.summary_as_of.as_ref().map(|s| s.covers_up_to),
-            }));
+            });
+            // L24: snapshot hashes when recorded (hash-only — the bodies live
+            // in the content-addressed store, the panel stays a visibility
+            // aid, not a second copy of the prompt bytes).
+            if let Some(h) = &rec.system_prompt_sha256 {
+                round["system_prompt_sha256"] = serde_json::json!(h);
+            }
+            if let Some(h) = &rec.tools_sha256 {
+                round["tools_sha256"] = serde_json::json!(h);
+            }
+            rounds.push(round);
         }
 
         Ok(Some(serde_json::json!({

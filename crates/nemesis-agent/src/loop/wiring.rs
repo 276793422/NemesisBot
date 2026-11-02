@@ -105,9 +105,8 @@ impl AgentLoop {
     }
 
     /// B4：取凭据 broker（未装配 = `None`——Auth 臂走原终局零回归）。
-    pub(crate) fn credential_broker(
-        &self,
-    ) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
+    /// L25 起对外可见：TakeoverToolBridge 构造期快照捕获（回退态发卡面）。
+    pub fn credential_broker(&self) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
         self.security.credential_broker.read().clone()
     }
 

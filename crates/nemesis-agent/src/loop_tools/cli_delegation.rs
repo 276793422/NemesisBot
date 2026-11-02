@@ -58,6 +58,21 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
 
+    // L27 env 窄版闸（T4 家族闸纪律，BUG-20261029-178：spawn 点必须显式
+    // 接闸）：第三方 CLI 子进程不继承 bot 内部命名空间变量
+    // （NEMESISBOT_VAULT_PASSPHRASE 等）。刻意窄剥——关键词黑名单不适用
+    // （第三方 CLI 自身 auth 依赖的 env key 必须保留，全剥砍登录态）。
+    // 超时臂 taskkill / find_cli_on_path 的 `where` 属系统工具、不携数据，
+    // 无 env 暴露面，不接闸（窄版语义见 nemesis-utils::env_sanitize 模块文档）。
+    let stripped_env = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
+    if stripped_env > 0 {
+        tracing::debug!(
+            stripped_env,
+            cli = spec.cli_label,
+            "narrow env sanitize before CLI delegation spawn (NEMESISBOT_* only)"
+        );
+    }
+
     // Spawn explicitly so a timeout KILLS THE PROCESS TREE: killing
     // only the direct child (bat wrapper) leaves grandchildren holding
     // the inherited stdout/stderr pipes open, and output() futures hang

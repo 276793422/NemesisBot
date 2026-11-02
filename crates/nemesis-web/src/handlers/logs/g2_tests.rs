@@ -109,6 +109,8 @@ fn projection_record(
         voice_append: None,
         summary_as_of: None,
         vision_projected: false,
+        system_prompt_sha256: None,
+        tools_sha256: None,
     }
 }
 
