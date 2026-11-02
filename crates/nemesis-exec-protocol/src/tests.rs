@@ -211,6 +211,78 @@ async fn call_id_mismatch_is_protocol_error() {
     }
 }
 
+/// BUG-20261102-308 回归锁：engage 失败行（P5-2 `emit_error_response`——
+/// 子进程在任何请求读取前拒绝会话，回 v1 形态错误、无 call_id）在
+/// persistent `read_response` 的 call_id 校验下必须把拒绝原因**原文透传**，
+/// 不得泛化成 "call_id mismatch"（P5-2「让模型/用户看到拒绝原因而不是对着
+/// 『子进程无响应』猜」的意图在 persistent 路径同样成立）。
+#[tokio::test]
+async fn session_error_empty_call_id_passes_reason_through() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    server
+        .write_all(
+            br#"{"ok":false,"result":"","error":"strict mode (fail-closed): sandbox required but unavailable - refusing to run unsandboxed"}"#,
+        )
+        .await
+        .unwrap();
+    server.shutdown().await.unwrap();
+    let mut reader = BufReader::new(client);
+    let err = read_response(&mut reader, SHORT, Some("c-1-1"))
+        .await
+        .unwrap_err();
+    match err {
+        TransportError::Protocol(m) => {
+            assert!(
+                m.contains("refusing to run unsandboxed"),
+                "拒绝原因必须透传: {m}"
+            );
+            assert!(!m.contains("mismatch"), "不得误报成串话: {m}");
+        }
+        other => panic!("期望 Protocol 错误，得到 {other}"),
+    }
+}
+
+/// carve-out 边界对照：空 call_id 但 ok=true 的行（成功应答不带 call_id）
+/// 是真实现缺陷/串话形态——不豁免，维持 mismatch 诊断。
+#[tokio::test]
+async fn empty_call_id_ok_true_still_mismatch() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    server
+        .write_all(br#"{"ok":true,"result":"r"}"#)
+        .await
+        .unwrap();
+    server.shutdown().await.unwrap();
+    let mut reader = BufReader::new(client);
+    let err = read_response(&mut reader, SHORT, Some("c-1-1"))
+        .await
+        .unwrap_err();
+    match err {
+        TransportError::Protocol(m) => assert!(m.contains("mismatch"), "{m}"),
+        other => panic!("期望 Protocol 错误，得到 {other}"),
+    }
+}
+
+/// 对称边界：**非空**错误 call_id 的 ok=false 行（错位的错误应答）不豁免
+/// ——carve-out 只认空 call_id 的会话级全局错误；串话 / journal replay
+/// 防线不削弱（`call_id_mismatch_is_protocol_error` 的错误应答侧补全）。
+#[tokio::test]
+async fn nonempty_call_id_error_still_mismatch() {
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    server
+        .write_all(br#"{"v":2,"call_id":"c-other","ok":false,"result":"","error":"boom"}"#)
+        .await
+        .unwrap();
+    server.shutdown().await.unwrap();
+    let mut reader = BufReader::new(client);
+    let err = read_response(&mut reader, SHORT, Some("c-1-1"))
+        .await
+        .unwrap_err();
+    match err {
+        TransportError::Protocol(m) => assert!(m.contains("mismatch"), "{m}"),
+        other => panic!("期望 Protocol 错误，得到 {other}"),
+    }
+}
+
 #[tokio::test]
 async fn bad_response_json_is_protocol_error() {
     let (read, mut write, server) = boxed_halves();
