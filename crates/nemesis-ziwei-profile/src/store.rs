@@ -75,13 +75,9 @@ impl ProfileStore {
     }
 
     fn assert_id(id: &str) -> Result<(), StoreError> {
-        // id 是路径组件：只允许 zw-pro- 前缀 + 安全字符，拒绝路径穿越。
-        let ok = id.starts_with("zw-pro-")
-            && id.len() <= 64
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-        if ok {
+        // id 是路径组件：形态闸单一真相源 = model::is_valid_profile_id
+        //（Profile::validate 同源消费——BUG-20261103-329），拒绝路径穿越。
+        if crate::model::is_valid_profile_id(id) {
             Ok(())
         } else {
             Err(StoreError::Invalid(format!("profile_id {id:?} 形态非法")))
