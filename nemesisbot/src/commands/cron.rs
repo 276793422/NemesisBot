@@ -193,13 +193,35 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 .map_err(anyhow::Error::msg)?;
             println!("Added job '{}' ({})", name, job.id);
         }
-        CronAction::Remove { id } => match svc.remove_job(&id) {
-            Ok(true) => println!("Removed job {}", id),
-            Ok(false) => println!("Job {} not found.", id),
-            Err(e) => return Err(anyhow::anyhow!("删除任务落盘失败（任务保留）: {e}")),
-        },
+        CronAction::Remove { id } => {
+            ensure_user_job(&svc, &id)?;
+            match svc.remove_job(&id) {
+                Ok(true) => println!("Removed job {}", id),
+                Ok(false) => println!("Job {} not found.", id),
+                Err(e) => return Err(anyhow::anyhow!("删除任务落盘失败（任务保留）: {e}")),
+            }
+        }
         CronAction::Enable { id } => toggle(&svc, &id, true)?,
         CronAction::Disable { id } => toggle(&svc, &id, false)?,
+    }
+    Ok(())
+}
+
+/// 系统内部作业（`board-ap:` / `memory-dreaming:` 保留命名空间，单一真相源
+/// [`nemesis_cron::reserved_prefix_hit`]）的 CLI 变更闸：这些作业由看板
+/// autopilot 规则与 `memory.dreaming` 配置各自拥有真相源，删掉/停用后到
+/// 下次 gateway 启动同步才会重建（期间规则侧「已挂载」状态照常说谎），
+/// 用户面变更一律 loud 拒绝并指路专属管理面。任务不存在时放行（保留既有
+/// not-found 输出语义）。
+fn ensure_user_job(svc: &CronService, id: &str) -> Result<()> {
+    if let Some(job) = svc.get_job(id)
+        && nemesis_cron::reserved_prefix_hit(&job.name).is_some()
+    {
+        anyhow::bail!(
+            "任务 {id}（{}）是系统内部作业（保留命名空间），不能通过 cron 命令删除/停用\
+             ——看板定时规则用 `autopilot` 命令管理，记忆 dreaming 在 Memory 设置页管理",
+            job.name
+        );
     }
     Ok(())
 }
@@ -217,6 +239,7 @@ fn toggle(svc: &CronService, id: &str, enabled: bool) -> Result<()> {
         println!("Job {} not found.", id);
         return Ok(());
     }
+    ensure_user_job(svc, id)?;
     svc.enable_job(id, enabled)
         .map(|_| {
             println!(

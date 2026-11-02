@@ -144,6 +144,7 @@ fn compute_audit_hash_is_deterministic() {
         hash: String::new(),
         prev_hash: "genesis".into(),
         sign: None,
+        hash_version: 0,
     };
     let h1 = compute_audit_hash(&ev);
     let h2 = compute_audit_hash(&ev);
@@ -166,6 +167,7 @@ fn compute_audit_hash_changes_with_field() {
         hash: String::new(),
         prev_hash: "p".into(),
         sign: None,
+        hash_version: 0,
     };
     let mut ev = base();
     let h1 = compute_audit_hash(&ev);

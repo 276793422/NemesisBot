@@ -336,6 +336,81 @@ pub enum MaixCamEvent {
     Unknown(String),
 }
 
+impl MaixCamChannel {
+    /// 出站写超时（BUG-20261102-300）：manager 出站派发是单任务串行
+    /// await（一条通道 send 无界挂起 = 全部通道出站停摆且零错误零日志，
+    /// 见 base.rs 串行派发纪律）——设备停摆（对端不读、内核缓冲填满）
+    /// 时定向写/broadcast 写会把整条出站管线冻死，TCP write 必须有界。
+    /// HTTP 35s / email 30s 同族先例，此处对齐 email 的 30s。
+    const WRITE_TIMEOUT_SECS: u64 = 30;
+
+    /// 单一写路径：带超时的 write_all（BUG-20261102-300 有界性）。
+    /// 超时映射 `ErrorKind::TimedOut`（email io_timeout 同形态）。
+    /// 泛型形态：生产传 TcpStream 写半部，测试传 mock writer（Windows
+    /// loopback TCP 缓冲自调连显式收窄都不认——内核行为不可依赖）。
+    async fn write_payload_with_timeout<W: tokio::io::AsyncWrite + Unpin>(
+        writer: &mut W,
+        payload: &str,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        match tokio::time::timeout(timeout, writer.write_all(payload.as_bytes())).await {
+            Ok(r) => r,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("MaixCam write timed out after {}s", timeout.as_secs()),
+            )),
+        }
+    }
+
+    /// send 的可注入超时形态（测试用短窗验证 BUG-20261102-300 的
+    /// 有界性；生产走 WRITE_TIMEOUT_SECS）。
+    async fn send_with_timeout(
+        &self,
+        msg: OutboundMessage,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        if !*self.running.read() {
+            return Err(NemesisError::Channel(
+                "maixcam channel not running".to_string(),
+            ));
+        }
+
+        self.base.record_sent();
+
+        // Try to send to a specific device or broadcast
+        if !self.client_writers.is_empty() {
+            let cmd = Self::build_command(&msg.chat_id, &msg.content);
+            let json = serde_json::to_string(&cmd)
+                .map_err(|e| NemesisError::Channel(format!("MaixCam serialize error: {e}")))?;
+            let payload = format!("{json}\n");
+
+            if let Some(mut writer) = self.client_writers.get_mut(&msg.chat_id) {
+                Self::write_payload_with_timeout(&mut *writer, &payload, timeout)
+                    .await
+                    .map_err(|e| NemesisError::Channel(format!("MaixCam write error: {e}")))?;
+                return Ok(());
+            }
+
+            // Broadcast to all（best-effort 语义保持：单设备失败不拦整体，
+            // 但每设备写有界——不再被停摆设备冻死派发管线）
+            for mut entry in self.client_writers.iter_mut() {
+                let _ = Self::write_payload_with_timeout(&mut *entry, &payload, timeout).await;
+            }
+            return Ok(());
+        }
+
+        if *self.client_count.read() == 0 {
+            return Err(NemesisError::Channel(
+                "no connected MaixCam devices".to_string(),
+            ));
+        }
+
+        debug!(chat_id = %msg.chat_id, "[MaixCamChannel] sending command");
+        self.outbound_queue.write().push(msg);
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Channel for MaixCamChannel {
     fn name(&self) -> &str {
@@ -380,44 +455,12 @@ impl Channel for MaixCamChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        if !*self.running.read() {
-            return Err(NemesisError::Channel(
-                "maixcam channel not running".to_string(),
-            ));
-        }
-
-        self.base.record_sent();
-
-        // Try to send to a specific device or broadcast
-        if !self.client_writers.is_empty() {
-            let cmd = Self::build_command(&msg.chat_id, &msg.content);
-            let json = serde_json::to_string(&cmd)
-                .map_err(|e| NemesisError::Channel(format!("MaixCam serialize error: {e}")))?;
-
-            if let Some(mut writer) = self.client_writers.get_mut(&msg.chat_id) {
-                writer
-                    .write_all(format!("{json}\n").as_bytes())
-                    .await
-                    .map_err(|e| NemesisError::Channel(format!("MaixCam write error: {e}")))?;
-                return Ok(());
-            }
-
-            // Broadcast to all
-            for mut entry in self.client_writers.iter_mut() {
-                let _ = entry.write_all(format!("{json}\n").as_bytes()).await;
-            }
-            return Ok(());
-        }
-
-        if *self.client_count.read() == 0 {
-            return Err(NemesisError::Channel(
-                "no connected MaixCam devices".to_string(),
-            ));
-        }
-
-        debug!(chat_id = %msg.chat_id, "[MaixCamChannel] sending command");
-        self.outbound_queue.write().push(msg);
-        Ok(())
+        Self::send_with_timeout(
+            self,
+            msg,
+            std::time::Duration::from_secs(Self::WRITE_TIMEOUT_SECS),
+        )
+        .await
     }
 }
 

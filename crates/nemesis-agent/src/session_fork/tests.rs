@@ -380,6 +380,38 @@ fn test_fork_errors_on_empty_or_turnless_source() {
     assert!(err2.contains("jsonl"), "unexpected error: {err2}");
 }
 
+/// BUG-20261101-292：at_turn=0 诚实拒绝（CLI --at 0 / WSAPI at_turn 0）。
+/// 此前 `.max(1)` 静默 clamp 成 fork 1 轮——与 interactive_pick 的
+/// `Ok(n) if n >= 1` 拒 0 臂行为分裂，静默纠偏违反 loud 纪律。
+#[test]
+fn test_fork_rejects_zero_turn_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = unique_src();
+    seed_clean_log(&src);
+    let err = fork_session(&store, &src, None, Some(0)).unwrap_err();
+    assert!(err.contains("无效轮次"), "unexpected error: {err}");
+    // 拒绝路径零副作用：源会话 jsonl 未被触碰（fork 源只读契约）。
+    let (rows, _, _, _) = read_chat_log(&src, usize::MAX, None);
+    assert_eq!(rows.len(), 6, "源会话必须原样保留");
+    delete_chat_log(&src);
+}
+
+/// BUG-20261101-292 横向同族：--new-key 空/空白值诚实拒绝（此前会经
+/// unique_key 产出空名会话文件垃圾残留）。
+#[test]
+fn test_fork_rejects_empty_new_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = unique_src();
+    seed_clean_log(&src);
+    for bad in ["", "   "] {
+        let err = fork_session(&store, &src, Some(bad.to_string()), None).unwrap_err();
+        assert!(err.contains("new_key"), "unexpected error: {err}");
+    }
+    delete_chat_log(&src);
+}
+
 /// system + (u,a) × 3, with a tool exchange inside turn 2 (STORE shape).
 fn three_turn_store_history() -> Vec<StoredMessage> {
     vec![

@@ -199,10 +199,15 @@ pub fn is_image_size_error(msg: &str) -> bool {
 
 /// Extract HTTP status code from error message.
 pub fn extract_http_status(msg: &str) -> Option<u16> {
-    // Look for patterns like "status: 429", "status 429", "HTTP 429"
+    // Look for patterns like "status: 429", "status 429", "HTTP 429".
+    // 两个模式均 (?i)（BUG-20261102-317）：classify_llm_error 与 providers
+    // classify_error 传进来的都是 to_lowercase() 后的文本，大写 "HTTP" 字面
+    // 在该语境恒 miss——"HTTP/1.1 503 ..." 纯状态行形态分类落 None，fallback
+    // 不轮转；(?i) 同时让原始大小写文本直调时的 "Status:"/"HTTP" 首字母
+    // 大写形态也命中。
     let patterns = [
-        regex::Regex::new(r"status[:\s]+(\d{3})").ok()?,
-        regex::Regex::new(r"HTTP[/\s]+\d*\.?\d*\s+(\d{3})").ok()?,
+        regex::Regex::new(r"(?i)status[:\s]+(\d{3})").ok()?,
+        regex::Regex::new(r"(?i)HTTP[/\s]+\d*\.?\d*\s+(\d{3})").ok()?,
     ];
 
     for p in &patterns {

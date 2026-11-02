@@ -46,6 +46,35 @@ const SKIP_FILENAMES: &[&str] = &[
 /// Browser-like User-Agent for GitHub API requests.
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
+/// persona 名/id 路径安全闸——复用技能 slug 验证器单一真相源（BUG-20261101-294：
+/// web 面 activate/remove/file.*/shop.download 此前零校验。`name: ""` 经
+/// resolve_path("personas/") 命中 personas 目录本身：remove 直接全灭人格库
+/// （default 档案 + 激活标记 + 全部已装人格，不可逆），activate 清空工作区
+/// 人格文件后把激活标记写成空名。验证器拒空串/路径分隔符/`..`/`:`（盘符
+/// 相对路径 + NTFS ADS）/Windows 保留名/尾点尾空格，必须在触碰文件系统
+/// 与网络之前调用（CLI install/remove 同源，BUG-20261028-117 起）。
+fn validate_persona_name(name: &str) -> Result<(), String> {
+    nemesis_skills::types::validate_skill_identifier(name)
+        .map_err(|e| format!("persona name '{}' invalid: {}", name, e))
+}
+
+/// persona 文件编辑面白名单（BUG-20261101-294：`file` 参数此前裸拼
+/// resolve_path，`../config.json` 形态命中 workspace 内任意路径——人格文件
+/// 编辑器成了任意 workspace 文件读/裸写原语，可绕过 config schema 校验
+/// 直接改写 config.json / cron store / approval_rules 等。PersonaView
+/// 逐 PERSONA_FILES 编辑，白名单与其完全一致）。
+fn validate_persona_file(file: &str) -> Result<(), String> {
+    if PERSONA_FILES.contains(&file) {
+        Ok(())
+    } else {
+        Err(format!(
+            "file '{}' 不是可编辑的人格文件（允许：{}）",
+            file,
+            PERSONA_FILES.join(", ")
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -923,6 +952,7 @@ impl ModuleHandler for PersonaHandler {
             "activate" => {
                 let d = data.ok_or("missing data")?;
                 let name = get_str(&d, "name")?;
+                validate_persona_name(&name)?;
                 let result = self.cmd_activate(workspace, &name)?;
                 restart_agent(ctx)?;
                 Ok(result)
@@ -935,12 +965,26 @@ impl ModuleHandler for PersonaHandler {
             "remove" => {
                 let d = data.ok_or("missing data")?;
                 let name = get_str(&d, "name")?;
-                self.cmd_remove(workspace, &name)
+                validate_persona_name(&name)?;
+                let was_active = self.read_active(workspace).unwrap_or_default() == name;
+                let result = self.cmd_remove(workspace, &name)?;
+                // BUG-20261101-294 次生修复：remove-active 在 cmd_remove 内部落
+                // default（文件面已切），但此前不同步重启 agent——activate/restore
+                // 臂都经 restart_agent 加载新人格，remove-active 漏重启让 agent
+                // 继续用已删除人格的 system prompt 直到下次重启。agent 缺席
+                // （纯本地/测试 ctx）best-effort 跳过（与 shop.hire 的 cluster
+                // reload 缺席跳过同 spirit）。
+                if was_active && ctx.state.agent_service.is_some() {
+                    restart_agent(ctx)?;
+                }
+                Ok(result)
             }
             "file.get" => {
                 let d = data.ok_or("missing data")?;
                 let name = get_str(&d, "name")?;
                 let file = get_str(&d, "file")?;
+                validate_persona_name(&name)?;
+                validate_persona_file(&file)?;
                 self.cmd_file_get(workspace, &name, &file)
             }
             "file.save" => {
@@ -948,6 +992,8 @@ impl ModuleHandler for PersonaHandler {
                 let name = get_str(&d, "name")?;
                 let file = get_str(&d, "file")?;
                 let content = get_str(&d, "content")?;
+                validate_persona_name(&name)?;
+                validate_persona_file(&file)?;
                 self.cmd_file_save(workspace, &name, &file, &content)
             }
             "shop.browse" => self.cmd_shop_browse(workspace, data.as_ref()).await,
@@ -964,12 +1010,14 @@ impl ModuleHandler for PersonaHandler {
             "shop.download" => {
                 let d = data.ok_or("missing data")?;
                 let id = get_str(&d, "id")?;
+                validate_persona_name(&id)?;
                 self.cmd_shop_download(workspace, &id).await
             }
             #[cfg(feature = "cluster")]
             "shop.hire" => {
                 let d = data.ok_or("missing data")?;
                 let id = get_str(&d, "id")?;
+                validate_persona_name(&id)?;
                 self.cmd_shop_hire(workspace, &id, ctx)
             }
             _ => Err(format!("unknown command: persona.{}", cmd)),

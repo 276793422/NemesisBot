@@ -318,6 +318,10 @@ pub async fn run(
     let skills_install_gate = if ctx.cfg.skills.as_ref().is_none_or(|s| s.install_approval) {
         let gate = std::sync::Arc::new(crate::web_approval::LateWebSkillsGate::new(300));
         web_server.set_skills_install_gate(gate.clone());
+        // BUG-20261101-295：同一门填进 SharedResources 共享槽——agent 的
+        // `install_skill` 工具经此走 P13 审批（旧形态工具面绕过全漏斗，
+        // 是 web/CLI 之外的唯一旁路）。槽 Arc 早于 loop 构建，晚填可见。
+        *shared_resources.skills_install_gate_slot.write() = Some(gate.clone());
         Some(gate)
     } else {
         tracing::info!(

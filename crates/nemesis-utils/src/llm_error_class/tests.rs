@@ -86,6 +86,35 @@ fn status_504_maps_to_timeout() {
 }
 
 #[test]
+fn http_status_line_form_is_classified() {
+    // BUG-20261102-317 红证锚：`extract_http_status` 的 "HTTP[/\s]+..."
+    // 模式写的是大写字面 "HTTP"，而 classify_llm_error / providers
+    // classify_error 传给它的都是 to_lowercase() 后的文本——纯状态行形态
+    // （"HTTP/1.1 503 Service Unavailable"，reqwest 常见 Display 之一）在
+    // classify 语境下 extract 恒 miss，词表又无裸 "503"/"502"，分类落 None
+    // → fallback 不轮转；同一输入直调 extract_http_status 却能拿 Some(503)
+    // （providers tests 钉住的形态）——同一 pub 函数两语境分叉。
+    assert_eq!(
+        classify_llm_error("HTTP/1.1 503 Service Unavailable"),
+        Some(LlmErrorClass::Overloaded)
+    );
+    // lowercase 后仍带 "http/1.1" 前缀的形态同样必须命中（修复前同死）。
+    assert_eq!(
+        classify_llm_error("http/2 502 bad gateway"),
+        Some(LlmErrorClass::Overloaded)
+    );
+    // 状态行里的 429 也应经 extract → RateLimit（修复前落文案词表恰好
+    // 含裸 "429" 误打误撞命中——钉住走的是 extract 通道而非词表巧合）。
+    assert_eq!(
+        classify_llm_error("HTTP/1.1 429 Too Many Requests"),
+        Some(LlmErrorClass::RateLimit)
+    );
+    // 首字母大写 "Status:" 形态（原始大小写文本直调 pub 函数）——修复前
+    // pattern 1 只认小写 "status"，同样 miss。
+    assert_eq!(extract_http_status("Status: 429"), Some(429));
+}
+
+#[test]
 fn image_errors_are_format_class() {
     assert_eq!(
         classify_llm_error("image dimensions exceed max 8000px"),

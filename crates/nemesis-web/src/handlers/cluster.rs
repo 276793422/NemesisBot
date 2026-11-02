@@ -333,7 +333,8 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
 /// 集群本体闸链快照（roaming status 用，加法字段）。跨网叠加层的
 /// 装配在 gateway 启动路径被三道闸前置（`gateway/cluster_init.rs`）：
 /// config.json `cluster.enabled` × config.cluster.json 顶层 `enabled`（合成
-/// `cluster_should_start`）+ RPC token 引用解析（fail-closed 分支整个跳过
+/// `cluster_should_start`）+ RPC token 认证不可用（引用解析失败**或**为空，
+/// BUG-20261102-297 起统一裁决；fail-closed 分支整个跳过 RPC/discovery
 /// 装配）。只开叠加层开关（roaming.enabled）而集群
 /// 本体闸未开时，**重启永远不生效**——payload 带闸链原值，前端据此区分
 /// 「待重启」与「集群未启用」，否则徽标恒说「重启网关」误导用户无限重启
@@ -378,11 +379,14 @@ fn inject_cluster_gate(
     ctx: &RequestContext,
     workspace: &str,
 ) {
+    // BUG-20261102-297：闸链快照读统一裁决（引用解析失败**或**token 为空
+    // 都算 token 异常）——RPC fail-closed 时前端徽标必须按 token 定性，
+    // 不能误报「待重启生效」。
     let token_broken = ctx
         .state
         .cluster
         .as_ref()
-        .map(|c| c.rpc_reference_broken())
+        .map(|c| c.rpc_auth_unavailable())
         .unwrap_or(false);
     if let Some(obj) = payload.as_mut().and_then(|p| p.as_object_mut()) {
         obj.insert(

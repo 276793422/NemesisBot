@@ -71,6 +71,12 @@ fn session_poisoning_detection() {
     assert!(is_session_poisoning(
         "header line 131072 bytes exceeds cap 65536"
     ));
+    // BUG-20261102-311：Content-Length 值 parse 失败（非数字）同族——
+    // 头块已被消费、body 边界未知，会话不可信（此前漏出词表：裸 Err
+    // 返回、session 滞留表里直到 idle reap）。
+    assert!(is_session_poisoning(
+        "bad Content-Length \"abc\": invalid digit found in string"
+    ));
     // Well-formed LSP error: session stays.
     assert!(!is_session_poisoning(
         "server error on textDocument/definition: {code:-32601}"
@@ -687,6 +693,16 @@ def handle(msg):
                 sys.stdout.buffer.write(b"X" * 131072 + b"\r\n")
                 sys.stdout.buffer.flush()
             return
+        if MODE == "bad-clength":
+            # BUG-20261102-311：Content-Length 值非数字（parse 失败形态）
+            # ——头块已被客户端消费、body 边界未知（读过未知量字节），
+            # 会话中毒必须按 poisoning 驱逐（与 without Content-Length /
+            # exceeds cap 同族）。发完坏头块再续一点垃圾字节（模拟被替换
+            # 服务器的错位输出），进程保持存活。
+            with send_lock:
+                sys.stdout.buffer.write(b"Content-Length: abc\r\n\r\n{\"jsonrpc\":")
+                sys.stdout.buffer.flush()
+            return
         if MODE == "diag-on-hover":
             # C2：在响应前先推一条诊断——request() 读循环的 Notification
             # 臂必须把它缓存住（而非只等自己的响应）。
@@ -1035,7 +1051,27 @@ async fn fake_server_giant_header_line_is_capped_and_poisons_session() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// No gopls anywhere on (a filtered) PATH: query must fail fast with the
+/// BUG-20261102-311：Content-Length 值 parse 失败（`Content-Length: abc`）
+/// ——头块已被消费、body 边界未知（BUG-93/R205 钦定的「读过未知量字节」
+/// 同族），会话中毒必须驱逐。修复前该形态漏出 is_session_poisoning 词表：
+/// 裸 Err 返回、session 滞留表里（count==1，直到 idle reap 才清），后续
+/// 请求在错位字节流上连环 desync。
+#[tokio::test]
+async fn fake_server_bad_content_length_poisons_session() {
+    let (dir, _path) = plant_fake_gopls("bad-clength");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let err = mgr
+        .query(LspOp::Hover, &dir.path().join("main.go"), 0, 0)
+        .await
+        .unwrap_err();
+    assert!(err.contains("bad Content-Length"), "{err}");
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "poisoned session must be evicted"
+    );
+    let _ = mgr.shutdown_all().await;
+}
 /// actionable "not installed" error instead of attempting a session spawn.
 #[tokio::test]
 async fn s1_missing_server_on_path_yields_not_installed_error() {

@@ -235,7 +235,15 @@ impl JobPauseHandle {
         // no-op），此行封的是非触发期调用面的不变量缺口。
         job.state.next_run_at_ms = None;
         job.updated_at_ms = Local::now().timestamp_millis();
-        let _ = save_store_to_path(&self.store_path, &s);
+        // BUG-20261102-315：落盘失败必须留痕——静默吞错会让「自动暂停」只
+        // 活在内存，重启后 job 复活再触发（自愈但零痕迹，排障无从下手）。
+        // 不改控制流：内存状态已真实推进，pause 语义在本进程内仍然成立。
+        if let Err(e) = save_store_to_path(&self.store_path, &s) {
+            warn!(
+                "[Cron] pause_job persist failed (id={}): {} — 内存已停用，重启后该作业会恢复启用",
+                job_id, e
+            );
+        }
         info!(
             "[Cron] Job paused via pause handle: id={} (disabled; manual re-enable allowed)",
             job_id
@@ -270,7 +278,18 @@ fn collect_and_reset_due(
         }
     }
     if !due.is_empty() {
-        let _ = save_store_to_path(store_path, &s);
+        // BUG-20261102-315：落盘失败必须留痕——内存 next_run 已复位而盘上
+        // 仍是旧值，重启后 recompute（H1 子句）会复活该触发点，本次触发
+        // 的副作用在重启后被重放。停摆调度器不可取（内存状态真实，丢了
+        // 就是丢任务），但零痕迹等于排障黑洞：warn 记下「本次触发可能被
+        // 重放」的事实。
+        if let Err(e) = save_store_to_path(store_path, &s) {
+            warn!(
+                "[Cron] due-collect persist failed: {} — {} 个到期作业的 next_run 复位未落盘，重启后可能重放本次触发",
+                e,
+                due.len()
+            );
+        }
     }
     due
 }
@@ -514,7 +533,17 @@ impl CronService {
                                 // 新 kind，旧三条件在 cron→at 改期场景全部命中）。
                                 || j.state.next_run_at_ms.is_some()
                         });
-                        let _ = save_store_to_path(&store_path, &s);
+                        // BUG-20261102-315：落盘失败必须留痕——执行后状态
+                        // （last_status/history/停摆/删除）只活在内存，重启即
+                        // 丢；失败单发的 disable 落盘失败会让 R34 修过的
+                        // 「失败单发重启重放」僵尸复活。不置毒不改控制流：
+                        // 内存状态真实，调度继续，但重启重放风险必须可追溯。
+                        if let Err(e) = save_store_to_path(&store_path, &s) {
+                            warn!(
+                                "[Cron] post-execution persist failed: {} — last_status/停摆状态未落盘，重启后可能重放",
+                                e
+                            );
+                        }
                     }
                 }
             }

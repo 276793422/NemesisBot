@@ -5141,3 +5141,119 @@ async fn test_workflow_variables_survive_in_process_resume() {
         *seen
     );
 }
+
+// -----------------------------------------------------------------------
+// BUG-20261102-NN：sub_workflow 等待节点评审路由的错误臂
+// -----------------------------------------------------------------------
+
+/// 造一个「父执行停在 sub_workflow 节点（子执行停在自己的 human_review）」
+/// 的现场，返回 (engine, 父执行 id, 子执行 id)。用 new_arc（注册真实
+/// sub_workflow 执行器）。
+async fn setup_parent_waiting_on_subworkflow(engine: &Arc<WorkflowEngine>) -> (String, String) {
+    engine
+        .register_workflow(make_workflow(
+            "err_child_wf",
+            vec![make_node("review", "human_review", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "err_parent_wf",
+            vec![make_node("call", "sub_workflow", vec![])],
+        ))
+        .unwrap();
+    // sub_workflow 节点需要 config.workflow 指向子工作流。
+    {
+        let mut wf = engine.workflows.get_mut("err_parent_wf").unwrap();
+        wf.nodes[0]
+            .config
+            .insert("workflow".to_string(), serde_json::json!("err_child_wf"));
+    }
+
+    let parent = engine
+        .run("err_parent_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Waiting);
+    let child_id = parent.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (parent.id.clone(), child_id)
+}
+
+/// 错误臂 ①：等待结果的 metadata.execution_id 缺失 → 诚实报错 +
+/// 执行状态恢复 Waiting + token 清理（不得留 Running 无 token 卡死形态）。
+#[tokio::test]
+async fn test_sub_workflow_resume_missing_execution_id_restores_waiting() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // 模拟旧数据/异常形态：抹掉路由锚。
+    {
+        let mut execs = engine.executions.write().await;
+        let exec = execs.get_mut(&parent_id).unwrap();
+        exec.node_results.get_mut("call").unwrap().metadata.clear();
+    }
+
+    let result = engine
+        .resume_execution(
+            &parent_id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "missing routing anchor must error, not overwrite"
+    );
+    let err = format!("{}", result.unwrap_err());
+    assert!(
+        err.contains("metadata.execution_id"),
+        "error must name the anchor: {err}"
+    );
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        after.state,
+        ExecutionState::Waiting,
+        "failed resume must restore Waiting, not leave Running"
+    );
+    assert!(
+        engine.cancel_tokens.is_empty(),
+        "cancel token must be cleaned up on the error arm"
+    );
+}
+
+/// 错误臂 ②：metadata.execution_id 指向不存在的子执行 → 诚实报错 +
+/// 恢复 Waiting + token 清理。
+#[tokio::test]
+async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    {
+        let mut execs = engine.executions.write().await;
+        let exec = execs.get_mut(&parent_id).unwrap();
+        exec.node_results.get_mut("call").unwrap().metadata.insert(
+            "execution_id".to_string(),
+            serde_json::json!("nonexistent-child-exec"),
+        );
+    }
+
+    let result = engine
+        .resume_execution(
+            &parent_id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await;
+    assert!(result.is_err(), "missing child execution must error");
+    let err = format!("{}", result.unwrap_err());
+    assert!(
+        err.contains("nonexistent-child-exec"),
+        "error must name the dangling child id: {err}"
+    );
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(after.state, ExecutionState::Waiting);
+    assert!(engine.cancel_tokens.is_empty());
+}

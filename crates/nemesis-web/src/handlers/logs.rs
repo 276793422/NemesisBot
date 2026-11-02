@@ -14,8 +14,9 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use chrono::NaiveDateTime;
 #[cfg(feature = "security")]
 use nemesis_security::integrity::AuditEvent;
-#[cfg(feature = "security")]
-use sha2::{Digest, Sha256};
+// 无 feature 门：下方目录 helper（request/cluster/security/session/boundary）
+// 全部无门控使用 Path/PathBuf——门在导入上会让无 security 构建炸出 46 错
+// 级联（2026-11-02 Windows 分片实录：Linux 带 security 绿、Windows 裸 feature 红）。
 use std::path::{Path, PathBuf};
 
 pub struct LogsHandler;
@@ -782,18 +783,17 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
     events
 }
 
-/// SHA-256 hash using the same field order as `AuditChain::append_with_sign`.
+/// 事件 hash 单一真相源委托（BUG-20261102-305：此处原是
+/// `AuditChain::append_with_sign` 七字段公式的手抄拷贝——v1 公式追加
+/// source+reason 后拷贝版对追加事件恒算出「hash mismatch」假阳性）。
+/// 未支持版本（hash_version>1）返回空串 → 与任何存 hash 不等 → 上层
+/// 诊断自然报 hash mismatch（与 verify_chain fail-closed 同语义）。
 #[cfg(feature = "security")]
 fn compute_audit_hash(ev: &AuditEvent) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(ev.prev_hash.as_bytes());
-    hasher.update(ev.timestamp.as_bytes());
-    hasher.update(ev.operation.as_bytes());
-    hasher.update(ev.tool_name.as_bytes());
-    hasher.update(ev.user.as_bytes());
-    hasher.update(ev.target.as_bytes());
-    hasher.update(ev.decision.as_bytes());
-    format!("{:x}", hasher.finalize())
+    if ev.hash_version > 1 {
+        return String::new();
+    }
+    nemesis_security::integrity::AuditChain::compute_event_hash(ev)
 }
 
 /// SAN-05：薄包装委托仓内单一真相源白名单消毒（原黑名单
@@ -1321,7 +1321,12 @@ impl LogsHandler {
         // File-based scan is the primary source — works even without the memory
         // manager (when enhanced memory / ONNX is disabled). Each *.jsonl is one
         // session. This decouples the dashboard's "对话历史" from the vector stack.
-        let mut sessions = scan_session_logs(workspace);
+        // BUG-20261102-302：全目录全量解析（逐行 JSON parse）直跑 tokio
+        // worker 会占住 worker，spawn_blocking 移出（sessions.list 同款纪律）。
+        let ws = workspace.to_string();
+        let mut sessions = tokio::task::spawn_blocking(move || scan_session_logs(&ws))
+            .await
+            .map_err(|e| format!("logs.session_list task join failed: {e}"))?;
 
         // When episodic memory is available, enrich file entries with metadata
         // (model, triggerCluster) the raw chat log does not carry. Match by both
@@ -1463,8 +1468,16 @@ impl LogsHandler {
         // jsonl（同 fs.rs tree_in 的 F7 闸，BUG-HUNT R7）。
         let path =
             session_log_dir(workspace).join(format!("{}.jsonl", sanitize_session_key(session)));
+        // BUG-20261102-302：整会话 jsonl 全量解析（逐行 JSON parse）在 wire
+        // 路径直跑 tokio worker，spawn_blocking 移出（sessions.export 同款
+        // 纪律）。
+        let raw_lines = {
+            tokio::task::spawn_blocking(move || read_jsonl_lines(&path))
+                .await
+                .map_err(|e| format!("logs.session_detail task join failed: {e}"))?
+        };
         #[cfg_attr(not(feature = "memory"), allow(unused_mut))]
-        let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
+        let mut messages: Vec<serde_json::Value> = raw_lines
             .into_iter()
             .map(|ln| {
                 let mut msg = serde_json::json!({

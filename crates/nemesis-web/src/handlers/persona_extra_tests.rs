@@ -343,7 +343,17 @@ async fn test_file_get_missing_returns_empty() {
     }
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
+    // 白名单外的文件名一律 loud 拒绝（BUG-20261101-294 file 白名单闸）；
+    // 「缺失 → 空内容」语义收敛到白名单内但不存在的文件上验证。
     let data = serde_json::json!({ "name": "default", "file": "NONEXISTENT.md" });
+    let err = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("不是可编辑的人格文件"), "got: {err}");
+
+    let data = serde_json::json!({ "name": "default", "file": "TOOLS.md" });
+    std::fs::remove_file(dir.path().join("personas/default/TOOLS.md")).unwrap();
     let r = h
         .handle_cmd("file.get", Some(data), &ctx)
         .await
@@ -400,7 +410,9 @@ async fn test_file_get_path_traversal() {
         .handle_cmd("file.get", Some(data), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("path traversal denied"), "got: {}", err);
+    // BUG-20261101-294：白名单闸先于 resolve_path（敌意文件名在触碰
+    // 文件系统之前拒绝，比旧的「.. 启发式 canonicalize 拒绝」更早更强）。
+    assert!(err.contains("不是可编辑的人格文件"), "got: {}", err);
 }
 
 #[tokio::test]
@@ -484,7 +496,11 @@ async fn test_file_save_path_traversal() {
         .handle_cmd("file.save", Some(data), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("path traversal denied"), "got: {}", err);
+    // BUG-20261101-294：name 闸（slug 验证器）先于 resolve_path——旧路径下
+    // 该用例靠「目标不存在 + 相对路径含 ..」的 canonicalize 启发式兜住；
+    // 目标存在时 resolve_path 实际放行（personas/../ = workspace 根），
+    // 等于越权写根文件。现在 name='..' 在触碰文件系统之前 loud 拒绝。
+    assert!(err.contains("invalid"), "got: {}", err);
 }
 
 #[tokio::test]
@@ -868,4 +884,255 @@ async fn test_unknown_command_missing_workspace_still_workspace_first() {
     let h = PersonaHandler::new();
     let err = h.handle_cmd("bogus", None, &ctx).await.unwrap_err();
     assert!(err.contains("workspace not configured"));
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261101-294 — persona 面用户可控 name/id/file 参数校验闸
+// ---------------------------------------------------------------------------
+
+/// 计数 mock：restart = stop + start 各 +1，用于 remove-active 重启断言。
+struct CountingAgentService(std::sync::atomic::AtomicUsize);
+
+impl LifecycleService for CountingAgentService {
+    fn start(&self) -> Result<(), String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn stop(&self) -> Result<(), String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn is_running(&self) -> bool {
+        true
+    }
+}
+impl AgentLoopService for CountingAgentService {}
+
+fn make_ctx_with_counting_agent(ws: &str, counter: Arc<CountingAgentService>) -> RequestContext {
+    make_ctx_inner(ws, Some(counter as Arc<dyn AgentLoopService>))
+}
+
+async fn seeded_workspace(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let ws = dir.path().to_path_buf();
+    seed_default_persona(&ws);
+    let ctx = make_ctx(dir);
+    let h = PersonaHandler::new();
+    let _ = h.handle_cmd("current", None, &ctx).await.unwrap();
+    ws
+}
+
+#[tokio::test]
+async fn test_remove_empty_name_rejected_store_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = seeded_workspace(&dir).await;
+    create_persona_dir(&ws, "go", "Go", "🟢", "go persona");
+
+    let h = PersonaHandler::new();
+    // name: "" 经 resolve_path("personas/") 命中 personas 目录本身——修复前
+    // remove_dir_all 全灭人格库（default 档案 + 激活标记 + go）。
+    let err = h
+        .handle_cmd(
+            "remove",
+            Some(serde_json::json!({"name": ""})),
+            &make_ctx(&dir),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid"), "err: {err}");
+
+    // 人格库完好：激活标记 + default + go 全在。
+    assert!(ws.join("personas/_active.json").exists());
+    assert!(ws.join("personas/default").exists());
+    assert!(ws.join("personas/go").exists());
+}
+
+#[tokio::test]
+async fn test_remove_path_form_name_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = seeded_workspace(&dir).await;
+
+    let h = PersonaHandler::new();
+    for bad in ["../x", "a/b", "a\\b", "..", "con", "x."] {
+        let err = h
+            .handle_cmd(
+                "remove",
+                Some(serde_json::json!({"name": bad})),
+                &make_ctx(&dir),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid"), "name {bad:?} 必须拒绝，err: {err}");
+    }
+    assert!(ws.join("personas/_active.json").exists());
+}
+
+#[tokio::test]
+async fn test_activate_empty_name_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = seeded_workspace(&dir).await;
+    let root_identity = std::fs::read_to_string(ws.join("IDENTITY.md")).unwrap();
+
+    let h = PersonaHandler::new();
+    let err = h
+        .handle_cmd(
+            "activate",
+            Some(serde_json::json!({"name": ""})),
+            &make_ctx(&dir),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid"), "err: {err}");
+
+    // 工作区未被清空、激活标记未被写成空名。
+    assert_eq!(
+        std::fs::read_to_string(ws.join("IDENTITY.md")).unwrap(),
+        root_identity
+    );
+    let active: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ws.join("personas/_active.json")).unwrap())
+            .unwrap();
+    assert_eq!(active["name"], "default");
+}
+
+#[tokio::test]
+async fn test_file_save_traversal_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = seeded_workspace(&dir).await;
+
+    let h = PersonaHandler::new();
+    let err = h
+        .handle_cmd(
+            "file.save",
+            Some(serde_json::json!({
+                "name": "default",
+                "file": "../config.json",
+                "content": "{\"security\":{\"enabled\":false}}",
+            })),
+            &make_ctx(&dir),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("不是可编辑的人格文件"), "err: {err}");
+    assert!(!ws.join("config.json").exists(), "越界文件不得落盘");
+}
+
+#[tokio::test]
+async fn test_file_get_and_nonwhitelisted_files_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let _ws = seeded_workspace(&dir).await;
+
+    let h = PersonaHandler::new();
+    let ctx = make_ctx(&dir);
+    // workspace 内相对逃逸（personas/../…）也被白名单拦下。
+    for bad in [
+        "../config.json",
+        "../../IDENTITY.md",
+        "HEARTBEAT.md",
+        "sub/IDENTITY.md",
+    ] {
+        let err = h
+            .handle_cmd(
+                "file.get",
+                Some(serde_json::json!({"name": "default", "file": bad})),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("不是可编辑的人格文件"), "file {bad:?}: {err}");
+    }
+    // 白名单内四文件照常。
+    let ok = h
+        .handle_cmd(
+            "file.get",
+            Some(serde_json::json!({"name": "default", "file": "SOUL.md"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ok["content"].is_string());
+}
+
+#[tokio::test]
+async fn test_shop_download_invalid_id_rejected_before_fetch() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let h = PersonaHandler::new();
+    // 验证器先于任何网络语句（对齐 skills installer 纪律）——无种子 ctx
+    // 直接拒绝且不触网。
+    let err = h
+        .handle_cmd(
+            "shop.download",
+            Some(serde_json::json!({"id": "../evil"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid"), "err: {err}");
+    let err = h
+        .handle_cmd(
+            "shop.download",
+            Some(serde_json::json!({"id": "a/b"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid"), "err: {err}");
+}
+
+#[tokio::test]
+async fn test_remove_active_persona_restarts_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = seeded_workspace(&dir).await;
+    create_persona_dir(&ws, "go", "Go", "🟢", "go persona");
+
+    let counter = Arc::new(CountingAgentService(std::sync::atomic::AtomicUsize::new(0)));
+    let ctx = make_ctx_with_counting_agent(&ws.to_string_lossy(), counter.clone());
+    let h = PersonaHandler::new();
+
+    // activate "go" → restart #1（stop+start = 2 次）。
+    let _ = h
+        .handle_cmd("activate", Some(serde_json::json!({"name": "go"})), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    // remove-active → 文件面落 default + agent 重启 #2（此前漏）。
+    let _ = h
+        .handle_cmd("remove", Some(serde_json::json!({"name": "go"})), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        counter.0.load(std::sync::atomic::Ordering::SeqCst),
+        4,
+        "remove-active 必须重启 agent"
+    );
+    let active: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ws.join("personas/_active.json")).unwrap())
+            .unwrap();
+    assert_eq!(active["name"], "default");
+}
+
+#[tokio::test]
+async fn test_remove_non_active_persona_no_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = seeded_workspace(&dir).await;
+    create_persona_dir(&ws, "extra", "Extra", "✨", "extra persona");
+    set_active(&ws, "default");
+
+    let counter = Arc::new(CountingAgentService(std::sync::atomic::AtomicUsize::new(0)));
+    let ctx = make_ctx_with_counting_agent(&ws.to_string_lossy(), counter.clone());
+    let h = PersonaHandler::new();
+    let _ = h
+        .handle_cmd("remove", Some(serde_json::json!({"name": "extra"})), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        counter.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "非活动人格删除不影响 agent，不得重启"
+    );
 }

@@ -173,8 +173,14 @@ pub struct Cluster {
     /// P0 vault fail-closed：config.cluster.json 的 `token` 若是 vault:/env:/yaml:
     /// 引用且解析失败，置位。RPC 绑定点据此拒绝启动（宁可没有 RPC，不可
     /// 无认证 RPC）；start_discovery 据此拒绝无加密发现。空串/字面量/读文件
-    /// 失败不置位（维持既有语义）。
+    /// 失败不置位（见 rpc_token_missing）。
     rpc_reference_broken: AtomicBool,
+    /// BUG-20261102-297 fail-closed：集群启用但 token 为空（字面量空串/键缺
+    /// 失），置位。空 token + bind 0.0.0.0 = 明文无鉴权 RPC，局域网任意主机
+    /// 可 peer_chat 驱动本节点 agent 带工具执行——与坏引用同威胁且更劣
+    /// （连加密都不协商），同款处理：RPC 与 discovery 均拒绝启动。消费方
+    /// 统一走 [`Cluster::rpc_auth_unavailable`]。
+    rpc_token_missing: AtomicBool,
     discovery: Mutex<Option<crate::discovery::DiscoveryService>>,
     stop_tx: broadcast::Sender<()>,
     /// G5: Arc 包一层 —— 恢复循环 spawn 时克隆 Arc，之后每 tick 重新
@@ -290,6 +296,7 @@ impl Cluster {
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
             rpc_reference_broken: AtomicBool::new(false),
+            rpc_token_missing: AtomicBool::new(false),
             discovery: Mutex::new(None),
             stop_tx,
             bus: Arc::new(Mutex::new(None)),
@@ -484,6 +491,7 @@ impl Cluster {
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
             rpc_reference_broken: AtomicBool::new(false),
+            rpc_token_missing: AtomicBool::new(false),
             discovery: Mutex::new(None),
             stop_tx,
             bus: Arc::new(Mutex::new(None)),
@@ -765,20 +773,34 @@ impl Cluster {
             }
         };
 
-        let token = match serde_json::from_str::<serde_json::Value>(&data) {
-            Ok(v) => v
-                .get("token")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string(),
+        let v = match serde_json::from_str::<serde_json::Value>(&data) {
+            Ok(v) => v,
             Err(e) => {
                 tracing::warn!(path = %cfg_path.display(), error = %e, "[Cluster] Failed to parse cluster config for token");
                 return;
             }
         };
 
+        let token = v
+            .get("token")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+
         if token.is_empty() {
-            tracing::info!("[Cluster] No RPC auth token configured — running without auth");
+            // BUG-20261102-297 fail-closed：集群启用 + 空 token = 明文无鉴权
+            // RPC（bind 0.0.0.0，局域网任意主机可 peer_chat 驱动本节点 agent
+            // 带工具执行）。坏引用同威胁已 fail-closed（rpc_reference_broken），
+            // 空 token 是同类威胁更劣形态（连加密都不协商），同款处理：RPC
+            // 拒绝启动。子系统未启用（enabled 非 true）不置位——disabled 的
+            // 集群本就不 bind，置位只会污染 Dashboard 闸链快照（抢在「未启
+            // 用」前面误报「token 异常」）。
+            if v.get("enabled").and_then(|b| b.as_bool()).unwrap_or(false) {
+                self.rpc_token_missing.store(true, Ordering::SeqCst);
+                tracing::error!(
+                    "[Cluster] 集群已启用但 RPC auth token 为空 —— fail-closed：RPC 服务不启动（无认证 RPC = 局域网任意主机可驱动本节点 agent）。补救：运行 `nemesisbot cluster token generate --save`（或重跑 `nemesisbot cluster enable` 自动生成）"
+                );
+            }
             return;
         }
 
@@ -814,7 +836,9 @@ impl Cluster {
     ///
     /// Call this after wrapping Cluster in `Arc` and passing the `Arc` as `arc_self`.
     /// Reads the encryption key from the same `token` field in `config.cluster.json`
-    /// used for RPC auth. If no token is configured, discovery runs without encryption.
+    /// used for RPC auth. Token 引用解析失败或为空（rpc_auth_unavailable）时
+    /// 整体不启动——拒绝无加密发现；仅 config.cluster.json 整个缺失的未配置
+    /// 接线才会落到明文运行（一次性 WARN）。
     pub fn start_discovery(&self, arc_self: Arc<dyn ClusterCallbacks>) {
         if self.discovery_running.load(Ordering::SeqCst) {
             tracing::warn!("[Cluster] Discovery already running, skipping");
@@ -825,9 +849,17 @@ impl Cluster {
 
         // P0 vault fail-closed：token 引用解析失败（load_discovery_secret 或
         // 先前的 load_rpc_auth_token 置位）→ 拒绝无加密发现，宁可不发现。
+        // BUG-20261102-297：token 为空（rpc_token_missing）同款拒绝——
+        // 明文 announce 可被局域网任意主机侦听/伪造，与坏引用同威胁。
         if self.rpc_reference_broken.load(Ordering::SeqCst) {
             tracing::error!(
                 "[Cluster] token 引用解析失败 —— fail-closed：UDP discovery 不启动（拒绝无加密运行；请修复引用或运行 `nemesisbot vault set <alias>`）"
+            );
+            return;
+        }
+        if self.rpc_token_missing.load(Ordering::SeqCst) {
+            tracing::error!(
+                "[Cluster] 集群已启用但 token 为空 —— fail-closed：UDP discovery 不启动（拒绝无加密发现；运行 `nemesisbot cluster token generate --save` 后重启）"
             );
             return;
         }
@@ -842,10 +874,13 @@ impl Cluster {
         );
         discovery_config.announce_expiry_secs = app_cfg.announce_expiry_secs;
 
-        // L3 语义矩阵（2026-09-27）：enabled + token = 加密广播（主路径）；
-        // enabled + token 空 = **明文广播运行**（局域网内任何人都可侦听/伪造
-        // announce）——这是既有的向后兼容行为，不拒绝启动，但必须一次性
-        // WARN 讲清楚，避免"配了 cluster.enabled 就以为有加密"的误解。
+        // 走到这里 secret 仍可能为空的只剩一条路径：config.cluster.json
+        // 整个缺失（load_rpc_auth_token / load_discovery_secret 都早退、两
+        // 旗标均未置位）——即集群未配置却手工挂 discovery 的 exotic 接线
+        // （测试直驱属此类）。生产路径（gateway / `cluster node`）config
+        // 存在且 token 为空时已在上面 token_missing 闸拒绝（BUG-20261102-297
+        // 推翻 L3 语义矩阵的「空 token = 明文广播运行」兼容臂：与 RPC
+        // fail-closed 对齐，拒绝无加密发现）。
         if secret.is_empty() {
             tracing::warn!(
                 "[Cluster] 未配置 discovery token —— UDP 发现以**明文**模式运行 \
@@ -929,9 +964,23 @@ impl Cluster {
     /// P0 vault fail-closed：config.cluster.json 的 `token` 是否为解析失败的
     /// 引用。RPC 绑定点（gateway / `commands/cluster.rs`）在 `start()` 之后
     /// 检查此项——为 true 时拒绝 bind，节点以"无 RPC 服务"状态运行而非
-    /// 裸奔。空串/字面量 token 恒为 false（不改变既有语义）。
+    /// 裸奔。空串/字面量 token 恒为 false（见 rpc_token_missing）。
     pub fn rpc_reference_broken(&self) -> bool {
         self.rpc_reference_broken.load(Ordering::SeqCst)
+    }
+
+    /// BUG-20261102-297：集群启用但 token 为空。RPC 绑定点与 start_discovery
+    /// 据此拒绝无认证/无加密运行（同 rpc_reference_broken 的处置）。
+    pub fn rpc_token_missing(&self) -> bool {
+        self.rpc_token_missing.load(Ordering::SeqCst)
+    }
+
+    /// RPC 认证不可用统一裁决（引用解析失败 **或** token 为空）：true =
+    /// RPC 绑定点不 bind、start_discovery 不启动。消费方（gateway /
+    /// `cluster node` CLI / Dashboard 闸链快照）一律走此入口；需要区分
+    /// 具体原因时分别读 `rpc_reference_broken()` / `rpc_token_missing()`。
+    pub fn rpc_auth_unavailable(&self) -> bool {
+        self.rpc_reference_broken() || self.rpc_token_missing()
     }
 
     /// iroh 漫游叠加层是否在跑。供 Dashboard `cluster.roaming.status`

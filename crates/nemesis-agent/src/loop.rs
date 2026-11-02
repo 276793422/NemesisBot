@@ -1381,6 +1381,11 @@ mod recovery_classifier_tests;
 // 令牌是唯一出口）。
 #[cfg(test)]
 mod recovery_stop_tests;
+// 恢复环 tool_defs 供给闸回归锁（BUG-20261102-306）：三恢复环重试请求的
+// 工具面必须与主链路 effective_tool_defs 同源（hidden/tier 等供给闸在
+// 恢复重试上同样生效）。
+#[cfg(test)]
+mod recovery_supply_gate_tests;
 // R1 (2026-09-21)：中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]

@@ -494,3 +494,243 @@ async fn agent_tool_trigger_recursion_depth_round_trips() {
         other => panic!("expected AgentTool, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Section 5: resume-side review routing (BUG-20261102-NN regressions)
+//
+// 运行期 Waiting 传播是既有设计（Section 1 钉住）；本节钉 resume 侧语义：
+// 父执行的 sub_workflow 节点 Waiting（子执行停在自己的 human_review）时，
+// 评审必须路由进子执行、父节点结果按子执行终态同步——旧实现把评审 JSON
+// 直接覆写进父节点结果并放行父下游（子执行孤儿化、子下游永不执行、父
+// 下游拿到伪造的 `{"approved":true}`）。
+// ---------------------------------------------------------------------------
+
+/// 子工作流：start(delay) → review(human_review) → after(delay)。
+fn child_with_mid_review(name: &str) -> Workflow {
+    workflow_with_nodes(
+        name,
+        vec![
+            node("start", "delay", &[]),
+            node("review", "human_review", &["start"]),
+            node("after", "delay", &["review"]),
+        ],
+    )
+}
+
+fn approval_review(step: u8) -> HashMap<String, serde_json::Value> {
+    HashMap::from([
+        ("approved".to_string(), serde_json::json!(true)),
+        ("step".to_string(), serde_json::json!(step)),
+    ])
+}
+
+#[tokio::test]
+async fn sub_workflow_resume_routes_review_into_child_execution() {
+    let engine = build_engine("ignored", None);
+    engine
+        .register_workflow(child_with_mid_review("child_with_review"))
+        .unwrap();
+    engine
+        .register_workflow(workflow_with_nodes(
+            "parent",
+            vec![
+                sub_workflow_node("call", "child_with_review"),
+                node("parent_after", "delay", &["call"]),
+            ],
+        ))
+        .unwrap();
+
+    let parent = engine
+        .run("parent", HashMap::new(), Some(TriggerSource::Cli))
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Waiting);
+
+    let child_id = parent.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        engine.get_execution(&child_id).await.unwrap().state,
+        ExecutionState::Waiting
+    );
+
+    // Resume the PARENT with an approval — must route into the child.
+    let resumed = engine
+        .resume_execution(&parent.id, approval_review(1))
+        .await
+        .unwrap();
+
+    // Child: review landed there, its downstream ran, execution Completed.
+    let child = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child.state, ExecutionState::Completed);
+    assert_eq!(
+        child.node_results["review"].output["step"],
+        serde_json::json!(1),
+        "review must land in the child execution"
+    );
+    assert!(
+        child.node_results.contains_key("after"),
+        "child downstream must run after the review routes in"
+    );
+
+    // Parent node result = child node_results projection (real data, not
+    // the review JSON), parent downstream ran, parent Completed.
+    let call = &resumed.node_results["call"];
+    assert_eq!(call.state, ExecutionState::Completed);
+    assert_eq!(
+        call.output["review"]["approved"],
+        serde_json::json!(true),
+        "call output must be the child output projection, not {{\"approved\":true}}"
+    );
+    assert_eq!(
+        call.output["after"]["delayed_seconds"],
+        serde_json::json!(0.0)
+    );
+    assert!(
+        resumed.node_results.contains_key("parent_after"),
+        "parent downstream must run after child completes"
+    );
+    assert_eq!(resumed.state, ExecutionState::Completed);
+}
+
+#[tokio::test]
+async fn sub_workflow_resume_child_failure_fails_parent_with_child_id() {
+    let engine = build_engine("ignored", None);
+    // Child fails downstream of the review (llm without prompt → 失败，
+    // 同 Section 1 failing_child 先例).
+    engine
+        .register_workflow(workflow_with_nodes(
+            "child_failing_after_review",
+            vec![
+                node("review", "human_review", &[]),
+                node("bad", "llm", &["review"]),
+            ],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(workflow_with_nodes(
+            "parent",
+            vec![
+                sub_workflow_node("call", "child_failing_after_review"),
+                node("parent_after", "delay", &["call"]),
+            ],
+        ))
+        .unwrap();
+
+    let parent = engine
+        .run("parent", HashMap::new(), Some(TriggerSource::Cli))
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Waiting);
+    let child_id = parent.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resumed = engine
+        .resume_execution(&parent.id, approval_review(1))
+        .await
+        .unwrap();
+
+    // Child honestly failed; parent mirrors it with the child id named.
+    let child = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child.state, ExecutionState::Failed);
+    assert_eq!(resumed.state, ExecutionState::Failed);
+    let err = resumed.error.as_deref().unwrap_or("");
+    assert!(
+        err.contains(&child_id),
+        "parent error must name the child execution id, got: {err}"
+    );
+    let call = &resumed.node_results["call"];
+    assert_eq!(call.state, ExecutionState::Failed);
+    assert!(
+        !resumed.node_results.contains_key("parent_after"),
+        "parent downstream must not run on child failure"
+    );
+}
+
+#[tokio::test]
+async fn sub_workflow_resume_nested_double_review_keeps_parent_waiting_then_completes() {
+    // 嵌套审批：子工作流有两个串联 human_review。第一次 resume 路由进
+    // 子执行 → 子推进到第二个 review 再度 Waiting → 父保持 Waiting（快照
+    // 刷新、execution_id 不变）；第二次 resume → 子 Completed → 父 Completed。
+    let engine = build_engine("ignored", None);
+    engine
+        .register_workflow(workflow_with_nodes(
+            "child_two_reviews",
+            vec![
+                node("review1", "human_review", &[]),
+                node("review2", "human_review", &["review1"]),
+                node("after", "delay", &["review2"]),
+            ],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(workflow_with_nodes(
+            "parent",
+            vec![
+                sub_workflow_node("call", "child_two_reviews"),
+                node("parent_after", "delay", &["call"]),
+            ],
+        ))
+        .unwrap();
+
+    let parent = engine
+        .run("parent", HashMap::new(), Some(TriggerSource::Cli))
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Waiting);
+    let child_id = parent.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 第一次 resume：父保持 Waiting。
+    let first = engine
+        .resume_execution(&parent.id, approval_review(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        first.state,
+        ExecutionState::Waiting,
+        "parent must stay Waiting while the child waits on its second review"
+    );
+    let call = &first.node_results["call"];
+    assert_eq!(call.state, ExecutionState::Waiting);
+    assert_eq!(
+        call.metadata["execution_id"].as_str().unwrap(),
+        child_id,
+        "routing anchor must survive the nested Waiting"
+    );
+    assert!(
+        !first.node_results.contains_key("parent_after"),
+        "parent downstream must not run while nested review pending"
+    );
+    let child_mid = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child_mid.state, ExecutionState::Waiting);
+    assert_eq!(
+        child_mid.node_results["review1"].output["step"],
+        serde_json::json!(1),
+        "first review landed in the child"
+    );
+
+    // 第二次 resume：子 Completed → 父 Completed。
+    let second = engine
+        .resume_execution(&parent.id, approval_review(2))
+        .await
+        .unwrap();
+    assert_eq!(second.state, ExecutionState::Completed);
+    let child_done = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child_done.state, ExecutionState::Completed);
+    assert_eq!(
+        child_done.node_results["review2"].output["step"],
+        serde_json::json!(2)
+    );
+    assert!(child_done.node_results.contains_key("after"));
+    assert_eq!(
+        second.node_results["call"].output["after"]["delayed_seconds"],
+        serde_json::json!(0.0)
+    );
+    assert!(second.node_results.contains_key("parent_after"));
+}

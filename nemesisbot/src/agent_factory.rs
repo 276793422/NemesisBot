@@ -112,6 +112,11 @@ pub struct SharedResources {
     /// 模式——重启重建的 AgentLoop 拿到的都是同一槽 Arc，晚填也可见）。
     /// 不依赖 security feature（提问是交互动作，不是安全动作）。
     pub question_slot: nemesis_agent::loop_tools::QuestionBrokerSlot,
+    /// WS4（P13）/BUG-20261101-295：`install_skill` 工具的装前审批门槽，
+    /// gateway 建 `LateWebSkillsGate` 后填（先建槽后填，同 approval_slot）。
+    /// 槽内 None = 无审批面直装（headless / `install_approval=false`）；
+    /// 漏斗其余闸（staging/验签/扫描/lockfile）与门无关恒生效。
+    pub skills_install_gate_slot: nemesis_agent::loop_tools::SkillsInstallGateSlot,
 
     // Cluster RPC closure (Cluster itself is mem::forget'd, but rpc_call_fn must survive)
     pub cluster_rpc_call_fn: Option<
@@ -250,6 +255,7 @@ impl Default for SharedResources {
             workflow_engine: None,
             approval_slot: Default::default(),
             question_slot: Default::default(),
+            skills_install_gate_slot: Default::default(),
             cluster_rpc_call_fn: None,
             cluster_rpc_config: None,
             cluster_peers_fn: None,
@@ -1698,6 +1704,9 @@ fn build_shared_tool_config(
         approval_manager: Some(shared.approval_slot.clone()),
         // F7（2026-09-06）：question 工具 broker 槽（gateway 晚填 WebQuestionBroker）。
         question_broker: Some(shared.question_slot.clone()),
+        // WS4（P13）/BUG-20261101-295：install_skill 工具审批门槽（gateway
+        // 晚填 LateWebSkillsGate；headless 形态槽内恒 None = 无审批面直装）。
+        skills_install_gate_slot: Some(shared.skills_install_gate_slot.clone()),
         // N2（机会项）：present_plan 默认不注册——主 loop / 项目 loop 的
         // builder 持 PlanPresentHandle 后覆写（plan 模式语义只在那两处可达；
         // 集群 loop 恒 None）。

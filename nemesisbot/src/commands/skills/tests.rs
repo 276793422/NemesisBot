@@ -2832,3 +2832,64 @@ mod wave6 {
         cmd_show(&skills_dir, "w6-empty").expect("空目录展示不报错");
     }
 }
+
+// -----------------------------------------------------------------------
+// BUG-20261101-295：cmd_show / cmd_install_clawhub 路径安全闸
+// -----------------------------------------------------------------------
+
+/// cmd_show 敌意名触 FS 前拒绝（读任意 <target>/SKILL.md + 无 SKILL.md
+/// 时列任意目录文件清单，此前零校验）。
+#[test]
+fn cmd_show_hostile_names_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+
+    for hostile in ["", "..", "../..", "a/b", "con"] {
+        let err = cmd_show(&skills_dir, hostile).unwrap_err();
+        assert!(
+            format!("{err}").contains("非法"),
+            "hostile name {:?} must fail at the slug gate, got: {}",
+            hostile,
+            err
+        );
+    }
+    // 拒绝发生在触碰文件系统之前：敌意名路径未产生任何读副作用（这里
+    // 以 skills 目录保持只有自身为证——不存在越界目录被创建/枚举）。
+    let entries: Vec<_> = std::fs::read_dir(&skills_dir).unwrap().collect();
+    assert!(entries.is_empty(), "skills dir must stay untouched");
+}
+
+/// cmd_show 合法名不误伤（既有 happy 路径回归）。
+#[test]
+fn cmd_show_valid_name_still_works() {
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+    let skill_dir = skills_dir.join("gate-ok");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "# Ok").unwrap();
+    cmd_show(&skills_dir, "gate-ok").unwrap();
+}
+
+/// cmd_install_clawhub 落盘名闸：--output-name 敌意值触网/落盘前拒绝
+/// （裸写 skills/<out_name>/SKILL.md 可越出 skills/ 边界）。
+#[tokio::test]
+async fn cmd_install_clawhub_output_name_gate() {
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+
+    for hostile in ["../..", "a/b", "..\\..\\"] {
+        let err = cmd_install_clawhub(&skills_dir, "author", "skill", Some(hostile))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("非法"),
+            "hostile output name {:?} must fail at the slug gate, got: {}",
+            hostile,
+            err
+        );
+    }
+    // 闸在网络请求之前：无越界落盘。
+    assert!(!tmp.path().join("skills/a").exists());
+}

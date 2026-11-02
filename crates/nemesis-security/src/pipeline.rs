@@ -1062,7 +1062,14 @@ impl SecurityPlugin {
                 }
 
                 // Scan content in tool arguments (check multiple content fields)
-                for content_key in &["content", "data", "body", "html"] {
+                // BUG-20261102-310：new_text 在列——edit_file 待写内容是顶层
+                // new_text（edit.rs schema required 键，execute 落
+                // tokio::fs::write），缺键 = edit_file 写盘内容完全绕过病毒
+                // 扫描（write_file/multiedit 拦得住的 edit_file 拦不住；
+                // BUG-20261029-171 同族漂移在扫描面复发）。old_text 刻意不扫
+                // ——它是待删除文本（须已存在于文件中），拦截其删除是反向
+                // 语义。
+                for content_key in &["content", "data", "body", "html", "new_text"] {
                     if let Some(content) = args.get(*content_key).and_then(|v| v.as_str())
                         && !content.is_empty()
                     {

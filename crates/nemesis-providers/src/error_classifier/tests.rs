@@ -19,6 +19,19 @@ fn test_classify_overloaded() {
 }
 
 #[test]
+fn test_classify_http_status_line_carries_status_value() {
+    // BUG-20261102-317 横向钉：classify_error 把 to_lowercase() 后的文本
+    // 传给 extract_http_status——修复前 "HTTP" 大写字面在 lowercase 文本上
+    // 恒 miss，状态行形态富化的 status 恒 0（且分类落 None 不进本函数）。
+    // 修后：分类 Overloaded + status 富化真值 503。
+    let err = classify_error("HTTP/1.1 503 Service Unavailable", "openai", "gpt-4");
+    match err {
+        Some(FailoverError::Overloaded { status, .. }) => assert_eq!(status, 503),
+        other => panic!("expected Overloaded with status=503, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_classify_timeout() {
     let err = classify_error("request timeout", "openai", "gpt-4");
     assert!(matches!(err, Some(FailoverError::Timeout { .. })));

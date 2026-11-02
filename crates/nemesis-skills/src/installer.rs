@@ -61,7 +61,10 @@ pub struct InstallOutcome {
 /// Skill installer that manages downloading and installing skills from registries.
 pub struct SkillInstaller {
     workspace: PathBuf,
-    registry_manager: Option<crate::registry::RegistryManager>,
+    // Arc 包装：agent `install_skill` 工具持 `Arc<RegistryManager>` 共享
+    // 句柄（BUG-20261101-295 漏斗接线），经 `set_registry_manager_shared`
+    // 注入同一实例；`set_registry_manager` 对 owned 值透明包 Arc。
+    registry_manager: Option<std::sync::Arc<crate::registry::RegistryManager>>,
     github_base_url: String,
     /// GitHub API base（P12 commit 解析；测试 seam 可换 wiremock）。
     github_api_url: String,
@@ -97,6 +100,16 @@ impl SkillInstaller {
 
     /// Set the registry manager for advanced installation features.
     pub fn set_registry_manager(&mut self, manager: crate::registry::RegistryManager) {
+        self.registry_manager = Some(std::sync::Arc::new(manager));
+    }
+
+    /// Inject an already-shared registry manager (agent `install_skill` tool
+    /// holds the same `Arc` as the loop's find_skills tools — same instance,
+    /// same registries).
+    pub fn set_registry_manager_shared(
+        &mut self,
+        manager: std::sync::Arc<crate::registry::RegistryManager>,
+    ) {
         self.registry_manager = Some(manager);
     }
 
@@ -154,7 +167,7 @@ impl SkillInstaller {
     /// Returns `Some(&RegistryManager)` if a registry manager has been set,
     /// or `None` otherwise.
     pub fn get_registry_manager(&self) -> Option<&crate::registry::RegistryManager> {
-        self.registry_manager.as_ref()
+        self.registry_manager.as_deref()
     }
 
     /// Get the result from the most recent security check.

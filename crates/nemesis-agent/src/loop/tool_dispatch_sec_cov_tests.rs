@@ -501,3 +501,71 @@ async fn guardian_failure_policy_unknown_value_treated_as_deny() {
         "文案必须携带原始策略值: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261102-296：mcp_discover 分类失真投影的 dispatch 端到端
+// ---------------------------------------------------------------------------
+
+/// 真实 dispatch 链路（嗅探 operation_override → metadata override_op_type
+/// → 管线按 exec 分档）端到端：stdio 臂的 LLM 可控 command 命中 process
+/// deny 规则（修复前该形态以 NetworkRequest 过管线，process 规则整体失配，
+/// default allow 下静默放行）；url 臂维持静态档，process 规则不适用。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_discover_stdio_command_hits_process_deny_rule_e2e() {
+    let _logs = capture_logs();
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig {
+            enabled: true,
+            // Layer 2 关掉：deny 确定性来自 ABAC 规则（Layer 2 对投影形态的
+            // 覆盖已在 nemesis-security 管线测试单独钉死）。
+            command_guard_enabled: false,
+            injection_enabled: false,
+            credential_enabled: false,
+            dlp_enabled: false,
+            ssrf_enabled: false,
+            default_action: "allow".to_string(),
+            process_rules: vec![nemesis_security::types::SecurityRule {
+                pattern: "remove-item*".to_string(),
+                action: "deny".to_string(),
+                comment: "no Remove-Item via discovery probe".to_string(),
+            }],
+            ..Default::default()
+        },
+    ));
+    let mut agent_loop = sec_loop();
+    agent_loop.set_security_plugin(plugin);
+    agent_loop.register_tool(
+        "mcp_discover".to_string(),
+        Box::new(crate::loop_tools::McpDiscoverTool::new()),
+    );
+    let ctx = sec_ctx();
+
+    // stdio 臂（command 非空）→ 投影 process_exec → deny 规则命中。
+    let out = agent_loop
+        .handle_tool_call(
+            &sec_call(
+                "mcp_discover",
+                r#"{"command": "Remove-Item", "args": ["-Recurse", "C:/tmp/x"]}"#,
+            ),
+            &ctx,
+        )
+        .await;
+    assert!(
+        out.contains("SECURITY BLOCKED") && out.contains("rule matched: pattern=remove-item*"),
+        "stdio command 必须经投影命中 exec deny 规则，实际: {out}"
+    );
+
+    // url 臂（无 command）→ 无投影 → 静态 NetworkRequest 档 → process 规则
+    // 不适用（SSRF 已在本 fixture 关闭；回环 :1 连接秒拒，无外网依赖）。
+    let out = agent_loop
+        .handle_tool_call(
+            &sec_call("mcp_discover", r#"{"url": "http://127.0.0.1:1/mcp"}"#),
+            &ctx,
+        )
+        .await;
+    assert!(
+        !out.contains("SECURITY BLOCKED"),
+        "url 臂不得被 process 规则误伤，实际: {out}"
+    );
+}

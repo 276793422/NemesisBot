@@ -122,6 +122,224 @@ fn test_verify_chain() {
     assert!(!AuditChain::verify_chain(&[e1, tampered]));
 }
 
+// ---- BUG-20261102-305：hash 覆盖面缺 source/reason ----
+// 旧公式只进 prev/timestamp/operation/tool/user/target/decision 七字段，
+// 篡改 jsonl 行的 reason（为何放行/拒绝的取证叙述）不破坏链验证。
+
+use sha2::{Digest, Sha256};
+
+/// 旧七字段公式（测试内复刻，钉死 v0 兼容契约不被静默改动）。
+fn legacy_formula_hash(ev: &AuditEvent) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(ev.prev_hash.as_bytes());
+    hasher.update(ev.timestamp.as_bytes());
+    hasher.update(ev.operation.as_bytes());
+    hasher.update(ev.tool_name.as_bytes());
+    hasher.update(ev.user.as_bytes());
+    hasher.update(ev.target.as_bytes());
+    hasher.update(ev.decision.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+#[test]
+fn test_reason_tamper_breaks_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let config = AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    chain
+        .append(
+            "file_read",
+            "read_file",
+            "u",
+            "cli",
+            "/tmp/a",
+            "allowed",
+            "rule match",
+        )
+        .unwrap();
+    chain
+        .append(
+            "file_write",
+            "write_file",
+            "u",
+            "cli",
+            "/tmp/b",
+            "denied",
+            "workspace boundary",
+        )
+        .unwrap();
+
+    // 攻击形态：改写磁盘行的 reason（伪造成「user approved」），hash 不动。
+    let content = std::fs::read_to_string(&path).unwrap();
+    let mut tampered_events = Vec::new();
+    for line in content.lines() {
+        let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if v["decision"] == "denied" {
+            v["reason"] = serde_json::json!("user approved");
+        }
+        tampered_events.push(serde_json::from_str::<AuditEvent>(&v.to_string()).unwrap());
+    }
+    assert!(!AuditChain::verify_chain(&tampered_events));
+}
+
+#[test]
+fn test_source_tamper_breaks_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    let e1 = chain
+        .append(
+            "file_read",
+            "read_file",
+            "u",
+            "cli",
+            "/tmp",
+            "allowed",
+            "ok",
+        )
+        .unwrap();
+    let mut tampered = e1.clone();
+    tampered.source = "web".to_string();
+    assert!(!AuditChain::verify_chain(&[tampered]));
+}
+
+#[test]
+fn test_appended_events_roundtrip_verify() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let config = AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    chain
+        .append(
+            "file_read",
+            "read_file",
+            "u",
+            "cli",
+            "/tmp/a",
+            "allowed",
+            "ok",
+        )
+        .unwrap();
+    chain
+        .append("exec", "exec", "u", "cli", "ls", "allowed", "ok")
+        .unwrap();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    let events: Vec<AuditEvent> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].hash_version, 1);
+    assert!(AuditChain::verify_chain(&events));
+}
+
+#[test]
+fn test_legacy_hash_version_events_verify() {
+    // 存量链兼容：hash_version=0 事件按旧七字段公式验证。
+    let genesis = "0".repeat(64);
+    let mut e1 = AuditEvent {
+        id: "l1".to_string(),
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        operation: "file_read".to_string(),
+        tool_name: "read_file".to_string(),
+        user: "u".to_string(),
+        source: "cli".to_string(),
+        target: "/tmp/a".to_string(),
+        decision: "allowed".to_string(),
+        reason: "legacy".to_string(),
+        hash: String::new(),
+        prev_hash: genesis,
+        sign: None,
+        hash_version: 0,
+    };
+    e1.hash = legacy_formula_hash(&e1);
+    let mut e2 = AuditEvent {
+        prev_hash: e1.hash.clone(),
+        operation: "exec".to_string(),
+        tool_name: "exec".to_string(),
+        target: "ls".to_string(),
+        decision: "denied".to_string(),
+        reason: "blocked".to_string(),
+        ..e1.clone()
+    };
+    e2.hash = legacy_formula_hash(&e2);
+    assert!(AuditChain::verify_chain(&[e1, e2]));
+}
+
+#[test]
+fn test_unknown_hash_version_fails_closed() {
+    let mut ev = AuditEvent {
+        id: "x".to_string(),
+        timestamp: "t".to_string(),
+        operation: "op".to_string(),
+        tool_name: "tn".to_string(),
+        user: "u".to_string(),
+        source: "s".to_string(),
+        target: "tg".to_string(),
+        decision: "allowed".to_string(),
+        reason: "r".to_string(),
+        hash: String::new(),
+        prev_hash: "0".repeat(64),
+        sign: None,
+        hash_version: 9,
+    };
+    // 即便 hash 恰好匹配某个公式，未知版本也必须整链判负。
+    ev.hash = legacy_formula_hash(&ev);
+    assert!(!AuditChain::verify_chain(&[ev]));
+}
+
+#[test]
+fn test_compute_event_hash_v1_covers_source_and_reason() {
+    let base = AuditEvent {
+        id: "e".to_string(),
+        timestamp: "t".to_string(),
+        operation: "op".to_string(),
+        tool_name: "tn".to_string(),
+        user: "u".to_string(),
+        source: "s".to_string(),
+        target: "tg".to_string(),
+        decision: "d".to_string(),
+        reason: "r".to_string(),
+        hash: String::new(),
+        prev_hash: "p".to_string(),
+        sign: None,
+        hash_version: 1,
+    };
+    let mut other_reason = base.clone();
+    other_reason.reason = "r2".to_string();
+    let mut other_source = base.clone();
+    other_source.source = "s2".to_string();
+    assert_ne!(
+        AuditChain::compute_event_hash(&base),
+        AuditChain::compute_event_hash(&other_reason)
+    );
+    assert_ne!(
+        AuditChain::compute_event_hash(&base),
+        AuditChain::compute_event_hash(&other_source)
+    );
+
+    // v0 同字段差异不进 hash（旧契约本貌）。
+    let mut v0 = base.clone();
+    v0.hash_version = 0;
+    let mut v0_other_reason = v0.clone();
+    v0_other_reason.reason = "r2".to_string();
+    assert_eq!(
+        AuditChain::compute_event_hash(&v0),
+        AuditChain::compute_event_hash(&v0_other_reason)
+    );
+}
+
 #[test]
 fn test_jsonl_persistence() {
     let dir = tempfile::tempdir().unwrap();
@@ -285,6 +503,7 @@ fn test_audit_event_serialization() {
         hash: "abc123".to_string(),
         prev_hash: "000000".to_string(),
         sign: None,
+        hash_version: 0,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("test-id"));
@@ -313,6 +532,7 @@ fn test_audit_event_with_sign_serialization() {
         hash: "def456".to_string(),
         prev_hash: "abc123".to_string(),
         sign: Some("ed25519_signature_data".to_string()),
+        hash_version: 0,
     };
     let json = serde_json::to_string(&event).unwrap();
     let de: AuditEvent = serde_json::from_str(&json).unwrap();

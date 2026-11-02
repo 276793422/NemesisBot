@@ -197,10 +197,15 @@ fn matcher_hits_cc_alias_and_raw_name() {
 #[test]
 fn alias_table_shape() {
     assert_eq!(cc_tool_alias("exec"), Some("Bash"));
+    assert_eq!(cc_tool_alias("async_shell"), Some("Bash"));
     assert_eq!(cc_tool_alias("edit"), Some("Edit"));
+    assert_eq!(cc_tool_alias("edit_file"), Some("Edit"));
+    assert_eq!(cc_tool_alias("multiedit"), Some("MultiEdit"));
     assert_eq!(cc_tool_alias("write_file"), Some("Write"));
     assert_eq!(cc_tool_alias("read_file"), Some("Read"));
     assert_eq!(cc_tool_alias("grep"), Some("Grep"));
+    assert_eq!(cc_tool_alias("spawn"), Some("Task"));
+    assert_eq!(cc_tool_alias("web_fetch"), Some("WebFetch"));
     assert_eq!(cc_tool_alias("weather"), None);
 }
 
@@ -1598,5 +1603,69 @@ async fn observing_approval_manager_notifies_then_delegates() {
         rec.0.lock().unwrap().as_slice(),
         ["sync", "ctx"],
         "两方法都真实委托到 inner"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261102-312 / 313 / 314 回归锁（R404 cc_hooks 审计）
+// ---------------------------------------------------------------------------
+
+/// BUG-20261102-312：stdin 写入必须在超时保护内。旧实现在 timeout 包裹的
+/// wait 之前 inline `write_all`——payload 超 pipe buffer（PostToolUse 的
+/// tool_response 可达数 MB）且脚本不读 stdin 不退出时，write_all 永久阻塞，
+/// timeout 永远不生效 → agent loop 挂死。回归形态：大 payload + 长跑脚本
+/// + 1s timeout，必须按时 kill（timed_out）而不是等脚本自然退出。
+#[tokio::test]
+async fn run_hook_script_stdin_write_is_under_timeout() {
+    let dir = tempdir();
+    let big_payload = format!("{{\"blob\":\"{}\"}}", "x".repeat(1 << 26)); // 1MiB
+    let start = std::time::Instant::now();
+    let out = super::run_hook_script(&slow_cmd(), 1, &big_payload, &dir).await;
+    let elapsed = start.elapsed();
+    assert!(
+        out.timed_out,
+        "1s timeout must fire; got code={:?} elapsed={elapsed:?}",
+        out.code
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(2500),
+        "kill must happen at ~timeout, not after script exits naturally: {elapsed:?}"
+    );
+}
+
+/// BUG-20261102-313：alias 表必须覆盖方言生态脚本引用的高频工具——
+/// multiedit→MultiEdit / spawn→Task / web_fetch→WebFetch。缺别名时
+/// 方言 matcher（如 lint 拦截脚本的 "MultiEdit|Edit"）对这些工具静默
+/// 不命中 = PreToolUse 审计面静默失效。
+#[test]
+fn alias_table_covers_dialect_write_subagent_web_tools() {
+    assert_eq!(cc_tool_alias("multiedit"), Some("MultiEdit"));
+    assert_eq!(cc_tool_alias("spawn"), Some("Task"));
+    assert_eq!(cc_tool_alias("web_fetch"), Some("WebFetch"));
+    // matcher 集成：方言名命中原始名。
+    let mk = |pattern: &str| super::CcHookGroup {
+        matcher: Some(pattern.to_string()),
+        hooks: vec![],
+    };
+    assert!(mk("MultiEdit").matches("multiedit"));
+    assert!(mk("Task").matches("spawn"));
+    assert!(mk("WebFetch").matches("web_fetch"));
+}
+
+/// BUG-20261102-314：非 command 类型过滤必须覆盖全部 12 个事件组——
+/// 旧实现只遍历 8 组，PostToolUseFailure/SessionEnd/PreCompact/PostCompact
+/// 里 type 写错的条目照跑 command（「只认 command 类型」契约漏 4 组）。
+#[test]
+fn parse_filters_non_command_type_across_all_events() {
+    let typo = r#"[{"hooks":[{"type":"http","command":"echo should-not-run"}]}]"#;
+    let doc = format!(
+        r#"{{"hooks":{{"PostToolUseFailure":{typo},"SessionEnd":{typo},"PreCompact":{typo},"PostCompact":{typo}}}}}"#
+    );
+    let ev = parse_cc_hooks(&doc).expect("parse");
+    assert_eq!(
+        ev.total_scripts(),
+        0,
+        "non-command hooks must be filtered in ALL event groups, got {:?}",
+        ev.script_counts()
     );
 }

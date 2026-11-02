@@ -188,6 +188,135 @@ fn test_ssrf_blocked() {
     assert!(err.unwrap().summary.contains("SSRF"));
 }
 
+// BUG-20261102-296 端到端：mcp_discover 的 stdio 臂（LLM 可控 command）经
+// dispatch 嗅探 operation_override 投影 process_exec 后走 exec 同款 ABAC
+// 规则——默认配置形态的 `process_rules.exec` 危险命令 deny 规则照常拦截；
+// 无投影（HTTP 臂形态）维持静态 NetworkRequest 档，process 规则不适用。
+// 修复前 stdio 命令以 NetworkRequest 过管线：process 规则整体失配，
+// `default_action=allow` 下静默放行（exec 同载荷会被 deny）。
+// #[tokio::test]：放行臂（HTTP）会走到 Layer 7 扫描的 block_in_place +
+// Handle::current——纯 #[test] 无运行时必炸（deny 臂提前返回不受影响）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_mcp_discover_stdio_projection_hits_process_rules() {
+    let override_metadata = |op: &str| -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::from([("override_op_type".to_string(), op.to_string())])
+    };
+    let stdio_args = || {
+        serde_json::json!({
+            "command": "Remove-Item",
+            "args": ["-Recurse", "C:/tmp/x"]
+        })
+    };
+    // 臂 A：默认装配（Layer 2 命令守卫在位）——投影后 op_type=process_exec
+    // 且 target 取命令行本体，Layer 2 的 remove_item_recurse 形态直接命中
+    // （修复前该层对 mcp_discover 整体失明：op=NetworkRequest 不进
+    // matches!(op, ProcessExec|ProcessSpawn) 闸且 target 恒空）。
+    let plugin_guard = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        dlp_enabled: false,
+        ..Default::default()
+    });
+    let stdio = ToolInvocation {
+        tool_name: "mcp_discover".to_string(),
+        args: stdio_args(),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: override_metadata("process_exec"),
+    };
+    let (allowed, err) = plugin_guard.execute(&stdio);
+    assert!(!allowed, "projected stdio arm must hit the command guard");
+    let guard_summary = err.unwrap().summary;
+    assert!(
+        guard_summary.contains("command guard"),
+        "Layer 2 should fire first on the projected exec op, got: {guard_summary}"
+    );
+
+    // 臂 B：关掉 Layer 2，deny 必须确定性来自 ABAC 的 process deny 规则
+    // （exec 同载荷同判——分类对齐的实证；同载荷走 exec 也是这条规则拦）。
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        command_guard_enabled: false,
+        process_rules: vec![SecurityRule {
+            pattern: "remove-item*".to_string(),
+            action: "deny".to_string(),
+            comment: "no Remove-Item via discovery probe".to_string(),
+        }],
+        dlp_enabled: false,
+        ..Default::default()
+    });
+    let stdio_b = ToolInvocation {
+        tool_name: "mcp_discover".to_string(),
+        args: stdio_args(),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: override_metadata("process_exec"),
+    };
+    let (allowed, err) = plugin.execute(&stdio_b);
+    assert!(!allowed, "projected stdio arm must hit the exec deny rule");
+    assert!(err.unwrap().summary.contains("rule matched"));
+
+    // 无投影（HTTP 臂 / 旧调用方）→ 静态 NetworkRequest 档，process 规则
+    // 不适用 → default_action=allow 放行（SSRF 由 extract_url 层另行把关，
+    // 此处 example.com 是外网合法目标）。
+    let http = ToolInvocation {
+        tool_name: "mcp_discover".to_string(),
+        args: serde_json::json!({"url": "http://example.com/mcp"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed2, _) = plugin.execute(&http);
+    assert!(allowed2, "url form keeps the static NetworkRequest path");
+}
+
+// BUG-20261102-296：mcp_discover 的 url 进 Layer 6 SSRF——内网/回环目标
+// 与 web_fetch 同判（此前 extract_url 无臂 → SSRF 对该工具整体失明）。
+#[test]
+fn test_mcp_discover_http_arm_ssrf_guarded() {
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        dlp_enabled: false,
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "mcp_discover".to_string(),
+        args: serde_json::json!({"url": "http://127.0.0.1:49000/api"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "loopback discovery probe must hit the SSRF guard");
+    assert!(err.unwrap().summary.contains("SSRF"));
+}
+
+// BUG-20261102-304：browser navigate 的 url 进 Layer 6 SSRF——MCP 浏览器
+// 导航 LLM 可控 URL 且页面内容回流（extract_text），与 web_fetch 同语义
+// 同判（此前 extract_url 无 browser 臂 → SSRF 对该工具整体失明，
+// BUG-20261102-296 横向扫描漏网）。deny 臂在 Layer 6 提前返回，纯 #[test]。
+#[test]
+fn test_browser_navigate_ssrf_guarded() {
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        dlp_enabled: false,
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "browser".to_string(),
+        args: serde_json::json!({"action": "navigate", "url": "http://127.0.0.1:49000/admin"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "loopback navigate must hit the SSRF guard");
+    assert!(err.unwrap().summary.contains("SSRF"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_register_rules() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
@@ -1483,6 +1612,32 @@ async fn test_plugin_execute_layer7_blocks_infected_multiedit_content() {
         args: serde_json::json!({"edits": [
             {"path": "/tmp/out.txt", "old_text": "", "new_text": "X5O!P%@AP[EICAR]"}
         ]}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("virus scanner"), "{}", e.summary);
+    assert!(e.summary.contains("new_text"), "{}", e.summary);
+}
+
+// BUG-20261102-310 红证：edit_file 待写内容是顶层 new_text（edit.rs schema
+// required 键，execute 落 tokio::fs::write）——Layer 7 内容键循环
+// ["content","data","body","html"] 不含 new_text，multiedit 特判只覆盖
+// edits[] 数组 = edit_file 写盘内容完全绕过病毒扫描（write_file/multiedit
+// 拦得住的 edit_file 拦不住；BUG-20261029-171 同族漂移在扫描面复发）。
+// content-only 引擎隔离内容臂：file 臂恒干净，命中必来自 new_text 扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_blocks_infected_edit_file_new_text() {
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "edit_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/out.txt", "old_text": "", "new_text": "X5O!P%@AP[EICAR]"}),
         user: "test".to_string(),
         source: "cli".to_string(),
         metadata: Default::default(),

@@ -147,6 +147,26 @@ impl ProviderStreamSink {
         self.any_deltas.load(Ordering::Relaxed)
     }
 
+    /// 新流边界重置（BUG-20261102-309）：sink 跨重试环共享（recovery.rs
+    /// 五调用点同一包装实例），重试 = 新流——seq 归零、合并缓冲/相位状态
+    /// 清空，下一次 chat() 的首增量重新惰性发 start（前端卡片唯一 reset
+    /// 信号），上一 attempt 的残尾不再渗入本流；合成增量判据
+    /// `deltas_emitted` 随之按 attempt 判定（非流式 provider 重试成功的
+    /// 回复文本不再被短路丢失）。sink 新建后首调 = 无操作等价（字段已是
+    /// 初值，仅 started 刷新为本 attempt 起点，elapsed 语义更准）。
+    pub(crate) fn reset_for_new_stream(&self) {
+        let mut st = self.state.lock();
+        *st = SinkState {
+            seq: 0,
+            buf: String::new(),
+            last_flush: None,
+            deltas_emitted: false,
+            started: std::time::Instant::now(),
+        };
+        drop(st);
+        self.any_deltas.store(false, Ordering::Relaxed);
+    }
+
     fn emit(&self, seq: u64, phase: &str, text: &str) {
         self.emit_with_elapsed(seq, phase, text, None);
     }
@@ -197,6 +217,10 @@ impl LlmProvider for StreamingLlmProvider {
         options: Option<crate::types::ChatOptions>,
         tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
+        // 重试 = 新流（BUG-20261102-309）：sink 跨重试环共享，每个 chat()
+        // 入口重置流状态——首增量重新惰性发 start（前端 reset 信号）、seq
+        // 归零、上一 attempt 残尾/相位不渗入本流。
+        self.sink.reset_for_new_stream();
         let sink = self.sink.clone();
         let on_delta = move |d: String| sink.on_delta(&d);
         match self
