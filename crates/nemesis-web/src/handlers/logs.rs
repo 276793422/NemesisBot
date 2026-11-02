@@ -426,6 +426,26 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             "ancestors": ancestors,
         });
     }
+    // BUG-20261102-325：会话列表确定性 + 最近活跃优先。read_dir 顺序是平台
+    // 实现细节（NTFS 字典序 vs ext4 哈希序），前端侧栏「组内保持原排序」
+    // 直接消费此序——无排序 = ext4 上每次启动列表漂移，且与新建会话乐观行
+    // unshift 置顶（最近在前）语义矛盾。lastTime 是 Local offset RFC3339
+    // 且 chrono 秒内小数位自适应（`22+08:00` 裸字典序会错压 `22.5+08:00`），
+    // 必须解析成时间戳比较；解析失败（空/坏行/无偏移旧行）视为最旧沉底
+    // （仅向前语义：无时间锚不参与排序红利）。同刻按 id 升序破平——全键
+    // 有序 = 跨平台逐位一致。
+    let rank = |e: &serde_json::Value| -> i64 {
+        e["lastTime"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.timestamp_millis())
+            .unwrap_or(i64::MIN)
+    };
+    sessions.sort_by(|a, b| {
+        rank(b)
+            .cmp(&rank(a))
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
     sessions
 }
 
