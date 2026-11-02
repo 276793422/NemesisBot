@@ -37,6 +37,7 @@
  */
 
 import { reactive } from 'vue'
+import { apiUrl } from '../lib/appBase'
 import { wsStatus } from './useWebSocket'
 import { useWSAPI } from './useWSAPI'
 import { parseSkinStructure } from '../skins/sanitize'
@@ -242,7 +243,10 @@ export async function resolveScriptConsent(allow: boolean): Promise<void> {
   map[p.id] = p.sha.slice(0, 16)
   localStorage.setItem(SCRIPT_OK_KEY, JSON.stringify(map))
   try {
-    const res = await fetch(`/skins/${p.id}/script`, { cache: 'no-store' })
+    // BUG-20261102-320：经桥子路径形态（<base href="/d/<node>/">）下根相对
+    // URL 打到中继根——中继自身有 /skins/* 路由，会加载到中继节点的皮肤
+    // 包（串台）。所有对外 HTTP 构造统一经 apiUrl() 加 base 前缀。
+    const res = await fetch(apiUrl(`/skins/${p.id}/script`), { cache: 'no-store' })
     const sha = res.ok ? res.headers.get('X-Skin-Sha256') || '' : ''
     if (!res.ok || sha !== p.sha) return // 闸关（403）/ 包被换（sha 失配）：不注入
     const js = await res.text()
@@ -393,10 +397,12 @@ export async function applySkinBoot(): Promise<void> {
     return
   }
 
-  await applyFromUrl(q ? `/skins/${q}` : '/skins/active.css', q || '')
+  // BUG-20261102-320：桥子路径形态经 apiUrl() 加 base 前缀（cssUrl 派生的
+  // structure/script URL 随入口带前缀）。
+  await applyFromUrl(q ? apiUrl(`/skins/${q}`) : apiUrl('/skins/active.css'), q || '')
 }
 
 /** 运行中重应用当前皮肤（无 `?skin` 预览分支；设置页皮肤 tab 热切用）。 */
 export async function applySkinRefresh(): Promise<void> {
-  await applyFromUrl('/skins/active.css', '')
+  await applyFromUrl(apiUrl('/skins/active.css'), '')
 }
