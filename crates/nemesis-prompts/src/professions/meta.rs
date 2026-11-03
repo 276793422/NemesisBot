@@ -186,15 +186,22 @@ pub fn find_builtin(slug: &str) -> Option<&'static ProfessionMeta> {
 
 /// tier 门槛判定（matcher 硬条件 4 的纯函数内核）。
 ///
-/// 节点 tier 已知（`Some`）且低于职能 `min_tier` → `false`（排除）；
-/// 节点 tier 未知（`None`，含旧节点）→ fail-open 放行（D3）。节点输入
+/// 节点 tier 已知（`Some` 非空白）且低于职能 `min_tier` → `false`（排除）；
+/// 节点 tier 未知（`None`，含旧节点）或**空白串**（`Some("")`/纯空白——
+/// BUG-20261103-345：hand-edit `tier = ""` 或 wire 空字段经 serde 落成
+/// `Some("")`，与「无信息」同语义）→ fail-open 放行（D3）。节点输入
 /// trim + 归一小写（peers.toml 手写 `BIG` 也能比对；min_tier 是内置常量
-/// 恒小写）。
+/// 恒小写）。非空未知串（如手写 typo）维持 rank 最低挡——fail-open 只对
+/// 「无信息」，有信息但档位低一律挡（tier_gate_rank_semantics 钉死）。
 pub fn tier_allows(node_tier: Option<&str>, min_tier: &str) -> bool {
     let Some(node) = node_tier else {
         return true;
     };
-    let node = crate::subagents::role_tier::rank(node.trim().to_ascii_lowercase().as_str());
+    let node = node.trim();
+    if node.is_empty() {
+        return true;
+    }
+    let node = crate::subagents::role_tier::rank(node.to_ascii_lowercase().as_str());
     node >= crate::subagents::role_tier::rank(min_tier)
 }
 

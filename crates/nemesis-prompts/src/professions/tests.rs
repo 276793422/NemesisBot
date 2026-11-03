@@ -198,6 +198,19 @@ fn tier_gate_fail_open_on_unknown_node_tier() {
 }
 
 #[test]
+fn tier_gate_fail_open_on_empty_tier_string() {
+    // BUG-20261103-345：空串/纯空白档位 = 「无信息」，与 None 同语义
+    // fail-open（本文件 tier_gate_rank_semantics 自身的口径注释：fail-open
+    // 只对「无信息」）。手改 peers.toml `tier = ""` 或对端 wire 空字段经
+    // serde 落成 Some("")——旧实现 rank("")=0 按最低档排除，tier 闸永不
+    // 松弛 = 该节点静默永久失配全部 normal/big 职能任务。
+    assert!(tier_allows(Some(""), "normal"), "空串 = 未宣告，放行");
+    assert!(tier_allows(Some("  "), "big"), "纯空白同语义");
+    // 对照：非空垃圾串仍是「有信息但档位低」（既有钉死语义，不得松动）。
+    assert!(!tier_allows(Some("whatever"), "normal"));
+}
+
+#[test]
 fn tier_gate_rank_semantics() {
     assert!(tier_allows(Some("big"), "big"), "同级放行");
     assert!(tier_allows(Some("big"), "normal"), "高档放行低门槛");
