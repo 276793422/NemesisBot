@@ -1,8 +1,9 @@
-//! B4（2026-09-05）后台进程三件套测试。
+//! B4（2026-09-05）后台进程四动词测试（steer 为 L11 2026-11-03 扩展）。
 //!
 //! 全部走真实子进程（cmd /C 或 sh -c），覆盖：echo 完成读回、退出码、
 //! 增量分页、kill（含幂等）、上限拒绝与已完成任务淘汰、输出 cap 丢头部
-//! 保尾部、cwd 工作区边界、注册表 Drop 树杀残余、注册接线三件套。
+//! 保尾部、cwd 工作区边界、注册表 Drop 树杀残余、注册接线四动词、
+//! steer e2e 回执（stdin 环回）与诚实拒绝面。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,7 +88,7 @@ async fn wait_done(reg: &BackgroundProcessRegistry, id: u64, secs: u64) -> serde
 async fn start_echo_completes_with_output() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
-    let started = reg.start("echo hello_b4_marker", "/").await.unwrap();
+    let started = reg.start("echo hello_b4_marker", "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
     let done = wait_done(&reg, id, 15).await;
 
@@ -105,7 +106,7 @@ async fn start_echo_completes_with_output() {
 async fn exit_code_preserved() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
-    let started = reg.start("exit 7", "/").await.unwrap();
+    let started = reg.start("exit 7", "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
     let done = wait_done(&reg, id, 15).await;
     assert_eq!(done["exit_code"].as_i64(), Some(7));
@@ -117,6 +118,7 @@ async fn unknown_job_id_errors() {
     let reg = BackgroundProcessRegistry::new();
     assert!(reg.output(9999, 0).await.is_err());
     assert!(reg.kill(9999).await.is_err());
+    assert!(reg.steer(9999, "x").await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +129,7 @@ async fn unknown_job_id_errors() {
 async fn kill_running_job_reports_killed() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
-    let started = reg.start(long_cmd(), "/").await.unwrap();
+    let started = reg.start(long_cmd(), "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
 
     let running = reg.output(id, 0).await.unwrap();
@@ -146,7 +148,7 @@ async fn kill_running_job_reports_killed() {
 async fn kill_finished_job_is_idempotent() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
-    let started = reg.start("echo quick_b4", "/").await.unwrap();
+    let started = reg.start("echo quick_b4", "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
     wait_done(&reg, id, 15).await;
 
@@ -164,10 +166,10 @@ async fn kill_finished_job_is_idempotent() {
 async fn cap_rejects_when_all_running() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::with_limits(2, 64 * 1024);
-    let j1 = reg.start(long_cmd(), "/").await.unwrap();
-    let j2 = reg.start(long_cmd(), "/").await.unwrap();
+    let j1 = reg.start(long_cmd(), "/", false).await.unwrap();
+    let j2 = reg.start(long_cmd(), "/", false).await.unwrap();
 
-    let err = reg.start(long_cmd(), "/").await.unwrap_err();
+    let err = reg.start(long_cmd(), "/", false).await.unwrap_err();
     assert!(err.contains("limit"), "err: {}", err);
 
     // 清场：杀掉两个长跑任务（不留 30s 孤儿给测试 runner）。
@@ -179,14 +181,14 @@ async fn cap_rejects_when_all_running() {
 async fn finished_job_evicted_at_cap() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::with_limits(2, 64 * 1024);
-    let echo_id = reg.start("echo evict_b4", "/").await.unwrap()["job_id"]
+    let echo_id = reg.start("echo evict_b4", "/", false).await.unwrap()["job_id"]
         .as_u64()
         .unwrap();
     wait_done(&reg, echo_id, 15).await;
 
-    let s1 = reg.start(long_cmd(), "/").await.unwrap();
+    let s1 = reg.start(long_cmd(), "/", false).await.unwrap();
     // 满员：echo 已完成 → 被淘汰，新任务顶上。
-    let s2 = reg.start(long_cmd(), "/").await.unwrap();
+    let s2 = reg.start(long_cmd(), "/", false).await.unwrap();
 
     assert_eq!(reg.job_count().await, 2);
     assert!(
@@ -205,7 +207,7 @@ async fn finished_job_evicted_at_cap() {
 async fn output_cap_drops_head_keeps_tail() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::with_limits(1, 4096);
-    let started = reg.start(&big_output_cmd(), "/").await.unwrap();
+    let started = reg.start(&big_output_cmd(), "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
     let done = wait_done(&reg, id, 20).await;
 
@@ -238,7 +240,7 @@ async fn offset_paging_covers_output() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
     let cmd = incremental_cmd();
-    let started = reg.start(&cmd, "/").await.unwrap();
+    let started = reg.start(&cmd, "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
     let done = wait_done(&reg, id, 20).await;
     let total = done["total_bytes"].as_u64().unwrap();
@@ -319,14 +321,16 @@ async fn tool_read_only_flags() {
     let reg = Arc::new(BackgroundProcessRegistry::new());
     assert!(BackgroundOutputTool::new(reg.clone()).is_read_only());
     assert!(!BackgroundStartTool::new("/", true, reg.clone()).is_read_only());
-    assert!(!BackgroundKillTool::new(reg).is_read_only());
+    assert!(!BackgroundKillTool::new(reg.clone()).is_read_only());
+    // L11：steer 是写动作（stdin 注入）。
+    assert!(!BackgroundSteerTool::new(reg).is_read_only());
 }
 
 #[tokio::test]
 async fn registration_requires_registry() {
     let ws = "/tmp".to_string();
 
-    // None → 三件套不注册（exec_worker / 基线形态）。
+    // None → 四动词不注册（exec_worker / 基线形态）。
     let cfg = SharedToolConfig {
         workspace: Some(ws.clone()),
         background_registry: None,
@@ -336,8 +340,9 @@ async fn registration_requires_registry() {
     assert!(!tools.contains_key("background_start"));
     assert!(!tools.contains_key("background_output"));
     assert!(!tools.contains_key("background_kill"));
+    assert!(!tools.contains_key("background_steer"));
 
-    // Some → 三件套齐全。
+    // Some → 四动词齐全（L11 起含 steer）。
     let cfg = SharedToolConfig {
         workspace: Some(ws),
         background_registry: Some(Arc::new(BackgroundProcessRegistry::new())),
@@ -347,6 +352,121 @@ async fn registration_requires_registry() {
     assert!(tools.contains_key("background_start"));
     assert!(tools.contains_key("background_output"));
     assert!(tools.contains_key("background_kill"));
+    assert!(tools.contains_key("background_steer"));
+}
+
+// ---------------------------------------------------------------------------
+// L11（2026-11-03）steer 动词：stdin 活管道 + 注入回执
+// ---------------------------------------------------------------------------
+
+/// stdin→stdout 回显过滤器（steer e2e 的回执语义载体：注入什么回什么）。
+/// Windows 用 `more`（管道形态无分页提示，逐块流式回显）；Unix 用 `cat`。
+fn echo_filter_cmd() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "more"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "cat"
+    }
+}
+
+/// 轮询任务输出直到出现 `needle`（steer 回执等待）。
+async fn wait_output_contains(
+    reg: &BackgroundProcessRegistry,
+    id: u64,
+    needle: &str,
+    secs: u64,
+) -> String {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let v = reg.output(id, 0).await.expect("output should exist");
+        let chunk = v["chunk"].as_str().unwrap_or("").to_string();
+        if chunk.contains(needle) {
+            return chunk;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "steer receipt '{}' did not appear within {}s; last chunk: {}",
+            needle,
+            secs,
+            chunk
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// 验收 e2e：spawn 可操控常驻进程 → steer 注入 → 回执语义断言（注入文本
+/// 经 stdin→stdout 环回出现在输出缓冲）。回执出现即证「stdin 活管道 +
+/// 写入 + flush」全链路真实打通。
+#[tokio::test]
+async fn steer_e2e_echo_receipt() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(echo_filter_cmd(), "/", true).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    assert_eq!(started["steerable"].as_bool(), Some(true));
+
+    let receipt = reg.steer(id, "steer_l11_marker_xyz").await.unwrap();
+    assert_eq!(receipt["job_id"].as_u64(), Some(id));
+    assert_eq!(receipt["running"].as_bool(), Some(true));
+
+    let chunk = wait_output_contains(&reg, id, "steer_l11_marker_xyz", 10).await;
+    // 回执原样环回（字节级写入，无协议封装痕迹）。
+    assert!(chunk.contains("steer_l11_marker_xyz"));
+
+    // 二连注入（写入队列串行形态）：两行先后落盘都可回读。
+    reg.steer(id, "second_line_b4").await.unwrap();
+    wait_output_contains(&reg, id, "second_line_b4", 10).await;
+
+    // 清场（不留常驻进程给测试 runner）。
+    let killed = reg.kill(id).await.unwrap();
+    assert_eq!(killed["killed"].as_bool(), Some(true));
+}
+
+/// 非 steerable 任务 steer = 诚实拒绝（不是静默吞掉）。
+#[tokio::test]
+async fn steer_rejects_non_steerable_job() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(long_cmd(), "/", false).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    assert_eq!(started["steerable"].as_bool(), Some(false));
+
+    let err = reg.steer(id, "hello").await.unwrap_err();
+    assert!(err.contains("steerable"), "err: {}", err);
+
+    reg.kill(id).await.unwrap();
+}
+
+/// 已结束任务 steer = 诚实拒绝（not running 检查在 steerable 检查之前）。
+#[tokio::test]
+async fn steer_finished_job_errors() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start("echo done_b4", "/", true).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    wait_done(&reg, id, 15).await;
+
+    let err = reg.steer(id, "late").await.unwrap_err();
+    assert!(err.contains("not running"), "err: {}", err);
+}
+
+/// 工具层参数面：空文本拒绝 + 缺字段拒绝（不起进程）。
+#[tokio::test]
+async fn steer_tool_arg_guards() {
+    let tool = BackgroundSteerTool::new(Arc::new(BackgroundProcessRegistry::new()));
+    let empty = serde_json::json!({"job_id": 1, "text": "  "});
+    let err = tool.execute(&empty.to_string(), &ctx()).await.unwrap_err();
+    assert!(err.contains("empty"), "err: {}", err);
+
+    let missing = serde_json::json!({"job_id": 1});
+    let err = tool
+        .execute(&missing.to_string(), &ctx())
+        .await
+        .unwrap_err();
+    assert!(err.contains("text"), "err: {}", err);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +477,7 @@ async fn registration_requires_registry() {
 async fn drop_kills_residual_process() {
     let _serial = TEST_LOCK.lock().await;
     let reg = Arc::new(BackgroundProcessRegistry::new());
-    let started = reg.start(long_cmd(), "/").await.unwrap();
+    let started = reg.start(long_cmd(), "/", false).await.unwrap();
     let pid = started["pid"].as_u64().expect("pid present") as u32;
 
     drop(reg);
@@ -505,7 +625,7 @@ async fn stop_ladder_graceful_exit_within_window_no_escalation() {
 async fn background_kill_ladder_terminates_stubborn_job_end_to_end() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
-    let started = reg.start(stubborn_cmd(), "/").await.unwrap();
+    let started = reg.start(stubborn_cmd(), "/", false).await.unwrap();
     let id = started["job_id"].as_u64().unwrap();
     // 阶梯升级前（TERM-only）：POSIX 上 TERM-忽略进程永远收不掉，kill()
     // 必落 KILL_WAIT 超时 Err；升级后 3s 宽限 + SIGKILL 落在 5s 窗内。

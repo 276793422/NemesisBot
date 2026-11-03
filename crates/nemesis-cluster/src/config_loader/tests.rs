@@ -67,6 +67,7 @@ fn test_app_config_roundtrip() {
         token: "cfg09-secret".to_string(),
         node_name: "batch4-name".to_string(),
         worker_discipline: true,
+        mandate: Default::default(),
     };
 
     save_app_config(workspace, &config).unwrap();
@@ -157,6 +158,7 @@ fn test_app_config_serialization_roundtrip() {
         token: "tok-xyz".to_string(),
         node_name: String::new(),
         worker_discipline: true,
+        mandate: Default::default(),
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: AppConfig = serde_json::from_str(&json).unwrap();

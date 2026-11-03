@@ -120,6 +120,12 @@ pub struct DiscoveryMessage {
     /// Dashboard 节点面直接展示对端构建号，人工 sha 比对退役。
     #[serde(default)]
     pub build: String,
+    /// 自报 mandate 签名公钥（L13-a 2026-11-03；P-256 SEC1 hex 66/130）。
+    /// 旧节点 / Go 节点的 announce 无此字段 → serde default None = 未宣告
+    /// （wire 兼容，同 iroh_id 先例）。对端据此 TOFU 首见钉存进
+    /// trust.toml `[mandate_keys]`（验签消费在 L13-b）。
+    #[serde(default)]
+    pub mandate_pubkey: Option<String>,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -159,6 +165,7 @@ impl DiscoveryMessage {
             iroh_id: None,
             runtime_backend: None,
             build: String::new(),
+            mandate_pubkey: None,
             timestamp: now_unix(),
         }
     }
@@ -203,6 +210,14 @@ impl DiscoveryMessage {
         self
     }
 
+    /// 附自报 mandate 签名公钥（L13-a；`None` = 未宣告——静态 config 未
+    /// 声明语义。生产 announce 构造点 `build_announce_from_callbacks` 链式
+    /// 调用，与 with_build 同一单一真相源纪律）。
+    pub fn with_mandate_pubkey(mut self, pubkey: Option<String>) -> Self {
+        self.mandate_pubkey = pubkey;
+        self
+    }
+
     /// Create a new bye message, mirroring Go's `NewByeMessage`.
     pub fn new_bye(node_id: impl Into<String>) -> Self {
         Self {
@@ -223,6 +238,7 @@ impl DiscoveryMessage {
             iroh_id: None,
             runtime_backend: None,
             build: String::new(),
+            mandate_pubkey: None,
             timestamp: now_unix(),
         }
     }

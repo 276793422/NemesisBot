@@ -189,5 +189,103 @@ pub fn migrate_step(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// L20 存储族装配门面（改进项三期 2026-11-03，拍板轻量版：接口化 + 漂移检测，
+// 不引入第二引擎——`open_sqlite_store` 就是将来引擎分叉点，加引擎 = 新增
+// 构造函数，调用方 spec 不变）。
+// ---------------------------------------------------------------------------
+
+/// 一步 schema 迁移（迁移链数组项；version 递增，门面按序跳过已应用步）。
+pub struct Migration {
+    pub version: i32,
+    pub sql: &'static str,
+    /// 迁移成功日志正文（门面拼 `[{label}] {log_note}` 板式）。
+    pub log_note: &'static str,
+}
+
+/// 存储族描述——per-family open 装配的单一描述面。`StoreSpec` 是数据不是
+/// trait（当前只有一族引擎实现，YAGNI；不做 trait 对象多态）。
+pub struct StoreSpec {
+    /// 日志/WAL 身份标签（带方括号，如 "[BoardStore]" / "[DataStore]"）。
+    pub label: &'static str,
+    /// 错误文案名词（"board database" / "database"）——既有测试逐字断言
+    /// open/inspect 文案，门面拼 "Failed to inspect {noun} file: …" /
+    /// "Failed to open {noun}: …"。
+    pub db_noun: &'static str,
+    /// 迁移步标签前缀（门面拼 "{prefix} v{version}"，如 "Board schema" /
+    /// "Schema"——migrate_step 失败文案身份）。
+    pub migrate_label: &'static str,
+    /// 程序支持的 schema 版本（drift 对账基准 + 迁移终点）。
+    pub schema_version: i32,
+    /// 版本化迁移链（逐级前进，每步原子，手法⑤）。
+    pub migrations: &'static [Migration],
+}
+
+/// 单一装配点：能力准入 → 打开 → WAL（lenient）→ 语义 PRAGMA（硬失败）→
+/// drift 对账 → 迁移前轮换备份 → 迁移链 → 版本戳。行为与 board/db.rs、
+/// data/db.rs 既有 open 序列等价（L20 重构非重写）；差异经 `StoreSpec`
+/// 携带：错误文案（`db_noun`）、WAL/日志标签（`label`）、迁移链与成功
+/// 日志正文。
+///
+/// `foreign_keys = ON` 恒为语义闸；`extra_pragmas` 供调用方追加（board 的
+/// `PRAGMA busy_timeout = 5000`，data 无）——门面自动补分号。
+///
+/// 目录创建（mkdir parents）留给调用方——两存储的错误文案
+/// （"Failed to create board/data directory"）由既有测试逐字断言。
+pub fn open_sqlite_store(
+    db_path: &Path,
+    spec: &StoreSpec,
+    extra_pragmas: &[&str],
+) -> Result<rusqlite::Connection, String> {
+    // 手法① 能力准入：头 16 字节判定（垃圾文件 loud 拒绝，不等到首语句炸）。
+    match header_kind(db_path)
+        .map_err(|e| format!("Failed to inspect {} file: {e}", spec.db_noun))?
+    {
+        HeaderKind::New | HeaderKind::Valid => {}
+        HeaderKind::Foreign { head_hex } => {
+            return Err(foreign_header_error(db_path, &head_hex));
+        }
+    }
+
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| format!("Failed to open {}: {e}", spec.db_noun))?;
+
+    // 手法④ WAL 降级（lenient：网络盘/FAT/只读 warn 不崩，回落默认
+    // journal）+ 语义 PRAGMA（硬失败）。
+    set_wal_lenient(&conn, spec.label);
+    let mut pragmas = String::from("PRAGMA foreign_keys = ON;");
+    for p in extra_pragmas {
+        pragmas.push_str(p);
+        pragmas.push(';');
+    }
+    conn.execute_batch(&pragmas)
+        .map_err(|e| format!("Failed to set pragmas: {e}"))?;
+
+    let current_version: i32 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap_or(0);
+
+    // 手法② schema 漂移对账（拒绝降级打开）+ 手法③ 迁移前轮换备份
+    // （全新库跳过；失败 warn 不阻断）。
+    check_schema_drift(current_version, spec.schema_version)?;
+    if current_version > 0 && current_version < spec.schema_version {
+        backup_before_migrate(&conn, db_path, spec.label);
+    }
+
+    // 迁移链：逐级前进；每步原子（migrate_step 手法⑤）；成功日志统一
+    // `[{}] {}` 板式带 version 字段（消息文本与既有两存储逐字一致）。
+    for step in spec.migrations {
+        if current_version < step.version {
+            let label = format!("{} v{}", spec.migrate_label, step.version);
+            migrate_step(&conn, step.version, &label, step.sql)?;
+            tracing::info!(version = step.version, "[{}] {}", spec.label, step.log_note);
+        }
+    }
+    conn.pragma_update(None, "user_version", spec.schema_version)
+        .map_err(|e| format!("Failed to set schema version: {e}"))?;
+
+    Ok(conn)
+}
+
 #[cfg(test)]
 mod tests;

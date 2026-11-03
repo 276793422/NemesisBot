@@ -36,9 +36,20 @@ pub fn rules_file_path(home: &Path) -> std::path::PathBuf {
 // serde 模型
 // ---------------------------------------------------------------------------
 
-/// 规则文件顶层：`{"rules": [...]}`。
+/// 规则文件当前版本（L20 漂移检测基准；字段演进时递增，旧 version 文件
+/// 照常载入，高 version 文件拒载——降级读入会产生运行期字段缺失）。
+pub const CURRENT_RULES_VERSION: u32 = 1;
+
+fn default_rules_version() -> u32 {
+    CURRENT_RULES_VERSION
+}
+
+/// 规则文件顶层：`{"version": 1, "rules": [...]}`（version 缺省 = 1，
+/// 旧形态文件零迁移）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RulesFile {
+    #[serde(default = "default_rules_version")]
+    pub version: u32,
     pub rules: Vec<Rule>,
 }
 
@@ -160,9 +171,20 @@ pub fn validate_rule(rule: &Rule) -> Result<()> {
     Ok(())
 }
 
-/// 解析规则文件内容为 `RulesFile`（校验每条规则 + id 唯一）。
+/// 解析规则文件内容为 `RulesFile`（校验每条规则 + id 唯一 + 版本漂移）。
 pub fn parse_rules(content: &str) -> Result<RulesFile> {
     let file: RulesFile = serde_json::from_str(content).context("parse rules JSON")?;
+    // L20 漂移检测：文件 version 高于程序支持 = 来自更新版本的程序，拒载
+    // （与 sqlite_preflight::check_schema_drift 同语义：降级打开会产生
+    // 运行期字段缺失，宁 loud 拒不静默）。
+    if file.version > CURRENT_RULES_VERSION {
+        bail!(
+            "rules file version {} is newer than supported {} \
+             (written by a newer build; upgrade this program before loading)",
+            file.version,
+            CURRENT_RULES_VERSION
+        );
+    }
     validate_rules(&file.rules)?;
     Ok(file)
 }
@@ -174,6 +196,7 @@ pub fn parse_rules_lenient(content: &str) -> Result<RulesFile> {
         serde_json::from_value(v).context("parse rules JSON")?
     } else {
         RulesFile {
+            version: CURRENT_RULES_VERSION,
             rules: vec![serde_json::from_value(v).context("parse single rule object")?],
         }
     };
@@ -217,6 +240,19 @@ pub fn load_rules(path: &Path) -> Result<RulesFile> {
 /// `.tmp-{pid}-{nanos}` + sync_all + 失败清理，替代此前的自制固定名
 /// `.json.tmp` + rename——旧形态无 sync、并发互踩、失败清理只覆盖 rename 臂）。
 pub fn save_rules(path: &Path, file: &RulesFile) -> Result<()> {
+    // L20 覆写前备份：现存旧文件轮换为 `.json.bak`（单份，本次成功覆盖旧
+    // bak）。用户可编辑资产（add/edit/reset 都走本单一写点）被直接覆盖前
+    // 至少留一份可回。备份是兜底不是闸门——复制失败 warn 不阻断保存。
+    if path.exists() {
+        let bak = path.with_extension("json.bak");
+        if let Err(e) = std::fs::copy(path, &bak) {
+            tracing::warn!(
+                error = %e,
+                path = %bak.display(),
+                "eval_rules 覆写前备份失败（继续保存，不阻断）"
+            );
+        }
+    }
     let content = serde_json::to_string_pretty(file).context("serialize rules")?;
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
         .map_err(anyhow::Error::msg)

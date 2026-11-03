@@ -461,6 +461,72 @@ async fn agt_process_messages_binds_router_and_runs_filter_ladder() {
 }
 
 // ============================================================
+// L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键——同
+// (session, client_msg_id) 重复提交只扇出一次（bus 不二次触发 agent），
+// 不带 id 的消息零变化。全局去重表（chat_dedup TABLE）测试整段互斥。
+// ============================================================
+
+#[tokio::test]
+async fn agt_chat_send_dedup_suppresses_duplicate_fanout() {
+    let _dedup_guard = crate::chat_dedup::test_support::GLOBAL_TABLE_LOCK
+        .lock()
+        .await;
+    crate::chat_dedup::test_support::reset_for_tests();
+
+    let bus = Arc::new(MessageBus::new());
+    let mut inbound_rx = bus.subscribe_inbound();
+    let session_manager = Arc::new(SessionManager::with_default_timeout());
+    let chain: FilterChain<InboundMessage> = FilterChain::new();
+
+    let (tx, rx) = mpsc::unbounded_channel::<IncomingMessage>();
+    let task = tokio::spawn(process_messages_with_router(
+        rx,
+        bus.clone(),
+        None,
+        Some(session_manager),
+        Some(Arc::new(chain)),
+    ));
+
+    let mut with_id = agt_incoming("web:dupA", "idempotent-hello", Some("dedup-conv"));
+    with_id.metadata.insert(
+        "client_msg_id".to_string(),
+        format!("cm-{}", std::process::id()),
+    );
+    // 重试形态：同 session + 同 client_msg_id（chat_id 不同——重连场景）。
+    let mut retry = agt_incoming("web:dupB", "idempotent-hello", Some("dedup-conv"));
+    retry.metadata = with_id.metadata.clone();
+    // 不带 id：零变化路径。
+    let plain = agt_incoming("web:dupC", "plain-hello", Some("dedup-conv"));
+
+    tx.send(with_id).unwrap();
+    tx.send(retry).unwrap();
+    tx.send(plain).unwrap();
+
+    // 首投扇出。
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), inbound_rx.recv())
+        .await
+        .expect("inbound timeout")
+        .expect("bus closed");
+    assert_eq!(first.content, "idempotent-hello");
+
+    // 重试被去重短路：只扇出 plain 一条（不二次触发 agent）。
+    let second = tokio::time::timeout(std::time::Duration::from_secs(5), inbound_rx.recv())
+        .await
+        .expect("inbound timeout")
+        .expect("bus closed");
+    assert_eq!(
+        second.content, "plain-hello",
+        "重复 client_msg_id 必须被去重短路，不得二次扇出"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(inbound_rx.try_recv().is_err(), "no third inbound expected");
+
+    drop(tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+    crate::chat_dedup::test_support::reset_for_tests();
+}
+
+// ============================================================
 // pump_agent_events：SessionCreated 分支 + Lagged 存活
 // ============================================================
 

@@ -772,9 +772,13 @@ pub async fn run_disconnect_resume(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64,
 ///     保留：最终出站（Error 通知随 assistant 行出站）含「stream
 ///     interrupted from provider」头行 + L02 注记框架 + partial marker
 ///     全文。
-///   - 奇数下标 = 重试臂（testai-heal-1.0 奇断偶成）：首轮断流（partial
-///     已生成）→ transient 环重试 → 完整回复。断言重试完整 + partial
-///     不上抛：回复含 HEAL_RETRY_OK、不含 partial marker、不含中断文本。
+///   - 奇数下标 = 重试臂（testai-heal-1.0 奇断偶成）：首轮断流 →
+///     transient 环重试 → 成功回复。L29 拼接续写契约（2026-11-03，默认
+///     开 `agents.stream_concat_retry`）：partial 已交付时成功回复 =
+///     partial（头，恰一次）+ 续写段；Hijack 时序抖动下 partial 可能未
+///     达客户端（extract None → 「重试从头」回落）→ 回复只含续写段。
+///     两形态均合法；含 partial 时钉拼接形状（头置恰一次），并断言续写
+///     段在场 + 无中断错误文本。
 ///
 /// TestAI 侧契约：StreamBreaker 模型流式请求下发 SSE 前缀后不发
 /// finish/[DONE] 直接返回（干净 EOF 无终态 → collect_stream_response
@@ -834,9 +838,18 @@ pub async fn run_stream_break(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, Stri
                     "终局通知缺 Error: 前缀: {reply:?}"
                 );
             } else {
+                // L29 拼接续写契约：partial 已交付 = 头部恰一次 + 后跟续写
+                // 段；未交付（空 partial 回落）= 只含续写段。两形态均合法。
+                if reply.contains(PARTIAL_MARKER) {
+                    anyhow::ensure!(
+                        reply.starts_with(PARTIAL_MARKER)
+                            && reply.matches(PARTIAL_MARKER).count() == 1,
+                        "重试成功回复的 partial 拼接形状违反 L29 契约（应头部恰一次）: {reply:?}"
+                    );
+                }
                 anyhow::ensure!(
-                    !reply.contains(PARTIAL_MARKER),
-                    "重试成功回复泄漏 partial（partial 应只在断流请求内部）: {reply:?}"
+                    reply.contains(RETRY_MARKER),
+                    "重试成功回复缺续写段（HEAL_RETRY_OK）: {reply:?}"
                 );
                 anyhow::ensure!(
                     !reply.contains("stream interrupted"),

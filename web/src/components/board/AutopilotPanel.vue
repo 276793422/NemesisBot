@@ -24,6 +24,7 @@ interface Autopilot {
   target: string
   auto_plan: boolean
   acceptance_criteria: string | null
+  session_key: string | null
   enabled: boolean
   cron_job_id: string | null
   last_run_at: number | null
@@ -55,6 +56,7 @@ const form = ref({
   target: '',
   auto_plan: false,
   acceptance_criteria: '',
+  session_key: '',
   enabled: true,
 })
 
@@ -78,7 +80,7 @@ async function load(silent = false) {
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, acceptance_criteria: '', enabled: true }
+  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, acceptance_criteria: '', session_key: '', enabled: true }
   showForm.value = true
 }
 
@@ -93,6 +95,7 @@ function openEdit(ap: Autopilot) {
     target: ap.target || '',
     auto_plan: !!ap.auto_plan,
     acceptance_criteria: ap.acceptance_criteria || '',
+    session_key: ap.session_key || '',
     enabled: ap.enabled,
   }
   showForm.value = true
@@ -225,6 +228,9 @@ useBoardChanged(() => load(true))
               <span v-if="ap.target" class="badge badge-info">{{ ap.target }}</span>
               <span v-else-if="ap.auto_plan" class="badge badge-info">建单 + 自动拆解</span>
               <span v-else class="muted">仅建单</span>
+              <div v-if="ap.session_key" class="muted" style="margin-top: var(--space-1);" title="绑定父会话：建单继承其上下文；父会话删除/清空后规则自动暂停">
+                🔗 父会话
+              </div>
             </td>
             <td>
               <span class="badge" :class="ap.enabled ? 'badge-success' : 'badge-neutral'">
@@ -284,6 +290,13 @@ useBoardChanged(() => load(true))
             <label class="form-label">派发目标（worker 节点名，可空）</label>
             <input class="form-input" v-model="form.target" placeholder="留空 = 只建单不派发" />
             <div class="muted" style="margin-top: var(--space-1);">配置后每次触发会把 issue 自动派发给该节点执行（需集群运行）</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">绑定父会话 session_key（可空）</label>
+            <input class="form-input" v-model="form.session_key" placeholder="留空 = 不绑定（现行行为）" />
+            <div class="muted" style="margin-top: var(--space-1);">
+              绑定后每次建单继承该会话的近期上下文（经安全闸注入任务描述）；父会话被删除或清空时规则自动暂停，不再孤儿运行
+            </div>
           </div>
           <label class="muted" style="display: flex; align-items: center; gap: var(--space-1); cursor: pointer;">
             <input type="checkbox" v-model="form.auto_plan" :disabled="!!form.target.trim()" />

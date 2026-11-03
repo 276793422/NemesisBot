@@ -196,6 +196,7 @@ async fn continuation_final_response_logs_info_fields() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &std::collections::HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

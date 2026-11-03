@@ -394,6 +394,7 @@ fn test_message_to_node_info_from_message() {
         agents: Vec::new(),
         iroh_id: None,
         runtime_backend: None,
+        mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
     };
@@ -424,6 +425,7 @@ fn test_handle_discovery_message_own_node_ignored() {
         agents: Vec::new(),
         iroh_id: None,
         runtime_backend: None,
+        mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
     };
@@ -453,6 +455,7 @@ fn test_handle_discovery_message_remote_announce() {
         agents: Vec::new(),
         iroh_id: None,
         runtime_backend: None,
+        mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
     };
@@ -483,6 +486,7 @@ fn test_handle_discovery_message_bye() {
         agents: Vec::new(),
         iroh_id: None,
         runtime_backend: None,
+        mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
     };
@@ -506,6 +510,7 @@ fn test_handle_discovery_message_bye() {
         agents: Vec::new(),
         iroh_id: None,
         runtime_backend: None,
+        mandate_pubkey: None,
         timestamp: 1700000001,
         build: String::new(),
     };
@@ -572,6 +577,7 @@ fn test_message_to_node_info_empty_name_and_category_fallbacks() {
         agents: Vec::new(),
         iroh_id: None,
         runtime_backend: None,
+        mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
     };

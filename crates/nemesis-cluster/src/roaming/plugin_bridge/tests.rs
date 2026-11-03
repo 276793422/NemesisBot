@@ -142,3 +142,128 @@ fn plugin_registry_sync_section_deserializes() {
     let f: Full = serde_json::from_str(r#"{"ok":true,"running":false}"#).expect("旧插件响应");
     assert!(f.registry_sync.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// L16（2026-11-02 三期）：TrustGateDialer 吊销 veto + 放行透传
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use super::{RoamingDialer, TrustGateDialer, extract_iroh_hex};
+use crate::roaming::trust::TrustBook;
+
+/// 记录型假 dialer：dial 计数 + 固定成功响应（veto 测试断言「零调用」）。
+#[derive(Debug, Clone, Default)]
+struct RecordingDialer {
+    dial_calls: Arc<AtomicUsize>,
+    close_calls: Arc<AtomicUsize>,
+}
+
+impl RoamingDialer for RecordingDialer {
+    fn dial(
+        &self,
+        _addr: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u16, u64), String>> + Send>>
+    {
+        let calls = self.dial_calls.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((45678, 7))
+        })
+    }
+
+    fn close(&self, _conn_id: u64) {
+        self.close_calls.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// hex 提取四形态：裸 hex / @relay 完整形态 / 大写小写不归一（veto 层归一）/
+/// 非 iroh 形态 None。
+#[test]
+fn extract_iroh_hex_forms() {
+    let hex = "ab".repeat(32);
+    assert_eq!(extract_iroh_hex(&format!("iroh:{hex}")).unwrap(), hex);
+    assert_eq!(
+        extract_iroh_hex(&format!("iroh:{hex}@https://relay.example.com")).unwrap(),
+        hex
+    );
+    assert!(
+        extract_iroh_hex("192.168.1.5:9500").is_none(),
+        "TCP 形态无信任面"
+    );
+    assert!(extract_iroh_hex("iroh:").is_none(), "空 hex 不产条目");
+    assert!(extract_iroh_hex("").is_none());
+}
+
+/// revoked 命中：诚实 Err + 内层拨号**零调用**（连接根本不建立）。
+#[tokio::test]
+async fn trust_gate_veto_blocks_inner_dial() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let revoked = "cc".repeat(32);
+    let mut book = TrustBook::from_data(crate::roaming::trust::TrustBookData::default());
+    book.revoke(&revoked);
+    book.save(tmp.path()).expect("save");
+
+    let inner = RecordingDialer::default();
+    let gate = TrustGateDialer {
+        workspace: tmp.path().to_path_buf(),
+        inner: inner.clone(),
+    };
+    let err = gate
+        .dial(&format!("iroh:{revoked}@https://relay.example.com"))
+        .await
+        .expect_err("revoked 必须 veto");
+    assert!(err.contains("吊销"), "错误串应说明吊销语义: {err}");
+    assert_eq!(inner.dial_calls.load(Ordering::SeqCst), 0, "内层零调用");
+}
+
+/// 非 revoked（unknown / 簿缺席）：透传内层（Ok 形态），close 直透传。
+#[tokio::test]
+async fn trust_gate_non_revoked_passthrough() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // 激活簿 + revoked 别人：unknown 不 veto（出站臂只防主动撞吊销节点）。
+    let mut book = TrustBook::from_data(crate::roaming::trust::TrustBookData::default());
+    book.revoke(&"cc".repeat(32));
+    book.save(tmp.path()).expect("save");
+
+    let inner = RecordingDialer::default();
+    let gate = TrustGateDialer {
+        workspace: tmp.path().to_path_buf(),
+        inner: inner.clone(),
+    };
+    let ok = gate.dial(&format!("iroh:{}", "dd".repeat(32))).await;
+    assert_eq!(ok.unwrap(), (45678, 7), "unknown 透传");
+    assert_eq!(inner.dial_calls.load(Ordering::SeqCst), 1);
+    gate.close(7);
+    assert_eq!(inner.close_calls.load(Ordering::SeqCst), 1, "close 直透传");
+
+    // 簿缺席（regime 未激活）：同样透传。
+    let tmp2 = tempfile::tempdir().expect("tempdir");
+    let inner2 = RecordingDialer::default();
+    let gate2 = TrustGateDialer {
+        workspace: tmp2.path().to_path_buf(),
+        inner: inner2.clone(),
+    };
+    let ok2 = gate2.dial(&format!("iroh:{}", "ee".repeat(32))).await;
+    assert_eq!(ok2.unwrap(), (45678, 7), "簿缺席 = 未启用 = 放行");
+    assert_eq!(inner2.dial_calls.load(Ordering::SeqCst), 1);
+}
+
+/// TCP 形态地址无信任面：永远透传（trust 簿只管辖 iroh 叠加层）。
+#[tokio::test]
+async fn trust_gate_tcp_form_has_no_trust_face() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut book = TrustBook::from_data(crate::roaming::trust::TrustBookData::default());
+    book.revoke(&"cc".repeat(32));
+    book.save(tmp.path()).expect("save");
+
+    let inner = RecordingDialer::default();
+    let gate = TrustGateDialer {
+        workspace: tmp.path().to_path_buf(),
+        inner: inner.clone(),
+    };
+    let ok = gate.dial("192.168.1.5:9500").await;
+    assert_eq!(ok.unwrap(), (45678, 7), "TCP 形态不经 trust 闸");
+    assert_eq!(inner.dial_calls.load(Ordering::SeqCst), 1);
+}

@@ -12,7 +12,7 @@ use nemesis_types::cluster::NodeRole;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-fn make_ctx_with_board(dir: &std::path::Path) -> RequestContext {
+pub(super) fn make_ctx_with_board(dir: &std::path::Path) -> RequestContext {
     make_ctx_with_role(dir, NodeRole::Coordinator)
 }
 
@@ -82,7 +82,7 @@ fn make_ctx_with_service(
     }
 }
 
-fn unique_dir(name: &str) -> std::path::PathBuf {
+pub(super) fn unique_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "nemesis-web-boardtest-{}-{name}",
         std::process::id()
@@ -91,7 +91,7 @@ fn unique_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-async fn dispatch(
+pub(super) async fn dispatch(
     ctx: &RequestContext,
     cmd: &str,
     data: serde_json::Value,
@@ -2732,6 +2732,7 @@ fn p3_ap(store: &BoardStore, name: &str, auto_plan: bool) -> nemesis_board::Auto
             enabled: true,
             auto_plan,
             acceptance_criteria: None,
+            session_key: None,
         })
         .expect("create autopilot")
 }
@@ -2771,6 +2772,7 @@ async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
         enabled: true,
         auto_plan: false,
         acceptance_criteria: Some("报告含时间与磁盘空间两项".to_string()),
+        session_key: None,
     };
     let ap = store.create_autopilot(&n).unwrap();
     let out = fire_autopilot(&store, None, &ap, &actor, None).unwrap();
@@ -6741,6 +6743,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
     // job 名约定 = board-ap:{autopilot_id}（不是规则名）
@@ -6770,6 +6773,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
     super::sync_autopilot_jobs(&cron, &store).unwrap();
@@ -6862,6 +6866,7 @@ async fn agt_autopilot_validate_and_issues_listing() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
     let r = dispatch(
@@ -8676,6 +8681,7 @@ async fn w5_autopilot_target_assignee_and_fire_dispatch_fail() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
 
@@ -12391,6 +12397,7 @@ fn autopilot_orphan_sweep_spares_user_collision_names_and_sweeps_real_orphans() 
         enabled: true,
         auto_plan: false,
         acceptance_criteria: None,
+        session_key: None,
     };
     let ap_live = store.create_autopilot(&mk_ap("存活规则")).unwrap();
     let ap_orphan = store.create_autopilot(&mk_ap("将删除规则")).unwrap();

@@ -637,7 +637,7 @@ fn r221_failed_migration_step_rolls_back_atomically() {
 
     // 半途失败批：第 2 条语句撞同名表必败（旧行为：第 1 条已隐式提交）。
     let bad = "CREATE TABLE r221_probe(a TEXT);\nCREATE TABLE r221_probe(b TEXT);";
-    let err = migrate_step(&conn, 2, "v2(test)", bad).unwrap_err();
+    let err = nemesis_utils::sqlite_preflight::migrate_step(&conn, 2, "v2(test)", bad).unwrap_err();
     assert!(err.contains("v2(test)"), "错误信息带步标签: {err}");
     let n: i64 = conn
         .query_row(
@@ -653,7 +653,13 @@ fn r221_failed_migration_step_rolls_back_atomically() {
     assert_eq!(v, 0, "失败步不得写版本戳");
 
     // 成功步：库对象与版本戳原子同步落。
-    migrate_step(&conn, 1, "v1(test)", "CREATE TABLE r221_ok(a TEXT);").unwrap();
+    nemesis_utils::sqlite_preflight::migrate_step(
+        &conn,
+        1,
+        "v1(test)",
+        "CREATE TABLE r221_ok(a TEXT);",
+    )
+    .unwrap();
     let v: i32 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();

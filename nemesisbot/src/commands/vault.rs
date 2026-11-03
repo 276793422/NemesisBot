@@ -38,6 +38,32 @@ pub enum VaultAction {
     /// credentials.yaml 条目 → vault 别名，配置回写 `vault:<alias>`。
     /// 幂等——已迁移的条目跳过；同值复用别名，异值加后缀不覆盖。
     Migrate,
+    /// 绑定别名域白名单（L26②）：允许 alias 在 tool 的 slot 槽位免卡使用
+    /// （dispatch 凭据闸 v2：域内直过/出域审计拒绝）。写
+    /// `<workspace>/config/config.vault.json`（明文策略面，不触 vault.enc）。
+    /// 幂等——完全相同的 (tool, slot) 重复绑定不追加。
+    Bind {
+        /// 别名（绑定先于凭据写入合法，不校验 vault.enc 存在性）。
+        alias: String,
+        /// 工具名（如 `web_fetch`；精确匹配）。
+        #[arg(long)]
+        tool: String,
+        /// 槽位字段路径（顶层键 `headers` 或叶 `headers.Authorization`；
+        /// 顶槽绑定覆盖该槽全部叶子）。
+        #[arg(long)]
+        slot: String,
+    },
+    /// 解除绑定（L26②）。`--tool` 缺省 = 删该别名全部绑定；
+    /// `--slot` 缺省 = 删该工具下全部槽位绑定。
+    Unbind {
+        alias: String,
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long)]
+        slot: Option<String>,
+    },
+    /// 列出全部域绑定（明文策略面，L26②）。
+    Bindings,
 }
 
 /// 读取 vault 模式对应口令：argon2 模式取 `NEMESISBOT_VAULT_PASSPHRASE`
@@ -256,8 +282,115 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
             println!();
             println!("迁移期兼容说明：明文 key 在迁移前继续工作；每次解析进程会提示一次。");
         }
+        VaultAction::Bind { alias, tool, slot } => {
+            let path = vault_domain_config_path(&home)?;
+            let mut cfg = load_or_init_domain_config(&path)?;
+            let entries = cfg.bindings.entry(alias.clone()).or_default();
+            let binding = nemesis_config::DomainBinding {
+                tool: tool.clone(),
+                slot: slot.clone(),
+            };
+            if entries.contains(&binding) {
+                println!(
+                    "绑定已存在（幂等）：{alias} -> {}:{}（{}）",
+                    tool,
+                    slot,
+                    path.display()
+                );
+                return Ok(());
+            }
+            entries.push(binding);
+            let count = entries.len();
+            save_domain_config(&path, &cfg)?;
+            println!(
+                "已绑定：{alias} -> {tool}:{slot}（{} 条绑定，{}）",
+                count,
+                path.display()
+            );
+            println!("域内使用免卡直过；出域使用将在 dispatch 凭据闸被审计拒绝。");
+        }
+        VaultAction::Unbind { alias, tool, slot } => {
+            if slot.is_some() && tool.is_none() {
+                anyhow::bail!(
+                    "--slot 需要与 --tool 同给（槽位是工具作用域的）；只删别名全部绑定请省略两个参数"
+                );
+            }
+            let path = vault_domain_config_path(&home)?;
+            let mut cfg = load_or_init_domain_config(&path)?;
+            let Some(entries) = cfg.bindings.get_mut(&alias) else {
+                anyhow::bail!("别名「{alias}」没有域绑定");
+            };
+            let before = entries.len();
+            entries.retain(|b| match (&tool, &slot) {
+                (Some(t), Some(s)) => !(b.tool == *t && b.slot == *s),
+                (Some(t), None) => b.tool != *t,
+                _ => false,
+            });
+            let removed = before - entries.len();
+            if entries.is_empty() {
+                cfg.bindings.remove(&alias);
+            }
+            if removed == 0 {
+                anyhow::bail!("没有匹配的绑定可删除（alias={alias} tool={tool:?} slot={slot:?}）");
+            }
+            save_domain_config(&path, &cfg)?;
+            println!("已解除 {} 条绑定（{}）。", removed, path.display());
+        }
+        VaultAction::Bindings => {
+            let path = vault_domain_config_path(&home)?;
+            let cfg = load_or_init_domain_config(&path)?;
+            if cfg.bindings.is_empty() {
+                println!("无域绑定（{}）。", path.display());
+                println!("绑定写作：nemesisbot vault bind <alias> --tool <T> --slot <S>");
+                return Ok(());
+            }
+            println!("ALIAS                       BINDINGS（{}）", path.display());
+            for (alias, entries) in &cfg.bindings {
+                let joined = entries
+                    .iter()
+                    .map(|b| format!("{}:{}", b.tool, b.slot))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("{:<28} {}", alias, joined);
+            }
+            println!();
+            println!(
+                "共 {} 个别名。域内免卡直过；出域审计拒绝。",
+                cfg.bindings.len()
+            );
+        }
     }
     Ok(())
+}
+
+/// L26② 绑定配置路径：`<workspace>/config/config.vault.json`
+/// （`workspace_config_dir` 单一定义；与 gate 侧 config_path.parent()
+/// 推导同点）。
+fn vault_domain_config_path(home: &std::path::Path) -> Result<std::path::PathBuf> {
+    let ws = common::workspace_path(home);
+    Ok(nemesis_path::workspace_config_dir(&ws).join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE))
+}
+
+/// 读绑定配置（不存在 = 空配置）；损坏 loud 拒改（不静默重置——用户手编
+/// 内容不许被 CLI 覆盖吞掉）。
+fn load_or_init_domain_config(path: &std::path::Path) -> Result<nemesis_config::VaultDomainConfig> {
+    match nemesis_config::VaultDomainConfig::load_at(path) {
+        Ok(Some(c)) => Ok(c),
+        Ok(None) => Ok(Default::default()),
+        Err(e) => anyhow::bail!("{e}——请修正或删除该文件后再操作（CLI 不做静默重置）"),
+    }
+}
+
+fn save_domain_config(
+    path: &std::path::Path,
+    cfg: &nemesis_config::VaultDomainConfig,
+) -> Result<()> {
+    let out = serde_json::to_string_pretty(cfg).context("序列化绑定配置失败")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("创建目录失败: {}", dir.display()))?;
+    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| anyhow::anyhow!("写绑定配置失败（{}）: {e}", path.display()))
 }
 
 /// P0 B2（2026-09-22 计划 §2.4）：模型 key 迁移——CLI 壳。

@@ -3449,6 +3449,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",
     );
@@ -3500,6 +3501,7 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -3537,6 +3539,7 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -3738,6 +3741,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,       // 桥接成员登记：无 source_addr
         "",
     );
@@ -3771,6 +3775,7 @@ fn test_discovered_node_malformed_id_charset_gate_rejected() {
             Vec::new(),
             None,
             None,
+            None, // mandate 公钥：未宣告
             None,
             "",
         );
@@ -6871,6 +6876,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         callback_result: None,
         required_profession: None,
         async_usage_stash: None,
+        mandate: None,
     });
     tl.save_async_state(
         "parent-1",
@@ -6942,6 +6948,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         callback_result: None,
         required_profession: None,
         async_usage_stash: None,
+        mandate: None,
     });
     tl.save_async_state(
         "parent-2",
@@ -9346,6 +9353,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9381,6 +9389,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9420,6 +9429,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9633,6 +9643,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         Some("203.0.113.99"),
         "",
     );
@@ -9660,6 +9671,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         Some("203.0.113.96"),
         "",
     );
@@ -9738,6 +9750,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         Some("203.0.113.29"),
         "",
     );
@@ -9909,6 +9922,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_a.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9932,6 +9946,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_a.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9953,6 +9968,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_b.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9987,6 +10003,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Vec::new(),
         None, // iroh_id：未宣告
         Some("vm".into()),
+        None, // mandate 公钥：未宣告
         None,
         "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10010,6 +10027,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Vec::new(),
         None, // iroh_id：未宣告
         Some("vm".into()),
+        None, // mandate 公钥：未宣告
         None,
         "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10031,6 +10049,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Vec::new(),
         None, // iroh_id：未宣告
         None,
+        None, // mandate 公钥：未宣告
         None,
         "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10110,6 +10129,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         roster.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -10259,6 +10279,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         vec![],
         Some(hex.clone()),
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10297,6 +10318,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         vec![],
         Some(hex.clone()),
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10335,6 +10357,7 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
             vec![],
             Some(bad.to_string()),
             None, // 自报运行时后端形态：未宣告
+            None, // mandate 公钥：未宣告
             None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
             "",   // build：未宣告（P5 期测试补齐 A1 参数）
         );
@@ -10371,6 +10394,7 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
         vec![],
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10443,6 +10467,7 @@ fn test_announce_build_propagates_to_registry_new_entry() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "6f96d056",
     );
@@ -10471,6 +10496,7 @@ fn test_announce_build_refreshes_existing_entry() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "aaaa1111",
     );
@@ -10490,6 +10516,7 @@ fn test_announce_build_refreshes_existing_entry() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "bbbb2222",
     );
@@ -10701,5 +10728,378 @@ id = broken ===",
     assert!(
         !logs2.contains("failed to parse"),
         "首次启动（无 peers.toml）不得 warn，实际日志: {logs2}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// L16（2026-11-02 三期）：iroh 互信 announce 采信闸接线（handle_discovered_
+// node_ex 单一漏斗）。身份用 random_valid_iroh_hex 真实派生（valid_iroh_id
+// on-curve 校验拒绝任意 hex）。
+// ---------------------------------------------------------------------------
+
+/// revoked 一票不采信：整条 veto（registry 无条目），且**换 node_id 洗白
+/// 无效**（trust 簿按 iroh hex 键控，密钥级吊销——同一 hex 换 id 重宣告
+/// 同样拒）。
+#[test]
+fn l16_revoked_announce_veto_whole_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let revoked_hex = crate::roaming::random_valid_iroh_hex();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.revoke(&revoked_hex);
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "revoked-peer",
+        "revoked-worker",
+        vec!["10.0.0.20".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(revoked_hex.clone()),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(!changed, "revoked announce 必须整条拒绝");
+    assert!(
+        cluster.get_node_info("revoked-peer").is_none(),
+        "吊销节点不得入册"
+    );
+
+    // 换 node_id 洗白（hex 不变）：同样 veto。
+    let changed2 = cluster.handle_discovered_node_ex(
+        "laundered-id",
+        "laundered-worker",
+        vec!["10.0.0.21".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(revoked_hex),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(!changed2, "换 node_id 不换 hex = 密钥级吊销仍然 veto");
+    assert!(cluster.get_node_info("laundered-id").is_none());
+}
+
+/// unknown（regime 已激活）→ TOFU 首见钉存：announce 入册 + trust.toml
+/// 盘上回读含新 hex，既有 trusted 条目不受影响。
+#[test]
+fn l16_unknown_announce_tofu_pins_and_registers() {
+    let dir = tempfile::tempdir().unwrap();
+    let veteran_hex = crate::roaming::random_valid_iroh_hex();
+    let newcomer_hex = crate::roaming::random_valid_iroh_hex();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.trust(&veteran_hex);
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "newcomer-peer",
+        "newcomer-worker",
+        vec!["10.0.0.22".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(newcomer_hex.clone()),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(changed, "unknown 首见 = TOFU 采信入册");
+    let node = cluster.get_node_info("newcomer-peer").expect("新节点入册");
+    assert_eq!(node.base.name, "newcomer-worker");
+
+    let reloaded = crate::roaming::trust::TrustBook::load(dir.path())
+        .expect("load")
+        .expect("簿已在");
+    assert!(
+        reloaded.is_trusted(&newcomer_hex),
+        "TOFU 钉存必须落盘: {:?}",
+        reloaded.data()
+    );
+    assert!(reloaded.is_trusted(&veteran_hex), "既有条目不受影响");
+}
+
+/// 簿缺席 = regime 未激活：携合法 iroh hex 的 announce 照常入册，且**绝不
+/// 因 announce 创建 trust.toml**（零回归锁——发现链不激活 allowlist）。
+#[test]
+fn l16_no_book_announce_adopts_without_creating_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let hex = crate::roaming::random_valid_iroh_hex();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "plain-peer",
+        "plain-worker",
+        vec!["10.0.0.23".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(hex),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(changed, "无簿 = 未启用 = 采信入册（字节级现状）");
+    assert!(cluster.get_node_info("plain-peer").is_some());
+    assert!(
+        !crate::roaming::trust::trust_book_path(dir.path()).exists(),
+        "announce 闸不得创建 trust.toml"
+    );
+}
+
+/// 无 key 旧节点（iroh_id=None）= 维持现行行为：regime 激活与否都照常
+/// 入册（信任簿无从键控，诚实跳过）。
+#[test]
+fn l16_announce_without_iroh_skips_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.trust(&"aa".repeat(32));
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "legacy-peer",
+        "legacy-worker",
+        vec!["10.0.0.24".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(changed, "无 iroh 身份 = 闸跳过 = 现行行为入册");
+    assert!(cluster.get_node_info("legacy-peer").is_some());
+}
+
+// ---------------------------------------------------------------------------
+// L13-a（2026-11-03 三期）：mandate 公钥分发面集成（TOFU 钉存三态 +
+// L16 veto 短路）
+// ---------------------------------------------------------------------------
+
+/// 合法 uncompressed 130 hex 测试钥（04 头 + tag + 126 hex）。
+fn l13a_pk(tag: u8) -> String {
+    format!("04{:02x}{}", tag, "ab".repeat(63))
+}
+
+/// 激活簿 + announce 携合法 mandate 公钥 → TOFU 首见钉存落盘，入册照常。
+#[test]
+fn l13a_announce_pubkey_pins_into_active_book() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.trust(&"aa".repeat(32));
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "mandate-peer",
+        "mandate-worker",
+        vec!["10.0.0.31".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        Some(l13a_pk(1)),
+        None,
+        "",
+    );
+    assert!(changed, "带 mandate 公钥的 announce 照常入册");
+    let reloaded = crate::roaming::trust::TrustBook::load(dir.path())
+        .unwrap()
+        .expect("簿已在");
+    assert_eq!(
+        reloaded
+            .data()
+            .mandate_keys
+            .get("mandate-peer")
+            .map(String::as_str),
+        Some(l13a_pk(1).as_str()),
+        "TOFU 首见钉存必须落盘: {:?}",
+        reloaded.data()
+    );
+}
+
+/// 簿缺席（regime 未激活）+ announce 携公钥 → 不建文件不钉存，入册照常
+/// （announce 抵达绝不激活 trust.toml，L16 纪律镜像）。
+#[test]
+fn l13a_announce_pubkey_book_absent_no_touch() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "mandate-peer",
+        "mandate-worker",
+        vec!["10.0.0.32".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        Some(l13a_pk(2)),
+        None,
+        "",
+    );
+    assert!(changed, "无簿时 announce 照常入册");
+    assert!(
+        !crate::roaming::trust::trust_book_path(dir.path()).exists(),
+        "mandate 钉存不得创建 trust.toml"
+    );
+    assert_eq!(
+        crate::roaming::trust::mandate_key_state(dir.path(), "mandate-peer"),
+        crate::roaming::trust::MandateKeyVerdict::Absent,
+        "簿缺席 = Absent"
+    );
+}
+
+/// 已有 pin + 异值公钥 announce → strict TOFU 保留首见，入册照常不拒
+/// （Conflict 是 warn 不是拒绝——分发面 fail-open）。
+#[test]
+fn l13a_announce_pubkey_conflict_keeps_first_and_registers() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::roaming::trust::mandate_pin_forced(dir.path(), "mandate-peer", &l13a_pk(3)).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "mandate-peer",
+        "mandate-worker",
+        vec!["10.0.0.33".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        Some(l13a_pk(4)),
+        None,
+        "",
+    );
+    assert!(changed, "冲突只 warn，announce 照常采信入册");
+    assert_eq!(
+        crate::roaming::trust::mandate_key_state(dir.path(), "mandate-peer"),
+        crate::roaming::trust::MandateKeyVerdict::Pinned(l13a_pk(3)),
+        "strict TOFU 保留首见"
+    );
+}
+
+/// L16 revoked veto 短路在 mandate hook 之前：节点 iroh 身份被吊销时整条
+/// 不采信（return false 提前），mandate 公钥不钉存。
+#[test]
+fn l13a_revoked_iroh_veto_skips_mandate_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let hex = crate::roaming::random_valid_iroh_hex();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.revoke(&hex);
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "revoked-peer",
+        "revoked-worker",
+        vec!["10.0.0.34".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(hex),
+        None,
+        Some(l13a_pk(5)),
+        None,
+        "",
+    );
+    assert!(!changed, "iroh revoked veto 整条不采信");
+    let reloaded = crate::roaming::trust::TrustBook::load(dir.path())
+        .unwrap()
+        .expect("簿已在");
+    assert!(
+        reloaded.data().mandate_keys.is_empty(),
+        "veto 短路 → mandate 公钥不钉存: {:?}",
+        reloaded.data()
     );
 }

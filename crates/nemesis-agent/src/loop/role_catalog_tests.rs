@@ -390,8 +390,10 @@ async fn runtime_flip_unhides_role_without_restart() {
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert!(out.contains("not available"), "实际: {out}");
 
-    // 阶段 2：改盘解除 → 角色闸放行（spawn 未注册 → Unknown tool 文案）。
+    // 阶段 2：改盘解除 → 下一轮 round start 发布新代（L18 世代化）→ 角色闸
+    // 放行（spawn 未注册 → Unknown tool 文案）。
     std::fs::write(&cfg_path, r#"{"agents": {"roles": {"hidden": []}}}"#).unwrap();
+    agent_loop.check_config_reload();
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert!(
         !out.contains("not available"),

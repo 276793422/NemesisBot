@@ -840,6 +840,18 @@ impl AgentLoop {
                     sections.push(crate::prompt::render_external_channel_section(ch));
                 }
             }
+            // L10-建设（改进项三期 2026-11-02）：已解锁 schema 注记节——惰性
+            // 供给下模型经 tools_schema_get 取回过的 schema 在这里持续携带。
+            // 累积渲染（append-only 前缀稳定，新增只失效 cache 尾部）；lazy
+            // 关 = 无节零字节；session_key None 不注入（Branch Context 同款
+            // 先例）。内容纯状态派生（解锁账+registry）→ 字节稳定；随
+            // InjectionRecord 台账回放一致。
+            if self.current_lazy_tool_schema() {
+                let unlock_section = self.schema_unlock_section(session_key);
+                if !unlock_section.is_empty() {
+                    sections.push(unlock_section);
+                }
+            }
             if sections.is_empty() {
                 None
             } else {

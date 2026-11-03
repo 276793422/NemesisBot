@@ -18,8 +18,10 @@
 //! - [`config`]：config.cluster.json `roaming` 段解析（单一真相源纯函数）；
 //! - [`quic_config`]：config.quic.json 解析（QUIC 自身全部配置：服务端
 //!   `relay` 段 + 客户端 `client` 段；旧位置首读迁移，2026-10-23 解耦）；
-//! - [`trust`]：TrustBook 本地 allowlist（trust.toml——**裁决在插件 accept
-//!   闸**，宿主只留数据形态供 CLI/WSAPI 只读显示）；
+//! - [`trust`]：TrustBook 本地 allowlist（trust.toml）——L16 起宿主承载
+//!   announce 采信闸（TOFU 首见钉存 + revoked veto）与 dial 吊销 veto 两
+//!   活跃面 + CLI/WSAPI 管理面（数据形态/裁决纯函数）；插件 accept 闸
+//!   （strict allowlist）仍在 plugin_roaming，同文件同格式同裁决镜像；
 //! - [`relay_info`]：中继显示面（证书路径/对外 URL 纯函数）；
 //! - [`rendezvous`]：成员名册 wire 类型 + registry_url 解析/拨号地址拼装
 //!   （同步循环在 plugin_roaming——宿主只留数据形态）。
@@ -31,6 +33,11 @@
 
 pub mod bridge;
 pub mod config;
+/// L13-b（2026-11-03 三期）：任务 mandate 签名授权——数据形态 + 密码学
+/// 内核（P-256 canonical 摘要签验/密钥 load-or-generate/四拒分类纯函数）；
+/// wire 接线在 rpc/client（A 端签名注入）与 rpc/peer_chat_handler（B 端
+/// 前置闸）。
+pub mod mandate;
 /// C-ABI 桥（QUIC 插件化 M2 控制面 + M3 连接面）：插件句柄槽 +
 /// spawn_blocking 调用 + 三态裁决 + 成员回流漏斗 + dial/accept 交接与
 /// 端点启停。依赖 `nemesis-plugin`（optional，随本 feature）。

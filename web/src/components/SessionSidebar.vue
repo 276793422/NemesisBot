@@ -35,6 +35,9 @@ import { fmtUsageLine as usage } from '../composables/useUsageFormat'
 import { useWfEditSessions } from '../composables/wfEditSessions'
 import ForkSessionModal from './ForkSessionModal.vue'
 import ProjectCreateModal from './ProjectCreateModal.vue'
+// L22（2026-11-03 session PR 最小形态）：变更对比弹窗复用 M3 会话变更面板
+// （file_changes 聚合 + 逐文件 sessions.file_diff unified diff 渲染）。
+import SessionChangesPanel from './logs/SessionChangesPanel.vue'
 import type { SessionEntry } from '../composables/useChatApi'
 // WS9/P17（2026-09-26）：谱系树重排（组内子会话紧跟父会话 + 缩进深度）
 // 与弹窗「谱系」节祖先链行——纯视图工具，真相源在后端 meta。
@@ -44,7 +47,7 @@ const sessionStore = useSessionStore()
 const toast = useToast()
 const router = useRouter()
 const wfEditSessions = useWfEditSessions()
-const { openProjectDir, snooze, unsnooze, detach } = useChatApi()
+const { openProjectDir, snooze, unsnooze, detach, importSession } = useChatApi()
 
 // 服务端绑定权威面（2026-10-19 修复）：`wf_agentgen:*` 绑定命中的存活
 // 会话一律视为工作流编辑会话。隐藏判定与 localStorage 登记取**并集**——
@@ -509,6 +512,87 @@ function undeliveredBadge(s: { undelivered?: number }): string | null {
   return n > 9 ? '9+' : String(n)
 }
 
+/** L22（2026-11-03 snooze 排队）：暂停期排队徽标文案——无排队返回 null
+ *  （后端只在 >0 时投影 pendingCount）。 */
+function pendingBadge(s: { pendingCount?: number }): string | null {
+  const n = s.pendingCount ?? 0
+  if (n <= 0) return null
+  return n > 9 ? '9+' : String(n)
+}
+
+// ---------------------------------------------------------------------------
+// L22（2026-11-03）：跨设备移动（导入）+ session PR（变更对比弹窗）
+// ---------------------------------------------------------------------------
+
+/** 导入会话：文件选择器读导出 JSON（裸消息数组或 {messages:[...]} 两种
+ *  形态都收——后者兼容本侧栏「📥 导出」的下载产物）。session_id 缺省 =
+ *  服务端生成 uuid；目标已存在 = 后端诚实拒绝（导入不覆盖）。 */
+const importInput = ref<HTMLInputElement | null>(null)
+
+function triggerImport() {
+  closeMenus()
+  importInput.value?.click()
+}
+
+async function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 复位——允许重复选同一文件
+  if (!file) return
+  let messages: unknown[]
+  try {
+    const parsed = JSON.parse(await file.text())
+    if (Array.isArray(parsed)) messages = parsed
+    else if (Array.isArray(parsed?.messages)) messages = parsed.messages
+    else {
+      toast.error('文件格式不对：应为导出的消息数组或 { messages: [...] }')
+      return
+    }
+  } catch {
+    toast.error('文件不是合法 JSON')
+    return
+  }
+  try {
+    const out = await importSession({ messages })
+    toast.success(`已导入会话（${out.imported} 条消息）`)
+    await sessionStore.fetchList(true)
+  } catch (e: any) {
+    toast.error(typeof e === 'string' ? e : e?.message || '导入失败')
+  }
+}
+
+/** 变更对比弹窗（session PR 最小形态）：拉全量消息行（file_changes 随行），
+ *  交给 SessionChangesPanel 聚合 + 逐文件 file_diff。 */
+const prSession = ref<{ id: string; name: string } | null>(null)
+const prMessages = ref<unknown[]>([])
+const prLoading = ref(false)
+
+function openChanges(s: SessionEntry) {
+  closeMenus()
+  prSession.value = { id: s.id, name: title(s) }
+  prMessages.value = []
+  prLoading.value = true
+  sessionStore
+    .exportSession(s.id)
+    .then((resp) => {
+      prMessages.value = resp.messages ?? []
+    })
+    .catch(() => {
+      toast.error('加载会话消息失败')
+      prSession.value = null
+    })
+    .finally(() => {
+      prLoading.value = false
+    })
+}
+
+/** 弹窗内有无变更（零变更给诚实空态——面板自身 v-if 也会隐藏）。 */
+const hasPrChanges = computed(
+  () =>
+    Array.isArray(prMessages.value) &&
+    prMessages.value.some((m: any) => Array.isArray(m?.file_changes) && m.file_changes.length > 0),
+)
+
 // ---------------------------------------------------------------------------
 // B11（2026-10-18 snooze）：会话暂停——UI 标记 + 到期自动唤醒（后端 sweeper
 // 摘标记 + 注入恢复 system 行）。期间消息照常处理；snoozedUntil 在未来 =
@@ -769,6 +853,15 @@ function relTime(ts: string): string {
           @click="toggleBatchMode"
           title="批量管理：多选会话，批量移入回收站"
         >☑ 批量</button>
+        <!-- L22（2026-11-03 跨设备移动）：导入会话（导出 JSON 重建） -->
+        <button class="fn-btn" data-test="import-toggle" @click="triggerImport" title="导入会话：选择导出的 JSON 文件重建会话">⤓ 导入</button>
+        <input
+          ref="importInput"
+          type="file"
+          accept=".json,application/json"
+          style="display: none"
+          @change="onImportFile"
+        />
       </div>
     </div>
 
@@ -884,6 +977,13 @@ function relTime(ts: string): string {
                 class="snooze-badge"
                 :title="snoozeTip(s)"
               >⏰</span>
+              <!-- L22（2026-11-03 snooze 排队）: 暂停期排队条数徽标（恢复后
+                   自动投递；后端 >0 才投影）。 -->
+              <span
+                v-if="pendingBadge(s)"
+                class="pending-badge"
+                :title="`暂停期已排队 ${s.pendingCount} 条消息，恢复后自动投递`"
+              >💤{{ pendingBadge(s) }}</span>
               <!-- P2（2026-09-11）: 未送达回复徽标（assistant 推送失败时后端
                    打点；点开拉取历史后清零）。 -->
               <span
@@ -922,6 +1022,9 @@ function relTime(ts: string): string {
               <button v-else class="menu-item" @click="snoozeSession(s)">⏰ 暂停会话</button>
               <button class="menu-item" @click="renameSession(s)">✏ 重命名</button>
               <button class="menu-item" @click="forkSession(s)">⑂ 创建分支</button>
+              <!-- L22（2026-11-03 session PR 最小形态）：变更文件清单 + 逐
+                   文件 diff 对比（复用 M3 SessionChangesPanel）。 -->
+              <button class="menu-item" @click="openChanges(s)">🔀 变更对比</button>
               <!-- detach（2026-10-20）：仅分支会话显示——脱离后与父会话平级 -->
               <button v-if="s.parent" class="menu-item" @click="detachSession(s)">✂ 脱离父分支</button>
               <button class="menu-item" @click="clearSession(s)">🗑 清空消息</button>
@@ -998,6 +1101,22 @@ function relTime(ts: string): string {
         </div>
         <div class="info-actions">
           <button class="info-close" @click="infoSession = null">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- L22（2026-11-03）：会话变更对比弹窗（session PR 最小形态）——
+         复用 SessionChangesPanel（file_changes 聚合 + 逐文件 file_diff）。 -->
+    <div v-if="prSession" class="modal-backdrop" @click.self="prSession = null">
+      <div class="modal-box pr-box">
+        <h3>🔀 变更对比 — {{ prSession.name }}</h3>
+        <div v-if="prLoading" class="pr-hint">⟳ 加载中...</div>
+        <template v-else>
+          <SessionChangesPanel :session="prSession.id" :messages="prMessages" />
+          <div v-if="!hasPrChanges" class="pr-hint">本会话没有文件变更记录（file_changes 随 assistant 回复落盘）。</div>
+        </template>
+        <div class="info-actions">
+          <button class="info-close" @click="prSession = null">关闭</button>
         </div>
       </div>
     </div>
@@ -1305,6 +1424,27 @@ function relTime(ts: string): string {
   font-size: 11px;
   display: inline-block;
   vertical-align: 1px;
+}
+/* L22（2026-11-03 snooze 排队）: 暂停期排队徽标——💤+n（弱化行内视觉
+ * 锚点；tooltip 行内 title 承担；后端 >0 才投影 pendingCount） */
+.pending-badge {
+  margin-left: 6px;
+  font-size: 11px;
+  display: inline-block;
+  vertical-align: 1px;
+}
+/* L22（2026-11-03）：变更对比弹窗（session PR 最小形态）——面板与空态
+ * 提示；modal-box/modal-backdrop/info-actions 样式复用会话信息弹窗。 */
+.pr-box {
+  width: 640px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: auto;
+}
+.pr-hint {
+  padding: var(--space-2, 4px) 0;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 /* A：对话区排序循环按钮（⇅ + 当前档位，档位见 SORT_LABELS） */
 .sort-toggle {

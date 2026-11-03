@@ -110,6 +110,13 @@ pub struct ClusterTask {
     /// 成功回调）。resume 完成时合并（饱和加法）上报。
     #[serde(default)]
     pub async_usage_stash: Option<serde_json::Value>,
+    /// L13-b（2026-11-03 三期）：mandate 执行期守卫投影——B 端前置闸验签
+    /// 通过后从 mandate body 派生（[`crate::roaming::mandate::
+    /// enforcement_from_body`]），随任务进执行面（cluster_agent set 进
+    /// AgentLoop guard 槽）。None = 无 mandate（旧节点兼容/verify 放行）。
+    /// serde default 兼容旧任务记录/async state 回读。
+    #[serde(default)]
+    pub mandate: Option<nemesis_types::cluster::MandateEnforcement>,
 }
 
 // ---------------------------------------------------------------------------

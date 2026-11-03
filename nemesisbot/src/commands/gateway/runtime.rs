@@ -1248,8 +1248,58 @@ pub(crate) async fn run_runtime(
 
     // B11（2026-10-18 snooze）：暂停会话到期唤醒 sweeper（每 10s 扫 meta
     // sidecar；到期摘标记 + 注入恢复 system 行 + 事件广播）。
-    nemesis_web::handlers::sessions::spawn_snooze_sweeper();
-    info!("[Gateway] snooze sweeper started (10s interval)");
+    // L22（2026-11-03 snooze 排队）：装配重放 hook——摘标记后把 `.pending`
+    // sidecar 里的暂停期消息逐条注入该会话归属 loop。三臂解析与 web
+    // resolve_session_loop 同序（agents → projects → 主槽；直接取 bridge
+    // getter 免造 RequestContext）。注入走 loop 私有入站通道
+    // （inject_inbound）而非 bus.publish_inbound——bus 广播会 re-match
+    // workflow message-triggers（drain 重注入同纪律）。主槽臂每次调用
+    // agent_adapter.current() 现取——agent 重启后解析到最新 loop（捕获
+    // 一次性 Arc 会把重放注射进已关闭的旧通道，自愈链断裂）。
+    {
+        let agent_adapter_for_replay = Arc::clone(&agent_adapter);
+        nemesis_web::handlers::sessions::set_snooze_replay_hook(Some(std::sync::Arc::new(
+            move |session_key: &str| -> usize {
+                let loop_arc: Option<Arc<nemesis_agent::r#loop::AgentLoop>> =
+                    if let Some(agent_id) =
+                        nemesis_web::handlers::agents::agent_owner_of(session_key)
+                    {
+                        nemesis_web::handlers::agents::agents_bridge()
+                            .and_then(|b| b.loop_for_agent(&agent_id).ok())
+                    } else if let Some(b) = nemesis_web::handlers::projects::projects_bridge()
+                        && let Some(pid) = b.owner_of(session_key)
+                    {
+                        b.loop_for_session(&pid)
+                    } else {
+                        agent_adapter_for_replay.current()
+                    };
+                let Some(loop_arc) = loop_arc else {
+                    return 0; // 停机窗口：pending 落盘保留，sweeper 下轮重试
+                };
+                let msgs = nemesis_agent::chat_log::take_session_pending(session_key);
+                let mut delivered = 0usize;
+                for (i, m) in msgs.iter().enumerate() {
+                    if loop_arc.inject_inbound(m.clone()) {
+                        delivered += 1;
+                    } else {
+                        // 通道满/关闭（停机窗口）：余量写回 pending（不丢
+                        // 失），已投数返回——sweeper 下轮重试。
+                        for back in &msgs[i..] {
+                            if let Err(e) =
+                                nemesis_agent::chat_log::append_session_pending(session_key, back)
+                            {
+                                warn!("[sessions] snooze 重放余量写回失败（诚实降级）: {e}");
+                            }
+                        }
+                        break;
+                    }
+                }
+                delivered
+            },
+        )));
+        nemesis_web::handlers::sessions::spawn_snooze_sweeper();
+        info!("[Gateway] snooze sweeper started (10s interval, replay hook armed)");
+    }
 
     // Ctrl+C / SIGINT 优雅停机臂（2026-08-31 web-dead 停机事故教训）：
     // 此前 gateway 停机只有两条路——/api/internal（骑 web，web 任务一死即全断）

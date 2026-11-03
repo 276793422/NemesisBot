@@ -64,6 +64,7 @@ fn seed_rule(store: &BoardStore, name: &str, target: &str, enabled: bool) -> i64
             enabled,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .map_err(anyhow::Error::msg)
         .unwrap()
@@ -90,6 +91,7 @@ fn w_run_list_empty_then_create_then_list_nonempty() {
             project_id: None,
             target: String::new(),
             acceptance_criteria: "has summary".into(),
+            session_key: String::new(),
             disabled: false,
         },
         false,
@@ -124,6 +126,7 @@ fn w_run_create_rejects_invalid_cron() {
             project_id: None,
             target: String::new(),
             acceptance_criteria: String::new(),
+            session_key: String::new(),
             disabled: false,
         },
         false,
@@ -163,6 +166,7 @@ fn w_run_update_patches_fields_and_rejects_invalid_cron() {
             project_id: None,
             target: Some("node-b".into()),
             acceptance_criteria: None,
+            session_key: None,
         },
         false,
     )
@@ -185,6 +189,7 @@ fn w_run_update_patches_fields_and_rejects_invalid_cron() {
             project_id: None,
             target: None,
             acceptance_criteria: None,
+            session_key: None,
         },
         false,
     )

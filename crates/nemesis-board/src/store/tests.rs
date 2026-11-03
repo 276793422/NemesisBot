@@ -1759,6 +1759,7 @@ fn new_ap(name: &str) -> NewAutopilot {
         enabled: true,
         auto_plan: false,
         acceptance_criteria: None,
+        session_key: None,
     }
 }
 
@@ -2844,6 +2845,80 @@ fn test_autopilot_acceptance_criteria_roundtrip() {
         legacy.acceptance_criteria, None,
         "存量 JSON 缺键反序列化为 None（行为不变）"
     );
+}
+
+#[test]
+fn test_autopilot_session_key_roundtrip() {
+    // L23（三期 2026-11-03）：父会话绑定字段 create/update 全链
+    // round-trip + 空串归一 None + 存量 JSON 缺键反序列化 None。
+    let (store, dir) = temp_store("autopilot-session-key");
+
+    // create 带 → Some；不填（None）→ 读回 None（DB 存 ''）。
+    let mut n = new_ap("带绑定");
+    n.session_key = Some("agent:main:session:l23store".to_string());
+    let ap = store.create_autopilot(&n).unwrap();
+    assert_eq!(
+        ap.session_key.as_deref(),
+        Some("agent:main:session:l23store")
+    );
+    let ap_none = store.create_autopilot(&new_ap("无绑定")).unwrap();
+    assert_eq!(ap_none.session_key, None);
+
+    // update 覆盖 / 清空（Some("")）/ 不改（None）。
+    let ap = store
+        .update_autopilot(
+            ap.id,
+            &AutopilotPatch {
+                session_key: Some("k2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(ap.session_key.as_deref(), Some("k2"));
+    let cleared = store
+        .update_autopilot(
+            ap.id,
+            &AutopilotPatch {
+                session_key: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(cleared.session_key, None, "Some(\"\") = 清空");
+    let untouched = store
+        .update_autopilot(
+            cleared.id,
+            &AutopilotPatch {
+                name: Some("改名".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        untouched.session_key, None,
+        "patch None = 不改（保持清空态）"
+    );
+
+    // 跨连接持久化复核：重开同一 DB 读回（真相源在盘上）。
+    let db = dir.join("board.db");
+    drop(store);
+    let reopened = BoardStore::open(&db, "NB").unwrap();
+    let rules = reopened.list_autopilots().unwrap();
+    let bound = rules.iter().find(|a| a.id == cleared.id).unwrap();
+    assert_eq!(bound.session_key, None);
+    let other = rules.iter().find(|a| a.id == ap_none.id).unwrap();
+    assert_eq!(other.session_key, None);
+
+    // 存量 JSON（v21 前，无 session_key 键）→ 反序列化 None（行为不变）。
+    let legacy_json = r#"{"id":9,"name":"老规则","cron":"0 9 * * *","title":"t","priority":1,
+        "project_id":null,"target":"","enabled":true,"auto_plan":false,"cron_job_id":null,
+        "last_run_at":null,"created_at":0,"updated_at":0}"#;
+    let legacy: Autopilot = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(
+        legacy.session_key, None,
+        "存量 JSON 缺键反序列化为 None（行为不变）"
+    );
+    cleanup(&dir);
 }
 
 #[test]

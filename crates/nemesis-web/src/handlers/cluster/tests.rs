@@ -303,3 +303,93 @@ fn test_roaming_enabled_write_preserves_relay_siblings() {
     assert_eq!(v["enabled"], serde_json::json!(true));
     assert_eq!(v["token"], serde_json::json!("cluster-tok"));
 }
+
+// --- L16（2026-11-02 三期）：roaming.trust.* 互信 allowlist 管理面（表面契约） ---
+
+/// 测试身份：真实 ed25519 派生（管理面入参走 node_id_from_hex on-curve
+/// 校验——与生产同口径）。递增 seed：多次调用互异。
+fn valid_iroh_hex(seed: u64) -> String {
+    let mut s = [0u8; 32];
+    s[..8].copy_from_slice(&seed.to_le_bytes());
+    hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&s)
+            .verifying_key()
+            .as_bytes(),
+    )
+}
+
+/// 真「非曲线点」编码：随机 32 字节约 50% 过 on-curve（0xAA×32 实证通过），
+/// 固定魔数不可靠——运行时从计数器 seed 找一个 node_id_from_hex 明确拒绝
+/// 的形态（找不到 = 校验器本身坏了，测试自爆）。
+fn invalid_iroh_hex() -> String {
+    for seed in 1..1000u64 {
+        let mut s = [0u8; 32];
+        s[..8].copy_from_slice(&seed.to_le_bytes());
+        let candidate = hex::encode(s);
+        if nemesis_cluster::roaming::node_id_from_hex(&candidate).is_err() {
+            return candidate;
+        }
+    }
+    panic!("1000 个候选里找不到非曲线点编码——on-curve 校验器疑似失效");
+}
+
+#[test]
+fn test_roaming_trust_mutate_surface_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+
+    // 簿缺席快照：enabled=false 空列表（regime 未激活）。
+    let snap = roaming_trust_payload(Path::new(ws)).unwrap();
+    assert_eq!(snap["enabled"], serde_json::json!(false));
+    assert_eq!(snap["trusted"], serde_json::json!([]));
+    assert_eq!(snap["revoked"], serde_json::json!([]));
+
+    // add：首次写入即激活（文件出现）+ `iroh:` 前缀/大写归一入簿。
+    let a = valid_iroh_hex(1);
+    let p = roaming_trust_mutate_impl(ws, &format!("iroh:{}", a.to_uppercase()), TrustOp::Add)
+        .unwrap()
+        .unwrap();
+    assert_eq!(p["added"], serde_json::json!(a));
+    assert_eq!(p["trust"]["enabled"], serde_json::json!(true));
+    assert_eq!(p["trust"]["trusted"], serde_json::json!([a]));
+    let tp = nemesis_cluster::roaming::trust::trust_book_path(Path::new(ws));
+    assert!(tp.exists(), "首次写盘 = regime 激活唯一路径");
+
+    // revoke：从 trusted 移除 + revoked 入册留痕（响应双列表如实反映）。
+    let b = valid_iroh_hex(2);
+    roaming_trust_mutate_impl(ws, &b, TrustOp::Add)
+        .unwrap()
+        .unwrap();
+    let p = roaming_trust_mutate_impl(ws, &b, TrustOp::Revoke)
+        .unwrap()
+        .unwrap();
+    assert_eq!(p["revoked"], serde_json::json!(b));
+    assert_eq!(p["trust"]["trusted"], serde_json::json!([a]), "a 不受影响");
+    assert_eq!(p["trust"]["revoked"], serde_json::json!([b]));
+
+    // unrevoke：移出 revoked，不自动恢复 trusted（重信是显式 add）。
+    let p = roaming_trust_mutate_impl(ws, &b, TrustOp::Unrevoke)
+        .unwrap()
+        .unwrap();
+    assert_eq!(p["unrevoked"], serde_json::json!(b));
+    assert_eq!(p["trust"]["revoked"], serde_json::json!([]));
+    assert_eq!(p["trust"]["trusted"], serde_json::json!([a]));
+
+    // 幂等：重复 add 不产生重复条目。
+    roaming_trust_mutate_impl(ws, &a, TrustOp::Add)
+        .unwrap()
+        .unwrap();
+    let snap = roaming_trust_payload(Path::new(ws)).unwrap();
+    assert_eq!(snap["trusted"], serde_json::json!([a]));
+
+    // 垃圾 hex（非 hex 字符 / 非曲线点编码）loud 拒——管理面入簿条目影响
+    // 插件 accept 闸，垃圾条目 = 无声死区，必须在门口拦。
+    let err = roaming_trust_mutate_impl(ws, &invalid_iroh_hex(), TrustOp::Add)
+        .expect_err("非曲线点必须拒");
+    assert!(err.contains("node_id 非法"), "{err}");
+    let err = roaming_trust_mutate_impl(ws, "zz", TrustOp::Add).expect_err("非 hex 必须拒");
+    assert!(err.contains("node_id 非法"), "{err}");
+    // 拒绝路径不得落盘变更。
+    let snap = roaming_trust_payload(Path::new(ws)).unwrap();
+    assert_eq!(snap["trusted"], serde_json::json!([a]));
+}

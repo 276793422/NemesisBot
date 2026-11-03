@@ -594,6 +594,63 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             handler.set_rpc_client(client);
         }
 
+        // --- L13-b（2026-11-03 三期）：mandate 签名授权装配 ---
+        // 密钥 load-or-generate（损坏 = Err 拒绝，禁用签名不静默换钥）→
+        // A 端签名器注入 RpcClient（dispatch 咽喉逐单签）+ 运行时公钥覆盖
+        // announce 槽位；B 端前置闸 MandatePolicy 注入 PeerChatHandler
+        //（mode=off 时也显式装配——None 语义是 verify，必须显式 Off 才能关）。
+        // 任何失败只降级 + warn，不阻断 cluster 启动。
+        let mandate_ws = home.join("workspace");
+        let mandate_cfg = &cluster_app_cfg.mandate;
+        let mandate_key =
+            nemesis_cluster::roaming::mandate::load_or_generate_mandate_key(&mandate_ws);
+        match mandate_key {
+            Ok(kf) => {
+                // peers.toml [node].pubkey 与运行时密钥的 mismatch warn 在
+                // set_mandate_pubkey 内部（槽位现值 = Cluster::new 种入的
+                // 静态声明）。
+                cluster.set_mandate_pubkey(kf.public_key.clone());
+                if mandate_cfg.sign_enabled {
+                    match nemesis_cluster::roaming::mandate::MandateSigner::from_key_file(
+                        &kf,
+                        mandate_cfg.allowlist_or_unlimited(),
+                        mandate_cfg.window_secs,
+                        mandate_cfg.max_tokens,
+                        mandate_cfg.max_tool_calls,
+                    ) {
+                        Ok(signer) => {
+                            let signer = std::sync::Arc::new(signer);
+                            if let Some(client) = rpc_client.as_ref() {
+                                client.set_mandate_signer(signer.clone());
+                                info!(
+                                    "[Gateway] mandate 签名器就绪（key_fp={}，window={}s，allowlist={}）",
+                                    signer.key_fp,
+                                    mandate_cfg.window_secs,
+                                    match mandate_cfg.allowlist_or_unlimited() {
+                                        Some(list) => list.join(","),
+                                        None => "不限".to_string(),
+                                    }
+                                );
+                            }
+                        }
+                        Err(e) => warn!(
+                            "[Gateway] mandate 签名器构造失败（出站不签名，B 端 verify 对缺失放行）: {e}"
+                        ),
+                    }
+                }
+            }
+            Err(e) => warn!(
+                "[Gateway] mandate 密钥不可用（本节点不签名不宣告公钥；对端 verify 模式对缺失放行）: {e}"
+            ),
+        }
+        handler.set_mandate_policy(nemesis_cluster::roaming::mandate::MandatePolicy {
+            workspace: mandate_ws,
+            mode: mandate_cfg.resolve_mode(),
+        });
+        if mandate_cfg.resolve_mode() == nemesis_cluster::config_loader::MandateMode::Require {
+            info!("[Gateway] mandate B 端 posture=require（缺失 mandate 的旧节点任务将被拒绝）");
+        }
+
         // --- P3/D1-D5（看板项目档案 goal）：分块档案传输栈 ---
         // 收件 sink（inbox 落地 + D6 manifest 核验 + D4 master 护栏）与发件
         // outbox（worker 推送循环）。D4 护栏初值读 board.archive.max_transfer_bytes，

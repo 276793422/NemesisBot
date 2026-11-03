@@ -414,4 +414,36 @@ fn stream_interrupted_display_headline_prefix_and_tail_full_partial() {
         display.contains("connection reset by peer"),
         "根因链不丢（诚实化纪律）: {display:?}"
     );
+    // L29 契约：分隔符与 tc 标记常量出现在 Display（agent 侧解析器用同
+    // 常量解析——字面量与常量漂移在此钉死）。
+    assert!(
+        display.contains(super::STREAM_PARTIAL_SEPARATOR),
+        "partial 分隔符常量必须在 Display（跨 crate 解析契约）: {display:?}"
+    );
+    assert!(
+        headline.contains(super::STREAM_TOOL_CALLS_TRUNCATED_MARK),
+        "has_partial_tool_calls=true 头行必须带截断标记（L29 拼接续写判定面）: {headline:?}"
+    );
+}
+
+#[test]
+fn stream_interrupted_display_no_tool_calls_mark_when_false() {
+    // L29 契约另一半：has_partial_tool_calls=false 头行不带标记（可拼接续写）。
+    let e = FailoverError::StreamInterrupted {
+        provider: "openai".to_string(),
+        model: "gpt-5".to_string(),
+        reason: "channel closed".to_string(),
+        partial_content: "half text".to_string(),
+        has_partial_tool_calls: false,
+    };
+    let display = e.to_string();
+    let headline = display.lines().next().unwrap_or("");
+    assert!(
+        !headline.contains(super::STREAM_TOOL_CALLS_TRUNCATED_MARK),
+        "false 不得带标记: {headline:?}"
+    );
+    assert!(
+        display.contains(super::STREAM_PARTIAL_SEPARATOR),
+        "分隔符恒在: {display:?}"
+    );
 }

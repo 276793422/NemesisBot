@@ -71,6 +71,13 @@ pub struct NodeInfo {
     /// 解耦，同 tier 先例）；缺省 None = 未宣告（本批只宣告不做 matcher 闸）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
+    /// L13-a（2026-11-03 三期）：本节点 mandate 签名公钥（P-256 SEC1 hex，
+    /// 66/130 字符）。**手工声明**——announce 携带，对端 TOFU 首见钉存进
+    /// trust.toml `[mandate_keys]`（验签消费在 L13-b）。缺省 None = 未宣告
+    /// （announce 不带字段，wire 兼容）。L13-b 落地后真相源变为运行时
+    /// leaf key 派生，本声明降级为对账锚（同 iroh_id 与 roaming.key 分工）。
+    #[serde(default)]
+    pub pubkey: Option<String>,
 }
 
 impl Default for NodeInfo {
@@ -87,6 +94,7 @@ impl Default for NodeInfo {
             capabilities: Vec::new(),
             iroh_id: None,
             runtime_backend: None,
+            pubkey: None,
         }
     }
 }
@@ -350,6 +358,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             capabilities: Vec::new(),
             iroh_id: None,
             runtime_backend: None,
+            pubkey: None,
         },
     }
 }

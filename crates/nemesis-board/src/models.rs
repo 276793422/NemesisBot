@@ -596,6 +596,13 @@ pub struct Autopilot {
     /// 评审保持「验收标准（未提供）」保守转人工的既有语义。DB 列 v15 迁移。
     #[serde(default)]
     pub acceptance_criteria: Option<String>,
+    /// 三期 L23（2026-11-03）：可选绑定发起 session_key（父会话）。绑定的
+    /// 规则触发时先验父会话存活（jsonl 在档且非空）：存活 = 建单继承父会话
+    /// 近段上下文（description 注入）+ 单据可溯源父会话；消失（清空/删除）
+    /// = 规则自动暂停 + 留痕评论，不孤儿运行。None = 未绑定 = 现行行为
+    /// 零变化。DB 列 v21 迁移（空串归一 None）。
+    #[serde(default)]
+    pub session_key: Option<String>,
     pub enabled: bool,
     /// live CronService 对应 job 的 id（`board-ap:{id}` 名字约定）。
     /// CronService 不支持指定 job id（add_job_ext 返回随机 id），只能注册
@@ -624,6 +631,8 @@ pub struct NewAutopilot {
     pub auto_plan: bool,
     /// UAT U5 F-U5-1：验收标准（建单透传，同 [`Autopilot::acceptance_criteria`]）。
     pub acceptance_criteria: Option<String>,
+    /// 三期 L23：父会话绑定（同 [`Autopilot::session_key`]）。None = 不绑定。
+    pub session_key: Option<String>,
 }
 
 /// 部分更新 autopilot 字段的 patch（None = 不改；cron_job_id/last_run_at
@@ -643,6 +652,9 @@ pub struct AutopilotPatch {
     /// UAT U5 F-U5-1：`Some(v)` = 改验收标准（`Some("")` = 清空，语义同
     /// 不填；None = 不改）。
     pub acceptance_criteria: Option<String>,
+    /// 三期 L23：`Some(v)` = 改父会话绑定（`Some("")` = 清空绑定；None =
+    /// 不改）。
+    pub session_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

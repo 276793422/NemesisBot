@@ -411,6 +411,13 @@ async fn execute_new_task(
         return Ok(());
     }
 
+    // L13-b：mandate 执行面守卫装配（B 端前置闸验签产物随任务投影；任务无
+    // mandate = 不装配 = 旧行为）。set/take 对称——run 结束摘除，违规记录
+    // 随回调 response 追加块交回 master。
+    if let Some(mandate) = task.mandate.as_ref() {
+        agent_loop.set_mandate_guard(mandate.clone(), &task.source.session_key);
+    }
+
     // Restore history from SessionStore (same pattern as main AgentLoop).
     // Without this, every peer_chat starts with empty context, so "give me the
     // code from last time" can't be answered — Alex would have no memory of
@@ -464,6 +471,10 @@ async fn execute_new_task(
     // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用
     // 这一份记录；只有 success 臂的交付捕获真正消费，其余臂诚实丢弃）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
+    // L13-b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加进
+    // response。cancel 臂不带——控制面回执不是工作交付；async 臂不带——
+    // 任务未终局，续行腿重新装配守卫时重新计数）。
+    let mandate_guard = agent_loop.take_mandate_guard();
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
@@ -569,7 +580,7 @@ async fn execute_new_task(
     // 交付评审后盲重派（同节点重放同一任务大概率复现同一循环）。
     let error_text = terminal_error(&events);
     let escalation_stop = error_text.is_none() && result.contains(ESCALATION_MARKER);
-    let status = if escalation_stop {
+    let mut status = if escalation_stop {
         (result.clone(), "error")
     } else {
         match (&error_text, result.trim().is_empty()) {
@@ -581,6 +592,17 @@ async fn execute_new_task(
             (None, false) => (String::new(), "success"),
         }
     };
+    // L13-b：违规记录块追加（success/error 都带——master 评审/审计可见；
+    // classify 按 Error 事件文本**前缀**识别 fail_class，尾部追加不影响）。
+    if let Some(g) = mandate_guard.as_ref()
+        && let Some(report) = g.violation_report()
+    {
+        if status.1 == "error" {
+            status.0.push_str(&report);
+        } else {
+            result.push_str(&report);
+        }
+    }
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
@@ -663,6 +685,13 @@ async fn resume_task(
         .ok_or("No callback_result")?;
     instance.replace_tool_result(tool_call_id, callback_result);
 
+    // L13-b：mandate 守卫续行腿重新装配（授权面不变；token 基线/调用计数
+    // 按本腿重新快照——多跳任务的每腿预算口径是「本腿 delta」，终局时限
+    // expires_at 仍全局约束）。
+    if let Some(mandate) = task.mandate.as_ref() {
+        agent_loop.set_mandate_guard(mandate.clone(), &task.source.session_key);
+    }
+
     let context = build_context(agent_loop, task);
     let trace_id = format!("cluster-resume-{}", &task.task_id);
 
@@ -696,6 +725,8 @@ async fn resume_task(
         .await;
     // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
+    // L13-b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加）。
+    let mandate_guard = agent_loop.take_mandate_guard();
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
@@ -795,7 +826,7 @@ async fn resume_task(
     // 停止告知不是工作交付（详见 execute_new_task 同段注释）。
     let error_text = terminal_error(&events);
     let escalation_stop = error_text.is_none() && result.contains(ESCALATION_MARKER);
-    let status = if escalation_stop {
+    let mut status = if escalation_stop {
         (result.clone(), "error")
     } else {
         match (&error_text, result.trim().is_empty()) {
@@ -807,6 +838,17 @@ async fn resume_task(
             (None, false) => (String::new(), "success"),
         }
     };
+    // L13-b：违规记录块追加（同 execute_new_task；续行腿的记录在此追加——
+    // 首跳 async 臂的记录诚实丢弃，见 execute_new_task 摘槽注释）。
+    if let Some(g) = mandate_guard.as_ref()
+        && let Some(report) = g.violation_report()
+    {
+        if status.1 == "error" {
+            status.0.push_str(&report);
+        } else {
+            result.push_str(&report);
+        }
+    }
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
@@ -1478,6 +1520,10 @@ async fn deliver_files_back(
 ///   loop 硬停与入口拒接两类文案同前缀
 ///   [`nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER`]；master
 ///   board_review 识别后转人工不重派
+/// - `mandate_violation`（L13-b，2026-11-03 三期）：mandate 执行面守卫
+///   终局（时限/token 预算/调用次数超限，稳定前缀
+///   [`nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER`]）——授权
+///   状态不变时重放大概率复现，board_review 按能力类失败处理
 /// - `exec_failed`：其它失败（兜底）。success 回调返回 None（不落字段）。
 fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Option<&'static str> {
     if status != "error" {
@@ -1490,6 +1536,8 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
         Some("escalation")
     } else if text.starts_with(nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER) {
         Some("token_budget")
+    } else if text.starts_with(nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER) {
+        Some("mandate_violation")
     } else if text.starts_with("worker 返回空结果") {
         Some("empty_result")
     } else if text.starts_with("Error:") {

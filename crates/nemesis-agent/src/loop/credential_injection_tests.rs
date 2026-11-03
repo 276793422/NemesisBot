@@ -15,11 +15,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// 本文件专用 mock provider（s9_tests 同款：测试文件自包含）。
-struct MockLlmProvider {
+/// pub(super)：L26② 域绑定测试（credential_domain_tests）复用。
+pub(super) struct MockLlmProvider {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
 }
 impl MockLlmProvider {
-    fn new(responses: Vec<LlmResponse>) -> Self {
+    pub(super) fn new(responses: Vec<LlmResponse>) -> Self {
         Self {
             responses: std::sync::Mutex::new(responses),
         }
@@ -53,7 +54,7 @@ impl LlmProvider for MockLlmProvider {
     }
 }
 
-fn test_config() -> AgentConfig {
+pub(super) fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
@@ -105,7 +106,7 @@ impl Tool for SlotTool {
 }
 
 /// 全局解析器槽位是进程单例——触及它的测试互斥。
-static VAULT_SLOT_LOCK: PlMutex<()> = PlMutex::new(());
+pub(super) static VAULT_SLOT_LOCK: PlMutex<()> = PlMutex::new(());
 
 /// 槽位 vault: 引用改写为真值；非槽位字段不动。
 #[test]
@@ -268,7 +269,7 @@ impl Tool for CapturingCredTool {
 const SECRET: &str = "REAL-SECRET-VALUE-DO-NOT-LOG";
 const ALIAS_REF: &str = "vault:leak-test-alias";
 
-fn tool_call_response(name: &str, args: &str) -> LlmResponse {
+pub(super) fn tool_call_response(name: &str, args: &str) -> LlmResponse {
     LlmResponse {
         finish_reason: None,
         escalated_to: None,

@@ -157,6 +157,21 @@ impl AgentLoop {
         *self.reinject_tx.write() = Some(tx);
     }
 
+    /// L22（2026-11-03 snooze 排队）：暂停期消息恢复后的重注入入口——
+    /// gateway 的 snooze replay hook 把 `take_session_pending` 取出的消息
+    /// 逐条塞回本 loop 的入站通道，与 drain 重注入同纪律：走私有通道而
+    /// 非 bus.publish_inbound（bus 广播会 re-match workflow message-triggers，
+    /// 二次触发）。重放消息与新消息同权过完整 gate（暂停标记已摘，不再
+    /// 享受排队豁免；busy 闸照常）。未接线（standalone）或通道已满/关闭
+    /// = `false`（调用方把余量写回 pending，sweeper 下轮重试——自愈不丢失）。
+    pub fn inject_inbound(&self, msg: nemesis_types::channel::InboundMessage) -> bool {
+        let tx = self.reinject_tx.read().clone();
+        match tx {
+            Some(tx) => tx.try_send(msg).is_ok(),
+            None => false,
+        }
+    }
+
     /// Stash the memory tool executor so the gateway can later attach an approval
     /// gate via `set_memory_approval_gate`. Called by the factory after building
     /// the shared tool config.

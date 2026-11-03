@@ -1076,3 +1076,144 @@ async fn test_arbitration_probe_shares_bridge_path() {
     );
     assert_eq!(bridge_calls.load(Ordering::SeqCst), 1);
 }
+
+// ---------------------------------------------------------------------------
+// L13-b：mandate 签名注入 step 0（[`RpcClient::inject_mandate_if_needed`]，
+// 免网络直测 dispatch 咽喉判定——注入/不注入/绑定/兼容语义）
+// ---------------------------------------------------------------------------
+
+/// 生成一对 mandate 密钥（KeyFile 形态）。
+fn make_mandate_key(tag: &str) -> crate::roaming::mandate::MandateKeyFile {
+    use crate::roaming::mandate::{MandateKeyFile, public_key_bytes};
+    let sk = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+    MandateKeyFile {
+        private_key: hex::encode(sk.to_bytes().as_slice()),
+        public_key: hex::encode(public_key_bytes(sk.verifying_key())),
+        created_at: format!("test-{tag}"),
+    }
+}
+
+/// 带 mandate 签名器的客户端（allowlist=exec 精确名单，600s 窗）。
+fn client_with_signer(kf: &crate::roaming::mandate::MandateKeyFile) -> RpcClient {
+    use crate::roaming::mandate::MandateSigner;
+    let client = RpcClient::new();
+    let signer =
+        MandateSigner::from_key_file(kf, Some(vec!["exec".into()]), 600, 5000, 10).unwrap();
+    client.set_mandate_signer(std::sync::Arc::new(signer));
+    client
+}
+
+fn peer_chat_request(payload: serde_json::Value) -> RPCRequest {
+    use crate::rpc_types::{ActionType, KnownAction};
+    RPCRequest {
+        id: "req-1".into(),
+        action: ActionType::Known(KnownAction::PeerChat),
+        payload,
+        source: "node-a".into(),
+        target: Some("node-b".into()),
+    }
+}
+
+#[test]
+fn test_mandate_injection_peer_chat_with_signer() {
+    use crate::roaming::mandate::parse_envelope;
+    let kf = make_mandate_key("inject");
+    let client = client_with_signer(&kf);
+    let mut request = peer_chat_request(serde_json::json!({
+        "content": "do work",
+        "task_id": "t-9",
+    }));
+    client.inject_mandate_if_needed(&mut request);
+
+    let mandate = request
+        .payload
+        .get("mandate")
+        .expect("peer_chat + 签名器在场必须注入 mandate");
+    let env = parse_envelope(mandate).expect("注入产物必须可解析");
+    assert_eq!(env.body.task_id, "t-9", "task_id 绑定取 payload 值");
+    assert_eq!(env.body.tool_allowlist, Some(vec!["exec".into()]));
+    // 自验闭环：pin 公钥 → verify_mandate_full 全链通过
+    let ws = tempfile::tempdir().unwrap().keep();
+    crate::roaming::trust::mandate_pin_forced(&ws, "node-a", &kf.public_key).unwrap();
+    let now = crate::roaming::mandate::now_unix();
+    let verified = crate::roaming::mandate::verify_mandate_full(&ws, "node-a", mandate, "t-9", now);
+    assert!(verified.is_ok(), "注入 mandate 必须能按钉存钥全链验证");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn test_mandate_injection_falls_back_to_request_id() {
+    use crate::roaming::mandate::parse_envelope;
+    let kf = make_mandate_key("fallback");
+    let client = client_with_signer(&kf);
+    // payload 无 task_id（老节点/旧路径形态）→ 绑定回落 request.id
+    let mut request = peer_chat_request(serde_json::json!({"content": "do work"}));
+    client.inject_mandate_if_needed(&mut request);
+    let env = parse_envelope(request.payload.get("mandate").unwrap()).unwrap();
+    assert_eq!(env.body.task_id, "req-1", "task_id 缺席回落 request.id");
+}
+
+#[test]
+fn test_mandate_not_injected_for_non_peer_chat() {
+    let kf = make_mandate_key("nonpeer");
+    let client = client_with_signer(&kf);
+    // ping / 回调 / 结果查询不签——只有 PeerChat 是任务投递面
+    for action in [
+        crate::rpc_types::ActionType::Known(crate::rpc_types::KnownAction::Ping),
+        crate::rpc_types::ActionType::Known(crate::rpc_types::KnownAction::PeerChatCallback),
+        crate::rpc_types::ActionType::Known(crate::rpc_types::KnownAction::Status),
+    ] {
+        let mut request = RPCRequest {
+            id: "req-2".into(),
+            action,
+            payload: serde_json::json!({"task_id": "t-1"}),
+            source: "node-a".into(),
+            target: Some("node-b".into()),
+        };
+        client.inject_mandate_if_needed(&mut request);
+        assert!(
+            request.payload.get("mandate").is_none(),
+            "{} 不应注入 mandate",
+            request.action
+        );
+    }
+}
+
+#[test]
+fn test_mandate_not_injected_without_signer() {
+    // 签名器缺席（sign_enabled=false / 密钥不可用）→ payload 与旧版逐字节一致
+    let client = RpcClient::new();
+    let mut request = peer_chat_request(serde_json::json!({"content": "x", "task_id": "t-1"}));
+    let before = serde_json::to_string(&request.payload).unwrap();
+    client.inject_mandate_if_needed(&mut request);
+    assert!(request.payload.get("mandate").is_none());
+    assert_eq!(
+        serde_json::to_string(&request.payload).unwrap(),
+        before,
+        "缺席路径 payload 零改动（开关即回滚语义）"
+    );
+}
+
+#[test]
+fn test_mandate_injection_non_object_payload_no_panic() {
+    // payload 非 JSON 对象（畸形形态）→ 不炸不注入（诚实 warn 放行）
+    let kf = make_mandate_key("nonobj");
+    let client = client_with_signer(&kf);
+    let mut request = peer_chat_request(serde_json::json!(["not", "an", "object"]));
+    client.inject_mandate_if_needed(&mut request);
+    assert!(request.payload.get("mandate").is_none());
+}
+
+#[test]
+fn test_mandate_signer_state_surface() {
+    // 状态查询面（WSAPI runtime.status mandate 段的数据源）
+    let client = RpcClient::new();
+    assert!(client.mandate_signer_state().is_none(), "缺省无签名器");
+    let kf = make_mandate_key("state");
+    let signer =
+        crate::roaming::mandate::MandateSigner::from_key_file(&kf, None, 600, 0, 0).unwrap();
+    client.set_mandate_signer(std::sync::Arc::new(signer));
+    let (pubkey, key_fp) = client.mandate_signer_state().unwrap();
+    assert_eq!(pubkey, kf.public_key);
+    assert_eq!(key_fp.len(), 64);
+}

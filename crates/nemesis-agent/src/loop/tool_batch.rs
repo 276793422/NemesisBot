@@ -862,7 +862,13 @@ impl AgentLoop {
                                 "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
                                 tc.name, tc.id, class, message
                             );
-                            format!("Tool error: {}", message)
+                            // L10-建设：回灌单一真相源（与并行预计算臂同源——
+                            // 惰性供给时附 tools_schema_get 取回指引）。
+                            super::tool_defs::validation_error_feedback(
+                                &message,
+                                self.current_lazy_tool_schema(),
+                                &tc.name,
+                            )
                         }
                     },
                 };

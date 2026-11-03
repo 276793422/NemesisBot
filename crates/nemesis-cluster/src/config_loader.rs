@@ -105,10 +105,101 @@ pub struct AppConfig {
     /// 缺省 on——契约是质量底线不是可选项；关掉 = 回退纯人格提示词。
     #[serde(default = "default_worker_discipline")]
     pub worker_discipline: bool,
+    /// L13-b（2026-11-03 三期）：mandate 签名授权段。全部键可缺省（serde
+    /// default）——旧 config.cluster.json 零迁移；默认形态 = A 端签名开 +
+    /// B 端 verify（mandate 缺失放行 = 旧行为，旧节点兼容）。
+    #[serde(default)]
+    pub mandate: MandateConfig,
 }
 
 fn default_worker_discipline() -> bool {
     true
+}
+
+/// L13-b：mandate 签名授权配置（config.cluster.json `[mandate]` 段；JSON
+/// 嵌套对象）。模式词表单一真相源 [`MandateConfig::mode`] doc。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MandateConfig {
+    /// B 端 posture：`off`（忽略 mandate）/ `verify`（在场即验，缺失放行
+    /// = 旧行为）/ `require`（缺失也拒 = 严格 opt-in，防剥离攻击，代价 =
+    /// 断旧 A）。缺省 verify。未知值按 verify 处理 + WARN（装配期）。
+    #[serde(default = "default_mandate_mode")]
+    pub mode: String,
+    /// A 端：出站 peer_chat 附签名 mandate。缺省 true；密钥不可用时禁用
+    /// 签名 + warn（fail-open 到兼容态，不崩 gateway）。
+    #[serde(default = "default_mandate_sign_enabled")]
+    pub sign_enabled: bool,
+    /// A 端授权面：空数组 = 不限（None 语义）；显式列名 = 白名单（v1 精确
+    /// 匹配无通配符）。缺省空 = 不限。
+    #[serde(default)]
+    pub tool_allowlist: Vec<String>,
+    /// mandate 时间窗（秒）：expires_at = signed_at + window_secs。缺省
+    /// 7200（2 小时）。
+    #[serde(default = "default_mandate_window_secs")]
+    pub window_secs: u64,
+    /// A 端 token 预算（0 = 不限，缺省）。
+    #[serde(default)]
+    pub max_tokens: u64,
+    /// A 端工具调用次数预算（0 = 不限，缺省）。
+    #[serde(default)]
+    pub max_tool_calls: u64,
+}
+
+fn default_mandate_mode() -> String {
+    "verify".into()
+}
+
+fn default_mandate_sign_enabled() -> bool {
+    true
+}
+
+fn default_mandate_window_secs() -> u64 {
+    7200
+}
+
+impl Default for MandateConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_mandate_mode(),
+            sign_enabled: default_mandate_sign_enabled(),
+            tool_allowlist: Vec::new(),
+            window_secs: default_mandate_window_secs(),
+            max_tokens: 0,
+            max_tool_calls: 0,
+        }
+    }
+}
+
+impl MandateConfig {
+    /// mode 词表解析（单一真相源）：off/verify/require；未知值 = verify
+    /// （保守缺省 + 调用方 WARN）。
+    pub fn resolve_mode(&self) -> MandateMode {
+        match self.mode.trim().to_lowercase().as_str() {
+            "off" => MandateMode::Off,
+            "require" => MandateMode::Require,
+            _ => MandateMode::Verify,
+        }
+    }
+
+    /// A 端授权面投影：空数组 = 不限（None）。
+    pub fn allowlist_or_unlimited(&self) -> Option<Vec<String>> {
+        if self.tool_allowlist.is_empty() {
+            None
+        } else {
+            Some(self.tool_allowlist.clone())
+        }
+    }
+}
+
+/// B 端 mandate posture（`MandateConfig::resolve_mode` 产物）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MandateMode {
+    /// 忽略 mandate（不验不拒——回滚开关）。
+    Off,
+    /// 在场即验，缺失放行（默认；旧行为兼容）。
+    Verify,
+    /// 缺失也拒（严格 opt-in；防剥离攻击）。
+    Require,
 }
 
 impl Default for AppConfig {
@@ -125,6 +216,7 @@ impl Default for AppConfig {
             token: String::new(),
             node_name: String::new(),
             worker_discipline: default_worker_discipline(),
+            mandate: MandateConfig::default(),
         }
     }
 }

@@ -27,6 +27,7 @@ use tracing::{debug, info};
 
 use crate::background_registry::{
     BackgroundKillTool, BackgroundOutputTool, BackgroundProcessRegistry, BackgroundStartTool,
+    BackgroundSteerTool,
 };
 use crate::context::RequestContext;
 use crate::r#loop::{FileChange, FileChangeKind, McpToolSnapshotEntry, OperationOverride, Tool};
@@ -8134,6 +8135,42 @@ impl Tool for McpCallTool {
     }
 }
 
+/// L10-建设（改进项三期 2026-11-02）：惰性 schema 供给的取回工具——
+/// 两级化供给下工具 defs 只带 name+description（参数折叠为占位），模型
+/// 按需以 `{"name": "<tool>"}` 取回完整 schema（取回过的名字进 per-session
+/// 解锁账，后续轮次以「已解锁 schema 注记」持续携带）。
+///
+/// **执行走 dispatch 拦截，不走本 execute**：tool_dispatch 在闸门瀑布入口
+/// 查 registry 渲染真实 schema 并记账（未知名/hidden/tier 不可见=诚实
+/// 报错）。本 execute 只在绕过 loop 分发的直调场景触达（诚实报错的
+/// 安全网，正常流程死代码）——与 McpCallTool 同形态。
+pub struct ToolsSchemaGetTool;
+
+#[async_trait]
+impl Tool for ToolsSchemaGetTool {
+    fn description(&self) -> String {
+        "Get the full parameter schema of a registered tool by name (lazy-supply meta tool). In lazy-supply mode tool definitions carry only name+description; call this with {\"name\": \"<tool name>\"} to retrieve a tool's complete schema before calling it. Hidden or tier-filtered tools cannot be fetched."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Registered tool name whose full schema should be retrieved."
+                }
+            },
+            "required": ["name"]
+        })
+    }
+
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Err("tools_schema_get is dispatched by the agent loop (renders the real schema from the registry); direct invocation is not supported. Use the normal tool-call path.".to_string())
+    }
+}
+
 /// Extended tool registration configuration.
 ///
 /// Mirrors Go's `registerSharedTools` parameters, bundling all the
@@ -8242,7 +8279,8 @@ pub struct SharedToolConfig {
     pub todo: Option<TodoToolConfig>,
     /// B4（2026-09-05）：后台进程注册表（gateway 级单例，跨 agent 重启
     /// 存活；Drop 时给残余任务发 kill 旗标）。Some 时注册
-    /// background_start / background_output / background_kill 三件套。
+    /// background_start / background_output / background_kill /
+    /// background_steer 四动词（steer 为 L11 2026-11-03 扩展）。
     /// None = 不注册（exec_worker 子进程——per-call 生命周期里起后台任务
     /// 必然孤儿，见 remote_executor_tool.rs 的 exec_async 注记；以及
     /// register_default_tools 基线/测试形态）。
@@ -8660,6 +8698,10 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             "background_kill".to_string(),
             Box::new(BackgroundKillTool::new(Arc::clone(registry))),
         );
+        tools.insert(
+            "background_steer".to_string(),
+            Box::new(BackgroundSteerTool::new(Arc::clone(registry))),
+        );
     }
 
     // Cron tool (mirrors Go's CronTool).
@@ -8821,6 +8863,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // W7：惰性供给 meta 工具（供给闸在 build_tool_defs，dispatch 拦截解包；
     // lazy off 时供给面不出现——注册恒在，行为零变化由双闸保证）。
     tools.insert("mcp_call".to_string(), Box::new(McpCallTool));
+    // L10-建设：惰性 schema 供给取回工具（同上形态——注册恒在，供给闸钉死
+    // 在 schema_lazy 旗标，dispatch 拦截渲染 registry 真实 schema 并记账）。
+    tools.insert("tools_schema_get".to_string(), Box::new(ToolsSchemaGetTool));
 
     // Workflow tools — lets the agent trigger registered workflows, and
     // (对话生成) save AI-generated definitions as drafts / query capabilities.

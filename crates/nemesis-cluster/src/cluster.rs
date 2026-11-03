@@ -154,6 +154,11 @@ pub struct Cluster {
     /// [`Cluster::set_build_hash`] 注入——编译期常量 `NEMESISBOT_GIT_COMMIT`
     /// 住在 nemesisbot，cluster crate 不重复抽 git。空 = 未宣告。
     build_hash: parking_lot::RwLock<String>,
+    /// L13-a（2026-11-03 三期）：本节点 mandate 签名公钥（P-256 SEC1 hex；
+    /// announce 携带，对端 TOFU 钉存）。构造期从 peers.toml `[node].pubkey`
+    /// 静态种入（同 tier/professions 先例）；L13-b 落地运行时 key 源后由
+    /// key 派生接管。None = 未宣告（announce 不带字段）。
+    mandate_pubkey: parking_lot::RwLock<Option<String>>,
     /// Arc 自根槽（弱引用；gateway 装配在 `Arc::new(cluster)` 后经
     /// [`Cluster::install_self_weak`] 安装一次）。RPC handler 闭包与后台
     /// 循环经它活读自身身份——构造期只有 `&self`（无 Arc），安装先后无关
@@ -288,6 +293,7 @@ impl Cluster {
             rendezvous_status: parking_lot::RwLock::new(None),
             rendezvous_params: parking_lot::RwLock::new(None),
             build_hash: parking_lot::RwLock::new(String::new()),
+            mandate_pubkey: parking_lot::RwLock::new(None),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
@@ -418,6 +424,23 @@ impl Cluster {
             .as_ref()
             .map(|s| s.node.capabilities.clone())
             .unwrap_or_default();
+        // L13-a（2026-11-03 三期）：`[node].pubkey` mandate 签名公钥种入。
+        // 归一（trim/小写）+ 形态校验——非法形态 warn 一次且不进 announce
+        // （分发面只放合法形态；错钥在 L13-b 验签时自然 loud 失败）。
+        let mandate_pubkey_default = sc
+            .as_ref()
+            .and_then(|s| s.node.pubkey.as_deref())
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| match crate::roaming::trust::normalize_mandate_pubkey(s) {
+                Some(k) => Some(k),
+                None => {
+                    tracing::warn!(
+                        pubkey = %s,
+                        "[Cluster] peers.toml [node].pubkey 形态非法（期待 P-256 SEC1 hex 66/130）——本节点不宣告 mandate 公钥"
+                    );
+                    None
+                }
+            });
 
         // P1 统一任务层：生产路径任务真相源换 tasks.db（SQLite）——内存态根除，
         // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
@@ -456,6 +479,7 @@ impl Cluster {
             professions: parking_lot::RwLock::new(professions_default),
             tier: parking_lot::RwLock::new(tier_default),
             runtime_backend: parking_lot::RwLock::new(runtime_backend_default),
+            mandate_pubkey: parking_lot::RwLock::new(mandate_pubkey_default),
             agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             static_capabilities: parking_lot::RwLock::new(static_caps_default),
@@ -1141,9 +1165,14 @@ impl Cluster {
         }
 
         // 出站：RPC client dial 分派按 `iroh:` 前缀走桥拨号（插件 loopback
-        // 交接；测试可注入 LocalDialer 同 trait）。
+        // 交接；测试可注入 LocalDialer 同 trait）。L16：包一层 TrustGateDialer
+        // 吊销 veto（簿缺席 = 未启用透传字节不变；revoked 诚实 Err，调用方
+        // ⛔ 重试语义照常）。
         if let Some(client) = self.rpc_client.lock().clone() {
-            client.set_roaming_dialer(Arc::new(crate::roaming::plugin_bridge::BridgeDialer));
+            client.set_roaming_dialer(Arc::new(crate::roaming::plugin_bridge::TrustGateDialer {
+                workspace: self.workspace.clone(),
+                inner: crate::roaming::plugin_bridge::BridgeDialer,
+            }));
         }
 
         // announce 携带本节点 iroh 身份（下一拍广播生效；对端入池拨号候选）。
@@ -1360,6 +1389,7 @@ impl Cluster {
                 m.tier.clone(),
                 Vec::new(),
                 Some(m.iroh_id.clone()),
+                None,
                 None,
                 None,
                 &m.build,
@@ -1882,7 +1912,8 @@ impl Cluster {
             Vec::new(),
             None,
             Vec::new(),
-            // 旧 9 参回调无 runtime_backend → None = 未宣告（诚实，不猜）。
+            // 旧 9 参回调无扩展身份字段 → None = 未宣告（诚实，不猜）。
+            None,
             None,
             None,
             None,
@@ -1903,6 +1934,10 @@ impl Cluster {
     /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；hex 校验合法且 feature
     /// 编译时才入池——拼 `iroh:<hex>` 作拨号候选，池尾追加不抢直连优先级；
     /// 非法值/未编译 = 忽略，debug 留痕）。
+    ///
+    /// `mandate_pubkey`：对端自报 mandate 签名公钥（L13-a；P-256 SEC1 hex
+    /// 66/130。合法形态且 trust.toml 已激活时 TOFU 首见钉存进
+    /// `[mandate_keys]`——验签消费在 L13-b；无 key 旧节点维持现行行为）。
     #[allow(clippy::too_many_arguments)]
     pub fn handle_discovered_node_ex(
         &self,
@@ -1920,6 +1955,7 @@ impl Cluster {
         agents: Vec<crate::types::AgentAnnouncement>,
         iroh_id: Option<String>,
         runtime_backend: Option<String>,
+        mandate_pubkey: Option<String>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -1938,6 +1974,7 @@ impl Cluster {
             agents,
             iroh_id,
             runtime_backend,
+            mandate_pubkey,
             source_addr,
             build,
         )
@@ -1960,6 +1997,7 @@ impl Cluster {
         agents: Vec<crate::types::AgentAnnouncement>,
         iroh_id: Option<String>,
         runtime_backend: Option<String>,
+        mandate_pubkey: Option<String>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -1978,6 +2016,56 @@ impl Cluster {
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
             return false;
+        }
+
+        // L16（2026-11-02 三期）：iroh 互信 announce 采信闸——revoked 一票
+        // 不采信（整条拒绝：身份/地址池含 iroh 候选全不采，last_seen 不刷新
+        // → registry 自然 stale → Offline → 派发回避），unknown TOFU 首见钉
+        // 存，簿缺席 = regime 未激活全放行（字节级现状，绝不因 announce 建
+        // trust.toml）。携合法 iroh hex 才触发（valid_iroh_id on-curve 校验
+        // 同款）：无 key 旧节点维持现行行为。
+        if let Some(hex) = Self::valid_iroh_id(iroh_id.clone())
+            && crate::roaming::trust::trust_book_path(&self.workspace).exists()
+        {
+            match crate::roaming::trust::announce_gate(&self.workspace, &hex) {
+                crate::roaming::trust::AnnounceVerdict::Adopt => {}
+                crate::roaming::trust::AnnounceVerdict::Veto(reason) => {
+                    tracing::warn!(
+                        "[Cluster] announce 来自已吊销节点（{reason}），整条不采信: {node_id} iroh:{hex}"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // L13-a（2026-11-03 三期）：mandate 签名公钥 TOFU 首见钉存。合法
+        // P-256 SEC1 hex 且 trust.toml 已激活（簿存在）才写簿——announce
+        // 抵达绝不激活 trust.toml（L16 纪律镜像），无 key 旧节点维持现行
+        // 行为。验签消费在 L13-b；此处只管分发面钉存。Conflict 保留首见
+        // （strict TOFU，轮换唯一通道 = 管理面 mandate_pin_forced）；读/
+        // 写失败 warn 不拒 announce（分发面 fail-open，自愈重钉）。
+        if let Some(pk) = mandate_pubkey.as_deref()
+            && crate::roaming::trust::normalize_mandate_pubkey(pk).is_some()
+            && crate::roaming::trust::trust_book_path(&self.workspace).exists()
+        {
+            match crate::roaming::trust::mandate_tofu_pin(&self.workspace, node_id, pk) {
+                Ok(outcome) => match outcome {
+                    crate::roaming::trust::MandatePinOutcome::Pinned => {
+                        tracing::info!("[Cluster] mandate 公钥 TOFU 首见钉存: {node_id}");
+                    }
+                    crate::roaming::trust::MandatePinOutcome::Conflict { .. } => {
+                        tracing::warn!(
+                            "[Cluster] mandate 公钥与既有 pin 冲突，保留首见（轮换走管理面 mandate-pin-forced）: {node_id}"
+                        );
+                    }
+                    _ => {}
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "[Cluster] mandate 公钥钉存失败（不拒 announce）: {node_id}: {e}"
+                    );
+                }
+            }
         }
 
         // 批次四：撞名后缀收敛（goal 钉死，确定性规则无需协商协议）。
@@ -3606,6 +3694,29 @@ impl Cluster {
         self.sync_local_node_to_registry();
     }
 
+    /// L13-b（2026-11-03 三期）：运行时 mandate 签名公钥覆盖静态声明。
+    ///
+    /// gateway 装配期 load-or-generate 出节点 mandate 密钥后调用——announce
+    /// wire 从此携带运行时真实公钥（peers.toml `[node].pubkey` 只是降级对账
+    /// 锚；密钥文件缺失/损坏时本方法不被调用，维持静态声明或 None）。与
+    /// `set_node_name` 同族：RwLock 原子换值，不触发 registry 同步（announce
+    /// 周期广播自然携带）。
+    pub fn set_mandate_pubkey(&self, pubkey_hex: impl Into<String>) {
+        let new = pubkey_hex.into();
+        // 静态声明降级对账（同 iroh_id 先例）：槽位现值 = Cluster::new 从
+        // peers.toml `[node].pubkey` 种入的声明值；与运行时密钥不一致 =
+        // 声明过期/手改残留，以运行时为准 + warn（announce 载荷自此携带
+        // 运行时真实公钥，对端 TOFU 钉存不受声明漂移影响）。
+        if let Some(declared) = self.mandate_pubkey.read().as_ref()
+            && declared.to_lowercase() != new.to_lowercase()
+        {
+            tracing::warn!(
+                "[Cluster] peers.toml [node].pubkey 与运行时 mandate 密钥不一致（声明过期或手改残留）——以运行时密钥为准"
+            );
+        }
+        *self.mandate_pubkey.write() = Some(new);
+    }
+
     /// Set the dynamic capabilities for this node (tool names from AgentLoop).
     ///
     /// Called after the AgentLoop is built so the discovery broadcast includes
@@ -4534,6 +4645,7 @@ impl Cluster {
             msg.agents,
             msg.iroh_id,
             msg.runtime_backend,
+            msg.mandate_pubkey,
             None,
             &msg.build,
         );
@@ -5085,6 +5197,7 @@ impl ClusterCallbacks for Cluster {
         agents: &[crate::types::AgentAnnouncement],
         iroh_id: Option<&str>,
         runtime_backend: Option<&str>,
+        mandate_pubkey: Option<&str>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -5103,6 +5216,7 @@ impl ClusterCallbacks for Cluster {
             agents.to_vec(),
             iroh_id.map(|s| s.to_string()),
             runtime_backend.map(|s| s.to_string()),
+            mandate_pubkey.map(|s| s.to_string()),
             source_addr,
             build,
         )
@@ -5110,6 +5224,10 @@ impl ClusterCallbacks for Cluster {
 
     fn build_hash(&self) -> String {
         self.build_hash.read().clone()
+    }
+
+    fn mandate_pubkey(&self) -> Option<String> {
+        self.mandate_pubkey.read().clone()
     }
 
     fn handle_node_offline(&self, node_id: &str, reason: &str) {

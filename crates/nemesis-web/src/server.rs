@@ -1906,8 +1906,56 @@ pub async fn process_messages_with_router(
         // request_type=="history"（loop.rs 两处），其余按用户消息处理。
         let is_history_request =
             msg.metadata.get("request_type").map(String::as_str) == Some("history");
+        // L12（改进项三期 2026-11-02）：写入侧幂等键——(session_key,
+        // client_msg_id) 命中去重索引 = 不重复入环、不二次触发 agent（短路
+        // bus 转发），回声帧带**原 seq + deduped:true**。幂等窗口有界
+        // （chat_dedup LRU cap，超窗重复 = 正常重复处理，文档口径）。
+        // history_request 恒不参与（查询面无幂等语义）；不带 id = 零变化。
+        let client_msg_id = if is_history_request {
+            None
+        } else {
+            msg.metadata
+                .get("client_msg_id")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+        };
+        if let Some(cmid) = client_msg_id
+            && let Some(orig_seq) = crate::chat_dedup::lookup(&session_key, cmid)
+        {
+            tracing::info!(
+                session_key = %session_key,
+                client_msg_id = %cmid,
+                orig_seq = orig_seq,
+                "[Web] chat.send deduped (client_msg_id hit; agent not re-triggered)"
+            );
+            // 环行回声（seq>0）带 deduped 旗重发（游标推进语义与首投一致）；
+            // 纯图消息（seq=0 无环行）沿用 P8 不回声语义，只短路转发。
+            if orig_seq > 0
+                && let Some(ref sm) = session_manager
+            {
+                let mut echo = serde_json::json!({
+                    "role": "user",
+                    "content": msg.content,
+                    "seq": orig_seq,
+                    "deduped": true,
+                });
+                if let Some(sid) = session_key.strip_prefix("agent:main:session:") {
+                    echo["session_id"] = serde_json::Value::String(sid.to_string());
+                }
+                let frame =
+                    crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(echo));
+                if let Ok(bytes) = frame.to_json() {
+                    let _ = sm.broadcast_droppable(&msg.session_id, &bytes);
+                }
+            }
+            continue;
+        }
         if !msg.content.is_empty() && !is_history_request {
             let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None, None);
+            // L12：首投登记幂等键（seq = 本次环行原 seq）。
+            if let Some(cmid) = client_msg_id {
+                crate::chat_dedup::insert(&session_key, cmid, seq);
+            }
             if let Some(ref sm) = session_manager {
                 let mut echo = serde_json::json!({
                     "role": "user",
@@ -1927,6 +1975,11 @@ pub async fn process_messages_with_router(
                     let _ = sm.broadcast_droppable(&msg.session_id, &bytes);
                 }
             }
+        } else if let Some(cmid) = client_msg_id {
+            // L12：纯图消息（content 空带 media）——不入环不回声（P8 语义
+            // 不变），幂等键照常登记（seq=0 标记「无环行」；重复提交仍被
+            // 上方 lookup 短路，回声臂 seq>0 闸自动跳过）。
+            crate::chat_dedup::insert(&session_key, cmid, 0);
         }
 
         let inbound = InboundMessage {

@@ -178,6 +178,7 @@ fn make_build_context_task(task_id: &str) -> ClusterTask {
         callback_result: None,
         required_profession: None,
         async_usage_stash: None,
+        mandate: None,
     }
 }
 
@@ -554,6 +555,7 @@ mod loop_e2e {
             callback_result: None,
             required_profession: None,
             async_usage_stash: None,
+            mandate: None,
         }
     }
 
@@ -1246,6 +1248,7 @@ mod wave_b {
             callback_result: None,
             required_profession: None,
             async_usage_stash: None,
+            mandate: None,
         }
     }
 
@@ -1996,6 +1999,35 @@ fn test_classify_llm_failure_variants() {
     );
 }
 
+/// L13-b：mandate 执行面守卫终局 → mandate_violation（稳定前缀契约）。
+#[test]
+fn test_classify_mandate_violation() {
+    let fc = super::classify_terminal_failure(
+        "error",
+        "",
+        &format!(
+            "{}token 预算耗尽（1000/1000）。任务已停止；已完成的工作已保存。",
+            nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER
+        ),
+    );
+    assert_eq!(fc, Some("mandate_violation"));
+    // 尾部追加违规记录块不影响前缀识别（追加块语义契约）
+    let fc2 = super::classify_terminal_failure(
+        "error",
+        &format!(
+            "{}时间窗已过期。任务已停止。
+
+---
+{}（1 条）：
+1. x",
+            nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER,
+            nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER
+        ),
+        "",
+    );
+    assert_eq!(fc2, Some("mandate_violation"));
+}
+
 /// 空交付与兜底类；success 不分类。
 #[test]
 fn test_classify_empty_result_and_fallback() {
@@ -2161,6 +2193,7 @@ mod wave_d {
             callback_result: None,
             required_profession: None,
             async_usage_stash: None,
+            mandate: None,
         }
     }
 
@@ -2924,6 +2957,7 @@ fn prof_task(slug: Option<&str>) -> ClusterTask {
         callback_result: None,
         required_profession: slug.map(str::to_string),
         async_usage_stash: None,
+        mandate: None,
     }
 }
 

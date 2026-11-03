@@ -422,10 +422,13 @@ async fn stream_interrupted_display_enters_transient_ring_not_rate_limit_or_comp
 
     let events = agent_loop.run(&instance, "Hello", &context).await;
 
+    // L29 拼接续写（默认开）：partial（含污染词）会前拼进恢复回复——
+    // Done 断言锚恢复段结尾而非全文等值；路由正确性由 calls==2（非压缩
+    // 环）与无限流进度通知（下方 rx 扫描）继续钉住。
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+            .any(|e| matches!(e, AgentEvent::Done(m) if m.ends_with("Recovered!"))),
         "流中断 Display 必须进 transient 环并恢复: {events:?}"
     );
     assert_eq!(

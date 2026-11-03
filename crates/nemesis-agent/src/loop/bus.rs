@@ -213,6 +213,7 @@ impl AgentLoop {
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
+            mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             draining: std::sync::atomic::AtomicBool::new(false),
@@ -269,9 +270,10 @@ impl AgentLoop {
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
             pending_workflow_edit: parking_lot::RwLock::new(None),
+            tool_schema_unlocks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
-            config_mtime: parking_lot::RwLock::new(None),
+            config_gen: parking_lot::RwLock::new(None),
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
@@ -339,6 +341,8 @@ impl AgentLoop {
                 let max_tokens_cap = self
                     .current_max_tokens_override(Some(&model))
                     .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
+                // L28+：阶梯封顶与主循环同源（agents.defaults.max_output_ceiling）。
+                let max_tokens_ceiling = self.current_max_output_ceiling();
 
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -349,6 +353,7 @@ impl AgentLoop {
                     provider.as_ref(),
                     &model,
                     max_tokens_cap,
+                    max_tokens_ceiling,
                     &tools,
                     tx,
                     self.observer_manager.clone(),
@@ -376,6 +381,8 @@ impl AgentLoop {
             let max_tokens_cap = self
                 .current_max_tokens_override(Some(&model))
                 .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
+            // L28+：阶梯封顶同样 spawn 前解析（闭包要求 'static）。
+            let max_tokens_ceiling = self.current_max_output_ceiling();
 
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
@@ -391,6 +398,7 @@ impl AgentLoop {
                         provider.as_ref(),
                         &model,
                         max_tokens_cap,
+                        max_tokens_ceiling,
                         &tools,
                         tx,
                         observer_manager,
@@ -978,6 +986,8 @@ impl AgentLoop {
             let max_tokens_cap = self
                 .current_max_tokens_override(Some(&cont_model))
                 .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
+            // L28+：阶梯封顶与主循环同源。
+            let max_tokens_ceiling = self.current_max_output_ceiling();
             if let Some(ref tx) = self.outbound_tx {
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -988,6 +998,7 @@ impl AgentLoop {
                     cont_provider.as_ref(),
                     &cont_model,
                     max_tokens_cap,
+                    max_tokens_ceiling,
                     &self.tools,
                     tx,
                     self.observer_manager.clone(),

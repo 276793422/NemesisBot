@@ -377,6 +377,7 @@ fn autopilot_patch_validation_and_partial_update() {
             enabled: false,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
 

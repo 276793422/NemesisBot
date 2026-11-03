@@ -4059,3 +4059,164 @@ fn default_node_display_name_short_node_id_kept_whole() {
     let node_id = "node-x";
     assert_eq!(default_node_display_name(node_id), format!("Bot {node_id}"));
 }
+
+// ── L16（2026-11-02 三期）：roaming 互信 allowlist 管理面（trust-add /
+//    trust-list / revoke / unrevoke 四臂）──
+
+/// 测试身份：真实 ed25519 派生（管理面入参走 node_id_from_hex on-curve
+/// 校验，任意 hex loud 拒——与生产同口径）。
+fn valid_iroh_hex(seed: u64) -> String {
+    let mut s = [0u8; 32];
+    s[..8].copy_from_slice(&seed.to_le_bytes());
+    ed25519_dalek::SigningKey::from_bytes(&s)
+        .verifying_key()
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// 真「非曲线点」编码：随机 32 字节约 50% 过 on-curve，固定魔数不可靠——
+/// 运行时从计数器 seed 找一个 node_id_from_hex 明确拒绝的形态。
+fn invalid_iroh_hex() -> String {
+    for seed in 1..1000u64 {
+        let mut s = [0u8; 32];
+        s[..8].copy_from_slice(&seed.to_le_bytes());
+        let candidate: String = s.iter().map(|b| format!("{b:02x}")).collect();
+        if nemesis_cluster::roaming::node_id_from_hex(&candidate).is_err() {
+            return candidate;
+        }
+    }
+    panic!("1000 个候选里找不到非曲线点编码——on-curve 校验器疑似失效");
+}
+
+fn trust_book_path_of_home(home: &std::path::Path) -> std::path::PathBuf {
+    nemesis_cluster::roaming::trust::trust_book_path(&crate::common::workspace_path(home))
+}
+
+/// trust-add：首次写入即建文件（regime 激活唯一路径）+ `iroh:` 前缀/大写
+/// 归一入簿（小写 hex 存储形态）。
+#[tokio::test]
+async fn test_roaming_trust_add_activates_regime_and_normalizes() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    let hex = valid_iroh_hex(1);
+
+    run_roaming(
+        RoamingAction::TrustAdd {
+            node_id: format!("iroh:{}", hex.to_uppercase()),
+        },
+        &home,
+    )
+    .await
+    .expect("trust-add 成功");
+
+    let path = trust_book_path_of_home(&home);
+    assert!(path.exists(), "首次写盘 = regime 激活");
+    let book =
+        nemesis_cluster::roaming::trust::TrustBook::load(&crate::common::workspace_path(&home))
+            .unwrap()
+            .expect("簿已在");
+    assert!(
+        book.is_trusted(&hex),
+        "大写 + 前缀归一入簿: {:?}",
+        book.data()
+    );
+}
+
+/// 垃圾 hex loud 拒（on-curve 不过 / 非 hex / 长度错）：不建文件不落盘——
+/// 管理面入簿条目影响插件 accept 闸，垃圾条目 = 无声死区。
+#[tokio::test]
+async fn test_roaming_trust_add_garbage_hex_loud_reject() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+
+    for bad in ["zz", "abc", invalid_iroh_hex().as_str()] {
+        let err = run_roaming(
+            RoamingAction::TrustAdd {
+                node_id: bad.into(),
+            },
+            &home,
+        )
+        .await
+        .expect_err(&format!("垃圾入参必须拒: {bad}"));
+        assert!(err.to_string().contains("node_id 非法"), "{err}");
+    }
+    assert!(
+        !trust_book_path_of_home(&home).exists(),
+        "拒绝路径不得创建 trust.toml"
+    );
+}
+
+/// revoke / unrevoke 全流程：revoke 后 trusted 移除 + revoked 留痕；
+/// unrevoke 后 revoked 清空但 trusted 不自动恢复（重信显式 trust-add）；
+/// 重复操作幂等。
+#[tokio::test]
+async fn test_roaming_trust_revoke_unrevoke_flow() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    let a = valid_iroh_hex(1);
+    let b = valid_iroh_hex(2);
+
+    for h in [&a, &b] {
+        run_roaming(RoamingAction::TrustAdd { node_id: h.clone() }, &home)
+            .await
+            .expect("trust-add");
+    }
+    run_roaming(RoamingAction::Revoke { node_id: b.clone() }, &home)
+        .await
+        .expect("revoke");
+    let ws = crate::common::workspace_path(&home);
+    let book = nemesis_cluster::roaming::trust::TrustBook::load(&ws)
+        .unwrap()
+        .expect("簿已在");
+    assert!(book.is_trusted(&a), "a 不受影响");
+    assert!(!book.is_trusted(&b), "revoke 立即生效（trusted 移除）");
+    assert_eq!(book.data().revoked.len(), 1, "revoked 留痕");
+
+    // 幂等：重复 revoke 不重复入册。
+    run_roaming(RoamingAction::Revoke { node_id: b.clone() }, &home)
+        .await
+        .expect("重复 revoke 幂等");
+    let book = nemesis_cluster::roaming::trust::TrustBook::load(&ws)
+        .unwrap()
+        .expect("簿已在");
+    assert_eq!(book.data().revoked.len(), 1);
+
+    run_roaming(RoamingAction::Unrevoke { node_id: b.clone() }, &home)
+        .await
+        .expect("unrevoke");
+    let book = nemesis_cluster::roaming::trust::TrustBook::load(&ws)
+        .unwrap()
+        .expect("簿已在");
+    assert!(
+        book.data().revoked.is_empty(),
+        "unrevoke 移出 revoked: {:?}",
+        book.data()
+    );
+    assert!(!book.is_trusted(&b), "不自动恢复信任（重信显式 trust-add）");
+    assert!(book.is_trusted(&a));
+}
+
+/// 激活态下坏簿：管理面 loud 拒改（load Err → Err，不静默用空簿覆盖——
+/// 覆盖会把 revoked 名单无声抹掉，方向性错误）。
+#[tokio::test]
+async fn test_roaming_trust_mutate_corrupt_book_loud_reject() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    let path = trust_book_path_of_home(&home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{{ not toml").unwrap();
+
+    let hex = valid_iroh_hex(1);
+    let err = run_roaming(RoamingAction::TrustAdd { node_id: hex }, &home)
+        .await
+        .expect_err("坏簿必须拒改");
+    assert!(err.to_string().contains("解析失败"), "{err}");
+    // 盘上坏簿原样保留（未被空簿覆盖）。
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{{ not toml",
+        "坏簿不得被静默覆盖"
+    );
+}

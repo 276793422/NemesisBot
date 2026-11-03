@@ -23,6 +23,12 @@ pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
+// L15（改进项三期 2026-11-03）：存储世代化迁移链骨架（四条铁律的代码化
+// 模板——零接线，未来破坏性格式变更时按设计文档契约接线）。
+pub mod storage_gen;
+// L19（改进项三期 2026-11-03）：统一 WorkPool 设施（CPU 准入 max(1,N-1) /
+// reader-compute-writer 分池 / 双上限背压+类型化 overloaded / 取消三事实分离）。
+pub mod workpool;
 // B10（2026-10-18 存储韧性）：SQLite 打开面前置守卫——feature 门控，
 // 未启用 `sqlite-preflight` 的消费方不编译本模块（rusqlite 不进依赖图）。
 #[cfg(feature = "sqlite-preflight")]

@@ -80,6 +80,13 @@ pub(crate) const LENGTH_CONTINUE_PROMPT: &str = "Output limit reached. Continue 
      no recap, no apology. If you were writing a large file, \
      break it into smaller writes.";
 
+/// L29（2026-11-02 改进项三期）流中断拼接续写提示：语境是「流被中断」而非
+/// 「输出撞上限」，措辞与 LENGTH_CONTINUE_PROMPT 同族但场景化。partial 作
+/// assistant 前缀 + 本提示追加，模型从中断点续写。
+pub(crate) const STREAM_CONTINUE_PROMPT: &str = "Your previous response was interrupted mid-stream. \
+     Continue exactly where you left off — no recap, no apology. \
+     If you were writing a large file, break it into smaller writes.";
+
 impl AgentLoop {
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
     ///
@@ -189,6 +196,18 @@ impl AgentLoop {
             // 继续本轮。budget=0（关，默认）时器官零开销直通。
             if let Some(ev) = self.check_session_budget(instance, context).await {
                 st.terminal_reason = Some("token_budget");
+                events.push(ev);
+                break;
+            }
+
+            // L13-b（2026-11-03 三期）：mandate 轮顶检。时限过期 / token
+            // 预算超限 / 调用次数超限 = 终局 Error（文案以
+            // MANDATE_VIOLATION_MARKER 开头——worker classify_terminal_failure
+            // 识别为 fail_class=mandate_violation，走既有 error 回调链回
+            // master，board_review 按能力类失败处理）。guard 缺席（任务无
+            // mandate = 旧行为）零开销直通。
+            if let Some(ev) = self.check_mandate_round(instance, context) {
+                st.terminal_reason = Some("mandate_violation");
                 events.push(ev);
                 break;
             }

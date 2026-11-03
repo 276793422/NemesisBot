@@ -364,6 +364,10 @@ pub struct RpcClient {
     /// 打真插件，测试注入 LocalDialer 直连本地 TCP）。宿主在装配漫游身份后
     /// 注入；`None` = 拨到 `iroh:` 地址诚实报错（不黑洞）。
     roaming_dialer: RwLock<Option<Arc<dyn crate::roaming::plugin_bridge::RoamingDialer>>>,
+    /// L13-b（2026-11-03 三期）：mandate 签名器（gateway 装配期注入一次）。
+    /// `None` = 不签名（sign_enabled=false 或密钥不可用）——出站 payload 与
+    /// 旧版逐字节一致（开关即回滚）。RwLock 因装配晚于构造（同 bridge_transport）。
+    mandate_signer: RwLock<Option<Arc<crate::roaming::mandate::MandateSigner>>>,
 }
 
 impl RpcClient {
@@ -383,6 +387,7 @@ impl RpcClient {
             warn_gate: crate::discovery::AnnounceWarnGate::with_cooldown(Duration::from_secs(60)),
             bridge_transport: RwLock::new(None),
             roaming_dialer: RwLock::new(None),
+            mandate_signer: RwLock::new(None),
         }
     }
 
@@ -440,7 +445,63 @@ impl RpcClient {
         *self.roaming_dialer.write() = Some(dialer);
     }
 
+    /// L13-b：注入 mandate 签名器（gateway 装配期；重复调用 = 覆盖）。
+    pub fn set_mandate_signer(&self, signer: Arc<crate::roaming::mandate::MandateSigner>) {
+        *self.mandate_signer.write() = Some(signer);
+    }
+
+    /// mandate 签名器状态查询（`cluster status` 显示面）。
+    pub fn mandate_signer_state(&self) -> Option<(String, String)> {
+        self.mandate_signer
+            .read()
+            .clone()
+            .map(|s| (s.public_key.clone(), s.key_fp.clone()))
+    }
+
     // -- High-level API -------------------------------------------------------
+
+    /// L13-b（2026-11-03 三期）：mandate 签名注入 step 0（dispatch 咽喉）。
+    /// A 端单一咽喉——board 派发 / chat 派发 / cluster_rpc 工具三路出站全部
+    /// 汇经 dispatch。仅 `Known(PeerChat)` 签：ping/探针/结果查询/回调不签。
+    /// 绑定 task_id 取 `payload["task_id"]`（board/chat 派发两路都显式带）
+    /// 回落 `request.id`；签名器缺席 = 不注入（payload 与旧版逐字节一致）；
+    /// 签名失败 = 诚实放行 + warn（不因授权书故障阻断任务投递，B 端 verify
+    /// 模式对缺失 mandate 放行）。pub(crate) 供单测免网络直测注入判定。
+    pub(crate) fn inject_mandate_if_needed(&self, request: &mut RPCRequest) {
+        if request.action
+            != crate::rpc_types::ActionType::Known(crate::rpc_types::KnownAction::PeerChat)
+        {
+            return;
+        }
+        let Some(signer) = self.mandate_signer.read().clone() else {
+            return;
+        };
+        let task_id = request
+            .payload
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&request.id)
+            .to_string();
+        match signer.sign_for_task(&task_id) {
+            Ok(mandate) => {
+                if let Some(obj) = request.payload.as_object_mut() {
+                    obj.insert("mandate".to_string(), mandate);
+                } else {
+                    tracing::warn!(
+                        request_id = %request.id,
+                        "[RpcClient] payload 非 JSON 对象，mandate 未注入"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    request_id = %request.id,
+                    error = %e,
+                    "[RpcClient] mandate 签名失败，本次派发不带 mandate（兼容放行）"
+                );
+            }
+        }
+    }
 
     /// Send an RPC request to `peer_id` and wait for the response.
     ///
@@ -490,11 +551,21 @@ impl RpcClient {
     async fn dispatch(
         &self,
         peer_id: &str,
-        request: RPCRequest,
+        mut request: RPCRequest,
         timeout: Duration,
         require_online: bool,
     ) -> Result<RPCResponse, RpcClientError> {
         let start = std::time::Instant::now();
+
+        // 0. L13-b mandate 签名注入（A 端单一咽喉——board 派发/chat 派发/
+        // cluster_rpc 工具三路出站全部汇经本方法）。仅 Known(PeerChat)：
+        // ping/探针/结果查询/回调不签。绑定 task_id 取 payload["task_id"]
+        // （board/chat 派发两路都显式带）回落 request.id；签名器缺席 =
+        // 不注入（payload 与旧版逐字节一致）。签名失败 = 诚实放行 + warn
+        // （签名器缺席的同一兼容语义——不因授权书故障阻断任务投递，B 端
+        // verify 模式对缺失 mandate 放行）。逻辑抽成
+        // [`Self::inject_mandate_if_needed`]——单测免网络直测注入判定。
+        self.inject_mandate_if_needed(&mut request);
 
         // 1. Rate limiting (async retry matching Go's blocking Acquire)
         if let Err(e) = self.rate_limiter.acquire_async(peer_id).await {
