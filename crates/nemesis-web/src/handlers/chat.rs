@@ -111,10 +111,15 @@ impl ModuleHandler for ChatHandler {
         // 的测量口径（与压缩压力同公式，见 loop.rs session_context_status）。
         if cmd == "context_status" {
             let status = agent_loop.session_context_status(&session_key);
+            // L10-量测（改进项三期 2026-11-02）：tool defs 供给面字节随行
+            // ——AgentLoop 单一真相源量测（openai 形态代理口径），与压缩
+            // 压力快照同请求返回；L10-建设惰性 schema 的前后对比基线源。
+            let tool_defs = agent_loop.tool_defs_metrics();
             return Ok(Some(serde_json::json!({
                 "session_id": session_id,
                 "session_key": session_key,
                 "context": status,
+                "tool_defs": tool_defs,
             })));
         }
         // F1（devtool-upgrade 阶段 4）：plan/build 模式切换。与 /plan /build

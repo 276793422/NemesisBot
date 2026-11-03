@@ -28,6 +28,7 @@ fn new_ap(name: &str, target: &str, enabled: bool) -> nemesis_board::NewAutopilo
         enabled,
         auto_plan: false,
         acceptance_criteria: None,
+        session_key: None,
     }
 }
 

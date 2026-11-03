@@ -2634,8 +2634,12 @@ fn p2a_latest_fail_class_none_without_marker() {
 
 #[test]
 fn p2a_capability_classes_and_hints_contract() {
-    // 闸门只认两类能力类失败；每类都有对应的人工处置建议。
-    assert_eq!(CAPABILITY_FAIL_CLASSES, ["validation_budget", "escalation"]);
+    // 闸门只认三类能力类失败（L13-b 加 mandate_violation：换节点重派=重新
+    // 授权语义）；每类都有对应的人工处置建议。
+    assert_eq!(
+        CAPABILITY_FAIL_CLASSES,
+        ["validation_budget", "escalation", "mandate_violation"]
+    );
     let hint_budget = capability_fail_hint("validation_budget");
     assert!(
         hint_budget.contains("probe") && hint_budget.contains("set-tier"),
@@ -4847,6 +4851,39 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
     .await
     .expect_err("全路解析失败必须报错");
     assert!(err.contains("连续 3 轮无法解析"), "got: {err}");
+}
+
+#[tokio::test]
+async fn sweep_run_review_panel_overload_rejects_whole_batch_without_llm() {
+    // L19 手法3：单 prompt 超 PANEL_MAX_INPUT_BYTES → 首次 try_submit 即
+    // 类型化拒绝（overload 臂在 LLM 之前短路——不触模型、不部分执行）。
+    let (deps, _ws) = review_deps("sweep-panel-overload");
+    attach_loop(
+        &deps,
+        Arc::new(ScriptedLlm {
+            script: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            fallback: String::new(),
+            on_call: None,
+        }),
+    );
+    let big = "x".repeat(super::PANEL_MAX_INPUT_BYTES + 1);
+    let err = run_review_panel(
+        deps.moderator_loop.get().unwrap(),
+        &big,
+        ReviewToolMode::NoTools,
+        3,
+        nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
+    )
+    .await
+    .expect_err("字节超限必须全批拒绝");
+    assert!(err.contains("面板过载"), "got: {err}");
+    assert!(
+        err.contains("rejected, not queued"),
+        "类型化 Display 必须在场: {err}"
+    );
+    assert!(err.contains("8388608"), "字节上限事实在场: {err}");
 }
 
 // ===== review_issue LLM 语义臂全链（2026-09-25 覆盖补齐） =====

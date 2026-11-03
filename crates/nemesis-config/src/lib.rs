@@ -17,6 +17,7 @@ pub mod provider_resolver;
 pub mod proxy_file;
 pub mod proxy_keys_file;
 pub mod store;
+pub mod vault_domain;
 pub mod vault_ref;
 
 pub use commands::{CommandEntry, CommandsConfig, load_commands_config, save_commands_config};
@@ -27,6 +28,13 @@ pub use hot_reload::HotReloader;
 pub use vault_ref::{
     VAULT_PREFIX, VaultResolver, clear_global_vault_resolver, global_vault_resolver,
     is_secret_reference, resolve_secret_field, resolve_vault_reference, set_global_vault_resolver,
+};
+
+// L26②（2026-11-02 三期）：vault 别名域绑定（alias→(工具,槽位) 白名单）
+// 的配置 loader 与判定——dispatch 凭据闸 v2 臂的单一真相源。
+pub use vault_domain::{
+    DomainBinding, DomainVerdict, DomainViolation, VAULT_DOMAIN_CONFIG_FILE, VaultDomainConfig,
+    vault_domain_config_path_in,
 };
 
 // Runtime config cache (single source of truth for the live config).

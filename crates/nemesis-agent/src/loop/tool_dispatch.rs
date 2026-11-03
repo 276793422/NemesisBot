@@ -292,6 +292,25 @@ impl AgentLoop {
                 .to_string();
         }
 
+        // L13-b（2026-11-03 三期）：mandate 执行面守卫调用闸。位置在 estop
+        // 之后（急停优先于授权书——冻结语义压倒一切）、安全 8 层之前（授权
+        // 面是比风险分级更上游的供给约束：不在授权名单的工具直接拒，不进
+        // 风险管线）。拒绝 = 拒该次调用（结构化错误回灌，任务继续——终局
+        // 归轮顶检 check_mandate_round）。guard 缺席（任务无 mandate）= 直通。
+        if let Some(guard) = self.mandate_guard.read().clone()
+            && let Err(reason) =
+                guard.check_tool_call(&tool_call.name, crate::mandate_guard::now_unix())
+        {
+            warn!(
+                "[AgentLoop] mandate denied tool {}: {}",
+                tool_call.name, reason
+            );
+            return format!(
+                "Error: {}：{reason}。不要重试该工具；改用授权面内的工具完成工作，或告知用户任务授权受限。",
+                crate::mandate_guard::MANDATE_CALL_DENIED_PREFIX
+            );
+        }
+
         // W7（2026-10-25 加固）：mcp_call meta 工具 dispatch 拦截——
         // 解包 {tool, args} 后以真实工具名重走全瀑布（estop/hidden/tier/
         // 安全 8 层/审批，审计 target=真实名）——调用链路与直连等价。
@@ -336,6 +355,82 @@ impl AgentLoop {
             // Box::pin：async fn 递归的尺寸不定点（内层名已保证 != mcp_call，
             // 实际递归深度恒 1，装箱只是给编译器的有限尺寸凭据）。
             return Box::pin(self.handle_tool_call_at_depth(&inner_call, context, depth)).await;
+        }
+
+        // L10-建设（改进项三期 2026-11-02）：tools_schema_get dispatch 拦截
+        // ——惰性 schema 供给的取回通路。渲染 registry 真实 schema（供给面
+        // 折叠占位不影响本处），成功即记入 per-session 解锁账（build_messages
+        // 的「已解锁 schema 注记」节随之持续携带）。与 mcp_call 同形态：estop
+        // 之后（急停拒绝一切分发）、路径重写之前（schema 取回无路径语义）。
+        // hidden/tier 双镜像（F8 同模型）：被 hidden_tools 隐藏或当前档位
+        // 不可见的工具不可取——供给面看不见的 schema 取了也没用，且不暴露
+        // 配置刻意藏起来的工具面。execute 直调是诚实报错安全网（同
+        // McpCallTool——正常流程死代码）。
+        if tool_call.name == "tools_schema_get" {
+            if !self.current_lazy_tool_schema() {
+                warn!("[AgentLoop] tools_schema_get refused (lazy schema supply inactive).");
+                return "Error: tools_schema_get 仅在惰性 schema 供给模式下可用（当前档位下全部工具的完整参数 schema 已随轮上行，直接按列表中的 schema 调用即可，无需取回）。Inform the user.".to_string();
+            }
+            let parsed: serde_json::Value =
+                serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::Value::Null);
+            let want = parsed
+                .get("name")
+                .and_then(|t| t.as_str())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if want.is_empty() {
+                return "Error: tools_schema_get 缺少必填字段 `name`（要取回 schema 的工具名）。Inform the user; do NOT retry without it.".to_string();
+            }
+            {
+                let hidden = self.current_hidden_tools();
+                if tool_name_matches_hidden(&hidden, &want) {
+                    return format!(
+                        "Error: Tool '{}' is hidden by configuration (agents.hidden_tools) and its schema cannot be fetched. Inform the user; do NOT retry.",
+                        want
+                    );
+                }
+            }
+            {
+                // tier 可见性镜像 build_tool_defs 同一判定（min_tier 秩比较
+                // ∨ 白名单空/含名 ∨ mcp meta 两件套 lazy 豁免）——两端口径
+                // 永不漂移。
+                let tier = *self.tier.read();
+                let allowed = nemesis_types::capability::tier_allowed_tools(tier);
+                let mcp_lazy = self.current_mcp_lazy_supply();
+                let tools_guard = self.tools.read();
+                let Some(tool) = tools_guard.get(want.as_str()) else {
+                    return format!(
+                        "Error: tools_schema_get 目标工具 `{want}` 未注册（或已被移除）。检查工具名拼写（区分大小写）后重试。Inform the user."
+                    );
+                };
+                let visible = match tool.min_tier() {
+                    Some(min) => active_tier_rank(tier) >= plugin_min_tier_rank(min),
+                    None => {
+                        allowed.is_empty()
+                            || allowed.contains(&want.as_str())
+                            || (mcp_lazy && matches!(want.as_str(), "mcp_call" | "mcp_list"))
+                    }
+                };
+                if !visible {
+                    return format!(
+                        "Error: Tool '{}' is not visible at the active model's tier and its schema cannot be fetched. Inform the user; they can switch models via /model.",
+                        want
+                    );
+                }
+                let params =
+                    serde_json::to_string(&tool.parameters()).unwrap_or_else(|_| "{}".to_string());
+                let desc = self.description_for(want.as_str(), tool.as_ref());
+                drop(tools_guard);
+                self.record_schema_unlock(&context.session_key, &want);
+                info!(
+                    "[AgentLoop] Schema unlocked for tool '{}' (session={}).",
+                    want, context.session_key
+                );
+                return format!(
+                    "# Schema: `{}`\n\n- **description**: {}\n- **parameters**: {}\n\n以上为该工具的完整参数 schema（已解锁，后续轮次持续携带）。按 schema 构造参数后直接调用 `{}` 即可。",
+                    want, desc, params, want
+                );
+            }
         }
 
         // F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准重写。位置在
@@ -997,108 +1092,207 @@ impl AgentLoop {
                     // headers 随首跳外发）无人工裁决点的时序空隙收口）。
                     // 闸位精确性：只查声明槽位（credential_arg_keys），未声明
                     // 槽位里的 vault: 子串不进闸面（字面量明文是凭据扫描层
-                    // 管辖）。无审批通道（headless/裸装配）= 闸跳过（行为与
+                    // 管辖）。无审批通道（headless/裸装配）= 卡臂跳过（行为与
                     // 落地前一致，L26 设计文档 §9.2）；有通道但请求失败 =
                     // fail-closed。闸拒绝的调用在 preview 之前返回——零
                     // checkpoint/turn 记录残留。
-                    #[cfg(feature = "security")]
-                    {
-                        if let Some(tool) = tool_opt.as_ref() {
-                            let gate_refs = credential_injection::find_declared_vault_references(
+                    // L26②（2026-11-02 三期）：refs 探测移出 cfg 块——绑定
+                    // 判定臂 always-on（用户显式配置策略，域内免卡/出域拒绝
+                    // 都不依赖审批通道，headless 自动化正是其目标形态）。
+                    let gate_refs = tool_opt
+                        .as_ref()
+                        .map(|tool| {
+                            credential_injection::find_declared_vault_references(
                                 tool.as_ref(),
                                 &call.arguments,
-                            );
-                            if !gate_refs.is_empty()
-                                && let Some(ref security) = cred_gate
-                            {
-                                let auditor = security.auditor();
-                                if !auditor.has_approval_channel() {
-                                    debug!(
-                                        "[AgentLoop] credential gate skipped for {}: no approval channel（值不落日志）",
+                            )
+                        })
+                        .unwrap_or_default();
+                    // 绑定判定（config.vault.json，<ws>/config/ sidecar）：
+                    // 文件缺席/无命中别名 = v1 卡路径；出域 = 审计拒绝 loud
+                    // （硬策略，不出卡不占冷却）；全域内 = 免卡直过。损坏配置
+                    // fail-secure：warn 后按无绑定兜底（绑定是松弛机制，坏
+                    // 配置不得松弛任何调用）。
+                    let mut domain_preauthorized = false;
+                    if !gate_refs.is_empty() {
+                        let domain_cfg = format_cfg_path
+                            .as_ref()
+                            .and_then(|p| p.parent())
+                            .map(nemesis_config::vault_domain_config_path_in)
+                            .and_then(|path| {
+                                match nemesis_config::VaultDomainConfig::load_at(&path) {
+                                    Ok(c) => Some(c),
+                                    Err(e) => {
+                                        warn!(
+                                            "[AgentLoop] vault domain config unreadable, falling back to card path: {e}（值不落日志）"
+                                        );
+                                        None
+                                    }
+                                }
+                            })
+                            .unwrap_or(None);
+                        if let Some(cfg) = domain_cfg {
+                            match cfg.evaluate(&call.name, &gate_refs) {
+                                nemesis_config::DomainVerdict::OutOfDomain(violations) => {
+                                    let detail = violations
+                                        .iter()
+                                        .map(|v| {
+                                            format!(
+                                                "别名 {}（已绑定域: {}）出现在槽位 {}",
+                                                v.alias,
+                                                v.allowed.join(", "),
+                                                v.field
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("；");
+                                    // 链上审计只在 security plugin 在场时可达；
+                                    // 缺席/feature 关 = warn + 拒绝串即审计面
+                                    // （诚实降级，设计 §4.2）。
+                                    #[cfg(feature = "security")]
+                                    if let Some(ref security) = cred_gate {
+                                        use nemesis_security::auditor::AuditEvent;
+                                        use nemesis_security::types::{DangerLevel, OperationType};
+                                        security.auditor().log_audit_event(&AuditEvent {
+                                            event_id: uuid::Uuid::new_v4().to_string(),
+                                            request: nemesis_security::auditor::OperationRequest {
+                                                id: format!("creddom-{}", uuid::Uuid::new_v4()),
+                                                op_type: OperationType::ProcessExec,
+                                                danger_level: DangerLevel::High,
+                                                source: "credential_domain".to_string(),
+                                                target: call.name.clone(),
+                                                ..Default::default()
+                                            },
+                                            decision: "denied".to_string(),
+                                            reason: format!(
+                                                "credential domain violation: {detail}（值不落日志）"
+                                            ),
+                                            timestamp: chrono::Local::now().to_rfc3339(),
+                                            policy_rule: "security.credential_domain"
+                                                .to_string(),
+                                        });
+                                    }
+                                    warn!(
+                                        "[AgentLoop] credential domain violation for {}（值不落日志）",
                                         call.name
                                     );
-                                } else {
-                                    let fields_csv = gate_refs
-                                        .iter()
-                                        .map(|(f, _)| f.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(", ");
-                                    let gate_key = format!(
-                                        "gate:{}:{}",
-                                        call.name,
-                                        gate_refs
-                                            .iter()
-                                            .map(|(_, a)| a.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join(",")
+                                    return format!(
+                                        "⛔ CREDENTIAL USE — OUT OF DOMAIN [layer:credential_domain|tool:{}] {detail}。凭据引用不在其绑定域内，已拒绝。工具未执行。不要重试同一调用；如需在该槽位使用该凭据，请让用户更新 config.vault.json 绑定。Inform the user.",
+                                        call.name
                                     );
-                                    // 冷却窗（拒绝/超时后同键 600s）：静默拒绝
-                                    // 不出卡——卡轰炸限速 + doom-loop 收敛加速
-                                    // （复用 USER REJECTED 文案保持 turn_guard
-                                    // (tool,error) 签名稳定，设计意图非巧合）。
-                                    if !cred_guard.try_acquire(&ctx.session_key, &gate_key) {
-                                        debug!(
-                                            "[AgentLoop] credential gate cooldown for {} ({} refs)（值不落日志）",
+                                }
+                                nemesis_config::DomainVerdict::AllInDomain => {
+                                    // 绑定即预授权：免卡直过（info 留痕，跳过
+                                    // 下方 v1 卡臂）。
+                                    domain_preauthorized = true;
+                                    info!(
+                                        "[AgentLoop] credential domain pre-authorized for {} ({} refs)（值不落日志）",
+                                        call.name,
+                                        gate_refs.len()
+                                    );
+                                }
+                                nemesis_config::DomainVerdict::NoBindings => {}
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "security"))]
+                    {
+                        let _ = domain_preauthorized;
+                    }
+                    #[cfg(feature = "security")]
+                    {
+                        if tool_opt.is_some()
+                            && !gate_refs.is_empty()
+                            && !domain_preauthorized
+                            && let Some(ref security) = cred_gate
+                        {
+                            let auditor = security.auditor();
+                            if !auditor.has_approval_channel() {
+                                debug!(
+                                    "[AgentLoop] credential gate skipped for {}: no approval channel（值不落日志）",
+                                    call.name
+                                );
+                            } else {
+                                let fields_csv = gate_refs
+                                    .iter()
+                                    .map(|(f, _)| f.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let gate_key = format!(
+                                    "gate:{}:{}",
+                                    call.name,
+                                    gate_refs
+                                        .iter()
+                                        .map(|(_, a)| a.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                );
+                                // 冷却窗（拒绝/超时后同键 600s）：静默拒绝
+                                // 不出卡——卡轰炸限速 + doom-loop 收敛加速
+                                // （复用 USER REJECTED 文案保持 turn_guard
+                                // (tool,error) 签名稳定，设计意图非巧合）。
+                                if !cred_guard.try_acquire(&ctx.session_key, &gate_key) {
+                                    debug!(
+                                        "[AgentLoop] credential gate cooldown for {} ({} refs)（值不落日志）",
+                                        call.name,
+                                        gate_refs.len()
+                                    );
+                                    return format!(
+                                        "⛔ CREDENTIAL USE — USER REJECTED [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，用户未放行。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
+                                        call.name
+                                    );
+                                }
+                                let reason = format!(
+                                    "本调用将把声明槽位（{fields_csv}）中的 vault: 凭据引用解析为真值后随本次 {} 调用发出（如 HTTP 首跳）。若目标是外部地址，凭据可能外泄。批准=本次调用携带凭据执行；拒绝=调用不执行。",
+                                    call.name
+                                );
+                                let approval_ctx = nemesis_security::auditor::ApprovalContext {
+                                    channel: ctx.channel.clone(),
+                                    chat_id: ctx.chat_id.clone(),
+                                    sender_id: ctx.user.clone(),
+                                    session_key: ctx.session_key.clone(),
+                                    tool_args: serde_json::from_str(&call.arguments)
+                                        .unwrap_or(serde_json::Value::Null),
+                                };
+                                match auditor.request_credential_use_approval(
+                                    &call.name,
+                                    &reason,
+                                    Some(&approval_ctx),
+                                ) {
+                                    Ok(av) if av.approved => {
+                                        cred_guard.release(&ctx.session_key, &gate_key);
+                                        info!(
+                                            "[AgentLoop] credential gate approved for {} ({} refs)（值不落日志）",
                                             call.name,
                                             gate_refs.len()
                                         );
+                                    }
+                                    Ok(av) => {
+                                        let note = av
+                                            .note
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|n| !n.is_empty())
+                                            .map(|n| format!(" 用户备注: {n}"))
+                                            .unwrap_or_default();
+                                        warn!(
+                                            "[AgentLoop] credential gate rejected for {}（值不落日志）",
+                                            call.name
+                                        );
                                         return format!(
-                                            "⛔ CREDENTIAL USE — USER REJECTED [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，用户未放行。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
+                                            "⛔ CREDENTIAL USE — USER REJECTED [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，用户未放行。工具未执行。Do NOT retry the same call unchanged. Inform the user.{note}",
                                             call.name
                                         );
                                     }
-                                    let reason = format!(
-                                        "本调用将把声明槽位（{fields_csv}）中的 vault: 凭据引用解析为真值后随本次 {} 调用发出（如 HTTP 首跳）。若目标是外部地址，凭据可能外泄。批准=本次调用携带凭据执行；拒绝=调用不执行。",
-                                        call.name
-                                    );
-                                    let approval_ctx = nemesis_security::auditor::ApprovalContext {
-                                        channel: ctx.channel.clone(),
-                                        chat_id: ctx.chat_id.clone(),
-                                        sender_id: ctx.user.clone(),
-                                        session_key: ctx.session_key.clone(),
-                                        tool_args: serde_json::from_str(&call.arguments)
-                                            .unwrap_or(serde_json::Value::Null),
-                                    };
-                                    match auditor.request_credential_use_approval(
-                                        &call.name,
-                                        &reason,
-                                        Some(&approval_ctx),
-                                    ) {
-                                        Ok(av) if av.approved => {
-                                            cred_guard.release(&ctx.session_key, &gate_key);
-                                            info!(
-                                                "[AgentLoop] credential gate approved for {} ({} refs)（值不落日志）",
-                                                call.name,
-                                                gate_refs.len()
-                                            );
-                                        }
-                                        Ok(av) => {
-                                            let note = av
-                                                .note
-                                                .as_deref()
-                                                .map(str::trim)
-                                                .filter(|n| !n.is_empty())
-                                                .map(|n| format!(" 用户备注: {n}"))
-                                                .unwrap_or_default();
-                                            warn!(
-                                                "[AgentLoop] credential gate rejected for {}（值不落日志）",
-                                                call.name
-                                            );
-                                            return format!(
-                                                "⛔ CREDENTIAL USE — USER REJECTED [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，用户未放行。工具未执行。Do NOT retry the same call unchanged. Inform the user.{note}",
-                                                call.name
-                                            );
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "[AgentLoop] credential gate channel error for {}: {}（值不落日志）",
-                                                call.name, e
-                                            );
-                                            return format!(
-                                                "⛔ CREDENTIAL USE — NO APPROVAL CHANNEL [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，无可用审批通道，fail-closed 拒绝。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
-                                                call.name
-                                            );
-                                        }
+                                    Err(e) => {
+                                        warn!(
+                                            "[AgentLoop] credential gate channel error for {}: {}（值不落日志）",
+                                            call.name, e
+                                        );
+                                        return format!(
+                                            "⛔ CREDENTIAL USE — NO APPROVAL CHANNEL [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，无可用审批通道，fail-closed 拒绝。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
+                                            call.name
+                                        );
                                     }
                                 }
                             }

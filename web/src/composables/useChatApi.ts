@@ -63,6 +63,9 @@ export interface SessionEntry {
   snoozedUntil?: string
   /** B11：暂停备注（用户可选说明）。 */
   snoozeNote?: string
+  /** L22（2026-11-03 snooze 排队）：暂停期排队消息数（sidecar pending
+   *  投影；>0 才带字段）。侧栏 💤+n 徽标的依据——恢复后自动投递。 */
+  pendingCount?: number
   /** 会话级全部放行（2026-10-24 长任务无人值守计划：sidecar `allow_all`
    *  投影）。缺省 = 关。侧栏 🔓 徽标的依据。 */
   allow_all?: boolean
@@ -254,9 +257,26 @@ export function useChatApi() {
         ...(note ? { note } : {}),
       }),
 
-    /** B11：取消暂停（立即恢复）。幂等——未暂停时返回 unsnoozed=false。 */
-    unsnooze: (session_id: string): Promise<{ session_id: string; unsnoozed: boolean }> =>
+    /** B11：取消暂停（立即恢复）。幂等——未暂停时返回 unsnoozed=false。
+     *  L22：`delivered` = 解除后重放投递的暂停期排队消息数（0 = 无滞留）。 */
+    unsnooze: (
+      session_id: string,
+    ): Promise<{ session_id: string; unsnoozed: boolean; delivered?: number }> =>
       request('sessions', 'unsnooze', { session_id }),
+
+    /** L22（2026-11-03 session PR 最小形态）：分支会话变更文件清单
+     *  （jsonl assistant 行 file_changes 聚合去重，首次出现序）。清单逐
+     *  文件走 file_diff 看对比。 */
+    changedFiles: (session_id: string): Promise<{ session_id: string; files: string[] }> =>
+      request('sessions', 'changed_files', { session_id }),
+
+    /** L22（2026-11-03 跨设备移动）：sessions.export 的配对面——导入导出
+     *  消息行重建会话（逐行 VERBATIM 落盘）。session_id 缺省 = 服务端生成
+     *  uuid；目标已存在 = 后端诚实拒绝（导入不覆盖）。 */
+    importSession: (
+      data: { session_id?: string; title?: string; messages: unknown[] },
+    ): Promise<{ session_id: string; imported: number }> =>
+      request('sessions', 'import', data),
 
     /** detach（2026-10-20）：脱离父分支——清血缘 meta（parent/fork缘由/
      *  分支摘要），与会话的父会话平级独立；子分支跟随独立。不可逆；

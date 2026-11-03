@@ -152,6 +152,46 @@ pub enum RoamingAction {
     /// Disable cross-network roaming (writes config.cluster.json roaming.enabled;
     /// takes effect on gateway restart)
     Disable,
+    /// Add node to trust book（L16：写盘即激活互信 allowlist regime——
+    /// 首次写入 trust.toml 起发现链 TOFU 钉存 + 插件 accept 闸 allowlist 语义）
+    TrustAdd {
+        /// iroh node_id hex（64 hex；接受 `iroh:` 前缀 / 大写，归一入簿）
+        node_id: String,
+    },
+    /// List trust book contents（trusted / revoked 全量 + regime 状态）
+    TrustList,
+    /// Revoke node（从 trusted 移除 + 入 revoked 留痕；三臂生效：其 announce
+    /// 不采信 / 新 iroh 连接被拒 / 本节点出站拨号 veto）
+    Revoke {
+        /// iroh node_id hex（64 hex；接受 `iroh:` 前缀 / 大写，归一入簿）
+        node_id: String,
+    },
+    /// Un-revoke（从 revoked 移除；不自动恢复信任——重信需显式 trust-add）
+    Unrevoke {
+        /// iroh node_id hex（64 hex；接受 `iroh:` 前缀 / 大写，归一入簿）
+        node_id: String,
+    },
+    /// List mandate 公钥钉存（L13-a：`[mandate_keys]` / `[mandate_revoked]`
+    /// 全量 + 各节点验签态）
+    MandateList,
+    /// Force-pin mandate 公钥（管理面显式写簿：覆盖既有 pin / 轮换唯一
+    /// 通道；簿缺席时创建——trust-add 同款 regime 激活语义）
+    MandatePin {
+        /// cluster node_id（大小写归一入簿）
+        node_id: String,
+        /// P-256 SEC1 公钥 hex（66 compressed / 130 uncompressed）
+        pubkey: String,
+    },
+    /// Revoke mandate 公钥（吊销态一票否决验签；keys 保留留痕）
+    MandateRevoke {
+        /// cluster node_id
+        node_id: String,
+    },
+    /// Un-revoke mandate 公钥（pin 保留，验签态恢复）
+    MandateUnrevoke {
+        /// cluster node_id
+        node_id: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -303,6 +343,26 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Some(interval) = cfg.get("broadcast_interval").and_then(|v| v.as_u64()) {
                         println!("  Broadcast Interval: {}s", interval);
                     }
+                    // L13-b：mandate 授权配置（CLI 是离线静态视图——运行时
+                    // 签名器状态看 Dashboard runtime.status 的 mandate 段）。
+                    if let Some(m) = cfg.get("mandate").and_then(|v| v.as_object()) {
+                        let mode = m.get("mode").and_then(|v| v.as_str()).unwrap_or("verify");
+                        let sign = m
+                            .get("sign_enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+                        println!("  Mandate: mode={} sign={}", mode, sign);
+                    }
+                    let key_path = common::cluster_dir(&home).join("mandate_key.json");
+                    println!(
+                        "  Mandate key: {} [{}]",
+                        key_path.display(),
+                        if key_path.exists() {
+                            "found"
+                        } else {
+                            "not found (generated at gateway start)"
+                        }
+                    );
                 }
 
                 // 身份字段从 peers.toml [node] 段读
@@ -970,6 +1030,9 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     // init 不写声明（setup_roaming 按派生对账）。
                     iroh_id: None,
                     runtime_backend: runtime_backend_value,
+                    // mandate 签名公钥声明（L13-a）：init 期无运行时签名密钥
+                    //（L13-b 落地后真相源改为运行时 leaf key 派生），不写声明。
+                    pubkey: None,
                 },
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {
@@ -1212,7 +1275,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
     use crate::roaming_plugin_loader::{RoamingLoadOutcome, load_roaming_plugin, relay_init_json};
     use nemesis_cluster::roaming::plugin_bridge::{self, BridgeOutcome};
     use nemesis_cluster::roaming::roaming_key_path;
-    use nemesis_cluster::roaming::trust::TrustBook;
+    use nemesis_cluster::roaming::trust::{TrustBook, trust_book_path};
 
     // roaming_* / resolve_*_in_workspace 系列收的是 workspace 根（与 gateway
     // setup_roaming、WSAPI 面同口径），不是 home——错传会把 key/config 写到
@@ -1283,6 +1346,10 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                         "  信任名单: trust.toml 已启用（trusted {} 条 / revoked {} 条）",
                         d.trusted.len(),
                         d.revoked.len()
+                    );
+                    println!(
+                        "  mandate 公钥: {} 条（L13-a 分发面；验签消费在 L13-b，详情 `roaming mandate-list`）",
+                        d.mandate_keys.len()
                     );
                 }
                 Ok(None) => println!("  信任名单: 未启用（无 trust.toml——token 单层语义）"),
@@ -1357,7 +1424,186 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             println!("  （重启网关后生效：nemesisbot gateway）");
             Ok(())
         }
+        RoamingAction::TrustAdd { node_id } => {
+            let hex = normalize_trust_hex(&node_id)?;
+            let regime_was_off = !trust_book_path(&workspace).exists();
+            let mut book = load_trust_book_or_new(&workspace)?;
+            book.trust(&hex);
+            save_trust_book(&workspace, &book)?;
+            println!("Trusted iroh:{hex}");
+            if regime_was_off {
+                // L16：写入即建文件 = regime 激活唯一路径——一次性语义说明。
+                println!("  trust.toml 已创建 = 互信 allowlist regime 激活：");
+                println!("  - 发现链首见节点自动钉存（TOFU）；");
+                println!(
+                    "  - 插件 accept 闸转 allowlist 语义（仅 trusted/已钉存节点可连入，陌生直连拒）；"
+                );
+                println!(
+                    "  - revoked 一票否决（revoke 三臂：announce 不采信 / accept 拒连 / dial veto）。"
+                );
+            }
+            Ok(())
+        }
+        RoamingAction::TrustList => {
+            match TrustBook::load(&workspace) {
+                Ok(Some(book)) => {
+                    let d = book.data();
+                    println!(
+                        "TrustBook: {}（regime 已激活）",
+                        trust_book_path(&workspace).display()
+                    );
+                    println!("  trusted（{} 条）:", d.trusted.len());
+                    if d.trusted.is_empty() {
+                        println!("    （空——显式关门形态：TOFU 钉存外全部拒绝）");
+                    }
+                    for s in &d.trusted {
+                        println!("    iroh:{s}");
+                    }
+                    println!("  revoked（{} 条）:", d.revoked.len());
+                    if d.revoked.is_empty() {
+                        println!("    （空）");
+                    }
+                    for s in &d.revoked {
+                        println!("    iroh:{s}");
+                    }
+                }
+                Ok(None) => {
+                    println!("TrustBook: 未启用（无 trust.toml——token 单层语义）");
+                    println!(
+                        "  激活路径：`cluster roaming trust-add <hex>` 或 `revoke <hex>`（首次写入即激活）。"
+                    );
+                }
+                Err(e) => anyhow::bail!("trust.toml 读取失败: {e}"),
+            }
+            Ok(())
+        }
+        RoamingAction::Revoke { node_id } => {
+            let hex = normalize_trust_hex(&node_id)?;
+            let mut book = load_trust_book_or_new(&workspace)?;
+            book.revoke(&hex);
+            save_trust_book(&workspace, &book)?;
+            println!("Revoked iroh:{hex}");
+            println!(
+                "  三臂生效：其 announce 不再采信 / 新 iroh 连接被拒 / 本节点出站 iroh 拨号 veto。"
+            );
+            // TCP 边界注记（§2.3 对称面）：trust 簿只管辖 roaming 叠加层。
+            println!(
+                "  注意：信任簿只管辖 iroh 漫游叠加层——TCP 主通路直连不受此拦（节点级移除走 `cluster peer remove`）；在途连接不踢，下次连接由 accept 闸拒绝。"
+            );
+            Ok(())
+        }
+        RoamingAction::Unrevoke { node_id } => {
+            let hex = normalize_trust_hex(&node_id)?;
+            let mut book = load_trust_book_or_new(&workspace)?;
+            book.unrevoke(&hex);
+            save_trust_book(&workspace, &book)?;
+            println!("Un-revoked iroh:{hex}（重新信任需显式 `cluster roaming trust-add <hex>`）");
+            Ok(())
+        }
+        RoamingAction::MandateList => {
+            use nemesis_cluster::roaming::trust::{MandateKeyVerdict, mandate_key_state};
+            match TrustBook::load(&workspace) {
+                Ok(Some(book)) => {
+                    let d = book.data();
+                    println!(
+                        "Mandate 公钥簿: {}（regime 已激活）",
+                        trust_book_path(&workspace).display()
+                    );
+                    println!("  mandate_keys（{} 条）:", d.mandate_keys.len());
+                    if d.mandate_keys.is_empty() {
+                        println!("    （空——发现链 TOFU 首见钉存后此处出现条目）");
+                    }
+                    for (node_id, pk) in &d.mandate_keys {
+                        let state = match mandate_key_state(&workspace, node_id) {
+                            MandateKeyVerdict::Pinned(_) => "pinned",
+                            MandateKeyVerdict::Revoked => "revoked",
+                            MandateKeyVerdict::Absent => "absent",
+                        };
+                        println!("    {node_id}: {pk}（{state}）");
+                    }
+                    println!("  mandate_revoked（{} 条）:", d.mandate_revoked.len());
+                    if d.mandate_revoked.is_empty() {
+                        println!("    （空）");
+                    }
+                    for s in &d.mandate_revoked {
+                        println!("    {s}");
+                    }
+                }
+                Ok(None) => {
+                    println!("Mandate 公钥簿: 未启用（无 trust.toml）");
+                    println!(
+                        "  激活路径：`cluster roaming mandate-pin <node_id> <pubkey>`（首次写入即激活）；激活后发现链对 announce 携带的 mandate 公钥 TOFU 首见自动钉存（L13-a），验签消费在 L13-b。"
+                    );
+                }
+                Err(e) => anyhow::bail!("trust.toml 读取失败: {e}"),
+            }
+            Ok(())
+        }
+        RoamingAction::MandatePin { node_id, pubkey } => {
+            use nemesis_cluster::roaming::trust::mandate_pin_forced;
+            let regime_was_off = !trust_book_path(&workspace).exists();
+            match mandate_pin_forced(&workspace, &node_id, &pubkey) {
+                Ok(outcome) => {
+                    println!("Pinned mandate 公钥: {node_id}");
+                    if outcome.persisted() {
+                        println!("  （盘上已更新）");
+                    }
+                    if regime_was_off {
+                        println!("  trust.toml 已创建 = mandate 公钥钉存 regime 激活：");
+                        println!("  - 发现链对 announce 携带的 mandate 公钥 TOFU 首见自动钉存；");
+                        println!("  - 轮换唯一通道 = 本命令（mandate-pin 覆盖既有 pin）。");
+                    }
+                    Ok(())
+                }
+                Err(e) => anyhow::bail!("mandate pin 失败: {e}"),
+            }
+        }
+        RoamingAction::MandateRevoke { node_id } => {
+            use nemesis_cluster::roaming::trust::mandate_revoke;
+            mandate_revoke(&workspace, &node_id)
+                .map_err(|e| anyhow::anyhow!("mandate revoke 失败: {e}"))?;
+            println!("Revoked mandate 公钥: {node_id}（keys 保留留痕，验签一票否决）");
+            Ok(())
+        }
+        RoamingAction::MandateUnrevoke { node_id } => {
+            use nemesis_cluster::roaming::trust::mandate_unrevoke;
+            mandate_unrevoke(&workspace, &node_id)
+                .map_err(|e| anyhow::anyhow!("mandate unrevoke 失败: {e}"))?;
+            println!("Un-revoked mandate 公钥: {node_id}（pin 保留，验签态恢复）");
+            Ok(())
+        }
     }
+}
+
+/// L16 管理面入参校验：剥 `iroh:` 前缀 → 64 hex + on-curve（`node_id_from_hex`
+/// 同款）loud 拒绝。管理面入簿条目会实际影响插件 accept 闸——垃圾条目 =
+/// 无声死区（对端真 hex 对不上永不命中），必须在门口拦住。返回小写 hex
+/// （TOML 存储形态）。
+fn normalize_trust_hex(input: &str) -> Result<String> {
+    let bare = input.trim().trim_start_matches("iroh:").trim();
+    let arr = nemesis_cluster::roaming::node_id_from_hex(bare)
+        .map_err(|e| anyhow::anyhow!("node_id 非法: {e}"))?;
+    Ok(arr.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// 加载信任簿（簿缺席 = regime 未激活 → 空簿起底；读失败 loud 报错——
+/// 激活态下坏簿不允许静默改写覆盖）。
+fn load_trust_book_or_new(workspace: &Path) -> Result<nemesis_cluster::roaming::trust::TrustBook> {
+    match nemesis_cluster::roaming::trust::TrustBook::load(workspace) {
+        Ok(Some(b)) => Ok(b),
+        Ok(None) => Ok(nemesis_cluster::roaming::trust::TrustBook::from_data(
+            Default::default(),
+        )),
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
+}
+
+/// 信任簿落盘（原子写由 TrustBook::save 承担；错误转 anyhow）。
+fn save_trust_book(
+    workspace: &Path,
+    book: &nemesis_cluster::roaming::trust::TrustBook,
+) -> Result<()> {
+    book.save(workspace).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// 漫游 config 键写入（CLI 面）：`roaming.enabled` = bool。咽喉锁 + 原子写，

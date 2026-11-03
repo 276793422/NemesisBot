@@ -733,6 +733,7 @@ async fn test_handle_cluster_continuation_no_data() {
         &MockContinuationProvider::new(vec![]),
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -785,6 +786,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -841,6 +843,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -923,6 +926,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &tools,
         &outbound_tx,
         None,
@@ -966,6 +970,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1036,6 +1041,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1353,6 +1359,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1434,6 +1441,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1515,6 +1523,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1584,6 +1593,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1738,6 +1748,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1882,6 +1893,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         &provider,
         "model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &tools,
         &outbound_tx,
         Some(Arc::clone(&observer)),
@@ -1937,6 +1949,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         &provider,
         "model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -2547,6 +2560,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -2606,6 +2620,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         Some(Arc::new(nemesis_observer::Manager::new())),
@@ -3171,6 +3186,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         &provider_no_vision,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3226,6 +3242,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         &provider_vision,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3470,6 +3487,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3539,6 +3557,7 @@ async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3595,6 +3614,7 @@ async fn test_cluster_continuation_no_source_node_meta_absent() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

@@ -189,11 +189,12 @@ fn workspace_absent_returns_none() {
 // 的临时名注释、HotReloader::force_reload 的 2026-10-22 实录、auth_tests
 // 的 20ms sleep「不赌 mtime 粒度」三处在案）——第二次写与第一次写落在同
 // 一 tick 时 mtime 相同，mtime 单信号缓存把第二次写当「未变」：禁用/删除
-// 的 key 无限期继续放行（直到下次写盘或重启），「写盘即热生效」契约被破。
-// 毒化缓存 = 确定性重建该碰撞态（mtime 与写代号都取当前真实值——即只剩
-// 「表」是第二次写前的陈旧值，等价于旧 mtime 单信号下的自然碰撞态）：任何
-// 单一信号下的新鲜判定都拦不住它，只有「表源自上次读，写代号已前进」的
-// 代号失配才能重读。
+// 的 key 无限期继续放行，「写盘即热生效」契约被破。
+// 收敛记录（与远端同族修复合并后方案升级为内容比对，BUG-20261103-350）：
+// 时钟信号退场，比对信号 = 文件字节——同 tick 双写在结构上必可分辨
+//（set_enabled 翻转 enabled 字段 → 字节必变），本测试钉住该结构前提
+//（第二次写字节 ≠ 缓存字节）+ 端到端穿透（零间隔双写后禁用即刻生效，
+// 不 sleep 不毒化）。
 #[test]
 fn same_tick_double_write_disable_still_takes_effect() {
     let (dir, ws) = held_workspace("same_tick");
@@ -201,27 +202,22 @@ fn same_tick_double_write_disable_still_takes_effect() {
     proxy_keys_file::add_key(&config, entry("bot-a", "nbk_aaa")).unwrap();
     let state = make_state(Some(ws));
     assert!(match_proxy_caller(&state, "nbk_aaa", "/v1/chat/completions").is_some());
-    // 碰撞态锚点 = set_enabled 之前的代号（缓存里的表正是这个代号读的）。
-    let stale_gen = proxy_keys_file::write_generation();
+    // 缓存已热（持第一次写的表 + 字节）。
+    let cached_bytes = crate::proxy_keys::CACHE.lock().as_ref().unwrap().1.clone();
+    // 同 tick 第二次写：与第一次写零间隔，不等任何钟。
     proxy_keys_file::set_enabled(&config, "bot-a", false).unwrap();
-    // 毒化：mtime 伪装成「最新」（取当前真实值——同 tick 双写下与缓存里
-    // 的旧 mtime 数值相同），代号与表是 set_enabled 前的（自然碰撞态：
-    // 缓存最后一次刷新停在第一次写，第二次写只动了 mtime 且没动成）。
+    // 结构前提：禁用写必改字节（enabled 字段翻转）——比对信号对同 tick
+    // 双写必失配（mtime 单信号在此形态下等值，这正是被替换掉的原因）。
     let path = proxy_keys_file::proxy_keys_config_path(&config);
-    let mtime_now = std::fs::metadata(&path).unwrap().modified().unwrap();
-    *crate::proxy_keys::CACHE.lock() = Some((
-        path,
-        mtime_now,
-        stale_gen,
-        Arc::new(vec![entry("bot-a", "nbk_aaa")]),
-    ));
-    let cur_gen = proxy_keys_file::write_generation();
-    assert!(
-        stale_gen != cur_gen,
-        "set_enabled 必须递增写代号（本测试的失配判据）"
+    let bytes_now = std::fs::read(&path).unwrap();
+    assert_ne!(
+        &*bytes_now,
+        cached_bytes.as_slice(),
+        "禁用写必须改变文件字节（内容比对可分辨同 tick 双写的前提）"
     );
+    // 端到端：失配重读 → 禁用即刻生效。
     assert!(
         match_proxy_caller(&state, "nbk_aaa", "/v1/chat/completions").is_none(),
-        "同 tick 双写（mtime 相同）后禁用必须仍然生效"
+        "同 tick 双写后禁用必须仍然生效"
     );
 }

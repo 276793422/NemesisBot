@@ -433,10 +433,19 @@ fn tier_lists_background_tools() {
         normal.contains(&"background_kill"),
         "background_kill in Normal"
     );
+    // L11（2026-11-03）：steer 动词随家族同档 Normal+。
+    assert!(
+        normal.contains(&"background_steer"),
+        "background_steer in Normal"
+    );
     let mini = tier_allowed_tools(ModelTier::Mini);
     assert!(
         !mini.contains(&"background_start"),
         "Mini excluded by design (job_id bookkeeping burns turns)"
+    );
+    assert!(
+        !mini.contains(&"background_steer"),
+        "Mini excluded by design (steer needs job_id bookkeeping too)"
     );
     // Big/Auto see everything (empty slice = no filtering).
     assert!(tier_allowed_tools(ModelTier::Big).is_empty());

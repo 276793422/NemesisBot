@@ -114,6 +114,12 @@ fn test_tool_to_operation_inventory_complete() {
         tool_to_operation("background_kill"),
         Some(OperationType::Internal)
     );
+    // L11（2026-11-03）：steer = 注入指令操控进程 → exec 类审批口径
+    // （与 output/kill 的 Internal 例外刻意不同档）。
+    assert_eq!(
+        tool_to_operation("background_steer"),
+        Some(OperationType::ProcessExec)
+    );
     // 纯编排/查询/交互面 → Internal（LOW）。
     for name in [
         "message",

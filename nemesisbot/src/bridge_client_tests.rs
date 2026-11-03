@@ -600,31 +600,34 @@ async fn test_fin_true_does_not_shutdown_write_half() {
 async fn spawn_mock_relay_on_same_port(
     port: u16,
 ) -> tokio::task::JoinHandle<WebSocketStream<TcpStream>> {
-    // 全量并行下同口重绑会撞旧 listener/accepted 流的短暂残留窗口
-    //（WSAEADDRINUSE；实录：test_welcome_rejected_then_retry 全量跑 rebind
-    // 假红、单测复跑恒绿）——有界退避重试代替一步 expect。客户端退避重连
-    // 循环会等到监听者出现，延迟不破坏用例语义。
-    let listener = {
-        let mut bound = None;
-        let mut last_err = None;
-        for _ in 0..10 {
-            match TcpListener::bind(("127.0.0.1", port)).await {
-                Ok(l) => {
-                    bound = Some(l);
-                    break;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-        bound.unwrap_or_else(|| panic!("rebind after retries: {last_err:?}"))
-    };
+    let listener = bind_with_retry(port).await;
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept#2");
         accept_async(stream).await.expect("ws handshake#2")
     })
+}
+
+/// 同口重绑（有界退避重试）：全量并行下重绑会撞旧 listener/accepted 流的
+/// 短暂残留窗口（WSAEADDRINUSE；实录：test_welcome_rejected_then_retry /
+/// test_kick_reconnect_skips_backoff_wait 全量跑 rebind 假红、单测复跑恒
+/// 绿）——有界退避重试代替一步 expect。客户端退避重连循环会等到监听者
+/// 出现，延迟不破坏用例语义。单一真相源：同口重绑一律走这里。
+async fn bind_with_retry(port: u16) -> tokio::net::TcpListener {
+    let mut bound = None;
+    let mut last_err = None;
+    for _ in 0..10 {
+        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(l) => {
+                bound = Some(l);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    bound.unwrap_or_else(|| panic!("rebind after retries: {last_err:?}"))
 }
 
 #[tokio::test]
@@ -1378,9 +1381,7 @@ async fn test_kick_reconnect_during_session() {
     drop(ws);
 
     // 重绑端口 + 后台反复 kick（permit 合并；任何一次被消费即生效）。
-    let listener2 = TcpListener::bind(("127.0.0.1", relay_port))
-        .await
-        .expect("rebind");
+    let listener2 = bind_with_retry(relay_port).await;
     let kicker = tokio::spawn(async {
         for _ in 0..20 {
             nemesis_web::relay::kick_reconnect();
@@ -1437,9 +1438,7 @@ async fn test_kick_reconnect_skips_backoff_wait() {
     drop(ws);
 
     // 退避 select 的 notified() 臂被 kick 命中 → 立即重连。
-    let listener2 = TcpListener::bind(("127.0.0.1", relay_port))
-        .await
-        .expect("rebind");
+    let listener2 = bind_with_retry(relay_port).await;
     let kicker = tokio::spawn(async {
         for _ in 0..20 {
             nemesis_web::relay::kick_reconnect();

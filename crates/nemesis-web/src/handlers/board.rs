@@ -1166,10 +1166,18 @@ pub fn dispatch_issue_core(
                 if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(
                     resp.result.as_ref(),
                 ) {
-                    Some((
-                        "worker 拒单",
-                        "B 端工作队列满，任务未被接受（ACK status=error）".into(),
-                    ))
+                    // L13-b：ACK error 字段（B 端 mandate 拒绝原因等）优先
+                    // 透传——缺失回落队列满文案（旧 B 端 wire 无 error 键）。
+                    let ack_reason = resp
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("error"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .unwrap_or_else(|| {
+                            "B 端工作队列满，任务未被接受（ACK status=error）".into()
+                        });
+                    Some(("worker 拒单", ack_reason))
                 } else {
                     tracing::info!("[Board] dispatch RPC ACK received (task_id={task_id_for_rpc})");
                     None
@@ -5463,6 +5471,192 @@ fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) -> NewIssue
     ni
 }
 
+// ---------------------------------------------------------------------------
+// L23（三期 2026-11-03）：autopilot 父会话绑定
+// 规则可选绑定发起 session_key：fire 时父会话存活 → 建单 description 注入
+// 父会话溯源行 + 尾窗摘录（planner/worker 派发/评审三条既有链路读
+// description 自动可见，零链路改动）；父会话 clear/删除 → 规则自动暂停 +
+// 评论留痕（不孤儿运行）。注入的是会话账本（chat_log）里已过安全 8 层的
+// 内容——与普通消息同源，不开旁路；工具面/tier 供给闸照常生效（建单不
+// 改变任何 agent 装配）。不绑定 = 现行行为零变化。
+// ---------------------------------------------------------------------------
+
+/// L23 父会话存活判定（单一判据：chat_log 账本 total > 0）。clear 是截空
+/// （文件在、0 行）→ total=0；删除（硬删/回收站移走）→ 文件消失 → total=0。
+/// 两态都不存活——绑定规则 fire 时一律裁决为「父会话已不存在」。
+fn parent_session_alive(session_key: &str) -> bool {
+    let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(session_key, 1, None);
+    total > 0
+}
+
+/// L23 父会话上下文块：尾窗 40 行 → 倒序筛可投影行（user/assistant、
+/// 跳空内容与投影行）→ 最多 10 条、每条 600 字 → join 后总截 4000 字。
+/// 与前端历史气泡同一投影判定（`is_projected_chat_row` 单一真相源）。
+fn build_parent_context_block(session_key: &str) -> String {
+    const WINDOW: usize = 40;
+    const MAX_MESSAGES: usize = 10;
+    const PER_MSG_CHARS: usize = 600;
+    const TOTAL_CHARS: usize = 4000;
+    let (rows, _, _, _) = nemesis_agent::chat_log::read_chat_log(session_key, WINDOW, None);
+    let mut picked: Vec<(String, String)> = Vec::new();
+    for row in rows.iter().rev() {
+        if picked.len() >= MAX_MESSAGES {
+            break;
+        }
+        let role = row.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = row.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if !nemesis_agent::chat_log::is_projected_chat_row(role, content) {
+            continue;
+        }
+        picked.push((
+            role.to_string(),
+            nemesis_utils::truncate(content, PER_MSG_CHARS),
+        ));
+    }
+    picked.reverse(); // 摘录保持时间顺序（旧 → 新）
+    let joined = picked
+        .iter()
+        .map(|(role, content)| format!("[{role}] {content}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    nemesis_utils::truncate(&joined, TOTAL_CHARS)
+}
+
+/// L23 暂停绑定规则：enabled=false 落库（store 是真相源；gateway 的 cron
+/// tick 先读规则 disabled 短路，不误触发；job 侧 enabled 旗标启动同步时
+/// 对齐——不 patch cron job，最终一致）+ ⏸ 系统评论落最近一次 run 的单
+/// （从未运行无评论面 = WARN 日志即留痕面）。
+fn pause_bound_autopilot(
+    store: &Arc<BoardStore>,
+    ap: &nemesis_board::Autopilot,
+    reason: &str,
+) -> Result<(), String> {
+    use nemesis_board::models::{AutopilotPatch, CommentType, NewComment};
+    store.update_autopilot(
+        ap.id,
+        &AutopilotPatch {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    )?;
+    let content = format!(
+        "⏸ 父会话 `{}` 已不存在（{}），本规则已自动暂停（不孤儿运行）；重新启用前请先改绑有效会话",
+        ap.session_key.as_deref().unwrap_or(""),
+        reason
+    );
+    match store.list_issues_by_origin("autopilot", &ap.id.to_string(), 1) {
+        Ok(issues) => {
+            if let Some(latest) = issues.first() {
+                let _ = store.add_comment(NewComment {
+                    issue_id: latest.id,
+                    author: Actor::system("board"),
+                    content,
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+            } else {
+                tracing::warn!(
+                    "[Board] autopilot #{}「{}」绑定父会话已消失并自动暂停（{}）；规则从未运行，无评论面，留痕仅此处",
+                    ap.id,
+                    ap.name,
+                    reason
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[Board] autopilot #{}「{}」暂停留痕评论失败: {e}（暂停本身已生效）",
+                ap.id,
+                ap.name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// L23 fire 时父会话裁决（单一入口，两个 fire_autopilot 变体共用）：
+/// 未绑定 → `Ok(None)`（现行行为零变化）；绑定且父会话存活 →
+/// `Ok(Some(上下文块))`；绑定但父会话已消失 → 先暂停（enabled=false +
+/// 评论留痕）再返回 `Err`——fire 中止、不建单、gateway/WSAPI 把 Err 包成
+/// 「触发失败：…已自动暂停」诚实可见。
+fn resolve_autopilot_parent(
+    store: &Arc<BoardStore>,
+    ap: &nemesis_board::Autopilot,
+) -> Result<Option<String>, String> {
+    let Some(key) = ap
+        .session_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    if parent_session_alive(key) {
+        let mut block = format!("## 父会话上下文（autopilot 绑定继承）\n\n- 父会话: {key}\n");
+        let excerpt = build_parent_context_block(key);
+        if !excerpt.trim().is_empty() {
+            block.push_str("\n### 会话尾窗摘录\n\n");
+            block.push_str(&excerpt);
+            block.push('\n');
+        }
+        return Ok(Some(block));
+    }
+    pause_bound_autopilot(store, ap, "clear 或删除")?;
+    Err(format!(
+        "绑定的父会话 `{key}` 已不存在（clear 或删除），规则已自动暂停（不孤儿运行）"
+    ))
+}
+
+/// L23 主动级联：父会话被删除/clear 时（sessions.rs delete/clear 路径调用），
+/// 暂停所有绑定该会话的启用规则。返回被暂停的规则 id 列表（调用方用于
+/// 汇报/留痕）。幂等：不启用或未绑定的规则不受影响。
+pub fn pause_autopilots_bound_to(
+    store: &Arc<BoardStore>,
+    session_key: &str,
+    reason: &str,
+) -> Vec<i64> {
+    let mut paused = Vec::new();
+    let Ok(rules) = store.list_autopilots() else {
+        return paused;
+    };
+    for ap in rules {
+        if !ap.enabled {
+            continue;
+        }
+        let bound = ap
+            .session_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            == Some(session_key);
+        if !bound {
+            continue;
+        }
+        match pause_bound_autopilot(store, &ap, reason) {
+            Ok(()) => paused.push(ap.id),
+            Err(e) => {
+                tracing::warn!(
+                    "[Board] L23 级联暂停 autopilot #{}「{}」失败: {e}（其余规则照常）",
+                    ap.id,
+                    ap.name
+                );
+            }
+        }
+    }
+    paused
+}
+
+/// 把 L23 上下文块注入 NewIssue 的 description（既有描述在前、块在后；
+/// 既有描述为空时块即描述）。返回注入后的 NewIssue。
+fn inject_parent_context(mut ni: NewIssue, block: String) -> NewIssue {
+    if ni.description.trim().is_empty() {
+        ni.description = block;
+    } else {
+        ni.description = format!("{}\n\n{}", ni.description, block);
+    }
+    ni
+}
+
 /// 全自动流转 D2：autopilot auto_plan 触发 plan 链所需的运行时上下文。
 /// cron 路径的 moderator 槽在 gateway 装配期晚填（OnceLock 模式，照
 /// autopilot_cluster_slot 同款）；WSAPI 路径 agent_loop 现成，包一个即抛
@@ -5517,7 +5711,13 @@ pub fn fire_autopilot(
             ap.name
         ));
     }
-    let issue = store.create_issue(autopilot_new_issue(ap, actor))?;
+    // L23：父会话裁决（绑定且父会话消失 → 已自动暂停 + Err，不建单）。
+    let parent_block = resolve_autopilot_parent(store, ap)?;
+    let mut new_issue = autopilot_new_issue(ap, actor);
+    if let Some(block) = parent_block {
+        new_issue = inject_parent_context(new_issue, block);
+    }
+    let issue = store.create_issue(new_issue)?;
     let dispatch = if target.is_empty() {
         None
     } else {
@@ -5674,7 +5874,13 @@ pub fn fire_autopilot(
             ap.name
         ));
     }
-    let issue = store.create_issue(autopilot_new_issue(ap, actor))?;
+    // L23：父会话裁决（绑定且父会话消失 → 已自动暂停 + Err，不建单）。
+    let parent_block = resolve_autopilot_parent(store, ap)?;
+    let mut new_issue = autopilot_new_issue(ap, actor);
+    if let Some(block) = parent_block {
+        new_issue = inject_parent_context(new_issue, block);
+    }
+    let issue = store.create_issue(new_issue)?;
     let auto_plan_skipped = ap.auto_plan;
     if auto_plan_skipped {
         let _ = store.add_comment(NewComment {
@@ -6477,6 +6683,10 @@ impl ModuleHandler for BoardHandler {
                     // F-U5-1：验收标准（触发建单透传；空 = 不填）。
                     acceptance_criteria: get_opt_str(&data, "acceptance_criteria")
                         .filter(|s| !s.trim().is_empty()),
+                    // L23：父会话绑定（空/空白 = 不绑定）。
+                    session_key: get_opt_str(&data, "session_key")
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
                 })?;
                 // cron 已注入 → 即时登记并回填 cron_job_id；未注入（单测/
                 // 极简构建）→ 启动同步兜底。
@@ -6520,6 +6730,9 @@ impl ModuleHandler for BoardHandler {
                         auto_plan: data.get("auto_plan").and_then(|v| v.as_bool()),
                         // F-U5-1：验收标准（Some("") = 清空；缺省 = 不改）。
                         acceptance_criteria: get_opt_str(&data, "acceptance_criteria"),
+                        // L23：父会话绑定（Some("") = 解除绑定；缺省 = 不改）。
+                        session_key: get_opt_str(&data, "session_key")
+                            .map(|s| s.trim().to_string()),
                     },
                 )?;
                 arm_autopilot_job(ctx, &store, &ap)?;
@@ -7759,3 +7972,8 @@ fn rebase_board_onto_disk(
 
 #[cfg(test)]
 mod tests;
+
+// L23（三期 2026-11-03）：父会话绑定专项测试（home 单例隔离 + fire 裁决 +
+// 级联暂停 + WSAPI 绑定面 roundtrip）。
+#[cfg(test)]
+mod l23_tests;

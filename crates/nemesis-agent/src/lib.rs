@@ -75,6 +75,9 @@ pub mod r#loop;
 pub mod loop_continuation;
 pub mod loop_executor;
 pub mod loop_tools;
+/// L13-b（2026-11-03 三期）：任务 mandate 执行面守卫——marker + 纯裁决
+/// （loop 侧接线在 `r#loop::mandate_guard`）。
+pub mod mandate_guard;
 pub mod mcp_bridge;
 pub mod memory;
 pub mod message_preprocess;

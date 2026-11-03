@@ -179,6 +179,12 @@ mod sessions_snooze_tests;
 #[cfg(test)]
 mod sessions_trash_tests;
 
+// L22（2026-11-03 snooze 排队 + 跨设备移动 + session PR）：import/
+// changed_files 两动词 + 重放 hook（unsnooze delivered / wake 消费 /
+// 无 hook 滞留保留）+ orphan 兜底四臂 + list pendingCount 投影。
+#[cfg(test)]
+mod sessions_l22_tests;
+
 // L6++ G4（2026-09-08）：projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]

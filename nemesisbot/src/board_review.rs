@@ -716,7 +716,10 @@ pub(crate) fn decide_review_action(
 // ---------------------------------------------------------------------------
 
 /// 能力类失败类集：这些 fail_class 同目标重派前必须换节点或人工介入。
-const CAPABILITY_FAIL_CLASSES: [&str; 2] = ["validation_budget", "escalation"];
+/// L13-b 补 mandate_violation（2026-11-03 三期）：worker 执行面守卫终局 =
+/// 授权面/时限/预算违规，同节点同授权状态重放大概率原样复现；换节点 =
+/// master 重签新 mandate（重新授权语义），人工介入 = 评审授权模板本身。
+const CAPABILITY_FAIL_CLASSES: [&str; 3] = ["validation_budget", "escalation", "mandate_violation"];
 
 /// 从评论线程提取最新一条结构化失败分类（write_back_board_dispatch 在
 /// ⛔ 失败评论尾部落 `fail_class: <class>` 标记行，gateway.rs 唯一写入点）。
@@ -725,7 +728,7 @@ const CAPABILITY_FAIL_CLASSES: [&str; 2] = ["validation_budget", "escalation"];
 fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str> {
     // 与 classify_terminal_failure 的值集同步演化（该函数发出什么，这里才
     // 认什么；llm_rate_limit 2026-09-17 补认、token_budget 2026-10-10 P8）。
-    const KNOWN: [&str; 8] = [
+    const KNOWN: [&str; 9] = [
         "validation_budget",
         "llm_timeout",
         "llm_failure",
@@ -733,6 +736,9 @@ fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str
         "empty_result",
         "escalation",
         "token_budget",
+        // L13-b（2026-11-03 三期）：worker 侧 mandate 执行面守卫终局
+        //（授权面/时限/预算违规——同目标重派授权状态不变，大概率复现）。
+        "mandate_violation",
         "exec_failed",
     ];
     comments.iter().rev().find_map(|c| {
@@ -2891,18 +2897,26 @@ pub(crate) fn is_system_terminal_text(raw: &str) -> bool {
 const PANEL_CONCURRENCY: usize = 4;
 /// 检查员路数收敛上限（配置面同步 clamp；防手滑写 5000 路烧穿 LLM 配额）。
 pub(crate) const MAX_REVIEW_CHECKERS: u32 = 5;
+/// L19 手法3：检查员面板 retained input 字节上限（prompt 总账）。8 MiB
+/// 刻意宽于任何现实评审 prompt，只有病态大包才被诚实拒绝。
+const PANEL_MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// B3 多检查员面板评审：`checkers > 1` 时并行发出 N 路独立 `run_review_llm`
-/// （每路独立 prompt 副本 + 编号后缀去相关，`Semaphore` 限并发，`join_all`
-/// 保序），`aggregate_verdicts` 多数票聚合。`checkers = 1`（默认）直接单路
-/// 调用，与历史行为字节等价。全路解析失败 → 返回末路错误（与单路 3 轮
-/// 全败语义一致）。
+/// （每路独立 prompt 副本 + 编号后缀去相关，WorkPool 限并发（permits =
+/// [`PANEL_CONCURRENCY`]，L19 spawn 形态），join 保序），`aggregate_verdicts`
+/// 多数票聚合。`checkers = 1`（默认）直接单路调用，与历史行为字节等价。
+/// 全路解析失败 → 返回末路错误（与单路 3 轮全败语义一致）。
 ///
 /// B3/C2（profession-capability-evolution 2026-10-14）：单路 = B3 职能分镜
 /// （`profession_lens`，按 issue.required_profession 选）；多路 = C2 异构
 /// 三镜按 index 轮换（`checker_lens_for_index`，不再 N 个同质评委，「第
 /// N 号检查员」编号去相关保留）——预取的禁令节引用只注入 constraint 镜
 /// （[`nemesis_prompts::board::CONSTRAINT_LENS_ID`]）。
+///
+/// L19 手法3（改进项三期 2026-11-03）：双上限背压——pending 上限 =
+/// [`MAX_REVIEW_CHECKERS`]（clamp 后全批可提交）、retained input 字节上限 =
+/// [`PANEL_MAX_INPUT_BYTES`]。超限 = 类型化 overloaded **全批诚实拒绝**
+/// （已提交任务取消释放，不部分执行——与 U5 并行批同款批级原子性）。
 async fn run_review_panel(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     base_prompt: &str,
@@ -2925,33 +2939,55 @@ async fn run_review_panel(
         )
         .await;
     }
-    let sem = Arc::new(tokio::sync::Semaphore::new(PANEL_CONCURRENCY));
-    let mut futs = Vec::with_capacity(checkers);
+    let pool = nemesis_utils::workpool::WorkPool::new(nemesis_utils::workpool::PoolLimits {
+        permits: PANEL_CONCURRENCY,
+        max_pending: MAX_REVIEW_CHECKERS as usize,
+        max_input_bytes: PANEL_MAX_INPUT_BYTES,
+    });
+    let mut tasks = Vec::with_capacity(checkers);
     for i in 0..checkers {
         let lens = nemesis_prompts::board::checker_lens_for_index(i);
         let reference = if lens.id == nemesis_prompts::board::CONSTRAINT_LENS_ID {
-            lens_reference
+            lens_reference.map(str::to_string)
         } else {
             None
         };
-        let mut prompt = format!(
+        let prompt = format!(
             "{base_prompt}\n\n（你是第 {} 号检查员：请独立评审，不受其他检查员意见影响）",
             i + 1
         );
-        let sem = Arc::clone(&sem);
+        let input_bytes = prompt.len();
         let agent_loop = Arc::clone(agent_loop);
-        futs.push(async move {
-            let _permit = sem.acquire_owned().await;
-            run_review_llm(&agent_loop, &mut prompt, mode, tier, Some(lens), reference).await
+        let submitted = pool.try_submit(input_bytes, async move {
+            let mut prompt = prompt;
+            run_review_llm(
+                &agent_loop,
+                &mut prompt,
+                mode,
+                tier,
+                Some(lens),
+                reference.as_deref(),
+            )
+            .await
         });
+        match submitted {
+            Ok(t) => tasks.push(t),
+            Err(err) => {
+                // 超限 = 全批诚实拒绝（已提交任务 Drop=取消 → worker 下一
+                // 悬挂点停止释放；不部分执行、不挂起排队）。
+                drop(tasks);
+                warn!("[BoardReview] Reviewer panel rejected by pool: {err}");
+                return Err(format!("评审检查员面板过载，已拒绝执行（{err}）"));
+            }
+        }
     }
-    let results = futures::future::join_all(futs).await;
     let mut oks = Vec::new();
     let mut last_err = String::new();
-    for r in results {
-        match r {
-            Ok(out) => oks.push(out),
-            Err(e) => last_err = e,
+    for task in tasks {
+        match task.join().await {
+            Ok(Ok(out)) => oks.push(out),
+            Ok(Err(e)) => last_err = e,
+            Err(_cancelled) => last_err = "检查员任务被取消".to_string(),
         }
     }
     if oks.is_empty() {
@@ -4700,7 +4736,15 @@ async fn dispatch_selfcheck(
     // 任务从未开始，不能当派发成功——返回 Err 走调用方既有取证失败
     // 路径，评审链不被悬挂等待一个永不会来的回调。
     if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(resp.result.as_ref()) {
-        return Err("取证派发被 worker 拒单（B 端工作队列满，ACK status=error）".into());
+        // L13-b：ACK error 字段（mandate 拒绝原因等）优先透传。
+        let reason = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("error"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "B 端工作队列满，任务未被接受（ACK status=error）".into());
+        return Err(format!("取证派发被 worker 拒单（{reason}）"));
     }
     Ok(task_id)
 }

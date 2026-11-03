@@ -998,6 +998,9 @@ pub fn delete_chat_log(session_key: &str) {
     if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&mpath) {
         tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
     }
+    // L22（2026-11-03 snooze 排队）：第四件套——暂停期 pending 队列随会话
+    // 删除级联清理（会话没了，重放无主；滞留会被 orphan sweep 无限重试）。
+    delete_session_pending(session_key);
 }
 
 /// Clear (truncate) a session's chat log, keeping the file. Used by session
@@ -1444,6 +1447,187 @@ pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// B11：单读暂停标记（gate 同步分类点用）：`(until, note)`。无 meta /
+/// 无标记 = `None`（热路径一次 stat 失败即走，不引入每消息可感开销）。
+pub fn session_snoozed_until(session_key: &str) -> Option<(String, Option<String>)> {
+    let meta = read_meta_full(session_key)?;
+    Some((meta.snoozed_until?, meta.snooze_note))
+}
+
+// ---------------------------------------------------------------------------
+// L22（2026-11-03 snooze 排队）：暂停期入站 pending sidecar
+// ---------------------------------------------------------------------------
+
+/// 暂停期 pending 队列上限。超限 = 诚实拒收（gate 回执），不挤掉旧条——
+/// 挤掉等于丢消息，与「暂停期消息不丢」验收直接冲突。
+pub const SESSION_PENDING_CAP: usize = 64;
+
+/// 暂停期 pending sidecar 路径（`{safe_key}.pending`，与 log/meta 同族
+/// 命名）。内容是 jsonl 行（每行一条序列化 `InboundMessage`），但**刻意
+/// 不用 `.jsonl` 后缀**——boundary sidecar 的先例：session_logs 目录按
+/// `*.jsonl` 扫描为会话，`.jsonl` 后缀会造出幻影会话条目。
+pub(crate) fn pending_path(session_key: &str) -> PathBuf {
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
+    default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.pending", safe_key))
+}
+
+/// 暂停期入站消息排队：整行 serde 序列化追加到 pending sidecar。返回排队
+/// 后的条数；超 [`SESSION_PENDING_CAP`] = `Err`（诚实拒收，gate 侧回执）。
+/// 上限检查与追加非原子（并发双 append 可微越限）——软上限，微越限无害；
+/// 强一致需要文件锁，排队语义不需要。
+///
+/// 存储前把裁决好的会话键烧入副本：gate 的键是 `route_message` 现裁的，
+/// msg 自带 `session_key` 字段可能为空/未定，而 [`pending_sessions`] 与
+/// 重放路径靠**行内** `session_key` 还原真实键（文件名 stem 是 sanitize
+/// 有损形态，不可逆）。
+pub fn append_session_pending(
+    session_key: &str,
+    msg: &nemesis_types::channel::InboundMessage,
+) -> Result<usize, String> {
+    let existing = session_pending_count(session_key);
+    if existing >= SESSION_PENDING_CAP {
+        return Err(format!(
+            "暂停期排队已满（{SESSION_PENDING_CAP} 条上限），本条未接收"
+        ));
+    }
+    let mut stamped = msg.clone();
+    stamped.session_key = session_key.to_string();
+    let line = serde_json::to_string(&stamped).map_err(|e| format!("pending 序列化失败: {e}"))?;
+    let path = pending_path(session_key);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("pending 写入失败: {e}"))?;
+    writeln!(f, "{line}").map_err(|e| format!("pending 写入失败: {e}"))?;
+    Ok(existing + 1)
+}
+
+/// 取走全部 pending（唤醒重放单次消费）。原子性：先 rename 到 `.taking`
+/// 临时名——并发 drain（unsnooze 与 sweeper 唤醒同刻竞态）只有一方成功，
+/// 防双投；读临时名后删除。删除失败 warn 照常返回（重复投递可容忍，丢
+/// 消息不可）。崩溃残留恢复臂：rename 后、删除前进程终止会留 `.taking`，
+/// 下一次 take 优先收走它（Windows rename 不覆盖已存在目标，先收残留是
+/// 顺序必需）；残留臂的并发双读理论可双投（残留只在崩溃后出现），接受。
+pub fn take_session_pending(session_key: &str) -> Vec<nemesis_types::channel::InboundMessage> {
+    let path = pending_path(session_key);
+    let tmp = path.with_extension("taking");
+    let src = if tmp.exists() {
+        tmp.clone()
+    } else {
+        if !path.exists() {
+            return Vec::new();
+        }
+        if fs::rename(&path, &tmp).is_err() {
+            return Vec::new(); // 并发方已取走
+        }
+        tmp.clone()
+    };
+    let mut rows = Vec::new();
+    match fs::read_to_string(&src) {
+        Ok(data) => {
+            for l in data.lines() {
+                match serde_json::from_str::<nemesis_types::channel::InboundMessage>(l) {
+                    Ok(m) => rows.push(m),
+                    Err(e) => {
+                        tracing::warn!("[chat_log] pending 行损坏跳过 {}: {e}", src.display())
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::warn!("[chat_log] pending 读取失败 {}: {e}", src.display()),
+    }
+    if let Err(e) = fs::remove_file(&src) {
+        tracing::warn!("[chat_log] pending 删除失败 {}: {e}", src.display());
+    }
+    rows
+}
+
+/// 当前 pending 条数（列表投影/测试用）。读不到文件 = 0。
+pub fn session_pending_count(session_key: &str) -> usize {
+    let path = pending_path(session_key);
+    let Ok(data) = fs::read_to_string(&path) else {
+        return 0;
+    };
+    data.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
+/// 列出全部有 pending 残留的会话键（读**首行**行内 `session_key` 还原
+/// 真实键——文件名 stem 是 sanitize 有损形态不可逆；写入侧
+/// [`append_session_pending`] 烧入裁决键保证本函数可靠）。空文件/坏首行
+/// 跳过（warn 留痕）。输出按键排序去重（read_dir 顺序是平台实现细节，
+/// 消费与顺序无关，排序只为测试确定性）。
+pub fn pending_sessions() -> Vec<String> {
+    let dir = default_path_manager().sessions_log_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("pending") {
+            continue;
+        }
+        let Ok(data) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(first) = data.lines().next() else {
+            continue; // 空文件
+        };
+        match serde_json::from_str::<nemesis_types::channel::InboundMessage>(first) {
+            Ok(m) => out.push(m.session_key),
+            Err(e) => tracing::warn!("[chat_log] pending 首行损坏 {}: {e}", path.display()),
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 删除 pending sidecar（含 `.taking` 临时名残留）。会话删除级联清理；
+/// 无文件时 no-op。
+pub(crate) fn delete_session_pending(session_key: &str) {
+    let path = pending_path(session_key);
+    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&path) {
+        tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
+    }
+    let tmp = path.with_extension("taking");
+    if tmp.exists()
+        && let Err(e) = nemesis_utils::fsutil::remove_file_retry(&tmp)
+    {
+        tracing::warn!("[chat_log] Failed to delete {}: {}", tmp.display(), e);
+    }
+}
+
+/// L22 session PR：聚合会话内全部 `file_changes`（assistant 行 meta 的
+/// 去重路径清单，按首次出现序）。分支对比视图的文件清单真相源——前端
+/// 拿清单逐文件调 `sessions.file_diff` 展示 unified diff。
+pub fn session_file_changes(session_key: &str) -> Vec<String> {
+    let (rows, _, _, _) = read_chat_log(session_key, 100_000, None);
+    let mut out: Vec<String> = Vec::new();
+    for row in &rows {
+        if row["role"].as_str() != Some("assistant") {
+            continue;
+        }
+        let Some(changes) = row["file_changes"].as_array() else {
+            continue;
+        };
+        for c in changes {
+            if let Some(p) = c["path"].as_str()
+                && !out.iter().any(|e| e == p)
+            {
+                out.push(p.to_string());
+            }
+        }
+    }
     out
 }
 
@@ -1983,3 +2167,9 @@ mod r44_tests;
 // `"work"` 键写入形状（有中间轮才带 / 直答不带 / serde 形态与前端镜像）。
 #[cfg(test)]
 mod work_tests;
+
+// L22（2026-11-03 snooze 排队）：暂停期入站 pending sidecar 设施——
+// append/take 原子取走（rename 防双投 + `.taking` 崩溃残留臂）/ 上限诚实
+// 拒收 / 行内会话键烧入还原 / delete 级联 / session_file_changes 聚合。
+#[cfg(test)]
+mod l22_pending_tests;

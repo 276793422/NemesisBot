@@ -77,7 +77,7 @@ async fn registry_drop_raises_kill_flags_for_running_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let reg = BackgroundProcessRegistry::with_limits(4, 4096);
     let started = reg
-        .start("ping -n 30 127.0.0.1", dir.path().to_str().unwrap())
+        .start("ping -n 30 127.0.0.1", dir.path().to_str().unwrap(), false)
         .await
         .expect("long job starts");
     assert_eq!(started["running"], serde_json::json!(true));
@@ -102,7 +102,11 @@ async fn output_reports_head_dropped_note() {
     let dir = tempfile::tempdir().unwrap();
     let reg = Arc::new(BackgroundProcessRegistry::with_limits(4, 8));
     let started = reg
-        .start("echo cov-overflow-output", dir.path().to_str().unwrap())
+        .start(
+            "echo cov-overflow-output",
+            dir.path().to_str().unwrap(),
+            false,
+        )
         .await
         .unwrap();
     let id = started["job_id"].as_u64().unwrap();
@@ -178,7 +182,7 @@ async fn kill_tool_stops_running_job_idempotently() {
     let kill = BackgroundKillTool::new(reg.clone());
 
     let started = reg
-        .start("ping -n 30 127.0.0.1", dir.path().to_str().unwrap())
+        .start("ping -n 30 127.0.0.1", dir.path().to_str().unwrap(), false)
         .await
         .unwrap();
     let id = started["job_id"].as_u64().unwrap();

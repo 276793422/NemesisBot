@@ -92,6 +92,13 @@ pub trait ClusterCallbacks: Send + Sync {
     fn build_hash(&self) -> String {
         String::new()
     }
+    /// 自报 mandate 签名公钥（L13-a 2026-11-03；P-256 SEC1 hex 66/130，
+    /// announce 携带，对端 TOFU 首见钉存）。默认 `None` = 未宣告（静态
+    /// config 未声明 / L13-b 运行时 key 源未装配——announce 不带字段，
+    /// wire 兼容）。
+    fn mandate_pubkey(&self) -> Option<String> {
+        None
+    }
     /// Handle a newly discovered or updated node.
     /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
@@ -115,6 +122,8 @@ pub trait ClusterCallbacks: Send + Sync {
     /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；非法值实现侧忽略）。
     /// `runtime_backend`：对端自报运行时后端形态（P5；如 `process`/`vm`；
     /// 缺省 None = 未宣告，仅宣告面不设 matcher 闸）。
+    /// `mandate_pubkey`：对端自报 mandate 签名公钥（L13-a；缺省 None =
+    /// 未宣告，TOFU 钉存由实现侧在簿激活前提下执行）。
     /// `source_addr`：R5 源地址收割——announce UDP 包的源 IP（发现层亲眼
     /// 可见的可达性证据），最低优先级拨号候选；非 UDP 路径传 `None`。
     fn handle_discovered_node_ex(
@@ -133,6 +142,7 @@ pub trait ClusterCallbacks: Send + Sync {
         agents: &[crate::types::AgentAnnouncement],
         iroh_id: Option<&str>,
         runtime_backend: Option<&str>,
+        mandate_pubkey: Option<&str>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -142,6 +152,7 @@ pub trait ClusterCallbacks: Send + Sync {
             agents,
             iroh_id,
             runtime_backend,
+            mandate_pubkey,
             source_addr,
         );
         let _ = (professions, tier, agents, iroh_id, source_addr, build);
@@ -678,6 +689,7 @@ impl DiscoveryService {
                         &msg.agents,
                         msg.iroh_id.as_deref(),
                         msg.runtime_backend.as_deref(),
+                        msg.mandate_pubkey.as_deref(),
                         Some(source_ip.as_str()),
                         &msg.build,
                     );
@@ -845,6 +857,7 @@ pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> D
     .with_agents(cluster.agent_roster())
     .with_iroh_id(cluster.roaming_id())
     .with_build(cluster.build_hash())
+    .with_mandate_pubkey(cluster.mandate_pubkey())
 }
 
 /// Send an announce message using the listener's broadcast method.

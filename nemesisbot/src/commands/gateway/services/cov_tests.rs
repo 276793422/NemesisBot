@@ -104,6 +104,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .expect("种 autopilot 规则");
 
@@ -413,6 +414,7 @@ mod wave6 {
                 enabled: true,
                 auto_plan: false,
                 acceptance_criteria: None,
+                session_key: None,
             })
             .expect("种规则");
         let cron = ctx.cron_service.clone();

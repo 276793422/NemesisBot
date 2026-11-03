@@ -1,6 +1,8 @@
-//! B4（devtool-upgrade 阶段 3）：网关级后台进程注册表 + 三件套工具。
+//! B4（devtool-upgrade 阶段 3）：网关级后台进程注册表 + 四动词工具
+//! （start / output / kill / steer，steer 为 L11 2026-11-03 扩展）。
 //!
-//! 起一个长跑进程拿到句柄，随后分页读输出、随时终止。此前唯一的异步形态
+//! 起一个长跑进程拿到句柄，随后分页读输出、随时终止、（可选）经 stdin
+//! 活管道中途注入输入。此前唯一的异步形态
 //! `exec_async` 是 fire-and-forget——`wait_seconds` 后 `Child` 直接 drop（无
 //! kill_on_drop），管道被丢弃导致句柄与输出全部不可回读。
 //!
@@ -10,16 +12,27 @@
 //!
 //! **不进 [`MOVE_TOOLS`](crate::remote_executor_tool::MOVE_TOOLS)**：executor
 //! 分离是 per-call 子进程，一次调用后退出——在子进程里起后台任务，句柄必然
-//! 随子进程孤儿化。因此三件套固定在 gateway 进程内跑（与 `exec_async` 同一
+//! 随子进程孤儿化。因此四动词固定在 gateway 进程内跑（与 `exec_async` 同一
 //! 决策，见 remote_executor_tool.rs 顶部注记），`exec_worker` 侧不注入注册表
 //! （SharedToolConfig.background_registry = None → 工具不注册）。
 //!
 //! 安全：`background_start` 语义等同 `exec`（起进程）→ 8 层管线按
 //! ProcessExec 审查命令本体；`background_output` / `background_kill` 只操作
 //! 本注册表内的自有任务（命令已在 start 时过闸，读缓冲/杀自属子进程不构成
-//! 新的攻击面）→ 显式映射 `Internal`（LOW）。W5 盲点修复后管线未知名 =
+//! 新的攻击面）→ 显式映射 `Internal`（LOW）。`background_steer`（L11，
+//! 2026-11-03）：向自有任务 stdin 注入文本 = 操控进程行为，风险与起进程
+//! 同级 → 显式映射 `ProcessExec`（exec 类审批口径对齐，清单拍板项）；steer
+//! 文本作为工具入参照常过注入检测层。W5 盲点修复后管线未知名 =
 //! CRITICAL fail-closed，不再有「未知名放行」分支可搭（types.rs 表内
 //! 显式条目，例外语义保留但不再依赖兜底行为）。
+//!
+//! stdin 活管道（L11，2026-11-03）：`start(.., steerable=true)` 保留 child
+//! stdin（此前恒 `Stdio::null()`），`background_steer` 向其写字节（text +
+//! 换行 + flush）。registry 层只管字节——协议帧封装（stream-json /
+//! app-server 帧协议）是 delegate_registry 的职责，不在本层重复。缺省
+//! steerable=false 零行为变化（读 stdin 的命令照旧即刻 EOF，不会因活管道
+//! 挂住）。写入队列 = stdin Mutex 的锁队列（tokio Mutex FIFO）——并发
+//! steer 串行落盘不交错撕裂。
 //!
 //! 输出上限：每任务 [`DEFAULT_MAX_OUTPUT_BYTES`] 字节环形语义——超限丢头部
 //! 保尾部，`dropped_bytes` 如实上报（offset 分页坐标按 `produced` 单调计）。
@@ -155,6 +168,12 @@ struct JobEntry {
     /// kill 请求旗标（监督任务看到即树杀；注册表 Drop 同步置位）。
     /// pid 由监督任务闭包持有（Drop 路径无法异步树杀，用不上）。
     kill_flag: Arc<AtomicBool>,
+    /// stdin 活管道（L11）：Some = steerable 启动且未关闭；None = 非可操控
+    /// 启动（null stdin）或已关闭。写入队列 = 本 Mutex 的锁队列。
+    stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
+    /// 是否以 steerable=true 启动（区分「没开过 stdin」与「开过但已断」
+    /// 两种 None 形态，steer 拒绝文案诚实分流）。
+    steerable: bool,
 }
 
 impl JobEntry {
@@ -217,9 +236,16 @@ impl BackgroundProcessRegistry {
         self.jobs.lock().await.len()
     }
 
-    /// 起一个后台任务。`command` 经平台 shell 解释（cmd /C 或 sh -c），
-    /// stdin 恒 null（后台任务无交互输入通道，同 exec 决策）。
-    pub async fn start(&self, command: &str, cwd: &str) -> Result<serde_json::Value, String> {
+    /// 起一个后台任务。`command` 经平台 shell 解释（cmd /C 或 sh -c）。
+    /// `steerable=false` → stdin 恒 null（旧行为，读 stdin 的命令即刻 EOF）；
+    /// `steerable=true` → stdin 活管道（[`Self::steer`] 可注入，任务不读
+    /// stdin 也无害——管道缓冲写满前子进程照常跑）。
+    pub async fn start(
+        &self,
+        command: &str,
+        cwd: &str,
+        steerable: bool,
+    ) -> Result<serde_json::Value, String> {
         // 满员处理：先淘汰最旧的已完成任务；全在跑才拒绝。
         {
             let mut jobs = self.jobs.lock().await;
@@ -247,7 +273,12 @@ impl BackgroundProcessRegistry {
 
         let mut child = build_platform_shell(command)
             .current_dir(cwd)
-            .stdin(std::process::Stdio::null())
+            .stdin(if steerable {
+                // L11：活管道——保留写半端供 background_steer 注入。
+                std::process::Stdio::piped()
+            } else {
+                std::process::Stdio::null()
+            })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             // 任务条目/监督任务都销毁时强杀子进程——孤儿进程兜底。
@@ -259,6 +290,11 @@ impl BackgroundProcessRegistry {
         let output = Arc::new(Mutex::new(OutputBuffer::new(self.max_output)));
         let status: Arc<Mutex<Option<JobStatus>>> = Arc::new(Mutex::new(None));
         let kill_flag = Arc::new(AtomicBool::new(false));
+        let stdin = Arc::new(Mutex::new(if steerable {
+            child.stdin.take()
+        } else {
+            None
+        }));
 
         // B4 同 exec 的 B2 教训：管道必须由独立任务并发排干——否则长输出
         // 写满 ~64KB 管道缓冲会把子进程卡死在 write 上。stdout/stderr 合流
@@ -286,13 +322,23 @@ impl BackgroundProcessRegistry {
                 output,
                 status,
                 kill_flag,
+                stdin,
+                steerable,
             },
         );
         debug!(
             job = id,
             pid = pid.map(|p| p as u64),
+            steerable,
             "[BackgroundRegistry] started"
         );
+
+        let mut note = "poll background_output with job_id (+offset) to read output; \
+                         background_kill to stop"
+            .to_string();
+        if steerable {
+            note.push_str("; background_steer to inject input via stdin");
+        }
 
         Ok(serde_json::json!({
             "job_id": id,
@@ -300,8 +346,8 @@ impl BackgroundProcessRegistry {
             "command": command,
             "cwd": cwd,
             "running": true,
-            "note": "poll background_output with job_id (+offset) to read output; \
-                     background_kill to stop",
+            "steerable": steerable,
+            "note": note,
         }))
     }
 
@@ -399,6 +445,57 @@ impl BackgroundProcessRegistry {
             }
             sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// steer（L11，2026-11-03）：向运行中任务的 stdin 写入 `text`（字节级
+    /// ——registry 层不做协议帧封装；text 后补换行 + flush，行协议 CLI 直读）。
+    /// 并发 steer 经 stdin Mutex 的锁队列串行落盘，不交错撕裂。
+    ///
+    /// 诚实拒绝面：任务不存在 / 已结束 / 非 steerable 启动（stdin 从未开）
+    /// / stdin 已断（进程死了写半端随之收走）——各自独立文案。
+    pub async fn steer(&self, id: u64, text: &str) -> Result<serde_json::Value, String> {
+        let (stdin, steerable, running) = {
+            let jobs = self.jobs.lock().await;
+            let job = jobs
+                .get(&id)
+                .ok_or_else(|| format!("background_steer: no such job_id {}", id))?;
+            let running = job.is_running().await;
+            (Arc::clone(&job.stdin), job.steerable, running)
+        };
+        if !running {
+            return Err(format!("background_steer: job {} is not running", id));
+        }
+        if !steerable {
+            return Err(format!(
+                "background_steer: job {} was started without steerable=true \
+                 (stdin is closed; restart with steerable=true to steer)",
+                id
+            ));
+        }
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut guard = stdin.lock().await;
+            let Some(s) = guard.as_mut() else {
+                return Err(format!(
+                    "background_steer: job {} stdin is closed (process exited?)",
+                    id
+                ));
+            };
+            s.write_all(text.as_bytes())
+                .await
+                .map_err(|e| format!("failed to write to job {} stdin: {}", id, e))?;
+            s.write_all(b"\n")
+                .await
+                .map_err(|e| format!("failed to write to job {} stdin: {}", id, e))?;
+            s.flush()
+                .await
+                .map_err(|e| format!("failed to flush job {} stdin: {}", id, e))?;
+        }
+        Ok(serde_json::json!({
+            "job_id": id,
+            "running": true,
+            "note": "text delivered to the job's stdin (read its reaction via background_output)",
+        }))
     }
 }
 
@@ -607,7 +704,7 @@ pub(crate) async fn tree_kill(pid: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// 三件套工具
+// 四动词工具（start / output / kill / steer，L11 2026-11-03）
 // ---------------------------------------------------------------------------
 
 /// cwd 解析 + 工作区边界（与 `ExecTool` 同形态：相对 cwd join workspace，
@@ -664,7 +761,8 @@ impl Tool for BackgroundStartTool {
         "Start a long-running shell command in the background and return immediately \
          with a job_id. Use for dev servers, watchers, builds, or any command that \
          outlives a normal exec timeout. Read output incrementally with \
-         background_output; stop with background_kill."
+         background_output; stop with background_kill. Pass steerable=true to keep \
+         a live stdin pipe and inject input later with background_steer."
             .to_string()
     }
 
@@ -673,7 +771,8 @@ impl Tool for BackgroundStartTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run in the background"},
-                "cwd": {"type": "string", "description": "Working directory (default: workspace root; confined to workspace)"}
+                "cwd": {"type": "string", "description": "Working directory (default: workspace root; confined to workspace)"},
+                "steerable": {"type": "boolean", "description": "Keep a live stdin pipe so the job can receive input via background_steer (default false)"}
             },
             "required": ["command"]
         })
@@ -691,7 +790,11 @@ impl Tool for BackgroundStartTool {
             self.restrict,
             val.get("cwd").and_then(|v| v.as_str()),
         )?;
-        let payload = self.registry.start(command, &cwd).await?;
+        let steerable = val
+            .get("steerable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let payload = self.registry.start(command, &cwd, steerable).await?;
         Ok(payload.to_string())
     }
 }
@@ -784,6 +887,62 @@ impl Tool for BackgroundKillTool {
             .and_then(|v| v.as_u64())
             .ok_or("Missing 'job_id' argument")?;
         let payload = self.registry.kill(job_id).await?;
+        Ok(payload.to_string())
+    }
+}
+
+/// `background_steer`（L11，2026-11-03）：向运行中后台任务的 stdin 注入文本。
+///
+/// 安全档 = ProcessExec（exec 类审批口径对齐——注入指令 = 操控进程，风险
+/// 同级，见 nemesis-security types.rs L11 注记）；steer 文本作为工具入参
+/// 照常过注入检测层（dispatch 瀑布自动覆盖，工具内不重复扫描）。
+pub struct BackgroundSteerTool {
+    registry: Arc<BackgroundProcessRegistry>,
+}
+
+impl BackgroundSteerTool {
+    pub fn new(registry: Arc<BackgroundProcessRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait]
+impl Tool for BackgroundSteerTool {
+    fn description(&self) -> String {
+        "Inject a line of input into a running background job's stdin (steer). The \
+         job must have been started with background_start using steerable=true. \
+         Use this to drive interactive CLI processes mid-run (answer prompts, send \
+         new commands) without restarting them; read the reaction via \
+         background_output."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer", "description": "Job id returned by background_start"},
+                "text": {"type": "string", "description": "Input line to write to the job's stdin (a newline is appended)"}
+            },
+            "required": ["job_id", "text"]
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+        let job_id = val
+            .get("job_id")
+            .and_then(|v| v.as_u64())
+            .ok_or("Missing 'job_id' argument")?;
+        let text = val
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'text' argument")?;
+        if text.trim().is_empty() {
+            return Err("text is empty".to_string());
+        }
+        let payload = self.registry.steer(job_id, text).await?;
         Ok(payload.to_string())
     }
 }

@@ -1230,6 +1230,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // config）。provider.chat 从 None（lane 默认）改显式 Some(ChatOptions)，
     // 截断判定与续写预算锚在同一可知值上。
     max_tokens_cap: u32,
+    // L28+（改进项三期）：翻倍阶梯封顶（agents.defaults.max_output_ceiling，
+    // 解析在 loop 侧 `current_max_output_ceiling` 完成，与主循环阶梯同源）。
+    // 续写再撞顶翻倍升档不超此值（拍板：阶梯 2 档封顶防单任务 token 失控）。
+    max_tokens_ceiling: u64,
     tools: &T,
     outbound_tx: &tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -1397,6 +1401,14 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // L28：连续空内容撞 cap 计数（主循环器官 6 同款守卫，阈值复用
     // MAX_EMPTY_LENGTH_CONTINUATIONS）。
     let mut empty_length_streak: u32 = 0;
+    // L28+（改进项三期）：续写再撞顶翻倍阶梯的当前档位（起点 = max_tokens_cap；
+    // 升档公式与地板复用主循环 §6.2 length_escalation 单一真相源）。
+    let mut effective_cap = max_tokens_cap as u64;
+    // 拍板（改进项三期计划表）：阶梯 **2 档封顶**——防单任务 token 失控
+    // （主循环阶梯无次数封顶但受 iteration 语义约束，续行单任务长文场景
+    // 显式限 2 次升档）。到顶后维持现档续写，iteration 预算照旧兜底。
+    const MAX_CAP_ESCALATIONS: u32 = 2;
+    let mut cap_escalations: u32 = 0;
 
     for iteration in 1..=max_iterations {
         debug!(
@@ -1429,8 +1441,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 
         let round_start = std::time::Instant::now();
         // L28：options 显式带 cap（此前 None = lane 默认，截断不可知）。
+        // L28+：cap 用当前阶梯档位（续写再撞顶时翻倍升档）。
         let chat_options = crate::types::ChatOptions {
-            max_tokens: Some(max_tokens_cap),
+            max_tokens: Some(effective_cap.min(u32::MAX as u64) as u32),
             ..Default::default()
         };
         let mut response = match provider
@@ -1482,8 +1495,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // 一律丢弃（执行半截 args 是写坏文件事故），只保留正文；②空内容撞
         // cap 不烧预算（M4-B 同款 2 连守卫）；③续写轮消耗同一 1..=20 迭代
         // 预算，耗尽仍截断 → 半截正文 + 诚实注记终局（不再无声冒充完整）。
-        if is_length_truncated(&response, max_tokens_cap) {
-            let token_cap = response.escalated_to.unwrap_or(max_tokens_cap as u64);
+        if is_length_truncated(&response, effective_cap as u32) {
+            let token_cap = response.escalated_to.unwrap_or(effective_cap);
             if response.content.trim().is_empty() {
                 empty_length_streak += 1;
             } else {
@@ -1525,6 +1538,21 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 "[Continuation] task {task_id} truncated at max_tokens cap ({token_cap}); \
                  continue-generation {iteration}/{max_iterations}"
             );
+            // L28+（改进项三期）：续写再撞顶 → 翻倍升档（对齐主循环 §6.2
+            // length_escalation 公式：next = max(current × 2, 32K 地板)），
+            // 受双闸约束：拍板 2 档封顶 + 全局 ceiling（与主循环同源）。
+            // 升档只影响下一迭代请求的 max_tokens；本轮已截断正文照常入
+            // 对话续写（已有半截不丢）。升不了档（到顶）= 维持现档继续，
+            // iteration 预算照旧兜底。
+            let next = (effective_cap * 2).max(crate::r#loop::length_escalation::ESCALATION_FLOOR);
+            if cap_escalations < MAX_CAP_ESCALATIONS && next <= max_tokens_ceiling {
+                cap_escalations += 1;
+                warn!(
+                    "[Continuation] task {task_id} 续写撞 max_tokens 顶（{effective_cap}），\
+                     翻倍至 {next} 续写（第 {cap_escalations}/{MAX_CAP_ESCALATIONS} 次升档，封顶 {max_tokens_ceiling}）"
+                );
+                effective_cap = next;
+            }
             messages.push(LlmMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),

@@ -7,9 +7,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 116,
-        "p50": 62,
-        "p95": 116
+        "max": 91,
+        "p50": 51,
+        "p95": 91
       },
       "model": "testai-1.1",
       "name": "basic_chat",
@@ -21,9 +21,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 165,
-        "p50": 156,
-        "p95": 165
+        "max": 158,
+        "p50": 138,
+        "p95": 158
       },
       "model": "testai-9.3",
       "name": "context_integrity",
@@ -35,9 +35,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 179,
-        "p50": 179,
-        "p95": 179
+        "max": 156,
+        "p50": 156,
+        "p95": 156
       },
       "model": "testai-sum-1.0",
       "name": "identifier_survival",
@@ -49,9 +49,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6147,
-        "p50": 6147,
-        "p95": 6147
+        "max": 6119,
+        "p50": 6119,
+        "p95": 6119
       },
       "model": "testai-2.1",
       "name": "tool_parallel_batch",
@@ -63,9 +63,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 119,
-        "p50": 100,
-        "p95": 119
+        "max": 108,
+        "p50": 102,
+        "p95": 108
       },
       "model": "testai-5.0",
       "name": "security_boundary_block",
@@ -77,9 +77,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 143,
-        "p50": 143,
-        "p95": 143
+        "max": 103,
+        "p50": 103,
+        "p95": 103
       },
       "model": "testai-1.1",
       "name": "concurrent_sessions",
@@ -91,9 +91,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 68,
-        "p50": 68,
-        "p95": 68
+        "max": 65,
+        "p50": 65,
+        "p95": 65
       },
       "model": "testai-vision-1.0",
       "name": "vision_roundtrip",
@@ -105,9 +105,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 117,
-        "p50": 117,
-        "p95": 117
+        "max": 119,
+        "p50": 119,
+        "p95": 119
       },
       "model": "testai-codemode-1.0",
       "name": "codemode_orchestration",
@@ -119,9 +119,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 107,
-        "p50": 107,
-        "p95": 107
+        "max": 116,
+        "p50": 116,
+        "p95": 116
       },
       "model": "testai-docslift-1.0",
       "name": "docs_lift",
@@ -133,9 +133,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6272,
-        "p50": 6233,
-        "p95": 6249
+        "max": 6233,
+        "p50": 6201,
+        "p95": 6206
       },
       "model": "testai-2.1",
       "name": "disconnect_resume",
@@ -147,9 +147,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 1290,
-        "p50": 1290,
-        "p95": 1290
+        "max": 1373,
+        "p50": 1373,
+        "p95": 1373
       },
       "model": "testai-break-1.0",
       "name": "stream_break",
@@ -161,9 +161,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 2916,
-        "p50": 2916,
-        "p95": 2916
+        "max": 2976,
+        "p50": 2976,
+        "p95": 2976
       },
       "model": "testai-9.3",
       "name": "gateway_restart",
@@ -175,9 +175,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 70,
-        "p50": 70,
-        "p95": 70
+        "max": 88,
+        "p50": 88,
+        "p95": 88
       },
       "model": "testai-lenbreak-1.0",
       "name": "length_continuation",
@@ -189,9 +189,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 296,
-        "p50": 296,
-        "p95": 296
+        "max": 297,
+        "p50": 297,
+        "p95": 297
       },
       "model": "testai-chain-step-1.0",
       "name": "codemode_chain",
@@ -201,7 +201,11 @@
     }
   ],
   "schema": "agent-bench/v1",
-  "started_at": "2026-11-01T17:00:48.395112900+08:00",
+  "started_at": "2026-11-02T19:26:36.910365800+08:00",
+  "tool_defs": {
+    "bytes": 69585,
+    "tools": 61
+  },
   "totals": {
     "pass_rate": 1.0,
     "passed": 43,

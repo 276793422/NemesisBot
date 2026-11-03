@@ -515,6 +515,34 @@ async fn main() -> Result<()> {
     scenarios::drop_png_fixture(&ws)?;
     let mut card = Scorecard::new(gateway_version_stub(&cfg));
     let mut api = WsApi::connect().await?;
+
+    // L10-量测（改进项三期）：tool defs 供给面字节快照——场景热切前采集
+    // （默认模型 testai-1.1 = big 档全量供给基线），`chat.context_status`
+    // 单一真相源量测（openai 形态代理口径）；L10-建设惰性 schema 的前后
+    // 对比锚点。失败不炸套件（附随产出，记分卡不带该块）。
+    let (td_data, td_err) = api
+        .call(
+            "chat",
+            "context_status",
+            Some(json!({ "session_id": "bench-tooldefs" })),
+        )
+        .await;
+    match td_err {
+        None => {
+            let td = td_data.and_then(|d| d.get("tool_defs").cloned());
+            if let Some(td) = td.filter(|v| v.is_object()) {
+                println!(
+                    "tool defs 供给面：{} 工具 / {} 字节（openai 形态代理口径）",
+                    td.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+                    td.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0)
+                );
+                card.tool_defs = Some(td);
+            } else {
+                eprintln!("tool defs 量测返回缺 tool_defs 块（记分卡不带该块）");
+            }
+        }
+        Some(e) => eprintln!("tool defs 量测失败（记分卡不带该块）: {e}"),
+    }
     let bench_start = Instant::now();
 
     for spec in &catalog {

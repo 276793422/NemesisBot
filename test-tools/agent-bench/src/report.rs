@@ -85,6 +85,10 @@ pub struct Scorecard {
     /// A3：宿主机指纹（延迟门的同机判定依据；老基线无此字段时延迟门
     /// 自动跳过）。
     pub host: String,
+    /// L10-量测（改进项三期）：tool defs 供给面字节快照（`chat.context_status`
+    /// 单一真相源量测；openai 形态代理口径，big 档全量供给基线）。None =
+    /// 量测失败（附随产出，不炸套件）。
+    pub tool_defs: Option<Value>,
 }
 
 impl Scorecard {
@@ -95,6 +99,7 @@ impl Scorecard {
             gateway_version,
             bench_wall_secs: 0,
             host: host_fingerprint(),
+            tool_defs: None,
         }
     }
 
@@ -136,6 +141,8 @@ impl Scorecard {
             "gateway_version": self.gateway_version,
             "bench_wall_secs": self.bench_wall_secs,
             "host": self.host,
+            // L10-量测：None 序列化为 null（老基线无此字段，对比侧跳过）。
+            "tool_defs": self.tool_defs,
             "totals": {
                 "runs": total_runs,
                 "passed": total_passed,
@@ -155,6 +162,13 @@ impl Scorecard {
         out.push_str(&format!("- 时间：{}\n", self.started_at));
         out.push_str(&format!("- 被测网关：{}\n", self.gateway_version));
         out.push_str(&format!("- 场景执行墙钟：{}s\n\n", self.bench_wall_secs));
+        if let Some(td) = &self.tool_defs {
+            out.push_str(&format!(
+                "- tool defs 供给面：{} 工具 / {} 字节（openai 形态代理口径）\n\n",
+                td.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+                td.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+            ));
+        }
         out.push_str("| 场景 | 模型 | 轮数 | 通过 | 通过率 | p50(ms) | p95(ms) |\n");
         out.push_str("|---|---|---|---|---|---|---|\n");
         for s in &self.scenarios {
@@ -348,6 +362,22 @@ pub fn compare_baseline(
                 regressions += 1;
                 findings.push(format!("场景 `{name}` 本轮未执行（覆盖缩水）"));
             }
+        }
+    }
+    // L10-量测（改进项三期）：tool defs 字节变化提示（仅 note 不判门——
+    // 字节数变化是 L10-建设 惰性 schema 的预期产物，方向由该项自身验收
+    // 承载；这里只保证对比时变化可见）。任一侧缺字段（老基线/量测失败）
+    // = 静默跳过。
+    let base_td = base.get("tool_defs").filter(|v| !v.is_null());
+    if let (Some(b), Some(c)) = (base_td, card.tool_defs.as_ref()) {
+        let bb = b.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cb = c.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        if bb > 0 && cb > 0 && bb != cb {
+            findings.push(format!(
+                "[note] tool defs 字节变化：{bb} → {cb}（基线 {} 工具 / 本轮 {} 工具）",
+                b.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+                c.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+            ));
         }
     }
     if regressions == 0 {

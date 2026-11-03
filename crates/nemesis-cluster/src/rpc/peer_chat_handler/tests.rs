@@ -294,6 +294,7 @@ fn test_peer_chat_ack_fields() {
     let ack = PeerChatAck {
         status: "accepted".into(),
         task_id: "task-123".into(),
+        error: None,
     };
     assert_eq!(ack.status, "accepted");
     assert_eq!(ack.task_id, "task-123");
@@ -404,6 +405,7 @@ fn test_peer_chat_ack_serialization_roundtrip() {
     let ack = PeerChatAck {
         status: "accepted".into(),
         task_id: "t-123".into(),
+        error: None,
     };
     let json = serde_json::to_string(&ack).unwrap();
     let parsed: PeerChatAck = serde_json::from_str(&json).unwrap();
@@ -775,6 +777,7 @@ fn test_peer_chat_ack_serialization() {
     let ack = PeerChatAck {
         status: "accepted".into(),
         task_id: "t-123".into(),
+        error: None,
     };
     let json = serde_json::to_string(&ack).unwrap();
     assert!(json.contains("accepted"));
@@ -2229,4 +2232,259 @@ async fn test_queue_full_rejection_without_source_node_skips_persister() {
         "无 source 节点时 set_running 未发生，delete 也不该发生"
     );
     assert!(tl.get_task("rej-2").is_none(), "ghost 照常移除");
+}
+
+// ============================================================
+// L13-b mandate 前置闸（四道校验 × posture 矩阵 + enforcement 投影）
+// ============================================================
+
+use crate::roaming::mandate::{
+    MandateKeyFile, MandatePolicy, build_default_mandate, now_unix, sign_mandate,
+    signing_key_from_hex,
+};
+use crate::roaming::trust::mandate_pin_forced;
+
+/// 生成一对 mandate 密钥（KeyFile 形态）。
+fn make_gate_key(tag: &str) -> MandateKeyFile {
+    use crate::roaming::mandate::public_key_bytes;
+    let sk = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+    MandateKeyFile {
+        private_key: hex::encode(sk.to_bytes().as_slice()),
+        public_key: hex::encode(public_key_bytes(sk.verifying_key())),
+        created_at: format!("test-{tag}"),
+    }
+}
+
+/// 签好 mandate 的 peer_chat 载荷（allowlist=None 不限；窗口从 signed_at 起
+/// 3600s——默认命中 happy path）。
+fn signed_payload(kf: &MandateKeyFile, task_id: &str, signed_at: u64) -> serde_json::Value {
+    let sk = signing_key_from_hex(&kf.private_key).unwrap();
+    let body = build_default_mandate(task_id, None, 3600, 100_000, 50, signed_at);
+    let env = sign_mandate(&body, &sk).unwrap();
+    let mut payload = serde_json::json!({
+        "content": "do work",
+        "task_id": task_id,
+        "_source": {"chat_id": "web:g1"},
+    });
+    payload["mandate"] = serde_json::to_value(&env).unwrap();
+    payload
+}
+
+fn verify_policy(ws: &std::path::Path) -> MandatePolicy {
+    MandatePolicy {
+        workspace: ws.to_path_buf(),
+        mode: crate::config_loader::MandateMode::Verify,
+    }
+}
+
+fn gate_meta() -> Option<RpcMeta> {
+    Some(RpcMeta {
+        from: Some("node-A".into()),
+    })
+}
+
+#[tokio::test]
+async fn mandate_valid_accepted_with_enforcement_projection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-ok");
+    mandate_pin_forced(tmp.path(), "node-A", &kf.public_key).unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(verify_policy(tmp.path()));
+
+    let payload = signed_payload(&kf, "gate-ok-1", now_unix());
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "accepted", "合法 mandate 必须放行");
+
+    let task = tl.get_task("gate-ok-1").expect("放行任务必须入队");
+    let enf = task.mandate.expect("enforcement 必须随任务投影");
+    assert_eq!(enf.task_id, "gate-ok-1");
+    assert_eq!(enf.tool_allowlist, None, "None = 不限语义投影");
+    assert_eq!(enf.max_tokens, 100_000);
+    assert_eq!(enf.max_tool_calls, 50);
+    assert!(enf.expires_at > now_unix(), "窗口终界在未来");
+}
+
+#[tokio::test]
+async fn mandate_tampered_rejected_and_not_enqueued() {
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-tamper");
+    mandate_pin_forced(tmp.path(), "node-A", &kf.public_key).unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(verify_policy(tmp.path()));
+
+    let mut payload = signed_payload(&kf, "gate-tamper-1", now_unix());
+    // 篡改 budget（扩权攻击形态）——canonical 摘要不匹配
+    payload["mandate"]["budget"]["max_tokens"] = serde_json::json!(999_999_999);
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "error", "篡改 mandate 必须 error ACK");
+    assert_eq!(ack.task_id, "gate-tamper-1");
+    assert!(
+        ack.error
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("mandate 拒绝:"),
+        "拒绝文案必须带 mandate 拒绝: 前缀，got: {:?}",
+        ack.error
+    );
+    assert!(tl.get_task("gate-tamper-1").is_none(), "拒单任务不得入队");
+}
+
+#[tokio::test]
+async fn mandate_missing_verify_passes_old_behavior() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(verify_policy(tmp.path()));
+
+    // 无 mandate（旧 A 端形态）→ verify 放行 = 旧行为
+    let ack = handler.handle(
+        serde_json::json!({"content": "old peer", "task_id": "gate-miss-1"}),
+        gate_meta(),
+    );
+    assert_eq!(ack.status, "accepted", "verify 模式缺失 mandate 放行");
+    let task = tl.get_task("gate-miss-1").expect("放行任务必须入队");
+    assert!(task.mandate.is_none(), "无 mandate = enforcement None");
+    // mandate: null 同缺失语义
+    let ack = handler.handle(
+        serde_json::json!({"content": "old peer", "task_id": "gate-miss-2", "mandate": null}),
+        gate_meta(),
+    );
+    assert_eq!(ack.status, "accepted", "null mandate 同缺失语义放行");
+}
+
+#[tokio::test]
+async fn mandate_missing_require_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(MandatePolicy {
+        workspace: tmp.path().to_path_buf(),
+        mode: crate::config_loader::MandateMode::Require,
+    });
+
+    // require = 防剥离攻击：缺失也拒
+    let ack = handler.handle(
+        serde_json::json!({"content": "stripped?", "task_id": "gate-req-1"}),
+        gate_meta(),
+    );
+    assert_eq!(ack.status, "error", "require 模式缺失 mandate 必须拒");
+    assert!(
+        ack.error.as_deref().unwrap_or("").contains("缺失"),
+        "拒绝文案应说明缺失，got: {:?}",
+        ack.error
+    );
+    assert!(tl.get_task("gate-req-1").is_none(), "拒单任务不得入队");
+}
+
+#[tokio::test]
+async fn mandate_mode_off_ignores_even_garbage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(MandatePolicy {
+        workspace: tmp.path().to_path_buf(),
+        mode: crate::config_loader::MandateMode::Off,
+    });
+
+    // off = 回滚开关：garbage mandate 也零触碰放行
+    let ack = handler.handle(
+        serde_json::json!({"content": "x", "task_id": "gate-off-1", "mandate": "garbage"}),
+        gate_meta(),
+    );
+    assert_eq!(ack.status, "accepted", "off 模式对 mandate 内容零校验");
+    let task = tl.get_task("gate-off-1").expect("放行任务必须入队");
+    assert!(task.mandate.is_none(), "off 模式不投影 enforcement");
+}
+
+#[tokio::test]
+async fn mandate_policy_absent_passes_with_garbage() {
+    // 旧装配兼容：策略未装配（None）= 全放行——带 garbage mandate 的载荷
+    // 不验（验收面没有 workspace 钉存钥就无从验起，宁放行不误伤）
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+
+    let ack = handler.handle(
+        serde_json::json!({"content": "x", "task_id": "gate-none-1", "mandate": "garbage"}),
+        gate_meta(),
+    );
+    assert_eq!(ack.status, "accepted", "未装配策略 = 旧行为全放行");
+    assert!(tl.get_task("gate-none-1").is_some());
+}
+
+#[tokio::test]
+async fn mandate_expired_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-exp");
+    mandate_pin_forced(tmp.path(), "node-A", &kf.public_key).unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(verify_policy(tmp.path()));
+
+    // 重放过期授权：signed_at = now-7200 → expires_at = now-3600（已过期）
+    let now = now_unix();
+    let payload = signed_payload(&kf, "gate-exp-1", now.saturating_sub(7200));
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "error", "过期 mandate 必须拒");
+    assert!(
+        ack.error.as_deref().unwrap_or("").contains("已过期"),
+        "拒绝文案应说明过期，got: {:?}",
+        ack.error
+    );
+    assert!(tl.get_task("gate-exp-1").is_none(), "拒单任务不得入队");
+}
+
+#[tokio::test]
+async fn mandate_task_id_mismatch_rejected() {
+    // 移植攻击：mandate 签给任务 1，贴到任务 2 的载荷
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-bind");
+    mandate_pin_forced(tmp.path(), "node-A", &kf.public_key).unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(verify_policy(tmp.path()));
+
+    let mut payload = signed_payload(&kf, "gate-bind-1", now_unix());
+    payload["task_id"] = serde_json::json!("gate-bind-2");
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "error", "移植 mandate 必须拒");
+    assert!(
+        ack.error.as_deref().unwrap_or("").contains("绑定不匹配"),
+        "拒绝文案应说明绑宝不匹配，got: {:?}",
+        ack.error
+    );
+    assert!(tl.get_task("gate-bind-2").is_none());
+    assert!(tl.get_task("gate-bind-1").is_none());
+}
+
+#[tokio::test]
+async fn mandate_no_pinned_key_rejected() {
+    // TOFU 纪律：任务时到达 mandate 但 B 端无钉存钥 = 拒（钉存只走 announce 面）
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-nopin");
+    // 故意不 pin
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(verify_policy(tmp.path()));
+
+    let payload = signed_payload(&kf, "gate-nopin-1", now_unix());
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "error", "无钉存钥必须拒");
+    assert!(
+        ack.error.as_deref().unwrap_or("").contains("无钉存公钥"),
+        "拒绝文案应说明无钉存钥，got: {:?}",
+        ack.error
+    );
+    assert!(tl.get_task("gate-nopin-1").is_none());
 }

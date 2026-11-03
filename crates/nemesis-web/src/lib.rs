@@ -16,6 +16,7 @@
 
 pub mod api_handlers;
 pub mod api_usage;
+pub mod chat_dedup;
 pub mod chat_event_log;
 pub mod conv_router;
 pub mod cors;
@@ -100,6 +101,11 @@ mod proxy_keys_extra_tests;
 // 入站过滤链 history 过滤器（BUG 2026-09-23 项目会话历史加载修复）。
 #[cfg(test)]
 mod history_filter_tests;
+
+// L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键——LRU 容量 / LRU
+// touch / sidecar 持久化往返 / 损坏 sidecar 降级 / 纯图 seq=0 形态。
+#[cfg(test)]
+mod chat_dedup_tests;
 
 // Home 单例测试竞态锁（test_home.rs 头注）：重定向 home 的测试与经单例
 // 读写 chat_log 的测试全 crate 串行化。

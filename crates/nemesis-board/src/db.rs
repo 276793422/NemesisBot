@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 21;
+const SCHEMA_VERSION: i32 = 22;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -402,223 +402,153 @@ const SCHEMA_V21: &str = r#"
 ALTER TABLE issue ADD COLUMN origin_meta TEXT NOT NULL DEFAULT '';
 "#;
 
+/// v22（三期 L23 定时任务父子上下文语义，2026-11-03）：autopilot 加可选
+/// 父会话绑定列（TEXT，空串 = 未绑定 = 现行行为零变化）。绑定的规则触发
+/// 时先验父会话存活（jsonl 在档且非空）：存活 = 建单继承父会话近段上下文
+/// （description 注入，plan/派发/评审三条既有链路自动看到）+ 单据可溯源
+/// 父会话；消失（清空截空/删除移走）= 规则自动暂停 + 留痕评论，不孤儿
+/// 运行。沿 v15 的 NOT NULL DEFAULT '' 单值 ALTER 模式（存量规则零迁移）。
+/// v22 顺延（v21 已被 origin_meta 占用，合并重排）。
+const SCHEMA_V22: &str = r#"
+ALTER TABLE autopilot ADD COLUMN session_key TEXT NOT NULL DEFAULT '';
+"#;
+
+/// L20 门面迁移链（v1-v22 数组化；语义与原散装 if 链等价：每步原子
+/// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
+const fn mig(
+    version: i32,
+    sql: &'static str,
+    log_note: &'static str,
+) -> nemesis_utils::sqlite_preflight::Migration {
+    nemesis_utils::sqlite_preflight::Migration {
+        version,
+        sql,
+        log_note,
+    }
+}
+
+static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
+    mig(1, SCHEMA_V1, "Database initialized (v1)"),
+    mig(2, SCHEMA_V2, "Database migrated to v2 (issue_dispatch)"),
+    mig(3, SCHEMA_V3, "Database migrated to v3 (notification)"),
+    mig(4, SCHEMA_V4, "Database migrated to v4 (autopilot)"),
+    mig(
+        5,
+        SCHEMA_V5,
+        "Database migrated to v5 (planner: issue 派发需求列 + issue_dependency)",
+    ),
+    mig(
+        6,
+        SCHEMA_V6,
+        "Database migrated to v6 (swarm M2: channel 三表 + asset)",
+    ),
+    mig(
+        7,
+        SCHEMA_V7,
+        "Database migrated to v7 (swarm M3: msg_dedup + seq_ledger)",
+    ),
+    mig(
+        8,
+        SCHEMA_V8,
+        "Database migrated to v8 (swarm M4.5: team_memory)",
+    ),
+    mig(
+        9,
+        SCHEMA_V9,
+        "Database migrated to v9 (auto-flow D2: autopilot.auto_plan)",
+    ),
+    mig(
+        10,
+        SCHEMA_V10,
+        "Database migrated to v10 (auto-flow F3: project.acceptance_criteria)",
+    ),
+    mig(
+        11,
+        SCHEMA_V11,
+        "Database migrated to v11 (P1/A2b: issue.hidden 取消单清理)",
+    ),
+    mig(
+        12,
+        SCHEMA_V12,
+        "Database migrated to v12 (P2/B1: project.directory 项目档案目录)",
+    ),
+    mig(
+        13,
+        SCHEMA_V13,
+        "Database migrated to v13 (P4/E8: dispatch_baseline 变更集归属)",
+    ),
+    mig(
+        14,
+        SCHEMA_V14,
+        "Database migrated to v14 (P5/F2+F3: project.conflict_frozen + pending_merges)",
+    ),
+    mig(
+        15,
+        SCHEMA_V15,
+        "Database migrated to v15 (UAT U5 F-U5-1: autopilot.acceptance_criteria)",
+    ),
+    mig(
+        16,
+        SCHEMA_V16,
+        "Database migrated to v16 (P34: worker_fingerprint + fingerprint_counted)",
+    ),
+    mig(
+        17,
+        SCHEMA_V17,
+        "Database migrated to v17 (profession framework M2: issue.required_profession)",
+    ),
+    mig(
+        18,
+        SCHEMA_V18,
+        "Database migrated to v18 (NB-122 batch: issue.required_capabilities)",
+    ),
+    mig(
+        19,
+        SCHEMA_V19,
+        "Database migrated to v19 (G4 delivery evidence: issue.requires_evidence)",
+    ),
+    mig(
+        20,
+        SCHEMA_V20,
+        "Database migrated to v20 (P6-R1 backend dispatch gate: issue.required_backend)",
+    ),
+    mig(
+        21,
+        SCHEMA_V21,
+        "Database migrated to v21 (task origin_meta coordinates: issue.origin_meta)",
+    ),
+    mig(
+        22,
+        SCHEMA_V22,
+        "Database migrated to v22 (L23 parent-session binding: autopilot.session_key)",
+    ),
+];
+
+/// L20 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
+/// 门面；busy_timeout 让 CLI 与 gateway 并开同库时写写冲突退避重试而不是
+/// 立刻报 SQLITE_BUSY——board.db 支持多进程读）。
+static BOARD_STORE: nemesis_utils::sqlite_preflight::StoreSpec =
+    nemesis_utils::sqlite_preflight::StoreSpec {
+        label: "[BoardStore]",
+        db_noun: "board database",
+        migrate_label: "Board schema",
+        schema_version: SCHEMA_VERSION,
+        migrations: BOARD_MIGRATIONS,
+    };
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create board directory: {e}"))?;
     }
-
-    // B10 手法① 能力准入：Connection::open 对任意可读文件惰性成功——
-    // 被覆盖/截断的垃圾文件要到第一条语句才炸且报错面模糊。头 16 字节
-    // 前置判定，非 SQLite 内容 loud 拒绝并带 hex 摘要。
-    match nemesis_utils::sqlite_preflight::header_kind(db_path)
-        .map_err(|e| format!("Failed to inspect board database file: {e}"))?
-    {
-        nemesis_utils::sqlite_preflight::HeaderKind::New
-        | nemesis_utils::sqlite_preflight::HeaderKind::Valid => {}
-        nemesis_utils::sqlite_preflight::HeaderKind::Foreign { head_hex } => {
-            return Err(nemesis_utils::sqlite_preflight::foreign_header_error(
-                db_path, &head_hex,
-            ));
-        }
-    }
-
-    let conn =
-        Connection::open(db_path).map_err(|e| format!("Failed to open board database: {e}"))?;
-
-    // WAL + FK enforcement；busy_timeout 让 CLI 与 gateway 并开同库时
-    // 写写冲突退避重试而不是立刻报 SQLITE_BUSY（board.db 支持多进程读）。
-    // B10 手法④：journal_mode 拆出为降级尝试（网络盘/FAT/只读 warn 不崩，
-    // 回落默认 journal 模式）；FK/busy_timeout 是语义闸，保持硬失败。
-    nemesis_utils::sqlite_preflight::set_wal_lenient(&conn, "[BoardStore]");
-    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
-        .map_err(|e| format!("Failed to set pragmas: {e}"))?;
-
-    let current_version: i32 = conn
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap_or(0);
-
-    // B10 手法② schema 漂移对账：库来自更新版本的程序 → 拒绝降级打开
-    // （旧行为会把 user_version 静默降级写回，迁移链跳过、运行期
-    // "no such column"）。
-    nemesis_utils::sqlite_preflight::check_schema_drift(current_version, SCHEMA_VERSION)?;
-
-    // B10 手法③ 迁移前轮换备份（0 = 全新库无数据可保护，跳过；备份
-    // 失败 warn 不阻断迁移）。
-    if current_version > 0 && current_version < SCHEMA_VERSION {
-        nemesis_utils::sqlite_preflight::backup_before_migrate(&conn, db_path, "[BoardStore]");
-    }
-
-    if current_version < 1 {
-        migrate_step(&conn, 1, "v1", SCHEMA_V1)?;
-        tracing::info!(version = 1, "[BoardStore] Database initialized (v1)");
-    }
-    if current_version < 2 {
-        migrate_step(&conn, 2, "v2", SCHEMA_V2)?;
-        tracing::info!(
-            version = 2,
-            "[BoardStore] Database migrated to v2 (issue_dispatch)"
-        );
-    }
-    if current_version < 3 {
-        migrate_step(&conn, 3, "v3", SCHEMA_V3)?;
-        tracing::info!(
-            version = 3,
-            "[BoardStore] Database migrated to v3 (notification)"
-        );
-    }
-    if current_version < 4 {
-        migrate_step(&conn, 4, "v4", SCHEMA_V4)?;
-        tracing::info!(
-            version = 4,
-            "[BoardStore] Database migrated to v4 (autopilot)"
-        );
-    }
-    if current_version < 5 {
-        migrate_step(&conn, 5, "v5", SCHEMA_V5)?;
-        tracing::info!(
-            version = 5,
-            "[BoardStore] Database migrated to v5 (planner: issue 派发需求列 + issue_dependency)"
-        );
-    }
-    if current_version < 6 {
-        migrate_step(&conn, 6, "v6", SCHEMA_V6)?;
-        tracing::info!(
-            version = 6,
-            "[BoardStore] Database migrated to v6 (swarm M2: channel 三表 + asset)"
-        );
-    }
-    if current_version < 7 {
-        migrate_step(&conn, 7, "v7", SCHEMA_V7)?;
-        tracing::info!(
-            version = 7,
-            "[BoardStore] Database migrated to v7 (swarm M3: msg_dedup + seq_ledger)"
-        );
-    }
-    if current_version < 8 {
-        migrate_step(&conn, 8, "v8", SCHEMA_V8)?;
-        tracing::info!(
-            version = 8,
-            "[BoardStore] Database migrated to v8 (swarm M4.5: team_memory)"
-        );
-    }
-    if current_version < 9 {
-        migrate_step(&conn, 9, "v9", SCHEMA_V9)?;
-        tracing::info!(
-            version = 9,
-            "[BoardStore] Database migrated to v9 (auto-flow D2: autopilot.auto_plan)"
-        );
-    }
-    if current_version < 10 {
-        migrate_step(&conn, 10, "v10", SCHEMA_V10)?;
-        tracing::info!(
-            version = 10,
-            "[BoardStore] Database migrated to v10 (auto-flow F3: project.acceptance_criteria)"
-        );
-    }
-    if current_version < 11 {
-        migrate_step(&conn, 11, "v11", SCHEMA_V11)?;
-        tracing::info!(
-            version = 11,
-            "[BoardStore] Database migrated to v11 (P1/A2b: issue.hidden 取消单清理)"
-        );
-    }
-    if current_version < 12 {
-        migrate_step(&conn, 12, "v12", SCHEMA_V12)?;
-        tracing::info!(
-            version = 12,
-            "[BoardStore] Database migrated to v12 (P2/B1: project.directory 项目档案目录)"
-        );
-    }
-    if current_version < 13 {
-        migrate_step(&conn, 13, "v13", SCHEMA_V13)?;
-        tracing::info!(
-            version = 13,
-            "[BoardStore] Database migrated to v13 (P4/E8: dispatch_baseline 变更集归属)"
-        );
-    }
-    if current_version < 14 {
-        migrate_step(&conn, 14, "v14", SCHEMA_V14)?;
-        tracing::info!(
-            version = 14,
-            "[BoardStore] Database migrated to v14 (P5/F2+F3: project.conflict_frozen + pending_merges)"
-        );
-    }
-    if current_version < 15 {
-        migrate_step(&conn, 15, "v15", SCHEMA_V15)?;
-        tracing::info!(
-            version = 15,
-            "[BoardStore] Database migrated to v15 (UAT U5 F-U5-1: autopilot.acceptance_criteria)"
-        );
-    }
-    if current_version < 16 {
-        migrate_step(&conn, 16, "v16", SCHEMA_V16)?;
-        tracing::info!(
-            version = 16,
-            "[BoardStore] Database migrated to v16 (P34: worker_fingerprint + fingerprint_counted)"
-        );
-    }
-    if current_version < 17 {
-        migrate_step(&conn, 17, "v17", SCHEMA_V17)?;
-        tracing::info!(
-            version = 17,
-            "[BoardStore] Database migrated to v17 (profession framework M2: issue.required_profession)"
-        );
-    }
-    if current_version < 18 {
-        migrate_step(&conn, 18, "v18", SCHEMA_V18)?;
-        tracing::info!(
-            version = 18,
-            "[BoardStore] Database migrated to v18 (NB-122 batch: issue.required_capabilities)"
-        );
-    }
-    if current_version < 19 {
-        migrate_step(&conn, 19, "v19", SCHEMA_V19)?;
-        tracing::info!(
-            version = 19,
-            "[BoardStore] Database migrated to v19 (G4 delivery evidence: issue.requires_evidence)"
-        );
-    }
-    if current_version < 20 {
-        migrate_step(&conn, 20, "v20", SCHEMA_V20)?;
-        tracing::info!(
-            version = 20,
-            "[BoardStore] Database migrated to v20 (P6-R1 backend dispatch gate: issue.required_backend)"
-        );
-    }
-    if current_version < 21 {
-        migrate_step(&conn, 21, "v21", SCHEMA_V21)?;
-        tracing::info!(
-            version = 21,
-            "[BoardStore] Database migrated to v21 (task origin_meta coordinates: issue.origin_meta)"
-        );
-    }
-    set_version(&conn, SCHEMA_VERSION)?;
-
-    Ok(conn)
-}
-
-/// 单个迁移步——薄包装补存储身份前缀（原子实现在共享件
-/// `nemesis_utils::sqlite_preflight::migrate_step`，手法⑤，R221 BUG-166；
-/// nemesis-data 同源消费）。
-fn migrate_step(
-    conn: &Connection,
-    version: i32,
-    label: &str,
-    schema_sql: &str,
-) -> Result<(), String> {
-    nemesis_utils::sqlite_preflight::migrate_step(
-        conn,
-        version,
-        &format!("Board schema {label}"),
-        schema_sql,
+    // 装配序（能力准入/WAL/漂移对账/迁移前备份/原子迁移链）单一真相源在
+    // 共享件 sqlite_preflight::open_sqlite_store（L20 门面）。
+    nemesis_utils::sqlite_preflight::open_sqlite_store(
+        db_path,
+        &BOARD_STORE,
+        &["PRAGMA busy_timeout = 5000"],
     )
-}
-
-fn set_version(conn: &Connection, version: i32) -> Result<(), String> {
-    conn.pragma_update(None, "user_version", version)
-        .map_err(|e| format!("Failed to set schema version: {e}"))
 }
 
 #[cfg(test)]

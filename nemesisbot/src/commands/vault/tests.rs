@@ -641,3 +641,229 @@ mod wave6 {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// L26②（2026-11-02 三期）：vault 别名域绑定 CLI（Bind/Unbind/Bindings）。
+// 绑定面是明文策略文件 `<workspace>/config/config.vault.json`——不触
+// vault.enc，无需口令；仍走 NEMESISBOT_HOME + GLOBAL_STATE_LOCK 夹具
+// （run() 落 home 解析与既有人马同一纪律）。断言一律盘上真相回读
+// （VaultDomainConfig::load_at），不解析 stdout。
+// ---------------------------------------------------------------------------
+mod domain_bindings {
+    use super::super::VaultAction;
+
+    struct DmEnv {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _tmp: tempfile::TempDir,
+        home: std::path::PathBuf,
+    }
+    impl Drop for DmEnv {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+            unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
+        }
+    }
+    fn dm_env() -> DmEnv {
+        let guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "migrate-test-pw") };
+        DmEnv {
+            _guard: guard,
+            _tmp: tmp,
+            home,
+        }
+    }
+    fn block_on<F: std::future::Future>(f: F) -> <F as std::future::Future>::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+    /// 绑定配置盘上真相（gate 侧 load_at 同源）。
+    fn domain_config(home: &std::path::Path) -> nemesis_config::VaultDomainConfig {
+        let ws = crate::common::workspace_path(home);
+        let p =
+            nemesis_path::workspace_config_dir(&ws).join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE);
+        nemesis_config::VaultDomainConfig::load_at(&p)
+            .expect("绑定配置必须可读")
+            .expect("绑定操作后文件必须存在")
+    }
+    fn bind(alias: &str, tool: &str, slot: &str) -> VaultAction {
+        VaultAction::Bind {
+            alias: alias.into(),
+            tool: tool.into(),
+            slot: slot.into(),
+        }
+    }
+    fn unbind(alias: &str, tool: Option<String>, slot: Option<String>) -> VaultAction {
+        VaultAction::Unbind {
+            alias: alias.into(),
+            tool,
+            slot,
+        }
+    }
+
+    /// 绑定落盘：缺席文件自动建（含 config 目录），内容可被 gate 侧 loader 读回。
+    #[test]
+    fn bind_creates_file_and_persists() {
+        let th = dm_env();
+        block_on(super::super::run(
+            bind("corp", "web_fetch", "headers"),
+            false,
+        ))
+        .unwrap();
+        let cfg = domain_config(&th.home);
+        assert_eq!(
+            cfg.bindings.get("corp").map(|v| v.as_slice()),
+            Some(
+                &[nemesis_config::DomainBinding {
+                    tool: "web_fetch".into(),
+                    slot: "headers".into()
+                }][..]
+            ),
+            "绑定应原样落盘"
+        );
+    }
+
+    /// 幂等：完全相同的 (tool, slot) 重复绑定不追加。
+    #[test]
+    fn bind_is_idempotent() {
+        let th = dm_env();
+        block_on(super::super::run(
+            bind("corp", "web_fetch", "headers"),
+            false,
+        ))
+        .unwrap();
+        block_on(super::super::run(
+            bind("corp", "web_fetch", "headers"),
+            false,
+        ))
+        .unwrap();
+        let cfg = domain_config(&th.home);
+        assert_eq!(cfg.bindings["corp"].len(), 1, "重复绑定不得追加");
+    }
+
+    /// 同别名多条绑定累积（多域白名单形态）。
+    #[test]
+    fn bind_accumulates_distinct_entries() {
+        let th = dm_env();
+        block_on(super::super::run(
+            bind("corp", "web_fetch", "headers"),
+            false,
+        ))
+        .unwrap();
+        block_on(super::super::run(
+            bind("corp", "rpc_call", "credential"),
+            false,
+        ))
+        .unwrap();
+        let cfg = domain_config(&th.home);
+        assert_eq!(cfg.bindings["corp"].len(), 2);
+    }
+
+    /// Unbind 三形态：精确 (tool,slot) / 按 tool（该工具全部槽位）/ 全删。
+    #[test]
+    fn unbind_three_forms() {
+        let th = dm_env();
+        block_on(super::super::run(bind("a1", "t1", "s1"), false)).unwrap();
+        block_on(super::super::run(bind("a1", "t1", "s2"), false)).unwrap();
+        block_on(super::super::run(bind("a1", "t2", "s1"), false)).unwrap();
+
+        // 精确：只删 t1:s1。
+        block_on(super::super::run(
+            unbind("a1", Some("t1".into()), Some("s1".into())),
+            false,
+        ))
+        .unwrap();
+        let cfg = domain_config(&th.home);
+        assert_eq!(cfg.bindings["a1"].len(), 2, "精确删后剩 t1:s2 + t2:s1");
+
+        // 按 tool：删 t1 剩余槽位。
+        block_on(super::super::run(
+            unbind("a1", Some("t1".into()), None),
+            false,
+        ))
+        .unwrap();
+        let cfg = domain_config(&th.home);
+        assert_eq!(cfg.bindings["a1"].len(), 1, "按 tool 删后只剩 t2:s1");
+
+        // 全删：别名条目整体移除。
+        block_on(super::super::run(unbind("a1", None, None), false)).unwrap();
+        let cfg = domain_config(&th.home);
+        assert!(!cfg.bindings.contains_key("a1"), "全删后别名条目应移除");
+    }
+
+    /// --slot 无 --tool 组合：前置 guard bail（槽位是工具作用域的）。
+    #[test]
+    fn unbind_slot_without_tool_bails() {
+        let th = dm_env();
+        block_on(super::super::run(bind("a2", "t1", "s1"), false)).unwrap();
+        let err = block_on(super::super::run(
+            unbind("a2", None, Some("s1".into())),
+            false,
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("--slot 需要与 --tool 同给"),
+            "实际：{err}"
+        );
+        // 拒改后盘上原样。
+        assert_eq!(domain_config(&th.home).bindings["a2"].len(), 1);
+    }
+
+    /// 无匹配绑定可删 → bail（诚实报错，不静默成功）。
+    #[test]
+    fn unbind_no_match_bails() {
+        let _th = dm_env();
+        block_on(super::super::run(bind("a3", "t1", "s1"), false)).unwrap();
+        let err = block_on(super::super::run(
+            unbind("a3", Some("nope".into()), None),
+            false,
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("没有匹配的绑定"), "实际：{err}");
+        // 别名不存在的 Unbind 同样 bail。
+        let err = block_on(super::super::run(unbind("ghost", None, None), false)).unwrap_err();
+        assert!(err.to_string().contains("没有域绑定"), "实际：{err}");
+    }
+
+    /// 损坏绑定文件：CLI loud 拒改（不静默重置用户手编内容）。
+    #[test]
+    fn corrupt_file_loud_rejects() {
+        let th = dm_env();
+        let p = nemesis_path::workspace_config_dir(&crate::common::workspace_path(&th.home))
+            .join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "{broken json").unwrap();
+        let err = block_on(super::super::run(bind("corp", "t", "s"), false)).unwrap_err();
+        assert!(
+            err.to_string().contains("请修正或删除该文件"),
+            "实际：{err}"
+        );
+        // 拒改后盘上损坏内容原样（未被覆盖）。
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{broken json");
+    }
+
+    /// Bindings 列举臂：空（文件缺席）与有绑定两形态都 Ok（盘上真相另断）。
+    #[test]
+    fn bindings_lists_both_states() {
+        let th = dm_env();
+        block_on(super::super::run(VaultAction::Bindings, false)).unwrap();
+        block_on(super::super::run(
+            bind("corp", "web_fetch", "headers"),
+            false,
+        ))
+        .unwrap();
+        block_on(super::super::run(
+            bind("other", "rpc_call", "credential"),
+            false,
+        ))
+        .unwrap();
+        block_on(super::super::run(VaultAction::Bindings, false)).unwrap();
+        let cfg = domain_config(&th.home);
+        assert_eq!(cfg.bindings.len(), 2);
+        assert!(cfg.bindings.contains_key("corp"));
+        assert!(cfg.bindings.contains_key("other"));
+    }
+}

@@ -923,3 +923,57 @@ fn announce_build_roundtrip_preserved() {
     let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
     assert!(back.build.is_empty());
 }
+
+// -----------------------------------------------------------------------
+// L13-a（2026-11-03 三期）：mandate 公钥 wire 兼容
+// -----------------------------------------------------------------------
+
+/// mandate_pubkey 经 with_mandate_pubkey 携带后序列化往返保全。
+#[test]
+fn mandate_pubkey_roundtrip_preserved() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-mandate",
+        "MandateNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_mandate_pubkey(Some(format!("04{}", "ab".repeat(64))));
+
+    let bytes = msg.to_bytes().expect("serialize");
+    let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(
+        back.mandate_pubkey.as_deref(),
+        Some(format!("04{}", "ab".repeat(64)).as_str())
+    );
+}
+
+/// 旧节点 / Go 节点的 announce JSON 无 mandate_pubkey 字段 → serde
+/// default None（wire 兼容），且该消息 validate 照常通过。
+#[test]
+fn mandate_pubkey_absent_defaults_none() {
+    let raw = serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": "legacy-node",
+        "name": "LegacyNode",
+        "addresses": ["10.0.0.1"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": 1700000000
+    });
+    let msg: DiscoveryMessage =
+        serde_json::from_value(raw).expect("legacy announce without mandate_pubkey");
+    assert!(
+        msg.mandate_pubkey.is_none(),
+        "absent field defaults to None"
+    );
+    msg.validate().expect("legacy announce still validates");
+}

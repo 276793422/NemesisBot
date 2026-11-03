@@ -105,73 +105,46 @@ CREATE TABLE IF NOT EXISTS guard_event_stats (
 );
 "#;
 
+/// L20 门面迁移链（v1-v3 数组化；语义与原散装 if 链等价：每步原子
+/// migrate_step + 成功日志 `[DataStore] {note}`，门面按序跳过已应用步）。
+static DATA_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
+    nemesis_utils::sqlite_preflight::Migration {
+        version: 1,
+        sql: SCHEMA_V1,
+        log_note: "Schema v1 applied",
+    },
+    nemesis_utils::sqlite_preflight::Migration {
+        version: 2,
+        sql: SCHEMA_V2,
+        log_note: "Schema v2 applied (A3: pricing/session/timing columns)",
+    },
+    nemesis_utils::sqlite_preflight::Migration {
+        version: 3,
+        sql: SCHEMA_V3,
+        log_note: "Schema v3 applied (P2B: tool_validation_stats)",
+    },
+];
+
+/// L20 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
+/// 门面；无 extra pragmas——data.db 单写者，无多进程并开退避需求）。
+static DATA_STORE: nemesis_utils::sqlite_preflight::StoreSpec =
+    nemesis_utils::sqlite_preflight::StoreSpec {
+        label: "[DataStore]",
+        db_noun: "database",
+        migrate_label: "Schema",
+        schema_version: SCHEMA_VERSION,
+        migrations: DATA_MIGRATIONS,
+    };
+
 /// Open (or create) the database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create data directory: {e}"))?;
     }
-
-    // B10 手法① 能力准入：Connection::open 对任意可读文件惰性成功——
-    // 被覆盖/截断的垃圾文件要到第一条语句才炸且报错面模糊。头 16 字节
-    // 前置判定，非 SQLite 内容 loud 拒绝并带 hex 摘要。
-    match nemesis_utils::sqlite_preflight::header_kind(db_path)
-        .map_err(|e| format!("Failed to inspect database file: {e}"))?
-    {
-        nemesis_utils::sqlite_preflight::HeaderKind::New
-        | nemesis_utils::sqlite_preflight::HeaderKind::Valid => {}
-        nemesis_utils::sqlite_preflight::HeaderKind::Foreign { head_hex } => {
-            return Err(nemesis_utils::sqlite_preflight::foreign_header_error(
-                db_path, &head_hex,
-            ));
-        }
-    }
-
-    let conn = Connection::open(db_path).map_err(|e| format!("Failed to open database: {e}"))?;
-
-    // B10 手法④ WAL 降级：journal_mode 失败（网络盘/FAT/只读）warn 不崩，
-    // 回落默认 journal；foreign_keys 是语义闸，保持硬失败。
-    nemesis_utils::sqlite_preflight::set_wal_lenient(&conn, "[DataStore]");
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|e| format!("Failed to set pragmas: {e}"))?;
-
-    let current_version: i32 = conn
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap_or(0);
-
-    // B10 手法② schema 漂移对账：库来自更新版本的程序 → 拒绝降级打开
-    // （旧行为会把 user_version 静默降级写回，迁移链跳过、运行期
-    // "no such column"）。
-    nemesis_utils::sqlite_preflight::check_schema_drift(current_version, SCHEMA_VERSION)?;
-
-    // B10 手法③ 迁移前轮换备份（0 = 全新库无数据可保护，跳过；备份
-    // 失败 warn 不阻断迁移）。
-    if current_version > 0 && current_version < SCHEMA_VERSION {
-        nemesis_utils::sqlite_preflight::backup_before_migrate(&conn, db_path, "[DataStore]");
-    }
-
-    // 版本化迁移链：每步只从上一版前进，旧库逐级升级；每步原子
-    // （语句 + 版本戳同事务，R221 BUG-166 手法⑤，board 同源）。
-    if current_version < 1 {
-        nemesis_utils::sqlite_preflight::migrate_step(&conn, 1, "Schema v1", SCHEMA_V1)?;
-        tracing::info!("[DataStore] Schema v1 applied");
-    }
-    if current_version < 2 {
-        nemesis_utils::sqlite_preflight::migrate_step(&conn, 2, "Schema v2", SCHEMA_V2)?;
-        tracing::info!("[DataStore] Schema v2 applied (A3: pricing/session/timing columns)");
-    }
-    if current_version < 3 {
-        nemesis_utils::sqlite_preflight::migrate_step(&conn, 3, "Schema v3", SCHEMA_V3)?;
-        tracing::info!("[DataStore] Schema v3 applied (P2B: tool_validation_stats)");
-    }
-    set_version(&conn, SCHEMA_VERSION)?;
-
-    Ok(conn)
-}
-
-fn set_version(conn: &Connection, version: i32) -> Result<(), String> {
-    conn.pragma_update(None, "user_version", version)
-        .map_err(|e| format!("Failed to set schema version: {e}"))
+    // 装配序（能力准入/WAL/漂移对账/迁移前备份/原子迁移链）单一真相源在
+    // 共享件 sqlite_preflight::open_sqlite_store（L20 门面）。
+    nemesis_utils::sqlite_preflight::open_sqlite_store(db_path, &DATA_STORE, &[])
 }
 
 #[cfg(test)]

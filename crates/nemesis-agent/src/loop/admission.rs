@@ -654,6 +654,21 @@ impl AgentLoop {
         }
     }
 
+    /// L22（2026-11-03 snooze 排队）：排队回执落盘（system 行，单行**不**
+    /// 成对——被排队的消息没有被拒绝，user 行由重放处理时的
+    /// process_admitted 早落盘物化，此刻成对写会在恢复后复制 user 行）。
+    /// 重写窗口内跳过（同 persist_busy_refusal 纪律——写了会被截断吞掉，
+    /// warn 保审计可见；排队本体照常，pending sidecar 不受重写窗口影响）。
+    fn persist_snooze_queue_receipt(&self, session_key: &str, receipt: &str) {
+        if crate::chat_log::history_rewrite_active(session_key) {
+            warn!(
+                "[AgentLoop] 会话 jsonl 重写窗口进行中，snooze 排队回执跳过落盘: session_key={session_key}"
+            );
+            return;
+        }
+        crate::chat_log::append_chat_log(session_key, "system", receipt);
+    }
+
     /// 闸门只做同步分类 + session 获取；async 处理（system/history/回合
     /// 本体）留给 tail。slash 命令在这里同步执行并短路（原路径在 busy
     /// 检查前同步返回；且命令可能有副作用，tail 不得重跑）。
@@ -849,6 +864,65 @@ impl AgentLoop {
         }
 
         let (agent_id, session_key) = self.route_message(msg);
+
+        // L22（2026-11-03 snooze 排队，拍板「暂停期入站消息=排队（恢复后
+        // 投递）」）：暂停中的会话，turn 候选消息落 `.pending` sidecar，到
+        // 期唤醒/手动恢复后由 replay hook 经 reinject 通道重放投递。管理
+        // 动词（slash/maintenance/approval 回执/system/continuation）都已
+        // 在上方短路，本闸只拦真正要开回合的消息——暂停是「不接新活」，
+        // 不是「失联」。
+        // - cron tick：静默排队（cron 无人类接收方，零回执零出站——
+        //   Coalesced 同姿态）；超限/落盘失败同样静默（info 留痕）。
+        // - 用户消息：排队 + 诚实回执（jsonl system 行 + Immediate 响应帧）。
+        // - 超上限/落盘失败：诚实拒收（persist_busy_refusal 成对留痕，D-2
+        //   同款——收不下的消息不能无痕消失）。
+        if let Some((until, _note)) = crate::chat_log::session_snoozed_until(&session_key) {
+            match crate::chat_log::append_session_pending(&session_key, msg) {
+                Ok(n) => {
+                    if let Some(job_id) = msg.metadata.get("cron_job_id") {
+                        info!(
+                            cron_job_id = %job_id,
+                            "[AgentLoop] session snoozed — cron tick queued for wake delivery (session_key={session_key}, pending={n})"
+                        );
+                        return GateOutcome::Coalesced {
+                            cron_job_id: job_id.clone(),
+                        };
+                    }
+                    let receipt = format!(
+                        "💤 会话暂停中（至 {until}）：消息已排队（第 {n} 条），恢复后自动投递。"
+                    );
+                    self.persist_snooze_queue_receipt(&session_key, &receipt);
+                    info!(
+                        "[AgentLoop] session snoozed — message queued (session_key={session_key}, pending={n})"
+                    );
+                    return GateOutcome::Immediate {
+                        agent_id,
+                        response: receipt,
+                    };
+                }
+                Err(why) => {
+                    warn!(
+                        "[AgentLoop] session snoozed — pending queue refused message (session_key={session_key}): {why}"
+                    );
+                    if msg.metadata.contains_key("cron_job_id") {
+                        // cron 臂拒绝同样静默（无接收方，Coalesced 同姿态）。
+                        return GateOutcome::Coalesced {
+                            cron_job_id: msg
+                                .metadata
+                                .get("cron_job_id")
+                                .cloned()
+                                .unwrap_or_default(),
+                        };
+                    }
+                    let bounce = format!("💤 会话暂停中且排队不可用，消息未接收：{why}");
+                    self.persist_busy_refusal(msg, &session_key, &bounce);
+                    return GateOutcome::Immediate {
+                        agent_id,
+                        response: bounce,
+                    };
+                }
+            }
+        }
 
         // Session busy check — I1 (U7) mode-aware:
         //   Reject: session-level busy disposition — immediate BUSY_MESSAGE

@@ -636,6 +636,12 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "memory_search",
             "cli_reference",
             "cron",
+            // L10-建设（改进项三期 2026-11-02）：惰性 schema 供给的取回工具。
+            // mini 强制惰性（AgentLoop::current_lazy_tool_schema）——拿不到
+            // 取 schema 的工具 = 惰性断供，惰性可达的档位必含。big/Auto 全量
+            // 供给时它不出现（build_tool_defs 供给闸按 lazy 旗标钉死，同
+            // mcp_call 形态）。
+            "tools_schema_get",
         ],
         ModelTier::Normal => &[
             "message",
@@ -676,6 +682,9 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "background_start",
             "background_output",
             "background_kill",
+            // L11（2026-11-03）：steer 动词随家族同档——Normal+（Mini 同样
+            // 不给：job_id 记账 + 中途操控是比 start 更高的多轮纪律要求）。
+            "background_steer",
             // C8（2026-09-06）：构建/测试运行器。Mini 不给——长构建 + 聚焦
             // 回灌的检索（read_file spill）是小模型轮次陷阱；exec 已覆盖。
             "run_checks",
@@ -695,6 +704,10 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // 判断「什么值得用户看」，小模型容易把中间产物全量上报稀释价值；
             // 误登记只污染展示面（无副作用），normal/big 放行。
             "present_files",
+            // L10-建设（改进项三期 2026-11-02）：惰性 schema 供给默认在
+            // normal 档开启——取回工具随档必含（同 mini 侧注释；lazy 关闭
+            // 时由供给闸隐藏，白名单成员无害）。
+            "tools_schema_get",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

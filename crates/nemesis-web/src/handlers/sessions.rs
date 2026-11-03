@@ -12,6 +12,10 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 
 pub struct SessionsHandler;
 
+/// L22 sessions.import 单次行数上限（与 export 读侧 100_000 上限同量级
+/// 取整——正常会话远达不到，挡的是误传巨型载荷/恶意输入）。
+const IMPORT_MAX_ROWS: usize = 50_000;
+
 #[async_trait::async_trait]
 impl ModuleHandler for SessionsHandler {
     fn module_name(&self) -> &str {
@@ -28,6 +32,8 @@ impl ModuleHandler for SessionsHandler {
             "delete",
             "clear",
             "export",
+            "import",
+            "changed_files",
             "rewind_to_message",
             "redo",
             "file_diff",
@@ -107,6 +113,22 @@ impl ModuleHandler for SessionsHandler {
                 {
                     for row in web.iter_mut() {
                         row["allow_all"] = serde_json::Value::Bool(false);
+                    }
+                }
+                // L22（2026-11-03 snooze 排队）：暂停期排队条数投影（>0 才
+                // 加字段，前端据此渲染 💤+n 徽标）。一次 stat + 小文件读，
+                // 无 pending 的会话（常态）接近零开销。
+                for row in web.iter_mut() {
+                    let Some(sid) = row["id"].as_str() else {
+                        continue;
+                    };
+                    let key = format!(
+                        "agent:main:session:{}",
+                        nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                    );
+                    let pending = nemesis_agent::chat_log::session_pending_count(&key);
+                    if pending > 0 {
+                        row["pendingCount"] = serde_json::Value::from(pending);
                     }
                 }
                 // B（2026-09-23 多会话并行清账）：回带绑定表（仅存活绑定，
@@ -200,7 +222,9 @@ impl ModuleHandler for SessionsHandler {
             }
             "unsnooze" => {
                 // B11：立即解除暂停。无标记 = 幂等成功（unsnoozed=false 仍回
-                // 200，前端刷新列表即可）。
+                // 200，前端刷新列表即可）。L22：解除后立即重放暂停期排队的
+                // 消息（同 wake 重放语义；幂等臂无标记也照调——幂等调用的
+                // 前提通常是前一次唤醒失败滞留，重放是无害的单次消费）。
                 let session_id = data
                     .as_ref()
                     .and_then(|d| d.get("session_id"))
@@ -209,6 +233,7 @@ impl ModuleHandler for SessionsHandler {
                 let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
                 let session_key = format!("agent:main:session:{sid}");
                 let cleared = nemesis_agent::chat_log::clear_session_snooze(&session_key).is_some();
+                let delivered = replay_pending_for(&session_key);
                 ctx.state.event_hub.publish(
                     "session.updated",
                     serde_json::json!({
@@ -217,7 +242,7 @@ impl ModuleHandler for SessionsHandler {
                     }),
                 );
                 Ok(Some(
-                    serde_json::json!({ "session_id": sid, "unsnoozed": cleared }),
+                    serde_json::json!({ "session_id": sid, "unsnoozed": cleared, "delivered": delivered }),
                 ))
             }
             "create" => {
@@ -479,6 +504,115 @@ impl ModuleHandler for SessionsHandler {
                     "messages": messages,
                     "count": total,
                 })))
+            }
+            "import" => {
+                // L22（2026-11-03 跨设备移动）：sessions.export 的配对面——
+                // 导入导出消息行重建会话（搬运最小形态）。messages 行保持
+                // 导出形态（jsonl Value 数组，逐行 VERBATIM 落盘——时间戳/
+                // 模型徽标等全保真）；session_id 可选（缺省生成 uuid）；
+                // 目标已存在 = 诚实拒绝（导入不覆盖既有会话）。落盘后零
+                // store 触碰——SessionStore 首次 get_or_create 时按 jsonl
+                // 自愈水合（fork 写入同机制），不双写两处真相源。
+                let d = data.as_ref().ok_or_else(|| "missing data".to_string())?;
+                let messages = d
+                    .get("messages")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "missing messages".to_string())?;
+                if messages.is_empty() {
+                    return Err("messages 为空".to_string());
+                }
+                if messages.len() > IMPORT_MAX_ROWS {
+                    return Err(format!(
+                        "messages 超上限（{IMPORT_MAX_ROWS} 行，收到 {} 行）",
+                        messages.len()
+                    ));
+                }
+                // 行校验：必须是 object 且带 role + content（导出契约的最小
+                // 形状——其余字段不白名单不剥离，VERBATIM 保真）。
+                let mut rows = Vec::with_capacity(messages.len());
+                for (i, v) in messages.iter().enumerate() {
+                    let obj = v
+                        .as_object()
+                        .ok_or_else(|| format!("messages[{i}] 不是对象"))?;
+                    if !obj.contains_key("role") || !obj.contains_key("content") {
+                        return Err(format!("messages[{i}] 缺 role/content 字段"));
+                    }
+                    rows.push(v.clone());
+                }
+                let sid = match data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(raw) => {
+                        let sid = nemesis_agent::session::SessionStore::sanitize_session_id(raw);
+                        let key = format!("agent:main:session:{sid}");
+                        if nemesis_agent::chat_log::chat_log_exists(&key) {
+                            return Err(format!("会话已存在: {sid}（导入不覆盖既有会话）"));
+                        }
+                        sid
+                    }
+                    None => uuid::Uuid::new_v4().to_string(),
+                };
+                let session_key = format!("agent:main:session:{sid}");
+                let written = {
+                    let key = session_key.clone();
+                    tokio::task::spawn_blocking(move || {
+                        nemesis_agent::chat_log::write_chat_log_rows(&key, &rows)
+                    })
+                    .await
+                    .map_err(|e| format!("sessions.import task join failed: {e}"))?
+                };
+                if written != messages.len() {
+                    return Err(format!(
+                        "落盘不完整: {written}/{} 行（会话 {sid} 已部分写入，请删除后重试）",
+                        messages.len()
+                    ));
+                }
+                // title（可选，manual 标记——自动标题永不覆盖，同 rename 语义）。
+                if let Some(t) = d
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    nemesis_agent::chat_log::write_session_meta_manual(&session_key, t);
+                }
+                ctx.state.event_hub.publish(
+                    "session.updated",
+                    serde_json::json!({ "session_id": sid, "imported": written }),
+                );
+                Ok(Some(
+                    serde_json::json!({ "session_id": sid, "imported": written }),
+                ))
+            }
+            "changed_files" => {
+                // L22 session PR（最小形态）：分支会话的变更文件清单——
+                // jsonl assistant 行 `file_changes` 聚合去重（按首次出现序）。
+                // 前端拿清单逐文件调 `sessions.file_diff` 展示 unified diff。
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?
+                    .to_string();
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
+                );
+                let files = {
+                    let key = session_key;
+                    tokio::task::spawn_blocking(move || {
+                        nemesis_agent::chat_log::session_file_changes(&key)
+                    })
+                    .await
+                    .map_err(|e| format!("sessions.changed_files task join failed: {e}"))?
+                };
+                Ok(Some(
+                    serde_json::json!({ "session_id": session_id, "files": files }),
+                ))
             }
             // E3（devtool-upgrade 阶段 5）：消息级回退——会话截断 + 文件恢复
             // 到锚 turn 开始时的状态 + 压 undo 栈。message_index 契约：本模块
@@ -893,6 +1027,19 @@ async fn delete_session_body(
             }
         }
     }
+    // L23（三期 2026-11-03）：看板 autopilot 父会话绑定级联——绑定本会话
+    // 的启用规则自动暂停 + 评论留痕（父会话删除后规则孤儿运行 = 绑定语义
+    // 破约；回收站软删同样移走 chat_log → 一致裁决）。board 未装配 = 无
+    // 绑定语义，跳过。
+    #[cfg(feature = "board")]
+    let paused_autopilots: Vec<i64> = match ctx.state.board.as_ref() {
+        Some(svc) => crate::handlers::board::pause_autopilots_bound_to(
+            svc.store(),
+            session_key,
+            "会话被删除",
+        ),
+        None => Vec::new(),
+    };
     // L6++ G4（2026-09-08）：项目归属联动摘除（内存索引 + sidecar
     // project 字段——meta 已随 delete_chat_log 删除时为 no-op）。
     // bridge 未装配 = 无项目分组语义，跳过。
@@ -913,12 +1060,20 @@ async fn delete_session_body(
             );
         }
     }
-    Ok(Some(serde_json::json!({
+    let out = serde_json::json!({
         "deleted": session_id,
         "trashed": trash_entry.is_some(),
         "trash_entry": trash_entry,
         "paused_cron_jobs": paused,
-    })))
+    });
+    // board 缺席时 out 不可变（影子投影——无 feature 不产 unused_mut）。
+    #[cfg(feature = "board")]
+    let out = {
+        let mut out = out;
+        out["paused_autopilots"] = serde_json::json!(paused_autopilots);
+        out
+    };
+    Ok(Some(out))
 }
 
 /// sessions.clear 操作体：jsonl 先截 + store 清（self-heal 顺序）+
@@ -945,6 +1100,26 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     // 的 sidecar 兜底把绑定「复活」）。bridge 未装配 = 跳过。
     if let Some(bridge) = crate::handlers::projects::projects_bridge() {
         bridge.forget_session(session_key);
+    }
+    // L23（三期 2026-11-03）：看板 autopilot 父会话绑定级联——clear 后
+    // 父会话账本空（chat_log 截空 = L23 存活判据不成立），绑定规则自动
+    // 暂停（规格明确 clear 也在裁决范围：空会话继承零上下文 = 绑定无意义，
+    // 与 cron job 的「clear 不级联」刻意不同——那边会话骨架还在）。board
+    // 未装配 = 无绑定语义，跳过。
+    #[cfg(feature = "board")]
+    if let Some(svc) = ctx.state.board.as_ref() {
+        let paused = crate::handlers::board::pause_autopilots_bound_to(
+            svc.store(),
+            session_key,
+            "会话被清空",
+        );
+        if !paused.is_empty() {
+            tracing::info!(
+                "[sessions] clear cascade: paused {} board autopilot(s) bound to {}",
+                paused.len(),
+                session_key
+            );
+        }
     }
     Ok(())
 }
@@ -994,17 +1169,84 @@ pub fn spawn_snooze_sweeper() {
             if woken > 0 {
                 tracing::info!("[sessions] snooze sweeper 唤醒 {woken} 个会话");
             }
+            drain_orphan_pending();
         }
     });
 }
 
+// —— L22（2026-11-03 snooze 排队）：暂停期消息重放 hook ——
+
+/// 重放 hook 签名：按会话键取走全部 pending（[`nemesis_agent::chat_log::
+/// take_session_pending`]）并经该会话归属 loop 的 reinject 通道逐条重放，
+/// 返回成功注入条数。loop 缺席（停机窗口/未装配）= 0——pending 落盘保
+/// 留，sweeper 下轮重试（自愈不丢失）。
+pub type SnoozeReplayHook = std::sync::Arc<dyn Fn(&str) -> usize + Send + Sync>;
+
+/// 进程级 hook 槽。**设计偏差说明**（vs OnceLock，PROJECTS_BRIDGE 同款）：
+/// OnceLock 只能 set 一次，crate 测试需要「无 hook」与「假 hook」形态并
+/// 存（并行测试共享槽）——`RwLock<Option<_>>` 生产语义相同（gateway 装配
+/// 期安装一次、sweeper/unsnooze 只读）且测试可置换。
+static SNOOZE_REPLAY_HOOK: std::sync::RwLock<Option<SnoozeReplayHook>> =
+    std::sync::RwLock::new(None);
+
+/// gateway 装配期安装重放 hook（runtime.rs：三臂 loop 解析 + inject_inbound）。
+pub fn set_snooze_replay_hook(hook: Option<SnoozeReplayHook>) {
+    *SNOOZE_REPLAY_HOOK.write().expect("snooze replay hook lock") = hook;
+}
+
+/// 调 hook 重放某会话的 pending；无 hook（单测/未装配）= 0（pending 保
+/// 留在盘上，不丢）。pub(crate) 供测试直调（wake_due_sessions 同先例）。
+pub(crate) fn replay_pending_for(session_key: &str) -> usize {
+    let hook = SNOOZE_REPLAY_HOOK
+        .read()
+        .expect("snooze replay hook lock")
+        .clone();
+    match hook {
+        Some(h) => h(session_key),
+        None => 0,
+    }
+}
+
+/// L22 滞留兜底（sweeper 每轮）：摘标记后 loop 短暂不可用的停机窗口会把
+/// pending 滞留在盘上（标记已摘，正常唤醒不再覆盖）——每轮扫 pending
+/// 残留，对「非暂停中」的会话补投。会话已删除（jsonl 没了）= 重放无主，
+/// 就地清 pending（防复活已删会话 + 防无限重试）。hook 返 0（loop 仍缺
+/// 席）= 文件保留下轮重试。量级：pending 文件只在暂停窗口/滞留场景存在，
+/// 常态零文件零开销。pub(crate) 供测试直调。
+pub(crate) fn drain_orphan_pending() {
+    for key in nemesis_agent::chat_log::pending_sessions() {
+        if nemesis_agent::chat_log::session_snoozed_until(&key).is_some() {
+            continue; // 仍在暂停期——正常唤醒流程负责
+        }
+        if !nemesis_agent::chat_log::chat_log_exists(&key) {
+            // 会话已删除：pending 随之作废（delete_chat_log 级联遗漏的
+            // 竞态残留在此收敛）。直接 take 后丢弃——**不能**走 hook：
+            // loop 解析对已删会话仍命中主槽，注入会让 process_admitted
+            // 早落盘复活已删会话。
+            let discarded = nemesis_agent::chat_log::take_session_pending(&key);
+            tracing::info!(
+                "[sessions] 会话已删除，作废滞留 pending {} 条: {key}",
+                discarded.len()
+            );
+            continue;
+        }
+        let delivered = replay_pending_for(&key);
+        if delivered > 0 {
+            tracing::info!("[sessions] 滞留 pending 补投 {delivered} 条: {key}");
+        }
+    }
+}
+
 /// 扫描到期暂停项并执行唤醒，返回唤醒数（pub(crate) 供测试直调）。
 ///
-/// 唤醒编排四件套：摘标记（chat_log 真相源，竞速安全——并发 sweeper/
+/// 唤醒编排五件套：摘标记（chat_log 真相源，竞速安全——并发 sweeper/
 /// unsnooze 只有一方拿到 Some）→ 注入恢复 system 行（jsonl 真相源）→
 /// `chat_event_log::record` 入环 + chat.activity 广播（sweep 不经 web 的
 /// record 点，已开 ChatPanel 窗口的活同步必须在这里手动补）→
-/// `publish_global_event("session.updated")`（侧栏 force 刷新信号）。
+/// `publish_global_event("session.updated")`（侧栏 force 刷新信号）→
+/// **重放暂停期排队的消息**（L22：经 replay hook 逐条 inject_inbound；
+/// 标记已摘所以重放消息过 gate 不再被排队——顺序不可颠倒，先重放会被
+/// 本闸再度排队成环）。
 pub(crate) fn wake_due_sessions() -> usize {
     let now = chrono::Local::now();
     let mut woken = 0;
@@ -1056,6 +1298,13 @@ pub(crate) fn wake_due_sessions() -> usize {
                 "snoozed_until": serde_json::Value::Null,
             }),
         );
+        // L22：重放暂停期排队的消息（标记已摘——重放消息过 gate 不再被
+        // 排队）。loop 缺席（停机窗口）= 0，pending 落盘保留，sweeper 下
+        // 轮的 orphan 兜底臂补投（自愈不丢失）。
+        let delivered = replay_pending_for(&session_key);
+        if delivered > 0 {
+            tracing::info!("[sessions] snooze 唤醒重放 {delivered} 条暂停期消息: {session_key}");
+        }
         woken += 1;
     }
     woken

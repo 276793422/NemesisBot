@@ -2781,8 +2781,8 @@ impl BoardStore {
         let now = Self::now();
         conn.execute(
             "INSERT INTO autopilot
-             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, session_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
             params![
                 n.name,
                 n.cron,
@@ -2794,6 +2794,7 @@ impl BoardStore {
                 n.enabled as i64,
                 n.auto_plan as i64,
                 n.acceptance_criteria.as_deref().unwrap_or(""),
+                n.session_key.as_deref().unwrap_or(""),
                 now,
             ],
         )
@@ -2869,11 +2870,16 @@ impl BoardStore {
             .acceptance_criteria
             .clone()
             .unwrap_or(old.acceptance_criteria.clone().unwrap_or_default());
+        // L23：父会话绑定，语义同 acceptance_criteria（`Some("")` = 清空）。
+        let session_key = patch
+            .session_key
+            .clone()
+            .unwrap_or(old.session_key.clone().unwrap_or_default());
         conn.execute(
             "UPDATE autopilot
              SET name = ?2, cron = ?3, title = ?4, description = ?5, priority = ?6,
                  project_id = ?7, target = ?8, enabled = ?9, auto_plan = ?10,
-                 acceptance_criteria = ?11, updated_at = ?12
+                 acceptance_criteria = ?11, session_key = ?12, updated_at = ?13
              WHERE id = ?1",
             params![
                 id,
@@ -2887,6 +2893,7 @@ impl BoardStore {
                 enabled as i64,
                 auto_plan as i64,
                 acceptance_criteria,
+                session_key,
                 Self::now(),
             ],
         )
@@ -4160,6 +4167,8 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     // F-U5-1：列 NOT NULL DEFAULT ''——空串归一为 None（「没填」统一语义，
     // 与 issue.acceptance_criteria 的 Option 用法对齐）。
     let acceptance_criteria: String = row.get("acceptance_criteria")?;
+    // L23：父会话绑定列，同款空串归一 None。
+    let session_key: String = row.get("session_key")?;
     Ok(Autopilot {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -4172,6 +4181,7 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
         enabled: enabled != 0,
         auto_plan: auto_plan != 0,
         acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
+        session_key: Some(session_key).filter(|s| !s.trim().is_empty()),
         cron_job_id: row.get("cron_job_id")?,
         last_run_at: row.get("last_run_at")?,
         created_at: row.get("created_at")?,
