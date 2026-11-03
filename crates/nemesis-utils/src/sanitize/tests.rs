@@ -212,3 +212,49 @@ fn csv_non_formula_fields_unaffected_by_guard() {
     assert_eq!(sanitize_csv(""), "");
     assert_eq!(sanitize_csv("节点 甲"), "节点 甲");
 }
+
+#[test]
+fn model_identifier_accepts_valid_wire_forms() {
+    use super::validate_model_identifier;
+    // 常规两段式；嵌套 `/`（业界 vendor/org/model:variant 形态）合法。
+    assert!(validate_model_identifier("openai/gpt-4o").is_ok());
+    assert!(validate_model_identifier("test/testai-1.1").is_ok());
+    assert!(validate_model_identifier("openrouter/deepseek/deepseek-chat").is_ok());
+    assert!(validate_model_identifier("zhipu/glm-4.7").is_ok());
+}
+
+#[test]
+fn model_identifier_rejects_traversal_and_malformed() {
+    use super::validate_model_identifier;
+    // R493 实机实测放行形态：vendor=`..`（含 / 所以过旧 contains('/') 闸）。
+    assert!(validate_model_identifier("../../etc/passwd").is_err());
+    // `..` 出现在任何段都拒（尾段形态也一样是穿越语义）。
+    assert!(validate_model_identifier("openai/../etc").is_err());
+    assert!(validate_model_identifier("openai/..").is_err());
+    // 单 `.` 段同样拒（空段语义）。
+    assert!(validate_model_identifier("openai/.").is_err());
+    // 空 / 纯空白语义：空串拒；无 `/` 拒（保持旧 CLI 校验意图）。
+    assert!(validate_model_identifier("").is_err());
+    assert!(validate_model_identifier("gpt-4o").is_err());
+    // 空段（首/中/尾）拒。
+    assert!(validate_model_identifier("/gpt-4o").is_err());
+    assert!(validate_model_identifier("openai//gpt").is_err());
+    assert!(validate_model_identifier("openai/").is_err());
+    // 反斜杠（Windows 路径分隔）与控制字符拒。
+    assert!(validate_model_identifier(r"openai\gpt-4o").is_err());
+    assert!(validate_model_identifier("openai/gpt\n-4o").is_err());
+}
+
+#[test]
+fn model_entry_name_bare_form_is_legal_but_traversal_still_rejected() {
+    use super::validate_model_entry_name;
+    // 宽松档：裸名合法（dashboard 既有契约，glm-5.3-flash 先例）。
+    assert!(validate_model_entry_name("glm-5.3-flash").is_ok());
+    assert!(validate_model_entry_name("gpt-5.6-sol").is_ok());
+    // 段级检查对裸名同样生效：裸 `..` / 反斜杠 / 控制字符 / 空串拒。
+    assert!(validate_model_entry_name("..").is_err());
+    assert!(validate_model_entry_name("../etc").is_err());
+    assert!(validate_model_entry_name(r"openai\gpt").is_err());
+    assert!(validate_model_entry_name("").is_err());
+    assert!(validate_model_entry_name("a/").is_err());
+}
