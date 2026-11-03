@@ -584,10 +584,28 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
         match handle_sse_event(&ev) {
             SseOutcome::Finished(response) => return Ok(parse_codex_response(&response)),
             SseOutcome::Failed(msg) => {
-                return Err(FailoverError::Unknown {
-                    provider: "codex".to_string(),
-                    message: msg,
-                });
+                // BUG-20261103-351：流内 failed/error 文案与真相源同判
+                //（classify_llm_error 单一真相源）——此前恒 Unknown（不带
+                // "connect error" 前缀 = is_retriable false），上游显式瞬态
+                // 文案（"quota exceeded"/"overloaded"）反而放弃 fallback
+                // 轮转，比断流（Timeout 可重试）处置更差。分类命中 → 对应
+                // 变体（轮转语义与 HTTP 429/500 同判）；分类不出维持 Unknown
+                // 兜底（不可重试语义不变）。
+                let provider = "codex".to_string();
+                // 根因文案随日志保留（RateLimit/Auth 等变体槽位无 message，
+                // Display 不含上游原文）。
+                tracing::warn!(
+                    provider = "codex",
+                    model = %model,
+                    error_message = %msg,
+                    "[Provider] Codex SSE stream failed"
+                );
+                // BUG-20261103-351：与真相源同判（classify_message_error 单一
+                // 入口）——此前恒 Unknown 不可重试，上游显式瞬态文案放弃轮转
+                // 比断流（Timeout）处置更差。
+                return Err(crate::failover::classify_message_error(
+                    &provider, model, &msg,
+                ));
             }
             SseOutcome::Continue => {}
         }

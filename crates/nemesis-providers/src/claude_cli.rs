@@ -281,10 +281,14 @@ impl LLMProvider for ClaudeCliProvider {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
-                return Err(FailoverError::Unknown {
-                    provider: "claude-cli".to_string(),
-                    message: format!("claude cli error: {}", stderr),
-                });
+                // stderr 是 CLI 对上游/API 错误的透传主通道——交真相源分类
+                //（瞬态文案可轮转；BUG-20261103-351），分类不出维持 Unknown
+                // 兜底。
+                return Err(crate::failover::classify_message_error(
+                    "claude-cli",
+                    model,
+                    &format!("claude cli error: {stderr}"),
+                ));
             }
             return Err(FailoverError::Unknown {
                 provider: "claude-cli".to_string(),

@@ -163,6 +163,7 @@ impl CodexCliProvider {
     fn parse_jsonl_events(
         &self,
         output: &str,
+        model: &str,
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse, FailoverError> {
         let mut content_parts = Vec::new();
@@ -219,10 +220,15 @@ impl CodexCliProvider {
         }
 
         if !last_error.is_empty() && content_parts.is_empty() {
-            return Err(FailoverError::Unknown {
-                provider: "codex-cli".to_string(),
-                message: format!("codex cli: {}", last_error),
-            });
+            // BUG-20261103-351：turn.failed/error 事件是 codex CLI 对上游
+            // API 错误的透传（CLI 成功启动后的交互失败），与 SSE lane 的
+            // response.failed 同源——交真相源分类（瞬态文案可轮转），分类
+            // 不出维持 Unknown 兜底。
+            return Err(crate::failover::classify_message_error(
+                "codex-cli",
+                model,
+                &format!("codex cli: {last_error}"),
+            ));
         }
 
         let content = content_parts.join("\n");
@@ -321,7 +327,7 @@ impl LLMProvider for CodexCliProvider {
 
         // Parse JSONL from stdout even if exit code is non-zero
         if !stdout.is_empty()
-            && let Ok(resp) = self.parse_jsonl_events(&stdout, tools)
+            && let Ok(resp) = self.parse_jsonl_events(&stdout, model, tools)
             && (!resp.content.is_empty() || !resp.tool_calls.is_empty())
         {
             return Ok(resp);
@@ -330,10 +336,13 @@ impl LLMProvider for CodexCliProvider {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
-                return Err(FailoverError::Unknown {
-                    provider: "codex-cli".to_string(),
-                    message: format!("codex cli error: {}", stderr),
-                });
+                // stderr 是 CLI 对上游/API 错误的透传主通道——同交真相源
+                // 分类（BUG-20261103-351）。
+                return Err(crate::failover::classify_message_error(
+                    "codex-cli",
+                    model,
+                    &format!("codex cli error: {stderr}"),
+                ));
             }
             return Err(FailoverError::Unknown {
                 provider: "codex-cli".to_string(),
@@ -341,7 +350,7 @@ impl LLMProvider for CodexCliProvider {
             });
         }
 
-        self.parse_jsonl_events(&stdout, tools)
+        self.parse_jsonl_events(&stdout, model, tools)
     }
 
     fn default_model(&self) -> &str {

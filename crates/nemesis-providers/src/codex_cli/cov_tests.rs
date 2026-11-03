@@ -64,7 +64,7 @@ fn build_prompt_with_empty_and_odd_role_messages() {
 fn parse_blank_and_malformed_lines_are_skipped() {
     let provider = provider_with("codex");
     let out = "\n   \n{not json}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n";
-    let resp = provider.parse_jsonl_events(out, &[]).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &[]).unwrap();
     assert_eq!(resp.content, "ok");
 }
 
@@ -77,7 +77,7 @@ fn parse_unknown_event_and_turn_failed_are_tolerated() {
         "{\"type\":\"turn.failed\",\"error\":{\"message\":\"failed hard\"}}\n",
         "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"still fine\"}}\n",
     );
-    let resp = provider.parse_jsonl_events(out, &[]).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &[]).unwrap();
     assert_eq!(resp.content, "still fine");
 }
 
@@ -86,7 +86,7 @@ fn parse_unknown_event_and_turn_failed_are_tolerated() {
 fn parse_error_event_with_no_content_returns_unknown_err() {
     let provider = provider_with("codex");
     let err = provider
-        .parse_jsonl_events("{\"type\":\"error\",\"message\":\"boom\"}\n", &[])
+        .parse_jsonl_events("{\"type\":\"error\",\"message\":\"boom\"}\n", "", &[])
         .unwrap_err();
     match err {
         FailoverError::Unknown { message, .. } => {
@@ -102,7 +102,7 @@ fn parse_agent_message_without_tools_finishes_stop() {
     let provider = provider_with("codex");
     let out =
         "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hi\"}}\n";
-    let resp = provider.parse_jsonl_events(out, &[]).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &[]).unwrap();
     assert_eq!(resp.finish_reason, "stop");
     assert!(resp.tool_calls.is_empty());
 }
@@ -216,7 +216,7 @@ fn parse_agent_message_with_embedded_tool_calls() {
         "\" 前缀 {\\\"tool_calls\\\":[{\\\"id\\\":\\\"c1\\\",\\\"type\\\":\\\"function\\\",\\\"function\\\":{\\\"name\\\":\\\"exec\\\",\\\"arguments\\\":\\\"{}\\\"}}]}\"}}
 "
     );
-    let resp = provider.parse_jsonl_events(out, &tools).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &tools).unwrap();
     assert_eq!(resp.finish_reason, "tool_calls");
     assert_eq!(resp.tool_calls.len(), 1, "{:?}", resp.tool_calls);
     assert_eq!(resp.tool_calls[0].function.as_ref().unwrap().name, "exec");
@@ -238,7 +238,7 @@ fn parse_documentation_json_not_hijacked() {
         "item": {"type": "agent_message", "text": docs}
     })
     .to_string();
-    let resp = provider.parse_jsonl_events(&out, &[]).unwrap();
+    let resp = provider.parse_jsonl_events(&out, "", &[]).unwrap();
     assert!(resp.tool_calls.is_empty(), "{:?}", resp.tool_calls);
     assert_eq!(resp.finish_reason, "stop");
     assert!(resp.content.contains("not_a_real_tool"), "{}", resp.content);

@@ -415,3 +415,45 @@ fn stream_interrupted_display_headline_prefix_and_tail_full_partial() {
         "根因链不丢（诚实化纪律）: {display:?}"
     );
 }
+
+// BUG-20261103-351 回归锁：classify_message_error 与真相源同判——自由文案
+// （流内错误事件 / CLI stderr）此前恒 Unknown 不可重试，上游显式瞬态文案
+// 放弃 fallback 轮转。
+#[test]
+fn test_classify_message_error_transient_maps_retriable() {
+    // 限流文案 → RateLimit（可轮转）。
+    let e = super::classify_message_error("codex", "gpt-4o", " quota exceeded ");
+    assert!(
+        matches!(e, FailoverError::RateLimit { ref model, retry_after: None, .. }
+        if model == "gpt-4o"),
+        "quota exceeded 应归 RateLimit: {e:?}"
+    );
+    assert!(e.is_retriable(), "限流必须可轮转");
+
+    // overloaded 文案按既有约定同归 RateLimit（class_by_message 同判）。
+    let e =
+        super::classify_message_error("codex", "m", "The model is overloaded, please try again");
+    assert!(matches!(e, FailoverError::RateLimit { .. }), "{e:?}");
+    assert!(e.is_retriable());
+
+    // 认证文案 → Auth（诚实归因；不可轮转语义正确）。
+    let e = super::classify_message_error("codex", "m", "invalid api key");
+    assert!(matches!(e, FailoverError::Auth { .. }), "{e:?}");
+    assert!(!e.is_retriable());
+}
+
+#[test]
+fn test_classify_message_error_unclassifiable_falls_back_unknown() {
+    // 分类不出维持 Unknown（不可重试兜底语义不变；原文案随 message 保留）。
+    let msg = "totally novel failure mode";
+    let e = super::classify_message_error("codex-cli", "m", msg);
+    match e {
+        FailoverError::Unknown { ref message, .. } => assert_eq!(message, msg),
+        other => panic!("未收录文案应维持 Unknown，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+
+    // Format 类文案同兜底（与流内 lane 行为一致）。
+    let e = super::classify_message_error("claude-cli", "m", "invalid request format: x");
+    assert!(matches!(e, FailoverError::Unknown { .. }), "{e:?}");
+}

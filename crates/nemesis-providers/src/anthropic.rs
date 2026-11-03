@@ -764,19 +764,55 @@ impl AnthropicProvider {
                                 .pointer("/error/message")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("stream error");
-                            let err = if etype == "overloaded_error" {
-                                FailoverError::Overloaded {
+                            // BUG-20261103-351：流内 error 事件与真相源同判
+                            //（llm_error_class / from_status 同门语义）——此前除
+                            // overloaded_error 外全砸 Format（不可重试，fallback
+                            // 放弃轮转），rate_limit_error / api_error 等瞬态故障
+                            // 的流内处置与同类 HTTP 状态码（429→RateLimit /
+                            // 500→Overloaded / 401→Auth）分裂：流内限流放弃轮转、
+                            // 流外限流照常轮转。按官方错误 type 全集映射；未收录
+                            // type 维持 Format 兜底（invalid_request_error 语义
+                            // 正确——换 provider 大概率同错）。
+                            let err = match etype {
+                                "overloaded_error" | "api_error" => FailoverError::Overloaded {
                                     provider: "anthropic".to_string(),
-                                    // SSE error 事件无 HTTP 状态码（流已在 200 里）
-                                    // → 0（未携带），与 Auth 纯文案形态同约定。
+                                    // SSE error 事件无 HTTP 状态码（流已在 200
+                                    // 里）→ 0（未携带），与 Auth 纯文案形态同约定。
                                     status: 0,
+                                },
+                                "rate_limit_error" => FailoverError::RateLimit {
+                                    provider: "anthropic".to_string(),
+                                    model: model.clone(),
+                                    retry_after: None,
+                                },
+                                "authentication_error" | "permission_error" => {
+                                    FailoverError::Auth {
+                                        provider: "anthropic".to_string(),
+                                        model: model.clone(),
+                                        status: 0,
+                                    }
                                 }
-                            } else {
-                                FailoverError::Format {
+                                "billing_error" => FailoverError::Billing {
+                                    provider: "anthropic".to_string(),
+                                },
+                                "timeout_error" => FailoverError::Timeout {
+                                    provider: "anthropic".to_string(),
+                                    model: model.clone(),
+                                },
+                                _ => FailoverError::Format {
                                     provider: "anthropic".to_string(),
                                     message: format!("{}: {}", etype, msg),
-                                }
+                                },
                             };
+                            // 根因文案随日志保留（RateLimit/Auth 等变体槽位无
+                            // message，Display 不含上游原文）。
+                            tracing::warn!(
+                                provider = "anthropic",
+                                model = %model,
+                                error_type = etype,
+                                error_message = msg,
+                                "[Provider] Anthropic SSE error event"
+                            );
                             let _ = tx.send(Err(err)).await;
                             return;
                         }

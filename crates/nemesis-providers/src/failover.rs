@@ -247,5 +247,43 @@ fn error_chain(e: &dyn std::error::Error) -> String {
     parts.join(": ")
 }
 
+/// 上游自由文案 → `FailoverError`，与真相源（`llm_error_class`）同判。
+///
+/// 流内错误事件（anthropic `error` / codex `response.failed`）与 CLI 型 lane
+/// 的 stderr/事件文案此前恒落 `Unknown`（不带 "connect error" 前缀 = 不可
+/// 重试）——上游显式瞬态文案（"quota exceeded"/"overloaded"）反而放弃
+/// fallback 轮转，比断流（Timeout 可重试）处置更差（BUG-20261103-351）。
+/// 分类命中 → 对应变体（轮转语义与同类 HTTP 状态码同判）；Format / 未收录
+/// → `Unknown`（原文案随 message 保留，不可重试兜底语义不变）。
+pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> FailoverError {
+    use nemesis_utils::llm_error_class::{LlmErrorClass, classify_llm_error};
+    match classify_llm_error(msg) {
+        // 文本层「overloaded 文案按限流对待」是既有约定（class_by_message
+        // 同判）——两者同臂归 RateLimit（可轮转 + 退避），与 HTTP 429 处置
+        // 一致。
+        Some(LlmErrorClass::RateLimit | LlmErrorClass::Overloaded) => FailoverError::RateLimit {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            retry_after: None,
+        },
+        Some(LlmErrorClass::Timeout) => FailoverError::Timeout {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        },
+        Some(LlmErrorClass::Auth) => FailoverError::Auth {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            status: 0,
+        },
+        Some(LlmErrorClass::Billing) => FailoverError::Billing {
+            provider: provider.to_string(),
+        },
+        Some(LlmErrorClass::Format) | None => FailoverError::Unknown {
+            provider: provider.to_string(),
+            message: msg.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests;

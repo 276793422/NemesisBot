@@ -1680,6 +1680,89 @@ async fn test_b_stream_error_event_overloaded_maps_overloaded() {
     ));
 }
 
+// BUG-20261103-351 回归锁：流内 error 事件与真相源（llm_error_class）同判。
+// 此前除 overloaded_error 外全砸 Format（不可重试，fallback 放弃轮转）——
+// rate_limit_error / api_error / authentication_error 等在流内形态的处置与
+// 同类 HTTP 状态码（429→RateLimit / 500→Overloaded / 401→Auth，from_status
+// 真相源）分裂：流内限流放弃轮转、流外限流照常轮转。按官方错误 type 全集
+// 映射；未收录 type 维持 Format 兜底（invalid_request_error 既有测试不变）。
+#[tokio::test]
+async fn test_b_stream_error_event_rate_limit_maps_retriable() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_response(concat!(
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of request tokens has exceeded your per-minute rate limit\"}}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1);
+    match chunks[0].as_ref().unwrap_err() {
+        FailoverError::RateLimit { retry_after, .. } => {
+            assert!(retry_after.is_none(), "SSE error 事件无 Retry-After 头");
+        }
+        other => panic!("rate_limit_error 应归 RateLimit（可轮转），实际 {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_b_stream_error_event_api_error_maps_overloaded() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_response(concat!(
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1);
+    assert!(
+        matches!(
+            chunks[0].as_ref().unwrap_err(),
+            FailoverError::Overloaded { .. }
+        ),
+        "api_error（官方 5xx 族）应归 Overloaded（可轮转），与 HTTP 500 同判"
+    );
+}
+
+#[tokio::test]
+async fn test_b_stream_error_event_auth_maps_auth_not_format() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_response(concat!(
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1);
+    assert!(
+        matches!(chunks[0].as_ref().unwrap_err(), FailoverError::Auth { .. }),
+        "authentication_error 应归 Auth（诚实归因），不可砸 Format"
+    );
+}
+
 #[tokio::test]
 async fn test_b_stream_eof_without_message_stop_synthesizes_final() {
     // 半截流：只有 message_start + 一块文本 delta，无 message_stop 就 EOF →

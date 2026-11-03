@@ -858,18 +858,52 @@ fn test_parse_sse_text_truncated_stream_maps_to_timeout() {
     }
 }
 
+// BUG-20261103-351 回归锁：流内 failed/error 文案与真相源（llm_error_class）
+// 同判——此前恒 Unknown（不带 connect error 前缀 = 不可重试），上游显式限流
+// 文案（"quota exceeded"）反而放弃 fallback 轮转，比断流（Timeout 可重试）
+// 处置更差。分类命中 → 对应变体（可轮转语义与 HTTP 429/500 同判）；分类
+// 不出维持 Unknown 兜底（不可重试语义不变）。
 #[test]
-fn test_parse_sse_text_failed_event_maps_to_unknown() {
+fn test_parse_sse_text_failed_event_classified_by_truth_source() {
+    // 限流文案 → RateLimit（可轮转；此前被钉死在 Unknown）。
     let text = concat!(
         "data: {\"type\":\"response.created\",\"response\":{}}\n\n",
         "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
         "\"error\":{\"message\":\" quota exceeded \"}}}\n\n",
     );
     match parse_sse_text(text, "gpt-4o") {
-        Err(FailoverError::Unknown { message, .. }) => {
-            assert_eq!(message, " quota exceeded ");
+        Err(FailoverError::RateLimit { retry_after, .. }) => {
+            assert!(retry_after.is_none(), "SSE 事件无 Retry-After 头");
         }
-        other => panic!("应 Unknown，实际 {other:?}"),
+        other => panic!("quota exceeded 应归 RateLimit（可轮转），实际 {other:?}"),
+    }
+
+    // 过载文案 → RateLimit（「overloaded 文案按限流对待」是 class_by_message
+    // 既有约定——文本层两者同判，处置与 HTTP 429 一致可轮转）。
+    let text =
+        "data: {\"type\":\"error\",\"message\":\"The model is overloaded, please try again\"}\n\n";
+    assert!(matches!(
+        parse_sse_text(text, "gpt-4o"),
+        Err(FailoverError::RateLimit { .. })
+    ));
+
+    // 认证文案 → Auth（诚实归因）。
+    let text = "data: {\"type\":\"error\",\"message\":\"invalid api key\"}\n\n";
+    assert!(matches!(
+        parse_sse_text(text, "gpt-4o"),
+        Err(FailoverError::Auth { .. })
+    ));
+
+    // 分类不出的未知文案 → 维持 Unknown（不可重试兜底语义不变）。
+    let text = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
+        "\"error\":{\"message\":\"totally novel failure mode\"}}}\n\n",
+    );
+    match parse_sse_text(text, "gpt-4o") {
+        Err(FailoverError::Unknown { message, .. }) => {
+            assert_eq!(message, "totally novel failure mode");
+        }
+        other => panic!("未收录文案应维持 Unknown，实际 {other:?}"),
     }
 }
 
