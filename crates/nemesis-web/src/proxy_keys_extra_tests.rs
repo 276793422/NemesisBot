@@ -169,9 +169,8 @@ fn hot_reload_picks_up_new_key() {
     proxy_keys_file::add_key(&config, entry("bot-a", "nbk_aaa")).unwrap();
     let state = make_state(Some(ws));
     assert!(match_proxy_caller(&state, "nbk_bbb", "/v1/chat/completions").is_none());
-    // WSAPI add 落盘 → 下一请求（新 mtime）看到新 key。两写之间留间隔，
-    // 不赌文件系统 mtime 粒度。
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // WSAPI add 落盘 → 下一请求看到新 key（写代号失配重读——不再赌 mtime
+    // 粒度，BUG-20261103-350 后无 sleep）。
     proxy_keys_file::add_key(&config, entry("bot-b", "nbk_bbb")).unwrap();
     let caller = match_proxy_caller(&state, "nbk_bbb", "/v1/chat/completions").unwrap();
     assert_eq!(caller.0.as_str(), "bot-b");
@@ -183,4 +182,46 @@ fn hot_reload_picks_up_new_key() {
 fn workspace_absent_returns_none() {
     let state = make_state(None);
     assert!(match_proxy_caller(&state, "nbk_aaa", "/v1/chat/completions").is_none());
+}
+
+// BUG-20261103-350 回归锁：同 tick 双写的缓存陈旧。NTFS LastWriteTime 有
+// 毫秒级量化（本机实测零间隔 atomic 写 3/11 次撞同值；write_file_atomic
+// 的临时名注释、HotReloader::force_reload 的 2026-10-22 实录、auth_tests
+// 的 20ms sleep「不赌 mtime 粒度」三处在案）——第二次写与第一次写落在同
+// 一 tick 时 mtime 相同，mtime 单信号缓存把第二次写当「未变」：禁用/删除
+// 的 key 无限期继续放行（直到下次写盘或重启），「写盘即热生效」契约被破。
+// 毒化缓存 = 确定性重建该碰撞态（mtime 与写代号都取当前真实值——即只剩
+// 「表」是第二次写前的陈旧值，等价于旧 mtime 单信号下的自然碰撞态）：任何
+// 单一信号下的新鲜判定都拦不住它，只有「表源自上次读，写代号已前进」的
+// 代号失配才能重读。
+#[test]
+fn same_tick_double_write_disable_still_takes_effect() {
+    let (dir, ws) = held_workspace("same_tick");
+    let config = dir.path().join("config");
+    proxy_keys_file::add_key(&config, entry("bot-a", "nbk_aaa")).unwrap();
+    let state = make_state(Some(ws));
+    assert!(match_proxy_caller(&state, "nbk_aaa", "/v1/chat/completions").is_some());
+    // 碰撞态锚点 = set_enabled 之前的代号（缓存里的表正是这个代号读的）。
+    let stale_gen = proxy_keys_file::write_generation();
+    proxy_keys_file::set_enabled(&config, "bot-a", false).unwrap();
+    // 毒化：mtime 伪装成「最新」（取当前真实值——同 tick 双写下与缓存里
+    // 的旧 mtime 数值相同），代号与表是 set_enabled 前的（自然碰撞态：
+    // 缓存最后一次刷新停在第一次写，第二次写只动了 mtime 且没动成）。
+    let path = proxy_keys_file::proxy_keys_config_path(&config);
+    let mtime_now = std::fs::metadata(&path).unwrap().modified().unwrap();
+    *crate::proxy_keys::CACHE.lock() = Some((
+        path,
+        mtime_now,
+        stale_gen,
+        Arc::new(vec![entry("bot-a", "nbk_aaa")]),
+    ));
+    let cur_gen = proxy_keys_file::write_generation();
+    assert!(
+        stale_gen != cur_gen,
+        "set_enabled 必须递增写代号（本测试的失配判据）"
+    );
+    assert!(
+        match_proxy_caller(&state, "nbk_aaa", "/v1/chat/completions").is_none(),
+        "同 tick 双写（mtime 相同）后禁用必须仍然生效"
+    );
 }

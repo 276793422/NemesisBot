@@ -179,6 +179,22 @@ fn read_for_write(config_dir: &Path) -> ProxyKeysFile {
     }
 }
 
+/// 进程内写代号：本模块每次成功落盘 +1。鉴权回落读点的缓存新鲜度必须
+/// 消费它（与 mtime 合取）——NTFS LastWriteTime 有毫秒级量化（write_file_atomic
+/// 临时名注释在案），同 tick 双写（如自动化连发 add→set_enabled）mtime
+/// 相同，mtime 单信号缓存会把第二次写当「未变」，禁用/删除永不生效直到
+/// 下次写盘。本模块是全部变更入口（add_key/remove_key/set_enabled/save_all
+/// 都经 [`write_locked`]），代号主信号对同进程写是精确的；外部手编文件
+/// 仍靠 mtime 兜底。同族先例：HotReloader::force_reload（2026-10-22 CI
+/// 实录）、L18 配置热发布世代化（config_gen.rs）。
+static WRITE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 当前写代号（读点缓存新鲜度合取信号之一；Acquire 与落盘 Release 配对，
+/// 见代号才必然见该代号之前完成的文件内容）。
+pub fn write_generation() -> u64 {
+    WRITE_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// 落盘（调用方必须已持 config_write_lock——RMW 全程罩锁，本函数只负责
 /// 创建目录 + 序列化 + 原子写，不再自行取锁）。
 fn write_locked(config_dir: &Path, file: &ProxyKeysFile) -> Result<PathBuf, String> {
@@ -189,6 +205,8 @@ fn write_locked(config_dir: &Path, file: &ProxyKeysFile) -> Result<PathBuf, Stri
     let json = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), (json + "\n").as_bytes(), 0o600)
         .map_err(|e| format!("写入代理 key 配置失败：{e}"))?;
+    // Release：读到新代号必然读到改名发布后的文件内容（配对读点 Acquire）。
+    WRITE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
     Ok(path)
 }
 

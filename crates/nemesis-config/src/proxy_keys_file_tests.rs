@@ -162,3 +162,25 @@ fn save_all_validates_and_replaces() {
     assert_eq!(keys[0].name, "bot-x");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn write_generation_increments_on_every_successful_write() {
+    let dir = temp_config_dir("writgen");
+    let _g = SERIAL.lock().unwrap();
+    // 写代号每次成功落盘 +1（消费侧缓存新鲜度合取信号——同 tick 双写
+    // mtime 相同时代号是唯一失配源，BUG-20261103-350）。
+    let g0 = write_generation();
+    add_key(&dir, entry("bot-a", "nbk_aaa")).unwrap();
+    assert_eq!(write_generation(), g0 + 1, "add_key 落盘必须递增代号");
+    set_enabled(&dir, "bot-a", false).unwrap();
+    assert_eq!(write_generation(), g0 + 2, "set_enabled 落盘必须递增代号");
+    // 幂等（状态不变不落盘）不递增。
+    set_enabled(&dir, "bot-a", false).unwrap();
+    assert_eq!(write_generation(), g0 + 2, "幂等不落盘不得递增代号");
+    remove_key(&dir, "bot-a").unwrap();
+    assert_eq!(write_generation(), g0 + 3, "remove_key 落盘必须递增代号");
+    // 失败操作（重名拒绝）不落盘不递增。
+    assert!(add_key(&dir, entry("", "")).is_err());
+    assert_eq!(write_generation(), g0 + 3, "校验失败不落盘不得递增代号");
+    let _ = std::fs::remove_dir_all(&dir);
+}

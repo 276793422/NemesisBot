@@ -318,10 +318,10 @@ async fn test_proxy_key_disabled_rejected_without_restart() {
     seed_proxy_key(&dir);
     let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;
     assert_ne!(resp.status(), 401);
-    // 禁用即失效（热生效：同一 router 不重建）。
+    // 禁用即失效（热生效：同一 router 不重建；写代号失配重读，不再赌
+    // mtime 粒度——BUG-20261103-350 后无 sleep）。
     nemesis_config::proxy_keys_file::set_enabled(&dir.path().join("config"), "bot-a", false)
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20)); // 不赌 mtime 粒度
     let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;
     assert_eq!(
         resp.status(),
