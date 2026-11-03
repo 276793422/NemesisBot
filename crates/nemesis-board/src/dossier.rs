@@ -326,6 +326,12 @@ fn copy_dir_sorted(src: &Path, dst: &Path) -> Result<(), String> {
     for e in entries {
         let p = e.path();
         let target = dst.join(e.file_name());
+        // BUG-20261103-343：目录符号链接跳过。file_type() 不穿越链接——
+        // 旧代码 p.is_dir() 跟随链接，链接环下整子树以「loop\loop\...」
+        // 假路径重复拷贝，直到 OS 路径长度上限才收敛。
+        if e.file_type().map(|t| t.is_symlink()).unwrap_or(false) && p.is_dir() {
+            continue;
+        }
         if p.is_dir() {
             copy_dir_sorted(&p, &target)?;
         } else if p.is_file() {
@@ -346,6 +352,10 @@ fn walk_has_dir(root: &Path, name: &str) -> bool {
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let p = e.path();
+        // BUG-20261103-343：链接条目不下探（同上环防护）
+        if e.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+            continue;
+        }
         if !p.is_dir() {
             continue;
         }

@@ -400,3 +400,60 @@ fn test_usage_csv_escapes_hostile_worker_id() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+/// BUG-20261103-343：dossier 导出的目录递归必须跳过目录符号链接——
+/// 链接环（junction/symlink 指回父目录自身）在旧实现（`p.is_dir()`
+/// 跟随链接）下整子树以「loop\loop\...」假路径重复拷贝几十层，直到
+/// OS 路径长度上限才收敛（导出目录被垃圾嵌套拷贝污染）。
+/// 链接创建免提权降级链：symlink_dir（开发者模式/管理员）→
+/// junction（mklink /J，任何用户）。
+#[cfg(windows)]
+fn make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn copy_dir_and_walk_skip_symlink_cycles() {
+    let dir = temp_dir("symcycle");
+    let src = dir.join("records");
+    let sub = src.join("issue").join("execution");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("x.md"), "data").unwrap();
+
+    // 链接环：records/loop → records 自身
+    make_dir_link(&src, &src.join("loop"));
+
+    // 旧实现：跟随环病态重复递归（红证 = dst/loop 在位——整子树被
+    // 重复拷贝进假路径）。
+    let dst = dir.join("out");
+    super::copy_dir_sorted(&src, &dst).unwrap();
+    assert!(
+        dst.join("issue").join("execution").join("x.md").is_file(),
+        "真实子树照常拷贝"
+    );
+    assert!(!dst.join("loop").exists(), "目录链接必须跳过");
+    // walk_has_dir 同环下有限返回
+    assert!(super::walk_has_dir(&src, "execution"));
+    assert!(!super::walk_has_dir(&src, "nonexistent"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
