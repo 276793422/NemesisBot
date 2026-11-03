@@ -72,7 +72,7 @@ fn l18_round_pin_readers_hold_generation_until_publication() {
     let path = write_config(dir.path(), "config.json", cfg_with(false, 7));
     let loop_ = fresh_loop();
     loop_.set_config_path(path.clone());
-    // 盘上改值（模拟 dashboard/CLI 保存，mtime 变化）但**不发布**——round 内
+    // 盘上改值（模拟 dashboard/CLI 保存，内容变化）但**不发布**——round 内
     // 钉代：读者仍持旧代（嵌套不跨代）。
     std::fs::write(&path, serde_json::to_string(&cfg_with(true, 9)).unwrap()).unwrap();
     assert!(!loop_.current_image_downscale(), "round 内读者必须持旧代");
@@ -87,13 +87,14 @@ fn l18_round_pin_readers_hold_generation_until_publication() {
 }
 
 #[test]
-fn l18_mtime_unchanged_check_is_noop() {
+fn l18_unchanged_check_is_noop() {
     let dir = tempfile::tempdir().unwrap();
     let path = write_config(dir.path(), "config.json", cfg_with(false, 7));
     let loop_ = fresh_loop();
     loop_.set_config_path(path);
     assert_eq!(loop_.config_generation_seq(), 1);
-    // 无盘上变化：重复 round start 零发布（mtime 闸短路）。
+    // 无盘上变化：重复 round start 零发布（内容闸短路；BUG-20261103 起
+    // 闸从 mtime 等值改内容比对——Windows 粗时钟同 tick 写 mtime 不可分辨）。
     loop_.check_config_reload();
     loop_.check_config_reload();
     assert_eq!(loop_.config_generation_seq(), 1);
@@ -106,33 +107,32 @@ fn l18_superseded_prepare_is_retryable() {
     let loop_ = fresh_loop();
     loop_.set_config_path(path.clone());
     assert_eq!(loop_.config_generation_seq(), 1);
-    // 准备基于 base=1；随后并发赢家以**更新后的 mtime**先发布（模拟盘上已
+    // 准备基于 base=1；随后并发赢家以**更新的盘上内容**先发布（模拟盘上已
     // 推进到更新的文件状态），输家发布被拒。
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let prepared = loop_
-        .prepare_config_generation(&path, mtime)
+        .prepare_config_generation(std::fs::read(&path).unwrap())
         .expect("prepare succeeds");
-    let winner_mtime = mtime.map(|t| t + std::time::Duration::from_secs(1));
+    let winner_raw = br#"{"agents":{"image_downscale":true}}"#.to_vec();
     let winner = PreparedConfig {
         base_generation: 1,
-        mtime: winner_mtime,
+        raw: winner_raw.clone(),
         value: std::sync::Arc::new(serde_json::json!({"agents": {"image_downscale": true}})),
     };
     assert!(matches!(loop_.publish_prepared_config(winner), Ok(true)));
     assert_eq!(loop_.config_generation_seq(), 2);
-    // 输家基于陈旧基线且 mtime 不同 → Superseded，现行代不被回退。
+    // 输家基于陈旧基线且内容不同 → Superseded，现行代不被回退。
     assert!(matches!(
         loop_.publish_prepared_config(prepared),
         Err(PublishSuperseded)
     ));
     assert_eq!(loop_.config_generation_seq(), 2);
     assert!(loop_.current_image_downscale(), "赢家内容保留");
-    // 收敛形态：同（陈旧）基线、但 mtime 与现行代相同 = 赢家已发布同盘态
+    // 收敛形态：同（陈旧）基线、但内容与现行代相同 = 赢家已发布同盘态
     // 内容 → Ok(false) 不再换代。
     let converged = PreparedConfig {
         base_generation: 1,
-        mtime: winner_mtime,
-        value: std::sync::Arc::new(serde_json::json!({})),
+        raw: winner_raw,
+        value: std::sync::Arc::new(serde_json::json!({"agents": {"image_downscale": true}})),
     };
     assert!(matches!(
         loop_.publish_prepared_config(converged),

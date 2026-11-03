@@ -5,7 +5,7 @@
 //! L18（2026-11-03）：current_* 家族从「每读者独立直读盘」收敛为「持代引用」
 //! ——读者取 `config_generation()` 的 Arc 快照（零 stat、零发布、代内恒一致），
 //! 发布点唯一三处（`set_config_path` 绑定强制 / round start
-//! `check_config_reload` mtime 闸 / 模型切换 `refresh_active_tier` 对账）。
+//! `check_config_reload` 内容闸 / 模型切换 `refresh_active_tier` 对账）。
 //! 机制与刻意偏差见 `loop/config_gen.rs` 模块文档。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
@@ -613,8 +613,8 @@ impl AgentLoop {
     ];
 
     /// Phase 4a: set the config.json path. After this, the tier is re-resolved
-    /// live from config.json on every model switch and whenever the file's mtime
-    /// changes (dashboard model add, CLI `model set-tier`). config.json is the
+    /// live from config.json on every model switch and whenever the file
+    /// content changes (dashboard model add, CLI `model set-tier`). config.json is the
     /// single source of truth — there is no stale per-model snapshot to keep in
     /// sync. Called by `agent_factory` at gateway startup.
     ///
@@ -908,7 +908,7 @@ impl AgentLoop {
             return;
         }
         // L18：切换点先对账发布（盘上 config 可能已变——dashboard/CLI 改键），
-        // mtime 闸未变 = 现行代仍是盘上真相；再从现行代解析。无代（绑定后
+        // 内容闸未变 = 现行代仍是盘上真相；再从现行代解析。无代（绑定后
         // 发布失败）→ 名字启发式，与旧读盘失败的回退同语义。
         self.republish_config_generation(false);
         let tier = self
@@ -1147,13 +1147,15 @@ impl AgentLoop {
         }
     }
 
-    /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
+    /// Phase 4a: detect config.json on-disk content changes and re-resolve
     /// the active model's tier if it changed. Runs once per LLM round, next to
     /// `check_mcp_reload`. Picks up dashboard model additions and CLI
     /// `model set-tier` while the gateway is running.
     ///
-    /// L18：mtime 闸内建于 [`Self::republish_config_generation`]（基准 = 现行
-    /// 代锚定的 mtime）；闸未过 = 现行代仍是盘上真相，整段跳过。**本方法即
+    /// L18：内容闸内建于 [`Self::republish_config_generation`]（基准 = 现行
+    /// 代锚定的盘上原始字节，内容比对不赌钟——BUG-20261103 Windows 粗时钟
+    /// 下 mtime 等值判定同 tick 写入不可分辨）；闸未过 = 现行代仍是盘上
+    /// 真相，整段跳过。**本方法即
     /// 「执行开始钉代」的执行点**——round start 发布新代后，round 内全部
     /// 读者持同一 Arc（读者绝不发布），嵌套不跨代。
     pub(crate) fn check_config_reload(&self) {

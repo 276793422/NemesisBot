@@ -11,10 +11,10 @@
 //!   +JSON 解析收敛为每发布点一次。
 //! - **在途准备被取代 = retryable**：prepare 在锁外做 IO（含基线代号），
 //!   publish 时 CAS——基线已被并发发布者推进 = `Superseded`，调用方以最新
-//!   基线重试（上限 3 次，仍败让到下个发布点自愈；赢家同 mtime = 内容已
+//!   基线重试（上限 3 次，仍败让到下个发布点自愈；赢家同内容 = 已收敛，
 //!   收敛，不重试）。
 //! - **执行开始钉代（嵌套不跨代）**：发布点唯一三处（`set_config_path`
-//!   绑定强制 / round start `check_config_reload` mtime 闸 / 模型切换
+//!   绑定强制 / round start `check_config_reload` 内容闸 / 模型切换
 //!   `refresh_active_tier` 对账），读者**绝不发布**——round 内无发布点，
 //!   嵌套工具链拿到的都是同一 Arc。
 //!
@@ -26,13 +26,16 @@
 
 use super::*;
 
-/// 已发布代：单调代号 + 发布时锚定的盘上 mtime + 不可变内容快照。
+/// 已发布代：单调代号 + 发布时锚定的盘上原始字节 + 不可变内容快照。
 pub(crate) struct ConfigGeneration {
     /// 单调代号（从 1 起；0 = 无代）。CAS 的比较基准。
     pub(crate) generation: u64,
-    /// 发布时锚定的 mtime（`check_config_reload` 的变更闸基准；mtime 与
-    /// 内容同对象携带——裸 mtime 锚字段已退役）。
-    pub(crate) mtime: Option<std::time::SystemTime>,
+    /// 发布时锚定的盘上原始字节（变更闸与 CAS 收敛的比对基准）。
+    /// **内容比对不赌钟**：mtime 等值判定在 Windows 粗时钟（毫秒级刷新
+    /// 粒度）下同 tick 两次写不可分辨，闸不睁 → 解禁/换档不生效
+    ///（BUG-20261103 CI Windows shard4/8/10 五测连红实录；proxy_keys
+    /// 缓存同族同修）。config.json KB 级，每发布点一次直读比对成本可忽略。
+    pub(crate) raw: Vec<u8>,
     /// 代内容（读者持 `Arc` 引用，代内恒一致）。
     pub(crate) value: std::sync::Arc<serde_json::Value>,
 }
@@ -42,7 +45,8 @@ pub(crate) struct ConfigGeneration {
 pub(crate) struct PreparedConfig {
     /// 准备完成时的现行代号（CAS 基线）。
     pub(crate) base_generation: u64,
-    pub(crate) mtime: Option<std::time::SystemTime>,
+    /// 准备所读的盘上原始字节（收敛比对基准，见 [`ConfigGeneration::raw`]）。
+    pub(crate) raw: Vec<u8>,
     pub(crate) value: std::sync::Arc<serde_json::Value>,
 }
 
@@ -68,11 +72,12 @@ impl AgentLoop {
             .unwrap_or(0)
     }
 
-    /// 发布协议：读盘 + 解析（校验，锁外）→ CAS 发布（mtime 闸内建）。
+    /// 发布协议：读盘（BOM 同源剥离）→ 内容比对 → 解析（校验，锁外）→
+    /// CAS 发布（内容闸内建，不赌钟——BUG-20261103 Windows 粗时钟实证）。
     /// 返回 true = 本调用结果使现行代代表盘上最新内容（新发布或并发赢家
     /// 已收敛）；false = 闸未过/校验失败/重试耗尽（现行代保留）。
     ///
-    /// `force`（绑定/重绑）跳过 mtime 闸——路径本身换了，闸比较无意义。
+    /// `force`（绑定/重绑）跳过内容闸——路径本身换了，闸比较无意义。
     pub(crate) fn republish_config_generation(&self, force: bool) -> bool {
         let path = match self.config_path.read().clone() {
             Some(p) => p,
@@ -81,15 +86,29 @@ impl AgentLoop {
         // 重试上限：CAS 连败 = 高频并发发布者（正常运行不存在），让到下个
         // 发布点自愈（round start / 模型切换都会再对账）。
         for _attempt in 0..3 {
-            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            // mtime 闸：现行代锚定的 mtime 未变 = 现行代仍是盘上真相。
+            // 内容闸：现行代锚定的原始字节未变 = 现行代仍是盘上真相。读取
+            // 走 read_config_string（BOM 剥离语义与全部配置读取点同源）；
+            // 读不到（缺文件/瞬时 IO）= 校验必败，直接走保留上一代臂（与
+            // 旧「穿闸→prepare 失败」的终态同语义，少一次注定失败的解析）。
+            let bytes = match nemesis_utils::fsutil::read_config_string(&path) {
+                Ok(s) => s.into_bytes(),
+                Err(_) => {
+                    if self.config_gen.read().is_some() {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "[ConfigGen] config 读取失败，保留上一代（last-known-good，下个发布点重试）"
+                        );
+                    }
+                    return false;
+                }
+            };
             if !force
                 && let Some(g) = self.config_gen.read().as_ref()
-                && g.mtime == mtime
+                && g.raw == bytes
             {
                 return false;
             }
-            let prepared = match self.prepare_config_generation(&path, mtime) {
+            let prepared = match self.prepare_config_generation(bytes) {
                 Ok(p) => p,
                 Err(e) => {
                     // 校验失败：保留上一代（last-known-good）；无代 = 读者
@@ -106,7 +125,7 @@ impl AgentLoop {
             };
             match self.publish_prepared_config(prepared) {
                 Ok(true) => return true,
-                Ok(false) => return true, // 并发赢家已发布同 mtime 内容 = 收敛
+                Ok(false) => return true, // 并发赢家已发布同内容 = 收敛
                 Err(PublishSuperseded) => continue, // retryable：以最新基线重试
             }
         }
@@ -114,17 +133,14 @@ impl AgentLoop {
         false
     }
 
-    /// 准备：读盘 + JSON 解析（= 校验）。IO 在锁外；基线代号在解析成功后
-    /// 现取（尽量缩小被取代窗口；CAS 兜底竞态）。
+    /// 准备：原始字节 → JSON 解析（= 校验）。解析在锁外；基线代号在解析
+    /// 成功后现取（尽量缩小被取代窗口；CAS 兜底竞态）。
     pub(crate) fn prepare_config_generation(
         &self,
-        path: &std::path::Path,
-        mtime: Option<std::time::SystemTime>,
+        raw: Vec<u8>,
     ) -> Result<PreparedConfig, String> {
-        let s = nemesis_utils::fsutil::read_config_string(path)
-            .map_err(|e| format!("config 读取失败: {e}"))?;
-        let value: serde_json::Value =
-            serde_json::from_str(&s).map_err(|e| format!("config 解析失败: {e}"))?;
+        let value: serde_json::Value = serde_json::from_slice(&raw)
+            .map_err(|e| format!("config 解析失败: {e}"))?;
         let base_generation = self
             .config_gen
             .read()
@@ -133,13 +149,13 @@ impl AgentLoop {
             .unwrap_or(0);
         Ok(PreparedConfig {
             base_generation,
-            mtime,
+            raw,
             value: std::sync::Arc::new(value),
         })
     }
 
     /// CAS 发布：现行代号 == 准备基线才换代（generation+1）；否则检查赢家
-    /// 是否已发布同 mtime 内容（收敛 = Ok(false)），未收敛 = Superseded。
+    /// 是否已发布同内容（收敛 = Ok(false)），未收敛 = Superseded。
     pub(crate) fn publish_prepared_config(
         &self,
         prepared: PreparedConfig,
@@ -147,14 +163,14 @@ impl AgentLoop {
         let mut slot = self.config_gen.write();
         let cur = slot.as_ref().map(|g| g.generation).unwrap_or(0);
         if cur != prepared.base_generation {
-            if slot.as_ref().is_some_and(|g| g.mtime == prepared.mtime) {
-                return Ok(false); // 赢家已发布同 mtime 内容 = 收敛，无需再发布
+            if slot.as_ref().is_some_and(|g| g.raw == prepared.raw) {
+                return Ok(false); // 赢家已发布同内容 = 收敛，无需再发布
             }
             return Err(PublishSuperseded);
         }
         *slot = Some(std::sync::Arc::new(ConfigGeneration {
             generation: cur + 1,
-            mtime: prepared.mtime,
+            raw: prepared.raw,
             value: prepared.value,
         }));
         Ok(true)
