@@ -946,3 +946,87 @@ fn test_copy_file_with_mkdir_dst_empty_no_parent() {
     let err = copy_file_with_mkdir(src.to_str().unwrap(), "").unwrap_err();
     assert!(err.contains("copy"), "unexpected error: {}", err);
 }
+
+/// BUG-20261103-343：目录符号链接环必须诚实跳过（不递归）。旧实现
+/// `path.is_dir()` 跟随链接，链接环（loop → memory 自身）= 病态重复
+/// 递归：每层以「loop\loop\...」假路径重复产出动作，直到 OS 路径长度
+/// 上限（Windows ~260 / Linux PATH_MAX）才收敛。链接创建免提权降级链：
+/// symlink_dir（开发者模式/管理员）→ junction（mklink /J，任何用户）。
+#[cfg(windows)]
+fn make_dir_link(target: &Path, link: &Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn make_dir_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn test_plan_dir_symlink_cycle_skipped_not_recursed() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    let mem = src.join("memory");
+    fs::create_dir_all(&mem).unwrap();
+    fs::write(mem.join("notes.txt"), "real content").unwrap();
+
+    // 链接环：memory/loop → memory 自身
+    make_dir_link(&mem, &mem.join("loop"));
+
+    // 旧实现：跟随环病态重复递归（红证 = loop 条目动作是 CreateDir
+    // ——递归进入链接，且深层产出 loop\loop\... 假路径垃圾动作）。
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
+
+    // 新实现：目录链接 = Skip（诚实注记），常规文件照常 Copy。
+    let loop_actions: Vec<_> = plan
+        .actions
+        .iter()
+        .filter(|a| a.destination.replace('\\', "/").ends_with("/memory/loop"))
+        .collect();
+    assert_eq!(
+        loop_actions.len(),
+        1,
+        "链接条目恰好一个动作: {:?}",
+        plan.actions
+    );
+    assert_eq!(
+        loop_actions[0].action_type,
+        ActionType::Skip,
+        "目录链接必须 Skip（防环）: {:?}",
+        loop_actions[0]
+    );
+    assert!(
+        loop_actions[0].description.contains("symlink"),
+        "诚实注记: {}",
+        loop_actions[0].description
+    );
+    // 常规文件不受影响
+    let notes: Vec<_> = plan
+        .actions
+        .iter()
+        .filter(|a| {
+            a.destination
+                .replace('\\', "/")
+                .ends_with("/memory/notes.txt")
+        })
+        .collect();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].action_type, ActionType::Copy);
+}

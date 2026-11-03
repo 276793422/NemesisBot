@@ -225,7 +225,23 @@ fn plan_dir_copy(
         let file_name = path.file_name().unwrap_or_default();
         let dst_path = dst_dir.join(file_name);
 
-        if path.is_dir() {
+        // BUG-20261103-343：目录符号链接跳过。file_type() 不穿越链接——
+        // 旧代码 path.is_dir() 跟随链接，链接环（loop → 父目录自身）=
+        // 病态重复递归：每层以「loop\loop\...」假路径重复产出动作/拷贝，
+        // 直到 OS 路径长度上限（Windows ~260 / Linux PATH_MAX）才收敛。
+        let ft = entry
+            .file_type()
+            .map_err(|e| format!("read entry type: {}", e))?;
+        if ft.is_symlink() && path.is_dir() {
+            actions.push(MigrationAction {
+                action_type: ActionType::Skip,
+                source: Some(path.to_string_lossy().to_string()),
+                destination: dst_path.to_string_lossy().to_string(),
+                description: "symlink directory skipped (cycle guard)".to_string(),
+            });
+            continue;
+        }
+        if ft.is_dir() {
             let sub_actions = plan_dir_copy(&path, &dst_path, force)?;
             actions.extend(sub_actions);
         } else {

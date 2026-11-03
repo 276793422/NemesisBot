@@ -6922,6 +6922,12 @@ fn grep_recursive(
             return;
         }
         let path = entry.path();
+        // BUG-20261103-343：目录符号链接跳过。file_type() 不穿越链接——
+        // 旧代码 path.is_dir() 跟随链接，链接环下同一文件以「loop\loop\...」
+        // 假路径重复命中几十层（直到 OS 路径长度上限才收敛）。
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) && path.is_dir() {
+            continue;
+        }
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if name.starts_with('.')

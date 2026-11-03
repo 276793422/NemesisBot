@@ -5355,3 +5355,51 @@ async fn git_tool_commit_hook_does_not_see_sensitive_env() {
         "git 子进程链（钩子）不得看到敏感环境变量: {content:?}"
     );
 }
+
+/// BUG-20261103-343：workspace 内目录符号链接环必须跳过——旧实现
+/// `path.is_dir()` 跟随链接，环（loop → 根自身）= 同一文件以
+/// 「loop\loop\...」假路径重复命中几十层（红证实测 64 次），直到 OS
+/// 路径长度上限才收敛。链接创建免提权降级链：symlink_dir（开发者
+/// 模式/管理员）→ junction（mklink /J，任何用户）。
+#[cfg(windows)]
+fn make_dir_link(target: &Path, link: &Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn make_dir_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn grep_recursive_skips_symlink_dir_cycles() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), "cycle needle here").unwrap();
+
+    // 链接环：ws/loop → ws 自身
+    make_dir_link(&root, &root.join("loop"));
+
+    let re = regex::Regex::new("needle").unwrap();
+    let mut out = Vec::new();
+    // 旧实现：跟随环病态重复递归（红证 = 同一文件重复命中 64 次，
+    // 以 loop\loop\... 假路径，直到 OS 路径长度上限收敛）。
+    grep_recursive(&root, &re, None, 100, &mut out);
+    // 新实现：链接环不重复命中，a.txt 恰好一次。
+    assert_eq!(out.len(), 1, "链接环不得重复命中: {out:?}");
+}

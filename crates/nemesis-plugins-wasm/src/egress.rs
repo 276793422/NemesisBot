@@ -3,7 +3,9 @@
 //! 安全形态（对齐宿主 SSRF 闸精神）：
 //! - manifest `permissions.egress` 无 allowlist → 能力整体关闭（no-permission）；
 //! - allowlist **精确域名匹配**（大小写不敏感；`host:port` 形态钉端口，
-//!   无端口 = 任意端口；不做子域名泛化——通配必须显式逐条列出）；
+//!   无端口 = 任意端口；不做子域名泛化——通配必须显式逐条列出。IPv6 条目
+//!   用 bracketed 形态 `[::1]:8080` 钉端口、裸 `[::1]` / `2001:db8::9`
+//!   任意端口——BUG-20261103-346 修复前钉端口条目对 IPv6 主机永不命中）；
 //! - `allow-private` 默认 false：解析出的 IP 落私网/回环/链路本地/ULA → 拒绝；
 //! - **DNS 钉地址**：解析一次，reqwest `.resolve()` 钉死——请求期 DNS 重绑
 //!   （rebinding）不成立；重定向 `Policy::none()`（跟重定向绕 allowlist 不成立）；
@@ -108,21 +110,55 @@ fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
 }
 
 /// allowlist 精确匹配（host 大小写不敏感；条目可带 :port 钉端口）。
-fn allowlisted(policy: &EgressPolicy, host: &str, port: u16) -> bool {
+///
+/// pub：allowlist 匹配原语（条目三分形态）独立成面供边界测试钉死——与
+/// [`is_private_ip`] 同理，匹配面回归不允许只靠 e2e 兜。
+///
+/// 条目形态三分（BUG-20261103-346：此前 `rsplit_once(':')` 解析把
+/// bracketed `[::1]:8080` 与裸 `::1:8080` 都判成「host 段含冒号」掉进
+/// 整串比较分支，而请求 host 在 [`proxy_request_inner`] 已剥括号成
+/// `::1`——钉端口文档语义对全部 IPv6 主机失效，条目静默永不命中）：
+/// - `[host]:port`——bracketed IPv6 钉端口（RFC 3986 唯一无歧义形态）；
+/// - `host:port`——v4/域名钉端口（host 段不含冒号才算 host:port）；
+/// - 裸形态（含全部带冒号 IPv6 字面量，如 `::1`、`2001:db8::9`、
+///   `::1:8080` 整串合法地址）——任意端口。
+#[must_use]
+pub fn allowlisted(policy: &EgressPolicy, host: &str, port: u16) -> bool {
     let host_lc = host.to_lowercase();
     for entry in &policy.allowlist {
-        if let Some((eh, ep)) = entry.rsplit_once(':')
-            && ep.chars().all(|c| c.is_ascii_digit())
-            && !eh.contains(':')
-        {
-            if let Ok(p) = ep.parse::<u16>()
-                && eh == host_lc
-                && p == port
-            {
-                return true;
+        let (eh, ep): (&str, Option<&str>) = if let Some(rest) = entry.strip_prefix('[') {
+            // bracketed：`[host]` 或 `[host]:port`；缺右括号 / 右括号后
+            // 跟非端口尾巴 = 形态不合法，整串比较（不命中即拒绝）。
+            match rest.split_once(']') {
+                Some((h, "")) => (h, None),
+                Some((h, tail)) if tail.starts_with(':') => (h, Some(&tail[1..])),
+                _ => (entry.as_str(), None),
             }
-        } else if *entry == host_lc {
-            return true;
+        } else {
+            match entry.rsplit_once(':') {
+                // host:port 仅当 host 段无冒号（v4/域名）；含冒号 = 裸
+                // IPv6 字面量（如 `::1:8080` 整体是合法地址），按裸处理。
+                Some((h, p))
+                    if !h.contains(':')
+                        && !p.is_empty()
+                        && p.chars().all(|c| c.is_ascii_digit()) =>
+                {
+                    (h, Some(p))
+                }
+                _ => (entry.as_str(), None),
+            }
+        };
+        if !eh.eq_ignore_ascii_case(&host_lc) {
+            continue;
+        }
+        match ep {
+            // 钉端口：解析失败（如 >u16）不命中且不短路——后续条目照常尝试。
+            Some(p) => {
+                if p.parse::<u16>() == Ok(port) {
+                    return true;
+                }
+            }
+            None => return true,
         }
     }
     false
