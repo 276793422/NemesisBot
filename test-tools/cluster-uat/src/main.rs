@@ -10129,9 +10129,35 @@ async fn main() {
                 ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
                 ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
 
-                // 1. 胜者先合并（in_review/done）→ 立刻 kill 双 worker：在硬解
-                //    3 轮失败窗口（Delay=4s×3 ≈ 12s）内完成，t0 探针必扑空。
-                wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                // 1. 胜者先合并（in_review/done）→ 等**败者执行档案安置**
+                //    （records/<败者>/execution/ 出现）→ kill 双 worker：kill
+                //    仍落在硬解 3 轮失败窗口（Delay=4s×3 ≈ 12s）内，t0 探针
+                //    必扑空。BUG-20261104 CI mrg-b2 实录：split 一见胜者
+                //    in_review 就杀，败者 C 的档案推送差 ~50ms（9/9 块已到
+                //    A、transfer_end 未发）→ 档案永不安置 → 冲突合并永不
+                //    触发 → spawn_conflict_resolver 唯一入口（落地腿，
+                //    board_archive_ingest::handle_merge_conflict）整链不启动
+                //    （硬解/探针/换人零日志），D5 兜底拉取对死节点每 60s
+                //    空转 → 600s 墙钟爆。board API 对档案安置零早期投影
+                //    （状态停 in_progress、无注释无审计），文件系统是唯一
+                //    确定性信号；落地正常 ~1s（exec 目录删除重试不对称最坏
+                //    ~5s，Windows os error 32 拖推送 4.4s 实录），30s 超时
+                //    诚实 bail 免楔死。安置→冲突合并→resolver spawn 全链在
+                //    A 本地（不依赖 B/C 存活），kill 晚于安置即安全。
+                let (_win_id, lose_id) = wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                let lose_num = if lose_id == id1 { &num1 } else { &num2 };
+                let placed_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                loop {
+                    if tokio::time::Instant::now() >= placed_deadline {
+                        anyhow::bail!(
+                            "等待败者 {lose_num} 执行档案落地超时——kill 锚定必须在安置后（过早杀=投递途中截断，硬解/换人链不启动）"
+                        );
+                    }
+                    if !execution_dirs(&pdir, lose_num).is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
                 gw_b.kill().await;
                 gw_c.kill().await;
 
