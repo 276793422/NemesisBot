@@ -498,6 +498,48 @@ impl ContinuationStore {
         stale
     }
 
+    /// Sweep crash-orphaned `.tmp-` atomic-write residue older than `grace`.
+    ///
+    /// BUG-20261104-356：`write_file_atomic` 的错误路径自清理临时文件，但
+    /// 进程崩溃/断电留在 create↔rename 窗口时孤儿永存——所有 `.json` 过滤
+    /// 的扫描路径（本 store 的 list_pending / stale_task_ids 刻意如此，R14
+    /// 靠扩展名过滤防误判 pending）都无视它，此前没有任何路径能删掉它。
+    /// 固定宽限（远超在写临时文件毫秒~秒级生命周期）保证绝不误删并发在写
+    /// 临时文件；刚崩出来的新鲜孤儿留到下一轮 sweep。单文件失败
+    /// warn-and-continue：卫生清扫不因单文件中断。返回删除数。
+    pub fn sweep_stale_tmp_orphans(&self, grace: std::time::Duration) -> usize {
+        let cutoff = std::time::SystemTime::now() - grace;
+        let mut removed = 0;
+        let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_tmp = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(nemesis_utils::ATOMIC_TMP_PREFIX));
+            if !is_tmp {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if modified >= cutoff {
+                continue; // 在写或新鲜孤儿——保留，下轮再说
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) => warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "[Continuation] Failed to delete stale tmp orphan（下轮 sweep 重试）"
+                ),
+            }
+        }
+        removed
+    }
+
     fn snapshot_path(&self, task_id: &str) -> PathBuf {
         // SAN-02：task_id 可能模型影响（cluster_rpc args）——路径成分前
         // 白名单消毒（真实 `task_*`/`bg_*` id 映射不变）。
@@ -1030,7 +1072,8 @@ impl ContinuationManager {
     /// Mirrors the SessionStore 7-day TTL (`cleanup_old_sessions`) and the
     /// nemesis-cluster `ContinuationStore::cleanup_old` semantics (same
     /// directory, other implementation). No-op without a disk store.
-    /// Returns the number of continuations removed.
+    /// Returns the number of entries removed（快照 + `.tmp-` 崩溃残留孤儿，
+    /// 后者走固定宽限与 max_age 无关，BUG-20261104-356）.
     pub async fn cleanup_old_snapshots(&self, max_age: Duration) -> usize {
         let Some(store) = self.disk_store.as_ref() else {
             return 0;
@@ -1040,7 +1083,14 @@ impl ContinuationManager {
             self.continuations.lock().await.remove(task_id);
             store.delete(task_id);
         }
-        stale.len()
+        let tmp_removed = store.sweep_stale_tmp_orphans(nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE);
+        if tmp_removed > 0 {
+            info!(
+                tmp_removed,
+                "[Continuation] Swept stale tmp orphans from rpc_cache"
+            );
+        }
+        stale.len() + tmp_removed
     }
 
     /// Check whether a continuation exists in memory (synchronous).

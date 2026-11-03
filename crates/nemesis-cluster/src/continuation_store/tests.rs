@@ -956,3 +956,64 @@ async fn test_save_barrier_waits_for_in_flight_write() {
     );
     assert_eq!(loaded.unwrap().task_id, "task-barrier");
 }
+
+// ============================================================
+// BUG-20261104-356：崩溃残留 `.tmp-` 原子写孤儿清扫（固定 1h 宽限）
+// ============================================================
+
+/// cleanup_old 附带孤儿清扫：超龄孤儿删、新鲜孤儿保留（宽限闸，与 max_age
+/// 无关——ZERO「清全部」也绝不误删在写/新鲜临时文件）、.json 走原 TTL 语义。
+#[tokio::test]
+async fn test_cleanup_old_sweeps_tmp_orphans_with_fixed_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    // 超龄孤儿（回拨 2h > 1h 宽限）。
+    let old = dir.path().join(".tmp-old-1-2-3");
+    std::fs::write(&old, b"partial").unwrap();
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+    {
+        let f = std::fs::File::options().write(true).open(&old).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(aged))
+            .unwrap();
+    }
+
+    // 新鲜孤儿（模拟刚崩出来的残留）。
+    let fresh = dir.path().join(".tmp-fresh-1-2-4");
+    std::fs::write(&fresh, b"partial").unwrap();
+
+    // 普通 .json 快照：ZERO 语义下被清（对照组，证明本轮确实在清扫）。
+    let snap = dir.path().join("t1.json");
+    std::fs::write(&snap, b"{}").unwrap();
+
+    let removed = store.cleanup_old(std::time::Duration::ZERO).await.unwrap();
+    assert_eq!(removed, 2, "超龄 json + 超龄孤儿；新鲜孤儿被宽限闸保留");
+    assert!(!snap.exists(), "ZERO 清全部快照语义不变");
+    assert!(!old.exists(), "超龄孤儿被清");
+    assert!(
+        fresh.exists(),
+        "新鲜孤儿必须被固定宽限闸保留（绝不误删在写临时文件）"
+    );
+}
+
+/// 孤儿不进快照清单/恢复路径（扩展名过滤防误判，R14 语义保持）：
+/// cleanup_old 清完孤儿后，list_pending / recover_from_disk 仍只认 .json。
+#[tokio::test]
+async fn test_tmp_orphans_never_count_as_snapshots() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    let orphan = dir.path().join(".tmp-crash-1-2-5");
+    std::fs::write(&orphan, b"partial").unwrap();
+
+    let pending = store.list_pending().await;
+    assert!(
+        pending.is_empty(),
+        "孤儿不得出现在 pending 清单：{:?}",
+        pending
+    );
+    let recovered = store.recover_from_disk().await.unwrap();
+    assert_eq!(recovered, 0, "孤儿不得被恢复为快照");
+    // 孤儿仍在（未被 recover 顺手误删），等 cleanup_old 的宽限闸处置。
+    assert!(orphan.exists());
+}

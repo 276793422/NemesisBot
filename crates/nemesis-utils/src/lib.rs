@@ -38,7 +38,9 @@ pub mod wait_ready;
 pub mod zip_util;
 
 // Re-export the most commonly used functions
-pub use file::{ensure_dir, read_file_string, write_file_atomic};
+pub use file::{
+    ATOMIC_TMP_ORPHAN_GRACE, ATOMIC_TMP_PREFIX, ensure_dir, read_file_string, write_file_atomic,
+};
 #[cfg(feature = "http")]
 pub use http_retry::do_request_with_retry_reqwest;
 pub use http_retry::{

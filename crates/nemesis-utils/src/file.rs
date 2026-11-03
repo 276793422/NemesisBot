@@ -5,6 +5,40 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// [`write_file_atomic`] 临时文件名前缀（单一真相源）。临时名形如
+/// `.tmp-{pid}-{seq}-{nanos}`，与目标同目录、无扩展名——消费方的目录
+/// 清扫（TTL sweep 等）若需清除**崩溃残留**的临时孤儿（错误路径会自清理，
+/// 但进程死亡留在 create↔rename 窗口时无人善后），按本前缀扫描。
+pub const ATOMIC_TMP_PREFIX: &str = ".tmp-";
+
+/// 临时孤儿清扫的保守宽限：在写临时文件的生命周期是毫秒~秒级（小 JSON
+/// 的 write+fsync+rename），1 小时是 3~4 个数量级的安全余量——清扫方只删
+/// mtime 早于 now-grace 的孤儿，绝不误删在写临时文件；刚崩出来的新鲜孤儿
+/// 留到下一轮 sweep（清扫节奏通常为启动/每日，无正确性影响）。
+pub const ATOMIC_TMP_ORPHAN_GRACE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// 生成原子写的临时文件路径（`<parent>/.tmp-{pid}-{seq}-{nanos}`）。
+/// 进程内唯一性不能只靠时间戳：Windows SystemTime 刷新粒度粗（毫秒级），
+/// 同 tick 内多线程并发出拿相同 nanos → create_new 撞 ERROR_FILE_EXISTS
+/// （Windows CI 实证）。叠加进程级单调序数保证同进程内绝对唯一；跨进程
+/// 唯一性仍由 pid 承担（低频配置写场景，见 [`write_file_atomic`] 诚实边界）。
+/// 独立成函数：命名规则单一真相（前缀常量 + 形态），测试与消费方可直接
+/// 断言，无需在写窗口内竞速观测。
+#[doc(hidden)]
+pub fn atomic_tmp_path(parent: &Path) -> std::path::PathBuf {
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    parent.join(format!(
+        "{}{}-{}-{}",
+        ATOMIC_TMP_PREFIX,
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
 /// Atomically write data to a file: unique same-dir temp file → write →
 /// flush → `sync_all` → (unix) rename over target → (unix) parent-dir sync.
 ///
@@ -31,20 +65,7 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
     let parent = p.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("atomic write {}: mkdir: {e}", p.display()))?;
 
-    // 进程内唯一性不能只靠时间戳：Windows SystemTime 刷新粒度粗（毫秒级），
-    // 同 tick 内多线程并发出拿相同 nanos → create_new 撞 ERROR_FILE_EXISTS
-    // （Windows CI 实证）。叠加进程级单调序数保证同进程内绝对唯一；跨进程
-    // 唯一性仍由 pid 承担（低频配置写场景，见上方诚实边界）。
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-    let tmp_path = parent.join(format!(
-        ".tmp-{}-{}-{}",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    let tmp_path = atomic_tmp_path(parent);
 
     let mut created = false;
     let result = (|| -> Result<(), String> {
