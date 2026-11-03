@@ -129,6 +129,12 @@ pub mod tasks;
 // 角色目录 WSAPI（2026-09-28 角色目录与分档供给）：roles.list——委派卡
 // 角色下拉数据源（目录全量 + tier 分档可见性，与 dispatch 闸同源裁决）。
 pub mod roles;
+// 子代理任务注册表 WSAPI（子代理可见性 P1/P2，2026-11-03）：subagents.list/
+// detail/cancel——三形态统一台账读面 + 用户面终止。
+pub mod subagents;
+// 子代理 WSAPI handler 测试（全局注册表纯内存态；断言按唯一 marker 过滤）。
+#[cfg(test)]
+mod subagents_handler_tests;
 // 独立代理配置 WSAPI（2026-10-31 代理设置三项改造）：proxy.get/save——
 // `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
 // （独立文件不依赖任何子系统）。
@@ -366,6 +372,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(deliveries::DeliveriesHandler));
     // 角色目录（2026-09-28 角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
+    // 子代理可见性（2026-11-03）：subagents.list/detail/cancel。
+    router.register(Arc::new(subagents::SubagentsHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));

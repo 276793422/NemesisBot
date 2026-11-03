@@ -238,6 +238,77 @@ async fn matrix3b_history_request_on_project_session_falls_to_main_loop() {
 }
 
 // ---------------------------------------------------------------------------
+// 矩阵 ③c：后台子代理完成回灌按 parent 会话归属路由（D7，2026-11-03）——
+// 项目派发的子代理回灌进项目 loop（快照在它的 continuation manager），无
+// 归属回灌照旧进主 loop。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn matrix3c_subagent_continuation_routes_by_parent_session_owner() {
+    let (bus, mgr, _home) = fixture("m3c");
+    let pid = "p_m3caaaaa";
+    let key = "agent:main:session:projc";
+    mgr.remember_session(key, pid);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    mgr.insert_test_channel(pid, tx);
+    mgr.start_routing();
+
+    // 项目派发的后台子代理完成回灌：channel=system + SUBAGENT 前缀 +
+    // session_key = parent 会话（项目绑定）。
+    let mut owned = msg("system", key);
+    owned.sender_id = format!(
+        "{}{}",
+        nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+        "bg1"
+    );
+    // 纯函数：先于 System 臂，归属命中 → ToProject。
+    assert_eq!(
+        route_decision(&owned, Some(pid)),
+        RouteDecision::ToProject(pid.to_string()),
+        "matrix3c: owned subagent continuation must route to project"
+    );
+    bus.publish_inbound(owned.clone());
+    let got = expect_recv(&mut rx, "matrix3c dispatcher").await;
+    assert_eq!(got.sender_id, owned.sender_id, "same message forwarded");
+    // 主桥：skip（主 loop 不得重复消费——快照只在项目 loop）。
+    assert!(
+        mgr.bridge_should_skip(&owned),
+        "matrix3c: main bridge must skip owned subagent continuation"
+    );
+
+    // 无归属（主 loop 派发）的回灌：session_key 无项目绑定 → ToMain，
+    // 主桥照常消费。
+    let mut orphan = msg("system", "agent:main:session:orphan");
+    orphan.sender_id = format!(
+        "{}{}",
+        nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+        "bg2"
+    );
+    assert_eq!(
+        route_decision(&orphan, None),
+        RouteDecision::ToMain,
+        "matrix3c: unowned subagent continuation falls to main"
+    );
+    assert!(
+        !mgr.bridge_should_skip(&orphan),
+        "matrix3c: main bridge must consume unowned continuation"
+    );
+
+    // 空 session_key 的回灌（老快照兼容形态）：不认领，保持 System 老语义。
+    let mut legacy = msg("system", "");
+    legacy.sender_id = format!(
+        "{}{}",
+        nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+        "bg3"
+    );
+    assert_eq!(
+        route_decision(&legacy, None),
+        RouteDecision::System,
+        "matrix3c: empty session_key stays System"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 矩阵 ④：同一项目并发两会话各自排队不串
 // ---------------------------------------------------------------------------
 

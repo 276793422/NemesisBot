@@ -144,7 +144,8 @@ async fn spawn_passes_args_and_defaults_to_closure() {
               _t: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             let cap = cap.clone();
             // &str 先转 owned（Future 'static）。
             let (agent_id, task, model, channel, chat_id) = (
@@ -202,7 +203,8 @@ async fn spawn_allows_custom_agent_id_passthrough() {
               _t: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             let cap = cap.clone();
             let agent_id = agent_id.to_string();
             let task = task.to_string();
@@ -243,7 +245,8 @@ async fn spawn_semaphore_queues_beyond_max_concurrent() {
               _t: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             let started = started_c.clone();
             let release = release_c.clone();
             let task = task.to_string();
@@ -322,7 +325,8 @@ async fn spawn_five_concurrent_with_max_four_never_exceeds_four() {
               _t: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             let in_flight = in_f.clone();
             let peak = peak_c.clone();
             let task = task.to_string();
@@ -596,7 +600,8 @@ async fn spawn_tools_profile_flows_to_closure() {
               tools: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             let s = s.clone();
             let task = task.to_string();
             let tools = tools.to_string();
@@ -637,7 +642,8 @@ async fn spawn_tools_profile_unknown_rejected_before_spawn() {
               _p: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async { Ok("should not run".to_string()) })
         },
@@ -903,7 +909,8 @@ async fn spawn_depth_within_limit_flows_child_depth_to_closure() {
               _p: &str,
               depth: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             let s = s.clone();
             let task = task.to_string();
             Box::pin(async move {
@@ -944,7 +951,8 @@ async fn spawn_depth_limit_rejects_before_spawn() {
               _p: &str,
               _d: usize,
               _bg: bool,
-              _r: &str| {
+              _r: &str,
+              _psk: &str| {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async { Ok("should not run".to_string()) })
         },
@@ -1056,7 +1064,8 @@ async fn run_detached_depth_enforcement_grandchild_rejected() {
          _p: &str,
          _d: usize,
          _bg: bool,
-         _r: &str| { Box::pin(async { Ok("grandchild should never run".to_string()) }) },
+         _r: &str,
+         _psk: &str| { Box::pin(async { Ok("grandchild should never run".to_string()) }) },
     ));
     agent_loop.register_tool("spawn".to_string(), Box::new(spawn_tool));
 

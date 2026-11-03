@@ -223,6 +223,14 @@ pub async fn run(
         // 迁移落盘后热读与 typed 装配双面一致。
         migrate_legacy_max_tool_iterations(&crate::common::config_path(&home));
         let ws_dir = crate::common::workspace_path(&home);
+        // 子代理可见性（P1，2026-11-03）：注册表落盘路径早期注入（幂等；
+        // 必须先于 global() 首次物化——首个 spawn 闭包运行远晚于此）。
+        nemesis_agent::subagent_registry::init(
+            ws_dir
+                .join("logs")
+                .join("subagent_tasks")
+                .join("tasks.json"),
+        );
         // 独立代理配置 env 段注入（2026-10-31 批B）已迁 `GatewayCtx::assemble`
         // Step 5a（ctx.rs）：必须晚于 logger 初始化（否则 tracing 事件蒸发）
         // 且早于一切 reqwest client 构造——两约束只在 assemble 内部同时成立。

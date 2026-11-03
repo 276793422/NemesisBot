@@ -826,6 +826,13 @@ pub struct AgentLoop {
     spawn_slot: parking_lot::RwLock<
         Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>,
     >,
+    /// 子代理可见性（D5，2026-11-03）：本 loop 的宿主形态标识（`main` /
+    /// `project:{pid}` / `agent:{id}`）。集群 delegate 任务入册
+    /// （`save_async_continuation` → `subagent_registry`）时抄给注册表
+    /// `loop_origin` 字段——详情/列表视图按它区分「哪个宿主委派的跨节点
+    /// 任务」。factory 组装后 `set_loop_origin` 注入；缺省 `main`（主 loop
+    /// 形态与其 spawn 闭包硬编码一致，standalone 测试形态同值）。
+    loop_origin: parking_lot::RwLock<String>,
     /// 语音 realtime P1（W4 L2）：语音对话模式提示词注入开关。gateway 侧把
     /// `chat.realtime.voice_prompt` 热态经 `set_voice_prompt` 接线（仿 estop
     /// late-binding 模式）；`build_messages` 每轮读取，`true` 且 tier≠mini 才
@@ -1033,6 +1040,7 @@ impl AgentLoop {
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
+            loop_origin: parking_lot::RwLock::new("main".to_string()),
             voice_prompt: parking_lot::RwLock::new(None),
             workspace_boundary: parking_lot::RwLock::new(None),
             plan_products_root: parking_lot::RwLock::new(None),
@@ -1311,6 +1319,10 @@ mod pre_pause_probe_tests;
 // G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
 #[cfg(test)]
 mod g4_background_spawn_tests;
+// D5（子代理可见性 2026-11-03）：集群 delegate 并入注册表咬合测试
+//（begin = save_async_continuation / finish = dispatch_continuation）。
+#[cfg(test)]
+mod delegate_registry_tests;
 // E6 (devtool-upgrade 阶段 2)：手动会话维护（/compact /clear）测试。
 #[cfg(test)]
 mod e6_maintenance_tests;

@@ -1808,17 +1808,23 @@ fn inject_spawn_fn(
               task: &str,
               _model: &str,
               _channel: &str,
-              _chat_id: &str,
+              chat_id: &str,
               tools_profile: &str,
               depth: usize,
               background: bool,
-              role: &str| {
+              role: &str,
+              parent_session_key: &str| {
             let weak = weak.clone();
             let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
+            let role_owned = role.to_string();
+            // 子代理可见性（P1）：连接级 chat_id（`web:{connId}`，泵按它回推
+            // 父会话房间）+ 父会话键（注册表台账 + D7 后台回灌路由信号）。
+            let chat_id = chat_id.to_string();
+            let parent_session_key = parent_session_key.to_string();
             // P3：显式角色覆盖（"" = 自动 → 沿用档位推导；非空 = 已过
             // from_slug 校验的 slug，直接转角色）。解析在闭包内做（&str
             // 参数不可跨 'static 边界）。
@@ -1860,6 +1866,35 @@ fn inject_spawn_fn(
                         depth,
                         "[SpawnTool] running detached sub-agent (G0/G1/G2)"
                     );
+                    // 子代理可见性（P1）：入册 + 挂取消令牌。会话键与注册表 id
+                    // 同键（`subagent:{uuid}`，详情视图按 session_key join
+                    // chat_event_log 环）；origin 按 agent_id 区分（client=
+                    // 客户端手动派发，其余=模型自主 spawn）。
+                    let registry_id = nemesis_agent::r#loop::AgentLoop::detached_session_key(None);
+                    let cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
+                    nemesis_agent::subagent_registry::global().begin(
+                        nemesis_agent::subagent_registry::SubagentBegin {
+                            id: registry_id.clone(),
+                            parent_session_key: parent_session_key.clone(),
+                            parent_chat_id: chat_id.clone(),
+                            origin: if info.agent_id == "client" {
+                                "client_spawn"
+                            } else {
+                                "model_spawn"
+                            }
+                            .to_string(),
+                            agent_id: info.agent_id.clone(),
+                            task: info.task.clone(),
+                            role: role_owned.clone(),
+                            tools_profile: info.tools_profile.clone(),
+                            depth,
+                            background: false,
+                            loop_origin: "main".to_string(),
+                            bg_task_id: None,
+                        },
+                    );
+                    nemesis_agent::subagent_registry::global()
+                        .attach_token(&registry_id, cancel_token.clone());
                     let result = agent_loop
                         .run_detached(
                             &info.task,
@@ -1875,6 +1910,11 @@ fn inject_spawn_fn(
                                         &info.tools_profile,
                                     )
                                 }),
+                                // 子代理可见性（P1）：会话键/注册表 id 同键；取消
+                                // 令牌直达执行链（注册表 cancel 面）。
+                                session_key_override: Some(registry_id.clone()),
+                                cancel_token: Some(cancel_token.clone()),
+                                registry_id: Some(registry_id.clone()),
                                 ..Default::default()
                             },
                         )
@@ -1920,6 +1960,35 @@ fn inject_spawn_fn(
                 let bg_task_id = task_id.clone();
                 let bg_bridge = cc_bridge.clone();
                 let bg_info = info.clone();
+                // 子代理可见性（P1/D7）：后台任务在 marker 返回**前**入册
+                // （列表立即可见）+ 挂取消令牌（注册表「终止」直达执行链）。
+                // 会话键与注册表 id 同键（详情视图 join chat_event_log 环）。
+                let bg_registry_id = nemesis_agent::r#loop::AgentLoop::detached_session_key(None);
+                let bg_cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
+                nemesis_agent::subagent_registry::global().begin(
+                    nemesis_agent::subagent_registry::SubagentBegin {
+                        id: bg_registry_id.clone(),
+                        parent_session_key: parent_session_key.clone(),
+                        parent_chat_id: chat_id.clone(),
+                        origin: if info.agent_id == "client" {
+                            "client_spawn"
+                        } else {
+                            "model_spawn"
+                        }
+                        .to_string(),
+                        agent_id: info.agent_id.clone(),
+                        task: info.task.clone(),
+                        role: role_owned.clone(),
+                        tools_profile: info.tools_profile.clone(),
+                        depth,
+                        background: true,
+                        loop_origin: "main".to_string(),
+                        bg_task_id: Some(bg_task_id.clone()),
+                    },
+                );
+                nemesis_agent::subagent_registry::global()
+                    .attach_token(&bg_registry_id, bg_cancel_token.clone());
+                let bg_parent_session_key = parent_session_key.clone();
                 tokio::spawn(async move {
                     let result = match weak.upgrade() {
                         Some(agent_loop) => {
@@ -1946,12 +2015,30 @@ fn inject_spawn_fn(
                                                 &info.tools_profile,
                                             )
                                         }),
+                                        // 子代理可见性（P1）：会话键/注册表 id 同键；
+                                        // 取消令牌直达执行链；完成状态自动收尾。
+                                        session_key_override: Some(bg_registry_id.clone()),
+                                        cancel_token: Some(bg_cancel_token.clone()),
+                                        registry_id: Some(bg_registry_id.clone()),
                                         ..Default::default()
                                     },
                                 )
                                 .await
                         }
-                        None => Err("agent loop is gone (gateway shutting down)".to_string()),
+                        None => {
+                            // 注册表兜底：upgrade 失败时 run_detached 未调用，
+                            // opts 的 registry_id 收尾不会发生——显式落 Failed
+                            // 防 Running 幽灵（正常路径由 opts 自动收尾，两路
+                            // 互斥不双写）。
+                            nemesis_agent::subagent_registry::global().finish(
+                                &bg_registry_id,
+                                nemesis_agent::subagent_registry::SubagentStatus::Failed,
+                                None,
+                                None,
+                                Some("agent loop is gone (gateway shutting down)".to_string()),
+                            );
+                            Err("agent loop is gone (gateway shutting down)".to_string())
+                        }
                     };
                     // 件2：SubagentStop（观察型）——完成后、continuation 回灌
                     // bus 前。「cancelled」= 任务 spawn 后 loop 已亡（G4 路径
@@ -1994,7 +2081,11 @@ fn inject_spawn_fn(
                         chat_id: String::new(),
                         content,
                         media: Vec::new(),
-                        session_key: String::new(),
+                        // 子代理可见性（D7）：父会话键随行——项目会话派发的后台
+                        // 任务完成回灌项目 loop（manager 按归属路由），不再全局
+                        // 短路进主 loop（项目快照在项目 loop 的 continuation
+                        // store，主 loop 加载必 miss）。
+                        session_key: bg_parent_session_key,
                         correlation_id: String::new(),
                         metadata,
                         voice_playback: None,
@@ -3201,6 +3292,11 @@ pub struct AgentLoopSpec {
     /// 落 home；None = 全部缺席（主/记录形态零变化；项目形态记录缺位时
     /// 也为 None——agents 记录是增强面，缺位 warn 降级不拒建 loop）。
     pub agent_home: Option<std::path::PathBuf>,
+    /// 子代理可见性（P1）：本 loop 的宿主形态标识——`project:{id}`（项目
+    /// loop）/ `agent:{id}`（记录/自建 loop）/ `main`（主 loop，不经 spec
+    /// 构建）。子代理注册表 `loop_origin` 字段的赋值源：详情视图按它区分
+    /// 「哪个宿主派发的子代理」，项目页/agent 页过滤台账用。
+    pub loop_origin: String,
 }
 
 impl AgentLoopSpec {
@@ -3211,6 +3307,9 @@ impl AgentLoopSpec {
         // sync_project_agents 物化，exec_root=项目目录。字段先克隆进
         // 'static 闭包（借用不能跨出工厂函数）。
         let project_id = project.id.clone();
+        // 子代理可见性（P1）：宿主形态标识（先算——project_id 随后 move
+        // 进 persistent_resolve 闭包）。
+        let loop_origin = format!("project:{project_id}");
         // B2（2026-10-31 项目 home 收编）：项目镜像记录现查一次拿 home_path。
         // 时序保证：sync_project_agents 先于项目 loop 构建——gateway boot
         // 在 agents seed（install_manager + 批量 sync）之后才 start_all
@@ -3252,6 +3351,7 @@ impl AgentLoopSpec {
             // G2：项目 loop 共享形态（浏览器 profile 不 per-project）。
             browser_profile: None,
             agent_home,
+            loop_origin,
         }
     }
 
@@ -3291,6 +3391,7 @@ impl AgentLoopSpec {
             // B2：记录形态（selfbuilt/main）不设第二根——selfbuilt 的 home
             // 就是 exec_root（两根重合无意义），main 无 home 语义。
             agent_home: None,
+            loop_origin: format!("agent:{}", record.agent_id),
         }
     }
 }
@@ -3948,11 +4049,21 @@ pub fn build_agent_loop_from_spec(
     }
     agent_loop.set_channel_manager(shared.enabled_channels.clone());
 
-    // 显式不装配（与主 loop 的差异面）：cluster_rpc 工具 / continuation
-    // manager（R1：续行快照 + 异步恢复经全局 bus，会话归属穿透 Phase 1 不做）/
-    // memory_inject（增强内存是主 workspace 资产）/ forge provider 更新（forge
-    // 不挂）/ workspace state manager（见上）/ spawn_daily_* 清扫任务
-    //（共享存储的清扫主 loop 侧唯一持有）。
+    // 子代理可见性（D7）：spec 形态 loop 接线 continuation manager（共享
+    // 主 workspace 的 `cluster/rpc_cache/` 盘上 store）——`__BG_SPAWN__`
+    // 后台子代理的续行快照/回灌从此在本 loop 闭合（快照存这里、完成消息
+    // 按 parent session_key 路由回这里）。cluster_rpc 工具仍不装配（无
+    // `__ASYNC__` 产生源），cluster 恢复循环对空 peer_id 快照本就跳过；
+    // rpc_cache TTL 清扫仍主 loop 侧唯一持有（共享目录，不重复扫）。
+    agent_loop.set_continuation_manager(Arc::new(
+        nemesis_agent::ContinuationManager::with_disk_store(&shared.workspace_dir()),
+    ));
+
+    // 显式不装配（与主 loop 的差异面）：cluster_rpc 工具（无跨节点 RPC 面，
+    // 续行只剩本 loop 的后台子代理形态，见上）/ memory_inject（增强内存是
+    // 主 workspace 资产）/ forge provider 更新（forge 不挂）/ workspace
+    // state manager（见上）/ spawn_daily_* 清扫任务（共享存储的清扫主
+    // loop 侧唯一持有）。
 
     info!(
         model = %model_name,
@@ -3990,7 +4101,13 @@ pub fn build_agent_loop_from_spec(
             );
         }
     }
-    inject_project_spawn_fn(&agent_loop, &spawn_slot, project_cc_bridge.clone());
+    inject_project_spawn_fn(
+        &agent_loop,
+        &spawn_slot,
+        project_cc_bridge.clone(),
+        &shared.bus,
+        &spec.loop_origin,
+    );
     // 治理补全 P1（2026-10-19）：connector 治理面与主 loop 同源——项目/
     // selfbuilt loop 同装 MCP（enable_mcp_reload），独占接管与 connector
     // 工具必须同覆盖，否则项目会话成为独占旁路（治理资产仍锚主 workspace，
@@ -4050,40 +4167,64 @@ fn spawn_approval_observer_once(
     });
 }
 
-/// L6++：项目 loop 的子代理 spawn 闭包——**仅同步路径**（R1：后台续行经
-/// 全局 bus 广播 `system` 消息，Phase 1 不做会话归属穿透，项目 loop 禁
-/// 异步续行；`background=true` 诚实报错而非静默转同步）。同步路径复用
-/// run_detached（本 loop 内 detached 轮次，无 bus 参与）。Weak 捕获防环
-/// 与主 spawn 同理。
+/// L6++：项目/记录 loop 的子代理 spawn 闭包。前台路径复用 run_detached
+///（本 loop 内 detached 轮次）；后台路径（D7 解锁，2026-11-03）与主 spawn
+/// 同源——spec 形态 loop 已接线 continuation manager（快照在本 loop 存取），
+/// 完成消息按 parent session_key 回灌（manager.rs 按归属路由回本 loop 的
+/// per-loop mpsc），不再全局短路进主 loop。Weak 捕获防环与主 spawn 同理。
 fn inject_project_spawn_fn(
     loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
     spawn_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
     // 件2：SubagentStart/Stop 事件源（None = 无桥，不发事件）。
     cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
+    // D7：后台完成消息回灌 bus（`system` 通道 + SUBAGENT_CONTINUATION_PREFIX）。
+    bus: &Arc<nemesis_bus::MessageBus>,
+    // 子代理可见性（P1）：宿主形态标识（`project:{id}` / `agent:{id}`），
+    // 注册表 `loop_origin` 字段赋值源。
+    loop_origin: &str,
 ) {
     // loop 侧镜像共享槽（client_spawn / WSAPI chat.spawn 消费同一闭包）。
     loop_arc.set_spawn_slot(spawn_slot.clone());
+    // 子代理可见性（D5）：宿主形态标识进 loop——delegate 任务（集群
+    // `__ASYNC__` 路径）入册时 loop 自己读（该路径在 loop 内部
+    // tool_batch，够不着本闭包）。主 loop 不经此函数，缺省 `main`。
+    loop_arc.set_loop_origin(loop_origin);
+    use std::sync::atomic::{AtomicU64, Ordering};
     let weak = Arc::downgrade(loop_arc);
+    let bus = bus.clone();
+    let loop_origin = loop_origin.to_string();
+    // 后台任务 id 计数器（同毫秒并发 spawn 防撞；与主 spawn 各自独立，
+    // task_id 带毫秒时间戳全局唯一性由时间戳承载）。
+    static BG_SPAWN_COUNTER: AtomicU64 = AtomicU64::new(0);
     let _ = spawn_slot.set(Arc::new(
         move |agent_id: &str,
               task: &str,
               _model: &str,
               _channel: &str,
-              _chat_id: &str,
+              chat_id: &str,
               tools_profile: &str,
               depth: usize,
               background: bool,
-              role: &str| {
+              role: &str,
+              parent_session_key: &str| {
             let weak = weak.clone();
+            let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
+            let role_owned = role.to_string();
+            // 子代理可见性（P1）：连接级 chat_id + 父会话键（同主 spawn）。
+            let chat_id = chat_id.to_string();
+            let parent_session_key = parent_session_key.to_string();
+            // 宿主形态标识 per-call 本地化（外层 Fn 闭包捕获变量不可 move）。
+            let loop_origin = loop_origin.clone();
             // P3：显式角色覆盖（语义与主 spawn 同源）。
             let explicit_role = nemesis_agent::prompt::SubagentRole::from_slug(role);
             // Fn 闭包不能把捕获 move 进 async 块——每次调用 clone 进去。
             let cc_bridge = cc_bridge.clone();
-            // 件2：SubagentStart/Stop 的 payload 素材。
+            // 件2：SubagentStart/Stop 的 payload 素材（两路径共用；后台路径
+            // 再 clone 进 spawn 任务）。
             let info = nemesis_agent::cc_hooks::SubagentInfo {
                 agent_id,
                 task,
@@ -4100,59 +4241,247 @@ fn inject_project_spawn_fn(
                     Ok(a) => a,
                     Err(e) => return Err(e),
                 };
-                if background {
-                    return Err(
-                        "项目模式下暂不支持后台子代理（异步续行需跨项目路由，暂未支持）"
-                            .to_string(),
+                if !background {
+                    let agent_loop = weak
+                        .upgrade()
+                        .ok_or_else(|| "agent loop is gone (shutdown in progress)".to_string())?;
+                    // 件2：SubagentStart（exit 2 = 拒绝 spawn，`?` 上抛阻断文案）。
+                    if let Some(bridge) = &cc_bridge {
+                        bridge.dispatch_subagent_start(&info).await?;
+                    }
+                    tracing::debug!(
+                        agent_id = %info.agent_id,
+                        task_len = info.task.len(),
+                        tools_profile = %info.tools_profile,
+                        depth,
+                        "[SpawnTool] project loop detached sub-agent (L6++)"
                     );
+                    // 子代理可见性（P1）：入册 + 挂取消令牌（同主 spawn；
+                    // loop_origin 按宿主形态标识，D7 详情视图按宿主过滤）。
+                    let registry_id =
+                        nemesis_agent::r#loop::AgentLoop::detached_session_key(None);
+                    let cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
+                    nemesis_agent::subagent_registry::global().begin(
+                        nemesis_agent::subagent_registry::SubagentBegin {
+                            id: registry_id.clone(),
+                            parent_session_key: parent_session_key.clone(),
+                            parent_chat_id: chat_id.clone(),
+                            origin: if info.agent_id == "client" {
+                                "client_spawn"
+                            } else {
+                                "model_spawn"
+                            }
+                            .to_string(),
+                            agent_id: info.agent_id.clone(),
+                            task: info.task.clone(),
+                            role: role_owned.clone(),
+                            tools_profile: info.tools_profile.clone(),
+                            depth,
+                            background: false,
+                            loop_origin: loop_origin.clone(),
+                            bg_task_id: None,
+                        },
+                    );
+                    nemesis_agent::subagent_registry::global().attach_token(
+                        &registry_id,
+                        cancel_token.clone(),
+                    );
+                    let result = agent_loop
+                        .run_detached(
+                            &info.task,
+                            nemesis_agent::r#loop::DetachedOpts {
+                                allowed_tools,
+                                depth,
+                                // prompt-pack pro（M4）：readonly 档 → 侦察员角色。
+                                // P3：显式角色优先，缺省回落档位推导。
+                                role: explicit_role.or_else(|| {
+                                    nemesis_agent::loop_tools::detached_role_for_profile(
+                                        &info.tools_profile,
+                                    )
+                                }),
+                                // 子代理可见性（P1）：会话键/注册表 id 同键；取消
+                                // 令牌直达执行链（注册表 cancel 面）。
+                                session_key_override: Some(registry_id.clone()),
+                                cancel_token: Some(cancel_token.clone()),
+                                registry_id: Some(registry_id.clone()),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                    // 件2：SubagentStop（观察型；前台两态，理由同主 spawn）。
+                    if let Some(bridge) = &cc_bridge {
+                        let outcome = if result.is_ok() {
+                            "completed"
+                        } else {
+                            "failed"
+                        };
+                        bridge
+                            .dispatch_subagent_stop(
+                                &info,
+                                outcome,
+                                result.as_ref().err().map(String::as_str),
+                            )
+                            .await;
+                    }
+                    return result;
                 }
-                let agent_loop = weak
-                    .upgrade()
-                    .ok_or_else(|| "agent loop is gone (shutdown in progress)".to_string())?;
-                // 件2：SubagentStart（exit 2 = 拒绝 spawn，`?` 上抛阻断文案）。
+
+                // D7 后台路径（2026-11-03 解锁）：与主 spawn 同源。continuation
+                // 快照由本 loop 的 manager 存取（spec 构建时已接线）；完成消息
+                // 按父会话键回灌 bus，manager 按归属路由回本 loop。
+                // 件2：SubagentStart 在任务真正 spawn 前发（拒绝则不产生
+                // marker / 不 spawn 任务）。
                 if let Some(bridge) = &cc_bridge {
                     bridge.dispatch_subagent_start(&info).await?;
                 }
-                tracing::debug!(
-                    agent_id = %info.agent_id,
-                    task_len = info.task.len(),
-                    tools_profile = %info.tools_profile,
-                    depth,
-                    "[SpawnTool] project loop detached sub-agent (sync-only, L6++)"
+                let task_id = format!(
+                    "{}{}_{}",
+                    nemesis_agent::loop_continuation::BG_SPAWN_TASK_PREFIX,
+                    chrono::Utc::now().timestamp_millis(),
+                    BG_SPAWN_COUNTER.fetch_add(1, Ordering::Relaxed),
                 );
-                let result = agent_loop
-                    .run_detached(
-                        &info.task,
-                        nemesis_agent::r#loop::DetachedOpts {
-                            allowed_tools,
-                            depth,
-                            // prompt-pack pro（M4）：readonly 档 → 侦察员角色。
-                            // P3：显式角色优先，缺省回落档位推导。
-                            role: explicit_role.or_else(|| {
-                                nemesis_agent::loop_tools::detached_role_for_profile(
-                                    &info.tools_profile,
+                let bg_agent_id = info.agent_id.clone();
+                let bg_task = info.task.clone();
+                let bg_profile = info.tools_profile.clone();
+                let bg_task_id = task_id.clone();
+                let bg_bridge = cc_bridge.clone();
+                let bg_info = info.clone();
+                // 子代理可见性（P1/D7）：后台任务在 marker 返回**前**入册
+                //（列表立即可见）+ 挂取消令牌。loop_origin = 宿主形态标识。
+                let bg_registry_id =
+                    nemesis_agent::r#loop::AgentLoop::detached_session_key(None);
+                let bg_cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
+                nemesis_agent::subagent_registry::global().begin(
+                    nemesis_agent::subagent_registry::SubagentBegin {
+                        id: bg_registry_id.clone(),
+                        parent_session_key: parent_session_key.clone(),
+                        parent_chat_id: chat_id.clone(),
+                        origin: if info.agent_id == "client" {
+                            "client_spawn"
+                        } else {
+                            "model_spawn"
+                        }
+                        .to_string(),
+                        agent_id: info.agent_id.clone(),
+                        task: info.task.clone(),
+                        role: role_owned.clone(),
+                        tools_profile: info.tools_profile.clone(),
+                        depth,
+                        background: true,
+                        loop_origin: loop_origin.clone(),
+                        bg_task_id: Some(bg_task_id.clone()),
+                    },
+                );
+                nemesis_agent::subagent_registry::global().attach_token(
+                    &bg_registry_id,
+                    bg_cancel_token.clone(),
+                );
+                let bg_parent_session_key = parent_session_key.clone();
+                tokio::spawn(async move {
+                    let result = match weak.upgrade() {
+                        Some(agent_loop) => {
+                            tracing::debug!(
+                                agent_id = %bg_agent_id,
+                                task_len = bg_task.len(),
+                                tools_profile = %bg_profile,
+                                depth,
+                                task_id = %bg_task_id,
+                                "[SpawnTool] project loop background sub-agent started (D7)"
+                            );
+                            agent_loop
+                                .run_detached(
+                                    &bg_task,
+                                    nemesis_agent::r#loop::DetachedOpts {
+                                        // 后台任务沿用派生前已过检查的同一深度
+                                        //（G2 语义：后台化不另计深度）。
+                                        allowed_tools,
+                                        depth,
+                                        role: explicit_role.or_else(|| {
+                                            nemesis_agent::loop_tools::detached_role_for_profile(
+                                                &info.tools_profile,
+                                            )
+                                        }),
+                                        // 子代理可见性（P1）：会话键/注册表 id 同键；
+                                        // 取消令牌直达执行链；完成状态自动收尾。
+                                        session_key_override: Some(bg_registry_id.clone()),
+                                        cancel_token: Some(bg_cancel_token.clone()),
+                                        registry_id: Some(bg_registry_id.clone()),
+                                        ..Default::default()
+                                    },
                                 )
-                            }),
-                            ..Default::default()
-                        },
-                    )
-                    .await;
-                // 件2：SubagentStop（观察型；前台两态，理由同主 spawn）。
-                if let Some(bridge) = &cc_bridge {
-                    let outcome = if result.is_ok() {
-                        "completed"
-                    } else {
-                        "failed"
+                                .await
+                        }
+                        None => {
+                            // 注册表兜底：upgrade 失败时 run_detached 未调用，
+                            // opts 的 registry_id 收尾不会发生——显式落 Failed
+                            // 防 Running 幽灵（正常路径由 opts 自动收尾，两路
+                            // 互斥不双写）。
+                            nemesis_agent::subagent_registry::global().finish(
+                                &bg_registry_id,
+                                nemesis_agent::subagent_registry::SubagentStatus::Failed,
+                                None,
+                                None,
+                                Some("agent loop is gone (gateway shutting down)".to_string()),
+                            );
+                            Err("agent loop is gone (gateway shutting down)".to_string())
+                        }
                     };
-                    bridge
-                        .dispatch_subagent_stop(
-                            &info,
-                            outcome,
-                            result.as_ref().err().map(String::as_str),
-                        )
-                        .await;
-                }
-                result
+                    // 件2：SubagentStop（观察型）——完成后、continuation 回灌
+                    // bus 前。三态语义同主 spawn。
+                    if let Some(bridge) = &bg_bridge {
+                        let outcome = match &result {
+                            Ok(_) => "completed",
+                            Err(e) if e.contains("agent loop is gone") => "cancelled",
+                            Err(_) => "failed",
+                        };
+                        bridge
+                            .dispatch_subagent_stop(
+                                &bg_info,
+                                outcome,
+                                result.as_ref().err().map(String::as_str),
+                            )
+                            .await;
+                    }
+                    let (content, status, error) = match &result {
+                        Ok(text) => (text.clone(), "ok", None),
+                        Err(e) => (
+                            format!("[后台子代理任务失败] {}", e),
+                            "error",
+                            Some(e.clone()),
+                        ),
+                    };
+                    let mut metadata = std::collections::HashMap::new();
+                    metadata.insert("status".to_string(), status.to_string());
+                    if let Some(ref e) = error {
+                        metadata.insert("error".to_string(), e.clone());
+                    }
+                    metadata.insert("source".to_string(), "background_subagent".to_string());
+                    bus.publish_inbound(nemesis_types::channel::InboundMessage {
+                        channel: "system".to_string(),
+                        sender_id: format!(
+                            "{}{}",
+                            nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+                            bg_task_id
+                        ),
+                        chat_id: String::new(),
+                        content,
+                        media: Vec::new(),
+                        // 子代理可见性（D7）：父会话键随行——项目会话派发的后台
+                        // 任务完成回灌项目 loop（manager 按归属路由），不再全局
+                        // 短路进主 loop（项目快照在项目 loop 的 continuation
+                        // store，主 loop 加载必 miss）。
+                        session_key: bg_parent_session_key,
+                        correlation_id: String::new(),
+                        metadata,
+                        voice_playback: None,
+                    });
+                    tracing::info!(
+                        task_id = %bg_task_id,
+                        status,
+                        "[SpawnTool] project loop background sub-agent finished, completion published to bus"
+                    );
+                });
+                Ok(format!("__BG_SPAWN__:{}", task_id))
             })
         },
     ));

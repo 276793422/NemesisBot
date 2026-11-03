@@ -115,6 +115,17 @@ pub struct DetachedOpts<'a> {
     /// `system_prompt` 的关系：显式 `system_prompt` 优先（裸提示词模式照旧
     /// 替换人格），`role` 只在没有显式覆盖时叠加。
     pub role: Option<crate::prompt::SubagentRole>,
+    /// 子代理可见性（P1/D7）：会话键覆盖。Some = 本回合直接用作 session_key
+    /// / chat_id / trace 关联（后台子代理续行要求快照与回灌同键，见
+    /// `agent_factory` 后台路径）；None = 默认 `subagent:{label}:{uuid}` 派生。
+    pub session_key_override: Option<String>,
+    /// 子代理可见性（P1/D6）：外部取消令牌。Some = 本回合改用该令牌
+    /// （注册表「终止」直达执行链）；None = 自造一次性令牌（行为不变）。
+    pub cancel_token: Option<Arc<tokio_util::sync::CancellationToken>>,
+    /// 子代理可见性（P1）：注册表条目 id。Some = 回合结束时把终态回写
+    /// 注册表（Cancelled > Done > Failed 裁决 + 轮数/摘要摘录）；None =
+    /// 零动作（K1/K2 headless 等无注册表路径行为不变）。
+    pub registry_id: Option<String>,
 }
 
 impl AgentLoop {
@@ -676,8 +687,9 @@ impl AgentLoop {
     }
 
     /// Swarm M1：detached 会话键构造。`label` 注入段（`subagent:{label}:{uuid}`）
-    /// 供日志检索与可观测（G13）；None 维持 `subagent:{uuid}` 现状。
-    pub(crate) fn detached_session_key(label: Option<&str>) -> String {
+    /// 供日志检索与可观测（G13）；None 维持 `subagent:{uuid}` 现状。pub：
+    /// spawn 闭包（agent_factory，crate 外）登记注册表时用同一派生规则。
+    pub fn detached_session_key(label: Option<&str>) -> String {
         match label {
             Some(l) => format!("subagent:{}:{}", l, uuid::Uuid::new_v4()),
             None => format!("subagent:{}", uuid::Uuid::new_v4()),
@@ -700,7 +712,18 @@ impl AgentLoop {
         } else if let Some(role) = opts.role {
             cfg.system_prompt = Some(role.render_system_prompt(cfg.system_prompt.as_deref()));
         }
-        let session_key = Self::detached_session_key(opts.label);
+        // 子代理可见性（P1/D7）：会话键覆盖（后台续行要求快照/回灌同键）；
+        // None = 默认派生（行为不变）。
+        let session_key = match &opts.session_key_override {
+            Some(k) => k.clone(),
+            None => Self::detached_session_key(opts.label),
+        };
+        // 子代理可见性（P1/D6）：外部取消令牌（注册表「终止」直达执行链）；
+        // None = 自造一次性令牌（行为不变）。
+        let cancel_token = opts
+            .cancel_token
+            .clone()
+            .unwrap_or_else(|| Arc::new(tokio_util::sync::CancellationToken::new()));
         let instance = AgentInstance::new(cfg);
         if let Some(allowed) = opts.allowed_tools
             && !allowed.is_empty()
@@ -757,7 +780,7 @@ impl AgentLoop {
                 &context,
                 &trace_id,
                 false,
-                &tokio_util::sync::CancellationToken::new(),
+                &cancel_token,
                 (opts.max_turns > 0).then_some(opts.max_turns),
                 &[],
             )
@@ -783,6 +806,34 @@ impl AgentLoop {
                 })
             })
             .unwrap_or_default();
+        // 子代理可见性（P1）：终态回写注册表。裁决 Cancelled > Done > Failed：
+        // 令牌已取消 = 用户「终止」命中（即使事件里已有 Done 也按用户意志记
+        // Cancelled）；有 Done = 完成；其余（纯 Error / 空输出）= Failed。
+        // registry_id 未挂载（K1/K2 headless 等）= 零动作。
+        if let Some(id) = opts.registry_id.as_deref() {
+            let status = if cancel_token.is_cancelled() {
+                crate::subagent_registry::SubagentStatus::Cancelled
+            } else if events.iter().any(|e| matches!(e, AgentEvent::Done(_))) {
+                crate::subagent_registry::SubagentStatus::Done
+            } else {
+                crate::subagent_registry::SubagentStatus::Failed
+            };
+            let summary = events.iter().rev().find_map(|e| match e {
+                AgentEvent::Done(m) => Some(m.clone()),
+                _ => None,
+            });
+            let error = events.iter().rev().find_map(|e| match e {
+                AgentEvent::Error(e) => Some(e.clone()),
+                _ => None,
+            });
+            crate::subagent_registry::global().finish(
+                id,
+                status,
+                Some(rounds as usize),
+                summary,
+                error,
+            );
+        }
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id,
             session_key,

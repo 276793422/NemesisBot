@@ -2399,10 +2399,33 @@ pub async fn pump_agent_events(
                     let tool_seq = crate::chat_event_log::record_tool(sk, data.clone());
                     data["seq"] = serde_json::Value::from(tool_seq);
                 }
+                // 子代理可见性（D3，2026-11-03）：子代理事件的 chat_id =
+                // 注册表 id（detached RequestContext 以 session_key 顶替，
+                // `subagent:{uuid}` 形态），天然够不着下面的 `web:` 房间
+                // 广播——查注册表取 parent_chat_id 作为投递房间；payload
+                // 补 subagent_id（SSE 与 WS 帧同形，前端抽屉/页面按注册表
+                // id 精确过滤，不必对 session_key 尾段做字符串手术）。
+                // 注册表 miss（重启后失忆的历史事件 / 非子代理的非 web
+                // 事件）= 诚实不投递，与 web: 缺席同语义。
+                let chat_id = event.chat_id().to_string();
+                let subagent_parent = if !chat_id.is_empty() && !chat_id.starts_with("web:") {
+                    nemesis_agent::subagent_registry::global()
+                        .get(&chat_id)
+                        .map(|t| t.parent_chat_id)
+                } else {
+                    None
+                };
+                if subagent_parent.is_some() {
+                    data["subagent_id"] = serde_json::Value::String(chat_id.clone());
+                }
                 event_hub.publish("tool_event", data.clone());
 
-                let chat_id = event.chat_id().to_string();
-                if let Some(session_id) = chat_id.strip_prefix("web:") {
+                let target_room = chat_id.strip_prefix("web:").or_else(|| {
+                    subagent_parent
+                        .as_deref()
+                        .and_then(|p| p.strip_prefix("web:"))
+                });
+                if let Some(session_id) = target_room {
                     // BUG 2026-09-22 慢客户端洪泛：带 seq = 已落
                     // chat_event_log 环，丢帧可被前端 chat.sync 补拉自愈
                     // → 走可丢通道（满即丢，事件泵绝不被单个慢客户端的

@@ -4601,6 +4601,8 @@ pub fn detached_role_for_profile(profile: &str) -> Option<crate::prompt::Subagen
 /// P3（角色显式化）：第 9 参 `role` = 子代理角色 slug（`""` = 自动：沿用
 /// 工具档位推导的既有行为；非空 = 已过 `SubagentRole::from_slug` 校验的
 /// 显式角色，闭包侧覆盖 `DetachedOpts.role`）。
+/// 子代理可见性（P1）：第 10 参 `parent_session_key` = 发起会话键（注册表
+/// 台账归属 + D7 后台续行回灌路由的信号；客户端手动 spawn 传 `""`）。
 pub type SpawnFn = Arc<
     dyn Fn(
             &str,
@@ -4611,6 +4613,7 @@ pub type SpawnFn = Arc<
             &str,
             usize,
             bool,
+            &str,
             &str,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
@@ -4890,6 +4893,7 @@ impl Tool for SpawnTool {
             child_depth,
             background,
             role,
+            &context.session_key,
         )
         .await
     }

@@ -108,6 +108,37 @@ impl AgentLoop {
             .cloned()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| target_id.clone());
+
+        // 子代理可见性（D5，2026-11-03）：集群 delegate 任务并入注册表
+        //（P3「delegate 并入同一列表」）。A 端生命周期视图——begin= 本处
+        //（`__ASYNC__` marker 落地），finish= 续行回灌（dispatch_continuation）；
+        // B 端 transcript 留在对端节点不拉取（诚实边界：本行 events 环恒空）。
+        // id/bg_task_id 直接用集群 task_id（gateway 侧跨节点状态面同键）。
+        // 任务文本取 cluster_rpc args 的 message 字段（解析失败 = 空，诚实
+        // 留白，不编造）。
+        let delegate_task = serde_json::from_str::<serde_json::Value>(&tc.arguments)
+            .ok()
+            .and_then(|v| {
+                v.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        crate::subagent_registry::global().begin(crate::subagent_registry::SubagentBegin {
+            id: task_id.clone(),
+            parent_session_key: context.session_key.clone(),
+            parent_chat_id: context.chat_id.clone(),
+            origin: "delegate".to_string(),
+            agent_id: target_id.clone(),
+            task: delegate_task,
+            role: String::new(),
+            tools_profile: String::new(),
+            depth: 0,
+            background: true,
+            loop_origin: self.loop_origin(),
+            bg_task_id: Some(task_id.clone()),
+        });
+
         if let Some(ref mgr) = self.continuation_manager {
             // Get messages up to this point (including the assistant's tool_call).
             // We use build_messages() to convert history → LlmMessage format.

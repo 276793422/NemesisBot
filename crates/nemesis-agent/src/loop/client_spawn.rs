@@ -19,6 +19,18 @@ impl AgentLoop {
         *self.spawn_slot.write() = Some(slot);
     }
 
+    /// 注入宿主形态标识（子代理可见性 D5，factory 组装后调用）：`main` /
+    /// `project:{pid}` / `agent:{id}`——delegate 任务入册时抄给注册表
+    /// `loop_origin`。缺省 `main`（主 loop 不注入即正确）。
+    pub fn set_loop_origin(&self, origin: &str) {
+        *self.loop_origin.write() = origin.to_string();
+    }
+
+    /// 当前宿主形态标识（getter 返回 owned——注册表 begin 持有）。
+    pub fn loop_origin(&self) -> String {
+        self.loop_origin.read().clone()
+    }
+
     /// 客户端 spawn 前的角色合法性检查（handler 侧裁决）：未知 slug /
     /// 分档外 / `agents.roles.hidden` 隐藏 = `Err`（错误串与 dispatch 闸
     /// 同文案形态）。空 role = `Ok`（缺省角色，档位推导）。
@@ -105,6 +117,7 @@ impl AgentLoop {
             1, // 深度 = 直接子代理（与主代理 spawn 同级；SpawnFn 侧 DetachedOpts.depth）
             false,
             role,
+            "", // parent_session_key：客户端手动 spawn 无父会话（注册表 origin=client_spawn）
         )
         .await
     }

@@ -97,6 +97,8 @@ pub mod session_fork;
 pub mod session_stats;
 pub mod skills_digest;
 pub mod spill;
+/// 子代理任务注册表（子代理可见性 P1）：三形态统一台账 + 落盘 + 取消面。
+pub mod subagent_registry;
 pub mod todo_closeout;
 /// P8（集群无人值守硬化 A2）：会话 token 预算闸——marker 文案单一真相源 +
 /// per-session 累计账本（loop 侧接线在 `r#loop::token_budget`）。

@@ -278,6 +278,7 @@ impl AgentLoop {
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
+            loop_origin: parking_lot::RwLock::new("main".to_string()),
             voice_prompt: parking_lot::RwLock::new(None),
             workspace_boundary: parking_lot::RwLock::new(None),
             plan_products_root: parking_lot::RwLock::new(None),
@@ -294,7 +295,8 @@ impl AgentLoop {
 
     /// Dispatch a cluster continuation: inline (permits=0) or spawned (permits>0).
     /// Called from both `run_bus_owned` (test) and `run_bus_arc` (production).
-    async fn dispatch_continuation(
+    /// `pub(crate)`：delegate 台账终态回写测试直驱（D5，2026-11-03）。
+    pub(crate) async fn dispatch_continuation(
         &self,
         task_id: String,
         msg: &nemesis_types::channel::InboundMessage,
@@ -322,6 +324,24 @@ impl AgentLoop {
         // 出站不带节点徽章，行为与历史一致。owned String——spawn 分支闭包
         // 要求 'static（与 task_error 同款）。
         let task_source_node = task_metadata.get("source_node").cloned();
+
+        // 子代理可见性（D5，2026-11-03）：delegate 任务终态回写（begin 在
+        // `__ASYNC__` marker 落地侧 save_async_continuation）。后台子代理
+        // 续行（`subagent_continuation`）的 task_id 不在注册表（行 id 是
+        // `subagent:{uuid}`）→ finish 静默 miss，语义正是「不在册不回写」。
+        // 用户侧 cancel 的本地视图会被真实结局覆盖——B 端结果才是任务真相，
+        // cancel 只代表「不再等待显示」。
+        crate::subagent_registry::global().finish(
+            &task_id,
+            if task_failed {
+                crate::subagent_registry::SubagentStatus::Failed
+            } else {
+                crate::subagent_registry::SubagentStatus::Done
+            },
+            None,
+            (!task_response.is_empty()).then(|| task_response.clone()),
+            task_metadata.get("error").map(|v| v.to_string()),
+        );
 
         if self.max_continuation_permits == 0 {
             // Inline: process directly in the main loop (no spawn).

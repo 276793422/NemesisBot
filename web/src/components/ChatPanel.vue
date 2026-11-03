@@ -34,6 +34,9 @@ import DelegateDialog from './DelegateDialog.vue'
 // 2026-10-30 Work 时间线：长任务「叙述+工具」交错折叠块（落地态+live 态
 // 共用），取代旧 ToolCallCard 卡片组 + roundTexts 折叠条。
 import WorkTimelineBlock from './chat/WorkTimelineBlock.vue'
+// 子代理可见性（2026-11-03）：当前会话派生的子代理/委派任务摘要抽屉
+// （零行隐藏；详情深链 /subagents?focus=<id>）。
+import SubagentDrawer from './chat/SubagentDrawer.vue'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
 import { escapeHtml, renderMarkdownHtml } from '../utils/markdown'
@@ -2928,6 +2931,9 @@ onUnmounted(() => {
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
+          <!-- 子代理可见性 D1c：当前会话派生任务摘要抽屉（零行隐藏，
+               详情深链 /subagents?focus=<id>）。 -->
+          <SubagentDrawer :session-sid="effectiveSid || ''" />
         </div>
       </div>
     </div>

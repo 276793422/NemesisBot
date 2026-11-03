@@ -603,3 +603,156 @@ async fn deliverables_event_non_web_chat_id_sse_only() {
 
     pump.abort();
 }
+
+// ---------------------------------------------------------------------------
+// 子代理可见性（D3，2026-11-03）：chat_id = 注册表 id（`subagent:{uuid}`
+// 形态）的事件 → 查注册表取 parent_chat_id 投进父会话房间 + payload 补
+// subagent_id；注册表 miss 维持「只进 hub」旧行为（上一测试覆盖）。
+// ---------------------------------------------------------------------------
+
+fn unique_subagent_id(tag: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("subagent:pump-{tag}-{nanos}")
+}
+
+#[tokio::test]
+async fn subagent_event_routed_to_parent_room_with_subagent_id() {
+    let manager = SessionManager::with_default_timeout();
+    let session = manager.create_session();
+    let mut queue_rx = attach_fake_queue(&manager, &session.id);
+
+    let event_hub = Arc::new(EventHub::new());
+    let mut hub_rx = event_hub.subscribe();
+
+    // 注册子代理任务：parent_chat_id 指向本测试连接的房间（marker id 防
+    // 全局注册表并行串扰）。
+    let id = unique_subagent_id("route");
+    nemesis_agent::subagent_registry::global().begin(
+        nemesis_agent::subagent_registry::SubagentBegin {
+            id: id.clone(),
+            parent_session_key: "agent:main:session:pumptest".into(),
+            parent_chat_id: format!("web:{}", session.id),
+            origin: "model_spawn".into(),
+            agent_id: "t-agent".into(),
+            task: "pump 路由测试".into(),
+            role: String::new(),
+            tools_profile: String::new(),
+            depth: 1,
+            background: true,
+            loop_origin: "pumptest".into(),
+            bg_task_id: None,
+        },
+    );
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    // 子代理形态事件：chat_id = 注册表 id（非 web: 前缀）。
+    tx.send(AgentEvent::ToolStarted {
+        session_key: id.clone(),
+        chat_id: id.clone(),
+        call_id: "cs1".into(),
+        tool: "grep".into(),
+        args_preview: "{}".into(),
+    })
+    .unwrap();
+
+    // 父房间收到 push 帧，且带 subagent_id 注入。
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), queue_rx.recv())
+        .await
+        .expect("timed out waiting for parent room frame")
+        .expect("queue closed");
+    let text = String::from_utf8(frame).unwrap();
+    assert!(text.contains("\"cmd\":\"tool_event\""), "frame: {text}");
+    assert!(text.contains("\"tool\":\"grep\""), "frame: {text}");
+    assert!(
+        text.contains(&format!("\"subagent_id\":\"{id}\"")),
+        "subagent_id must be injected: {text}"
+    );
+
+    // hub 同发（SSE 消费面同形，带 subagent_id）。
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert_eq!(ev.event_type, "tool_event");
+    assert_eq!(ev.data["subagent_id"], id.as_str());
+
+    pump.abort();
+    // 收尾：任务置终态（全局表 marker 过滤约定下避免残留 running 行）。
+    nemesis_agent::subagent_registry::global().finish(
+        &id,
+        nemesis_agent::subagent_registry::SubagentStatus::Done,
+        Some(1),
+        None,
+        None,
+    );
+}
+
+#[tokio::test]
+async fn subagent_event_with_parent_room_gone_survives() {
+    // parent_chat_id 指向不存在的房间 → broadcast Err，pump 必须吞掉继续。
+    let manager = SessionManager::with_default_timeout();
+    let event_hub = Arc::new(EventHub::new());
+
+    let id = unique_subagent_id("ghost");
+    nemesis_agent::subagent_registry::global().begin(
+        nemesis_agent::subagent_registry::SubagentBegin {
+            id: id.clone(),
+            parent_session_key: "agent:main:session:pumptest".into(),
+            parent_chat_id: "web:ghost-parent".into(),
+            origin: "model_spawn".into(),
+            agent_id: "t-agent".into(),
+            task: "ghost 房间测试".into(),
+            role: String::new(),
+            tools_profile: String::new(),
+            depth: 1,
+            background: true,
+            loop_origin: "pumptest".into(),
+            bg_task_id: None,
+        },
+    );
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    tx.send(AgentEvent::ToolFinished {
+        session_key: id.clone(),
+        chat_id: id.clone(),
+        call_id: "cf1".into(),
+        tool: "exec".into(),
+        duration_ms: 5,
+        ok: true,
+        result_preview: "ok".into(),
+    })
+    .unwrap();
+    // 第二个事件能进 hub = pump 没被 ghost 房间投递错误杀死。
+    tx.send(AgentEvent::ToolFinished {
+        session_key: format!("{id}-2"),
+        chat_id: format!("{id}-2"),
+        call_id: "cf2".into(),
+        tool: "exec".into(),
+        duration_ms: 5,
+        ok: true,
+        result_preview: "ok".into(),
+    })
+    .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !pump.is_finished(),
+        "pump died on parent room broadcast error"
+    );
+
+    pump.abort();
+    nemesis_agent::subagent_registry::global().finish(
+        &id,
+        nemesis_agent::subagent_registry::SubagentStatus::Done,
+        Some(1),
+        None,
+        None,
+    );
+}

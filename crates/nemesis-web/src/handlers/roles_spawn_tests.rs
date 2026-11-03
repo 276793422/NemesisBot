@@ -112,7 +112,7 @@ fn role_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
 }
 
 /// SpawnFn 实参捕获记录：(agent_id, task, model, channel, chat_id,
-/// tools_profile, depth, background, role)。
+/// tools_profile, depth, background, role, parent_session_key)。
 type CapturedSpawn = Arc<
     parking_lot::Mutex<
         Vec<(
@@ -124,6 +124,7 @@ type CapturedSpawn = Arc<
             String,
             usize,
             bool,
+            String,
             String,
         )>,
     >,
@@ -142,7 +143,8 @@ fn recording_spawn(
               tools_profile: &str,
               depth: usize,
               background: bool,
-              role: &str|
+              role: &str,
+              _psk: &str|
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'static>,
         > {
@@ -156,6 +158,7 @@ fn recording_spawn(
             let chat_id = chat_id.to_string();
             let tools_profile = tools_profile.to_string();
             let role = role.to_string();
+            let _psk = _psk.to_string();
             Box::pin(async move {
                 captured.lock().push((
                     agent_id,
@@ -167,6 +170,7 @@ fn recording_spawn(
                     depth,
                     background,
                     role,
+                    _psk,
                 ));
                 Ok(reply.to_string())
             })
@@ -372,7 +376,7 @@ async fn spawn_happy_path_invokes_slot_fn_with_client_identity() {
 
     let calls = captured.lock();
     assert_eq!(calls.len(), 1);
-    let (agent_id, task, model, channel, chat_id, tools_profile, depth, background, role) =
+    let (agent_id, task, model, channel, chat_id, tools_profile, depth, background, role, _psk) =
         &calls[0];
     assert_eq!(agent_id, "client");
     assert_eq!(task, "跑一遍单元测试");
