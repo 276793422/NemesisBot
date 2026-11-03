@@ -78,6 +78,60 @@ fn cli_mode_overwrites_persona() {
     assert_ne!(fs::read_to_string(&identity).unwrap(), "my custom persona");
 }
 
+// ===========================================================================
+// BUG-20261103-353 回归锁：onboard 曾把 agents.defaults.restrict_to_workspace
+// 强制改写 false（注释声称「security module enforces rules」，但安全管线不含
+// 工作区包围——包围唯一执法点是 agent 侧 WorkspaceBoundary），fresh 装机
+// 开箱即无文件系统写约束（`..` 相对路径越界写实机复现 ok:true）。修复后
+// onboard 不再触碰该键，模板默认 true 直通落盘。
+// ===========================================================================
+
+mod bug353_restrict_default {
+    use super::super::{OnboardMode, onboard_default};
+
+    /// Seed 模式 fresh 装机：restrict_to_workspace 必须保持模板默认 true。
+    #[test]
+    fn bug353_seed_fresh_onboard_keeps_restrict_true() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("bug353-seed-home");
+
+        onboard_default(&home, false, OnboardMode::Seed).unwrap();
+
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            cfg["agents"]["defaults"]["restrict_to_workspace"],
+            serde_json::json!(true),
+            "fresh onboard 不得关闭工作区围栏: {}",
+            cfg["agents"]["defaults"]
+        );
+    }
+
+    /// Cli + local=true 臂：围栏同样保持 true，且 --local workspace 改写
+    /// 照常生效（同块两语义不互斥）。
+    #[test]
+    fn bug353_cli_local_keeps_restrict_true_and_rewrites_workspace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("bug353-cli-local-home");
+
+        onboard_default(&home, true, OnboardMode::Cli).unwrap();
+
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            cfg["agents"]["defaults"]["restrict_to_workspace"],
+            serde_json::json!(true),
+        );
+        assert_eq!(
+            cfg["agents"]["defaults"]["workspace"].as_str(),
+            Some(".nemesisbot/workspace"),
+            "--local workspace 改写不受影响"
+        );
+    }
+}
+
 fn common_config(home: &std::path::Path) -> std::path::PathBuf {
     crate::common::config_path(home)
 }

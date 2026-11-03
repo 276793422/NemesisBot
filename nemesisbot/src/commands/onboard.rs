@@ -116,20 +116,21 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
             }
             println!("  Security module enabled");
 
-            // Disable workspace restriction (security module enforces rules)
+            // 工作区围栏不动模板默认（true；BUG-20261103-353）：安全管线 8 层
+            // 不含工作区包围（注入/命令/ABAC/凭据/DLP/SSRF/扫描/审计各自语义），
+            // 包围唯一执法点是 agent 侧 WorkspaceBoundary——旧代码在此强制改写
+            // false 且注释声称「security module enforces rules」，实测 fresh
+            // 装机 `..` 相对路径越界写 ok:true（管线放行、无审批弹卡），开箱即
+            // 无文件系统写约束，与模板/部署说明书基线矛盾。需要放开围栏的用户
+            // 显式改 config（部署说明书 §3.4：接受风险条件 = 沙盒 + strict）。
             if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
                 && let Some(obj) = agents.as_object_mut()
+                && local
             {
                 obj.insert(
-                    "restrict_to_workspace".to_string(),
-                    serde_json::Value::Bool(false),
+                    "workspace".to_string(),
+                    serde_json::Value::String(".nemesisbot/workspace".to_string()),
                 );
-                if local {
-                    obj.insert(
-                        "workspace".to_string(),
-                        serde_json::Value::String(".nemesisbot/workspace".to_string()),
-                    );
-                }
             }
 
             // Set web auth token, port, websocket
