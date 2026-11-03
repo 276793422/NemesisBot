@@ -15,6 +15,7 @@ pub mod plugin_wasm;
 pub mod plugins_native;
 pub mod provider_resolver;
 pub mod proxy_file;
+pub mod proxy_keys_file;
 pub mod store;
 pub mod vault_ref;
 
@@ -5915,6 +5916,11 @@ mod plugin_wasm_tests;
 // 前缀校验 / env 注入清单配对。
 #[cfg(test)]
 mod proxy_file_tests;
+
+// LLM 代理调用方 key（proxy_keys_file）：缺文件空表不落盘 / RMW 查重 /
+// 启停幂等 / 损坏重建 / 宽和读回落。
+#[cfg(test)]
+mod proxy_keys_file_tests;
 
 // HotReloader force_reload 语义（写方自刷新，绕过 mtime 检测）测试。
 #[cfg(test)]

@@ -12,9 +12,19 @@
 //! 注意 env 段的进程读数是**只读投影**——本 handler 绝不热改进程环境变量
 //! （reqwest client 在构造期快照 env，热改不生效还会造成「看起来改了」的
 //! 假象）；生效路径只有 gateway 启动注入一条。
+//!
+//! `proxy.keys.*`（2026-11-03 LLM代理调用方key管理 P5）：`config.proxy_keys.json`
+//! （`nemesis-config::proxy_keys_file`）的调用方 key 管理面——keys.list /
+//! keys.add（key 缺省自动生成 `nbk_`+32hex；拒绝与主 token 相同）/ keys.remove /
+//! keys.set_enabled。全部写盘即热生效（鉴权回落读点按 mtime 缓存，无需重启）；
+//! name/key 查重与非空校验在 config 层 loud 拒绝。命令族在 dashboard 鉴权闸内
+//! （主 token 才能调），代理 key 打不进 WSAPI（路径白名单只开两条代理 lane）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
-use nemesis_config::proxy_file::{self, EnvProxyConfig, ProxyFileConfig, proxy_config_path};
+use nemesis_config::{
+    proxy_file::{self, EnvProxyConfig, ProxyFileConfig, proxy_config_path},
+    proxy_keys_file::{self, ProxyKeyEntry},
+};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -61,6 +71,18 @@ fn file_state(config_dir: &std::path::Path) -> (bool, Option<String>, ProxyFileC
     }
 }
 
+/// ProxyKeyEntry → JSON 投影（key 明文回显：Dashboard 管理面需复制给调用方；
+/// 本命令族在 dashboard 鉴权闸内，调用者本就是凭据发放者）。
+fn key_obj(k: &ProxyKeyEntry) -> Value {
+    json!({
+        "name": k.name,
+        "key": k.key,
+        "enabled": k.enabled,
+        "created_at": k.created_at,
+        "note": k.note,
+    })
+}
+
 /// 代理配置面（无 feature 闸——独立文件不依赖任何子系统）。
 pub struct ProxyHandler;
 
@@ -71,7 +93,14 @@ impl ModuleHandler for ProxyHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["get", "save"]
+        &[
+            "get",
+            "save",
+            "keys.list",
+            "keys.add",
+            "keys.remove",
+            "keys.set_enabled",
+        ]
     }
 
     async fn handle_cmd(
@@ -124,7 +153,115 @@ impl ModuleHandler for ProxyHandler {
                 };
                 Ok(Some(json!({ "saved": saved, "note": note })))
             }
+            // --- 调用方 key 管理（写盘即热生效，无需重启） ---
+            "keys.list" => {
+                let config_dir = workspace_of(ctx)?.join("config");
+                let path = proxy_keys_file::proxy_keys_config_path(&config_dir);
+                let keys = proxy_keys_file::list(&config_dir);
+                Ok(Some(json!({
+                    "file_exists": path.exists(),
+                    "path": path.to_string_lossy(),
+                    "keys": keys.iter().map(key_obj).collect::<Vec<_>>(),
+                })))
+            }
+            "keys.add" => {
+                let config_dir = workspace_of(ctx)?.join("config");
+                let data = data.ok_or_else(|| "缺少 key 数据".to_string())?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if name.is_empty() {
+                    return Err("调用方名称（name）不能为空".to_string());
+                }
+                let key = match data
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(k) => k.to_string(),
+                    // key 缺省自动生成：nbk_ + 32 hex。
+                    None => format!("nbk_{}", uuid::Uuid::new_v4().simple()),
+                };
+                // key ≠ 主 token：相同 = 等效把主凭据发给调用方（防呆；主
+                // token 为空的免闸部署下 key 恒非空，不会误伤）。
+                let master = ctx.state.auth_token.trim();
+                if !master.is_empty() && key == master {
+                    return Err("key 不能与主 token 相同（等效于把主凭据发给调用方）".to_string());
+                }
+                let note = data
+                    .get("note")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                proxy_keys_file::add_key(
+                    &config_dir,
+                    ProxyKeyEntry {
+                        name: name.clone(),
+                        key,
+                        enabled: true,
+                        created_at: 0,
+                        note,
+                    },
+                )?;
+                let saved = proxy_keys_file::list(&config_dir)
+                    .into_iter()
+                    .find(|k| k.name == name);
+                Ok(Some(json!({
+                    "key": saved.as_ref().map(key_obj),
+                    "note": "已保存，即刻生效：调用方持此 key 打代理 lane（/v1/chat/completions、/api/chat/stream）即放行",
+                })))
+            }
+            "keys.remove" => {
+                let config_dir = workspace_of(ctx)?.join("config");
+                let data = data.ok_or_else(|| "缺少 name".to_string())?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "缺少 name".to_string())?;
+                let removed = proxy_keys_file::remove_key(&config_dir, name)?;
+                if !removed {
+                    return Err(format!("调用方不存在：{name}"));
+                }
+                Ok(Some(json!({
+                    "removed": name,
+                    "note": "已删除，即刻生效（该调用方的 key 不再放行）",
+                })))
+            }
+            "keys.set_enabled" => {
+                let config_dir = workspace_of(ctx)?.join("config");
+                let data = data.ok_or_else(|| "缺少参数".to_string())?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "缺少 name".to_string())?;
+                let enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .ok_or_else(|| "缺少 enabled 布尔值".to_string())?;
+                let changed = proxy_keys_file::set_enabled(&config_dir, name, enabled)?;
+                if !changed {
+                    return Err(format!("调用方不存在：{name}"));
+                }
+                let saved = proxy_keys_file::list(&config_dir)
+                    .into_iter()
+                    .find(|k| k.name == name);
+                Ok(Some(json!({
+                    "key": saved.as_ref().map(key_obj),
+                    "note": if enabled {
+                        "已启用，即刻生效"
+                    } else {
+                        "已禁用，即刻生效（该调用方的 key 不再放行，重启后仍为禁用）"
+                    },
+                })))
+            }
             _ => Err(format!("proxy 模块未知命令：{cmd}")),
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -11,12 +11,15 @@
 //! the response. For full agent capabilities, use the WebSocket channel.
 
 use crate::api_handlers::AppState;
+use crate::proxy_keys::{ProxyCaller, proxy_lane_session_key};
+use crate::proxy_usage::{ProxyUsageRecord, proxy_execution_model, record_proxy_usage};
 use axum::Json;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures::stream::Stream;
 use nemesis_providers::types::{ChatOptions, Message};
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -72,16 +75,33 @@ pub struct Usage {
 ///
 /// Accepts a JSON body with messages and streams LLM response chunks
 /// as SSE events. The stream ends with a `[DONE]` event.
-pub async fn handle_chat_stream(
+pub(crate) async fn handle_chat_stream(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    caller: Option<axum::Extension<ProxyCaller>>,
     Json(req): Json<ChatStreamRequest>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let provider = state.streaming_provider.clone();
+    // 记账身份 + 执行模型（调用方点名优先，空 = 活跃模型/默认槽文本；
+    // 与 bare lane 同语义——账本 model 记真实执行模型）。发请求仍用
+    // `model` 原值（空名 = default-following 槽路由），不受影响。
+    let started = Instant::now();
+    let execution_model = proxy_execution_model(&state, Some(req.model.as_str()));
     let model = if req.model.is_empty() {
         "".to_string()
     } else {
         req.model
     };
+    // 记账身份：带代理 caller 时 session_key 插 caller 段
+    // `proxy:{caller}:chat-stream:...`（使用统计页按调用方分行）；
+    // 共享 token 老形态不变。
+    let proxy_ids = uuid::Uuid::new_v4().simple();
+    let proxy_session_key = proxy_lane_session_key(caller.as_deref(), "chat-stream", proxy_ids);
+    let proxy_trace_id = format!("chat-stream-proxy-{proxy_ids}");
+    // async_stream 块 'static，借不了 state——clone 进块。
+    let ds_block = state.data_store.clone();
+    let em_block = execution_model.clone();
+    let sk_block = proxy_session_key.clone();
+    let tid_block = proxy_trace_id.clone();
 
     let messages: Vec<Message> = req
         .messages
@@ -124,6 +144,24 @@ pub async fn handle_chat_stream(
                     let is_done = chunk.finish_reason.is_some();
                     forwarded.push_str(&chunk.delta);
 
+                    // 终帧记账（usage 取 providers UsageInfo 原值——下方
+                    // map 会 move 掉 cache 字段）。
+                    if is_done {
+                        record_proxy_usage(
+                            ds_block.as_deref(),
+                            ProxyUsageRecord {
+                                execution_model: &em_block,
+                                usage: chunk.usage.as_ref(),
+                                latency_ms: started.elapsed().as_millis() as u64,
+                                is_streaming: true,
+                                status_code: 200,
+                                error_message: None,
+                                session_key: sk_block.clone(),
+                                trace_id: tid_block.clone(),
+                            },
+                        );
+                    }
+
                     let event = ChatStreamEvent {
                         delta: chunk.delta,
                         finish_reason: chunk.finish_reason,
@@ -146,7 +184,21 @@ pub async fn handle_chat_stream(
                     // L02：error 帧携带 retained_partial（仅累积非空白时
                     // 出现——空白增量无恢复价值，与 stream_util 判空口径
                     // 一致）；无累积维持纯 {"error": …} 旧形态（兼容）。
-                    let mut error_json = serde_json::json!({ "error": e.to_string() });
+                    let err_msg = e.to_string();
+                    record_proxy_usage(
+                        ds_block.as_deref(),
+                        ProxyUsageRecord {
+                            execution_model: &em_block,
+                            usage: None,
+                            latency_ms: started.elapsed().as_millis() as u64,
+                            is_streaming: true,
+                            status_code: 500,
+                            error_message: Some(&err_msg),
+                            session_key: sk_block.clone(),
+                            trace_id: tid_block.clone(),
+                        },
+                    );
+                    let mut error_json = serde_json::json!({ "error": err_msg });
                     if !forwarded.trim().is_empty() {
                         error_json["retained_partial"] =
                             serde_json::Value::String(forwarded.clone());
@@ -159,7 +211,22 @@ pub async fn handle_chat_stream(
             }
         }
 
-        // Stream ended without [DONE] — send it anyway.
+        // Stream ended without [DONE] — send it anyway. 无终态 = 上游断流
+        // 或 client 已断（后者 stream 被 drop 记不到账，v1 诚实边界）——
+        // 记一笔 500 空 token 错误账，请求事件不消失。
+        record_proxy_usage(
+            ds_block.as_deref(),
+            ProxyUsageRecord {
+                execution_model: &em_block,
+                usage: None,
+                latency_ms: started.elapsed().as_millis() as u64,
+                is_streaming: true,
+                status_code: 500,
+                error_message: Some("upstream stream ended without a terminal chunk"),
+                session_key: sk_block,
+                trace_id: tid_block,
+            },
+        );
         yield Ok(SseEvent::default().event("done").data("[DONE]"));
     };
 

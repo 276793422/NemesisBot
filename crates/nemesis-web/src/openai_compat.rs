@@ -51,6 +51,8 @@
 //! 错误面（两条 lane 一致）一律 OpenAI 形态 `{"error":{"message","type","code"}}`。
 
 use crate::api_handlers::AppState;
+use crate::proxy_keys::{ProxyCaller, proxy_lane_session_key};
+use crate::proxy_usage::{ProxyUsageRecord, proxy_execution_model, record_proxy_usage};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use nemesis_agent::r#loop::DetachedOpts;
@@ -348,7 +350,7 @@ fn completion_id() -> String {
     format!("chatcmpl-nemesis-{}", uuid::Uuid::new_v4().simple())
 }
 
-fn active_model_name(state: &AppState) -> String {
+pub(crate) fn active_model_name(state: &AppState) -> String {
     state.model_name.lock().clone()
 }
 
@@ -391,8 +393,22 @@ fn chunk_json(id: &str, model: &str, delta: serde_json::Value, finish: Option<&s
     .to_string()
 }
 
-/// 端点主体（handler 是薄壳；测试直接调本函数断言状态码 + JSON）。
+/// 端点主体（测试直接调本函数断言状态码 + JSON；handler 走
+/// [`api_chat_completions_with_caller`]，生产路径无人调本函数——仅测试
+/// 面保留旧签名免 31 处调用点机械改参）。
+#[cfg(test)]
 pub(crate) async fn api_chat_completions(state: &AppState, body: &[u8]) -> Response {
+    api_chat_completions_with_caller(state, body, None).await
+}
+
+/// 带调用方身份的端点主体：auth_middleware 命中代理 key 时由 handler 经
+/// `Option<axum::Extension<ProxyCaller>>` 提取传入；caller 进记账
+/// session_key（`proxy:{caller}:...`），其余行为逐字节不变。
+pub(crate) async fn api_chat_completions_with_caller(
+    state: &AppState,
+    body: &[u8],
+    caller: Option<&ProxyCaller>,
+) -> Response {
     // 1. 解析请求（手解析——错误面必须是 OpenAI 形态 JSON，不是 axum
     //    提取器的纯文本 422）。tools 条目先做 lenient 归一（OpenAI 规范
     //    允许省略 description/parameters），再进 typed 反序列化。
@@ -460,7 +476,7 @@ pub(crate) async fn api_chat_completions(state: &AppState, body: &[u8]) -> Respo
                 "invalid_request_error",
             );
         }
-        return bare_forward(state, req).await;
+        return bare_forward(state, req, caller).await;
     }
 
     // 3. agent loop 在场（headless/未装配 = 诚实 503，不裸调 provider）。
@@ -610,7 +626,11 @@ fn bare_chat_options(state: &AppState, model: &str, req: &OpenAiChatRequest) -> 
 }
 
 /// 裸转发 lane 主体：provider 槽直转（模块头「裸转发 lane」节）。
-async fn bare_forward(state: &AppState, req: OpenAiChatRequest) -> Response {
+async fn bare_forward(
+    state: &AppState,
+    req: OpenAiChatRequest,
+    caller: Option<&ProxyCaller>,
+) -> Response {
     // provider 槽：streaming_provider 是 default_following wrapper——空
     // 模型名路由到当前默认槽（set_default 热切即时生效），槽未装过走
     // 启动捕获降级（NullProvider 时 chat() 诚实报错 → 下错误面）。
@@ -623,17 +643,14 @@ async fn bare_forward(state: &AppState, req: OpenAiChatRequest) -> Response {
     };
     let started = Instant::now();
     // 执行模型 = master 活跃模型（AppState 展示字段与 set_default 同一
-    // 更新点；空名兜底默认槽文本）。
-    let execution_model = {
-        let m = active_model_name(state);
-        if m.is_empty() {
-            nemesis_providers::default_slot::current()
-                .map(|(_, model, _)| model)
-                .unwrap_or(m)
-        } else {
-            m
-        }
-    };
+    // 更新点；空名兜底默认槽文本）。bare lane 不消费调用方回显名。
+    let execution_model = proxy_execution_model(state, None);
+    // 记账身份（proxy_usage：session_key 带 `proxy:` 前缀供使用统计页
+    // 按会话筛出；成功/失败同一请求共用一对 id；带代理 caller 时插入
+    // caller 段 `proxy:{caller}:openai-api:...`，共享 token 老形态不变）。
+    let proxy_ids = uuid::Uuid::new_v4().simple();
+    let proxy_session_key = proxy_lane_session_key(caller, "openai-api", proxy_ids);
+    let proxy_trace_id = format!("openai-proxy-{proxy_ids}");
 
     // 协议守卫（belt-and-suspenders——set_default 已拒 images-openai，
     // 这里防手工改 config 后热切绕过）：裸 lane 是 chat 通道。
@@ -677,6 +694,7 @@ async fn bare_forward(state: &AppState, req: OpenAiChatRequest) -> Response {
             options,
             execution_model,
             started,
+            caller,
         )
         .await;
     }
@@ -687,6 +705,19 @@ async fn bare_forward(state: &AppState, req: OpenAiChatRequest) -> Response {
     {
         Ok(resp) => {
             let duration_ms = started.elapsed().as_millis() as u64;
+            record_proxy_usage(
+                state.data_store.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model,
+                    usage: resp.usage.as_ref(),
+                    latency_ms: duration_ms,
+                    is_streaming: false,
+                    status_code: 200,
+                    error_message: None,
+                    session_key: proxy_session_key,
+                    trace_id: proxy_trace_id,
+                },
+            );
             tracing::info!(
                 "[OpenAI-compat] 裸转发完成：model={execution_model} tool_calls={} finish={} usage={} {}ms",
                 resp.tool_calls.len(),
@@ -701,6 +732,20 @@ async fn bare_forward(state: &AppState, req: OpenAiChatRequest) -> Response {
         }
         Err(e) => {
             let (status, err_type) = bare_error_status(&e);
+            let err_msg = e.to_string();
+            record_proxy_usage(
+                state.data_store.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model,
+                    usage: None,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    is_streaming: false,
+                    status_code: 500,
+                    error_message: Some(&err_msg),
+                    session_key: proxy_session_key,
+                    trace_id: proxy_trace_id,
+                },
+            );
             tracing::warn!("[OpenAI-compat] 裸转发失败：model={execution_model} {status} {e}");
             error_response(status, format!("upstream error: {e}"), err_type)
         }
@@ -830,12 +875,21 @@ async fn bare_forward_stream(
     options: ChatOptions,
     execution_model: String,
     started: Instant,
+    caller: Option<&ProxyCaller>,
 ) -> Response {
     let mut rx = provider.chat_stream(&messages, &req.tools, &execution_model, &options);
     let id = completion_id();
     let model_echo = req.model.clone().unwrap_or_default();
     // stream 块内多次使用（tracing），头写入还要一份——clone 进块。
     let execution_model_stream = execution_model.clone();
+    // 记账身份 + data_store 句柄（async_stream 块 'static，借不了 state
+    // ——clone Arc 进块，`as_deref()` 出 `Option<&DataStore>`）。
+    let proxy_ids = uuid::Uuid::new_v4().simple();
+    let proxy_session_key = proxy_lane_session_key(caller, "openai-api", proxy_ids);
+    let proxy_trace_id = format!("openai-proxy-{proxy_ids}");
+    let ds_block = state.data_store.clone();
+    let sk_block = proxy_session_key.clone();
+    let tid_block = proxy_trace_id.clone();
 
     // 首帧判定：起流失败不 commit SSE（错误面保持 JSON 形态）；唯「流式
     // 不被该 provider 支持」（trait 缺省实现，BUG-a 2026-10-30）例外——
@@ -850,22 +904,52 @@ async fn bare_forward_stream(
                     "[OpenAI-compat] 裸转发流式不被支持，回落非流式：model={execution_model}"
                 );
                 return bare_fallback_non_stream(
+                    state,
                     provider,
                     &req,
                     messages,
                     options,
                     execution_model,
                     started,
+                    proxy_session_key,
+                    proxy_trace_id,
                 )
                 .await;
             }
             let (status, err_type) = bare_error_status(&e);
+            let err_msg = e.to_string();
+            record_proxy_usage(
+                state.data_store.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model,
+                    usage: None,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    is_streaming: true,
+                    status_code: 500,
+                    error_message: Some(&err_msg),
+                    session_key: proxy_session_key,
+                    trace_id: proxy_trace_id,
+                },
+            );
             tracing::warn!(
                 "[OpenAI-compat] 裸转发流式起流失败：model={execution_model} {status} {e}"
             );
             return error_response(status, format!("upstream error: {e}"), err_type);
         }
         None => {
+            record_proxy_usage(
+                state.data_store.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model,
+                    usage: None,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    is_streaming: true,
+                    status_code: 500,
+                    error_message: Some("upstream produced no output"),
+                    session_key: proxy_session_key,
+                    trace_id: proxy_trace_id,
+                },
+            );
             return error_response(
                 axum::http::StatusCode::BAD_GATEWAY,
                 "upstream produced no output".to_string(),
@@ -885,6 +969,20 @@ async fn bare_forward_stream(
                     Some(Err(e)) => {
                         // 中途断流：带内注记 + 合成 stop（worker 侧 J1 把
                         // 无终态断流当完整 stop——静默截断不可见）。
+                        let err_msg = e.to_string();
+                        record_proxy_usage(
+                            ds_block.as_deref(),
+                            ProxyUsageRecord {
+                                execution_model: &execution_model_stream,
+                                usage: None,
+                                latency_ms: started.elapsed().as_millis() as u64,
+                                is_streaming: true,
+                                status_code: 500,
+                                error_message: Some(&err_msg),
+                                session_key: sk_block.clone(),
+                                trace_id: tid_block.clone(),
+                            },
+                        );
                         tracing::warn!(
                             "[OpenAI-compat] 裸转发流中断：model={execution_model_stream} {e}"
                         );
@@ -927,6 +1025,19 @@ async fn bare_forward_stream(
             }
             if let Some(f) = &chunk.finish_reason {
                 // 终帧：空 delta + finish_reason + usage（OpenAI wire 形态）。
+                record_proxy_usage(
+                    ds_block.as_deref(),
+                    ProxyUsageRecord {
+                        execution_model: &execution_model_stream,
+                        usage: chunk.usage.as_ref(),
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        is_streaming: true,
+                        status_code: 200,
+                        error_message: None,
+                        session_key: sk_block.clone(),
+                        trace_id: tid_block.clone(),
+                    },
+                );
                 yield Ok(SseEvent::default().data(bare_final_chunk_json(
                     &id,
                     &model_echo,
@@ -939,6 +1050,19 @@ async fn bare_forward_stream(
         }
         if !finish_sent {
             // receiver 耗尽无终态（provider J1 保证合成终帧，防御性兜底）。
+            record_proxy_usage(
+                ds_block.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model_stream,
+                    usage: None,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    is_streaming: true,
+                    status_code: 500,
+                    error_message: Some("upstream stream ended without a terminal chunk"),
+                    session_key: sk_block,
+                    trace_id: tid_block,
+                },
+            );
             yield Ok(SseEvent::default().data(bare_final_chunk_json(
                 &id, &model_echo, "stop", None,
             )));
@@ -959,7 +1083,6 @@ async fn bare_forward_stream(
             .headers_mut()
             .insert("x-nemesis-execution-model", v);
     }
-    let _ = state;
     response
 }
 
@@ -970,18 +1093,35 @@ async fn bare_forward_stream(
 /// ——非流式 provider 也产生一次完整「流」，调用方无差别）。回落后的
 /// `chat()` 失败 = 真实上游错误，诚实上报不伪装。
 async fn bare_fallback_non_stream(
+    state: &AppState,
     provider: &dyn nemesis_providers::router::LLMProvider,
     req: &OpenAiChatRequest,
     messages: Vec<nemesis_providers::types::Message>,
     options: ChatOptions,
     execution_model: String,
     started: Instant,
+    proxy_session_key: String,
+    proxy_trace_id: String,
 ) -> Response {
     match provider
         .chat(&messages, &req.tools, &execution_model, &options)
         .await
     {
         Ok(resp) => {
+            record_proxy_usage(
+                state.data_store.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model,
+                    usage: resp.usage.as_ref(),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    // 请求形态是流式（回落是合成流的实现细节）。
+                    is_streaming: true,
+                    status_code: 200,
+                    error_message: None,
+                    session_key: proxy_session_key,
+                    trace_id: proxy_trace_id,
+                },
+            );
             let id = completion_id();
             let model_echo = req.model.clone().unwrap_or_default();
             let execution_model_stream = execution_model.clone();
@@ -1026,6 +1166,20 @@ async fn bare_fallback_non_stream(
         }
         Err(e) => {
             let (status, err_type) = bare_error_status(&e);
+            let err_msg = e.to_string();
+            record_proxy_usage(
+                state.data_store.as_deref(),
+                ProxyUsageRecord {
+                    execution_model: &execution_model,
+                    usage: None,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    is_streaming: true,
+                    status_code: 500,
+                    error_message: Some(&err_msg),
+                    session_key: proxy_session_key,
+                    trace_id: proxy_trace_id,
+                },
+            );
             tracing::warn!(
                 "[OpenAI-compat] 裸转发非流式回落失败：model={execution_model} {status} {e}"
             );
@@ -1034,12 +1188,15 @@ async fn bare_fallback_non_stream(
     }
 }
 
-/// axum handler 薄壳。
-pub async fn handle_chat_completions(
+/// axum handler 薄壳（caller = auth_middleware 命中代理 key 注入的身份，
+/// `Option` 提取器缺席 = 共享 token 老形态）。crate 内路由（server.rs），
+/// `pub(crate)` 因 `ProxyCaller` 是 crate 内类型。
+pub(crate) async fn handle_chat_completions(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    caller: Option<axum::Extension<ProxyCaller>>,
     body: axum::body::Bytes,
 ) -> Response {
-    api_chat_completions(&state, &body).await
+    api_chat_completions_with_caller(&state, &body, caller.as_deref()).await
 }
 
 #[cfg(test)]

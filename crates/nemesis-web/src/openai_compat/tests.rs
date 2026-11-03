@@ -1403,3 +1403,87 @@ async fn bare_multimodal_request_reaches_provider_with_both_parts() {
         }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// caller 线程化（2026-11-03 LLM代理调用方key管理 P4）：带代理 caller 的裸
+// lane 请求落账 session_key 带 caller 段（使用统计页按调用方分行）；无
+// caller（共享 token 老路径）旧形态不变。
+// ---------------------------------------------------------------------------
+
+fn open_store() -> (tempfile::TempDir, Arc<nemesis_data::DataStore>) {
+    let dir = tempfile::tempdir().unwrap();
+    let ds = nemesis_data::DataStore::open(&dir.path().join("usage.db")).expect("open store");
+    (dir, Arc::new(ds))
+}
+
+fn proxy_logs(ds: &nemesis_data::DataStore, session_substr: &str) -> Vec<nemesis_data::RequestLog> {
+    let filter = nemesis_data::LogFilter {
+        session_key: Some(session_substr.to_string()),
+        ..Default::default()
+    };
+    let (rows, _) = ds
+        .query_logs(0, chrono::Local::now().timestamp() + 60, 1, 100, &filter)
+        .expect("query logs");
+    rows
+}
+
+/// 带 data_store 的 state（caller 落账断言用；with_streaming 就地重建）。
+fn ledger_state(ds: Arc<nemesis_data::DataStore>) -> Arc<AppState> {
+    let inner = match Arc::try_unwrap(make_state(None, None)) {
+        Ok(mut v) => {
+            v.data_store = Some(ds);
+            v
+        }
+        Err(_) => panic!("test state must have no other owners"),
+    };
+    Arc::new(inner)
+}
+
+#[tokio::test]
+async fn bare_lane_ledger_row_carries_caller_segment() {
+    let (_dir, ds) = open_store();
+    let provider = slot_with_reply(BareSlotProvider::new(), slot_reply("ok", vec![]));
+    let (state, _bare) = with_streaming(ledger_state(ds.clone()), provider);
+
+    let caller = crate::proxy_keys::ProxyCaller(Arc::new("bot-a".to_string()));
+    let resp =
+        api_chat_completions_with_caller(&state, &body(&bare_request(false)), Some(&caller)).await;
+    let (status, v) = resp_json(resp).await;
+    assert_eq!(status, 200);
+    assert_eq!(v["choices"][0]["message"]["content"], "ok");
+
+    let rows = proxy_logs(&ds, "proxy:bot-a:openai-api:");
+    assert_eq!(rows.len(), 1, "带 caller 的请求必须落 caller 段账行");
+    assert!(rows[0].session_key.starts_with("proxy:bot-a:openai-api:"));
+    assert!(rows[0].trace_id.starts_with("openai-proxy-"));
+    assert_eq!(rows[0].status_code, 200);
+    assert_eq!(rows[0].input_tokens, 11, "usage 照常入账");
+    assert_eq!(rows[0].output_tokens, 7);
+    // 旧形态筛不出 caller 行（caller 段在 lane 名之前，LIKE 子串不撞）。
+    assert!(
+        proxy_logs(&ds, "proxy:openai-api:").is_empty(),
+        "caller 行不得混入旧形态筛取"
+    );
+}
+
+#[tokio::test]
+async fn bare_lane_ledger_row_legacy_shape_without_caller() {
+    let (_dir, ds) = open_store();
+    let provider = slot_with_reply(BareSlotProvider::new(), slot_reply("ok", vec![]));
+    let (state, _bare) = with_streaming(ledger_state(ds.clone()), provider);
+
+    // 共享 token 老路径（无 caller 提取器命中 = None）。
+    let resp = api_chat_completions(&state, &body(&bare_request(false))).await;
+    assert_eq!(resp.status(), 200);
+
+    let rows = proxy_logs(&ds, "proxy:openai-api:");
+    assert_eq!(rows.len(), 1, "旧形态账行照常落账");
+    assert!(
+        rows[0].session_key.starts_with("proxy:openai-api:"),
+        "session_key 必须保持无 caller 段旧形态"
+    );
+    assert!(
+        proxy_logs(&ds, "proxy:bot-a:").is_empty(),
+        "无 caller 请求不得出现 caller 段账行"
+    );
+}
