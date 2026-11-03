@@ -16,6 +16,18 @@
 //! 全局槽（`SESSION_MANAGER`）：AppState 有 69 处测试字面量不可扩字段——
 //! L1 COMMANDS_REGISTRY 同款 OnceLock 全局，gateway 装配时 set。
 
+/// 会话管理器未装配的统一错误文案（单一真相源，2026-11-03 BUG-1 修复）。
+///
+/// 此前同一条件（`global() == None`）散布三种括号注解（「gateway 未启用或
+/// 非 Windows 平台」/「gateway 未启用」/「config ziwei.enabled=false」），
+/// 同一会话先后出现不同文案把 agent 与用户引偏（实录见
+/// 2026-11-03_紫微实测对话四缺陷 BUG-1）。统一口径必须说清两件事：
+/// 原因（gateway 进程启动时 config ziwei.enabled=false，或当前非 gateway /
+/// 非 Windows 形态）与出路（改配置需重启 gateway 进程才生效——会话管理器
+/// 只在进程启动时装配进 OnceLock 槽，agent 重建读的是 fresh config，
+/// 「半热加载」（工具出现但槽仍空）必然失配）。
+pub const SESSION_MANAGER_NOT_ASSEMBLED_MSG: &str = "紫微会话管理器未装配（gateway 进程启动时 config ziwei.enabled=false，或当前非 gateway / 非 Windows 形态）：会话功能不可用；修改配置后需重启 gateway 进程才能生效";
+
 #[cfg(windows)]
 mod imp {
     use std::collections::{HashMap, HashSet};

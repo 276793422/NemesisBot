@@ -1567,14 +1567,25 @@ pub fn build_agent_loop(
     // 紫微系统 T2.2：profile.tools[] → 动态工具注册（poll_report 可调；
     // call_fn/hook_capture 诚实报 M4 实装中）。config 闸同 WSAPI 门关；
     // profile 新增后经 `ziwei.refresh` 幂等重注册（先清 zw_* 再装）。
+    // 半热加载失配闸（2026-11-03 BUG-1）：工具注册在 agent 构建时读 fresh
+    // config，会话管理器却只在 gateway 进程启动时装进 OnceLock 槽——config
+    // 改 true 后只重启 agent 会出现「工具可见但调用必败」。manager 不在场
+    // = 诚实不注册 + loud warn 说清重启要求（headless run/acp 形态同理）。
     #[cfg(feature = "ziwei")]
     if cfg.ziwei.clone().unwrap_or_default().enabled {
-        let n = crate::ziwei_tools::register_profile_tools(&agent_loop, &shared.workspace_dir());
-        crate::ziwei_tools::set_current_loop(agent_loop.clone());
-        // 配置期向导元工具（T3.8）：LLM 经 {action, params} 驱动 SetupManager。
-        crate::ziwei_tools::register_bridge_tool(&agent_loop, &shared.workspace_dir());
-        if n > 0 {
-            info!("[AgentFactory] ziwei dynamic tools registered ({n})");
+        if nemesis_ziwei::session::global().is_none() {
+            warn!(
+                "[AgentFactory] config ziwei.enabled=true 但会话管理器未装配（gateway 进程启动时 config 为 false，或非 gateway / 非 Windows 形态）：跳过 ziwei 工具注册；修改配置后需重启 gateway 进程才能生效"
+            );
+        } else {
+            let n =
+                crate::ziwei_tools::register_profile_tools(&agent_loop, &shared.workspace_dir());
+            crate::ziwei_tools::set_current_loop(agent_loop.clone());
+            // 配置期向导元工具（T3.8）：LLM 经 {action, params} 驱动 SetupManager。
+            crate::ziwei_tools::register_bridge_tool(&agent_loop, &shared.workspace_dir());
+            if n > 0 {
+                info!("[AgentFactory] ziwei dynamic tools registered ({n})");
+            }
         }
     }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮

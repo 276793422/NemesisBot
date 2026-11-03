@@ -172,6 +172,123 @@ fn test_build_request_body() {
     assert_eq!(body["store"], false);
 }
 
+/// reasoning_effort 翻译（2026-11-03 空摘要根修回归锁）："off" 按模型族
+/// 落 minimal[gpt-]/low[o 系]；low/medium/high 透传；None 与未知值不发
+/// reasoning 字段（字节兼容现网无 effort 请求）。
+#[test]
+fn test_build_request_body_reasoning_effort_translation() {
+    let provider = CodexProvider::new(CodexConfig::default());
+    let messages: Vec<Message> = Vec::new();
+
+    // "off" + gpt- 系 → minimal（gpt-5 空摘要根因形态）。
+    let body = provider.build_request_body(
+        &messages,
+        &[],
+        "gpt-5.2",
+        &ChatOptions {
+            reasoning_effort: Some("off".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(body["reasoning"]["effort"], "minimal", "{}", body);
+
+    // "off" + o 系（不支持 minimal）→ low。
+    let body = provider.build_request_body(
+        &messages,
+        &[],
+        "o4-mini",
+        &ChatOptions {
+            reasoning_effort: Some("off".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(body["reasoning"]["effort"], "low", "{}", body);
+
+    // 合法档原样透传。
+    for tier in ["low", "medium", "high"] {
+        let body = provider.build_request_body(
+            &messages,
+            &[],
+            "gpt-5.2",
+            &ChatOptions {
+                reasoning_effort: Some(tier.into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(body["reasoning"]["effort"], tier, "{}", body);
+    }
+
+    // None → 无 reasoning 键；未知值 → 同样不发（不猜）。
+    let body = provider.build_request_body(&messages, &[], "gpt-5.2", &ChatOptions::default());
+    assert!(body.get("reasoning").is_none(), "{}", body);
+    let body = provider.build_request_body(
+        &messages,
+        &[],
+        "gpt-5.2",
+        &ChatOptions {
+            reasoning_effort: Some("turbo".into()),
+            ..Default::default()
+        },
+    );
+    assert!(body.get("reasoning").is_none(), "{}", body);
+}
+
+/// effort 词表自愈（2026-11-04 真机实证回归锁）：400 unsupported_value 按
+/// 上游自带词表降档——gpt-6.1-sol 实测词表 low/medium/high/xhigh/max，
+/// cc-switch 包装错误逐字取自该机上游实录。
+#[test]
+fn test_effort_downgrade_target_from_error() {
+    let body = serde_json::json!({ "reasoning": { "effort": "minimal" } });
+    // cc-switch 包装形态（真机实录逐字）：解析出权威词表 → 最低档 low。
+    let wrapped = r#"{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. Provider: 公司的; model: gpt-6.1-sol; upstream_status: HTTP 400; cause: Unsupported value: 'none' is not supported with the 'gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.","type":"invalid_request_error","code":"unsupported_value","param":"reasoning.effort","provider":"公司的"}}"#;
+    assert_eq!(
+        effort_downgrade_target(&body, wrapped).as_deref(),
+        Some("low")
+    );
+
+    // param 非 reasoning.effort → None（别的参数不支持不归本机制管）。
+    let other_param = r#"{"error":{"message":"Unsupported value: 'x'. Supported values are: 'low'.","code":"unsupported_value","param":"temperature"}}"#;
+    assert_eq!(effort_downgrade_target(&body, other_param), None);
+
+    // code 非 unsupported_value → None。
+    let other_code =
+        r#"{"error":{"message":"boom","code":"invalid_api_key","param":"reasoning.effort"}}"#;
+    assert_eq!(effort_downgrade_target(&body, other_code), None);
+
+    // 缺 Supported values 句 → None（不猜词表）。
+    let no_list = r#"{"error":{"message":"Unsupported value: 'none' is not supported.","code":"unsupported_value","param":"reasoning.effort"}}"#;
+    assert_eq!(effort_downgrade_target(&body, no_list), None);
+
+    // 首跳未发 reasoning.effort（auto/未知值形态）→ None（无从降档）。
+    let bare = serde_json::json!({});
+    assert_eq!(effort_downgrade_target(&bare, wrapped), None);
+
+    // 当前已是词表最低档 → None（不重试，防循环）。
+    let low_body = serde_json::json!({ "reasoning": { "effort": "low" } });
+    assert_eq!(effort_downgrade_target(&low_body, wrapped), None);
+
+    // 词表乱序给出 → 仍按档位序取最低，与给出顺序无关。
+    let shuffled = r#"{"error":{"message":"Unsupported value: 'none' is not supported. Supported values are: 'max', 'xhigh', 'high', 'medium', 'low'.","code":"unsupported_value","param":"reasoning.effort"}}"#;
+    assert_eq!(
+        effort_downgrade_target(&body, shuffled).as_deref(),
+        Some("low")
+    );
+
+    // 词表全是未知档名（未来新词表）→ None（宁可失败不瞎降）。
+    let future = r#"{"error":{"message":"Unsupported value: 'none' is not supported. Supported values are: 'nano', 'micro'.","code":"unsupported_value","param":"reasoning.effort"}}"#;
+    assert_eq!(effort_downgrade_target(&body, future), None);
+
+    // o 系首跳 low 撞新词表 → 降无可降之外的情形：词表含 minimal 时
+    // minimal 优先于 low（gpt-5 系错误指名 minimal 不合法时不会出现本
+    // 情形，但解析器按序取最低是对的）。
+    let with_minimal = r#"{"error":{"message":"Unsupported value: 'none' is not supported. Supported values are: 'minimal', 'low', 'medium', 'high'.","code":"unsupported_value","param":"reasoning.effort"}}"#;
+    let medium_body = serde_json::json!({ "reasoning": { "effort": "medium" } });
+    assert_eq!(
+        effort_downgrade_target(&medium_body, with_minimal).as_deref(),
+        Some("minimal")
+    );
+}
+
 #[test]
 fn test_config_default() {
     let config = CodexConfig::default();

@@ -1037,7 +1037,7 @@ pub async fn handle_api_internal(
             let Some(manager) = nemesis_ziwei::session::global() else {
                 return Ok(Json(serde_json::json!({
                     "status": "error",
-                    "error": "紫微会话管理器未装配（config ziwei.enabled=false）",
+                    "error": nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG,
                 })));
             };
             // 四命令都在此终结——直接 return 内层 match 的结果（外层 match
