@@ -168,3 +168,74 @@ async fn m3_diff_errors_without_store_or_unknown_path() {
 
     delete_chat_log(&key);
 }
+
+/// BUG-20261103-347 红绿：git 形态 + **绝对路径声明**（真实工具入参常态
+/// 形态——preview 存的是 args 逐字串）。修复前声明/查询串原样喂
+/// `tree.get_path` 被 git2 拒（"should be relative, not a windows
+/// prefix"），diff 必报错；修复后树接口走 repo_relative_path 归一。
+#[tokio::test]
+async fn m3_diff_git_mode_absolute_declared_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    git2::Repository::init(&root).unwrap();
+    let abs = root.join("code.txt");
+    std::fs::write(&abs, "v1").unwrap();
+
+    let al = AgentLoop::new(Box::new(M3NoopProvider), m3_config());
+    al.set_checkpoint_store(Arc::new(crate::checkpoint::CheckpointStore::new(
+        None,
+        root.clone(),
+    )));
+    let key = m3_uniq_key("abs");
+    delete_chat_log(&key);
+    let cp = al.attached_checkpoint().unwrap();
+
+    cp.begin(1, "turn 1");
+    cp.snapshot(&FileChange {
+        path: abs.to_string_lossy().to_string(),
+        kind: FileChangeKind::Modify,
+    })
+    .await;
+    std::fs::write(&abs, "v2").unwrap();
+
+    // 绝对路径查询（与声明同形态）——修复前此处 Err。
+    let abs_str = abs.to_string_lossy().to_string();
+    let out = al
+        .session_file_diff(&key, &abs_str)
+        .await
+        .expect("绝对路径声明有基线且树读取成功");
+    assert_eq!(out["backend"], "git", "{out}");
+    assert_eq!(out["base_turn"], 1);
+    let diff = out["diff"].as_str().unwrap();
+    assert!(diff.contains("-v1") && diff.contains("+v2"), "{diff}");
+    assert_eq!(out["path"], abs_str, "回执回显调用方路径");
+
+    // 跨形态：repo 相对路径查询命中同一基线（comparable 归一）。hunk 一
+    // 致、header 标签随调用方形态（unified_diff 既有语义）。
+    let out_rel = al
+        .session_file_diff(&key, "code.txt")
+        .await
+        .expect("相对路径跨形态命中");
+    let diff_rel = out_rel["diff"].as_str().unwrap();
+    assert!(
+        diff_rel.contains("-v1") && diff_rel.contains("+v2"),
+        "{out_rel}"
+    );
+    assert!(diff_rel.contains("--- a/code.txt"), "{out_rel}");
+
+    // `\\?\` verbose 前缀形态查询（canonicalize 产物常见形态）同命中。
+    let verbose = format!(r"\\?\{}", abs_str);
+    let out_verbose = al
+        .session_file_diff(&key, &verbose)
+        .await
+        .expect("verbose 前缀跨形态命中");
+    let diff_verbose = out_verbose["diff"].as_str().unwrap();
+    assert!(
+        diff_verbose.contains("-v1") && diff_verbose.contains("+v2"),
+        "{out_verbose}"
+    );
+
+    delete_chat_log(&key);
+    let _ = dir;
+}
