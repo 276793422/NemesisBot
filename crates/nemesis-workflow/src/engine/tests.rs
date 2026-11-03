@@ -5257,3 +5257,107 @@ async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
     assert_eq!(after.state, ExecutionState::Waiting);
     assert!(engine.cancel_tokens.is_empty());
 }
+
+/// 多等待同层（BUG-20261103-349）：human_review 与 sub_workflow 并联（无
+/// 依赖）同时 Waiting。resume human_review 后，公共尾段 schedule_resume
+/// **不得整体重跑**仍 Waiting 的 sub_workflow 节点——SubWorkflowNodeExecutor
+/// 每次 execute 都 spawn 新子执行，重跑 = 旧子执行孤儿化（永停 Waiting、
+/// 重启被 restore 复活成幽灵执行）+ 路由锚 metadata.execution_id 被换新。
+/// 旧实现只堵了「resume 目标是 sub_workflow」的臂（engine.rs 早期收口），
+/// 目标是同层其他节点时尾段照样重跑兄弟 sub_workflow 节点。
+#[tokio::test]
+async fn test_multi_waiting_subworkflow_sibling_not_respawned() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "mw_child_wf",
+            vec![make_node("review", "human_review", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "mw_parent_wf",
+            vec![
+                make_node("review_a", "human_review", vec![]),
+                make_node("call", "sub_workflow", vec![]),
+            ],
+        ))
+        .unwrap();
+    {
+        let mut wf = engine.workflows.get_mut("mw_parent_wf").unwrap();
+        wf.nodes[1]
+            .config
+            .insert("workflow".to_string(), serde_json::json!("mw_child_wf"));
+    }
+
+    let parent = engine
+        .run("mw_parent_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Waiting);
+    assert_eq!(
+        parent.node_results["review_a"].state,
+        ExecutionState::Waiting
+    );
+    assert_eq!(parent.node_results["call"].state, ExecutionState::Waiting);
+    let child_id = parent.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        engine.executions.read().await.len(),
+        2,
+        "父 + 子 = 2 个执行"
+    );
+
+    // resume human_review 分支（定向，多等待集合 loud 拒绝无定向请求）：
+    // sub_workflow 兄弟节点保持原样等待，不重跑、不 spawn 新子执行。
+    let resumed = engine
+        .resume_execution_node(
+            &parent.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+            Some("review_a"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.state,
+        ExecutionState::Waiting,
+        "兄弟审批仍在等待，父执行必须再次暂停"
+    );
+    assert_eq!(
+        resumed.node_results["review_a"].state,
+        ExecutionState::Completed
+    );
+    assert_eq!(resumed.node_results["call"].state, ExecutionState::Waiting);
+    let anchor_after = resumed.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        anchor_after, child_id,
+        "路由锚不得被换新（重跑会 spawn 新子执行并覆盖 execution_id）"
+    );
+    assert_eq!(
+        engine.executions.read().await.len(),
+        2,
+        "不得孤儿化旧子执行（重跑形态会变 3：父 + 孤儿 + 新子）"
+    );
+    let child = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child.state, ExecutionState::Waiting, "原子执行保持等待");
+
+    // resume sub_workflow 分支：路由进原子执行，评审落地后全链走完。
+    let finished = engine
+        .resume_execution(
+            &parent.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(finished.state, ExecutionState::Completed);
+    assert_eq!(
+        finished.node_results["call"].state,
+        ExecutionState::Completed
+    );
+    let child = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child.state, ExecutionState::Completed, "评审落在原子执行上");
+}
