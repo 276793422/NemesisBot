@@ -321,7 +321,10 @@ async fn test_proxy_key_disabled_rejected_without_restart() {
     // 禁用即失效（热生效：同一 router 不重建）。
     nemesis_config::proxy_keys_file::set_enabled(&dir.path().join("config"), "bot-a", false)
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20)); // 不赌 mtime 粒度
+    // BUG-20261103：原 sleep(20ms)「不赌 mtime 粒度」仍是赌——Windows CI 实录
+    // 20ms 内文件时间可同 tick（shard9 禁用未生效 → 放行 → GET 打 POST-only
+    // completions 回 405 顶掉 401）。缓存已改内容比对（proxy_keys.rs），写盘
+    // 即刻生效不依赖任何钟，sleep 撤除让测试同时钉住零延迟热生效语义。
     let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;
     assert_eq!(
         resp.status(),

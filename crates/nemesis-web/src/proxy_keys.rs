@@ -7,7 +7,7 @@
 //! 设计铁律：
 //! - **不动 AppState**（加字段会连锁改 ~123 处测试构造点）——config 路径
 //!   从 `state.workspace`（生产装配 = `<home>/workspace`）推导，key 表按需
-//!   读盘 + mtime 单条目缓存（写盘即对下一请求生效，热生效不重启）。
+//!   读盘 + 内容比对单条目缓存（写盘即对下一请求生效，热生效不重启）。
 //! - **路径白名单只开 LLM 代理两条 lane**——代理 key 打 Dashboard 其他 API
 //!   一律不匹配（回落主 token 校验必 401），防借道提权读会话/文件/配置。
 //!   白名单是**前置内存闸**：Dashboard 路径连盘都不 stat。
@@ -20,7 +20,6 @@ use crate::api_handlers::AppState;
 use nemesis_config::proxy_keys_file::{self, ProxyKeyEntry};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 /// 代理调用方身份（auth_middleware 命中代理 key 后插入 request extensions；
 /// 转发面 handler 经 `Option<axum::Extension<ProxyCaller>>` 提取——缺席 =
@@ -33,10 +32,18 @@ pub(crate) struct ProxyCaller(pub Arc<String>);
 /// 不虚列；新增代理面端点时同步扩此表。
 const PROXY_KEY_ALLOWED_PATHS: [&str; 2] = ["/v1/chat/completions", "/api/chat/stream"];
 
-/// mtime 单条目缓存：路径 → (mtime, key 表)。同进程通常只服务一个
-/// workspace；路径换键 = 缓存未命中即重读（正确性不受影响）。mtime 取自
-/// `write_file_atomic` 新建文件（每次保存必换 mtime）。
-static CACHE: parking_lot::Mutex<Option<(PathBuf, SystemTime, Arc<Vec<ProxyKeyEntry>>)>> =
+/// 内容指纹单条目缓存：路径 → (文件原始字节, key 表)。同进程通常只服务一个
+/// workspace；路径换键 = 缓存未命中即重读（正确性不受影响）。
+///
+/// 为什么比内容不比 mtime：Windows 文件时间刷新粒度粗（毫秒级——
+/// `write_file_atomic` 临时名「同 tick 相同 nanos」有 CI 实证），同 tick 内
+/// 「保存 → 下一请求」的 mtime 等值判定必拿陈旧表，禁用 key 照常放行
+///（BUG-20261103 CI Windows shard5/9 实录：`disabled_key_rejected_hot` 断言
+/// 死 + 路由侧 GET 打 POST-only completions 回 405 顶掉 401；Linux 纳秒时钟
+/// 掩盖该类，hot_reload 的 2026-10-22 Windows 假红同族）。key 表 KB 级，
+/// 白名单 lane 每请求直读 + 字节比对成本可忽略，内容变才重解析——热生效
+/// 不赌任何钟，外部/手写文件落盘同样即刻生效。
+static CACHE: parking_lot::Mutex<Option<(PathBuf, Arc<Vec<u8>>, Arc<Vec<ProxyKeyEntry>>)>> =
     parking_lot::Mutex::new(None);
 
 /// 鉴权回落：token 匹配某条 enabled 代理 key 且路径在白名单内 →
@@ -74,31 +81,33 @@ pub(crate) fn proxy_lane_session_key(
     }
 }
 
-/// key 表读盘 + mtime 缓存。workspace 未装配 / key 文件不存在 = None
-///（调用方回落主 token 校验；前者顺带清缓存防陈旧）。
+/// key 表读盘 + 内容比对缓存。workspace 未装配 / key 文件不存在或不可读
+/// = None（调用方回落主 token 校验；不可读顺带清缓存防陈旧）。
 fn cached_keys(state: &AppState) -> Option<Arc<Vec<ProxyKeyEntry>>> {
     let config_dir = state
         .workspace
         .as_ref()
         .map(|w| PathBuf::from(w).join("config"))?;
     let path = proxy_keys_file::proxy_keys_config_path(&config_dir);
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let Some(mtime) = mtime else {
-        // 文件不存在 = 零 key；顺带清缓存（文件被删后不再持陈旧表）。
-        *CACHE.lock() = None;
-        return None;
-    };
+    let bytes = Arc::new(match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => {
+            // 文件不存在 = 零 key；顺带清缓存（文件被删后不再持陈旧表）。
+            *CACHE.lock() = None;
+            return None;
+        }
+    });
     {
         let cache = CACHE.lock();
-        if let Some((cached_path, cached_mtime, keys)) = cache.as_ref()
+        if let Some((cached_path, cached_bytes, keys)) = cache.as_ref()
             && cached_path == &path
-            && *cached_mtime == mtime
+            && **cached_bytes == *bytes
         {
             return Some(keys.clone());
         }
     }
     // miss → 重读（list 宽和读：损坏 = 空 + WARN，回落主 token 老路径）。
     let keys = Arc::new(proxy_keys_file::list(&config_dir));
-    *CACHE.lock() = Some((path, mtime, keys.clone()));
+    *CACHE.lock() = Some((path, bytes, keys.clone()));
     Some(keys)
 }
