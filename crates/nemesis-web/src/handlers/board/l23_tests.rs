@@ -225,6 +225,7 @@ async fn l23_pause_autopilots_bound_to_cascades_and_leaves_trace() {
             origin: Some(nemesis_board::models::TaskOrigin {
                 origin_type: "autopilot".to_string(),
                 origin_id: ap_b.id.to_string(),
+                origin_meta: Default::default(),
             }),
             ..NewIssue::default()
         })
