@@ -2516,3 +2516,32 @@ async fn mandate_no_pinned_key_require_rejected() {
     );
     assert!(tl.get_task("gate-req-nopin-1").is_none(), "拒单不入队");
 }
+
+#[tokio::test]
+async fn mandate_corrupt_book_fail_closed() {
+    // BUG-20261104-358：trust.toml 在场但损坏 = regime 已激活而验签基础
+    // 设施失效 → verify 模式也不降级（拒，ACK 文案指明簿损坏）——降级只
+    // 给簿缺席（regime 休眠）；坏簿静默放行 = 已激活验签面被无声降级。
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-corrupt-book");
+    let book = crate::roaming::trust::trust_book_path(tmp.path());
+    std::fs::create_dir_all(book.parent().unwrap()).unwrap();
+    std::fs::write(&book, "{{ not toml").unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(MandatePolicy {
+        workspace: tmp.path().to_path_buf(),
+        mode: crate::config_loader::MandateMode::Verify,
+    });
+
+    let payload = signed_payload(&kf, "gate-corrupt-book-1", now_unix());
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "error", "verify + 坏簿 = 拒（fail-closed）");
+    assert!(
+        ack.error.as_deref().unwrap_or("").contains("trust.toml"),
+        "拒绝文案应指明信任簿损坏，got: {:?}",
+        ack.error
+    );
+    assert!(tl.get_task("gate-corrupt-book-1").is_none(), "拒单不入队");
+}

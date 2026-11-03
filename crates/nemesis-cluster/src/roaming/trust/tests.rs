@@ -404,6 +404,49 @@ fn mandate_legacy_book_without_sections_loads_empty() {
     );
 }
 
+/// BUG-20261104-358：簿在场但读失败 = BookUnreadable（与 Absent 分立——
+/// 旧实现把 Err 归入 Absent，verify 降级臂上线后坏簿 = 已激活 regime 被
+/// 无声降级为放行态）。
+#[test]
+fn mandate_corrupt_book_verdict_is_book_unreadable() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = super::trust_book_path(tmp.path());
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&path, "{{ not toml").expect("write");
+    assert_eq!(
+        mandate_key_state(tmp.path(), "node-a"),
+        MandateKeyVerdict::BookUnreadable,
+        "坏簿 ≠ 簿缺席：fail-closed 专用态（announce 闸同方向）"
+    );
+    // 簿缺席仍是 Absent（降级臂的合法输入）。
+    let tmp2 = tempfile::tempdir().expect("tempdir");
+    assert_eq!(
+        mandate_key_state(tmp2.path(), "node-a"),
+        MandateKeyVerdict::Absent
+    );
+}
+
+/// BUG-20261031-260 横向补齐：trust.toml 带 UTF-8 BOM（记事本形态）不再
+/// 构成坏簿——剥 BOM 后正常解析（合法内容照常钉存生效）。
+#[test]
+fn mandate_bom_book_loads_normally() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = super::trust_book_path(tmp.path());
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+    let body = format!(
+        "trusted = []\nrevoked = []\n\n[mandate_keys]\n\"node-a\" = \"{}\"\n",
+        pk_uncompressed(1)
+    );
+    let mut bom = String::from("\u{feff}");
+    bom.push_str(&body);
+    std::fs::write(&path, bom).expect("write");
+    assert_eq!(
+        mandate_key_state(tmp.path(), "node-a"),
+        MandateKeyVerdict::Pinned(pk_uncompressed(1)),
+        "BOM 簿剥前缀后正常解析"
+    );
+}
+
 #[test]
 fn mandate_pins_and_iroh_sections_coexist() {
     let tmp = tempfile::tempdir().expect("tempdir");

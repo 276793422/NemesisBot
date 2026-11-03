@@ -472,6 +472,47 @@ fn policy_require_unactivated_book_still_rejected() {
     cleanup(&ws);
 }
 
+/// BUG-20261104-358：簿在场但读失败 = TrustBookUnreadable，Verify/Require
+/// 均拒不降级——降级只给「簿缺席（regime 休眠）」，不给「已激活 regime
+/// 的坏簿」（坏簿静默放行 = 管理员激活的验签面被无声降级；announce 闸
+/// 同方向 fail-closed）。旧实现坏簿归 Absent，降级臂上线后即 fail-open。
+#[test]
+fn policy_verify_corrupt_book_fail_closed() {
+    let ws = temp_workspace("policy-verify-corrupt-book");
+    let kf = make_key_file("pvcb");
+    let path = crate::roaming::trust::trust_book_path(&ws);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&path, "{{ not toml").expect("write");
+    let policy = policy_for(&ws, MandateMode::Verify);
+    let now = now_unix();
+    let payload = signed_payload(&kf, "t-1", now);
+    assert!(
+        matches!(
+            policy.check("node-a", &payload, "t-1", now),
+            Err(MandateViolation::TrustBookUnreadable)
+        ),
+        "verify + 坏簿 = 拒（fail-closed，不进降级臂）"
+    );
+    cleanup(&ws);
+}
+
+#[test]
+fn policy_require_corrupt_book_fail_closed() {
+    let ws = temp_workspace("policy-require-corrupt-book");
+    let kf = make_key_file("prcb");
+    let path = crate::roaming::trust::trust_book_path(&ws);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&path, "{{ not toml").expect("write");
+    let policy = policy_for(&ws, MandateMode::Require);
+    let now = now_unix();
+    let payload = signed_payload(&kf, "t-1", now);
+    assert!(matches!(
+        policy.check("node-a", &payload, "t-1", now),
+        Err(MandateViolation::TrustBookUnreadable)
+    ));
+    cleanup(&ws);
+}
+
 #[test]
 fn policy_verify_validates_present_mandate() {
     let ws = temp_workspace("policy-verify-present");

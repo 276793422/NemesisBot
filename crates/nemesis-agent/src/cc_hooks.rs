@@ -608,7 +608,7 @@ impl CcHookBridge {
     /// 正常态）；存在但解析失败 → warn + None（fail-open，不拖死 gateway）。
     pub fn load_from_dir(config_dir: &Path, project_dir: PathBuf) -> Option<Arc<Self>> {
         let path = config_dir.join(HOOKS_FILE);
-        let text = match std::fs::read_to_string(&path) {
+        let text = match nemesis_utils::fsutil::read_config_string(&path) {
             Ok(t) => t,
             Err(_) => return None, // 没有 hooks.json = 没配，正常
         };
@@ -685,7 +685,7 @@ impl CcHookBridge {
                 *self.events.write().unwrap() = CcEvents::default();
             }
             Some(_) => {
-                match std::fs::read_to_string(&path)
+                match nemesis_utils::fsutil::read_config_string(&path)
                     .map_err(|e| e.to_string())
                     .and_then(|t| parse_cc_hooks(&t))
                 {

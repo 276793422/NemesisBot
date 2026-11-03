@@ -1518,6 +1518,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                             MandateKeyVerdict::Pinned(_) => "pinned",
                             MandateKeyVerdict::Revoked => "revoked",
                             MandateKeyVerdict::Absent => "absent",
+                            MandateKeyVerdict::BookUnreadable => "unreadable（trust.toml 损坏）",
                         };
                         println!("    {node_id}: {pk}（{state}）");
                     }
