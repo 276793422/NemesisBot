@@ -43,8 +43,9 @@ const PROXY_KEY_ALLOWED_PATHS: [&str; 2] = ["/v1/chat/completions", "/api/chat/s
 /// 掩盖该类，hot_reload 的 2026-10-22 Windows 假红同族）。key 表 KB 级，
 /// 白名单 lane 每请求直读 + 字节比对成本可忽略，内容变才重解析——热生效
 /// 不赌任何钟，外部/手写文件落盘同样即刻生效。
-pub(crate) static CACHE: parking_lot::Mutex<Option<(PathBuf, Arc<Vec<u8>>, Arc<Vec<ProxyKeyEntry>>)>> =
-    parking_lot::Mutex::new(None);
+pub(crate) static CACHE: parking_lot::Mutex<
+    Option<(PathBuf, Arc<Vec<u8>>, Arc<Vec<ProxyKeyEntry>>)>,
+> = parking_lot::Mutex::new(None);
 
 /// 鉴权回落：token 匹配某条 enabled 代理 key 且路径在白名单内 →
 /// `Some(ProxyCaller)`；否则 `None`（调用方回落主 token 校验）。
