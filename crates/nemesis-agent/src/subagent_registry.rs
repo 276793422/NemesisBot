@@ -279,7 +279,13 @@ impl SubagentRegistry {
         drop(inner);
     }
 
-    /// 原子落盘（tmp + rename 覆盖）。失败只 WARN（注册表故障不阻断 spawn）。
+    /// 原子落盘（[`nemesis_utils::write_file_atomic`]：pid+序数+nanos 唯一
+    /// tmp 名 + create_new + rename 覆盖，BUG-20261104-354）。并发 begin/
+    /// finish/cancel 是功能常态路径（多子代理同时收尾），**禁止**固定 tmp
+    /// 名——两个 persist 竞争同一路径时 `fs::write` 交错可产出坏混合体，
+    /// rename 会把好账本顶成坏账本（重启 load 失败 = 整册清空）；Windows
+    /// 下对端持打开句柄时固定名 rename 共享违规失败还看时序运气。失败只
+    /// WARN（注册表故障不阻断 spawn）；unix 0600（台账含任务文本摘录）。
     fn persist(&self) {
         let Some(path) = &self.persist_path else {
             return;
@@ -296,16 +302,9 @@ impl SubagentRegistry {
         let Ok(json) = serde_json::to_string(&snapshot) else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = path.with_extension("json.tmp");
-        let write = || -> std::io::Result<()> {
-            std::fs::write(&tmp, json)?;
-            std::fs::rename(&tmp, path)?;
-            Ok(())
-        };
-        if let Err(e) = write() {
+        if let Err(e) =
+            nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+        {
             tracing::warn!(error = %e, path = %path.display(), "[subagent_registry] persist failed");
         }
     }

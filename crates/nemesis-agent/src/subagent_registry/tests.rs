@@ -164,3 +164,70 @@ fn begin_overwrites_duplicate_id_without_duplicating_order() {
         SubagentStatus::Running
     );
 }
+
+// ===========================================================================
+// BUG-20261104-354 回归锁：persist 曾手搓固定 tmp 名（tasks.json.tmp）+
+// 裸 fs::write——并发 begin/finish/cancel 是功能常态路径（多子代理同时
+// 收尾），两个 persist 竞争同一 tmp 路径时交错写可产出坏混合体，rename
+// 把好账本顶成坏账本（重启 load 失败 = 整册清空）。修复后走
+// write_file_atomic（pid+序数+nanos 唯一 tmp + create_new：并发写者结构
+// 上不可能互相踩踏，rename last-wins 必为某一次完整快照）。
+// 本测试钉住不变量：并发风暴结束后盘上文件**必然**是合法 JSON 快照且
+// 内容完整（旧实现下该测试偶发红——竞态窗口本质概率性，回归锁守的是
+// 结构前提而非确定性复现）。
+// ===========================================================================
+#[test]
+fn persist_concurrent_writers_always_leave_valid_snapshot() {
+    let dir = std::env::temp_dir().join(format!(
+        "nb-reg-conc-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tasks.json");
+
+    let reg = std::sync::Arc::new(SubagentRegistry::new(Some(path.clone())));
+    let mut handles = Vec::new();
+    // 8 线程 × 30 次 begin/finish 交替：并发写风暴（旧固定 tmp 名下
+    //交错窗口随负载真实存在；write_file_atomic 唯一 tmp 名下结构免疫）。
+    for t in 0..8 {
+        let reg = reg.clone();
+        handles.push(std::thread::spawn(move || {
+            for i in 0..30 {
+                let id = format!("subagent:t{t}-i{i}");
+                let mut req = begin_req(&id);
+                req.task = format!("并发风暴任务 t{t}-i{i}-{}", "x".repeat(200));
+                reg.begin(req);
+                reg.finish(
+                    &id,
+                    SubagentStatus::Done,
+                    Some(1),
+                    Some("done".to_string()),
+                    None,
+                );
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // 不变量 1：盘上文件必须是合法 JSON（旧实现交错写坏账本时此臂红）。
+    let bytes = std::fs::read(&path).unwrap();
+    let tasks: Vec<SubagentTask> = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("persist 产物必须是完整合法快照: {e}"));
+    // 不变量 2：内容完整——8×30 个 id 全部在册（快照是全量重写非追加）。
+    assert_eq!(tasks.len(), 8 * 30, "全量快照必须含全部条目");
+    // 不变量 3：无残留 tmp 垃圾（write_file_atomic 失败自清理 + rename 带走）。
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "不得残留 tmp 文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
