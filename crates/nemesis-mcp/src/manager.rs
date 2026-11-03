@@ -1,11 +1,10 @@
 //! MCP Manager — centralized MCP server configuration and tool discovery.
 //!
 //! Manages the MCP config file (`config.mcp.json`), provides CRUD operations
-//! for server entries, discovers tools from MCP servers, and tracks file
-//! modification time for hot-reload support.
+//! for server entries, discovers tools from MCP servers, and supports
+//! hot-reload via content comparison.
 
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use nemesis_config::McpConfig;
 use tracing::{info, warn};
@@ -23,7 +22,10 @@ use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 /// Centralized manager for MCP server configuration and tool discovery.
 ///
 /// Reads/writes `config.mcp.json`, discovers tools from MCP servers,
-/// and tracks file modification time for automatic hot-reload.
+/// and supports automatic hot-reload via file content comparison
+/// （内容比对不赌钟，BUG-20261104-359 同族收编：mtime 等值判定在 Windows
+/// 毫秒级粒度下漏检同刻改写，Dashboard `save_mcp_config` 直写落盘与热更
+/// 检查撞同刻 → 配置静默永久陈旧）。
 ///
 /// 2026-08-31 单一真相源收敛：私有 `McpFileConfig`（与 nemesis-config 的
 /// `McpConfig` 字段分叉的同族重复定义）已删除，配置层直接复用
@@ -31,7 +33,8 @@ use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 pub struct McpManager {
     config_path: PathBuf,
     config: McpConfig,
-    last_mtime: Option<SystemTime>,
+    /// 上次记账的盘上文本（read_config_string 同源剥 BOM；None = 缺失/不可读）。
+    last_content: Option<String>,
     /// G2（2026-10-18 批四）：per-agent 浏览器 profile 显式覆盖（gateway
     /// agent loop 装配时注入；None = 连接时回落进程 env——执行体子进程
     /// 上下文/共享形态零变化）。`discover_tools` 是单一消费点（启动全量
@@ -47,13 +50,13 @@ impl McpManager {
         let mut mgr = Self {
             config_path,
             config: McpConfig::default(),
-            last_mtime: None,
+            last_content: None,
             browser_profile: None,
         };
         if let Err(e) = mgr.load_config() {
             warn!("[McpManager] Failed to load config on init: {}", e);
         }
-        mgr.last_mtime = Self::read_mtime(&mgr.config_path);
+        mgr.last_content = Self::read_config_text(&mgr.config_path);
         mgr
     }
 
@@ -149,6 +152,7 @@ impl McpManager {
         self.config.servers.push(config);
         self.config.enabled = true;
         self.save_config()?;
+        self.sync_last_content();
         Ok(())
     }
 
@@ -161,6 +165,7 @@ impl McpManager {
         let removed = self.config.servers.len() < before;
         if removed {
             self.save_config()?;
+            self.sync_last_content();
         }
         Ok(removed)
     }
@@ -169,17 +174,17 @@ impl McpManager {
     // Hot-reload
     // -----------------------------------------------------------------------
 
-    /// Check if the config file has been modified since the last check.
-    /// Updates the internal mtime and returns true if changed.
+    /// Check if the config file content has changed since the last check.
+    /// Updates the internal record and returns true if changed.
     pub fn check_config_changed(&mut self) -> bool {
-        let current = Self::read_mtime(&self.config_path);
-        if current != self.last_mtime {
+        let current = Self::read_config_text(&self.config_path);
+        if current != self.last_content {
             if let Err(e) = self.load_config() {
                 warn!("[McpManager] Failed to reload config: {}", e);
-                // Do NOT update last_mtime — will retry next round
+                // Do NOT update last_content — will retry next round
                 return false;
             }
-            self.last_mtime = current;
+            self.last_content = current;
             info!("[McpManager] Config file changed, reloaded");
             return true;
         }
@@ -270,8 +275,15 @@ impl McpManager {
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn read_mtime(path: &PathBuf) -> Option<SystemTime> {
-        std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
+    /// 读取盘上文本（read_config_string 同源剥 BOM）作为热更记账。
+    fn read_config_text(path: &PathBuf) -> Option<String> {
+        nemesis_utils::fsutil::read_config_string(path).ok()
+    }
+
+    /// 自写落盘后回读记账（消除下一次 `check_config_changed` 对自写内容
+    /// 的冗余重载——内容比对下自写文本必然「已见」，无需再赌时钟）。
+    fn sync_last_content(&mut self) {
+        self.last_content = Self::read_config_text(&self.config_path);
     }
 }
 

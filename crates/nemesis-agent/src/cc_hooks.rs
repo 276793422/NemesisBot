@@ -64,7 +64,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -568,7 +568,7 @@ impl ScriptOutcome {
 /// [`LifecycleHook`]（SessionStart/UserPromptSubmit/Stop）。
 ///
 /// **热更（2026-09-24，hooks 三合一收口件1）**：盘上加载的桥（经
-/// [`Self::load_from_dir`]）在每次分发入口惰性检查 hooks.json 的 mtime，
+/// [`Self::load_from_dir`]）在每次分发入口惰性检查 hooks.json 的内容，
 /// 变化即重新解析并原子换装——保存即下条消息生效，无需重启 Agent。语义：
 /// 解析失败保留旧配置（fail-open 保旧，坏文件不炸会话）；文件清空/消失 =
 /// 换装为空 = 事实注销（与启动态「没有 hooks.json = 没配」同一语义）。纯
@@ -579,9 +579,12 @@ pub struct CcHookBridge {
     events: RwLock<CcEvents>,
     /// hooks.json 盘上路径；`None` = 纯内存桥，热更关闭。
     hooks_path: Option<PathBuf>,
-    /// 上次加载时已见的 mtime。与文件现状比较决定是否重载；**解析失败也
-    /// 记录**——同一版坏文件只 warn 一次，用户改好文件（mtime 再变）后自然重试。
-    seen_mtime: Mutex<Option<SystemTime>>,
+    /// 上次记账的盘上原始文本（read_config_string 同源剥 BOM；None = 缺失）。
+    /// 与文件现状比较决定是否重载；**解析失败也记录**——同一版坏文件只 warn
+    /// 一次，用户改好文件（内容再变）后自然重试。内容比对不赌 mtime
+    /// （BUG-20261104-359 同族收编：Windows 毫秒级粒度下同刻改写漏检 =
+    /// 换装静默滞留旧版）。
+    seen_raw: Mutex<Option<String>>,
     project_dir: PathBuf,
     /// SessionStart 只跑一次的判重（session_key → 已见）。
     seen_sessions: Mutex<HashSet<String>>,
@@ -597,7 +600,7 @@ impl CcHookBridge {
         Ok(Self {
             events: RwLock::new(events),
             hooks_path: None,
-            seen_mtime: Mutex::new(None),
+            seen_raw: Mutex::new(None),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
@@ -629,13 +632,9 @@ impl CcHookBridge {
                     events.script_counts()
                 );
                 drop(events);
-                // 盘上加载：记路径与当前 mtime，热更自此生效。
+                // 盘上加载：记路径与当前文件文本，热更自此生效。
                 bridge.hooks_path = Some(path.clone());
-                bridge.seen_mtime = Mutex::new(
-                    std::fs::metadata(&path)
-                        .ok()
-                        .and_then(|m| m.modified().ok()),
-                );
+                bridge.seen_raw = Mutex::new(nemesis_utils::fsutil::read_config_string(&path).ok());
                 Some(Arc::new(bridge))
             }
             Err(e) => {
@@ -655,28 +654,37 @@ impl CcHookBridge {
         agent_loop.add_lifecycle_hook(self);
     }
 
-    /// **分发入口**：hooks.json mtime 变化则热更换装，返回当前生效配置的
+    /// **分发入口**：hooks.json 内容变化则热更换装，返回当前生效配置的
     /// clone 快照（锁不跨 await）。纯内存桥直接返回快照。
     ///
     /// 换装语义（热更态与启动态的差异全部在此）：
-    /// - mtime 变化 + 解析成功 → 原子换装（info 记脚本计数）。
-    /// - mtime 变化 + 解析失败（含文件存在但读取失败，如编辑器/杀软瞬时
-    ///   锁定）→ warn + **保留旧配置**；mtime 已记录，同版坏文件只 warn 一次。
-    /// - 文件消失（metadata 失败）→ 视同用户清空：换装为空 = 事实注销，
-    ///   与启动态「没有 hooks.json = 没配」同一语义。
+    /// - 内容变化 + 解析成功 → 原子换装（info 记脚本计数）。
+    /// - 内容变化 + 解析失败 → warn + **保留旧配置**；文本已记账，同版
+    ///   坏文件只 warn 一次。
+    /// - 文件消失（NotFound）→ 视同用户清空：换装为空 = 事实注销，与
+    ///   启动态「没有 hooks.json = 没配」同一语义。
+    /// - 瞬时读失败（编辑器/杀软锁，非 NotFound）→ 保留现状不记账，下轮
+    ///   重试（与「消失」分立——读不到 ≠ 不存在；BUG-20261104-358 同款
+    ///   教训。旧实现 metadata 一并 Err 混同两态，此处顺手分立）。
     fn current_events(&self) -> CcEvents {
         let Some(path) = self.hooks_path.clone() else {
             return self.events.read().unwrap().clone();
         };
-        let file_mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        if file_mtime == *self.seen_mtime.lock().unwrap() {
+        // 内容比对不赌钟（BUG-20261104-359 同族收编）：mtime 等值判定在
+        // Windows 毫秒级粒度（346d3dc2 同 tick 同 nanos CI 实录）下漏检
+        // 同刻改写——hooks.json 换装静默滞留旧版。
+        let text = match nemesis_utils::fsutil::read_config_string(&path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // 非 NotFound（瞬时锁等）：保留现状不记账，下轮重试。
+            Err(_) => return self.events.read().unwrap().clone(),
+        };
+        if text == *self.seen_raw.lock().unwrap() {
             return self.events.read().unwrap().clone();
         }
-        // mtime 变了（或首检）。按文件现状三分支处理。
-        *self.seen_mtime.lock().unwrap() = file_mtime;
-        match file_mtime {
+        // 内容变了（或首检）。按文件现状三分支处理。
+        *self.seen_raw.lock().unwrap() = text.clone();
+        match text {
             None => {
                 tracing::info!(
                     "[cc-hooks] {} gone — hooks deactivated (hot-reload)",
@@ -684,28 +692,23 @@ impl CcHookBridge {
                 );
                 *self.events.write().unwrap() = CcEvents::default();
             }
-            Some(_) => {
-                match nemesis_utils::fsutil::read_config_string(&path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|t| parse_cc_hooks(&t))
-                {
-                    Ok(events) => {
-                        tracing::info!(
-                            "[cc-hooks] hot-reloaded {} ({} script(s))",
-                            path.display(),
-                            events.total_scripts()
-                        );
-                        *self.events.write().unwrap() = events;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "[cc-hooks] hot-reload failed to parse {} — keeping previous config: {}",
-                            path.display(),
-                            e
-                        );
-                    }
+            Some(t) => match parse_cc_hooks(&t) {
+                Ok(events) => {
+                    tracing::info!(
+                        "[cc-hooks] hot-reloaded {} ({} script(s))",
+                        path.display(),
+                        events.total_scripts()
+                    );
+                    *self.events.write().unwrap() = events;
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        "[cc-hooks] hot-reload failed to parse {} — keeping previous config: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            },
         }
         self.events.read().unwrap().clone()
     }
