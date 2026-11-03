@@ -22,6 +22,10 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
+/// WS 升级单连接墙钟上限（BUG-20261103-344）：TCP 连上不发 HTTP 升级请求
+/// 的静默连接（本地扫描/挂死客户端）按超时淘汰，不得永久冻结 accept 循环。
+const WS_UPGRADE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // Protocol types
 // ---------------------------------------------------------------------------
@@ -252,58 +256,74 @@ impl Channel for WebSocketChannel {
                         }
 
                         // WebSocket upgrade (with optional path check and auth)
-                        let ws_path = config.path.clone();
+                        // BUG-20261103-344：升级等待必须有界——TCP 连上不发
+                        // HTTP 升级请求的静默连接（本地扫描/挂死客户端）旧实现
+                        // 会永久冻结 accept 循环，通道对一切后续客户端失联。
+                        // 10s 上限按 per-connection 淘汰（与 oauth 回调连接
+                        // 同款处理；残余退化窗口≤10s/静默连接）。
                         let ws_stream = if config.auth_token.is_empty() {
-                            tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, response: Response| {
-                                // Path validation
-                                if !ws_path.is_empty() && req.uri().path() != ws_path {
-                                    warn!(path = %req.uri().path(), expected = %ws_path, "[WebSocketChannel] rejected: wrong path");
-                                    return Err(http::Response::builder()
-                                        .status(404)
-                                        .body(Some("Not Found".to_string()))
-                                        .unwrap());
-                                }
-                                Ok(response)
-                            }).await
+                            let ws_path = config.path.clone();
+                            tokio::time::timeout(
+                                WS_UPGRADE_TIMEOUT,
+                                tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, response: Response| {
+                                    // Path validation
+                                    if !ws_path.is_empty() && req.uri().path() != ws_path {
+                                        warn!(path = %req.uri().path(), expected = %ws_path, "[WebSocketChannel] rejected: wrong path");
+                                        return Err(http::Response::builder()
+                                            .status(404)
+                                            .body(Some("Not Found".to_string()))
+                                            .unwrap());
+                                    }
+                                    Ok(response)
+                                }),
+                            )
+                            .await
                         } else {
                             let token = config.auth_token.clone();
                             let auth_ws_path = config.path.clone();
-                            tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, response: Response| {
-                                // Path validation
-                                if !auth_ws_path.is_empty() && req.uri().path() != auth_ws_path {
-                                    warn!(path = %req.uri().path(), expected = %auth_ws_path, "[WebSocketChannel] rejected: wrong path");
-                                    return Err(http::Response::builder()
-                                        .status(404)
-                                        .body(Some("Not Found".to_string()))
-                                        .unwrap());
-                                }
-                                // Token validation
-                                let query = req.uri().query().unwrap_or("");
-                                let mut valid = false;
-                                for pair in query.split('&') {
-                                    if let Some((key, value)) = pair.split_once('=')
-                                        && key == "token" && value == token {
-                                            valid = true;
-                                            break;
-                                        }
-                                }
-                                if valid {
-                                    Ok(response)
-                                } else {
-                                    warn!("[WebSocketChannel] auth failed: invalid or missing token");
-                                    Err(http::Response::builder()
-                                        .status(401)
-                                        .body(Some("Unauthorized".to_string()))
-                                        .unwrap())
-                                }
-                            })
+                            tokio::time::timeout(
+                                WS_UPGRADE_TIMEOUT,
+                                tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, response: Response| {
+                                    // Path validation
+                                    if !auth_ws_path.is_empty() && req.uri().path() != auth_ws_path {
+                                        warn!(path = %req.uri().path(), expected = %auth_ws_path, "[WebSocketChannel] rejected: wrong path");
+                                        return Err(http::Response::builder()
+                                            .status(404)
+                                            .body(Some("Not Found".to_string()))
+                                            .unwrap());
+                                    }
+                                    // Token validation
+                                    let query = req.uri().query().unwrap_or("");
+                                    let mut valid = false;
+                                    for pair in query.split('&') {
+                                        if let Some((key, value)) = pair.split_once('=')
+                                            && key == "token" && value == token {
+                                                valid = true;
+                                                break;
+                                            }
+                                    }
+                                    if valid {
+                                        Ok(response)
+                                    } else {
+                                        warn!("[WebSocketChannel] auth failed: invalid or missing token");
+                                        Err(http::Response::builder()
+                                            .status(401)
+                                            .body(Some("Unauthorized".to_string()))
+                                            .unwrap())
+                                    }
+                                }),
+                            )
                             .await
                         };
 
                         let ws_stream = match ws_stream {
-                            Ok(s) => s,
-                            Err(e) => {
+                            Ok(Ok(s)) => s,
+                            Ok(Err(e)) => {
                                 warn!(addr = %remote_addr, error = %e, "[WebSocketChannel] upgrade failed");
+                                continue;
+                            }
+                            Err(_) => {
+                                warn!(addr = %remote_addr, "[WebSocketChannel] upgrade timed out (silent connection?)");
                                 continue;
                             }
                         };

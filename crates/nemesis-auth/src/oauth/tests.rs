@@ -1975,6 +1975,48 @@ async fn bug60_reset_connection_does_not_kill_flow() {
     assert!(resp.contains("200 OK"), "{resp}");
 }
 
+#[tokio::test(start_paused = true)]
+// BUG-20261103-344 横向同族红证：静默连接（TCP 握手后一个字节都不发——
+// 本地扫描/健康检查敲端口形态）旧实现内联 await handle_callback，读循环
+// 挂死到外层 300s 超时，期间真浏览器回调全部无法被服务。不变量：静默
+// 连接按单连接墙钟上限淘汰，真回调照常被服务。
+// start_paused 时钟：10s CALLBACK_CONN_TIMEOUT 瞬时快进，墙钟毫秒级完成。
+async fn bug344_silent_connection_does_not_block_callback_loop() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 静默连接先连（backlog FIFO → 先被 accept），连上后握住不发任何数据。
+    let stall = tokio::spawn(async move {
+        let _sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    });
+
+    // 真回调连接：合法 state + code。
+    let real = tokio::spawn(async move {
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sock.write_all(b"GET /auth/callback?code=real344&state=st344 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        cfg.wait_for_callback(&listener, "st344"),
+    )
+    .await
+    .expect("静默连接不得阻塞回调循环（BUG-20261103-344）")
+    .unwrap();
+    assert_eq!(code, "real344");
+
+    stall.abort();
+    let resp = real.await.unwrap();
+    assert!(resp.contains("200 OK"), "{resp}");
+}
+
 #[tokio::test]
 async fn wait_for_callback_no_code_param_errors() {
     let cfg = OAuthProviderConfig::openai();

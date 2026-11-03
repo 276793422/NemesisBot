@@ -14,6 +14,10 @@ use std::time::Duration;
 /// 默认请求超时（秒）；`request_timeout_secs == 0` 视作缺省。
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
+/// 单个回调连接的墙钟上限（BUG-20261103-344 横向同族）：真浏览器连上即发
+/// GET，10s 上限只淘汰静默/挂死连接（本地扫描、健康检查），不伤真回调。
+const CALLBACK_CONN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 带 bounded 超时的共享 HTTP client（BUG-20261028-104a：reqwest 默认
 /// client 零超时，挂死端点会让 `auth login` 无限卡住）。
 fn http_client(cfg: &OAuthProviderConfig) -> reqwest::Client {
@@ -274,14 +278,27 @@ impl OAuthProviderConfig {
                 }
             };
 
-            match self.handle_callback(stream, expected_state).await {
-                Ok(Some(code)) => return Ok(code),
-                Ok(None) => continue, // Not the callback path, keep listening
-                Err(CallbackFailure::PerConnection(e)) => {
+            // BUG-20261103-344（横向同族）：单连接墙钟上限——旧实现内联
+            // await handle_callback，静默连接（本地扫描/健康检查敲端口不发
+            // 数据）会把循环挂死到外层 300s 超时，期间真浏览器回调全部无法
+            // 被服务；超时按 per-connection 淘汰，继续监听。
+            let outcome = tokio::time::timeout(
+                CALLBACK_CONN_TIMEOUT,
+                self.handle_callback(stream, expected_state),
+            )
+            .await;
+            match outcome {
+                Err(_elapsed) => {
+                    tracing::warn!("[oauth] callback connection stalled past timeout, continuing");
+                    continue;
+                }
+                Ok(Ok(Some(code))) => return Ok(code),
+                Ok(Ok(None)) => continue, // Not the callback path, keep listening
+                Ok(Err(CallbackFailure::PerConnection(e))) => {
                     tracing::warn!(error = %e, "[oauth] callback connection failed, continuing");
                     continue;
                 }
-                Err(CallbackFailure::Terminal(e)) => return Err(e),
+                Ok(Err(CallbackFailure::Terminal(e))) => return Err(e),
             }
         }
     }

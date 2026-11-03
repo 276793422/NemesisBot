@@ -48,6 +48,30 @@ async fn make_server() -> (Arc<WebSocketServer>, u16, Arc<KeyGenerator>) {
     (server, port, key_gen)
 }
 
+/// 静默 TCP 连接（握手后一个字节都不发）不得冻结 accept 循环——后续真实
+/// 子进程连接必须照常完成升级+auth+注册。旧实现把 auth 等待内联在 accept
+/// 循环里，挂死的子进程窗口（或本地任意进程敲端口不发数据）会永久锁死
+/// 全部后续子窗口连接（BUG-20261103-344 回归锁）。
+#[tokio::test]
+async fn s7_silent_connection_does_not_block_accept_loop() {
+    let (server, port, key_gen) = make_server().await;
+
+    // 静默连接：TCP 握手成功后不发任何数据（挂死子进程/本地探测形态）。
+    let _stall = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    // 给 accept 循环时间接住它并进入 auth 等待。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 静默连接之后，真实子进程连接必须照常工作。
+    let key = key_gen.generate("s7-stall", 5);
+    let connected = tokio::time::timeout(Duration::from_secs(3), rogue_connect(port, &key)).await;
+    assert!(
+        connected.is_ok(),
+        "silent TCP connection must not block the accept loop"
+    );
+    wait_registered(&server, "s7-stall").await;
+    server.stop();
+}
+
 /// 发原始垃圾字节（非 HTTP 升级请求），accept_async 必须升级失败并
 /// 只打日志返回，服务器继续存活。
 #[tokio::test]
