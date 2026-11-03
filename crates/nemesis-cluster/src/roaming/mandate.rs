@@ -274,7 +274,9 @@ impl MandatePolicy {
     /// - mandate 缺失：Verify → 放行（旧行为逐字节保持）/ Require → 拒
     ///   （防剥离攻击）；policy 未装配 = Verify 同语义放行；
     /// - mandate 在场 → [`verify_mandate_full`] 全链（吊销 → 钉存 → 签名
-    ///   → 绑定 → 时限），通过 = 投影 enforcement。
+    ///   → 绑定 → 时限），通过 = 投影 enforcement；钉存钥缺席（簿未激活/
+    ///   对端未钉）时 Verify → 放行 + warn（regime 休眠降级，BUG-20261104
+    ///   全新集群默认形态死锁修复）/ Require → 拒。
     ///
     /// 失败返回 [`MandateViolation`]（Display 即 ACK reason 文案）。
     pub fn check(
@@ -308,8 +310,36 @@ impl MandatePolicy {
                 Ok(None)
             };
         }
-        let body =
-            verify_mandate_full(&self.workspace, source_node_id, mandate_value, task_id, now)?;
+        let body = match verify_mandate_full(
+            &self.workspace,
+            source_node_id,
+            mandate_value,
+            task_id,
+            now,
+        ) {
+            Ok(body) => body,
+            // verify 降级臂（BUG-20261104 CI UAT T-MRG 实录）：钉存钥缺席
+            // （簿未激活/对端未钉）= trust regime 对该对端休眠，验签基础
+            // 设施不在场——「在场即验」不可行时按 §3.3 默认形态承诺放行
+            // （旧行为），管理面激活 + announce 重钉后下单起自动恢复全链
+            // 验签。钉存钥**在场但验不过**（TOFU 首见污染/伪造）仍拒——
+            // 降级只给「无从验起」，不给「验出问题」。require 保持拒（显
+            // 式 opt-in 严格态，没得验也拒）。全新 4 节点默认配置实录：
+            // A 必签（sign_enabled 缺省 true）+ B 必验（mode 缺省 verify）
+            // + 钉存永不激活（L13a BookAbsent 纪律）= 全部派发滞留 backlog
+            //（T-MRG-1/2/3/4/7 五测连红）。
+            Err(MandateViolation::NoPinnedKey)
+                if self.mode == super::super::config_loader::MandateMode::Verify =>
+            {
+                tracing::warn!(
+                    task_id = %task_id,
+                    source_node = %source_node_id,
+                    "[Mandate] verify 模式钉存钥缺席（trust.toml 未激活/对端未钉）——放行（旧行为；管理面激活后恢复验签）"
+                );
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
         Ok(Some(enforcement_from_body(&body)))
     }
 }
@@ -328,7 +358,9 @@ pub enum MandateViolation {
     /// 否决先于验签）。
     Revoked,
     /// 本地无钉存钥（簿缺席/未钉）——TOFU 纪律：不做任务时自动钉，钉存
-    /// 只走 announce 面。
+    /// 只走 announce 面。**policy 消费注意**：Verify 模式将本违例降级为
+    /// 放行（regime 休眠，见 [`MandatePolicy::check`] 降级臂）；仅 Require
+    /// 硬拒。底层 [`verify_mandate_full`] 保持无条件 Err（低层不识 posture）。
     NoPinnedKey,
     /// 签名验不过（伪造/篡改/钉存钥与签发钥不一致）。
     BadSignature,

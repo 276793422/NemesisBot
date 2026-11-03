@@ -2468,11 +2468,17 @@ async fn mandate_task_id_mismatch_rejected() {
 }
 
 #[tokio::test]
-async fn mandate_no_pinned_key_rejected() {
-    // TOFU 纪律：任务时到达 mandate 但 B 端无钉存钥 = 拒（钉存只走 announce 面）
+async fn mandate_no_pinned_key_verify_degrades_to_accept() {
+    // BUG-20261104 CI UAT T-MRG 实录：verify 模式 + 簿未激活（L13a
+    // BookAbsent 纪律——announce 不建簿，激活唯一路径 = 管理面）= regime
+    // 休眠 → 放行旧行为（L13b §3.3 默认形态承诺）。旧断言「必须拒」在
+    // 默认形态下构成派发死锁：全新 4 节点集群 A 必签（sign_enabled 缺省
+    // true）+ B 必验 + 钉存永不激活 = T-MRG-1/2/3/4/7 五测连红全滞留
+    // backlog。管理面激活（mandate-pin-forced/trust-add）+ announce 重钉
+    // 后，下一单起自动恢复全链验签。
     let tmp = tempfile::tempdir().unwrap();
     let kf = make_gate_key("gate-nopin");
-    // 故意不 pin
+    // 故意不 pin（簿不存在 = 全新集群缺省形态）
     let mut handler = PeerChatHandler::new("node-b".into());
     let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
     handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
@@ -2480,11 +2486,33 @@ async fn mandate_no_pinned_key_rejected() {
 
     let payload = signed_payload(&kf, "gate-nopin-1", now_unix());
     let ack = handler.handle(payload, gate_meta());
-    assert_eq!(ack.status, "error", "无钉存钥必须拒");
+    assert_eq!(
+        ack.status, "accepted",
+        "verify + 簿未激活 = 放行（regime 休眠降级）"
+    );
+    assert!(tl.get_task("gate-nopin-1").is_some(), "放行即正常入队");
+}
+
+#[tokio::test]
+async fn mandate_no_pinned_key_require_rejected() {
+    // require = 显式 opt-in 严格态：没得验也拒（降级臂只属于 verify）。
+    let tmp = tempfile::tempdir().unwrap();
+    let kf = make_gate_key("gate-req-nopin");
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    handler.set_mandate_policy(MandatePolicy {
+        workspace: tmp.path().to_path_buf(),
+        mode: crate::config_loader::MandateMode::Require,
+    });
+
+    let payload = signed_payload(&kf, "gate-req-nopin-1", now_unix());
+    let ack = handler.handle(payload, gate_meta());
+    assert_eq!(ack.status, "error", "require + 无钉存钥必须拒");
     assert!(
         ack.error.as_deref().unwrap_or("").contains("无钉存公钥"),
         "拒绝文案应说明无钉存钥，got: {:?}",
         ack.error
     );
-    assert!(tl.get_task("gate-nopin-1").is_none());
+    assert!(tl.get_task("gate-req-nopin-1").is_none(), "拒单不入队");
 }

@@ -435,6 +435,44 @@ fn policy_require_missing_mandate_rejected() {
 }
 
 #[test]
+fn policy_verify_unactivated_book_degrades_to_allow() {
+    // BUG-20261104 CI UAT T-MRG 实录（BUG-20261104 五测连红 T-MRG-1/2/3/4/7）：
+    // 全新集群默认形态（sign_enabled=true + mode=verify）下 trust.toml 从未
+    // 激活（L13a BookAbsent 纪律——announce 不建簿，激活唯一路径 = 管理面），
+    // mandate 在场必拒 → 全部派发滞留 backlog。verify 降级臂：钉存钥缺席 =
+    // regime 休眠 → 放行旧行为（§3.3 默认形态承诺）；钉存钥在场但验不过
+    // （TOFU 污染/伪造）仍拒——见 policy_unpinned_node_rejected_when_mandate_present。
+    let ws = temp_workspace("policy-verify-no-book");
+    let kf = make_key_file("pvnb");
+    let policy = policy_for(&ws, MandateMode::Verify);
+    let now = now_unix();
+    let payload = signed_payload(&kf, "t-1", now);
+    assert!(
+        policy
+            .check("node-a", &payload, "t-1", now)
+            .unwrap()
+            .is_none(),
+        "verify + 簿未激活 = 放行（regime 休眠降级）"
+    );
+    cleanup(&ws);
+}
+
+#[test]
+fn policy_require_unactivated_book_still_rejected() {
+    // require 是显式 opt-in 严格态：没得验也拒（降级臂只属于 verify）。
+    let ws = temp_workspace("policy-require-no-book");
+    let kf = make_key_file("prnb");
+    let policy = policy_for(&ws, MandateMode::Require);
+    let now = now_unix();
+    let payload = signed_payload(&kf, "t-1", now);
+    assert!(matches!(
+        policy.check("node-a", &payload, "t-1", now),
+        Err(MandateViolation::NoPinnedKey)
+    ));
+    cleanup(&ws);
+}
+
+#[test]
 fn policy_verify_validates_present_mandate() {
     let ws = temp_workspace("policy-verify-present");
     let kf = make_key_file("pvp");
