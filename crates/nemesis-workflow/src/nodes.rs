@@ -1735,6 +1735,22 @@ pub fn set_http_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
     *HTTP_SSRF_GUARD_SLOT.write() = guard;
 }
 
+/// 重定向跨源判定（剥敏感头的开关，BUG-20261103-352 提取为纯函数单测）：
+/// host、端口、scheme 任一变化即跨源，对齐 reqwest
+/// `remove_sensitive_headers` 的判定形态（端口比
+/// `port_or_known_default()`、scheme 独立比较）。修复前只比
+/// host+`port()`：`reqwest::Url` 解析时把显式默认端口归一化掉（
+/// `http://host:80` 的 `port()` 已是 None），于是 `https://host →
+/// http://host` 两侧 `port()` 均 None + host 相同 → 不剥
+/// Authorization/cookie/proxy-authorization，凭据明文跟随降级进 http；
+/// 显式端口形态（`https://host:8443 → http://host:8443`）同理漏判。scheme
+/// 比较兜住两族跨源降级/升级。
+fn redirect_cross_origin(base: &reqwest::Url, next: &reqwest::Url) -> bool {
+    let cross_host = next.host_str() != base.host_str()
+        || next.port_or_known_default() != base.port_or_known_default();
+    cross_host || next.scheme() != base.scheme()
+}
+
 /// BUG-20261102-324：为当前跳构建 no-redirect client（重定向由调用方手动
 /// 循环，每跳重建 = 每跳重新过闸）。security 构建下闸槽在场时先过闸
 /// （Err = 拦，调用方转 failed_node_result）；闸返回解析 IP 集时钉死 DNS
@@ -1872,8 +1888,9 @@ impl NodeExecutor for HTTPNodeExecutor {
         // /元数据端点即整条绕闸（web_fetch J2a / http-pool R36 同判例；
         // workflow http 节点的 url 支持 {{var}} 运行时注入，威胁面与
         // web_fetch 同级）。语义对齐 reqwest 默认跟随：301/302/303 把非
-        // GET/HEAD 转为 GET 并剥 body；307/308 保持 method+body；跳到不同
-        // host 时剥敏感头；跳数上限 5。
+        // GET/HEAD 转为 GET 并剥 body；307/308 保持 method+body；跨源
+        //（host/端口/scheme 任一变化，BUG-20261103-352）时剥敏感头；跳数
+        // 上限 5。
         const HTTP_MAX_HOPS: usize = 5;
         const SENSITIVE_HEADERS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
@@ -1945,7 +1962,7 @@ impl NodeExecutor for HTTPNodeExecutor {
                     current_method = "GET".to_string();
                     current_body.clear();
                 }
-                if next.host_str() != base.host_str() || next.port() != base.port() {
+                if redirect_cross_origin(&base, &next) {
                     current_headers
                         .retain(|k, _| !SENSITIVE_HEADERS.contains(&k.to_lowercase().as_str()));
                 }
