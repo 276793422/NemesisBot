@@ -6641,6 +6641,57 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
     );
 }
 
+// BUG-20261103-334 横向排查定性钉（非缺陷修复）：记事本（带 BOM UTF-8）
+// 手工维护的 peers.toml 走 upgrade 时照常解析并原位升级（占位条目被摘除、
+// 真实条目并入、[node] 段保留）。实测 toml crate parse 容忍前导 BOM——
+// 本测试把该容忍行为钉死：若未来 crate 升级翻转，此处先行红出来（届时
+// upgrade_peer_in_peers_toml 等裸读位点需迁 read_config_string）。
+#[test]
+fn test_upgrade_peer_in_peers_toml_bom_file_upgrades_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    let body =
+        "[node]\nid = \"local-node-001\"\n\n[peers.\"Node-A\"]\naddress = \"10.0.0.1:9000\"\n";
+    std::fs::write(cluster_dir.join("peers.toml"), format!("\u{feff}{body}")).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.upgrade_peer_in_peers_toml(
+        "Node-A",
+        "real-bom",
+        &RealNodeInfo {
+            id: "real-bom".into(),
+            name: "Bom Peer".into(),
+            address: "10.0.0.1:21949".into(),
+            rpc_port: 0,
+            addresses: Vec::new(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            category: "test".into(),
+            capabilities: vec![],
+            tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
+            agents: Vec::new(),
+            runtime_backend: None,
+            node_type: "agent".into(),
+            build: String::new(),
+        },
+    );
+
+    let content = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(
+        !content.contains("Node-A"),
+        "BUG-20261103-334: 占位条目必须被原位摘除（降级 append 会残留）: {}",
+        content
+    );
+    assert!(
+        content.contains("real-bom"),
+        "真实条目必须落盘: {}",
+        content
+    );
+    assert!(content.contains("[node]"), "[node] 段必须保留: {}", content);
+}
+
 #[test]
 fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
     let dir = tempfile::tempdir().unwrap();

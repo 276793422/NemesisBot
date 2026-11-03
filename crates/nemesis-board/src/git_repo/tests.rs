@@ -790,6 +790,80 @@ fn push_branch_missing_local_branch_is_honest_error() {
 }
 
 // ---------------------------------------------------------------------------
+// P3 外循环：branch_at_head（第三臂——交付已并入副本，发布分支直取 HEAD）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn branch_at_head_points_head_and_keeps_worktree() {
+    let root = seeded_repo("bah-seed");
+    let before = head(&root);
+    let got = branch_at_head(&root, "nemesis/task-1").unwrap();
+    assert_eq!(got, before, "返回值必须等值 HEAD commit");
+    let repo = Repository::open(&root).unwrap();
+    let b = repo
+        .find_branch("nemesis/task-1", git2::BranchType::Local)
+        .unwrap();
+    assert_eq!(
+        b.get().peel_to_commit().unwrap().id().to_string(),
+        before,
+        "分支必须指向 HEAD"
+    );
+    assert_eq!(head(&root), before, "工作区 HEAD 不得移动");
+}
+
+#[test]
+fn branch_at_head_existing_branch_is_honest_error() {
+    let root = seeded_repo("bah-dup");
+    branch_at_head(&root, "nemesis/task-1").unwrap();
+    let err = branch_at_head(&root, "nemesis/task-1").unwrap_err();
+    assert!(err.contains("已存在"), "{err}");
+}
+
+#[test]
+fn branch_at_head_unborn_head_is_err() {
+    let root = temp_dir("bah-unborn");
+    std::fs::create_dir_all(&root).unwrap();
+    Repository::init(&root).unwrap();
+    let err = branch_at_head(&root, "nemesis/task-1").unwrap_err();
+    assert!(err.contains("HEAD"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// P3 外循环：branch_tree_if_exists（分支指向查询——发布重试幂等判断用）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn branch_tree_if_exists_absent_branch_is_none() {
+    let root = seeded_repo("btie-absent");
+    assert_eq!(
+        branch_tree_if_exists(&root, "nemesis/task-1").unwrap(),
+        None,
+        "分支缺席 → None（走常规建分支路径）"
+    );
+}
+
+#[test]
+fn branch_tree_if_exists_present_reports_commit_and_tree() {
+    let root = seeded_repo("btie-present");
+    branch_at_head(&root, "nemesis/task-1").unwrap();
+    let (commit, tree) = branch_tree_if_exists(&root, "nemesis/task-1")
+        .unwrap()
+        .expect("分支在场 → Some");
+    assert_eq!(commit, head(&root), "commit 等值分支指向");
+    let repo = Repository::open(&root).unwrap();
+    let head_tree = repo
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .tree()
+        .unwrap()
+        .id()
+        .to_string();
+    assert_eq!(tree, head_tree, "tree 等值 HEAD 树（branch_at_head 语义）");
+}
+
+// ---------------------------------------------------------------------------
 // P3 外循环：apply_patch_new_branch（patch → 副本内交付分支，工作区回原位）
 // ---------------------------------------------------------------------------
 
@@ -890,15 +964,82 @@ fn apply_patch_new_branch_rejects_dirty_worktree() {
 }
 
 #[test]
-fn apply_patch_new_branch_rejects_existing_branch() {
-    let root = seeded_repo("apply-exists");
+fn apply_patch_new_branch_existing_same_content_reuses_commit() {
+    let root = seeded_repo("apply-reuse");
+    write(&root, "src/main.rs", "fn main() { a }\n");
+    let patch = workdir_patch(&root);
+    reset_worktree_to_head(&root);
+    let first = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
+    // F1 续作：同基线 + 同内容 → 幂等复用既有 commit（push/PR 阶段失败后
+    // 重试不被自己上次的分支挡死）。
+    let again = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
+    assert_eq!(again, first, "同内容重放必须复用同一 commit，不新建");
+    // 复用路径同样不遗留脏工作区。
+    let on_head = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+    assert_eq!(on_head, "fn main() {}\n", "工作区必须回基线形态");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn apply_patch_new_branch_existing_mismatch_refuses_overwrite() {
+    let root = seeded_repo("apply-mismatch");
     write(&root, "src/main.rs", "fn main() { a }\n");
     let patch = workdir_patch(&root);
     reset_worktree_to_head(&root);
     apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
-    // 幂等撞 git 层：分支已存在 = Err（诚实人工核查，不静默复用）。
+    // 内容不同（换 patch）→ 拒绝覆盖，维持人工核查语义。
+    write(&root, "src/main.rs", "fn main() { b }\n");
+    let other = workdir_patch(&root);
+    reset_worktree_to_head(&root);
+    let err = apply_patch_new_branch(&root, "nemesis/task-x", &other, "m").unwrap_err();
+    assert!(err.contains("拒绝覆盖"), "{err}");
+    // 原交付分支未被第二笔内容污染。
+    let repo = Repository::open(&root).unwrap();
+    let delivered = repo
+        .find_branch("nemesis/task-x", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
+    let entry = delivered
+        .tree()
+        .unwrap()
+        .get_path(Path::new("src/main.rs"))
+        .unwrap();
+    let blob = repo.find_blob(entry.id()).unwrap();
+    assert_eq!(
+        std::str::from_utf8(blob.content()).unwrap(),
+        "fn main() { a }\n",
+        "拒绝覆盖路径原分支内容必须原样保留"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn apply_patch_new_branch_existing_new_baseline_refuses_reuse() {
+    let root = seeded_repo("apply-newbase");
+    write(&root, "src/main.rs", "fn main() { a }\n");
+    let patch = workdir_patch(&root);
+    reset_worktree_to_head(&root);
+    apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
+    // 基线前移后同 patch 重放：父基线不一致 → 不复用、拒绝覆盖（旧分支
+    // 基于旧基线，续作推送会形成错误谱系）。
+    write(&root, "src/other.rs", "pub fn b() {}\n");
+    {
+        // index 必须挂在存活的 repo 上（临时表达式 drop 后 libgit2 报
+        // "Index is not backed up by an existing repository"）。
+        let repo = Repository::open(&root).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("src/other.rs")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "advance base", &tree, &[&parent])
+            .unwrap();
+    }
     let err = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap_err();
-    assert!(err.contains("已存在"), "{err}");
+    assert!(err.contains("拒绝覆盖"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -978,4 +1119,39 @@ fn reset_worktree_to_head(root: &Path) {
     opts.force();
     repo.checkout_tree(head_obj.as_object(), Some(&mut opts))
         .unwrap();
+}
+
+/// 克隆产物工作树必须与 HEAD blob 字节一致（回归锁：2026-11-01 T1 全文件
+/// 伪冲突实录——clone 自带的 checkout 先于 autocrlf 钉落执行，local config
+/// 尚无键时 libgit2 落到系统级配置（本机 autocrlf=true），LF blob 被
+/// smudge 成 CRLF 工作树；合并三方 base(blob LF) 与 ours/theirs(工作树
+/// CRLF) 行尾不同源，未触及行全部伪冲突）。修复 = 钉完 config 对 HEAD
+/// 强制 reset --hard 撤销 smudge。在全局 autocrlf=true 的机器上修复前必
+/// 红；全局 false 的机器上本锁平凡通过，但「工作树=仓库字节」契约恒被钉住。
+#[test]
+fn clone_worktree_matches_blob_bytes_no_smudge() {
+    let origin = seeded_repo("clone-nosmudge-origin");
+    let copy = temp_dir("clone-nosmudge-copy");
+    let head = clone_repo(origin.to_str().unwrap(), &copy, None).unwrap();
+    {
+        let repo = Repository::open(&copy).unwrap();
+        let commit = repo
+            .find_commit(git2::Oid::from_str(&head).unwrap())
+            .unwrap();
+        let entry = commit
+            .tree()
+            .unwrap()
+            .get_path(Path::new("src/main.rs"))
+            .unwrap();
+        let blob = repo.find_blob(entry.id()).unwrap();
+        let blob_bytes = blob.content();
+        let worktree_bytes = std::fs::read(copy.join("src/main.rs")).unwrap();
+        assert_eq!(
+            worktree_bytes, blob_bytes,
+            "克隆产物工作树字节被 checkout 过滤器改写（smudge 未撤销，合并三方行尾将不同源）"
+        );
+        assert!(!blob_bytes.contains(&b'\r'), "源 blob 应为 LF 原始字节");
+    }
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&copy);
 }

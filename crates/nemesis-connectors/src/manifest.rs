@@ -92,6 +92,12 @@ pub struct ConnectorMetaRaw {
     /// （默认态「装了即生效」，拦截只经显式声明出现）。
     #[serde(default)]
     pub exclusive_mcp: Option<ExclusiveMcpSpec>,
+    /// 域剥离批 C（外循环域知识声明化）：该 connector 管辖的仓库 clone 源
+    /// （任务专属副本 `ensure_issue_project` 从这里起副本）。域知识只在
+    /// connector 清单——宿主不含任何领域仓库地址；缺省 = 该 connector 不
+    /// 提供副本源（建项目时诚实报「clone 源未声明」）。
+    #[serde(default)]
+    pub clone_url: Option<String>,
 }
 
 /// B2：`exclusive_mcp` 两形态（`exclusive_mcp = "playwright-mcp"` 或
@@ -133,8 +139,9 @@ pub struct CredentialSlotRaw {
     /// 注入形态：`"header:<头名>"` 或 `"query:<参数名>"`；缺省 `header:<槽位名>`。
     #[serde(default)]
     pub into: Option<String>,
-    /// 注入值前缀（认证头惯用形态：Gitea `Authorization: token <PAT>`、
-    /// GitHub `Authorization: Bearer <PAT>`）。仅 header 形态消费；最终值
+    /// 注入值前缀（认证头惯用形态：`Authorization: token <PAT>`、
+    /// `Authorization: Bearer <PAT>`——具体前缀由 connector 清单按目标
+    /// 服务声明，宿主不内置任何服务的惯例）。仅 header 形态消费；最终值
     /// = `prefix + secret`。禁止 CRLF（头注入防线，validate 兜底）。
     #[serde(default)]
     pub prefix: Option<String>,
@@ -310,6 +317,8 @@ pub struct ValidatedConnector {
     /// B2：独占的 MCP server 名清单（归一后形态：去空白、去空、去重、保序）。
     /// 空 = 不独占。
     pub exclusive_mcp: Vec<String>,
+    /// `[connector].clone_url`（域剥离批 C）：任务副本 clone 源；None = 未声明。
+    pub clone_url: Option<String>,
     /// ops（保清单书写序）。
     pub ops: Vec<ValidatedOp>,
 }
@@ -404,6 +413,15 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
     if base_url.as_deref().is_some_and(str::is_empty) {
         return Err(format!(
             "connector `{}`: [connector.http].base 不能为空",
+            meta.id
+        ));
+    }
+    // clone_url（域剥离批 C）：trim 后空串 = 声明了空的——loud 拒（与 base
+    // 同语义：装得进去 ≠ 校验得住）。
+    let clone_url = meta.clone_url.as_ref().map(|u| u.trim().to_string());
+    if clone_url.as_deref().is_some_and(str::is_empty) {
+        return Err(format!(
+            "connector `{}`: clone_url 不能为空（不需要就删掉该键）",
             meta.id
         ));
     }
@@ -677,6 +695,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         static_headers,
         credentials,
         exclusive_mcp,
+        clone_url,
         ops,
     })
 }

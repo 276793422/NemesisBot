@@ -200,6 +200,14 @@ pub struct CronService {
     /// scheduling. Jobs created AFTER startup are unaffected (armed latches
     /// for the process lifetime; only `new()` re-arms the gate).
     pending_arm: Arc<Mutex<bool>>,
+    /// 测试钩子（仅 test 构建）：下一次落盘强制失败（一次性）——
+    /// BUG-20261103-331 并发交错红证用。
+    #[cfg(test)]
+    persist_fail_next: std::sync::atomic::AtomicBool,
+    /// 测试钩子（仅 test 构建）：落盘前一次性停顿毫秒数（制造 mutate→save
+    /// 窗口，BUG-20261103-331 红证）。
+    #[cfg(test)]
+    persist_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 /// W3（2026-10-25 加固）：job 暂停句柄——供
@@ -312,6 +320,10 @@ impl CronService {
             on_job: Arc::new(Mutex::new(None)),
             load_poisoned: Arc::new(Mutex::new(false)),
             pending_arm: Arc::new(Mutex::new(true)),
+            #[cfg(test)]
+            persist_fail_next: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            persist_delay_ms: std::sync::atomic::AtomicU64::new(0),
         };
         if let Err(e) = svc.load_store() {
             warn!("[Cron] Failed to load store on init: {}", e);
@@ -704,15 +716,13 @@ impl CronService {
         {
             let mut s = self.store.lock();
             s.jobs.push(job.clone());
-        }
-        // BUG #16 (W1b): roll back the in-memory push when persistence fails.
-        // Previously the job stayed in the store after an Err return — the
-        // caller was told "create failed" while the job silently remained
-        // scheduled (memory/disk divergence + duplicate-create hazard on
-        // caller retry). Err must mean "not created".
-        if let Err(e) = self.save_store() {
-            self.store.lock().jobs.retain(|j| j.id != job.id);
-            return Err(e);
+            // BUG #16 (W1b) + BUG-20261103-331：落盘、回滚与 mutate 同一临界
+            // 区——save 失败时内存回退（Err 必须意味着「未创建」），且窗口内
+            // 无并发 mutator 可借 save 缝隙插入。
+            if let Err(e) = self.save_store_locked(&s) {
+                s.jobs.retain(|j| j.id != job.id);
+                return Err(e);
+            }
         }
         Ok(job)
     }
@@ -723,37 +733,21 @@ impl CronService {
     /// 以为删了而盘上任务照常触发）。
     pub fn remove_job(&self, job_id: &str) -> Result<bool, String> {
         info!("[Cron] Job remove requested: id={}", job_id);
-        enum Outcome {
-            Missing,
-            Removed { idx: usize, job: CronJob },
-        }
-        let outcome = {
-            let mut store = self.store.lock();
-            match store.jobs.iter().position(|j| j.id == job_id) {
-                Some(idx) => Outcome::Removed {
-                    idx,
-                    job: store.jobs.remove(idx),
-                },
-                None => Outcome::Missing,
-            }
+        let mut store = self.store.lock();
+        let Some(idx) = store.jobs.iter().position(|j| j.id == job_id) else {
+            return Ok(false);
         };
-        match outcome {
-            Outcome::Missing => Ok(false),
-            Outcome::Removed { idx, job } => {
-                let save_err = {
-                    let store = self.store.lock();
-                    crate::store::save(std::path::Path::new(&self.store_path), &store).err()
-                };
-                if let Some(e) = save_err {
-                    // 回滚：按原下标插回（save 失败 ⇒ 盘上内容未动，内存必须一致）。
-                    let mut store = self.store.lock();
-                    let idx = idx.min(store.jobs.len());
-                    store.jobs.insert(idx, job);
-                    return Err(e);
-                }
-                Ok(true)
-            }
+        let job = store.jobs.remove(idx);
+        // BUG #16 sweep + BUG-20261103-331：save、回滚与 mutate 同一临界区
+        // ——save 失败按原下标插回（Err 必须意味着「没删成」），且回滚窗口
+        // 内无并发 mutator（旧两段锁形态下，并发方的 save 可已把本方 removal
+        // 持久化、本方回滚又在内存复活它——内存/盘分叉）。
+        if let Err(e) = self.save_store_locked(&store) {
+            let idx = idx.min(store.jobs.len());
+            store.jobs.insert(idx, job);
+            return Err(e);
         }
+        Ok(true)
     }
 
     /// List jobs.
@@ -858,9 +852,9 @@ impl CronService {
             }
         }
         job.updated_at_ms = now_ms;
-        drop(store);
-        if let Err(e) = self.save_store() {
-            let mut store = self.store.lock();
+        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
+        if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
                 *job = before;
             }
@@ -980,9 +974,9 @@ impl CronService {
         }
         job.updated_at_ms = now_ms;
         let updated = job.clone();
-        drop(store);
-        if let Err(e) = self.save_store() {
-            let mut store = self.store.lock();
+        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
+        if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
                 *job = before;
             }
@@ -1041,9 +1035,9 @@ impl CronService {
         let new_state = job.enabled;
         info!("[Cron] Job toggled: id={}, enabled={}", job_id, new_state);
         job.updated_at_ms = now_ms;
-        drop(store);
-        if let Err(e) = self.save_store() {
-            let mut store = self.store.lock();
+        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
+        if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
                 *job = before;
             }
@@ -1100,9 +1094,9 @@ impl CronService {
         job.state.next_run_at_ms = next;
         job.updated_at_ms = now_ms;
         let updated = job.clone();
-        drop(store);
-        if let Err(e) = self.save_store() {
-            let mut store = self.store.lock();
+        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
+        if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
                 *job = before;
             }
@@ -1221,8 +1215,9 @@ impl CronService {
                     job.state.last_error.clone(),
                 );
             }
-            drop(store);
-            self.save_store()?;
+            // BUG-20261103-331：落盘与 mutate 同一临界区（对齐全仓 mutator
+            // 纪律——drop 后 save 的缝隙可被并发 mutator 借用插队落盘）。
+            self.save_store_locked(&store)?;
         }
         let elapsed = start.elapsed().as_millis();
         info!(
@@ -1304,7 +1299,15 @@ impl CronService {
         }
     }
 
-    fn save_store(&self) -> Result<(), String> {
+    /// 持有 store 锁期间的落盘（REL-002 毒态闸 + 测试钩子）。BUG-20261103-331：
+    /// mutator 的 mutate→save→回滚必须整体在同一把 store 锁内完成——旧形态
+    /// mutate 后 drop 锁再 save，save 窗口内并发 mutator 可插入并成功落盘
+    /// （整 store 快照含本方 mutation），本方 save 失败的回滚会把对方已 Ok
+    /// 的效果从内存抹掉（Ok 方效果丢失 + 内存/盘分叉）。同锁后窗口结构性
+    /// 消除（对齐 BUG-20261028-131「同一临界区」教训与 pause_job /
+    /// collect_and_reset_due 的既有正确形态）。调用方必须已持有 store 锁
+    /// （parking_lot 不可重入）。
+    fn save_store_locked(&self, data: &CronStoreData) -> Result<(), String> {
         if *self.load_poisoned.lock() {
             return Err(format!(
                 "cron store 加载失败（损坏/不可解析），拒绝落盘以防空内存 store \
@@ -1312,8 +1315,23 @@ impl CronService {
                 self.store_path
             ));
         }
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering;
+            let d = self.persist_delay_ms.swap(0, Ordering::SeqCst);
+            if d > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(d));
+            }
+            if self.persist_fail_next.swap(false, Ordering::SeqCst) {
+                return Err("test-injected persist failure".to_string());
+            }
+        }
+        crate::store::save(std::path::Path::new(&self.store_path), data)
+    }
+
+    fn save_store(&self) -> Result<(), String> {
         let s = self.store.lock();
-        crate::store::save(std::path::Path::new(&self.store_path), &s)
+        self.save_store_locked(&s)
     }
 
     fn recompute_next_runs(&self) {

@@ -547,8 +547,10 @@ fn dirs_home() -> Result<String, String> {
 }
 
 /// Expand ~ to home directory.
+/// BUG-20261102-319：`~\` 反斜杠形态（OpenClaw 侧 Windows 手写惯例）与
+/// `~/` 同判——`&path[1..]` 保留原分隔符，正反斜杠两形态都正确拼接。
 fn expand_home(path: &str) -> String {
-    if (path.starts_with("~/") || path == "~")
+    if (path.starts_with("~/") || path.starts_with("~\\") || path == "~")
         && let Ok(home) = dirs_home()
     {
         if path == "~" {

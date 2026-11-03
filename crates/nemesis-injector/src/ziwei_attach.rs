@@ -2,7 +2,8 @@
 //!
 //! 对**已运行**进程注入 ziwei payload DLL：OpenProcess → VirtualAllocEx(参数块+stub)
 //! → CreateRemoteThread(stub)。stub 在目标进程内 LoadLibraryW(dll) →
-//! GetProcAddress("ZiWeiInit") → ZiWeiInit(参数块)。
+//! GetProcAddress("ZiWeiInit") → ZiWeiInit(参数块)；两处 call 都带 NULL 守卫
+//! （BUG-20261103-342：load 失败退码 4 / GPA 失败退码 5，不再 call NULL 崩目标）。
 //!
 //! 与 EP 劫持（[`launch_and_inject`]，挂起启动场景）并列的另一条入口；
 //! 两者共享本 crate 的错误风格与 windows-sys 依赖面。
@@ -83,8 +84,29 @@ pub enum ZiweiAttachError {
     RemoteThread(u32),
     #[error("远线程 15s 未退出（可能被安全软件挂起；远程内存保留不释放防崩溃）")]
     RemoteThreadTimeout,
-    #[error("ZiWeiInit 返回 {0}（1=魔数错 2=协议错 3=起线程失败）")]
+    #[error(
+        "ZiWeiInit 返回 {0}（1=魔数错 2=协议错 3=起线程失败；4/5 已被 stub NULL 守卫退码占用，不会落此变体）"
+    )]
     InitFailed(u32),
+    #[error("payload DLL 路径过长（UTF-16 {0} 单位，上限 259——超出会被截断致目标内加载失败）")]
+    DllPathTooLong(usize),
+    #[error(
+        "payload 在目标内 LoadLibraryW 失败（stub 退码 4：路径不存在/依赖缺失/被安全软件拦截）"
+    )]
+    PayloadLoadFailed,
+    #[error("payload 在目标内 GetProcAddress(\"ZiWeiInit\") 失败（stub 退码 5）")]
+    PayloadResolveFailed,
+}
+
+/// stub/ZiWeiInit 退码 → 诚实错误（0=成功；4/5=stub NULL 守卫退码；
+/// 其余非零=ZiWeiInit 语义；259=仍活跃，由调用方与 wait 合并判超时）。
+fn stub_exit_error(code: u32) -> Option<ZiweiAttachError> {
+    match code {
+        0 => None,
+        4 => Some(ZiweiAttachError::PayloadLoadFailed),
+        5 => Some(ZiweiAttachError::PayloadResolveFailed),
+        c => Some(ZiweiAttachError::InitFailed(c)),
+    }
 }
 
 /// 注入请求。
@@ -107,53 +129,81 @@ pub struct ZiweiAttachOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// x64 stub（68 字节）：LoadLibraryW(dll_path) → GetProcAddress(hmod,"ZiWeiInit")
+// x64 stub（98 字节）：LoadLibraryW(dll_path) → GetProcAddress(hmod,"ZiWeiInit")
 // → ZiWeiInit(param)；返回值=线程退出码。
+// BUG-20261103-342：每次 call 后 test/jz NULL 守卫——LoadLibraryW 失败退码 4
+// （load_fail@0x4E）、GetProcAddress 失败退码 5（gpa_fail@0x58），不再
+// call NULL 把目标进程打成 0xC0000005。
 // ---------------------------------------------------------------------------
-const X64_STUB: [u8; 68] = [
+const X64_STUB: [u8; 98] = [
     0x48, 0x83, 0xEC, 0x28, // 00 sub rsp,28h
     0x48, 0xB9, 0, 0, 0, 0, 0, 0, 0, 0, // 04 movabs rcx, dll_path
     0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, // 0E movabs rax, LoadLibraryW
     0xFF, 0xD0, // 18 call rax
-    0x48, 0x89, 0xC1, // 1A mov rcx, rax（hmodule）
-    0x48, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0, // 1D movabs rdx, "ZiWeiInit"
-    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, // 27 movabs rax, GetProcAddress
-    0xFF, 0xD0, // 31 call rax
-    0x48, 0xB9, 0, 0, 0, 0, 0, 0, 0, 0, // 33 movabs rcx, param
-    0xFF, 0xD0, // 3D call rax（ZiWeiInit）
-    0x48, 0x83, 0xC4, 0x28, // 3F add rsp,28h
-    0xC3, // 43 ret
+    0x48, 0x85, 0xC0, // 1A test rax,rax（NULL 守卫）
+    0x74, 0x2F, // 1D jz load_fail（0x1F + 0x2F = 0x4E）
+    0x48, 0x89, 0xC1, // 1F mov rcx, rax（hmodule）
+    0x48, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0, // 22 movabs rdx, "ZiWeiInit"
+    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, // 2C movabs rax, GetProcAddress
+    0xFF, 0xD0, // 36 call rax
+    0x48, 0x85, 0xC0, // 38 test rax,rax（NULL 守卫）
+    0x74, 0x1B, // 3B jz gpa_fail（0x3D + 0x1B = 0x58）
+    0x48, 0xB9, 0, 0, 0, 0, 0, 0, 0, 0, // 3D movabs rcx, param
+    0xFF, 0xD0, // 47 call rax（ZiWeiInit）
+    0x48, 0x83, 0xC4, 0x28, // 49 add rsp,28h
+    0xC3, // 4D ret
+    // load_fail:
+    0xB8, 0x04, 0x00, 0x00, 0x00, // 4E mov eax,4（LoadLibraryW 失败退码）
+    0x48, 0x83, 0xC4, 0x28, // 53 add rsp,28h
+    0xC3, // 57 ret
+    // gpa_fail:
+    0xB8, 0x05, 0x00, 0x00, 0x00, // 58 mov eax,5（GetProcAddress 失败退码）
+    0x48, 0x83, 0xC4, 0x28, // 5D add rsp,28h
+    0xC3, // 61 ret
 ];
 // 立即数偏移（指令内 imm 的起始位置；与上方注释的指令起始地址一一对应）。
 const X64_OFF_DLLPATH: usize = 0x06;
 const X64_OFF_LOADLIB: usize = 0x10;
-const X64_OFF_NAME: usize = 0x1F;
-const X64_OFF_GPA: usize = 0x29;
-const X64_OFF_PARAM: usize = 0x35;
+const X64_OFF_NAME: usize = 0x24;
+const X64_OFF_GPA: usize = 0x2E;
+const X64_OFF_PARAM: usize = 0x3F;
 
 // ---------------------------------------------------------------------------
-// x86 stub（33 字节，stdcall：被调方清栈；返回值经 eax 透传为线程退出码）。
+// x86 stub（53 字节，stdcall：被调方清栈；返回值经 eax 透传为线程退出码）。
 // ⚠ GetProcAddress(HMODULE, LPCSTR) 参数右到左压栈：name 先压（深）、hmod 后压
 // （浅，[esp+4]）——顺序颠倒时 GPA 拿参数块地址当模块句柄（非 MZ）恒返
 // NULL+126（实证：x86 WOW64 attach 假失败 0xC0000005 的根因）。
+// BUG-20261103-342：call 后 test/jz NULL 守卫——load 失败退码 4
+// （load_fail@0x29）、GPA 失败退码 5（gpa_fail@0x2F）；守卫路径栈平衡
+// （stdcall 被调方已清栈）。
 // ---------------------------------------------------------------------------
-const X86_STUB: [u8; 33] = [
+const X86_STUB: [u8; 53] = [
     0x68, 0, 0, 0, 0, // 00 push dll_path
     0xB8, 0, 0, 0, 0, // 05 mov eax, LoadLibraryW
     0xFF, 0xD0, // 0A call eax（stdcall 清栈）
-    0x68, 0, 0, 0, 0,    // 0C push "ZiWeiInit"（第二参，先压）
-    0x50, // 11 push eax（hmodule，第一参后压 → [esp+4]=hmod）
-    0xB8, 0, 0, 0, 0, // 12 mov eax, GetProcAddress
-    0xFF, 0xD0, // 17 call eax（清 8 字节）
-    0x68, 0, 0, 0, 0, // 19 push param
-    0xFF, 0xD0, // 1E call eax（ZiWeiInit，清栈；eax=结果）
-    0xC3, // 20 ret
+    0x85, 0xC0, // 0C test eax,eax（NULL 守卫）
+    0x74, 0x19, // 0E jz load_fail（0x10 + 0x19 = 0x29）
+    0x68, 0, 0, 0, 0,    // 10 push "ZiWeiInit"（GPA 第二参，先压）
+    0x50, // 15 push eax（hmodule 第一参后压 → [esp+4]=hmod）
+    0xB8, 0, 0, 0, 0, // 16 mov eax, GetProcAddress
+    0xFF, 0xD0, // 1B call eax（清 8 字节）
+    0x85, 0xC0, // 1D test eax,eax（NULL 守卫）
+    0x74, 0x0E, // 1F jz gpa_fail（0x21 + 0x0E = 0x2F）
+    0x68, 0, 0, 0, 0, // 21 push param
+    0xFF, 0xD0, // 26 call eax（ZiWeiInit，清栈；eax=结果）
+    0xC3, // 28 ret
+    // load_fail:
+    0xB8, 0x04, 0x00, 0x00, 0x00, // 29 mov eax,4
+    0xC3, // 2E ret
+    // gpa_fail:
+    0xB8, 0x05, 0x00, 0x00, 0x00, // 2F mov eax,5
+    0xC3, // 34 ret
 ];
 const X86_OFF_DLLPATH: usize = 1;
 const X86_OFF_LOADLIB: usize = 6;
-const X86_OFF_NAME: usize = 0x0D;
-const X86_OFF_GPA: usize = 0x13;
-const X86_OFF_PARAM: usize = 0x1A;
+const X86_OFF_NAME: usize = 0x11;
+const X86_OFF_GPA: usize = 0x17;
+const X86_OFF_PARAM: usize = 0x22;
 
 fn put64(buf: &mut [u8], off: usize, v: u64) {
     buf[off..off + 8].copy_from_slice(&v.to_le_bytes());
@@ -182,6 +232,12 @@ fn payload_machine(dll: &[u8]) -> Result<u16, ZiweiAttachError> {
 /// 成功返回后 payload 工作线程已在目标内异步连管道；远程内存已回收
 /// （超时挂起场景除外——保留内存防崩溃，诚实报错）。
 pub fn attach_inject(params: &ZiweiAttachParams) -> Result<ZiweiAttachOutcome, ZiweiAttachError> {
+    // UTF-16 长度预检（fs::read 之前）：超限旧实现 take(259) 静默截断 →
+    // 目标内 LoadLibraryW 找不到文件 →（守卫在位前）call NULL 崩目标进程。
+    let u16_len = params.dll_path.to_string_lossy().encode_utf16().count();
+    if u16_len > 259 {
+        return Err(ZiweiAttachError::DllPathTooLong(u16_len));
+    }
     let dll_bytes = std::fs::read(&params.dll_path)
         .map_err(|e| ZiweiAttachError::PayloadPe(format!("{}: {e}", params.dll_path.display())))?;
     let dll_machine = payload_machine(&dll_bytes)?;
@@ -388,9 +444,9 @@ fn attach_with_handle(
             // 挂起：远程内存保留不释放（线程还在读参数块），诚实报错
             return Err(ZiweiAttachError::RemoteThreadTimeout);
         }
-        if code != 0 {
+        if let Some(e) = stub_exit_error(code) {
             VirtualFreeEx(hp, base, 0, 0x8000);
-            return Err(ZiweiAttachError::InitFailed(code));
+            return Err(e);
         }
         VirtualFreeEx(hp, base, 0, 0x8000);
         Ok(ZiweiAttachOutcome {

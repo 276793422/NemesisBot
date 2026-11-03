@@ -47,8 +47,31 @@ fn registry_default_matches_new() {
     let _ = BackgroundProcessRegistry::default();
 }
 
+/// 进程存活探测（drop 收尸断言用；查询自身失败保守视为存活，让 deadline
+/// 断言收口而不是误判死亡假绿）。
+fn process_alive(pid: u64) -> bool {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .expect("tasklist probe");
+        String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(true)
+    }
+}
+
 /// Drop 路径：注册表销毁时给存活任务置 kill 旗标（监督任务收尸），
-/// 不 panic、不泄漏卡死。
+/// 不 panic、不泄漏卡死。BUG-20261102-322：名字承诺 raises_kill_flags
+/// 但此前零断言——置旗标/收尸逻辑回归时测试照绿，Linux 上还会留孤儿
+/// 无限 ping。补行为断言：drop 后子进程必须在 deadline 内被终止。
 #[tokio::test]
 async fn registry_drop_raises_kill_flags_for_running_jobs() {
     let dir = tempfile::tempdir().unwrap();
@@ -60,8 +83,17 @@ async fn registry_drop_raises_kill_flags_for_running_jobs() {
     assert_eq!(started["running"], serde_json::json!(true));
 
     drop(reg);
-    // 给监督任务一点时间收尸（kill_on_drop 兜底强杀）。
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // BUG-20261102-322：死亡行为断言（deadline 轮询，不固定睡眠）——置旗标
+    // 或监督收尸回归时此处红；Linux 上 ping 无限跑，回归还会留孤儿进程。
+    let pid = started["pid"].as_u64().expect("pid");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while process_alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "drop 后 10s 内子进程未被收尸（pid {pid}）——kill 旗标或监督收尸回归"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// 输出超过容量上限 → 头部丢弃；offset 落在丢弃区 → 钳制 + note 注记。

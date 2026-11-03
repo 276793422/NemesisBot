@@ -461,6 +461,61 @@ fn enum_member_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     a == b
 }
 
+/// schema 驱动的 wire 规整（2026-11-02 外循环域剥离批 C）：字符串传输形态
+/// → 按 op args_schema 声明类型规整成 typed JSON。消费方（flow 引擎回写/
+/// publish 组包）全用 `BTreeMap<String,String>` 声明 + token 渲染，产出的
+/// args 值恒为字符串——类型事实只在 schema（`index` integer 等），不在
+/// 调用方。规则（只做无歧义转换，其余原样保留）：
+/// - `integer` + 字符串整串解析成 i64 → i64；
+/// - `number` + 字符串整串解析成 f64 → f64；
+/// - `boolean` + `"true"`/`"false"` → bool；
+/// - 其余（不可解析字符串/其他类型声明/null/数组/对象）原样保留——畸形
+///   声明（如模板把数字拼成文本）落到 validate_op_args 的类型错诚实浮出。
+///
+/// 只看顶层 properties（与 validate_op_args 同深度）。
+pub fn coerce_op_args(
+    schema: Option<&serde_json::Value>,
+    args: &serde_json::Value,
+) -> serde_json::Value {
+    let Some(properties) = schema
+        .and_then(|s| s.as_object())
+        .and_then(|o| o.get("properties"))
+        .and_then(|p| p.as_object())
+    else {
+        return args.clone();
+    };
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+    let mut out = obj.clone();
+    for (name, spec) in properties {
+        let Some(declared) = spec.get("type").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let Some(serde_json::Value::String(raw)) = out.get(name) else {
+            continue; // 只规整字符串值
+        };
+        let coerced = match declared {
+            "integer" => raw.parse::<i64>().ok().map(serde_json::Value::from),
+            "number" => raw
+                .parse::<f64>()
+                .ok()
+                .filter(|f| f.is_finite())
+                .map(serde_json::Value::from),
+            "boolean" => match raw.as_str() {
+                "true" => Some(serde_json::Value::Bool(true)),
+                "false" => Some(serde_json::Value::Bool(false)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(v) = coerced {
+            out.insert(name.clone(), v);
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
 fn type_name_of(value: &serde_json::Value) -> &'static str {
     match value {
         serde_json::Value::Null => "null",

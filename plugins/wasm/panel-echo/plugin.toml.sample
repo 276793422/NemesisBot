@@ -1,0 +1,39 @@
+# panel-echo 示例清单（plugin.toml.sample；`wasm-sha256` 行由 devkit pack
+# 工具替换为真实哈希；根键必须位于任何 table 段之前——TOML 语义）。
+wasm-sha256 = "<由 pack 工具填充>"
+api-version = 1
+slug = "panel-echo"
+kind = "panel"
+name = "Panel Echo"
+version = "0.1.0"
+description = "面板扩展示例：声明面骨架 + guest 命令通道（mode 见 src/lib.rs 注释）"
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+# 页面骨架：宿主预置组件按声明渲染（v0 词汇 form/table/timeline/detail/actions）。
+[[ui.page]]
+route = "echo"
+title = "回显面板"
+icon = "puzzle"
+
+[[ui.page.views]]
+kind = "table"
+bind = "cmd://rows"
+
+[[ui.page.views.columns]]
+key = "id"
+label = "编号"
+
+[[ui.page.views.columns]]
+key = "title"
+label = "标题"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "回显"
+command = "echo"

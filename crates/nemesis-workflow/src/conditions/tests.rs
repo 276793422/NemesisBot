@@ -583,3 +583,53 @@ fn test_doubled_logical_operator_does_not_panic() {
     // find_operator 对非 ASCII 前缀返回字节下标（切片直接可用）
     assert_eq!(find_operator("状态 == ok", "=="), Some(7));
 }
+
+/// BUG-20261102-323 红证：split_logical / find_matching_paren 与
+/// BUG-20261031-240 同族（char 下标按字节切片 / char 下标 vs 字节长度
+/// 比较）——240 只修了 find_operator，同文件两个兄弟函数漏扫
+/// （横向扫同类未做）。
+#[test]
+fn test_split_logical_multibyte_before_operator_no_panic() {
+    let vars = HashMap::new();
+    // 形态一（panic）：op 切片命中后 current_start（char 单位）按字节
+    // 切片落在多字节字符中间——修复前 `完成 == 完成 or 失败 == 失败`
+    // panic（byte index 12 is not a char boundary）。
+    assert_eq!(evaluate("完成 == 完成 or 失败 == 失败", &vars), Ok(true));
+    assert_eq!(evaluate("完成 == 失败 or 失败 == 完成", &vars), Ok(false));
+    // 更短形态（修复前 expr[0..2] 即 panic）：裸词不保证可求值，但不得 panic。
+    let _ = evaluate("完成 or 失败", &vars);
+    // 变量替换后中文值紧邻算子（生产常态路径）：修复前 mis-split 出
+    // 裸词 `部署完成` → Err；修复后正确两路 or。
+    let mut vars2 = HashMap::new();
+    vars2.insert("status".to_string(), "部署完成".to_string());
+    vars2.insert("fallback".to_string(), "已回滚".to_string());
+    assert_eq!(
+        evaluate("{{status}} == 部署完成 or {{fallback}} == 已回滚", &vars2),
+        Ok(true)
+    );
+    // " and " 同路径（修复前 current_start 落 mid-功 panic）。
+    assert_eq!(evaluate("成功 == 成功 and 失败 == 失败", &vars), Ok(true));
+    assert_eq!(evaluate("成功 == 成功 and 成功 == 失败", &vars), Ok(false));
+}
+
+#[test]
+fn test_parenthesized_multibyte_unwraps_correctly() {
+    let vars = HashMap::new();
+    // 形态二（静默错判）：find_matching_paren 旧实现返回 char 下标，
+    // `(完成 == 完成)` 的 ')' 在 char 9 / byte 17，与 len-1=17（字节）
+    // 永不相等 → 解包永不生效 → 左 `(完成` vs 右 `完成)` 错判 false。
+    assert_eq!(evaluate("(完成 == 完成)", &vars), Ok(true));
+    assert_eq!(evaluate("(完成 == 失败)", &vars), Ok(false));
+    assert_eq!(evaluate("not (完成 == 失败)", &vars), Ok(true));
+    // 括号 + 逻辑算子组合（修复前 split_logical 同形态 panic）。
+    assert_eq!(
+        evaluate("(部署 == 部署) and (通过 == 通过)", &vars),
+        Ok(true)
+    );
+    assert_eq!(
+        evaluate("(部署 == 部署) and (通过 == 失败)", &vars),
+        Ok(false)
+    );
+    // ASCII 回归锁（字节=char 下标时行为不变）。
+    assert_eq!(evaluate("(a == a) and (b == b)", &vars), Ok(true));
+}

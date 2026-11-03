@@ -377,6 +377,63 @@ async fn policy_disable_reenable_fallback_chain() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn policy_runtime_master_gate_blocks_and_recovers() {
+    // 运行期总闸（2026-11-01 BUG 修复）回归锁：总闸/宿主壳开关翻关 =
+    // call_policy_point NotAvailable（调用方按「无接管」语义回退内置策略）
+    // ——与插件禁用不同，接管者注册表照旧（policy_owner 在场），只挡
+    // guest 咨询；开关改回即时恢复（无缓存）。
+    let Ok((ws, mgr)) = installed_manager().await else {
+        eprintln!("{}", skip_reason());
+        return;
+    };
+    let input = serde_json::json!({
+        "tool": "exec",
+        "schema": serde_json::Value::Null,
+        "args": r#"{"cmd":"echo hi"}"#,
+    })
+    .to_string();
+
+    // 基线：接管者在场且可路由。
+    assert!(mgr.policy_owner(PolicyPoint::Validation).is_some());
+    mgr.call_policy_point(PolicyPoint::Validation, input.clone())
+        .await
+        .expect("baseline call");
+
+    // 宿主壳开关翻关 → NotAvailable；注册表不受影响。
+    nemesis_config::plugins_native::set_enabled(
+        &ws.path().join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        false,
+    )
+    .expect("flip shell switch off");
+    let err = mgr
+        .call_policy_point(PolicyPoint::Validation, input.clone())
+        .await
+        .expect_err("master gate off = NotAvailable");
+    assert!(
+        matches!(err, nemesis_plugins_wasm::PluginError::NotAvailable(_)),
+        "got: {err:?}"
+    );
+    assert!(
+        mgr.policy_owner(PolicyPoint::Validation).is_some(),
+        "总闸只挡咨询，不摘接管者注册表"
+    );
+
+    // 开关改回 = 即时恢复（热语义核心不变量）。
+    nemesis_config::plugins_native::set_enabled(
+        &ws.path().join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        true,
+    )
+    .expect("flip shell switch on");
+    let out = mgr
+        .call_policy_point(PolicyPoint::Validation, input)
+        .await
+        .expect("call after recovery");
+    assert_eq!(verdict_of(&out)["verdict"], "builtin", "got: {out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn policy_validation_latency_probe() {
     // 性能探针（计划批 5④）：validate-args 是高频路径（每次 LLM 工具调用
     // 一次），fresh-store-per-call 的固有开销在此实测。只打印不做墙钟硬

@@ -129,12 +129,6 @@ impl OAuthProviderConfig {
 
         let device_resp = parse_device_code_response(&body)?;
 
-        let interval = if device_resp.interval < 1 {
-            5
-        } else {
-            device_resp.interval
-        };
-
         println!(
             "\nTo authenticate, open this URL in your browser:\n\n  {}/codex/device\n\nThen enter this code: {}\n\nWaiting for authentication...\n",
             self.issuer, device_resp.user_code
@@ -142,23 +136,54 @@ impl OAuthProviderConfig {
 
         // Poll for 15 minutes
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval as u64));
+        let client = &client;
+        let device_auth_id = &device_resp.device_auth_id;
+        let user_code = &device_resp.user_code;
+        Self::device_code_poll_loop(
+            || self.poll_device_code_impl(client, device_auth_id, user_code),
+            device_resp.interval as i64,
+            deadline,
+        )
+        .await
+    }
+
+    /// 设备码轮询循环（从 [`Self::login_device_code`] 抽出以便单测——poll
+    /// 抽象为闭包参数：生产传 HTTP 轮询实现，测试传桩）。
+    async fn device_code_poll_loop<P, Fut>(
+        mut poll: P,
+        interval_hint_secs: i64,
+        deadline: std::time::Instant,
+    ) -> Result<AuthCredential, String>
+    where
+        P: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<Option<AuthCredential>, String>>,
+    {
+        let interval = if interval_hint_secs < 1 {
+            5u64
+        } else {
+            interval_hint_secs as u64
+        };
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
         // BUG-20261101-264：默认 Burst 会在挂起恢复后把错过的 tick 逐个补发
         // ——token 端点被密集轮询（OAuth 服务器对此限流/锁流）。Delay 从
         // 当前时刻重排。
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
         loop {
-            if std::time::Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
                 return Err("device code authentication timed out after 15 minutes".to_string());
             }
-
-            tick.tick().await;
-
-            match self
-                .poll_device_code_impl(&client, &device_resp.device_auth_id, &device_resp.user_code)
-                .await
-            {
+            // BUG-20261103-330：轮询等待必须被剩余 deadline 有界化。裸
+            // tick.tick().await 在间隔 ≥ 剩余时间（间隔是远端可控值：原始
+            // i32 上限 ≈68 年；parse_flexible_int 的 i64→i32 截断同样可造
+            // 出荒谬大值）时永久挂起——deadline 只在 loop 顶检查，await
+            // 期间不生效，15 分钟期限形同虚设。等待封顶后，timeout 触发
+            // continue → loop 顶 deadline 检查负责给出超时终态。
+            let wait = bounded_poll_wait(std::time::Duration::from_secs(interval), remaining);
+            if tokio::time::timeout(wait, tick.tick()).await.is_err() {
+                continue;
+            }
+            match poll().await {
                 Ok(Some(cred)) => return Ok(cred),
                 Ok(None) => continue, // Still pending
                 Err(_) => continue,   // Transient error, keep polling
@@ -619,6 +644,18 @@ fn parse_flexible_int(val: &serde_json::Value) -> i32 {
         serde_json::Value::String(s) => s.trim().parse().unwrap_or(0),
         _ => 0,
     }
+}
+
+/// BUG-20261103-330：轮询等待时长必须有界——远端可控的轮询间隔（原始
+/// i32 ≈68 年上限 / i64→i32 截断荒谬值）不得把等待推出 15 分钟 deadline。
+/// 契约：返回值 ≤ remaining 恒成立（旧公式 `Duration::from_secs(interval)`
+/// 无此上界）；剩余时间耗尽返回零（loop 顶 deadline 检查随即给出终态，
+/// 不会自旋）。
+fn bounded_poll_wait(
+    interval: std::time::Duration,
+    remaining: std::time::Duration,
+) -> std::time::Duration {
+    interval.min(remaining)
 }
 
 /// Parse a token response body into an AuthCredential.

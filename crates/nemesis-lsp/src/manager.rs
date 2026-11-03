@@ -799,7 +799,8 @@ impl LspManager {
     /// didOpen/didChange 共同实现。尽力而为语义：文件类型不支持、该语言
     /// 没配服务器、服务器不在 PATH —— 三者都静默 `Ok(())`（诊断闭环是
     /// 优化不是依赖，语言服务器缺席绝不能拖垮编辑路径）；会话 spawn 失败
-    /// / 写管道失败仍返回 Err（调用方记日志决定后续）。
+    /// / 写管道失败/写超时（server 僵死不消费 stdin，BUG-20261103-337）
+    /// 仍返回 Err（调用方记日志决定后续）。
     async fn sync_doc(&self, path: &Path, text_override: Option<&str>) -> Result<(), String> {
         let Some(lang) = registry::lang_for_path(path) else {
             return Ok(());
@@ -822,11 +823,11 @@ impl LspManager {
 
         let uri = proto::path_to_uri(path);
         let mut inner = session.inner.lock().await;
-        match inner.open_docs.get_mut(&uri) {
+        let note = match inner.open_docs.get_mut(&uri) {
             None => {
                 // didOpen：version 从 1 起（LSP 惯例）。
                 inner.open_docs.insert(uri.clone(), 1);
-                let note = proto::notification(
+                proto::notification(
                     "textDocument/didOpen",
                     json!({
                         "textDocument": {
@@ -836,21 +837,41 @@ impl LspManager {
                             "text": text,
                         },
                     }),
-                );
-                write_message(&mut inner, &note).await
+                )
             }
             Some(version) => {
                 // didChange：full 文本同步 + version 单调递增（服务器据此
                 // 丢弃乱序通知）。
                 *version += 1;
-                let note = proto::notification(
+                proto::notification(
                     "textDocument/didChange",
                     json!({
                         "textDocument": {"uri": uri, "version": *version},
                         "contentChanges": [{"text": text}],
                     }),
-                );
-                write_message(&mut inner, &note).await
+                )
+            }
+        };
+        // BUG-20261103-337：通知写包 `request_timeout` 预算。request 路径
+        // 的写有外层 timeout 包裹（`Session::request` 的 fut 整体在预算
+        // 内），通知路径（touch_file/notify_change → 本函数）此前裸写——
+        // server 活着但停止消费 stdin（僵死）时，超管道缓冲的大全文写
+        // （didOpen/didChange 携带整个文件）会永久阻塞，agent 工具卡满
+        // executor 看门狗（默认 1800s）。超时 = 会话中毒（与
+        // `is_session_poisoning` 的 "timed out" 语义同族）：写 future 已
+        // 被取消、锁在手上——直接 tree-kill 并把 wedged 会话逐出表，下次
+        // 查询/同步自愈新会话。
+        match tokio::time::timeout(self.request_timeout, write_message(&mut inner, &note)).await {
+            Ok(res) => res,
+            Err(_) => {
+                kill_tree(&mut inner.child).await;
+                drop(inner);
+                self.sessions.lock().await.remove(&(lang, root));
+                Err(format!(
+                    "LSP doc sync for {} timed out after {:?} — server is alive but stopped consuming stdin; session evicted",
+                    path.display(),
+                    self.request_timeout
+                ))
             }
         }
     }

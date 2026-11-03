@@ -1194,6 +1194,16 @@ fn test_expand_tilde_relative() {
 }
 
 #[test]
+fn test_expand_tilde_backslash_prefix() {
+    // BUG-20261102-319：`~\` 反斜杠形态（Windows 用户手写惯例，save_config /
+    // adjust_paths 的默认拼法判定均已承认该形态）此前不展开——与 log.rs 的
+    // 本地 expand_tilde（认 `~\`）分叉，同义两形态异判。
+    let result = expand_tilde("~\\custom\\path");
+    assert!(!result.starts_with("~"));
+    assert!(result.ends_with("custom\\path") || result.ends_with("custom/path"));
+}
+
+#[test]
 fn test_save_config_creates_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("deep/nested/config.json");
@@ -1518,6 +1528,26 @@ fn test_config_workspace_path_tilde() {
         agents: AgentsConfig {
             defaults: AgentDefaults {
                 workspace: "~/custom/path".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let ws = config.workspace_path();
+    assert!(!ws.starts_with("~"));
+    assert!(ws.contains("custom"));
+}
+
+#[test]
+fn test_config_workspace_path_tilde_backslash() {
+    // BUG-20261102-319：`~\` 形态 workspace 此前原样返回字面量（MCP/security/
+    // skills/scanner 四个配置路径解析消费方拿到后落 cwd 下 `~` 目录）——与
+    // `~/` 形态正确展开分叉。
+    let config = Config {
+        agents: AgentsConfig {
+            defaults: AgentDefaults {
+                workspace: "~\\custom\\path".to_string(),
                 ..Default::default()
             },
             ..Default::default()
@@ -4349,53 +4379,4 @@ fn test_connectors_script_default_timeout_semantics() {
     }))
     .unwrap();
     assert_eq!(cfg3.script_timeout_secs(), 120);
-}
-
-// ============================================================
-// P1 外循环：board.external_sources 默认值与 round-trip（2026-10-25）
-// ============================================================
-
-#[test]
-fn test_external_sources_defaults_and_roundtrip() {
-    // 缺段 / 空段 = 零源（本节点不导入）。
-    let empty: Config = serde_json::from_str("{}").unwrap();
-    assert!(empty.board.unwrap_or_default().external_sources.is_empty());
-
-    // 单条缺字段全落默认（enabled=true / connector=gitea / poll=60 /
-    // auto_dispatch=true / clone=true）。
-    let b: BoardFlagConfig = serde_json::from_value(serde_json::json!({
-        "external_sources": [ { "owner": "demo", "repo": "notecli" } ]
-    }))
-    .unwrap();
-    assert_eq!(b.external_sources.len(), 1);
-    let s = &b.external_sources[0];
-    assert!(s.enabled);
-    assert_eq!(s.connector, "gitea");
-    assert_eq!(s.owner, "demo");
-    assert_eq!(s.repo, "notecli");
-    assert_eq!(s.poll_interval_secs, 60);
-    assert!(s.auto_dispatch);
-    assert!(s.clone);
-    assert!(s.target.is_none() && s.clone_url.is_none() && s.labels.is_empty());
-
-    // 显式值 round-trip 保真；禁用源与钉住目标不丢。
-    let b2: BoardFlagConfig = serde_json::from_value(serde_json::json!({
-        "external_sources": [ {
-            "enabled": false, "connector": "gitea",
-            "owner": "demo", "repo": "notecli",
-            "poll_interval_secs": 30, "auto_dispatch": false, "clone": false,
-            "clone_username": "bot", "clone_url": "http://mirror/notecli.git",
-            "target": "Node-B", "labels": ["agent-ready"]
-        } ]
-    }))
-    .unwrap();
-    let s2 = &b2.external_sources[0];
-    assert!(!s2.enabled && !s2.auto_dispatch && !s2.clone);
-    assert_eq!(s2.poll_interval_secs, 30);
-    assert_eq!(s2.clone_username.as_deref(), Some("bot"));
-    assert_eq!(s2.clone_url.as_deref(), Some("http://mirror/notecli.git"));
-    assert_eq!(s2.target.as_deref(), Some("Node-B"));
-    assert_eq!(s2.labels, vec!["agent-ready".to_string()]);
-    let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&b2).unwrap()).unwrap();
-    assert_eq!(re.external_sources, b2.external_sources);
 }

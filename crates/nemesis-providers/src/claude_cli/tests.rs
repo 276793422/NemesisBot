@@ -80,7 +80,7 @@ fn test_messages_to_prompt_multi() {
 fn test_parse_response_text() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"Hello!","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#;
-    let resp = provider.parse_response(output).unwrap();
+    let resp = provider.parse_response(output, &[]).unwrap();
     assert_eq!(resp.content, "Hello!");
     assert_eq!(resp.finish_reason, "stop");
     assert!(resp.tool_calls.is_empty());
@@ -91,7 +91,7 @@ fn test_parse_response_text() {
 fn test_parse_response_error() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":true,"result":"Something went wrong","usage":{}}"#;
-    let result = provider.parse_response(output);
+    let result = provider.parse_response(output, &[]);
     assert!(result.is_err());
 }
 
@@ -99,9 +99,17 @@ fn test_parse_response_error() {
 fn test_parse_response_with_tool_calls() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"Using tool {\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"/tmp\\\"}\"}}]}","usage":{"input_tokens":20,"output_tokens":10}}"#;
-    // Note: this test uses the extract_tool_calls_from_text internally
-    // The result field has escaped JSON which should be parsed by the extract function
-    let _resp = provider.parse_response(output).unwrap();
+    // 白名单内名字（read_file）→ 正常恢复为工具调用（BUG-20261103-338 过滤
+    // 只拦名字不可执行的伪调用，不碰机制本身）。
+    let tools = vec![fn_tool("read_file")];
+    let resp = provider.parse_response(output, &tools).unwrap();
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(
+        resp.tool_calls[0].function.as_ref().unwrap().name,
+        "read_file"
+    );
+    assert_eq!(resp.finish_reason, "tool_calls");
+    assert!(!resp.content.contains("tool_calls"));
 }
 
 #[test]
@@ -255,7 +263,7 @@ fn test_messages_to_prompt_tool_without_call_id() {
 fn test_parse_response_with_usage() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"Done!","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}"#;
-    let resp = provider.parse_response(output).unwrap();
+    let resp = provider.parse_response(output, &[]).unwrap();
     assert_eq!(resp.content, "Done!");
     let usage = resp.usage.unwrap();
     // Anthropic 加法语义透传：prompt=纯输入 100，缓存读写单列；
@@ -272,7 +280,7 @@ fn test_parse_response_with_usage() {
 fn test_parse_response_no_usage() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"No usage info","usage":{}}"#;
-    let resp = provider.parse_response(output).unwrap();
+    let resp = provider.parse_response(output, &[]).unwrap();
     assert_eq!(resp.content, "No usage info");
     assert!(resp.usage.is_none()); // Both input and output are 0
 }
@@ -280,7 +288,7 @@ fn test_parse_response_no_usage() {
 #[test]
 fn test_parse_response_invalid_json() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
-    let result = provider.parse_response("not json at all");
+    let result = provider.parse_response("not json at all", &[]);
     assert!(result.is_err());
 }
 
@@ -323,4 +331,80 @@ fn test_messages_to_prompt_image_degrades_to_note() {
     assert!(prompt.contains("[用户附带 1 张图片（当前委派通道不支持视觉输入）]"));
     // 不泄露 base64
     assert!(!prompt.contains("aGVsbG8="));
+}
+
+// ============================================================
+// BUG-20261103-338：文档性 `{"tool_calls"` JSON 不得劫持成幻影工具调用
+// （BUG-20261025-16 同款白名单不变量）。文本信封是 CLI lane 唯一工具
+// 调用通道，过滤只拦名字不可执行的伪调用，不碰机制本身。
+// ============================================================
+
+fn fn_tool(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    }
+}
+
+/// 文档性 JSON（非白名单名字）→ 不劫持：finish 维持 stop、正文原文保留。
+#[test]
+fn test_parse_response_documentation_json_not_hijacked() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let docs = "工具调用信封示例：\n{\"tool_calls\":[{\"id\":\"demo\",\"type\":\"function\",\"function\":{\"name\":\"not_a_real_tool\",\"arguments\":\"{}\"}}]}";
+    let output = serde_json::json!({
+        "type": "result",
+        "is_error": false,
+        "result": docs,
+        "usage": {}
+    })
+    .to_string();
+    let resp = provider
+        .parse_response(&output, &[fn_tool("read_file")])
+        .unwrap();
+    assert!(resp.tool_calls.is_empty(), "{:?}", resp.tool_calls);
+    assert_eq!(resp.finish_reason, "stop");
+    // 文档原文保留（正文剥离只应发生在真恢复时）
+    assert!(resp.content.contains("not_a_real_tool"), "{}", resp.content);
+}
+
+/// 空白名单（请求未提供任何工具 = 未教信封协议）→ 信封文本一律不劫持。
+#[test]
+fn test_parse_response_empty_tools_drops_envelope() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let docs = "信封长这样：{\"tool_calls\":[{\"id\":\"demo\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}";
+    let output = serde_json::json!({
+        "type": "result",
+        "is_error": false,
+        "result": docs,
+        "usage": {}
+    })
+    .to_string();
+    let resp = provider.parse_response(&output, &[]).unwrap();
+    assert!(resp.tool_calls.is_empty(), "{:?}", resp.tool_calls);
+    assert_eq!(resp.finish_reason, "stop");
+    assert!(resp.content.contains("tool_calls"), "{}", resp.content);
+}
+
+/// 白名单内名字混同非白名单名字 → 只保留可执行的，其余丢弃。
+#[test]
+fn test_parse_response_mixed_names_filters_to_whitelist() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let docs = "{\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}},{\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"ghost_tool\",\"arguments\":\"{}\"}}]}";
+    let output = serde_json::json!({
+        "type": "result",
+        "is_error": false,
+        "result": docs,
+        "usage": {}
+    })
+    .to_string();
+    let resp = provider
+        .parse_response(&output, &[fn_tool("read_file")])
+        .unwrap();
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].id, "c1");
+    assert_eq!(resp.finish_reason, "tool_calls");
 }

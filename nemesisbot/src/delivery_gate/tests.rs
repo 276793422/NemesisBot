@@ -253,3 +253,257 @@ fn truncated_patch_still_carries_patch_path() {
         "wire patch 不超上限"
     );
 }
+
+/// ensure_exec_repo（BUG 2026-11-01 根修第一半）：首次进入定格基线 commit
+/// ——lib.rs 进基线、sidecar/_debug 不进；排除文件就位；任务期间改文件后
+/// 重入 = 同一 HEAD（基线恒定，是交付 diff 的稳定锚点）。
+#[test]
+fn ensure_exec_repo_freezes_baseline_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = dir.path().join("exec");
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::write(exec.join("lib.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(exec.join(".baseline.json"), "{}").unwrap();
+    std::fs::create_dir_all(exec.join("_debug")).unwrap();
+    std::fs::write(exec.join("_debug").join("probe.txt"), "x").unwrap();
+
+    let sha1 = ensure_exec_repo(&exec).expect("首次就绪成功");
+    {
+        let repo = git2::Repository::open(&exec).unwrap();
+        let commit = repo
+            .find_commit(git2::Oid::from_str(&sha1).unwrap())
+            .expect("返回 SHA 可解析为 commit");
+        let tree = commit.tree().unwrap();
+        assert!(tree.get_name("lib.rs").is_some(), "基线含 lib.rs");
+        assert!(
+            tree.get_name(".baseline.json").is_none(),
+            "sidecar 不进基线"
+        );
+        assert!(
+            tree.get_path(std::path::Path::new("_debug")).is_err(),
+            "_debug 不进基线"
+        );
+        assert_eq!(
+            repo.head().unwrap().peel_to_commit().unwrap().id(),
+            commit.id(),
+            "HEAD = 基线定格 commit"
+        );
+    }
+    let exclude = std::fs::read_to_string(exec.join(".git").join("info").join("exclude")).unwrap();
+    assert!(exclude.contains(".baseline.json"), "排除文件含 sidecar");
+    assert!(exclude.contains("_debug/"), "排除文件含 _debug/");
+
+    // 任务窗口 worker 改文件 → 重入不重新定格（幂等，读持久化锚点）。
+    std::fs::write(exec.join("lib.rs"), "fn a() -> i32 { 1 }\n").unwrap();
+    let sha2 = ensure_exec_repo(&exec).expect("重入成功");
+    assert_eq!(sha1, sha2, "重入复用持久化锚点，基线恒定");
+
+    // BUG 2026-11-01 C 后半回归锁：worker 合法 commit 移动 HEAD（T1 实证
+    // 形态）→ 重入仍返回定格基线，不跟随 HEAD 漂移。
+    {
+        let repo = git2::Repository::open(&exec).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["**"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("worker", "worker@local").unwrap();
+        let parent = repo
+            .find_commit(git2::Oid::from_str(&sha1).unwrap())
+            .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "worker fix", &tree, &[&parent])
+            .unwrap();
+    }
+    let head_after = git2::Repository::open(&exec)
+        .unwrap()
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id()
+        .to_string();
+    assert_ne!(head_after, sha1, "前提：HEAD 已被 worker commit 移动");
+    let sha3 = ensure_exec_repo(&exec).expect("worker 提交后重入成功");
+    assert_eq!(sha1, sha3, "重入取持久化锚点，不跟随 HEAD 漂移");
+
+    // 锚点文件落在 .git 内（不进树不进 diff 的位置纪律）。
+    assert!(
+        exec.join(".git").join("nemesis_baseline").is_file(),
+        "基线锚点持久化在 gitdir 内"
+    );
+}
+
+/// exec 路径端到端（BUG 2026-11-01 根修第二半）：真实改动进 patch；构建
+/// 产物/调试目录/sidecar 不进；wire 与主路径同形（checks/checks_binds/
+/// repo_base_sha）；patch 落**主 workspace**（副本内无 logs/）；影子库用后
+/// 即清；repo_base_sha = 基线 commit。
+#[test]
+fn exec_capture_end_to_end_clean_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = dir.path().join("exec");
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(exec.join("lib.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(exec.join(".baseline.json"), "{}").unwrap();
+    let base_sha = ensure_exec_repo(&exec).expect("基线就绪");
+    let baseline_tree_hex = {
+        let repo = git2::Repository::open(&exec).unwrap();
+        repo.head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .tree_id()
+            .to_string()
+    };
+
+    // 任务窗口：worker 真实改动 + 构建产物 + 调试文件。
+    std::fs::write(exec.join("lib.rs"), "fn a() -> i32 { 1 }\n").unwrap();
+    std::fs::create_dir_all(exec.join("target").join("debug")).unwrap();
+    std::fs::write(exec.join("target").join("debug").join("app.exe"), "MZfake").unwrap();
+    std::fs::create_dir_all(exec.join("_debug")).unwrap();
+    std::fs::write(exec.join("_debug").join("probe.txt"), "x").unwrap();
+
+    let checks = vec![CheckRecord {
+        tool: "exec".into(),
+        cmd: "cargo test".into(),
+        ok: true,
+        summary: "test result: ok. 1 passed".into(),
+    }];
+    let out = capture_task_delivery_exec(&exec, &ws, "t-exec", "node-b", checks, Some(&base_sha))
+        .expect("exec 路径捕获成功");
+    let obj = out.as_object().expect("delivery 是 JSON object");
+
+    // wire 形状与主路径同形。
+    assert_eq!(obj["branch"], "run-t-exec");
+    assert_eq!(obj["task_id"], "t-exec");
+    assert_eq!(obj["node"], "node-b");
+    assert_eq!(
+        obj["base_tree"],
+        baseline_tree_hex.as_str(),
+        "base = 副本基线 commit 的 tree"
+    );
+    assert_eq!(
+        obj["repo_base_sha"],
+        base_sha.as_str(),
+        "版本链基于副本基线 commit"
+    );
+    assert_eq!(obj["files_changed"], 1, "只有 lib.rs 一个真实改动");
+    assert_eq!(obj["patch_path"], "logs/deliveries/t-exec.patch");
+
+    // patch 内容：真实改动在场，三类垃圾全部不在。
+    let patch = obj["patch"].as_str().expect("patch 是字符串");
+    assert!(patch.contains("lib.rs"), "真实改动进 patch");
+    assert!(!patch.contains("target"), "构建产物不进 patch");
+    assert!(!patch.contains("app.exe"));
+    assert!(!patch.contains("_debug"), "调试目录不进 patch");
+    assert!(!patch.contains(".baseline.json"), "sidecar 不进 patch");
+
+    // ②typed checks + P2 绑定随 wire 上行。
+    let wire_checks = obj["checks"].as_array().expect("checks 是数组");
+    assert_eq!(wire_checks.len(), 1);
+    assert_eq!(wire_checks[0]["cmd"], "cargo test");
+    assert_eq!(
+        obj["checks_binds"]["base_tree"],
+        baseline_tree_hex.as_str(),
+        "检查窗口绑定基线 tree"
+    );
+    assert!(
+        obj["checks_binds"]["head_tree"].is_string(),
+        "head 绑定在场"
+    );
+
+    // patch 留底落主 workspace（副本交付后整树删除，留底必须在外部）。
+    let on_disk = std::fs::read_to_string(ws.join("logs").join("deliveries").join("t-exec.patch"))
+        .expect("patch 已落主 workspace");
+    assert_eq!(on_disk, patch, "盘上留底 = wire 证据");
+    assert!(
+        !exec.join("logs").exists(),
+        "副本内不得留 patch（副本交付后整树删除）"
+    );
+
+    // 影子库用后即清（临时证据，wire JSON + patch 留底是持久载体）。
+    assert!(
+        !ws.join("logs")
+            .join("exec_checkpoints")
+            .join("t-exec.git")
+            .exists(),
+        "影子库捕获完成即清"
+    );
+}
+
+/// BUG 2026-11-01 C 后半回归锁：worker 合法 commit 移动 HEAD（T1 实证
+/// async 续行形态）后，捕获仍以定格基线 diff——base_tree=基线 tree、
+/// files_changed≥1、repo_base_sha=基线 commit（不再「基于自己」）。
+/// 同时锁自愈链：透传参数缺席时从 `.git/nemesis_baseline` 持久锚点取回。
+#[test]
+fn exec_capture_survives_worker_commit_with_frozen_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    let exec = dir.path().join("exec");
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(exec.join("lib.rs"), "fn a() {}\n").unwrap();
+    let base_sha = ensure_exec_repo(&exec).expect("基线就绪");
+
+    // worker 合法 commit（T1 实证：任务中途提交移动 HEAD）。
+    std::fs::write(exec.join("lib.rs"), "fn a() -> i32 { 1 }\n").unwrap();
+    {
+        let repo = git2::Repository::open(&exec).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["**"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("worker", "worker@local").unwrap();
+        let parent = repo
+            .find_commit(git2::Oid::from_str(&base_sha).unwrap())
+            .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "worker fix", &tree, &[&parent])
+            .unwrap();
+    }
+
+    // 生产形态：ensure 捕获的基线 SHA 透传 → diff 面向定格基线。
+    let out = capture_task_delivery_exec(
+        &exec,
+        &ws,
+        "t-worker-commit",
+        "node-b",
+        Vec::new(),
+        Some(&base_sha),
+    )
+    .expect("worker 提交后捕获成功");
+    let obj = out.as_object().expect("delivery 是 JSON object");
+    assert_eq!(
+        obj["files_changed"], 1,
+        "基线锚定后 worker 改动可见（不因 HEAD 移动而恒空）"
+    );
+    assert_eq!(
+        obj["repo_base_sha"],
+        base_sha.as_str(),
+        "版本链基于定格基线，非 worker 自己的 commit"
+    );
+    assert_ne!(
+        obj["commit"], obj["base_tree"],
+        "交付 commit 是 worker 的，基线 tree 是定格的"
+    );
+    let patch = obj["patch"].as_str().expect("patch 是字符串");
+    assert!(patch.contains("lib.rs"), "真实改动进 patch");
+
+    // 自愈链：透传缺席 → `.git/nemesis_baseline` 持久锚点取回同一基线。
+    let healed =
+        capture_task_delivery_exec(&exec, &ws, "t-anchor-selfheal", "node-b", Vec::new(), None)
+            .expect("持久锚点自愈捕获成功");
+    let healed_obj = healed.as_object().expect("delivery 是 JSON object");
+    assert_eq!(
+        healed_obj["base_tree"], obj["base_tree"],
+        "透传缺席时从持久锚点取回同一基线 tree"
+    );
+    assert_eq!(
+        healed_obj["repo_base_sha"],
+        base_sha.as_str(),
+        "自愈路径 repo_base_sha 同样锚定基线 commit"
+    );
+}

@@ -47,7 +47,10 @@ cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
 forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
 workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]
-security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/security", "nemesis-web/security"]
+# security 透传 nemesis-workflow/security（BUG-20261102-324：workflow http 节点
+# SSRF 闸槽随门收放；workflow 开 + security 关的组合下槽 cfg 掉 = 节点无闸
+# 直通，重定向纪律仍生效）。
+security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/security", "nemesis-web/security", "nemesis-workflow/security"]
 # scanner：病毒扫描（第 7 层 + `nemesisbot scanner` CLI + Dashboard Scanner 页）。
 # implies security（管线里第 7 层臂 + clamav + zip 随它进出）；关 = 第 7 层诚实短路。
 scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]

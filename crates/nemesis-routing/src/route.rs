@@ -77,8 +77,35 @@ pub struct RouteResolver {
 }
 
 impl RouteResolver {
+    /// BUG-20261103-332：peer 约束完整性归一——kind/id **任一**为空（trim 后）
+    /// 的 peer 约束是永不命中的死绑定（find_peer_match 对空字段 continue），
+    /// 且 is_some() 判定会把 account/wildcard 匹配一并挡死——绑定静默脱靶
+    /// default。与 config 转换点（agent_factory build_route_resolver）对
+    /// guild/team 空串=None 的既有语义同构：不完整的约束 = 无约束。完整
+    /// 约束原样保留（精确匹配语义不变）。
     pub fn new(config: RouteConfig) -> Self {
-        Self { config }
+        let bindings = config
+            .bindings
+            .into_iter()
+            .map(|mut b| {
+                let kind_ok = b
+                    .match_peer_kind
+                    .as_deref()
+                    .is_some_and(|k| !k.trim().is_empty());
+                let id_ok = b
+                    .match_peer_id
+                    .as_deref()
+                    .is_some_and(|i| !i.trim().is_empty());
+                if !kind_ok || !id_ok {
+                    b.match_peer_kind = None;
+                    b.match_peer_id = None;
+                }
+                b
+            })
+            .collect();
+        Self {
+            config: RouteConfig { bindings, ..config },
+        }
     }
 
     /// Resolve the route for an inbound message.
@@ -220,7 +247,13 @@ impl RouteResolver {
         for b in bindings {
             if let Some(g) = &b.match_guild_id {
                 let g = g.trim();
-                if !g.is_empty() && g == guild_id {
+                if !g.is_empty()
+                    // BUG-20261025-89 族延伸（BUG-20261103-332）：guild/team
+                    // 与 peer/account 同一 CI 纪律——渠道侧 GUID 大小写漂移
+                    // （Teams/平台 GUID 语义大小写不敏感）此前精确比较让绑定
+                    // 静默脱靶。CI 是纯放宽（原精确命中在 CI 下照常命中）。
+                    && g.to_lowercase() == guild_id.to_lowercase()
+                {
                     return Some(*b);
                 }
             }
@@ -237,7 +270,8 @@ impl RouteResolver {
         for b in bindings {
             if let Some(t) = &b.match_team_id {
                 let t = t.trim();
-                if !t.is_empty() && t == team_id {
+                // CI 同 guild（BUG-20261025-89 族延伸）。
+                if !t.is_empty() && t.to_lowercase() == team_id.to_lowercase() {
                     return Some(*b);
                 }
             }

@@ -7,6 +7,8 @@ import { useToast } from '../composables/useToast'
 // - WASM 插件（默认 Tab，主角）：沙盒化组件插件管理面 + 「是什么/怎么做」
 //   引导 + 开发包（devkit）一键下载。2026-10-22 加载纪律反转：安装 ≠ 加载——
 //   装完默认不加载，开关（config.plugin.wasm.json 记录位）决定装载与否。
+//   2026-11-01 面板 LLM 总闸开关（wasm.panel_llm.get/set；总闸 × manifest
+//   x-llm 声明双闸，缺省关——用户在此打开，不改 config 文件）。
 // - 本地插件库：C-ABI 动态库（plugin_onnx/plugin_ui），只读探测总览。
 // - 管线插件：T2 三段化（pre/around/post）进程内插件，启停即时生效。
 // 编译期子系统 feature 状态已迁「关于」页「构建形态」tab（system.features）。
@@ -58,6 +60,8 @@ interface WasmPluginRow {
   takes_over?: string[]
   egress?: string[]
   x_secret?: string[]
+  /** 面板 LLM 声明位（manifest [permissions] x-llm；与总闸双闸，缺省关）。 */
+  x_llm?: boolean
   tool?: { name: string; description: string; operation_type: string; min_tier: string } | null
   signed_by?: string
   /** 未装载原因注记（manifest 解析失败 / 载荷目录缺失）。 */
@@ -109,6 +113,10 @@ const wasmDetailTab = ref<'config' | 'logs'>('config')
 const wasmConfig = ref<WasmConfigData | null>(null)
 const wasmLogs = ref<WasmLogLine[]>([])
 const wasmLogDropped = ref(0)
+
+// 面板 LLM 总闸（2026-11-01 决策 C）：声明 x-llm 的插件可调模型补全。
+// null = 状态读取失败（旧网关无此命令）→ 开关块隐藏，不装样子。
+const panelLlm = ref<{ enabled: boolean; plugins: { slug: string }[] } | null>(null)
 
 // devkit 下载（wasm.devkit_download）：zip 落 workspace/wasm-plugin-devkit/，
 // 解包 devkit/；已存在默认拒绝，勾「覆盖」重下。
@@ -190,6 +198,35 @@ async function loadWasm() {
     wasmAvailable.value = true
   } catch {
     wasmAvailable.value = false
+    return
+  }
+  // 面板 LLM 总闸状态（独立 try/catch：旧网关无此命令时隐藏开关块，
+  // 不影响插件列表本身）。
+  try {
+    const d = await request('plugins', 'panel_llm.get')
+    panelLlm.value = {
+      enabled: d?.enabled === true,
+      plugins: Array.isArray(d?.plugins) ? d.plugins : [],
+    }
+  } catch {
+    panelLlm.value = null
+  }
+}
+
+/** 面板 LLM 总闸切换（wasm.panel_llm.set，热生效 + 重启保持）。 */
+async function togglePanelLlm() {
+  if (!panelLlm.value) return
+  const target = !panelLlm.value.enabled
+  try {
+    const data = await request('plugins', 'panel_llm.set', { enabled: target })
+    panelLlm.value.enabled = data?.enabled ?? target
+    toast.success(
+      target
+        ? '面板 LLM 已开启：声明 x-llm 的插件可调用模型补全（优先 agents.small_model，未配置则回落主模型）'
+        : '面板 LLM 已关闭：插件补全请求将被拒绝'
+    )
+  } catch (e: any) {
+    toast.error('面板 LLM 开关写入失败: ' + e)
   }
 }
 
@@ -357,6 +394,19 @@ onMounted(() => {
                 <code>plugins/</code> 平级、命名区分）。安装或手工放入后<strong>默认不加载</strong>；
                 每个插件用开关决定加载与否（长期记忆，重启后保持）。一个插件原则上一个功能。
               </p>
+              <!-- 面板 LLM 总闸（2026-11-01 决策 C）：总闸 × manifest x-llm 声明双闸，
+                   缺省关；此处即用户开关（热生效，不改 config 文件）。 -->
+              <div v-if="panelLlm" style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-light); margin-bottom: var(--space-3); flex-wrap: wrap;">
+                <label class="toggle-switch" title="面板 LLM 总闸：打开后声明 x-llm 的插件可在流程/面板中调用模型补全（宿主代答，过安全审批与审计；热生效）">
+                  <input data-test="panel-llm-toggle" type="checkbox" :checked="panelLlm.enabled" @change="togglePanelLlm" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size: var(--text-sm); font-weight: 600;">面板 LLM</span>
+                <span style="font-size: var(--text-xs); color: var(--text-muted);">
+                  声明 x-llm 的插件可经宿主调用模型补全（优先 <code>agents.small_model</code>，未配置回落主模型；热生效）。
+                  已声明：{{ panelLlm.plugins.map(p => p.slug).join('、') || '（无）' }}
+                </span>
+              </div>
               <!-- 安装表单 -->
               <div style="display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-3); flex-wrap: wrap;">
                 <input
@@ -396,6 +446,11 @@ onMounted(() => {
                       class="plugin-badge plugin-badge--info"
                       :title="`接管内置工具 ${t}：可用性丢失自动回内置执行体；执行失败诚实报错不回退`"
                     >接管： {{ t }}</span>
+                    <span
+                      v-if="p.x_llm"
+                      class="plugin-badge plugin-badge--info"
+                      title="声明 x-llm：面板 LLM 总闸（上方开关）开启时可经宿主调用模型补全（过安全审批与审计）"
+                    >LLM</span>
                   </div>
                   <div style="display: flex; align-items: center; gap: var(--space-2);">
                     <!-- 配置：未加载也可读写（config 记录在 config.plugin.wasm.json，加载时生效） -->

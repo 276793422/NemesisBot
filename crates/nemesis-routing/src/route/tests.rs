@@ -392,8 +392,20 @@ fn test_find_peer_match_empty_kind_or_id() {
         identity_links: HashMap::new(),
     };
     let route = resolver.resolve(&input);
-    // Empty kind/id in input should not match peer binding
-    assert_eq!(route.matched_by, "default");
+    // Empty kind/id in input should not match peer binding（输入侧守卫）。
+    // BUG-20261103-332 前 matched_by=="default" 的旧断言被死绑定行为污染：
+    // binding 自身 kind="" 在旧代码既不命中 peer 也挡死 wildcard——落
+    // default 是死绑定的副作用而非本测试意图。修复后 binding 归一为
+    // wildcard 槽位，命中 channel 级；「输入空 kind 不命中 peer」的意图
+    // 由归一 + P1 输入守卫双保险保持。
+    assert_ne!(
+        route.matched_by, "binding.peer",
+        "输入空 kind 不得命中 peer 绑定（测试原意图）"
+    );
+    assert_eq!(
+        route.matched_by, "binding.channel",
+        "BUG-20261103-332: 归一后 wildcard 槽位可达（不再死绑脱靶）"
+    );
 }
 
 #[test]
@@ -1349,4 +1361,225 @@ fn test_peer_match_peer_id_case_insensitive() {
     let route2 = resolver2.resolve(&input2);
     assert_eq!(route2.agent_id, "peer-agent");
     assert_eq!(route2.matched_by, "binding.peer");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-332：不全 peer 约束死绑定 + guild/team 大小写脱靶（89 族延伸）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_binding_with_partial_peer_fields_is_not_dead_binding() {
+    // peer 约束字段不全（kind=""）的绑定：修复前 find_peer_match 对空 kind
+    // continue、find_account_match 对 is_some() 排除——绑定既不命中 peer
+    // 也不命中 account/wildcard（死绑定），静默脱靶 default。修复后
+    // RouteResolver::new 归一：不完整 peer 约束 = 无约束（与 config 转换点
+    // guild/team 空串=None 的既有语义同构）→ account 级匹配可达。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "coder".to_string(),
+            match_channel: "telegram".to_string(),
+            match_account_id: "bot1".to_string(),
+            match_peer_kind: Some("".to_string()),
+            match_peer_id: Some("123".to_string()),
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "coder".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "telegram".to_string(),
+        account_id: "bot1".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("999".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.agent_id, "coder",
+        "BUG-20261103-332: kind 空串的 peer 绑定不得死绑——account 匹配必须可达"
+    );
+    assert_eq!(
+        route.matched_by, "binding.account",
+        "归一后应命中 account 级绑定而非脱靶 default"
+    );
+
+    // 形态 2：id 空串（kind 完整）——同样归一为无约束。
+    let resolver2 = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "coder".to_string(),
+            match_channel: "telegram".to_string(),
+            match_account_id: "bot1".to_string(),
+            match_peer_kind: Some("direct".to_string()),
+            match_peer_id: Some("".to_string()),
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![AgentDef {
+            id: "coder".to_string(),
+            is_default: false,
+        }],
+        dm_scope: "main".to_string(),
+    });
+    let route2 = resolver2.resolve(&input);
+    assert_eq!(route2.matched_by, "binding.account", "id 空串同形归一");
+    assert_eq!(route2.agent_id, "coder");
+
+    // 形态 3：kind/id 都空 + account="*"——归一后 wildcard 可达。
+    let resolver3 = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "coder".to_string(),
+            match_channel: "telegram".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: Some(String::new()),
+            match_peer_id: Some(String::new()),
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![AgentDef {
+            id: "coder".to_string(),
+            is_default: false,
+        }],
+        dm_scope: "main".to_string(),
+    });
+    let route3 = resolver3.resolve(&input);
+    assert_eq!(
+        route3.matched_by, "binding.channel",
+        "空 peer + wildcard account 归一后命中 channel 级绑定"
+    );
+    assert_eq!(route3.agent_id, "coder");
+}
+
+#[test]
+fn test_complete_peer_binding_still_matches_exactly() {
+    // 完整 peer 约束不受归一影响：id 精确命中照常（89 的 CI 语义保持），
+    // id 不匹配时也不得错误落到该绑定的 account 级（约束仍生效）。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "coder".to_string(),
+            match_channel: "telegram".to_string(),
+            match_account_id: "bot1".to_string(),
+            match_peer_kind: Some("direct".to_string()),
+            match_peer_id: Some("user-abc".to_string()),
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "coder".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "telegram".to_string(),
+        account_id: "bot1".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("user-xyz".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    // peer id 不匹配：绑定不命中（peer 语义），account 级也不命中（有完整
+    // peer 约束）→ 正确脱靶 default。
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.agent_id, "main",
+        "完整 peer 约束不匹配时不得吞掉 account 槽位"
+    );
+    assert_eq!(route.matched_by, "default");
+
+    // peer id 匹配（大小写漂移，89 CI 语义）：照常命中。
+    let route2 = resolver.resolve(&RouteInput {
+        peer_id: Some("USER-ABC".to_string()),
+        ..input
+    });
+    assert_eq!(route2.agent_id, "coder");
+    assert_eq!(route2.matched_by, "binding.peer");
+}
+
+#[test]
+fn test_guild_team_binding_is_case_insensitive() {
+    // BUG-20261025-89 族延伸：guild/team 匹配此前是精确比较——渠道侧 GUID
+    // 大小写漂移（Teams/Platform GUID 语义大小写不敏感）让绑定静默脱靶。
+    // 修复：与 peer/account 同一 CI 纪律（纯放宽：原命中在 CI 下照常命中）。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "guild-agent".to_string(),
+            match_channel: "discord".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: Some("ABc-123-GUID".to_string()),
+            match_team_id: None,
+        }],
+        agents: vec![AgentDef {
+            id: "guild-agent".to_string(),
+            is_default: true,
+        }],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "discord".to_string(),
+        account_id: "default".to_string(),
+        peer_kind: Some("channel".to_string()),
+        peer_id: Some("room1".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: Some("abc-123-guid".to_string()),
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.matched_by, "binding.guild",
+        "BUG-20261103-332: guild 大小写漂移不得脱靶"
+    );
+    assert_eq!(route.agent_id, "guild-agent");
+
+    // team 同证（配置大写、渠道小写）。
+    let resolver2 = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "team-agent".to_string(),
+            match_channel: "teams".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: None,
+            match_team_id: Some("team-x".to_string()),
+        }],
+        agents: vec![AgentDef {
+            id: "team-agent".to_string(),
+            is_default: true,
+        }],
+        dm_scope: "main".to_string(),
+    });
+    let input2 = RouteInput {
+        channel: "teams".to_string(),
+        team_id: Some("TEAM-X".to_string()),
+        ..input
+    };
+    let route2 = resolver2.resolve(&input2);
+    assert_eq!(route2.matched_by, "binding.team", "team 大小写漂移不得脱靶");
+    assert_eq!(route2.agent_id, "team-agent");
 }

@@ -292,7 +292,13 @@ fn registry_anchor_commands_present() {
             "wasm.config.get",
             "wasm.config.set",
             "wasm.logs",
+            // 面板 LLM 总闸（2026-11-01 决策 C）。
+            "wasm.panel_llm.get",
+            "wasm.panel_llm.set",
             "wasm.devkit_download",
+            // 面板通道（2026-10-31 面板扩展批）。
+            "ui.registry",
+            "ui.invoke",
         ] {
             assert!(
                 p.contains(&anchor),

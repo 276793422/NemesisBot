@@ -5777,3 +5777,189 @@ async fn test_parallel_completed_child_still_succeeds() {
         .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261102-324：workflow http 节点 SSRF 闸 + 手动重定向循环
+// ---------------------------------------------------------------------------
+
+/// 闸槽是全局静态（gateway 注入形态）——写槽用例互斥，且与既有的
+/// 127.0.0.1 mock 用例（w4a_* 等，槽保持 None 不受扰）隔离。
+static HTTP_SSRF_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// RAII：测试结束（含 panic）把闸槽清回 None，不污染同进程后续用例。
+struct SsrfSlotReset;
+impl Drop for SsrfSlotReset {
+    fn drop(&mut self) {
+        #[cfg(feature = "security")]
+        super::set_http_ssrf_guard(None);
+    }
+}
+
+/// 本地序列 mock：按 `responses` 逐连接回预置原始响应（每响应自带
+/// Connection: close 强制关连接——重定向跳间不复用），记录每个连接的
+/// 请求首行（"METHOD /path"）供 method 语义断言。返回 (port, 请求记录)。
+fn bug324_sequenced_mock(responses: Vec<String>) -> (u16, Arc<parking_lot::Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let log = requests.clone();
+    std::thread::spawn(move || {
+        for resp in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // Drain the request head (and any body) so the client can finish.
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let first = head.lines().next().unwrap_or("").to_string();
+            log.lock().push(first);
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    (port, requests)
+}
+
+fn bug324_ok_body(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+/// 首跳 SSRF 拦截：注入真闸（默认配置 = block_localhost）后，
+/// `url: http://127.0.0.1:<port>/` 必须在连接前被拦（Failed + SSRF 注记），
+/// 不得把请求发到本地 mock。红证（修复前）：请求直连成功 → Completed。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn bug324_http_node_localhost_blocked_by_ssrf_guard() {
+    use nemesis_security::ssrf::{Guard, SsrfConfig};
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let _reset = SsrfSlotReset;
+    super::set_http_ssrf_guard(Some(Guard::new(SsrfConfig::default()).unwrap()));
+
+    let (port, log) = bug324_sequenced_mock(vec![bug324_ok_body("leaked")]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/meta", port)),
+        ),
+        ("method".to_string(), serde_json::json!("GET")),
+    ]);
+    let node = make_node("ssrf1", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("SSRF"), "unexpected error: {err}");
+    // 请求不得真发出去（mock 空转 = 连接前已拦）。
+    assert!(
+        log.lock().is_empty(),
+        "request reached local mock: {:?}",
+        log.lock()
+    );
+}
+
+/// 重定向跳 SSRF 拦截：首跳经 allowed_hosts 白名单直通本地 mock，mock 回
+/// 302 → `http://169.254.169.254/`（元数据端点）。修复后每一跳都过闸 →
+/// 跳 2 被拦（Failed + SSRF）；红证（修复前）：reqwest 自动跟随，撞
+/// link-local 连接错误（error 不含 SSRF）→ 断言红。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn bug324_http_node_redirect_to_metadata_blocked() {
+    use nemesis_security::ssrf::{Guard, SsrfConfig};
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let _reset = SsrfSlotReset;
+    let cfg = SsrfConfig {
+        allowed_hosts: vec!["127.0.0.1".to_string()],
+        ..SsrfConfig::default()
+    };
+    super::set_http_ssrf_guard(Some(Guard::new(cfg).unwrap()));
+
+    let (port, _log) = bug324_sequenced_mock(vec![
+        "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+        bug324_ok_body("should-never-be-served"),
+    ]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/start", port)),
+        ),
+        ("method".to_string(), serde_json::json!("GET")),
+    ]);
+    let node = make_node("ssrf2", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("SSRF"), "unexpected error: {err}");
+}
+
+/// 行为保持锁（修复前后都应绿）：307 保持 method + body（reqwest 默认
+/// 语义——手动循环必须等价替代，不得把 POST 307 降成 GET）。同拿
+/// TEST_LOCK：并行注闸用例会把 127.0.0.1 拦掉（槽是全局静态）。
+#[tokio::test]
+async fn bug324_http_node_307_preserves_post_method() {
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let (p2, log2) = bug324_sequenced_mock(vec![bug324_ok_body("post-target")]);
+    let (p1, log1) = bug324_sequenced_mock(vec![format!(
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:{}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        p2
+    )]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/a", p1)),
+        ),
+        ("method".to_string(), serde_json::json!("POST")),
+        ("body".to_string(), serde_json::json!("payload")),
+    ]);
+    let node = make_node("r307", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(*log1.lock(), vec![format!("POST /a HTTP/1.1")]);
+    assert_eq!(*log2.lock(), vec![format!("POST /b HTTP/1.1")]);
+}
+
+/// 行为保持锁（修复前后都应绿）：302 把 POST 转 GET（浏览器/reqwest 惯例）。
+#[tokio::test]
+async fn bug324_http_node_302_converts_post_to_get() {
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let (p2, log2) = bug324_sequenced_mock(vec![bug324_ok_body("get-target")]);
+    let (p1, log1) = bug324_sequenced_mock(vec![format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        p2
+    )]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/a", p1)),
+        ),
+        ("method".to_string(), serde_json::json!("POST")),
+        ("body".to_string(), serde_json::json!("payload")),
+    ]);
+    let node = make_node("r302", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(*log1.lock(), vec![format!("POST /a HTTP/1.1")]);
+    assert_eq!(*log2.lock(), vec![format!("GET /b HTTP/1.1")]);
+}

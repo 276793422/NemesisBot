@@ -435,6 +435,49 @@ impl TaskDb {
         })
     }
 
+    /// published 终态 + payload 合并**单事务**版（2026-11-02 复评 F1：发布
+    /// 落账原子化——状态与 PR 留痕要么同落要么都不落，杜绝「状态已
+    /// published 而 payload 无 pr_number」的半行账让重试误判）。事务语义同
+    /// `merge_delivery_payload`（Immediate 写锁前置）。幂等键不存在 = `Err`。
+    pub fn mark_delivery_published_with_payload(
+        &self,
+        idempotency_key: &str,
+        patch: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.with_conn(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("tasks.db mark delivery published begin failed: {e}"))?;
+            let payload_str: String = tx
+                .query_row(
+                    "SELECT payload FROM deliveries WHERE idempotency_key = ?1",
+                    params![idempotency_key],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("tasks.db read delivery failed: {e}"))?
+                .ok_or_else(|| format!("delivery {idempotency_key} not found"))?;
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
+            if let (Some(obj), Some(patch_obj)) = (payload.as_object_mut(), patch.as_object()) {
+                for (k, v) in patch_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            tx.execute(
+                "UPDATE deliveries SET payload = ?2, status = 'published', confirmed_at = \
+                 COALESCE(confirmed_at, ?3) \
+                 WHERE idempotency_key = ?1 \
+                 AND status IN ('recorded', 'delivered', 'confirmed')",
+                params![idempotency_key, payload.to_string(), now_rfc3339()],
+            )
+            .map_err(|e| format!("tasks.db mark delivery published failed: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("tasks.db mark delivery published commit failed: {e}"))?;
+            Ok(payload)
+        })
+    }
+
     /// 按执行 ID 列交付（run 维证据包查询面；created_at + id 稳定序）。
     pub fn deliveries_by_run(&self, run_id: &str) -> Result<Vec<DeliveryRecord>, String> {
         self.with_conn(|conn| {

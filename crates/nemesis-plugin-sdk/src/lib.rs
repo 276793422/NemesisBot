@@ -100,6 +100,56 @@ macro_rules! export_loop_policy {
     };
 }
 
+/// 面板插件一键导出（2026-10-31 面板扩展批；crate 根调用；工程须有
+/// `wit/plugin.wit` 合同副本）。
+///
+/// 展开顺序：生成 `plugin-panel` world 绑定（`exports::nemesis::plugin::ui`
+/// 与 `nemesis::plugin::host` 导入模块）→ `export!($ty)`。
+/// `runtime_path` 语义同 [`export_tool!`]。面板 guest 实现
+/// `exports::nemesis::plugin::ui::Guest::handle_ui_command(input: String)
+/// -> Result<String, host::HostError>`：入参投影
+/// `{"command":...,"args":{...},"context":{"slug":...}}`，出参为回复 JSON
+/// 串（约定对象；业务失败 `{"error":"..."}` 形态，不 trap）。
+#[macro_export]
+macro_rules! export_ui {
+    ($ty:ident) => {
+        ::nemesis_plugin_sdk::generate!({
+            path: "wit",
+            world: "plugin-panel",
+            runtime_path: "nemesis_plugin_sdk",
+        });
+        ::nemesis_plugin_sdk::__export_impl!($ty);
+    };
+}
+
+/// flow 步骤插件一键导出（2026-11-03 guest step 批；crate 根调用；工程须有
+/// `wit/plugin.wit` 合同副本）。
+///
+/// 展开顺序：生成 `plugin-flow-step` world 绑定
+/// （`exports::nemesis::plugin::flow_step` 与 `nemesis::plugin::host` 导入
+/// 模块）→ `export!($ty)`。`runtime_path` 语义同 [`export_tool!`]。
+/// flow-step guest 实现两个出口：
+/// - `get_step_metadata() -> Result<StepMetadata, host::HostError>`：
+///   自报本插件可执行的步骤 op 词表（`kinds`，不含 `plugin:<slug>:` 前缀，
+///   如 `["fetch_issues", "file_bug"]`；安装期对账 + 运行期路由事实源）。
+/// - `run_step(input: String) -> Result<String, host::HostError>`：单
+///   json-string 进出。入参投影
+///   `{"op","args","instance":{...},"steps":{...},"board_issue","attempts",
+///   "session_key"}`；出参为四态生命周期 JSON
+///   `{"status":"done"|"running"|"failed"|"skipped", ...}`（其余字段 =
+///   artifacts 自由载荷；幂等/重试责任在 guest，宿主只管投递与记账）。
+#[macro_export]
+macro_rules! export_step {
+    ($ty:ident) => {
+        ::nemesis_plugin_sdk::generate!({
+            path: "wit",
+            world: "plugin-flow-step",
+            runtime_path: "nemesis_plugin_sdk",
+        });
+        ::nemesis_plugin_sdk::__export_impl!($ty);
+    };
+}
+
 /// generate!/export! 的顺序衔接（`export!` 宏由 generate! 展开产物定义到
 /// 调用 crate 根——必须在其后展开）；不对外稳定。片段全程 `ident`（宏链
 /// 逐层转发，`ty` 片段无法再匹配内层 `ident`）。
@@ -156,6 +206,10 @@ pub mod guide {
     pub const OBSERVER_GUEST: &str = "exports::nemesis::plugin::observer::Guest";
     /// 循环策略插件 Guest trait（生成后位于插件 crate）。
     pub const LOOP_POLICY_GUEST: &str = "exports::nemesis::plugin::loop_policy::Guest";
+    /// 面板插件 Guest trait（生成后位于插件 crate）。
+    pub const UI_GUEST: &str = "exports::nemesis::plugin::ui::Guest";
+    /// flow 步骤插件 Guest trait（生成后位于插件 crate；2026-11-03 批）。
+    pub const FLOW_STEP_GUEST: &str = "exports::nemesis::plugin::flow_step::Guest";
 }
 
 pub mod types {
@@ -194,4 +248,29 @@ pub mod types {
     /// - `validate-args`：入 `{tool, schema, args}`；出
     ///   `valid | fixed{args} | reject{message} | builtin`。
     pub struct LoopPolicyDoc;
+
+    /// 面板单出口（2026-10-31 面板扩展批）：`handle-ui-command`，单
+    /// json-string 进出——入 `{"command":...,"args":{...},
+    /// "context":{"slug":...}}`；出回复 JSON 串（约定对象；业务失败
+    /// `{"error":"..."}` 形态，非 trap）。guest 可经 `host::tool_invoke`
+    /// 执行动作（过宿主安全 8 层与审批）。
+    pub struct PanelDoc;
+
+    /// flow 步骤双出口（2026-11-03 guest step 批）：
+    ///
+    /// - `get-step-metadata`（无参）：自报 `kinds` 词表（本插件可执行的
+    ///   步骤 op 名单，不含 `plugin:<slug>:` 前缀）——安装期对账 +
+    ///   运行期路由事实源；插件声明了模板用到但词表外的 op = 安装拒绝
+    ///   （MetadataMismatch）。
+    /// - `run-step`（单 json-string 进出）：入参投影
+    ///   `{"op","args","instance":{template,instance,ext_key,title,
+    ///   origin_type,origin_id},"steps":{<id>:{status,error,attempts}},
+    ///   "board_issue","attempts","session_key"}`（`args` 已完成
+    ///   `{{token}}` 渲染；不含图片字节与凭据）。出参四态生命周期 JSON：
+    ///   `{"status":"done"|"running"|"failed"|"skipped", ...}`——其余
+    ///   字段 = artifacts 自由载荷（done/skipped 落盘、failed 取
+    ///   `error` 字段文本走 on_fail、running 保持 Running 下轮重投）。
+    ///   **幂等/重试责任在 guest**：宿主每 tick 重投（`attempts` 计数
+    ///   供对账），guest 需凭自身数据目录状态去重已受理的操作。
+    pub struct FlowStepDoc;
 }

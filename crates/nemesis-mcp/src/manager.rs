@@ -279,6 +279,25 @@ impl McpManager {
 // One-shot discovery (for mcp_discover tool)
 // ---------------------------------------------------------------------------
 
+/// one-shot 探测的外层预算（0/缺省 = 15s）。
+fn one_shot_budget(timeout_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 15 })
+}
+
+/// one-shot 探测的内层逐请求超时 = 外层预算 + 1s 让位宽限（超时阶梯纪律：
+/// 内层必须大于外层——外层确定性先到并报 `timed out after Ns`；内层只兜
+/// 住传输层读挂死）。BUG-20261103-336：此前两处 one-shot 走裸
+/// `McpClient::new()`，内层硬编码 30s——调用方（mcp_discover 工具 /
+/// CLI `mcp discover`）传 timeout>30 想放宽预算时被内层静默截断（外层
+/// 形同虚设，报错形态是内层 `-3 request timed out` 而非外层
+/// `timed out after Ns`；红证：31s 慢 server + --timeout 35 → 32s 失败
+/// 于内层）。2026-10-15 第十二轮只修了 `from_server_config` 注册路径，
+/// one-shot 探测路径同族漏配（当时「裸 new() 无外层配对」的归类对本
+/// 函数不成立——它有 `tokio::time::timeout` 外层包裹）。
+fn one_shot_request_timeout_ms(timeout_secs: u64) -> u64 {
+    one_shot_budget(timeout_secs).as_millis() as u64 + 1_000
+}
+
 /// Result of one-shot MCP server discovery.
 ///
 /// Contains raw metadata (not adapter objects) for formatting/display.
@@ -304,9 +323,12 @@ pub async fn discover_server_metadata(
     timeout_secs: u64,
 ) -> Result<DiscoveryResult, String> {
     let transport = StdioTransport::new(command, args, env);
-    let mut client: Box<dyn Client> = Box::new(McpClient::new(Box::new(transport)));
+    let mut client: Box<dyn Client> = Box::new(
+        McpClient::new(Box::new(transport))
+            .with_request_timeout_ms(one_shot_request_timeout_ms(timeout_secs)),
+    );
 
-    let duration = std::time::Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 15 });
+    let duration = one_shot_budget(timeout_secs);
 
     // Initialize with timeout
     let init_result = tokio::time::timeout(duration, client.initialize()).await;
@@ -325,7 +347,8 @@ pub async fn discover_server_metadata(
             return Err(format!(
                 "MCP server '{}' timed out after {}s. \
                  If this is an HTTP-based MCP server, use the 'url' parameter instead.",
-                command, timeout_secs
+                command,
+                duration.as_secs()
             ));
         }
     }
@@ -377,9 +400,12 @@ pub async fn discover_server_metadata_http_with_headers(
     timeout_secs: u64,
 ) -> Result<DiscoveryResult, String> {
     let transport = HttpTransport::with_headers(url, header_lines);
-    let mut client: Box<dyn Client> = Box::new(McpClient::new(Box::new(transport)));
+    let mut client: Box<dyn Client> = Box::new(
+        McpClient::new(Box::new(transport))
+            .with_request_timeout_ms(one_shot_request_timeout_ms(timeout_secs)),
+    );
 
-    let duration = std::time::Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 15 });
+    let duration = one_shot_budget(timeout_secs);
 
     let init_result = tokio::time::timeout(duration, client.initialize()).await;
     match init_result {
@@ -397,7 +423,7 @@ pub async fn discover_server_metadata_http_with_headers(
             return Err(format!(
                 "MCP HTTP server '{}' timed out after {}s",
                 sanitize_url_for_log(url),
-                timeout_secs
+                duration.as_secs()
             ));
         }
     }

@@ -20,6 +20,13 @@
 //! conflict 返回（调用方转提示）；web 键允许带 `new_sid` 改名恢复（新 sid 经
 //! [`SessionStore::sanitize_session_id`] 消毒后重验），复合键改名不支持。
 //!
+//! 恢复事务（2026-11-02 复评 F3）：三段 rename 中途失败会留下「半成品」——
+//! 一部分材料已到目标键、其余还在条目目录。恢复在首次 rename 前往条目内写
+//! 事务标记（`restore-in-progress.json`，含目标键）；重试按标记识别自己的
+//! 半成品，跳过冲突检查续作；换键恢复遇材料已分裂诚实拒绝（防「chat 留原
+//! 键、boundary/meta 去新键」的会话分裂假成功）。成功 = 整目录删除（标记
+//! 随之消失），失败保留条目 = 可重试。
+//!
 //! # 寻址注入
 //!
 //! 核心函数全部走 [`TrashLocations`]（chat_log 三件套寻址 + 回收站根）。
@@ -418,6 +425,19 @@ pub fn trash_list_in(loc: &TrashLocations) -> Vec<serde_json::Value> {
 // 恢复 / 清除
 // ---------------------------------------------------------------------------
 
+/// 恢复事务标记文件名（2026-11-02 复评 F3）：条目目录内、首次 rename 前写入、
+/// 成功随整目录删除消失；语义见 [`trash_restore_in`]。
+const RESTORE_MARKER_FILE: &str = "restore-in-progress.json";
+
+/// [`RESTORE_MARKER_FILE`] 的内容。只记目标键，不记已移动清单——续作按盘面
+/// 事实对账（rename 同卷原子：源消失 = 目标在场），落盘清单反而多一个
+/// 「rename 成功但清单未更新」的不一致窗口。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RestoreMarker {
+    /// 本次恢复事务的目标键。
+    target_key: String,
+}
+
 /// 恢复条目到原键（或 `new_sid` 改名后的新 web 键）。
 ///
 /// 返回两态（都是 `Ok`，handler 按字段转前端）：
@@ -478,10 +498,53 @@ pub fn trash_restore_in(
         }
     };
 
+    // 恢复事务标记（F3，2026-11-02 复评）：三段 rename 中途失败会把一部分
+    // 材料留在目标键（chat 最先移、通常已过去）——不识别的话，重试的冲突
+    // 检测把自己的半成品当成「别的会话占位」（conflict:true 永久卡死原名
+    // 恢复），用户改道改名恢复更会把剩余材料移到另一个键（chat 留原键、
+    // boundary/meta 去新键 = 会话分裂还报成功）。标记在首次 rename 前写入，
+    // 成功随整目录删除一起消失；失败保留条目 + 标记 = 可重试。续作三态：
+    // - 同目标 = 上次半途失败的重试：目标上的占用是本事务自己的半成品，
+    //   跳过冲突检查续作；
+    // - 换目标 = 改道：旧目标已有任何一件材料 = 已分裂，改道必然造出会话
+    //   分裂，诚实拒绝；旧目标干净 = 上次死在第一个 rename 前，允许改道
+    //   （标记下面覆写）；
+    // - 无标记 = 全新恢复。标记在但读不出（半截 JSON）同此：标记只在移动
+    //   开始前写入（换目标覆写同样先于移动且已核实旧目标干净），写坏 = 死
+    //   在移动前、材料全在条目内——按全新处理，覆写坏标记。
+    //   （不变量：标记写入永远不进移动循环。）
+    let marker_path = entry_dir.join(RESTORE_MARKER_FILE);
+    let marker: Option<RestoreMarker> = std::fs::read_to_string(&marker_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+    let resuming = match &marker {
+        Some(m) if m.target_key == target_key => true,
+        Some(m) => {
+            let split = [
+                loc.log_path(&m.target_key),
+                loc.boundary_path(&m.target_key),
+                loc.meta_path(&m.target_key),
+            ]
+            .iter()
+            .any(|p| p.exists());
+            if split {
+                return Err(format!(
+                    "条目 {entry} 的恢复曾在目标 {} 中途失败（材料已分裂到该键），\
+                     换键恢复会造出会话分裂——请用与上次相同的目标重试完成",
+                    m.target_key
+                ));
+            }
+            false
+        }
+        None => false,
+    };
+
     // 冲突检测：目标 jsonl 或 meta 已存在 = 该会话已物化（meta 单独存在 =
     // 建了但没消息的会话，同样拦截）。boundary 是审计 sidecar，clear 截断
-    // 保留文件，不参与冲突判定（恢复覆盖之）。
-    let conflict = loc.log_path(&target_key).exists() || loc.meta_path(&target_key).exists();
+    // 保留文件，不参与冲突判定（恢复覆盖之）。续作路径跳过——目标上的占用
+    // 是本事务自己的半成品。
+    let conflict =
+        !resuming && (loc.log_path(&target_key).exists() || loc.meta_path(&target_key).exists());
     if conflict {
         let display_sid = display_id_of(&target_key);
         let ms = manifest
@@ -503,10 +566,16 @@ pub fn trash_restore_in(
         }));
     }
 
-    // 项目归属/title 投影在移走 meta 前抓取（meta.json 马上要 rename）。
+    // 项目归属/title 投影在移走 meta 前抓取（meta.json 马上要 rename）；
+    // 续作时 meta 可能已被上次移到目标键——回落读目标键的（同为本事务移入）。
     let meta = std::fs::read_to_string(entry_dir.join("meta.json"))
         .ok()
-        .and_then(|raw| serde_json::from_str::<SessionMeta>(&raw).ok());
+        .and_then(|raw| serde_json::from_str::<SessionMeta>(&raw).ok())
+        .or_else(|| {
+            std::fs::read_to_string(loc.meta_path(&target_key))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<SessionMeta>(&raw).ok())
+        });
     let (project_id, project_path, title) = match &meta {
         Some(m) => (
             m.project_id.clone(),
@@ -516,18 +585,57 @@ pub fn trash_restore_in(
         None => (None, None, manifest.as_ref().and_then(|m| m.title.clone())),
     };
 
-    // 移回三件套（boundary/meta 缺席 = 跳过）。
-    for (from, to) in [
-        (entry_dir.join("chat.jsonl"), loc.log_path(&target_key)),
+    // F3：写事务标记（首次恢复 / 改道覆写坏标记），先于任何 rename。
+    if !resuming {
+        let raw = serde_json::to_string(&RestoreMarker {
+            target_key: target_key.clone(),
+        })
+        .map_err(|e| format!("恢复标记序列化失败: {e}"))?;
+        std::fs::write(&marker_path, raw).map_err(|e| format!("恢复标记写入失败: {e}"))?;
+    }
+
+    // 移回三件套（boundary/meta 缺席 = 跳过；续作时已移走的同样按缺席跳过）。
+    let restore_pairs: [(&str, PathBuf, PathBuf); 3] = [
         (
+            "chat.jsonl",
+            entry_dir.join("chat.jsonl"),
+            loc.log_path(&target_key),
+        ),
+        (
+            "boundary.jsonl",
             entry_dir.join("boundary.jsonl"),
             loc.boundary_path(&target_key),
         ),
-        (entry_dir.join("meta.json"), loc.meta_path(&target_key)),
-    ] {
-        move_file_retry(&from, &to)?;
+        (
+            "meta.json",
+            entry_dir.join("meta.json"),
+            loc.meta_path(&target_key),
+        ),
+    ];
+    // 完成性验证基线：移动前「条目内有 或 目标键已有（续作半成品）」的成员
+    // = 期望集合；两侧都缺席 = 本来就 lazy 不存在，不参与验证。
+    let expected: Vec<usize> = restore_pairs
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, src, dst))| src.exists() || dst.exists())
+        .map(|(i, _)| i)
+        .collect();
+    for (_, from, to) in &restore_pairs {
+        move_file_retry(from, to)?;
     }
-    // 残留（trash.json 等）整目录清掉。
+    // 完成性验证（F3）：期望集合逐一核实在目标键——rename 同卷原子（源消失
+    // = 目标在场），缺位 = 语义被破坏，诚实 Err 不报假成功（条目 + 标记保留
+    // 可重试）。
+    for i in &expected {
+        let (name, _, dst) = &restore_pairs[*i];
+        if !dst.exists() {
+            return Err(format!(
+                "恢复完成性校验失败: {name} 未落到目标位置（条目保留，可重试）"
+            ));
+        }
+    }
+    // 残留（trash.json / 恢复标记）整目录清掉——标记随之消失，此后同键再删
+    // 是全新事务。
     nemesis_utils::fsutil::remove_dir_all_retry(&entry_dir)
         .map_err(|e| format!("清理回收站条目失败: {e}"))?;
 

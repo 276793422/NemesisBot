@@ -1959,8 +1959,18 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
     )
     .await;
 
-    // The session was created and the assistant reply recorded.
-    let _session = store.get_or_create("persist_session");
+    // BUG-20261102-322：名字承诺 persists_to_session_store——此前
+    // `let _session` 丢弃、零断言，持久化分支（add_message/save）回归时
+    // 测试照绿。assistant 回复必须真进 session_store。
+    let session = store.get_or_create("persist_session");
+    assert!(
+        session
+            .messages
+            .iter()
+            .any(|m| m.role == "assistant" && m.content.contains("Persisted reply")),
+        "assistant 回复必须持久化进 session_store: {:?}",
+        session.messages
+    );
 }
 
 #[tokio::test]

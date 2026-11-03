@@ -269,6 +269,16 @@ fn is_debug_artifact(path: &str) -> bool {
     path == "_debug" || path.starts_with("_debug/")
 }
 
+/// 顶层 `target/` = 构建产物，双向排除——worker 在副本里 cargo build 的产物
+/// 不进变更集（不合入项目），基线残留的构建产物缺失也不报删除。只排
+/// **顶层**：`src/target` 等深层同名不排——`is_noise_dir` 刻意只收无争议名
+/// （transfer.rs S-O3 纪律：静默丢真实交付比噪音入库严重），`target` 的
+/// 有实证收窄发生在本管线层不动通用剪枝语义（2026-11-01 T1 实录：68MB/
+/// 405 文件构建垃圾进变更集，真实改动仅 2 文件）。
+fn is_build_artifact(path: &str) -> bool {
+    path == "target" || path.starts_with("target/")
+}
+
 fn diff_tree(
     exec_dir: &Path,
     baseline_files: &[TransferFileEntry],
@@ -286,7 +296,7 @@ fn diff_tree(
         let mut out = Vec::new();
         diff_walk(exec_dir, exec_dir, &mut out, &mut skipped);
         out.into_iter()
-            .filter(|f| f.path != BASELINE_SIDECAR_NAME)
+            .filter(|f| f.path != BASELINE_SIDECAR_NAME && !is_build_artifact(&f.path))
             .collect()
     };
     // diff_walk 已按 path 字典序；显式再排一次防上游语义变化（变更集声明序 =
@@ -295,7 +305,7 @@ fn diff_tree(
 
     let baseline: std::collections::HashMap<&str, &TransferFileEntry> = baseline_files
         .iter()
-        .filter(|f| !is_debug_artifact(&f.path))
+        .filter(|f| !is_debug_artifact(&f.path) && !is_build_artifact(&f.path))
         .map(|f| (f.path.as_str(), f))
         .collect();
     let current_paths: std::collections::HashSet<&str> =
@@ -334,7 +344,7 @@ fn diff_tree(
     }
     let deletions: Vec<String> = baseline_files
         .iter()
-        .filter(|b| !is_debug_artifact(&b.path))
+        .filter(|b| !is_debug_artifact(&b.path) && !is_build_artifact(&b.path))
         .filter(|b| !current_paths.contains(b.path.as_str()))
         .map(|b| b.path.clone())
         .collect();

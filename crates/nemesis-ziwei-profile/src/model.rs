@@ -495,9 +495,13 @@ impl Profile {
                 self.schema_version, SCHEMA_VERSION
             ));
         }
-        if !self.profile_id.starts_with("zw-pro-") {
+        // BUG-20261103-329：profile_id 形态闸单一真相源（is_valid_profile_id
+        // ——与 store::assert_id 同源）。此前只查前缀：load 只 assert 请求侧
+        // id，手改盘上 profile.json 的内部 id（`zw-pro-../../evil` 形态）
+        // 经 validate 畅通入会话键 / capture / snapshots 路径消费面。
+        if !is_valid_profile_id(&self.profile_id) {
             return Err(format!(
-                "profile_id {:?} 形态非法（须 zw-pro- 前缀）",
+                "profile_id {:?} 形态非法（zw-pro- 前缀 + ≤64 字符 alnum/-/_）",
                 self.profile_id
             ));
         }
@@ -735,6 +739,19 @@ pub fn is_valid_tool_name(name: &str) -> bool {
         && b[0].is_ascii_lowercase()
         && b.iter()
             .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+}
+
+/// profile_id 形态判定（单一真相源）：`zw-pro-` 前缀 + ≤64 字符 +
+/// ASCII alnum/`-`/`_`。`Profile::validate` 与 `store::assert_id` 同源
+/// 消费——BUG-20261103-329：validate 此前只查前缀，手改 profile.json 的
+/// 内部 id（load 只 assert 请求侧 id）可携 `..`/路径分隔符进会话键与
+/// capture/snapshots 路径消费面逃逸。
+pub fn is_valid_profile_id(id: &str) -> bool {
+    id.starts_with("zw-pro-")
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn validate_rel_dest(dest: &str) -> Result<(), String> {

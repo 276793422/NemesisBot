@@ -187,6 +187,45 @@ fn reject_unknown_schema_version() {
     assert!(p.validate().is_err());
 }
 
+// ---------- BUG-20261103-329：profile_id 形态闸双轨不一 ----------
+
+#[test]
+fn reject_hostile_internal_profile_id() {
+    // load 只 assert 请求侧 id；手改 profile.json 的内部 id 可携路径
+    // 穿越形态过 validate（此前只查前缀）→ 会话键 / capture / snapshots
+    // 路径消费面逃逸。validate 必须与 store::assert_id 同形态。
+    for bad in [
+        "zw-pro-../../evil",
+        "zw-pro-a/b",
+        "zw-pro-a\\b",
+        "zw-pro-a.b",
+        "zw-pro-a b",
+        "not-zw-pro-clean",
+    ] {
+        let mut p = sample_profile();
+        p.profile_id = bad.to_string();
+        let Err(err) = p.validate() else {
+            panic!("profile_id {bad:?} 必须被 validate 拒绝");
+        };
+        assert!(err.contains("profile_id"), "错误须点名 profile_id: {err}");
+    }
+    // 合法形态不受影响（与 assert_id 值域逐一对齐；空后缀是 assert_id
+    // 既有接受值——本修复只补齐闸，不额外收紧值域）。
+    for ok_id in ["zw-pro-abcd1234", "zw-pro-"] {
+        let mut ok = sample_profile();
+        ok.profile_id = ok_id.to_string();
+        assert!(ok.validate().is_ok(), "{ok_id:?} 必须仍被接受");
+    }
+    // 恰 64 字符合法，65 拒。
+    let mut ok64 = sample_profile();
+    ok64.profile_id = format!("zw-pro-{}", "a".repeat(57));
+    assert_eq!(ok64.profile_id.len(), 64);
+    assert!(ok64.validate().is_ok());
+    let mut bad65 = sample_profile();
+    bad65.profile_id = format!("zw-pro-{}", "a".repeat(58));
+    assert!(bad65.validate().is_err());
+}
+
 #[test]
 fn reject_field_out_of_bounds() {
     let mut p = sample_profile();
@@ -409,6 +448,38 @@ fn store_rejects_path_traversal_id() {
         Err(crate::store::StoreError::NotFound(_)) => {}
         other => panic!("期望 NotFound，得到 {other:?}"),
     }
+}
+
+#[test]
+fn store_load_rejects_hostile_internal_id_hand_edit() {
+    // BUG-20261103-329 实链回归：干净目录名 + 盘上手改的恶意内部 id——
+    // load 的 assert 只看请求侧 id，必须靠 validate 在读出侧拦下
+    // （否则恶意 id 进会话键 / capture / snapshots 路径消费面）。
+    let tmp = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(tmp.path());
+    let mut p = sample_profile();
+    p.profile_id = "zw-pro-abc123".to_string();
+    store.save(&p, None).unwrap();
+    // 手改盘上 profile.json 的内部 id（绕过 save 的 assert——模拟手改/外源投毒）。
+    // ProfileStore::new(workspace) 内部拼 ziwei/profiles，手改须对齐实际落盘路径。
+    let dir = tmp
+        .path()
+        .join("ziwei")
+        .join("profiles")
+        .join("zw-pro-abc123");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("profile.json")).unwrap()).unwrap();
+    v["profile_id"] = json!("zw-pro-..\\..\\evil");
+    std::fs::write(
+        dir.join("profile.json"),
+        serde_json::to_string_pretty(&v).unwrap(),
+    )
+    .unwrap();
+    // 请求侧 id 合法（assert 过），读出侧内部 id 必须被 validate 拒。
+    let Err(crate::store::StoreError::Invalid(msg)) = store.load("zw-pro-abc123") else {
+        panic!("手改内部 id 的 profile 必须被 load 拒绝");
+    };
+    assert!(msg.contains("形态非法"), "{msg}");
 }
 
 #[test]

@@ -165,6 +165,7 @@ fn test_parse_host_port_wildcard() {
 // plugin_ui_dll_exists tests
 // -------------------------------------------------------------------------
 
+#[cfg(all(feature = "desktop", feature = "security"))] // 与生产 plugin_ui_library_exists 同闸
 #[test]
 fn test_plugin_ui_library_exists_returns_bool() {
     // This just verifies the function doesn't panic. The result depends on
@@ -1135,6 +1136,7 @@ fn test_print_gateway_banner_various_configs() {
     print_gateway_banner("192.168.1.1", 9999, "x", 100, "10.0.0.1", 65535);
 }
 
+#[cfg(feature = "scanner")]
 #[test]
 fn test_load_scanner_full_config_with_engines_and_enabled() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1156,6 +1158,7 @@ fn test_load_scanner_full_config_with_engines_and_enabled() {
     assert_eq!(cfg.engines.len(), 1);
 }
 
+#[cfg(feature = "scanner")]
 #[test]
 fn test_load_scanner_full_config_partial_data() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1170,6 +1173,7 @@ fn test_load_scanner_full_config_partial_data() {
     assert!(cfg.engines.is_empty());
 }
 
+#[cfg(feature = "scanner")]
 #[test]
 fn test_load_scanner_full_config_empty_file() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1182,6 +1186,7 @@ fn test_load_scanner_full_config_empty_file() {
     assert!(cfg.engines.is_empty());
 }
 
+#[cfg(feature = "scanner")]
 #[test]
 fn test_load_scanner_full_config_nonexistent() {
     let result = crate::security_setup::load_scanner_full_config(std::path::Path::new(
@@ -1212,6 +1217,7 @@ fn test_print_agent_startup_info_with_skills_dir() {
     print_agent_startup_info(tmp.path(), default_count + 4);
 }
 
+#[cfg(all(feature = "desktop", feature = "security"))] // 与生产 plugin_ui_library_exists 同闸
 #[test]
 fn test_plugin_ui_library_exists_no_panic() {
     // Just ensure the function runs without panic
@@ -1469,6 +1475,7 @@ fn test_cluster_rpc_config_construction() {
 // load_scanner_full_config with various inputs
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "scanner")]
 #[test]
 fn test_load_scanner_full_config_with_non_object() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1779,6 +1786,7 @@ fn test_forge_registry_creation() {
 // DeviceService creation test
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "devices")]
 #[test]
 fn test_device_service_creation() {
     let service = nemesis_devices::service::DeviceService::new();
@@ -1791,6 +1799,7 @@ fn test_device_service_creation() {
 // HeartbeatService wiring test
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "heartbeat")]
 #[test]
 fn test_heartbeat_config_construction() {
     let config = nemesis_heartbeat::service::HeartbeatConfig {
@@ -1804,6 +1813,7 @@ fn test_heartbeat_config_construction() {
     assert_eq!(config.interval, std::time::Duration::from_secs(300));
 }
 
+#[cfg(feature = "heartbeat")]
 #[test]
 fn test_heartbeat_service_creation_with_config() {
     let config = nemesis_heartbeat::service::HeartbeatConfig {
@@ -2447,6 +2457,7 @@ fn test_agent_max_turns_floor_positive() {
 // Scanner config with nested engines
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "scanner")]
 #[test]
 fn test_scanner_config_nested_engines() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -6160,6 +6171,7 @@ async fn run_runtime_pipeline(
         cluster_adapter: pa.cluster_adapter.clone(),
         skills_install_gate: None,
         plugin_install_gate: None,
+        enabled_channels: Vec::new(),
     };
 
     run_runtime(

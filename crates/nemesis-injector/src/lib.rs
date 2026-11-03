@@ -54,6 +54,14 @@ pub enum InjectError {
     ProtectEp(u32),
     #[error("WriteProcessMemory(EP) 失败: {0}")]
     WriteEp(u32),
+    #[error(
+        "注入 DLL 路径超长（{0} 字节，上限 255——超出会覆写 shellcode \"Run\\0\" 名字区致宿主死循环）"
+    )]
+    DllPathTooLong(usize),
+    #[error(
+        "注入 DLL 路径含非 ASCII 字符（LoadLibraryA 按 ANSI 代码页解读 UTF-8 字节必失败——请用纯 ASCII 路径）"
+    )]
+    DllPathNotAscii,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +122,27 @@ unsafe extern "system" {
 
 fn put64(p: &mut [u8], off: usize, v: u64) {
     p[off..off + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+/// 注入 DLL 路径装配校验（单一真相源：launch 预检与 shellcode 装配同源）。
+///
+/// - **ASCII**：shellcode 走 `LoadLibraryA`（ANSI 语义）——非 ASCII 的 UTF-8
+///   字节序列按本机代码页解读必变成别的路径 → 目标内加载失败 → shellcode
+///   `jmp self` 死循环（宿主 100% CPU 永久空转），必须在 spawn 前诚实拒绝。
+/// - **长度**：路径数据窗容量 = `OFF_DATA_NAME - OFF_DATA_DLLPATH - 1`（255，
+///   留 NUL）——超限的旧实现按 `min` 静默截断，且尾字节/NUL 会覆写
+///   OFF_DATA_NAME 的 "Run\0" 名字区 → 目标内 GetProcAddress 失败 → 同型
+///   `jmp self` 死循环。BUG-20261103-342 红线。
+fn validate_dll_path(dll_path: &str) -> Result<(), InjectError> {
+    const DLLPATH_MAX: usize = OFF_DATA_NAME - OFF_DATA_DLLPATH - 1; // 255
+    let bytes = dll_path.as_bytes();
+    if bytes.len() > DLLPATH_MAX {
+        return Err(InjectError::DllPathTooLong(bytes.len()));
+    }
+    if !bytes.is_ascii() {
+        return Err(InjectError::DllPathNotAscii);
+    }
+    Ok(())
 }
 
 /// 读远程进程的 OEP（ImageBase + PE AddressOfEntryPoint）。
@@ -198,6 +227,9 @@ pub fn launch_and_inject_with_env(
     creation_flags_extra: u32,
     env: &[(&str, &str)],
 ) -> Result<(HANDLE, HANDLE), InjectError> {
+    // fail-fast：路径不合法时不要 spawn 宿主进程（旧实现会带病启动后注入
+    // 失败 → 宿主空转死循环；校验与 shellcode 装配同源见 validate_dll_path）。
+    validate_dll_path(dll_path)?;
     unsafe {
         // CREATE_SUSPENDED + 调用方额外标志（CREATE_NO_WINDOW=0x08000000 默认加，防弹窗）
         let flags = CREATE_SUSPENDED | creation_flags_extra | 0x08000000;
@@ -310,24 +342,10 @@ fn inject_ep_hijack(hp: HANDLE, dll_path: &str) -> Result<(), InjectError> {
         let gpa_addr = GetProcAddress(k32, c"GetProcAddress".as_ptr().cast())
             .ok_or(InjectError::ResolveApi)? as usize as u64;
 
-        let mut sc = [0u8; 0x1000];
-        sc[..SHCODE_SIZE].copy_from_slice(&SHELLCODE);
-        put64(&mut sc, OFF_DLLPATH, base_addr + OFF_DATA_DLLPATH as u64);
-        put64(&mut sc, OFF_LOADLIB, load_lib_addr);
-        put64(&mut sc, OFF_NAME, base_addr + OFF_DATA_NAME as u64);
-        put64(&mut sc, OFF_GPA, gpa_addr);
-
-        // dllpath 写到 OFF_DATA_DLLPATH
-        let dp = &mut sc[OFF_DATA_DLLPATH..];
-        let bytes = dll_path.as_bytes();
-        let n = bytes.len().min(dp.len() - 1);
-        dp[..n].copy_from_slice(&bytes[..n]);
-        dp[n] = 0;
-        // "Run\0" 写到 OFF_DATA_NAME
-        sc[OFF_DATA_NAME..OFF_DATA_NAME + 4].copy_from_slice(b"Run\0");
+        let sc = build_shellcode_image(dll_path, base_addr, load_lib_addr, gpa_addr)?;
 
         let mut done: usize = 0;
-        if WriteProcessMemory(hp, base, sc.as_mut_ptr() as *mut _, 0x1000, &mut done) == 0 {
+        if WriteProcessMemory(hp, base, sc.as_ptr().cast(), 0x1000, &mut done) == 0 {
             return Err(InjectError::WriteShell(
                 std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32,
             ));
@@ -372,6 +390,33 @@ fn inject_ep_hijack(hp: HANDLE, dll_path: &str) -> Result<(), InjectError> {
     }
 }
 
+/// 组装完整 shellcode 镜像（0x1000 字节）：shellcode + 立即数补丁 + 数据区
+/// （dllpath @0x100 / "Run\0" @0x200）。纯函数——布局与失败面由 tests 钉死。
+fn build_shellcode_image(
+    dll_path: &str,
+    remote_base: u64,
+    load_lib: u64,
+    gpa: u64,
+) -> Result<[u8; 0x1000], InjectError> {
+    validate_dll_path(dll_path)?;
+    let mut sc = [0u8; 0x1000];
+    sc[..SHCODE_SIZE].copy_from_slice(&SHELLCODE);
+    put64(&mut sc, OFF_DLLPATH, remote_base + OFF_DATA_DLLPATH as u64);
+    put64(&mut sc, OFF_LOADLIB, load_lib);
+    put64(&mut sc, OFF_NAME, remote_base + OFF_DATA_NAME as u64);
+    put64(&mut sc, OFF_GPA, gpa);
+
+    // dllpath 写到 OFF_DATA_DLLPATH（validate 已保证 ≤255 + ASCII，不会
+    // 触及 OFF_DATA_NAME 名字区）
+    let dp = &mut sc[OFF_DATA_DLLPATH..];
+    let bytes = dll_path.as_bytes();
+    dp[..bytes.len()].copy_from_slice(bytes);
+    dp[bytes.len()] = 0;
+    // "Run\0" 写到 OFF_DATA_NAME
+    sc[OFF_DATA_NAME..OFF_DATA_NAME + 4].copy_from_slice(b"Run\0");
+    Ok(sc)
+}
+
 // 抑制未使用 import 说明：LoadLibraryA/GetProcAddress 在 shellcode 里间接调用，
 // 注入器自身只取它们的地址（GetModuleHandleA + GetProcAddress），不直接 import。
 
@@ -409,3 +454,6 @@ pub unsafe fn wait_and_get_exit(hp: HANDLE) -> Option<u32> {
         Some(code)
     }
 }
+
+#[cfg(test)]
+mod tests;

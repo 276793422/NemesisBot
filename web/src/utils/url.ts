@@ -1,10 +1,10 @@
 // 外链 scheme 闸（单一真相源）：只放行 http(s) 绝对 URL。
 //
-// 背景（BUG-20261101-274）：board 交付记录的 pr_url / MCP 供应商链接
+// 背景（BUG-20261101-274）：board 交付记录的 external_url / MCP 供应商链接
 // 源自 connector 调用的模型回复——被注入的输出可携带 `javascript:` 伪
 // URL，直接绑 `:href` 即成点击执行向量（Dashboard 域内持全量 WSAPI
 // 权限）。显示文本走 {{ }} 插值天然安全；只有 href/src 属性绑定需要
-// 本闸。后端 publish.rs `safe_pr_url` 是源头闸（落账前），本函数是
+// 本闸。后端 flow_engine `safe_external_url` 是源头闸（落账前），本函数是
 // 渲染闸（防历史脏数据与其他写入口）。
 //
 // 用法：`:href="safeExternalUrl(u) || undefined"`——unsafe 返 ''，与

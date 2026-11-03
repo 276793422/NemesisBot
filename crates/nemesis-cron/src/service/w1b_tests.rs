@@ -937,3 +937,71 @@ async fn test_fire_loop_survives_persist_failure() {
     );
     assert_eq!(svc.status()["enabled"], false, "stop 后服务必须停机");
 }
+
+#[test]
+fn test_w1b_mutator_save_window_cannot_clobber_concurrent_ok_effect() {
+    // BUG-20261103-331 红证：T1(update_job) 在「mutate 后 drop 锁 → save」
+    // 的窗口内，T2(patch_job) 可完成 mutate+save（整 store 快照包含 T1 的
+    // mutation 并成功落盘、返回 Ok）；随后 T1 的 save 失败回滚把 T2 已 Ok
+    // 的效果从内存抹掉——Ok 方效果丢失 + 内存/盘分叉。修复后 save 与
+    // mutate 同锁，T2 必须排在 T1 完整临界区之后（红断言转绿）。
+    let (_dir, path) = tmp_store_path("cron.json");
+    let svc = Arc::new(CronService::new(&path));
+    let job = svc
+        .add_job("j", every_schedule(60000), "m", false, None, None)
+        .unwrap();
+
+    // BUG-20261103-331 回归锁（修复后语义）：mutator 的 mutate→save→回滚
+    // 全程持同一把 store 锁，save 窗口内并发 mutator 物理上只能排队到临界
+    // 区之后——修复前「T1 update 落盘失败回滚抹掉 T2 已 Ok patch」的交错
+    // 可达（红证实录：left:"j" right:"t2-name"，T2 借 drop-锁-再-save 的
+    // 缝隙插队 Ok）；修复后 T2 在 T1 的持锁 save 停顿窗口内发起也必须等
+    // T1 临界区（含回滚）完成，其 Ok 干净落在回滚后的状态上，clobber 结
+    // 构性不可达。
+    // 时序：两旗标在 T1 启动前全部武装——T1 的 save 先消费 delay（持锁停
+    // 顿 1000ms）再消费 fail（Err+回滚）；主线程 200ms 后发起 T2（此刻正
+    // 值 T1 持锁停顿，T2 排队）；T1 走完临界区后 T2 才 mutate+save（旗标
+    // 已被消费光）→ Ok。旗标若移到 T2 之后：主线程自身会阻塞在 T2 的锁
+    // 竞争上，永远无法在 T1 save 期间 arm——那正是修复后的世界。
+    svc.persist_delay_ms.store(1000, Ordering::SeqCst);
+    svc.persist_fail_next.store(true, Ordering::SeqCst);
+
+    let svc1 = Arc::clone(&svc);
+    let job_id = job.id.clone();
+    let t1 = std::thread::spawn(move || {
+        svc1.update_job(
+            &job_id,
+            Some("t1-rename"),
+            Some(cron_schedule("*/5 * * * *")),
+        )
+    });
+
+    // 给 T1 足够时间完成 mutate 并进入持锁 save 停顿窗口（200ms vs 窗口
+    // 1000ms：数量级余量；post-fix 形态下 T2 会阻塞在 store 锁上直到
+    // T1 临界区结束）。
+    std::thread::sleep(Duration::from_millis(200));
+
+    // T2 patch（修复后形态：阻塞排队到 T1 完整临界区之后才执行）。
+    let patched = svc.patch_job(
+        &job.id,
+        &CronJobPatch {
+            name: Some("t2-name".to_string()),
+            ..Default::default()
+        },
+    );
+    assert!(patched.is_ok(), "T2 patch 必须最终成功返回 Ok");
+
+    let r1 = t1.join().unwrap();
+    assert!(r1.is_err(), "T1 update 必须经注入的落盘失败返回 Err");
+
+    // 不变量：Ok 方的效果必须存活，Err 方的效果必须不生效。
+    let after = svc.get_job(&job.id).unwrap();
+    assert_eq!(
+        after.name, "t2-name",
+        "BUG-20261103-331: T2 已 Ok 的 patch 不得被 T1 失败落盘的回滚抹掉"
+    );
+    assert_eq!(
+        after.schedule.kind, "every",
+        "T1 失败的 update 不得生效（回滚语义）"
+    );
+}

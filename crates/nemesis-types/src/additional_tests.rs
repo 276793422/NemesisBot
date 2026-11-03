@@ -112,6 +112,22 @@ fn test_node_role_serialization() {
     // 旧 JSON 词 "Master" 经 serde alias 仍可反序列化（存量数据兼容）。
     let legacy: NodeRole = from_value(to_value("Master").unwrap()).unwrap();
     assert_eq!(legacy, NodeRole::Coordinator);
+    // BUG-20261102-318 红证锚：同一存量旧词走字符串解析路径必须与 serde
+    // alias 同判——"Master" 在 serde 直解是 Coordinator（上方 legacy 断言），
+    // from_role_str 大小写敏感却落 Worker。字符串路径的输入域（peers.toml
+    // [node].role String / cluster.role 运行时 String）与 serde 路径消费的
+    // 存量 JSON 共享同一词表，节点身份在两路径下分叉 = peers.toml 手写
+    // "Master" 的节点被 Worker 化（看板权威职责丢失 + coordinator 角色派发
+    // 匹配失灵）。
+    assert_eq!(NodeRole::from_role_str("Master"), NodeRole::Coordinator);
+    assert_eq!(NodeRole::from_role_str("MANAGER"), NodeRole::Coordinator);
+    assert_eq!(
+        NodeRole::from_role_str("Coordinator"),
+        NodeRole::Coordinator
+    );
+    // Worker 词不因大小写宽容化误升 Coordinator。
+    assert_eq!(NodeRole::from_role_str("Worker"), NodeRole::Worker);
+    assert_eq!(NodeRole::from_role_str("worker"), NodeRole::Worker);
 }
 
 #[test]

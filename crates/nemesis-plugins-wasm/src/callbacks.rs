@@ -512,15 +512,18 @@ unsafe extern "C" fn cb_tool_invoke(
 /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
 /// （2026-10-22 样板工程批 4；cb_tool_invoke 同款骨架）。
 ///
-/// 帧纪律：**只有策略帧可用**（`kind == Policy`；tool / observer 帧恒
-/// unavailable——LLM 花销能力只授循环治理路径，见 host_impl::LlmInvoker
-/// 契约原文）。壳侧 llm-complete 恒注册（不按 world 区分）是 link 兼容
-///（无辜组件不因 import 缺席实例化失败），授权在调用时闸。
-/// 2026-10-24 R70 补齐：此前只拦 observe 帧，tool 帧经 build_frame
-/// 无差别注入的 llm 面即可调用——绕过 egress deny-by-default 形成未声明
-/// 出站通道（manifest 零权限插件可把任意内容经 prompt 送外部模型端点）。
-/// max_tokens=0 视为未给预算诚实拒绝（护栏在 LlmInvoker 实现内做钳制，
-/// 这里只挡明显畸形）。
+/// 帧纪律：**policy 帧（kind 硬规则）与 panel 帧（双闸：manifest
+/// `[permissions] x-llm` × 宿主总闸 `panel_llm_enabled`，2026-11-01
+/// 决策 C）可用**——授予裁决集中在 registry::build_frame（帧内 `llm`
+/// 为 None 即恒 unavailable）；tool / observer 帧恒 unavailable（LLM
+/// 花销能力只授循环治理路径与显式开关的面板通道，见
+/// host_impl::LlmInvoker 契约）。壳侧 llm-complete 恒注册（不按 world
+/// 区分）是 link 兼容（无辜组件不因 import 缺席实例化失败），授权在
+/// 调用时闸。2026-10-24 R70 补齐：此前只拦 observe 帧，tool 帧经
+/// build_frame 无差别注入的 llm 面即可调用——绕过 egress
+/// deny-by-default 形成未声明出站通道（manifest 零权限插件可把任意
+/// 内容经 prompt 送外部模型端点）。max_tokens=0 视为未给预算诚实拒绝
+/// （护栏在 LlmInvoker 实现内做钳制，这里只挡明显畸形）。
 #[doc(hidden)]
 pub(crate) unsafe extern "C" fn cb_llm_complete(
     env: *mut c_void,
@@ -535,10 +538,10 @@ pub(crate) unsafe extern "C" fn cb_llm_complete(
         if let Err(e) = caps.frame.consume() {
             return (host_err::BUDGET_EXCEEDED, Some(e));
         }
-        if caps.observer_frame || caps.kind != PluginKind::Policy {
+        if caps.observer_frame || !matches!(caps.kind, PluginKind::Policy | PluginKind::Panel) {
             return (
                 host_err::UNAVAILABLE,
-                Some("llm-complete is only available in policy frames".to_string()),
+                Some("llm-complete is only available in policy or panel frames".to_string()),
             );
         }
         if max_tokens == 0 {

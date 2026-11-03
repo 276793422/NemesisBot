@@ -250,9 +250,20 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
             .collect();
     }
     if let Some(o) = get_opt_str(data, "origin_type") {
+        // origin_meta 透传（v21；JSON object of string → map，非字符串值
+        // 诚实忽略——坐标映射约定 string 值域）。
+        let mut origin_meta = std::collections::BTreeMap::new();
+        if let Some(m) = data.get("origin_meta").and_then(|v| v.as_object()) {
+            for (k, v) in m {
+                if let Some(s) = v.as_str() {
+                    origin_meta.insert(k.clone(), s.to_string());
+                }
+            }
+        }
         ni.origin = Some(nemesis_board::models::TaskOrigin {
             origin_type: o,
             origin_id: get_opt_str(data, "origin_id").unwrap_or_default(),
+            origin_meta,
         });
     }
     Ok(ni)
@@ -555,34 +566,6 @@ static BOARD_ESTOP: std::sync::OnceLock<Arc<nemesis_agent::estop::EstopState>> =
 #[cfg(feature = "cluster")]
 pub fn install_board_estop(estop: Arc<nemesis_agent::estop::EstopState>) -> bool {
     BOARD_ESTOP.set(estop).is_ok()
-}
-
-// ---------------------------------------------------------------------------
-// P1 外循环（外部来源绑定）：轮询循环状态槽。external_source 模块在
-// gateway 装配时注册；未注册（单测/未配置 board.external_sources）=
-// 命令诚实报告「未装配」。同 BASELINE_PUSHER 理由：闭包面 + OnceLock，
-// 不给 AppState 加字段。
-// ---------------------------------------------------------------------------
-
-/// 外部来源 WSAPI 面：list 返回各来源轮询状态快照，sync_now 触发立即轮询
-/// 一轮（成功返回本轮导入摘要）。sync_now 是 boxed future——轮询要 await
-/// agent loop（WSAPI async 上下文直接驱动，不做 block_on）。
-pub struct ExternalSourceSurface {
-    pub list: Box<dyn Fn() -> serde_json::Value + Send + Sync>,
-    pub sync_now: Box<
-        dyn Fn() -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-            > + Send
-            + Sync,
-    >,
-}
-
-static EXTERNAL_SOURCE_SURFACE: std::sync::OnceLock<Arc<ExternalSourceSurface>> =
-    std::sync::OnceLock::new();
-
-/// 装配外部来源状态槽（gateway 启动期调用一次；重复装配保留首份）。
-pub fn install_external_source_surface(surface: Arc<ExternalSourceSurface>) -> bool {
-    EXTERNAL_SOURCE_SURFACE.set(surface).is_ok()
 }
 
 /// estop 是否生效中（未装配 = false，等价旧无闸行为）。
@@ -3489,6 +3472,7 @@ pub fn confirm_plan(
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".to_string(),
                 origin_id: parent.number.clone(),
+                origin_meta: Default::default(),
             }),
             creator: actor.clone(),
             ..nemesis_board::NewIssue::default()
@@ -5361,20 +5345,19 @@ fn auto_dispatch_after_assign(
 }
 
 // ---------------------------------------------------------------------------
-// P1 外循环（2026-10-25）：外部来源导入的自动派发
+// flow 导入单的自动派发（外循环域剥离后唯一消费方 = flow 引擎 board_land 步）
 // ---------------------------------------------------------------------------
 
-/// 外部来源导入单的派发（`board.external_sources[].auto_dispatch=true`；
-/// nemesisbot external_source 轮询循环消费）。目标解析阶梯 = 显式 `target`
-/// （源配置钉住，不在线诚实停车不换人）→ 匹配器硬条件 → 兜底松弛
-/// （board.dispatch_fallback）→ None = ⏸ 系统评论停车（sweep/停车场/announce
-/// 既有触发器接管恢复）。派发失败不回滚导入：warn + ⛔ 评论留痕（与
-/// auto_dispatch_with_config 同语义）。返回是否实际派发。
+/// flow 导入单的派发（flow 引擎模板 land 步建单后的自动派发）。目标解析
+/// 阶梯 = 显式 `target`（模板钉住，不在线诚实停车不换人）→ 匹配器硬条件 →
+/// 兜底松弛（board.dispatch_fallback）→ None = ⏸ 系统评论停车（sweep/
+/// 停车场/announce 既有触发器接管恢复）。派发失败不回滚导入：warn + ⛔
+/// 评论留痕（与 auto_dispatch_with_config 同语义）。返回是否实际派发。
 ///
 /// pub 供 nemesisbot 跨 crate 复用（install_baseline_pusher 同先例）——
 /// 派发单一入口仍是 [`dispatch_issue_core`]，本 helper 只包目标解析。
 #[cfg(feature = "cluster")]
-pub fn dispatch_issue_for_external_source(
+pub fn dispatch_issue_for_flow(
     store: &Arc<BoardStore>,
     cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
     issue: &nemesis_board::Issue,
@@ -5383,7 +5366,7 @@ pub fn dispatch_issue_for_external_source(
 ) -> bool {
     let Some(cluster) = cluster else {
         tracing::warn!(
-            "[Board] external-source: 集群未启用，issue #{} 留 backlog 等手动处理",
+            "[Board] flow: 集群未启用，issue #{} 留 backlog 等手动处理",
             issue.number
         );
         return false;
@@ -5399,8 +5382,9 @@ pub fn dispatch_issue_for_external_source(
         })
     });
     let Some(target) = target else {
-        let msg = "⏸ 外部来源导入暂缓派发：无匹配节点（职能/能力/兜底均未命中），等待节点上线由 sweep 承接";
-        tracing::info!("[Board] external-source issue #{}: {msg}", issue.number);
+        let msg =
+            "⏸ flow 导入暂缓派发：无匹配节点（职能/能力/兜底均未命中），等待节点上线由 sweep 承接";
+        tracing::info!("[Board] flow issue #{}: {msg}", issue.number);
         let _ = store.add_comment(nemesis_board::models::NewComment {
             issue_id: issue.id,
             author: nemesis_board::Actor::system("board"),
@@ -5413,20 +5397,20 @@ pub fn dispatch_issue_for_external_source(
     match dispatch_issue_core(store, Some(cluster), issue.id, &target, actor, None) {
         Ok(_) => {
             tracing::info!(
-                "[Board] external-source auto-dispatch: issue #{} → {target}",
+                "[Board] flow auto-dispatch: issue #{} → {target}",
                 issue.number
             );
             true
         }
         Err(e) => {
             tracing::warn!(
-                "[Board] external-source auto-dispatch failed for issue #{}: {e}",
+                "[Board] flow auto-dispatch failed for issue #{}: {e}",
                 issue.number
             );
             let _ = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
-                content: format!("⛔ 外部来源导入自动派发失败：{e}"),
+                content: format!("⛔ flow 导入自动派发失败：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
             });
@@ -5436,10 +5420,11 @@ pub fn dispatch_issue_for_external_source(
 }
 
 /// 非 cluster 编译形态：诚实零操作 + warn（与 auto_dispatch_after_assign
-/// 非 cluster 臂同款纪律）。
+/// 非 cluster 臂同款纪律）。签名与 cluster 臂一致（cluster 槽位收下不用）。
 #[cfg(not(feature = "cluster"))]
-pub fn dispatch_issue_for_external_source(
+pub fn dispatch_issue_for_flow(
     _store: &Arc<BoardStore>,
+    _cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
     _issue: &nemesis_board::Issue,
     _explicit_target: Option<&str>,
     _actor: &Actor,
@@ -5474,6 +5459,7 @@ fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) -> NewIssue
         origin: Some(nemesis_board::models::TaskOrigin {
             origin_type: "autopilot".to_string(),
             origin_id: ap.id.to_string(),
+            origin_meta: Default::default(),
         }),
         ..NewIssue::default()
     };
@@ -5779,6 +5765,7 @@ fn spawn_project_auto_start(
         origin: Some(nemesis_board::models::TaskOrigin {
             origin_type: "project".to_string(),
             origin_id: project_id.to_string(),
+            origin_meta: Default::default(),
         }),
         creator: actor.clone(),
         ..NewIssue::default()
@@ -6182,8 +6169,6 @@ impl ModuleHandler for BoardHandler {
             "config.get",
             "config.set",
             "dossier.export",
-            "board.external_sources",
-            "board.external_sync",
             "delivery.publish",
         ]
     }
@@ -7569,24 +7554,6 @@ impl ModuleHandler for BoardHandler {
                     "issues": outcome.issue_numbers,
                     "notes": outcome.notes,
                 })))
-            }
-            // --- P1 外循环（外部来源绑定）---
-            "board.external_sources" => {
-                match EXTERNAL_SOURCE_SURFACE.get() {
-                    Some(surface) => Ok(Some((surface.list)())),
-                    // 未装配 = 未配置来源或极简装配；诚实报告而非 500。
-                    None => Ok(Some(serde_json::json!({
-                        "installed": false,
-                        "sources": [],
-                    }))),
-                }
-            }
-            "board.external_sync" => {
-                let surface = EXTERNAL_SOURCE_SURFACE
-                    .get()
-                    .ok_or("外部来源轮询未装配（未配置 board.external_sources）")?;
-                let result = (surface.sync_now)().await?;
-                Ok(Some(result))
             }
             // --- P3 外循环（交付发布，2026-10-25）---
             "delivery.publish" => {

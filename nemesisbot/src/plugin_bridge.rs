@@ -117,6 +117,15 @@ impl PluginToolBridge {
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::Tool for PluginToolBridge {
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关后，已注册
+        // 工具在 loop 重建前残留注册表——执行体在此诚实拒绝（不产生任何
+        // guest 执行）；开关改回即时恢复，无需等重建。
+        if !nemesis_config::plugin_wasm::runtime_enabled(self.manager.workspace_root()) {
+            return Err(
+                "WASM 插件子系统已关闭（总闸或宿主壳开关关）——插件工具不可用，开关改回即时恢复"
+                    .to_string(),
+            );
+        }
         let exec_ctx = nemesis_plugins_wasm::runtime::ExecContext {
             session_key: context.session_key.clone(),
             call_id: uuid::Uuid::new_v4().to_string(),
@@ -265,7 +274,15 @@ pub struct TakeoverToolBridge {
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
-        if self.active.load(Ordering::SeqCst) {
+        // 路径决策单快照（R17 纪律扩展，2026-11-01）：active 位 + 运行期
+        // 总闸在同一次读取里定路。总闸翻关 = 可用性丢失（接管层降级文档
+        // 「总闸关 → 无缝回内置」）——与 load=false 同路回内置，绝不撞
+        // PluginToolBridge::execute 的总闸诚实报错把「无缝回退」变成
+        // 「工具报错」；回退分支的凭据注入只进内置执行体（明文不进沙盒
+        // 承诺不变）。翻回开 = 下次调用即回 wasm 分支（无缓存）。
+        let master_on =
+            nemesis_config::plugin_wasm::runtime_enabled(self.bridge.manager.workspace_root());
+        if self.active.load(Ordering::SeqCst) && master_on {
             // guest 回环闸（评审 #1，2026-10-23）：guest tool-invoke 经
             // GatewayHostInvoker 的固定标记 context（channel="plugin"，全仓
             // 唯一构造点）再入接管面 = guest↔wasm 无界递归——guest→内置链
@@ -562,7 +579,12 @@ pub fn apply_takeovers(
     manager: &Arc<PluginManager>,
     gate: bool,
 ) -> usize {
-    if !gate {
+    // 运行期总闸（2026-11-01 BUG 修复）：子系统翻关 = 接管面整体回内置
+    // （可用性丢失语义）——与接管总闸关同路（清侧表 + 不应用声明）；
+    // 在管 wrapper 的执行路径由 TakeoverToolBridge::execute 的单快照
+    // 路由兜住（总闸关 → 内置执行体），本函数收敛重建后的供给面。
+    let master_off = !nemesis_config::plugin_wasm::runtime_enabled(manager.workspace_root());
+    if !gate || master_off {
         // 总闸关：清表（不留死归因）+ 注记。wrapper 属本 loop 前身（重建
         // 场景）已随旧 registry 消亡；fresh loop 无接管面。
         let n = takeover_switches()
@@ -576,9 +598,13 @@ pub fn apply_takeovers(
         if n > 0 {
             info!("[WasmPlugin] 工具接管侧表清空（{n} 项；接管总闸关）");
         }
-        info!(
-            "[WasmPlugin] 工具接管总闸关（plugins.wasm.takeover=false）——全部内置接口维持内置执行体"
-        );
+        if master_off {
+            info!("[WasmPlugin] 子系统总闸关——工具接管面整体回内置执行体（可用性丢失语义）");
+        } else {
+            info!(
+                "[WasmPlugin] 工具接管总闸关（plugins.wasm.takeover=false）——全部内置接口维持内置执行体"
+            );
+        }
         return 0;
     }
     takeover_switches()
@@ -805,7 +831,7 @@ impl InstallApprover for LateInstallApprover {
             let manager = manager.clone();
             let timeout_secs = self.timeout_secs;
             let summary = format!(
-                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}",
+                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}{}",
                 review.slug,
                 review.version,
                 review.kind,
@@ -821,6 +847,16 @@ impl InstallApprover for LateInstallApprover {
                 review.x_secret.len(),
                 review.wasm_bytes,
                 review.source_dir,
+                // 声明面摘要（纯声明式面板无载荷可比对——审批者看的是
+                // 声明面：装几个页面、几条剧本）。
+                if review.ui_pages > 0 || review.flow_templates > 0 {
+                    format!(
+                        "\n声明面：{} 个页面，{} 条剧本",
+                        review.ui_pages, review.flow_templates
+                    )
+                } else {
+                    String::new()
+                },
             );
             let target = review.source_dir.clone();
             let wait = tokio::task::spawn_blocking(move || {
@@ -857,6 +893,12 @@ pub fn register_plugin_tools(
     agent_loop: &mut nemesis_agent::r#loop::AgentLoop,
     manager: &Arc<PluginManager>,
 ) -> usize {
+    // 运行期总闸（2026-11-01 BUG 修复）：关 = 供给面不注册（loop 重建即
+    // 收敛到与启动关一致形态）；翻回开 = 下次重建恢复供给。重建窗口内
+    // 已注册残留由 PluginToolBridge::execute 的总闸诚实报错兜住。
+    if !nemesis_config::plugin_wasm::runtime_enabled(manager.workspace_root()) {
+        return 0;
+    }
     let mut registered = 0usize;
     for reg in manager.list() {
         // 禁用插件的工具不进供给面（与 WSAPI enable/disable 热同步同语义：

@@ -1351,7 +1351,16 @@ async fn review_issue(
                 "checked_at": chrono::Local::now().to_rfc3339(),
             }
         });
-        match db.merge_delivery_payload(&task_id, &summary) {
+        // 键 = `{task_id}:branch`（生产唯一必然在场的交付行——peer_chat 回调
+        // 收据 branch_delivery_inner 落账）；裸 task_id = 旧形态兼容回落
+        // （人工转入/旧流程单/旧夹具）。裸键直合并 = BUG 2026-11-01 根修前
+        // 的错法：branch 行命名空间（9e9e06bf）早于 G4 注记（27ba44a1），
+        // 注记自上线起恒 miss 恒 WARN。
+        let branch_key = format!("{task_id}:branch");
+        let merged = db
+            .merge_delivery_payload(&branch_key, &summary)
+            .or_else(|_| db.merge_delivery_payload(&task_id, &summary));
+        match merged {
             Ok(_) => {
                 debug!("[BoardReview] issue {issue_id} anchor_summary 已注记进交付 {task_id}")
             }
@@ -1791,8 +1800,14 @@ async fn review_issue(
     // 置位面：issue 级 `requires_evidence`（AC 含 file: 锚点建单时自动置
     // 位，恒生效；F5：checkpoint-git 关的执行体建单时跳过自动置位）∪
     // 全局 `board.review.require_delivery_evidence`（所有的单加码）。
-    // 校验对象 = 最新派发任务在 tasks.db deliveries 表的记录（A 端
-    // handle_task_complete 落账，幂等键 = task_id）；**非 rejected 即在
+    // 校验对象 = 最新派发任务在 tasks.db deliveries 表的记录。生产真实落
+    // 账点 = peer_chat 回调收据的 branch_delivery_inner（幂等键 =
+    // `{task_id}:branch`，payload = delivery JSON **直接形态**）——本注释
+    // 旧文「A 端 handle_task_complete 落账，幂等键 = task_id」的契约在生产
+    // 从未成立：on_complete 回调零接线（`Cluster::with_callback`/
+    // `set_callback` 生产零注册点），cluster_result 行及其裸键只存在于旧
+    // 测试想象中（BUG 2026-11-01 根修，查找收编
+    // [`delivery_evidence_record`] 单一入口）；**非 rejected 即在
     // 场**（项 C 2026-10-22 起 status 初始 recorded、通道接受才 delivered
     // ——通知维度与交付证据正交：recorded/delivered/confirmed 都算在场，
     // rejected 单独为拒绝判据）。
@@ -1823,13 +1838,13 @@ async fn review_issue(
     if evidence_required && output.verdict == nemesis_board::ReviewVerdict::Pass {
         let evidence = dispatches.last().map(|d| d.task_id.clone()).and_then(|task_id| {
             let db = deps.cluster.task_db()?;
-            let rec = db.delivery_by_key(&task_id).ok().flatten()?;
+            let rec = delivery_evidence_record(&db, &task_id)?;
             if rec.status == "rejected" {
                 return Some(Err(format!(
                     "缺交付证据：最新派发任务 {task_id} 的交付记录状态为 rejected（拒绝不算在场）——交付已被拒。请走正常交付流程后重交。"
                 )));
             }
-            let delivery = rec.payload.get("delivery").filter(|d| !d.is_null());
+            let delivery = delivery_evidence_payload(&rec);
             let Some(delivery) = delivery else {
                 return Some(Err(
                     "缺交付证据：交付记录存在但 payload 无 delivery 结构——worker 未走交付管线，或执行体未编译交付管线（checkpoint-git 裁剪形态）。请用带交付管线的执行体重跑。".to_string(),
@@ -2057,12 +2072,8 @@ async fn review_issue(
         let task_id = dispatches.last().map(|d| d.task_id.clone());
         let delivery_obj = task_id.as_deref().and_then(|tid| {
             let db = deps.cluster.task_db()?;
-            db.delivery_by_key(tid).ok().flatten().and_then(|rec| {
-                rec.payload
-                    .get("delivery")
-                    .filter(|d| !d.is_null())
-                    .cloned()
-            })
+            delivery_evidence_record(&db, tid)
+                .and_then(|rec| delivery_evidence_payload(&rec).cloned())
         });
         let anchor_summary = if anchor_results.is_empty() {
             serde_json::Value::Null
@@ -3217,6 +3228,40 @@ fn last_dispatch_env(dispatches: &[nemesis_board::models::DispatchRecord]) -> se
     }
 }
 
+/// 交付证据行定位（BUG 2026-11-01 根修单一入口）：生产 A 端唯一必然在场
+/// 的交付记录 = **branch 行**（peer_chat 回调收据时 `branch_delivery_inner`
+/// 落账，幂等键 = `{task_id}:branch`，payload = delivery JSON 直接形态）。
+/// 幂等键 = 裸 task_id 的 cluster_result 行只在 on_complete 回调接线的形态
+/// 下存在——`Cluster::with_callback`/`set_callback` 生产零注册点（2026-11-01
+/// grep 实证，生产从不执行）；裸键查找仅作旧夹具/兼容形态回落。status 判
+/// （rejected 语义）归各消费点，本函数只管行定位。
+pub(crate) fn delivery_evidence_record(
+    db: &Arc<nemesis_taskstore::TaskDb>,
+    task_id: &str,
+) -> Option<nemesis_taskstore::deliveries::DeliveryRecord> {
+    db.delivery_by_key(&format!("{task_id}:branch"))
+        .ok()
+        .flatten()
+        .or_else(|| db.delivery_by_key(task_id).ok().flatten())
+}
+
+/// 交付证据 JSON 提取（BUG 2026-11-01 根修单一入口）：branch 行 payload =
+/// delivery **直接形态**（payload 自身即 delivery 对象）；旧形态 = 嵌套
+/// `{"delivery": {...}}` 外围包装。嵌套键优先，直接形态按「payload 自身带
+/// commit 或 tree」判定；两形态都不满足 = None（空壳行，闸报「无 delivery
+/// 结构」的诚实缺口）。
+pub(crate) fn delivery_evidence_payload(
+    rec: &nemesis_taskstore::deliveries::DeliveryRecord,
+) -> Option<&serde_json::Value> {
+    if let Some(d) = rec.payload.get("delivery").filter(|v| !v.is_null()) {
+        return Some(d);
+    }
+    if rec.payload.get("commit").is_some() || rec.payload.get("tree").is_some() {
+        return Some(&rec.payload);
+    }
+    None
+}
+
 /// P2 必检对账取数（2026-10-25）：最新派发任务交付记录里的 `delivery.checks`
 /// 块。无派发 / tasks.db 不在 / 无交付记录 / 无 checks 块 = 空数组——对账
 /// 语义即「没跑过检查」（诚实缺席形态，本闸正是为它存在）。
@@ -3229,12 +3274,12 @@ fn delivery_checks_for(
         .map(|d| d.task_id.clone())
         .and_then(|task_id| {
             let db = deps.cluster.task_db()?;
-            let rec = db.delivery_by_key(&task_id).ok().flatten()?;
-            rec.payload
-                .get("delivery")
-                .and_then(|d| d.get("checks"))
-                .and_then(|v| v.as_array())
-                .cloned()
+            delivery_evidence_record(&db, &task_id).and_then(|rec| {
+                delivery_evidence_payload(&rec)
+                    .and_then(|d| d.get("checks"))
+                    .and_then(|v| v.as_array())
+                    .cloned()
+            })
         })
         .unwrap_or_default()
 }

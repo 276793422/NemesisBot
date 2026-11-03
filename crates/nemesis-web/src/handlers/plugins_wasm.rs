@@ -13,7 +13,12 @@
 //! 命令（module=`plugins`，cmd 带 `wasm.` 前缀，由 plugins.rs 代理）：
 //! `wasm.list` / `wasm.install` / `wasm.enable` / `wasm.disable` /
 //! `wasm.uninstall` / `wasm.config.get` / `wasm.config.set` / `wasm.logs` /
-//! `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块宿主槽）。
+//! `wasm.panel_llm.get` / `wasm.panel_llm.set`（面板 LLM 总闸，2026-11-01
+//! 决策 C）/ `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块
+//! 宿主槽）。
+//! 面板通道（cmd 带 `ui.` 前缀，同由 plugins.rs 代理；estop 闸在代理层）：
+//! `ui.registry`（声明面聚合）/ `ui.invoke`（guest `handle-ui-command`
+//! 转发，2026-10-31 面板扩展批）。
 //!
 //! 安全面：install 是九步装配漏斗唯一运行期入口（验签→扫描→审批→编译
 //! →lockfile→落位全走 nemesis-plugins-wasm::install 单一真相源，本
@@ -100,9 +105,29 @@ fn installer() -> Option<Arc<PluginInstaller>> {
 }
 
 fn require_installer() -> Result<Arc<PluginInstaller>, String> {
-    installer().ok_or_else(|| {
+    let inst = installer().ok_or_else(|| {
         "WASM 插件子系统未装配（plugins.wasm.enabled=false 或非 gateway 运行态）".to_string()
-    })
+    })?;
+    // 运行期总闸（2026-11-01 BUG 修复）：启动装配后翻关（config.json
+    // `plugins.wasm.enabled` 或宿主壳开关）→ 服务面统一拒绝——此前闸只
+    // 在启动期消费，运行中翻关面板/guest 命令照常生效。开关改回即时恢复。
+    if let Some(err) = runtime_gate_error(inst.manager.workspace_root()) {
+        return Err(err);
+    }
+    Ok(inst)
+}
+
+/// 运行期总闸裁决（可直注 workspace 测试，不经全局 installer 槽）：子系统
+/// 翻关 = Some(诚实错误)，开 = None。真相源与热语义见
+/// `nemesis_config::plugin_wasm::runtime_enabled`。
+fn runtime_gate_error(workspace_root: &std::path::Path) -> Option<String> {
+    if nemesis_config::plugin_wasm::runtime_enabled(workspace_root) {
+        return None;
+    }
+    Some(
+        "WASM 插件子系统已关闭（总闸或宿主壳开关关）——面板与 guest 命令不可用，开关改回即时恢复"
+            .to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +153,7 @@ fn row_of(
         "min_tier": m.min_tier,
         "egress": m.permissions.egress,
         "x_secret": m.permissions.x_secret,
+        "x_llm": m.permissions.x_llm,
         "tool": reg.tool_meta.as_ref().map(|t| serde_json::json!({
             "name": t.name,
             "base": t.base,
@@ -235,6 +261,7 @@ fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
                 "takes_over": m.takeover,
                 "egress": m.permissions.egress,
                 "x_secret": m.permissions.x_secret,
+                "x_llm": m.permissions.x_llm,
                 "data_dir": mgr.plugin_data_dir(&slug).display().to_string(),
             }),
             Err(e) => pending_row(
@@ -654,6 +681,293 @@ pub fn cmd_logs(slug: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "slug": slug, "lines": rows, "dropped": dropped }))
 }
 
+/// `wasm.panel_llm.get`：面板 LLM 总闸状态 + 已声明 `[permissions] x-llm`
+/// 的插件清单投影（声明面 toml 直读，装载态另注——与 `ui.registry` 同
+/// 纪律：声明与运行态解耦）。总闸真相源 `<config>/config.plugin.wasm.json`
+/// 的 `panel_llm.enabled`（缺省 false）。
+pub fn cmd_panel_llm_get() -> Result<serde_json::Value, String> {
+    panel_llm_get_impl(require_installer()?.as_ref())
+}
+
+fn panel_llm_get_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
+    let mgr = &installer.manager;
+    let enabled =
+        nemesis_config::plugin_wasm::panel_llm_enabled(&mgr.workspace_root().join("config"));
+    let switches = switch_map(mgr);
+    let mut discovered: Vec<std::path::PathBuf> = match std::fs::read_dir(mgr.plugins_dir()) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.join("plugin.toml").is_file())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    discovered.sort();
+    let mut plugins: Vec<serde_json::Value> = Vec::new();
+    for pdir in discovered {
+        let slug = pdir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let Ok((m, _)) = nemesis_plugins_wasm::manifest::PluginManifest::load_from_dir(&pdir)
+        else {
+            continue;
+        };
+        if !m.permissions.x_llm {
+            continue;
+        }
+        plugins.push(serde_json::json!({
+            "slug": slug,
+            "name": m.name,
+            "enabled": switches.get(&slug).is_some_and(|sw| sw.enabled),
+            "loaded": mgr.get(&slug).is_some(),
+        }));
+    }
+    Ok(serde_json::json!({ "enabled": enabled, "plugins": plugins }))
+}
+
+/// `wasm.panel_llm.set {enabled}`：翻面板 LLM 总闸。热生效（build_frame
+/// 每次 UI 帧现读，无驻留会话可挂旧值）；落 `config.plugin.wasm.json`
+/// 重启保持。语义：总闸 × manifest `x-llm` 声明双闸（build_frame 单点
+/// 授予），模型槽 = `agents.small_model`（未配置回落主模型——UI 文案照实）。
+pub fn cmd_panel_llm_set(data: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
+    panel_llm_set_impl(require_installer()?.as_ref(), data)
+}
+
+fn panel_llm_set_impl(
+    installer: &PluginInstaller,
+    data: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let data = data.ok_or("missing data")?;
+    let enabled = data
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or("enabled (bool) is required")?;
+    nemesis_config::plugin_wasm::set_panel_llm(
+        &installer.manager.workspace_root().join("config"),
+        enabled,
+    )
+    .map_err(|e| format!("写面板 LLM 开关失败: {e}"))?;
+    tracing::info!(
+        target: "plugins",
+        enabled,
+        "panel llm total switch toggled (wasm.panel_llm.set)"
+    );
+    Ok(serde_json::json!({ "enabled": enabled }))
+}
+
+/// `ui.registry`：面板声明面聚合——扫 `plugins_wasm/` 载荷目录，取
+/// `kind=panel` 且开关 enabled 的插件，投影 `{slug, name, payload,
+/// pages:[{route,title,icon,views:[...]}]}`。声明面投影（toml 直读）与
+/// 运行态解耦：宿主重启窗口内开关开着照样出锚点（路由渲染不需要运行态，
+/// 到 `ui.invoke` 才需要，届时注册表侧诚实报错）。manifest 解析失败的
+/// 目录静默跳过（`wasm.list` 有 error 行兜底可见性，此处不重复）。
+pub fn cmd_ui_registry() -> Result<serde_json::Value, String> {
+    ui_registry_impl(require_installer()?.as_ref())
+}
+
+fn ui_registry_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
+    use nemesis_plugins_wasm::manifest::PluginKind;
+    let mgr = &installer.manager;
+    let switches = switch_map(mgr);
+    let mut discovered: Vec<std::path::PathBuf> = match std::fs::read_dir(mgr.plugins_dir()) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.join("plugin.toml").is_file())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    discovered.sort();
+    let mut panels: Vec<serde_json::Value> = Vec::new();
+    for pdir in discovered {
+        let slug = pdir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !switches.get(&slug).is_some_and(|sw| sw.enabled) {
+            continue;
+        }
+        let Ok((m, _)) = nemesis_plugins_wasm::manifest::PluginManifest::load_from_dir(&pdir)
+        else {
+            continue;
+        };
+        if *m.kind != PluginKind::Panel {
+            continue;
+        }
+        panels.push(serde_json::json!({
+            "slug": slug,
+            "name": m.name,
+            "payload": m.wasm_sha256.is_some(),
+            "pages": m
+                .ui
+                .pages
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "route": p.route,
+                        "title": p.title,
+                        "icon": p.icon,
+                        "views": p.views.iter().map(project_view).collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+    }
+    Ok(serde_json::json!({ "panels": panels }))
+}
+
+/// 视图声明投影（UiView 等是 Deserialize-only，手投影保前端骨架词汇）。
+fn project_view(v: &nemesis_plugins_wasm::manifest::UiView) -> serde_json::Value {
+    serde_json::json!({
+        "kind": v.kind,
+        "bind": v.bind,
+        "columns": v
+            .columns
+            .iter()
+            .map(|c| serde_json::json!({ "key": c.key, "label": c.label }))
+            .collect::<Vec<_>>(),
+        "fields": v
+            .fields
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "key": f.key,
+                    "label": f.label,
+                    "field_type": f.field_type,
+                    "placeholder": f.placeholder,
+                    "hint": f.hint,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "buttons": v
+            .buttons
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "label": b.label,
+                    "command": b.command,
+                    "confirm": b.confirm,
+                    "danger": b.danger,
+                })
+            })
+            .collect::<Vec<_>>(),
+        // chart 专用段（2026-11-01 决策 A）：非 chart 视图恒空值（前端忽略）。
+        "chart": v.chart,
+        "x_key": v.x_key,
+        "series": v
+            .series
+            .iter()
+            .map(|c| serde_json::json!({ "key": c.key, "label": c.label }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// flow 引擎代答桥（P3，2026-10-31 插件 UI 面板与流程扩展）：`ui.invoke` 的
+// `flow://<template>/<view>` 绑定由宿主 flow 引擎（nemesisbot 侧）代答。
+// 本 crate 不能反向依赖 nemesisbot——依赖反转同 DELIVERY_PUBLISH_BRIDGE
+// 先例：trait + 静态槽，gateway 装配期安装，agent 重启重装同槽覆盖。
+// ---------------------------------------------------------------------------
+
+/// flow 引擎桥：参数解析权在实现侧（view 词表 list/detail/timeline/confirm/
+/// fetch/resume 与 args.instance 等语义由引擎定义）。`Ok(Value)` 透传前端；
+/// `Err` = WS 错误形态（模板不存在/实例缺失等请求面失败）。
+#[async_trait::async_trait]
+pub trait FlowEngineBridge: Send + Sync {
+    async fn invoke(
+        &self,
+        template: &str,
+        view: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
+}
+
+static FLOW_ENGINE_BRIDGE: std::sync::RwLock<Option<std::sync::Arc<dyn FlowEngineBridge>>> =
+    std::sync::RwLock::new(None);
+
+/// gateway 装配期安装 flow 引擎桥（engine rebuild 重装同槽覆盖）。
+pub fn install_flow_engine_bridge(bridge: std::sync::Arc<dyn FlowEngineBridge>) {
+    *FLOW_ENGINE_BRIDGE.write().expect("flow engine bridge lock") = Some(bridge);
+}
+
+/// 取当前 flow 引擎桥（clone Arc 出来，不持锁跨 await）。`None` = flow
+/// 扩展未装配（裁剪形态 / 装配失败），调用方诚实报错。
+pub fn flow_engine_bridge() -> Option<std::sync::Arc<dyn FlowEngineBridge>> {
+    FLOW_ENGINE_BRIDGE
+        .read()
+        .expect("flow engine bridge lock")
+        .clone()
+}
+
+/// `ui.invoke {slug, command, args, session_key?}`：面板数据/动作通道——
+/// 转发 guest `handle-ui-command`。estop 闸在代理层（plugins.rs，cmd 是
+/// 动作面）；子系总闸/插件开关/kind/component 检查与审计在
+/// `PluginManager::invoke_ui`。声明式插件（无载荷）注册表侧诚实报错。
+/// guest 回复（约定 JSON 对象；业务失败 `{"error":...}` 形态）原样透传。
+pub async fn cmd_ui_invoke(data: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let data = data.ok_or("missing data")?;
+    let slug = require_slug(Some(&data))?;
+    let command = data
+        .get("command")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("command (non-empty string) is required")?;
+    let args = data
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !args.is_object() {
+        return Err("args must be an object".to_string());
+    }
+    // flow:// 绑定 = 宿主 flow 引擎代答（P3）：前端把 bind 串原样作为
+    // command 发来。桥缺席（flow 扩展未编译/网关装配失败）= 诚实报错，不
+    // 静默落 guest——纯声明式插件没有载荷，落 guest 必失败。
+    if let Some(rest) = command.strip_prefix("flow://") {
+        let (template, view) = rest.split_once('/').ok_or_else(|| {
+            format!("flow:// 绑定形态须为 flow://<template>/<view>，收到: {command}")
+        })?;
+        if template.is_empty() || view.is_empty() {
+            return Err(format!("flow:// 绑定 template/view 段不得为空: {command}"));
+        }
+        let bridge = flow_engine_bridge()
+            .ok_or_else(|| "流程引擎未装配（flow 扩展未编译或网关未装配 flow 引擎）".to_string())?;
+        return bridge.invoke(template, view, &args).await;
+    }
+    let session_key = data
+        .get("session_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let input = serde_json::json!({
+        "command": command,
+        "args": args,
+        "context": { "slug": slug },
+        "session_key": session_key,
+    });
+    let installer = require_installer()?;
+    let reply = installer
+        .manager
+        .invoke_ui(&slug, input.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&reply)
+        .unwrap_or_else(|_| serde_json::json!({ "raw": reply }));
+    Ok(parsed)
+}
+
+/// PluginsHandler `ui.*` 代理入口（cmd 已剥 `ui.` 前缀；estop 闸在
+/// plugins.rs——动作面冻结，registry 只读投影不冻结）。
+pub async fn ui_handle(
+    cmd: &str,
+    data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    match cmd {
+        "registry" => cmd_ui_registry().map(Some),
+        "invoke" => cmd_ui_invoke(data).await.map(Some),
+        _ => Err(format!("unknown command: plugins.ui.{cmd}")),
+    }
+}
+
 /// PluginsHandler `wasm.*` 代理入口（cmd 已剥 `wasm.` 前缀）。
 pub async fn handle(
     cmd: &str,
@@ -683,6 +997,8 @@ pub async fn handle(
             let slug = require_slug(data.as_ref())?;
             cmd_logs(&slug).map(Some)
         }
+        "panel_llm.get" => cmd_panel_llm_get().map(Some),
+        "panel_llm.set" => cmd_panel_llm_set(data.as_ref()).map(Some),
         _ => Err(format!("unknown command: plugins.wasm.{cmd}")),
     }
 }

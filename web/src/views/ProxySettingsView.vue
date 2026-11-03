@@ -96,6 +96,7 @@ async function loadProxyFile() {
 onMounted(() => {
   load()
   loadProxyFile()
+  loadKeys()
 })
 
 function startEdit(row: ProxyRow) {
@@ -161,6 +162,116 @@ async function saveEnv() {
   }
   envSaving.value = false
 }
+
+// ---- LLM 代理调用方 key（proxy.keys.*；2026-11-03）：给外部调用方发独立
+// key，持 key 只打两条代理 lane（/v1/chat/completions、/api/chat/stream），
+// 使用统计按调用方分行；改动写盘即热生效。
+interface ProxyKeyRow {
+  name: string
+  key: string
+  enabled: boolean
+  created_at: number
+  note: string
+}
+const keyRows = ref<ProxyKeyRow[]>([])
+const keyPath = ref('')
+const keyFileExists = ref(false)
+const keyLoading = ref(false)
+const newKeyName = ref('')
+const newKeyValue = ref('')
+const newKeyNote = ref('')
+const keyAdding = ref(false)
+const keyToggling = ref<string | null>(null)
+const keyRemoving = ref<string | null>(null)
+
+async function loadKeys() {
+  keyLoading.value = true
+  try {
+    const resp = await request('proxy', 'keys.list', {}, 8000)
+    keyRows.value = resp?.keys ?? []
+    keyPath.value = resp?.path ?? ''
+    keyFileExists.value = !!resp?.file_exists
+  } catch (e: any) {
+    toast.error('加载调用方 key 失败: ' + (e?.message || e))
+  }
+  keyLoading.value = false
+}
+
+function fmtKeyTime(ts: number): string {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString()
+}
+
+async function addKey() {
+  if (keyAdding.value) return
+  const name = newKeyName.value.trim()
+  if (!name) {
+    toast.error('调用方名称不能为空')
+    return
+  }
+  const key = newKeyValue.value.trim()
+  if (key && keyRows.value.some((r) => r.key === key)) {
+    toast.error('该 key 已被其他调用方使用（不同调用方不能共用同一 key）')
+    return
+  }
+  keyAdding.value = true
+  try {
+    const resp = await request(
+      'proxy',
+      'keys.add',
+      { name, key: key || undefined, note: newKeyNote.value.trim() },
+      8000,
+    )
+    toast.success(resp?.note || '已保存，即刻生效')
+    newKeyName.value = ''
+    newKeyValue.value = ''
+    newKeyNote.value = ''
+    await loadKeys()
+  } catch (e: any) {
+    toast.error('保存失败: ' + (e?.message || e))
+  }
+  keyAdding.value = false
+}
+
+async function toggleKey(row: ProxyKeyRow) {
+  if (keyToggling.value) return
+  keyToggling.value = row.name
+  try {
+    const resp = await request(
+      'proxy',
+      'keys.set_enabled',
+      { name: row.name, enabled: !row.enabled },
+      8000,
+    )
+    toast.success(resp?.note || (row.enabled ? '已禁用，即刻生效' : '已启用，即刻生效'))
+    await loadKeys()
+  } catch (e: any) {
+    toast.error('操作失败: ' + (e?.message || e))
+  }
+  keyToggling.value = null
+}
+
+async function removeKey(row: ProxyKeyRow) {
+  if (!confirm(`删除调用方「${row.name}」？其 key 将立即失效。`)) return
+  if (keyRemoving.value) return
+  keyRemoving.value = row.name
+  try {
+    const resp = await request('proxy', 'keys.remove', { name: row.name }, 8000)
+    toast.success(resp?.note || '已删除，即刻生效')
+    await loadKeys()
+  } catch (e: any) {
+    toast.error('删除失败: ' + (e?.message || e))
+  }
+  keyRemoving.value = null
+}
+
+function copyKey(row: ProxyKeyRow) {
+  navigator.clipboard
+    ?.writeText(row.key)
+    .then(() => toast.success('Key 已复制到剪贴板'))
+    .catch(() => toast.error('复制失败，请手动选择复制'))
+}
+
 </script>
 
 <template>
@@ -259,6 +370,103 @@ async function saveEnv() {
             </div>
             <p class="form-hint" style="margin-top: var(--space-3);">
               默认模型保存后自动热切（set_default）立即生效；非默认模型在下次激活时生效。
+            </p>
+          </div>
+        </div>
+
+        <!-- LLM 代理调用方 key（2026-11-03）：入站方向，给外部调用方发独立 key -->
+        <div class="card">
+          <div class="card-header">
+            <h3>代理调用方 Key</h3>
+            <button class="btn btn-sm" :disabled="keyLoading" @click="loadKeys">
+              {{ keyLoading ? '刷新中…' : '刷新' }}
+            </button>
+          </div>
+          <div style="padding: var(--space-4);">
+            <p class="muted" style="margin: 0 0 var(--space-3);">
+              给外部调用程序（其他 bot / 脚本）签发独立 key：持 key 以 Bearer 头打
+              <span class="mono">/v1/chat/completions</span> 或
+              <span class="mono">/api/chat/stream</span> 即放行，使用统计按调用方分行。
+              key 打不开 Dashboard 其他 API；改动即刻生效，无需重启。
+            </p>
+            <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-3); flex-wrap: wrap;">
+              <input
+                v-model="newKeyName"
+                class="form-input"
+                style="width: 180px;"
+                placeholder="调用方名称（必填）"
+                @keyup.enter="addKey"
+              />
+              <input
+                v-model="newKeyValue"
+                class="form-input mono"
+                style="width: 320px;"
+                placeholder="key（留空自动生成）"
+                @keyup.enter="addKey"
+              />
+              <input
+                v-model="newKeyNote"
+                class="form-input"
+                style="width: 220px;"
+                placeholder="备注（可选）"
+                @keyup.enter="addKey"
+              />
+              <button class="btn btn-sm btn-primary" :disabled="keyAdding || !newKeyName.trim()" @click="addKey">
+                {{ keyAdding ? '添加中…' : '添加' }}
+              </button>
+            </div>
+            <div v-if="keyRows.length === 0 && !keyLoading" class="muted">
+              尚未签发任何调用方 key——上方添加一个（不签发 = 沿用共享主 token 老形态）。
+            </div>
+            <div v-else class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>Key</th>
+                    <th style="width: 80px;">状态</th>
+                    <th style="width: 170px;">创建时间</th>
+                    <th>备注</th>
+                    <th style="width: 210px;">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in keyRows" :key="row.name">
+                    <td>{{ row.name }}</td>
+                    <td><span class="mono">{{ row.key }}</span></td>
+                    <td>
+                      <span :class="row.enabled ? 'badge badge-success' : 'badge badge-warn'">
+                        {{ row.enabled ? '启用' : '禁用' }}
+                      </span>
+                    </td>
+                    <td class="muted">{{ fmtKeyTime(row.created_at) }}</td>
+                    <td>
+                      <span v-if="row.note" class="muted">{{ row.note }}</span>
+                      <span v-else class="muted">—</span>
+                    </td>
+                    <td>
+                      <button class="btn btn-sm" @click="copyKey(row)">复制</button>
+                      <button
+                        class="btn btn-sm"
+                        style="margin-left: var(--space-2);"
+                        :disabled="keyToggling === row.name"
+                        @click="toggleKey(row)"
+                      >
+                        {{ row.enabled ? '禁用' : '启用' }}
+                      </button>
+                      <button
+                        class="btn btn-sm btn-danger"
+                        style="margin-left: var(--space-2);"
+                        :disabled="keyRemoving === row.name"
+                        @click="removeKey(row)"
+                      >删除</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="form-hint" style="margin-top: var(--space-3);">
+              {{ keyPath || 'config.proxy_keys.json（工作区 config 目录）' }}{{ keyFileExists ? '' : '——尚未创建，首次添加自动生成' }}
             </p>
           </div>
         </div>

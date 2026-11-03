@@ -145,6 +145,15 @@ fn test_expand_home_relative() {
 }
 
 #[test]
+fn test_expand_home_backslash_prefix() {
+    // BUG-20261102-319：`~\` 反斜杠形态（NEMESISBOT_HOME 环境变量可达）此前
+    // 原样穿透——与 `~/` 形态展开分叉。
+    let result = expand_home("~\\test");
+    assert!(!result.starts_with("~"));
+    assert!(result.ends_with("test"));
+}
+
+#[test]
 fn test_path_manager_config_path_default() {
     let _g = EnvGuard::remove(ENV_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
@@ -574,6 +583,19 @@ fn test_default_path_manager() {
 #[test]
 fn test_minimal_config_workspace_path_tilde() {
     let json = r#"{"agents":{"defaults":{"workspace":"~/myworkspace"}}}"#;
+    let cfg: MinimalConfig = serde_json::from_str(json).unwrap();
+    let ws = cfg.workspace_path();
+    assert!(ws.is_some());
+    let ws = ws.unwrap();
+    assert!(!ws.to_string_lossy().starts_with("~"));
+    assert!(ws.to_string_lossy().contains("myworkspace"));
+}
+
+#[test]
+fn test_minimal_config_workspace_path_tilde_backslash() {
+    // BUG-20261102-319：`~\` 反斜杠形态此前原样返回字面量（四个 resolve_*_config_path
+    // 消费方落错位置）——与 `~/` 形态展开分叉。
+    let json = r#"{"agents":{"defaults":{"workspace":"~\\myworkspace"}}}"#;
     let cfg: MinimalConfig = serde_json::from_str(json).unwrap();
     let ws = cfg.workspace_path();
     assert!(ws.is_some());

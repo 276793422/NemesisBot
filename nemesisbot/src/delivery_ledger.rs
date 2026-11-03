@@ -104,9 +104,14 @@ impl DeliveryLedgerBridge {
             commit: str_field(&rec.payload, "commit"),
             head_tree: str_field(&rec.payload, "tree"),
             base_tree: str_field(&rec.payload, "base_tree"),
-            // P3 发布留痕：发布落账后 payload 注入的 PR 号/链接/时间。
-            pr_number: num_field(&rec.payload, "pr_number"),
-            pr_url: str_field(&rec.payload, "pr_url"),
+            // 发布留痕：发布落账后 payload 注入的外部引用/链接/时间。
+            // 域剥离批（2026-11-02）键改通用 external_*；旧 pr_* 键只读
+            // 垫片**全仓仅此一处**（v1 已发布数据兼容查看；新写入全用
+            // external_*，见 publish.rs 落账段）。
+            external_ref: num_field(&rec.payload, "external_ref")
+                .or_else(|| num_field(&rec.payload, "pr_number")),
+            external_url: str_field(&rec.payload, "external_url")
+                .or_else(|| str_field(&rec.payload, "pr_url")),
             published_at: str_field(&rec.payload, "published_at"),
         }
     }

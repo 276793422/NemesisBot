@@ -2,11 +2,11 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // 交付审核页最小渲染 spec（P4 人审闭环，2026-10-25）：列表渲染（状态/种类
-// 徽标 + PR 链接）、过滤、确认/拒绝裁决请求形态、发布模态请求形态
-// （task_id 从幂等键 `{task_id}:branch` 提取）、发布三分支 outcome 展示
-// （published / already_published / failed）、详情模态 patch 按需拉取。
-// WSAPI 契约（deliveries.list/get/patch/confirm/reject + board.delivery.publish
-// 响应形态）由后端钉住，这里只锁前端渲染分支与请求形态。
+// 徽标 + 发布条目链接）、过滤、确认/拒绝裁决请求形态、详情模态 patch 按
+// 需拉取。发布表单随域剥离批（2026-11-02）退役——发布动作由 flow 模板
+// publish 步声明驱动，本页只留发布留痕展示。WSAPI 契约
+// （deliveries.list/get/patch/confirm/reject 响应形态）由后端钉住，这里
+// 只锁前端渲染分支与请求形态。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -42,8 +42,8 @@ function row(extra: Record<string, unknown> = {}) {
     commit: 'abc123',
     head_tree: 'tree-42',
     base_tree: 'tree-41',
-    pr_number: null,
-    pr_url: null,
+    external_ref: null,
+    external_url: null,
     published_at: null,
     ...extra,
   }
@@ -55,7 +55,7 @@ function defaultImpl() {
       return Promise.resolve({
         deliveries: [
           row(),
-          row({ id: 'd-2', idempotency_key: 'task-2:branch', status: 'published', pr_number: 7, pr_url: 'http://x/pr/7', published_at: '2026-10-25T11:00:00+08:00' }),
+          row({ id: 'd-2', idempotency_key: 'task-2:branch', status: 'published', external_ref: 7, external_url: 'http://x/pr/7', published_at: '2026-10-25T11:00:00+08:00' }),
           row({ id: 'd-3', idempotency_key: 'run-9:review', kind: 'review', branch: null, files_changed: null, patch_present: false }),
           row({ id: 'd-4', idempotency_key: 'task-4:branch', status: 'rejected', reject_reason: '测试不完整' }),
         ],
@@ -87,7 +87,7 @@ describe('DeliveriesView 列表与徽标', () => {
     expect(rows[0].find('[data-test="dl-status"]').text()).toBe('已送达')
     expect(rows[1].find('[data-test="dl-status"]').text()).toBe('已发布')
     expect(rows[3].find('[data-test="dl-status"]').text()).toBe('已拒绝')
-    // published 行带 PR 链接
+    // published 行带外部链接
     expect(rows[1].find('[data-test="dl-pr-link"]').attributes('href')).toBe('http://x/pr/7')
     // diffstat
     expect(rows[0].text()).toContain('+10')
@@ -104,22 +104,19 @@ describe('DeliveriesView 列表与徽标', () => {
     w.unmount()
   })
 
-  it('裁决按钮可见性：rejected/published 行无确认/拒绝/发布按钮', async () => {
+  it('裁决按钮可见性：rejected/published 行无确认/拒绝按钮', async () => {
     const w = await mountView()
     const rows = w.findAll('[data-test="dl-row"]')
-    // delivered 行：确认 + 拒绝 + 发布都在
+    // delivered 行：确认 + 拒绝都在
     expect(rows[0].find('[data-test="dl-confirm"]').exists()).toBe(true)
     expect(rows[0].find('[data-test="dl-reject"]').exists()).toBe(true)
-    expect(rows[0].find('[data-test="dl-publish"]').exists()).toBe(true)
-    // published 行：三按钮全无（终态）
+    // published 行：两按钮全无（终态）
     expect(rows[1].find('[data-test="dl-confirm"]').exists()).toBe(false)
     expect(rows[1].find('[data-test="dl-reject"]').exists()).toBe(false)
-    expect(rows[1].find('[data-test="dl-publish"]').exists()).toBe(false)
-    // rejected 行：三按钮全无（终态）
+    // rejected 行：两按钮全无（终态）
     expect(rows[3].find('[data-test="dl-confirm"]').exists()).toBe(false)
-    expect(rows[3].find('[data-test="dl-publish"]').exists()).toBe(false)
-    // review 行：无发布（kind≠branch），有拒绝
-    expect(rows[2].find('[data-test="dl-publish"]').exists()).toBe(false)
+    expect(rows[3].find('[data-test="dl-reject"]').exists()).toBe(false)
+    // review 行有拒绝
     expect(rows[2].find('[data-test="dl-reject"]').exists()).toBe(true)
     w.unmount()
   })
@@ -156,79 +153,6 @@ describe('DeliveriesView 裁决面', () => {
     const calls = requestMock.mock.calls.filter((c: unknown[]) => c[1] === 'reject')
     expect(calls).toHaveLength(1)
     expect(calls[0][2]).toEqual({ idempotency_key: 'task-1:branch', reason: '锚点没过' })
-    w.unmount()
-  })
-})
-
-describe('DeliveriesView 发布面', () => {
-  it('发布模态：task_id 从幂等键提取，提交走 board.delivery.publish', async () => {
-    const w = await mountView()
-    await w.findAll('[data-test="dl-publish"]')[0].trigger('click')
-    expect((w.find('[data-test="pub-task-id"]').element as HTMLInputElement).value).toBe('task-1')
-    await w.find('[data-test="pub-owner"]').setValue('o')
-    await w.find('[data-test="pub-repo"]').setValue('r')
-    await w.find('[data-test="pub-base"]').setValue('main')
-    requestMock.mockImplementation((m: string, cmd: string) => {
-      if (m === 'board' && cmd === 'delivery.publish') {
-        return Promise.resolve({ status: 'published', pr_number: 9, pr_url: 'http://x/pr/9', commit: 'c', branch: 'b', detail: 'ok' })
-      }
-      if (cmd === 'list') return Promise.resolve({ deliveries: [] })
-      return Promise.resolve({})
-    })
-    await w.find('[data-test="publish-submit"]').trigger('click')
-    await flushPromises()
-    const calls = requestMock.mock.calls.filter((c: unknown[]) => c[1] === 'delivery.publish')
-    expect(calls).toHaveLength(1)
-    expect(calls[0][0]).toBe('board')
-    expect(calls[0][2]).toEqual({ task_id: 'task-1', connector: 'gitea', owner: 'o', repo: 'r', base: 'main' })
-    w.unmount()
-  })
-
-  it('必填校验：缺 owner/repo 不发请求，错误留在模态', async () => {
-    const w = await mountView()
-    await w.findAll('[data-test="dl-publish"]')[0].trigger('click')
-    await w.find('[data-test="publish-submit"]').trigger('click')
-    expect(w.find('[data-test="publish-error"]').text()).toContain('owner')
-    const calls = requestMock.mock.calls.filter((c: unknown[]) => c[1] === 'delivery.publish')
-    expect(calls).toHaveLength(0)
-    w.unmount()
-  })
-
-  it('failed outcome：错误详情留在模态不关；页面 outcome 卡诚实展示', async () => {
-    const w = await mountView()
-    await w.findAll('[data-test="dl-publish"]')[0].trigger('click')
-    await w.find('[data-test="pub-owner"]').setValue('o')
-    await w.find('[data-test="pub-repo"]').setValue('r')
-    requestMock.mockImplementation((m: string, cmd: string) => {
-      if (m === 'board' && cmd === 'delivery.publish') {
-        return Promise.resolve({ status: 'failed', pr_number: null, detail: '基线漂移：副本 HEAD aa ≠ 交付基线 bb' })
-      }
-      if (cmd === 'list') return Promise.resolve({ deliveries: [] })
-      return Promise.resolve({})
-    })
-    await w.find('[data-test="publish-submit"]').trigger('click')
-    await flushPromises()
-    expect(w.find('[data-test="publish-error"]').text()).toContain('基线漂移')
-    expect(w.find('[data-test="publish-outcome"]').text()).toContain('发布失败')
-    w.unmount()
-  })
-
-  it('already_published 幂等短路：toast + 模态关闭', async () => {
-    const w = await mountView()
-    await w.findAll('[data-test="dl-publish"]')[0].trigger('click')
-    await w.find('[data-test="pub-owner"]').setValue('o')
-    await w.find('[data-test="pub-repo"]').setValue('r')
-    requestMock.mockImplementation((m: string, cmd: string) => {
-      if (m === 'board' && cmd === 'delivery.publish') {
-        return Promise.resolve({ status: 'already_published', pr_number: 3, pr_url: 'http://x/pr/3', detail: '该交付已发布（幂等跳过，不重复建 PR）' })
-      }
-      if (cmd === 'list') return Promise.resolve({ deliveries: [] })
-      return Promise.resolve({})
-    })
-    await w.find('[data-test="publish-submit"]').trigger('click')
-    await flushPromises()
-    expect(w.find('[data-test="publish-modal"]').exists()).toBe(false)
-    expect(w.find('[data-test="publish-outcome"]').text()).toContain('已发布过')
     w.unmount()
   })
 })

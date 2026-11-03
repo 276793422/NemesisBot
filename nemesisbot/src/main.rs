@@ -148,12 +148,15 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
-/// P1 外循环（外部来源绑定，2026-10-25）：Gitea issue 轮询导入 + 状态回写
-/// + 任务副本物化。门控 = board（store/WSAPI 面）+ security（vault 凭据）+
-/// connectors（connector_invoke 执行通路）三者与消费点同闸；config
-/// `board.external_sources` 空 = 装配入口直接短路（零开销）。
-#[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
-mod external_source;
+/// P3 插件流程扩展：宿主侧 flow 引擎——面板插件 `[[flow.template]]` 剧本
+/// 的推进者（六类 step 原语绑定既有件：connector 取数 / board 落单 /
+/// agent_fixloop / 回归验收 / publish 发布 / dossier 报告；磁盘实例账本 +
+/// `flow://` 代答面 + manual gate 卡点 + estop 冻结）。门控 =
+/// plugins-wasm（manifest [[flow]] 段来源 + 代答桥；该 feature 已蕴含
+/// security）+ board（BoardStore/TaskOrigin）+ connectors（connector 执行
+/// 通路）——与 publish 消费点同闸。
+#[cfg(all(feature = "plugins-wasm", feature = "board", feature = "connectors"))]
+mod flow_engine;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
@@ -193,9 +196,10 @@ mod profile_service;
 /// allow 随接线移除。
 #[allow(dead_code)]
 mod projects;
-/// P3 外循环（PR 发布 + unknown 对账，2026-10-25）：交付分支推远端 + PR
-/// 创建 + 三分支状态机。门控与消费点同闸（board+security+connectors，
-/// 同 external_source）——发布需要 connector 通路、vault 凭据、board 副本。
+/// P3 外循环（交付发布 + unknown 对账，2026-10-25）：交付分支推远端 +
+/// 外部引用创建（协议由 flow 模板 PublishProtocol 声明，域剥离批 2026-11-02）
+/// + 三分支状态机。门控与消费点同闸（board+security+connectors）——
+/// 发布需要 connector 通路、vault 凭据、board 副本。
 #[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
 mod publish;
 /// F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker——question

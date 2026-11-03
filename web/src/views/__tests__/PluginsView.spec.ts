@@ -419,3 +419,75 @@ describe('WASM 加载纪律反转（2026-10-22：安装 ≠ 加载，开关记�
     w.unmount()
   })
 })
+
+describe('面板 LLM 总闸开关（2026-11-01 决策 C：用户开关面，不改 config 文件）', () => {
+  it('状态卡：panel_llm.get 渲染总闸态 + 已声明清单；行徽标随 x_llm 声明', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(LIST)
+      if (cmd === 'wasm.list')
+        return Promise.resolve({
+          plugins: [
+            { slug: 'translate', name: '翻译工具', version: '0.1.0', kind: 'tool', trust: 'trusted', enabled: true, loaded: true, x_llm: true },
+            { slug: 'activity', name: '活动记录', version: '0.2.0', kind: 'observer', trust: 'unknown', enabled: false, loaded: false },
+          ],
+        })
+      if (cmd === 'panel_llm.get')
+        return Promise.resolve({ enabled: false, plugins: [{ slug: 'translate', name: '翻译工具', enabled: true, loaded: true }] })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    // 状态卡：总闸关态 + 已声明 slug 清单 + 诚实回落文案
+    expect(w.text()).toContain('面板 LLM')
+    expect(w.text()).toContain('已声明：translate')
+    expect(w.text()).toContain('agents.small_model')
+    // 行徽标：translate 带 x_llm → LLM 徽标；activity 无声明 → 无
+    const trCard = w.findAll('.plugin-card').find(c => c.text().includes('translate'))
+    expect(trCard!.text()).toContain('LLM')
+    const acCard = w.findAll('.plugin-card').find(c => c.text().includes('activity'))
+    expect(acCard!.find('.plugin-badge--info').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('总闸切换：走 panel_llm.set {enabled}，toast 诚实文案（回落主模型）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(LIST)
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      if (cmd === 'panel_llm.get') return Promise.resolve({ enabled: false, plugins: [] })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    requestMock.mockClear()
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'panel_llm.set') return Promise.resolve({ enabled: data.enabled })
+      if (cmd === 'list') return Promise.resolve(LIST)
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      if (cmd === 'panel_llm.get') return Promise.resolve({ enabled: data.enabled, plugins: [] })
+      return Promise.resolve({})
+    })
+    await w.find('[data-test="panel-llm-toggle"]').setValue(true)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('plugins', 'panel_llm.set', { enabled: true })
+    expect(useToast().toasts.some(t => t.message.includes('面板 LLM 已开启') && t.message.includes('回落主模型'))).toBe(true)
+    // 关闭：拒绝语义文案
+    await w.find('[data-test="panel-llm-toggle"]').setValue(false)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('plugins', 'panel_llm.set', { enabled: false })
+    expect(useToast().toasts.some(t => t.message.includes('面板 LLM 已关闭'))).toBe(true)
+    w.unmount()
+  })
+
+  it('panel_llm.get 失败（旧网关无此命令）：开关块隐藏，插件列表不受影响', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(LIST)
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      if (cmd === 'panel_llm.get') return Promise.reject(new Error('unknown command'))
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(w.text()).not.toContain('已声明：')
+    expect(w.find('[data-test="panel-llm-toggle"]').exists()).toBe(false)
+    // 插件列表照常（wasmAvailable = true）
+    expect(w.text()).toContain('尚未安装任何 WASM 插件')
+    w.unmount()
+  })
+})

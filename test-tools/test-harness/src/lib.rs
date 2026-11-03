@@ -680,6 +680,22 @@ pub fn http_client() -> reqwest::Client {
         .unwrap()
 }
 
+/// 单次 GET 并把 2xx 响应体解析为 JSON（非 2xx / 超时 / 非 JSON = Err）。
+/// 供契约探针类前置检查使用（如 agent-bench 的 /v1/models 模型面核查）。
+pub async fn http_get_json(url: &str, timeout: Duration) -> Result<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .context("build http client")?;
+    let resp = client.get(url).send().await.context(format!("GET {url}"))?;
+    let status = resp.status();
+    let body = resp.text().await.context("read response body")?;
+    if !status.is_success() {
+        bail!("GET {url} -> {status}: {}", &body[..body.len().min(200)]);
+    }
+    serde_json::from_str(&body).context(format!("parse JSON from {url}"))
+}
+
 /// Poll an HTTP endpoint until it returns 200 or timeout.
 pub async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
     let client = reqwest::Client::builder()

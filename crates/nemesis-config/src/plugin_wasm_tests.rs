@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // set_enabled/set_config/remove 走 config_write_lock（进程级串行锁）；
-// 读路径迁移写不罩锁——BUG-20261025-45 修复后写侧走 write_file_atomic
-// 唯一临时名（.tmp-{pid}-{seq}-{nanos}），同毫秒撞名已消除；
-// 此锁保留为廉价的串行卫生。
+// BUG-20261103-333 起读路径迁移写（load_switches/switch）同样全程罩锁
+// （迁移是 RMW+删旧文件，零锁时与开关写互相以旧底覆盖、迁移数据不可恢复）；
+// 写侧走 write_file_atomic 唯一临时名（BUG-20261025-45 同毫秒撞名已消除）。
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn temp_config_dir(tag: &str) -> PathBuf {
@@ -215,4 +215,251 @@ fn assert_no_tmp_residue(dir: &Path) {
         .filter(|n| n.contains(".tmp"))
         .collect();
     assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
+}
+
+// ==================== 运行期总闸 runtime_enabled（2026-11-01 BUG 修复） ====================
+//
+// 真相源两件：① `<home>/config.json` plugins.wasm.enabled（缺省 true）；
+// ② `<workspace>/config/config.plugin.native.json` plugin_wasm.enabled
+// （宿主壳闸，缺省 true）。任一关 = false；开关改回即时恢复（无缓存）。
+
+/// 造 `<home>/config.json` + `<home>/workspace/config/config.plugin.native.json` 布局。
+fn runtime_gate_home(tag: &str) -> PathBuf {
+    let home = std::env::temp_dir().join(format!(
+        "nb_plugin_wasm_gate_{}_{}",
+        tag,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("workspace/config")).unwrap();
+    home
+}
+
+fn write_native_switch(home: &Path, enabled: bool) {
+    let path = home.join("workspace/config/config.plugin.native.json");
+    std::fs::write(
+        &path,
+        format!(r#"{{"plugins":{{"plugin_wasm":{{"enabled":{enabled}}}}}}}"#),
+    )
+    .unwrap();
+}
+
+#[test]
+fn runtime_gate_defaults_true_when_both_sources_absent() {
+    let home = runtime_gate_home("defaults");
+    let _g = SERIAL.lock().unwrap();
+    assert!(
+        runtime_enabled(&home.join("workspace")),
+        "两真相源缺席 = 双缺省 true"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_master_switch_off_blocks() {
+    let home = runtime_gate_home("master_off");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    assert!(!runtime_enabled(&home.join("workspace")), "总闸关 = 拒绝");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_shell_switch_off_blocks() {
+    let home = runtime_gate_home("shell_off");
+    let _g = SERIAL.lock().unwrap();
+    write_native_switch(&home, false);
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "宿主壳开关关 = 拒绝（用户现场踩的正是这扇门）"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_both_off_and_recovery() {
+    let home = runtime_gate_home("both_off");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    write_native_switch(&home, false);
+    assert!(!runtime_enabled(&home.join("workspace")));
+    // 开关改回 = 即时恢复（无缓存；热语义核心不变量）
+    write_native_switch(&home, true);
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "总闸仍关 = 仍拒绝"
+    );
+    std::fs::write(home.join("config.json"), r#"{"plugins":{}}"#).unwrap();
+    assert!(
+        runtime_enabled(&home.join("workspace")),
+        "双源回开 = 即时恢复"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runtime_gate_malformed_master_falls_to_shell_switch() {
+    let home = runtime_gate_home("malformed");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(home.join("config.json"), "{ not valid !!!").unwrap();
+    // 主配置损坏 = 该源跳过（按缺省 true），宿主壳闸独立裁决
+    assert!(runtime_enabled(&home.join("workspace")));
+    write_native_switch(&home, false);
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "损坏主配置不影响壳闸裁决"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// BUG-20261103-334：记事本（带 BOM UTF-8）保存的 config.json——主装载器
+/// 剥 BOM 照常解析，总闸读必须同口径（旧形态裸 read_to_string：BOM →
+/// parse 失败 → 该源按缺省 true 跳过 → 用户 `plugins.wasm.enabled=false`
+/// 被静默忽略、WASM 子系统照常运行）。
+#[test]
+fn runtime_gate_bom_config_json_still_honors_master_switch() {
+    let home = runtime_gate_home("bom_master");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        "\u{feff}{\"plugins\":{\"wasm\":{\"enabled\":false}}}",
+    )
+    .unwrap();
+    assert!(
+        !runtime_enabled(&home.join("workspace")),
+        "BUG-20261103-334: BOM config.json 的总闸值必须被读取（不得按缺省 true 放行）"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+// ==================== 面板 LLM 总闸 panel_llm（2026-11-01 决策 C） ====================
+//
+// 真相源 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`
+// （缺省 false）。与 per-slug 开关同文件同锁；false 时键整体省略（既有文件
+// 消费者零感知）；热语义 = 每次 build_frame 现读（无缓存）。
+
+#[test]
+fn panel_llm_defaults_false_and_set_roundtrips_hot() {
+    let dir = temp_config_dir("panel_llm");
+    let _g = SERIAL.lock().unwrap();
+    assert!(
+        !panel_llm_enabled(&dir),
+        "文件缺席 = 缺省 false（LLM 花销能力不默认开）"
+    );
+    assert!(!plugin_wasm_config_path(&dir).exists(), "纯读不得落盘");
+    set_panel_llm(&dir, true).unwrap();
+    assert!(panel_llm_enabled(&dir), "写开 = 读开");
+    set_panel_llm(&dir, false).unwrap();
+    assert!(!panel_llm_enabled(&dir), "写关 = 读关（热语义：无缓存）");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn panel_llm_set_preserves_per_slug_siblings() {
+    let dir = temp_config_dir("panel_llm_sib");
+    let _g = SERIAL.lock().unwrap();
+    set_enabled(&dir, "alpha", true).unwrap();
+    set_panel_llm(&dir, true).unwrap();
+    set_panel_llm(&dir, false).unwrap();
+    assert!(
+        switch(&dir, "alpha").enabled,
+        "翻面板总闸不得抹掉 per-slug 开关"
+    );
+    set_enabled(&dir, "beta", true).unwrap();
+    assert!(!panel_llm_enabled(&dir), "翻 per-slug 开关不得惊动面板总闸");
+    assert!(switch(&dir, "alpha").enabled);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn panel_llm_key_shape_stable_for_existing_files() {
+    let dir = temp_config_dir("panel_llm_shape");
+    let _g = SERIAL.lock().unwrap();
+    // 既有文件（升级前形态）：只有 per-slug 开关，无 panel_llm 键。
+    std::fs::write(
+        plugin_wasm_config_path(&dir),
+        "{\n  \"plugins\": {\n    \"alpha\": {\n      \"enabled\": true\n    }\n  }\n}\n",
+    )
+    .unwrap();
+    // 开闸：panel_llm 键出现、per-slug 原样保留。
+    set_panel_llm(&dir, true).unwrap();
+    let raw = std::fs::read_to_string(plugin_wasm_config_path(&dir)).unwrap();
+    assert!(raw.contains("\"panel_llm\""), "开闸后键必须落盘");
+    assert!(raw.contains("\"alpha\""), "既有条目保留");
+    // 关闸：panel_llm 键整体省略（skip_serializing_if）——文件回到升级前形态，
+    // 既有消费者（旧版本二进制解析该文件）零感知。
+    set_panel_llm(&dir, false).unwrap();
+    let raw = std::fs::read_to_string(plugin_wasm_config_path(&dir)).unwrap();
+    assert!(!raw.contains("panel_llm"), "关闸后键整体省略");
+    assert!(raw.contains("\"alpha\""), "既有条目仍保留");
+    assert!(raw.ends_with('\n'), "尾随换行形态稳定");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ==================== BUG-20261103-333 回归锁 ====================
+//
+// load_switches/switch 读路径的迁移写（读旧实例文件→并入→整体写主文件→删旧
+// 文件）不罩 config_write_lock——与 set_enabled/set_config/remove（全程罩锁
+// 的 RMW）并发时互相以旧底覆盖：开关写丢 = 用户切换静默回退；迁移写丢更重
+// ——旧实例文件已删，迁移数据不可恢复。对照组 plugins_native 的迁移是
+// rename 原子形态天然免疫。修复 = 迁移写路径全程罩锁。并发触发迁移与开关
+// 写，断言两边效果并存（多轮重建现场提高交错命中率）。
+
+#[test]
+fn concurrent_migration_and_set_enabled_do_not_lose_each_other() {
+    let dir = temp_config_dir("concurrent_migrate");
+    let rounds = 30u32;
+    for r in 0..rounds {
+        // 每轮重建现场：主文件含 resident，旧实例文件含 migrated
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_enabled(&dir, "resident", true).unwrap();
+        legacy_instance(&dir, "migrated", r#"{"k":"v"}"#);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let h_migrate = {
+            let dir = dir.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let all = load_switches(&dir);
+                assert!(
+                    all.contains_key("migrated"),
+                    "迁移读返回值必须含并入条目（内存态完整性前置检查）"
+                );
+            })
+        };
+        let h_toggle = {
+            let dir = dir.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                set_enabled(&dir, "toggled", true).unwrap();
+            })
+        };
+        h_migrate.join().unwrap();
+        h_toggle.join().unwrap();
+        // 盘上终态重读（此时迁移已收敛，纯读）：两边效果必须并存
+        let final_all = load_switches(&dir);
+        assert!(
+            final_all.contains_key("migrated"),
+            "BUG-20261103-333(第{r}轮): 迁移条目不得被并发开关写的旧底覆盖（旧文件已删、丢失不可恢复）"
+        );
+        assert!(
+            final_all.get("toggled").is_some_and(|s| s.enabled),
+            "BUG-20261103-333(第{r}轮): 开关写不得被并发迁移写的旧底覆盖"
+        );
+        assert!(
+            final_all.get("resident").is_some_and(|s| s.enabled),
+            "现场既有条目必须保留"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

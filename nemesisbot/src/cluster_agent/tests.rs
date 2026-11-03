@@ -2887,12 +2887,64 @@ mod wave_d {
 
     // -- 讨论 post / send_nb_bus RPC 失败臂 ----------------------------------
 
-    /// 空回复：post 前被丢弃，不触 RPC、不炸。
+    /// 日志捕获（thread-local subscriber；BUG-20261102-322：空回复丢弃臂
+    /// 的名字承诺 dropped_before_post，需要真断言丢弃日志）。
+    fn capture_logs_to_buf() -> (
+        tracing::subscriber::DefaultGuard,
+        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    ) {
+        struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_buf = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(move || SharedBuf(writer_buf.clone()))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (guard, buf)
+    }
+
+    /// 空回复：post 前被丢弃，不触 RPC、不炸（丢弃日志可见）。
+    /// BUG-20261102-322 实证：whitespace provider 走退化重试梯后返回**非空**
+    /// notice，空回复丢弃臂从未执行（双重空洞）。改用恒 Err provider——
+    /// loop 以 Error 事件收尾、无 Done → extract_final_message 得空串，
+    /// 真正走进丢弃臂。
     #[tokio::test]
     async fn discussion_empty_reply_dropped_before_post() {
-        let agent_loop = AgentLoop::new(Box::new(plain_provider("  \n")), d_config());
+        struct AlwaysErrProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for AlwaysErrProvider {
+            async fn chat(
+                &self,
+                _model: &str,
+                _messages: Vec<LlmMessage>,
+                _options: Option<nemesis_agent::types::ChatOptions>,
+                _tools: Vec<nemesis_agent::types::ToolDefinition>,
+            ) -> Result<LlmResponse, String> {
+                Err("s9-empty-arm: provider unavailable".to_string())
+            }
+        }
+
+        let (_guard, buf) = capture_logs_to_buf();
+        let agent_loop = AgentLoop::new(Box::new(AlwaysErrProvider), d_config());
         let event = d_make_event(1);
         handle_discussion(&agent_loop, &d_config(), None, None, "node-a", &event).await;
+        // 名字承诺 dropped_before_post——丢弃闸或日志臂回归时此处红。
+        let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            captured.contains("Discussion round produced empty reply, dropping"),
+            "空回复必须在 post 前被丢弃并记录\n--- captured ---\n{captured}"
+        );
     }
 
     /// 正文回复 + RPC 失败（无 resolver 快速 Err）→ post Err 臂诚实 warn、

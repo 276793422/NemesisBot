@@ -4587,13 +4587,19 @@ async fn main() {
             };
 
             // 6. 轮询 session_logs（恢复循环 120s tick + 2min 新鲜保护，
-            //    预计 2-4 分钟内完成；deadline 300s）。
+            //    预计 2-4 分钟内完成）。
+            //    BUG-20261103：deadline 300s 只有 2.5 个 tick 机会——满载
+            //    runner（T-WAN-1 判词自证「前置测试极端慢速」段预算耗尽）
+            //    一次 tick miss 即超窗（scheduled ET 41596006276 core a1
+            //    08:06Z 实录：54 过 1 红即此）。与 T43/T46 同族慢批形态，
+            //    同房规修：等窗 ≥ 3 tick + 余量 = 540s（4.5 tick，2.25×
+            //    4min 上界预期），慢段才延伸、正常段 2-4min 照旧完赛。
             let session_logs_dir = ws_a
                 .home()
                 .join("workspace")
                 .join("logs")
                 .join("session_logs");
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(540);
             let mut recovered = false;
             while tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -4636,7 +4642,7 @@ async fn main() {
                 return fail(
                     "T19",
                     format!(
-                        "300s 内恢复未完成：session_logs 无 marker user 行 + 「好的，我知道了」assistant 行（dir={}）——检查 first_start 登记/恢复循环/回灌 bus 链路",
+                        "540s 内恢复未完成：session_logs 无 marker user 行 + 「好的，我知道了」assistant 行（dir={}）——检查 first_start 登记/恢复循环/回灌 bus 链路",
                         session_logs_dir.display()
                     ),
                 );

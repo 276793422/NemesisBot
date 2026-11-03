@@ -1,8 +1,8 @@
 //! plugins_wasm handler 单元测试（W6；独立测试文件——生产文件零内联测试）。
 //!
 //! 覆盖：槽空诚实报错 / list 空+lockfile 交叉 / 未注册 slug 的诚实错误 /
-//! config.get 脱敏（x-secret 值不回传）。真实 wasm 组件的装配链路归
-//! cluster 级 fixtures（W7 对抗套件），此处只打宿主面契约。
+//! config.get 脱敏（x-secret 值不回传）/ flow:// 绑定路由（P3）。真实 wasm
+//! 组件的装配链路归 cluster 级 fixtures（W7 对抗套件），此处只打宿主面契约。
 
 use super::*;
 use nemesis_plugins_wasm::registry::PluginManager;
@@ -97,6 +97,49 @@ fn set_installer_enables_list() {
     set_installer(inst.clone());
     let out = cmd_list().expect("list ok");
     assert_eq!(out["plugins"].as_array().map(|a| a.len()), Some(0));
+}
+
+// ==================== 运行期总闸（2026-11-01 BUG 修复） ====================
+//
+// 用户现场：宿主壳开关（config.plugin.native.json plugin_wasm.enabled）
+// 翻关后框架已不在（下次启动不再装配），但运行中的 gateway 服务面照常
+// 生效——require_installer 只信进程静态槽。修复后服务面热闸：翻关即拒，
+// 开关改回即时恢复。经 runtime_gate_error 直注 workspace 测试——不走全局
+// installer 槽（并行用例互相覆盖槽 = 拿到别家 workspace 的竞态假绿/假红，
+// 同 list_impl 直注纪律）。
+
+#[test]
+fn runtime_master_gate_blocks_and_recovers_service_faces() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ws = dir.path().join("workspace");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    // 基线：双真相源全开 → 无拒绝
+    assert!(runtime_gate_error(&ws).is_none(), "缺省（双源缺席）= 开");
+    // 宿主壳开关翻关（用户现场形态：settings 页关 plugin_wasm）→ 诚实拒绝
+    nemesis_config::plugins_native::set_enabled(
+        &ws.join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        false,
+    )
+    .expect("native switch off");
+    let err = runtime_gate_error(&ws).unwrap();
+    assert!(err.contains("已关闭"), "翻关后服务面必须诚实拒绝: {err}");
+    // 开关改回 = 即时恢复（热语义核心不变量，无缓存）
+    nemesis_config::plugins_native::set_enabled(
+        &ws.join("config"),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+        true,
+    )
+    .expect("native switch on");
+    assert!(runtime_gate_error(&ws).is_none(), "壳闸回开 = 即时恢复");
+    // 总闸臂（config.json plugins.wasm.enabled=false，home 与 workspace 同级）
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":false}}}"#,
+    )
+    .expect("master config");
+    let err = runtime_gate_error(&ws).unwrap();
+    assert!(err.contains("已关闭"), "总闸翻关同样拦截: {err}");
 }
 
 #[tokio::test]
@@ -256,4 +299,163 @@ fn install_sync_event_decision_table() {
 
     // remove 路径只消费 slug，tool_name/operation_type 允许为空。
     assert!(off.tool_name.is_empty());
+}
+
+/// flow:// 绑定路由契约（P3，单用例串行覆盖全序——FLOW_ENGINE_BRIDGE 是
+/// 全局槽，多用例并行会互踩状态）。flow:// 分支在 require_installer 之前
+/// 返回，故无需装配 installer；形态错误断言先于桥检查，与桥态无关。
+#[tokio::test]
+async fn flow_binding_routing_contract() {
+    // ① 形态错误（无斜杠 / 空 template 段）——在桥检查之前，恒可断言。
+    let err = cmd_ui_invoke(Some(serde_json::json!({
+        "slug": "panel-echo", "command": "flow://noview", "args": {},
+    })))
+    .await
+    .unwrap_err();
+    assert!(err.contains("绑定形态须为"), "无斜杠形态: {err}");
+    let err = cmd_ui_invoke(Some(serde_json::json!({
+        "slug": "panel-echo", "command": "flow:///list", "args": {},
+    })))
+    .await
+    .unwrap_err();
+    assert!(err.contains("段不得为空"), "空 template 段: {err}");
+
+    // ② 桥缺席诚实报错（槽初始为 None；本二进制内只有本用例安装桥——
+    // 若未来其他用例先装了桥，此断言按 unset_slot 同纪律跳过）。
+    if flow_engine_bridge().is_none() {
+        let err = cmd_ui_invoke(Some(serde_json::json!({
+            "slug": "panel-echo", "command": "flow://tpl/list", "args": {},
+        })))
+        .await
+        .unwrap_err();
+        assert!(err.contains("流程引擎未装配"), "桥缺席: {err}");
+    }
+
+    // ③ 桥安装后透传：template/view/args 原样到达实现侧，Ok 原样回前端
+    //（bind 全串 `flow://<template>/<view>` 前端逐字节发送的契约锚）。
+    struct EchoBridge;
+    #[async_trait::async_trait]
+    impl FlowEngineBridge for EchoBridge {
+        async fn invoke(
+            &self,
+            template: &str,
+            view: &str,
+            args: &serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({
+                "template": template,
+                "view": view,
+                "got_instance": args["instance"],
+            }))
+        }
+    }
+    install_flow_engine_bridge(Arc::new(EchoBridge));
+    let out = cmd_ui_invoke(Some(serde_json::json!({
+        "slug": "panel-echo",
+        "command": "flow://bugfix-pipeline/list",
+        "args": { "instance": "I-1" },
+    })))
+    .await
+    .expect("flow invoke ok");
+    assert_eq!(out["template"], "bugfix-pipeline");
+    assert_eq!(out["view"], "list");
+    assert_eq!(out["got_instance"], "I-1");
+}
+
+// ==================== 面板 LLM 总闸（2026-11-01 决策 C） ====================
+
+/// 纯声明式面板 manifest fixture（无 wasm 载荷——panel 免 sha 闸），
+/// `with_llm` 控制 `[permissions] x-llm` 段有无。
+fn write_panel_manifest(dir: &std::path::Path, slug: &str, with_llm: bool) {
+    let pdir = dir.join("plugins_wasm").join(slug);
+    std::fs::create_dir_all(&pdir).expect("payload dir");
+    let perms = if with_llm {
+        "\n[permissions]\nx-llm = true\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        pdir.join("plugin.toml"),
+        format!(
+            "api-version = 1\nslug = \"{slug}\"\nkind = \"panel\"\nname = \"{slug}\"\nversion = \"0.1.0\"\ndescription = \"panel-llm fixture\"\n\n[[ui.page]]\nroute = \"{slug}\"\ntitle = \"T\"\n{perms}"
+        ),
+    )
+    .expect("manifest");
+}
+
+#[test]
+fn panel_llm_get_projects_x_llm_declarations_with_default_off() {
+    // 投影契约：只收声明 x-llm 的面板插件（未声明的普通面板不进清单）；
+    // 总闸缺省 false；行 enabled=载荷开关位、loaded=注册表态，与总闸正交。
+    let (dir, inst) = temp_installer();
+    write_panel_manifest(dir.path(), "llmpanel", true);
+    write_panel_manifest(dir.path(), "plainpanel", false);
+    let out = panel_llm_get_impl(&inst).expect("get ok");
+    assert_eq!(out["enabled"], false, "缺省关（决策 C 用户拍板）");
+    let plugins = out["plugins"].as_array().expect("plugins");
+    assert_eq!(plugins.len(), 1, "未声明 x-llm 的面板不进清单: {plugins:?}");
+    assert_eq!(plugins[0]["slug"], "llmpanel");
+    assert_eq!(plugins[0]["name"], "llmpanel");
+    assert_eq!(plugins[0]["enabled"], false, "无开关记录 = 未装载");
+    assert_eq!(plugins[0]["loaded"], false, "注册表缺席 = 未加载");
+    // 声明插件的载荷开关翻开后照读（开关位 ≠ 总闸，两层独立）。
+    nemesis_config::plugin_wasm::set_enabled(
+        &dir.path().join("workspace").join("config"),
+        "llmpanel",
+        true,
+    )
+    .expect("switch");
+    let out = panel_llm_get_impl(&inst).expect("get ok");
+    assert_eq!(out["enabled"], false, "载荷开关不影响总闸投影");
+    assert_eq!(
+        out["plugins"][0]["enabled"], true,
+        "开关记录位翻开后行 enabled=true"
+    );
+}
+
+#[test]
+fn panel_llm_set_validates_and_roundtrips_via_config_truth() {
+    // set 路径直注 impl（不走全局槽——OnceLock 首胜 + 并行 TempDir 先删
+    // 竞态，同 list_impl 直注纪律）：校验臂 + config 真相源往返 + get 投影联动。
+    let (dir, inst) = temp_installer();
+    assert_eq!(
+        panel_llm_set_impl(&inst, None).unwrap_err(),
+        "missing data",
+        "缺 data 诚实报错"
+    );
+    assert_eq!(
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({ "enabled": "yes" }))).unwrap_err(),
+        "enabled (bool) is required",
+        "非 bool enabled 拒绝（字符串不猜）"
+    );
+    assert_eq!(
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({}))).unwrap_err(),
+        "enabled (bool) is required",
+        "缺 enabled 键同拒绝"
+    );
+    // 开 → config 落盘真相 + get 投影联动 + 往返幂等。
+    let out =
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({ "enabled": true }))).expect("set on");
+    assert_eq!(out["enabled"], true);
+    assert!(
+        nemesis_config::plugin_wasm::panel_llm_enabled(
+            &dir.path().join("workspace").join("config")
+        ),
+        "config 真相源已落盘"
+    );
+    assert_eq!(
+        panel_llm_get_impl(&inst).expect("get ok")["enabled"],
+        true,
+        "get 与 set 同源联动"
+    );
+    // 关 → 回落（重启保持语义的写半边由 config 层单测钉，此处钉 handler 面）。
+    let out =
+        panel_llm_set_impl(&inst, Some(&serde_json::json!({ "enabled": false }))).expect("set off");
+    assert_eq!(out["enabled"], false);
+    assert!(
+        !nemesis_config::plugin_wasm::panel_llm_enabled(
+            &dir.path().join("workspace").join("config")
+        ),
+        "关后 config 真相回落"
+    );
 }

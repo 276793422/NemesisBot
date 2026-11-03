@@ -169,3 +169,33 @@ pub fn parse_json_string_result(out_json: &str) -> Result<Result<String, HostErr
         )))),
     }
 }
+
+// ---------------------------------------------------------------------------
+// flow 步骤（2026-11-03 guest step 批）：get-step-metadata 结果；run-step
+// 出口与策略点同形（result<json-string, host-error>），复用
+// [`parse_json_string_result`]。
+// ---------------------------------------------------------------------------
+
+/// flow 步骤元数据（get-step-metadata 结果；字段名对齐 WIT step-metadata
+/// record）。
+#[derive(Debug, Clone)]
+pub struct StepMetadata {
+    /// 自报能跑的步骤 kind 词表（如 `"jira:fetch"`）。
+    pub kinds: Vec<String>,
+}
+
+/// get-step-metadata 结果解析。
+pub fn parse_step_metadata(out_json: &str) -> Result<StepMetadata, HostErr> {
+    let v = parse_result_json(out_json)?;
+    let kinds = v
+        .get("kinds")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(StepMetadata { kinds })
+}

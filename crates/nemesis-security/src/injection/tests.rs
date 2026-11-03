@@ -411,8 +411,13 @@ fn test_ldap_injection_detection() {
     let detector = Detector::new(InjectionConfig::default());
     let args = serde_json::json!({"content": ") (| (| ))"});
     let result = detector.analyze_tool_input("write_file", &args);
-    // May or may not trigger, but should not panic
-    let _ = result;
+    // BUG-20261102-322：名字承诺 detection——LDAP filter 模式 `\)\s*\(\s*\|\s*\(`
+    // 必须命中此载荷（此前 `let _ = result;` 零断言，模式表回归测试照绿）。
+    assert!(
+        result.score > 0.1,
+        "LDAP injection filter pattern should be detected, score was {}",
+        result.score
+    );
 }
 
 #[test]
@@ -422,10 +427,18 @@ fn test_extract_all_text_nested() {
         "content": "hello world",
         "nested": {"key": "value"}
     });
-    let detector = Detector::new(InjectionConfig::default());
-    let result = detector.analyze_tool_input("write_file", &args);
-    // Should extract text from all values including nested
-    let _ = result;
+    // BUG-20261102-322：名字承诺 nested 提取——递归必须下钻对象值
+    // （此前 `let _ = result;` 零断言）。
+    let text = super::extract_all_text(&args);
+    assert!(
+        text.contains("hello world"),
+        "顶层字符串值必须被提取: {text}"
+    );
+    assert!(
+        text.contains("value"),
+        "嵌套对象的值必须被提取（递归下钻）: {text}"
+    );
+    assert!(!text.contains("key"), "只提取值，键名不得混入: {text}");
 }
 
 #[test]
@@ -471,8 +484,13 @@ fn test_xxe_detection() {
     let detector = Detector::new(InjectionConfig::default());
     let args = serde_json::json!({"content": "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\"> ]>"});
     let result = detector.analyze_tool_input("write_file", &args);
-    // XXE pattern should be detected
-    let _ = result;
+    // BUG-20261102-322：`<!entity\s+` 模式（0.88）必须命中 DOCTYPE/ENTITY
+    // 载荷——此前 `let _ = result;` 零断言。
+    assert!(
+        result.score > 0.1,
+        "XXE <!ENTITY pattern should be detected, score was {}",
+        result.score
+    );
 }
 
 #[test]
@@ -480,7 +498,12 @@ fn test_format_string_detection() {
     let detector = Detector::new(InjectionConfig::default());
     let args = serde_json::json!({"content": "%s%s%s%s%s"});
     let result = detector.analyze_tool_input("write_file", &args);
-    let _ = result;
+    // BUG-20261102-322：format string 模式（0.82）必须命中——此前零断言。
+    assert!(
+        result.score > 0.1,
+        "format string exploit pattern should be detected, score was {}",
+        result.score
+    );
 }
 
 // ============================================================

@@ -13,6 +13,15 @@
 //   内调 LLM 的唯一通道）；新增 `loop-policy` interface + `plugin-loop-policy`
 //   world（循环流程策略接管面）。旧组件字节按名 import、宿主 linker 提供
 //   超集——存量 tool/observer 组件零影响。
+// - 2026-10-31 面板扩展批：新增 `ui` interface + `plugin-panel` world（面板
+//   插件出口：Dashboard【定制】分组页面的命令通道）。单入口 handle-ui-command
+//   抗命令演进（observer/loop-policy 单入口同纪律）；无状态请求-响应
+//   （fresh-store-per-call，guest 不驻留），编排归宿主 flow 引擎。
+// - 2026-11-03 guest step 批：新增 `flow-step` interface + `plugin-flow-step`
+//   world（flow 引擎插件步骤执行体：模板步骤 `kind = "plugin:<slug>:<op>"`
+//   引用组件，幂等/重试责任在插件，安装期审一次运行期不弹卡）。单 json-string
+//   进出单入口 run-step（observer/loop-policy/panel 单入口同纪律）。
+//   CONTRACT_API_VERSION 维持 1（minor 兼容新增，旧组件字节零影响）。
 package nemesis:plugin@0.1.0;
 
 /// 共享类型别名。
@@ -99,14 +108,17 @@ interface host {
     tool-invoke: func(tool: string, args-json: json-string) -> result<json-string, host-error>;
 
     /// 杂务 LLM 补全（2026-10-22 批 2 新增；组件内调 LLM 的唯一通道）。
-    /// 帧纪律：仅策略帧可用（world `plugin-loop-policy`）——tool/observer
-    /// 帧调用恒 unavailable，LLM 花销能力只授循环治理路径（壳侧按 world
-    /// 恒注册是 link 兼容，授权在宿主调用时闸）。
+    /// 帧纪律：policy 帧（kind 硬规则，world `plugin-loop-policy`）与
+    /// panel 帧（双闸：manifest `[permissions] x-llm` 声明 × 宿主总闸
+    /// `panel_llm_enabled`，2026-11-01 决策 C——双闸任一缺 = 恒
+    /// unavailable）可用；tool/observer 帧调用恒 unavailable，LLM 花销
+    /// 能力只授循环治理路径与显式开关的面板通道（壳侧按 world 恒注册是
+    /// link 兼容，授权在宿主调用时闸）。
     ///
     /// 走宿主 bypass_llm 护栏同源：max_tokens 钳 8192 上限、墙钟超时、
-    /// 输出校验；模型 = `agents.small_model` 杂务槽（与 /compact 同源）。
-    /// fail-closed：estop → unavailable；无 small_model 槽 → not-found。
-    /// 预算计入每帧宿主调用预算。
+    /// 输出校验；模型 = `agents.small_model` 杂务槽（与 /compact 同源；
+    /// 未配置时诚实回落主模型——与策略帧同一条实现）。
+    /// fail-closed：estop → unavailable。预算计入每帧宿主调用预算。
     llm-complete: func(prompt: string, max-tokens: u32) -> result<string, host-error>;
 }
 
@@ -244,6 +256,71 @@ interface loop-policy {
     validate-args: func(input: json-string) -> result<json-string, host-error>;
 }
 
+/// 面板插件出口（world plugin-panel；2026-10-31 面板扩展批新增）。
+///
+/// Dashboard「定制」分组页面的命令通道：面板骨架（组件/布局/字段）由
+/// manifest `[[ui]]` 段声明、宿主预置组件渲染；本接口只承载数据投影与
+/// 动作翻译（血肉）。单入口抗命令演进：命令种类增减不改 WIT 形状，只改
+/// 入参 JSON 的 `command` 字段值域。
+///
+/// 语义约束：无状态请求-响应——fresh-store-per-call，guest 不驻留、无
+/// tick；流程编排归宿主 flow 引擎（manifest `[[flow]]` 段声明），guest 只
+/// 做无状态投影与动作转发。宿主侧闸（转发前生效）：estop 冻结、每帧宿主
+/// 调用预算、审计链、`plugins.wasm.enabled` 总闸。
+interface ui {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 处理一条面板命令。
+    ///
+    /// 入参投影：`{"command":"<cmd 名>","args":<object>,"context":{
+    /// "slug":...,"view"?:...}}`（context 由宿主注入，guest 只读）。
+    /// 出参：任意 JSON 文本（对象/数组/标量）；渲染层按 manifest 声明的
+    /// 视图词汇表消费。业务失败不 trap：出参 `{"error":"<可读原因>"}`
+    /// 形态（渲染层诚实展示），或 host-error 走宿主错误面。
+    handle-ui-command: func(input: json-string) -> result<json-string, host-error>;
+}
+
+/// flow 步骤插件出口（world plugin-flow-step；2026-11-03 guest step 批新增）。
+///
+/// flow 引擎的插件步骤执行体：flow 模板步骤以 `kind = "plugin:<slug>:<op>"`
+/// 引用本 world 组件（slug = 插件名，op = 本接口自报词表成员），宿主 flow
+/// tick 每轮投递 run-step。责任划分（2026-11-03 拍板）：幂等/重试防重由
+/// guest 自己负责（宿主只管投递与状态记账，入参带 attempts 计数供对账）；
+/// 审批一次在安装期（九步装配漏斗），运行期不逐次弹审批卡。
+///
+/// 单入口 run-step 抗步骤种类演进：步骤种类增减不改 WIT 形状，只改入参
+/// JSON 的 `op` 字段值域（observer/loop-policy/panel 单入口同纪律）。
+interface flow-step {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 步骤元数据（安装期对账 + flow 模板引用校验的真相源）。
+    record step-metadata {
+        /// 自报能跑的步骤 kind 词表（如 `"jira:fetch"`；安装期校验非空 +
+        /// 形态；运行期路由按此对账——模板引用的 op 必须在词表内）。
+        kinds: list<string>,
+    }
+
+    /// 元数据自报（安装期对账）。
+    get-step-metadata: func() -> result<step-metadata, host-error>;
+
+    /// 跑一步：入参 = 宿主渲染后的上下文投影，出参 = 状态投影。
+    ///
+    /// 入参投影（宿主构造，token 渲染复用六原语同源；不含图片字节与凭据）：
+    /// `{"op":"<op>","args":<token 渲染后的步骤 args>,"instance":{...},
+    /// "steps":{...},"board_issue":...,"attempts":<本次投递为第几次>}`。
+    ///
+    /// 出参投影（约定对象；业务失败不 trap 用 status 表达）：
+    /// `{"status":"done"|"running"|"failed"|"skipped", ...}` + 自由负载
+    /// （宿主原样存步骤 artifacts）。`done` = 同步完成；`running` = 未完
+    /// （宿主转 Running，下一 tick 重投 run-step——幂等防重由 guest 负责）；
+    /// `failed` = 失败（宿主走步骤 on_fail 链，负载可带 `"error"` 人读
+    /// 原因）；`skipped` = 跳过（对齐 when 假语义）。出参畸形 / 未知
+    /// status = 宿主按步骤失败处置（走 on_fail 链）。
+    run-step: func(input: json-string) -> result<json-string, host-error>;
+}
+
 /// 工具插件世界（一 manifest 一 kind 不混装）。
 world plugin-tool {
     import host;
@@ -260,4 +337,16 @@ world plugin-observer {
 world plugin-loop-policy {
     import host;
     export loop-policy;
+}
+
+/// 面板插件世界。
+world plugin-panel {
+    import host;
+    export ui;
+}
+
+/// flow 步骤插件世界。
+world plugin-flow-step {
+    import host;
+    export flow-step;
 }

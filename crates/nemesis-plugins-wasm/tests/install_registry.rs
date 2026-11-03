@@ -456,6 +456,7 @@ fn takeover_owner_resolves_enabled_tool_plugin_only() {
             1,
             Some(meta),
             None,
+            None,
         )
         .expect("register");
     // 注册面缺省启用（开关记录的「默认不加载」由 installer 装载层裁决，
@@ -500,6 +501,7 @@ fn takeover_owner_multi_declarer_arbitration_is_deterministic() {
             1,
             Some(meta),
             None,
+            None,
         )
         .expect("register")
     };
@@ -523,4 +525,468 @@ fn takeover_owner_multi_declarer_arbitration_is_deterministic() {
     zeta.enabled
         .store(false, std::sync::atomic::Ordering::SeqCst);
     assert!(mgr.takeover_owner("web_fetch").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-31 面板扩展批：manifest 声明校验（kind 门 + 视图词汇/绑定形态 +
+// 剧本步骤词表/on_fail 分支 + 纯声明式插件最低声明面）
+// ---------------------------------------------------------------------------
+
+const PANEL_HEAD: &str = "api-version = 1\nslug = \"demo-panel\"\nkind = \"panel\"\n\
+     name = \"Demo Panel\"\nversion = \"0.1.0\"\ndescription = \"demo\"\n";
+
+fn parse_raw(raw: &str) -> Result<(), String> {
+    match PluginManifest::parse(raw) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 一页一 table 视图的最小合法页面段。
+fn one_page() -> String {
+    "[[ui.page]]\nroute = \"main\"\ntitle = \"主页\"\n\n\
+     [[ui.page.views]]\nkind = \"table\"\nbind = \"cmd://list\"\n\n\
+     [[ui.page.views.columns]]\nkey = \"id\"\nlabel = \"ID\"\n"
+        .to_string()
+}
+
+#[test]
+fn panel_manifest_validation_matrix() {
+    // 纯声明式（无载荷）+ 页面 → 过。
+    let raw = format!("{PANEL_HEAD}{}", one_page());
+    assert!(parse_raw(&raw).is_ok(), "declarative panel must parse");
+
+    // 纯声明式但零页面 → 拒绝（无载荷无声明 = 什么都没装）。
+    let err = parse_raw(PANEL_HEAD).unwrap_err();
+    assert!(err.contains("must declare at least one"), "{err}");
+
+    // 有载荷面板零页面 → 过（guest 命令通道本体合法，页面可后续升级补）。
+    let raw = format!("wasm-sha256 = \"{}\"\n{}", "a".repeat(64), PANEL_HEAD);
+    assert!(
+        parse_raw(&raw).is_ok(),
+        "payload panel without pages is legal"
+    );
+
+    // 非 panel kind 携声明面 → 拒绝（扩展点不混装，与 takeover 同纪律）。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\n{}{}",
+        "a".repeat(64),
+        PANEL_HEAD,
+        one_page()
+    )
+    .replacen("kind = \"panel\"", "kind = \"tool\"", 1);
+    let err = parse_raw(&raw).unwrap_err();
+    assert!(err.contains("requires kind=panel"), "{err}");
+
+    let flow_seg = "[[flow.template]]\nid = \"fix\"\n\n\
+                    [[flow.template.steps]]\nid = \"s1\"\nkind = \"connector_fetch\"\n";
+    let raw = format!("wasm-sha256 = \"{}\"\n{}", "a".repeat(64), PANEL_HEAD).replacen(
+        "kind = \"panel\"",
+        "kind = \"observer\"",
+        1,
+    ) + flow_seg;
+    let err = parse_raw(&raw).unwrap_err();
+    assert!(err.contains("requires kind=panel"), "{err}");
+
+    // 路由形态 + 跨页唯一。
+    let bad_route = one_page().replacen("route = \"main\"", "route = \"Bad_Route\"", 1);
+    let err = parse_raw(&format!("{PANEL_HEAD}{bad_route}")).unwrap_err();
+    assert!(err.contains("invalid ui.page.route"), "{err}");
+    let dup = format!("{PANEL_HEAD}{}{}", one_page(), one_page());
+    let err = parse_raw(&dup).unwrap_err();
+    assert!(err.contains("duplicate ui.page.route"), "{err}");
+}
+
+#[test]
+fn panel_view_and_bind_validation_matrix() {
+    let page_wrap =
+        |views: &str| format!("{PANEL_HEAD}[[ui.page]]\nroute = \"m\"\ntitle = \"M\"\n{views}");
+
+    // 视图词表外 kind → 拒绝。
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"carousel\"\nbind = \"cmd://x\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("invalid ui view kind"), "{err}");
+
+    // bind 前缀缺失 → 拒绝。
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"timeline\"\nbind = \"list-all\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("flow:// or cmd://"), "{err}");
+
+    // flow:// 单段 → 拒绝（缺 view 段）。
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"timeline\"\nbind = \"flow://only-template\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("flow bind"), "{err}");
+
+    // cmd:// 空与带空白 → 拒绝。
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"timeline\"\nbind = \"cmd://\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("cmd bind"), "{err}");
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"timeline\"\nbind = \"cmd://a b\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("cmd bind"), "{err}");
+
+    // table 缺列 → 拒绝。
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"table\"\nbind = \"cmd://list\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("needs at least one column"), "{err}");
+
+    // form 字段类型出词表 → 拒绝；secret 合法。
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"form\"\nbind = \"cmd://save\"\n\n\
+         [[ui.page.views.fields]]\nkey = \"k\"\nlabel = \"K\"\nfield-type = \"blob\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("invalid field type"), "{err}");
+    assert!(
+        parse_raw(&page_wrap(
+            "[[ui.page.views]]\nkind = \"form\"\nbind = \"cmd://save\"\n\n\
+         [[ui.page.views.fields]]\nkey = \"k\"\nlabel = \"K\"\nfield-type = \"secret\"\n"
+        ))
+        .is_ok()
+    );
+
+    // actions 空 bind 合法（语义在 per-button command；视图级 bind 无消费者），
+    // 但缺按钮仍拒绝。
+    assert!(
+        parse_raw(&page_wrap(
+            "[[ui.page.views]]\nkind = \"actions\"\nbind = \"\"\n\n\
+         [[ui.page.views.buttons]]\nlabel = \"跑\"\ncommand = \"go\"\n"
+        ))
+        .is_ok()
+    );
+    let err = parse_raw(&page_wrap(
+        "[[ui.page.views]]\nkind = \"actions\"\nbind = \"\"\n",
+    ))
+    .unwrap_err();
+    assert!(err.contains("needs at least one button"), "{err}");
+
+    // timeline 无专用段 → 直通。
+    assert!(
+        parse_raw(&page_wrap(
+            "[[ui.page.views]]\nkind = \"timeline\"\nbind = \"cmd://events\"\n"
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
+fn panel_flow_template_validation_matrix() {
+    // 带 wasm-sha256（有载荷面板零页面合法；纯声明式必须带页——flow 矩阵
+    // 不关心页面，走有载荷形态最省）。
+    let flow_wrap = |steps: &str| {
+        format!(
+            "wasm-sha256 = \"{}\"\n{PANEL_HEAD}[[flow.template]]\nid = \"fix\"\n{}",
+            "a".repeat(64),
+            steps
+        )
+    };
+    let step = |extra: &str| {
+        format!("\n[[flow.template.steps]]\nid = \"s1\"\nkind = \"connector_fetch\"\n{extra}")
+    };
+
+    // 步骤词表外 kind → 拒绝。
+    assert!(
+        parse_raw(&flow_wrap(&step(""))).is_ok(),
+        "legal step must pass"
+    );
+    let raw = flow_wrap(&step("")).replacen("kind = \"connector_fetch\"", "kind = \"magic\"", 1);
+    let err = parse_raw(&raw).unwrap_err();
+    assert!(err.contains("invalid kind"), "{err}");
+
+    // gate 出词表 → 拒绝（空|manual 之外不收）。
+    let raw = flow_wrap(&step("gate = \"auto\""));
+    let err = parse_raw(&raw).unwrap_err();
+    assert!(err.contains("invalid gate"), "{err}");
+    assert!(parse_raw(&flow_wrap(&step("gate = \"manual\""))).is_ok());
+
+    // on_fail 分支形态。
+    for ok in [
+        "",
+        "on-fail = \"park_human\"\n",
+        "on-fail = \"continue\"\n",
+        "on-fail = \"retry:3\"\n",
+    ] {
+        assert!(
+            parse_raw(&flow_wrap(&step(ok))).is_ok(),
+            "on_fail '{ok}' must pass"
+        );
+    }
+    for bad in [
+        "on-fail = \"retry:0\"\n",
+        "on-fail = \"retry:11\"\n",
+        "on-fail = \"giveup\"\n",
+    ] {
+        let err = parse_raw(&flow_wrap(&step(bad))).unwrap_err();
+        assert!(err.contains("invalid on_fail"), "{bad}: {err}");
+    }
+
+    // 模板/步骤 id 唯一。
+    let dup_tpl = format!(
+        "wasm-sha256 = \"{}\"\n{PANEL_HEAD}[[flow.template]]\nid = \"fix\"\n\n\
+         [[flow.template.steps]]\nid = \"s1\"\nkind = \"connector_fetch\"\n\n\
+         [[flow.template]]\nid = \"fix\"\n\n\
+         [[flow.template.steps]]\nid = \"s1\"\nkind = \"connector_fetch\"\n",
+        "a".repeat(64)
+    );
+    let err = parse_raw(&dup_tpl).unwrap_err();
+    assert!(err.contains("duplicate flow.template.id"), "{err}");
+    let dup_step = flow_wrap(
+        "\n[[flow.template.steps]]\nid = \"s1\"\nkind = \"connector_fetch\"\n\n\
+         [[flow.template.steps]]\nid = \"s1\"\nkind = \"connector_fetch\"\n",
+    );
+    let err = parse_raw(&dup_step).unwrap_err();
+    assert!(err.contains("duplicate step id"), "{err}");
+
+    // 零步骤模板 → 拒绝。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\n{PANEL_HEAD}[[flow.template]]\nid = \"empty\"\n",
+        "a".repeat(64)
+    );
+    let err = parse_raw(&raw).unwrap_err();
+    assert!(err.contains("needs at least one step"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-01 决策 C：面板 LLM 总闸——manifest `x-llm` 声明位校验矩阵。
+// （授予裁决本体在 registry::build_frame，端到端归 e2e_guest::panel_llm_dual_gate。）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn x_llm_manifest_validation_matrix() {
+    // panel + x-llm 声明 → 解析过且落字段。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\n{PANEL_HEAD}\
+         [permissions]\nx-llm = true\n\n{}",
+        "a".repeat(64),
+        one_page()
+    );
+    let m = PluginManifest::parse(&raw)
+        .expect("panel x-llm must parse")
+        .0;
+    assert!(m.permissions.x_llm, "x-llm = true must land on x_llm");
+
+    // panel + 显式 false → 过（等价未声明）。
+    let raw = raw.replace("x-llm = true", "x-llm = false");
+    let m = PluginManifest::parse(&raw)
+        .expect("panel x-llm=false must parse")
+        .0;
+    assert!(!m.permissions.x_llm);
+
+    // 非 panel kind 声明 → loud 拒（tool/observer 帧无 llm 面；policy 帧
+    // llm 走 kind 硬规则，声明 = 死键 = manifest 写错信号）。
+    for kind in ["tool", "observer", "policy"] {
+        let raw = format!(
+            "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"demo\"\nkind = \"{kind}\"\n\
+             name = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+             [permissions]\nx-llm = true\n",
+            "a".repeat(64)
+        );
+        let err = parse_raw(&raw).unwrap_err();
+        assert!(
+            err.contains("requires kind=panel"),
+            "kind={kind} declaring x-llm must be rejected: {err}"
+        );
+    }
+
+    // 缺省（无 permissions 段）→ x_llm = false（老 manifest 零迁移）。
+    // 带载荷形态（纯声明式零页面在页数闸就被拒，到不了本断言）。
+    let raw = format!("wasm-sha256 = \"{}\"\n{}", "a".repeat(64), PANEL_HEAD);
+    let m = PluginManifest::parse(&raw).expect("parse").0;
+    assert!(!m.permissions.x_llm, "absent key defaults false");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-31 面板扩展批：面板注册面（声明式载荷诚实报错 + 路由跨插件唯一）
+// ---------------------------------------------------------------------------
+
+/// 面板 manifest 组装器（actions 视图 = 声明面最小合法形态）。
+fn panel_manifest_raw(slug: &str, route: &str, payload: bool) -> String {
+    let head = if payload {
+        format!("wasm-sha256 = \"{}\"\n", "a".repeat(64))
+    } else {
+        String::new()
+    };
+    format!(
+        "{head}api-version = 1\nslug = \"{slug}\"\nkind = \"panel\"\n\
+         name = \"{slug}\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\n\
+         [[ui.page]]\nroute = \"{route}\"\ntitle = \"T\"\n\n\
+         [[ui.page.views]]\nkind = \"actions\"\nbind = \"\"\n\n\
+         [[ui.page.views.buttons]]\nlabel = \"跑\"\ncommand = \"go\"\n"
+    )
+}
+
+#[tokio::test]
+async fn panel_declarative_register_and_invoke_honest_error() {
+    use nemesis_plugins_wasm::PluginTrustState;
+
+    let (_ws, mgr) = fresh_manager();
+    let manifest = PluginManifest::parse(&panel_manifest_raw("decl-panel", "main", false))
+        .expect("parse")
+        .0;
+    // 声明式面板：component=0 哨兵直注册（无宿主壳依赖，纯注册面测试）。
+    let reg = mgr
+        .register(
+            manifest,
+            PluginTrustState::ReviewRequired,
+            0,
+            None,
+            None,
+            None,
+        )
+        .expect("register");
+    assert_eq!(reg.manifest.kind.as_str(), "panel");
+    assert_eq!(reg.component, 0);
+    // 声明式 invoke → 诚实报错（无 guest 载荷，cmd:// 绑定不可用）。
+    let err = mgr
+        .invoke_ui("decl-panel", r#"{"command":"go"}"#.to_string())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("is declarative"), "{err}");
+    // 未加载 slug → 诚实报错。
+    let err = mgr.invoke_ui("absent", "{}".to_string()).await.unwrap_err();
+    assert!(err.to_string().contains("not loaded"), "{err}");
+}
+
+#[test]
+fn panel_route_collision_rejected_across_plugins() {
+    use nemesis_plugins_wasm::PluginTrustState;
+
+    let (_ws, mgr) = fresh_manager();
+    let a = PluginManifest::parse(&panel_manifest_raw("panel-a", "main", false))
+        .expect("parse")
+        .0;
+    mgr.register(a, PluginTrustState::ReviewRequired, 0, None, None, None)
+        .expect("first register");
+    // 同路由第二家 → 拒绝（/panel/<route> 动态挂载键全局唯一）。
+    let b = PluginManifest::parse(&panel_manifest_raw("panel-b", "main", false))
+        .expect("parse")
+        .0;
+    let err = mgr
+        .register(b, PluginTrustState::ReviewRequired, 0, None, None, None)
+        .err()
+        .expect("duplicate route must be rejected");
+    assert!(
+        err.to_string().contains("already declared by plugin"),
+        "{err}"
+    );
+    // 换路由 → 过（唯一性只锁路由，不锁面板插件数）。
+    let c = PluginManifest::parse(&panel_manifest_raw("panel-b", "other", false))
+        .expect("parse")
+        .0;
+    mgr.register(c, PluginTrustState::ReviewRequired, 0, None, None, None)
+        .expect("other route ok");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 guest step 批：`plugin:<slug>:<op>` 引用解析纯函数矩阵
+// （valid_slug / valid_step_op / parse_plugin_step_ref）。安装期空词表/
+// 非法词表的对账闸在 probe_and_reconcile FlowStep 臂，其 fixture 级覆盖
+// 受 probe_frame 固定 InstanceConfig::default() 限制（无法经 config 种子
+// 注入空词表组件），与 policy「至少一个策略点」闸同先例——纯函数矩阵 +
+// e2e 全链（e2e_guest.rs stepdemo）作为覆盖面，诚实注记不装假绿。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plugin_step_ref_parse_matrix() {
+    use nemesis_plugins_wasm::manifest::{parse_plugin_step_ref, valid_slug, valid_step_op};
+
+    // 合法形态：slug+op 基础款。
+    assert_eq!(
+        parse_plugin_step_ref("plugin:stepdemo:echo"),
+        Some(("stepdemo", "echo"))
+    );
+    // op 段允许冒号（域内二级命名）；首个冒号切 slug，其余全归 op。
+    assert_eq!(
+        parse_plugin_step_ref("plugin:acme-jira:issue:fetch"),
+        Some(("acme-jira", "issue:fetch"))
+    );
+    // slug 允许数字与内嵌连字符。
+    assert_eq!(
+        parse_plugin_step_ref("plugin:2fa-helper:t2"),
+        Some(("2fa-helper", "t2"))
+    );
+
+    // 非本形态：缺前缀 / 缺 op 段 / 缺 slug 段。
+    assert_eq!(parse_plugin_step_ref("fetch"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:stepdemo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin::echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:"), None);
+
+    // slug 词表 [a-z0-9-]（不以 - 开头结尾、非 all）：大写/下划线/点号全拒。
+    assert_eq!(parse_plugin_step_ref("plugin:Bad_Slug:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:acme.jira:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:-lead:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:trail-:echo"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:all:echo"), None);
+
+    // op 词表：非空、≤64、无空白/控制字符；冒号/中文/符号在界内合法。
+    assert_eq!(parse_plugin_step_ref("plugin:s:has space"), None);
+    assert_eq!(parse_plugin_step_ref("plugin:s:\t"), None);
+    let long_op = "x".repeat(65);
+    assert_eq!(parse_plugin_step_ref(&format!("plugin:s:{long_op}")), None);
+    let max_op = "x".repeat(64);
+    assert_eq!(
+        parse_plugin_step_ref(&format!("plugin:s:{max_op}")),
+        Some(("s", max_op.as_str()))
+    );
+    assert_eq!(
+        parse_plugin_step_ref("plugin:s:拉取工单"),
+        Some(("s", "拉取工单"))
+    );
+
+    // valid_slug / valid_step_op 直查边界。
+    assert!(valid_slug("stepdemo"));
+    assert!(!valid_slug(""));
+    assert!(!valid_slug("STEPDEMO"));
+    assert!(!valid_slug("a.b"));
+    assert!(valid_step_op("issue:fetch"));
+    assert!(!valid_step_op(""));
+}
+
+#[test]
+fn flow_step_manifest_rejects_empty_kinds_at_probe_level_shape() {
+    // 结构面：kind=flow-step 的 manifest 本体不带 kinds（词表来自 guest
+    // 自报 get-step-metadata，manifest 只声明 kind）——parse 通过即声名
+    // 面 ok；词表对账在 probe_and_reconcile（运行 probe 才能拿到 guest
+    // 自报，fixture 级覆盖见 e2e_guest.rs stepdemo 全链 + 上方矩阵注记）。
+    let raw = "wasm-sha256 = \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n\
+               api-version = 1\n\
+               slug = \"flowstep-demo\"\n\
+               kind = \"flow-step\"\n\
+               name = \"FS\"\n\
+               version = \"0.1.0\"\n\
+               description = \"shape probe\"\n";
+    let (m, _) = PluginManifest::parse(raw).expect("flow-step manifest parses");
+    assert_eq!(m.kind.as_str(), "flow-step");
+    assert_eq!(m.slug, "flowstep-demo");
+}
+
+// BUG-20261103-334 横向排查定性钉（非缺陷修复）：三方开发者以记事本
+// （带 BOM UTF-8）手写 plugin.toml 后，manifest 装载照常解析（canonical
+// loader 单点：load_from_dir）。实测 toml crate parse 容忍前导 BOM——
+// 本测试把容忍行为钉死，crate 升级若翻转此处先行红出来。
+#[test]
+fn bom_prefixed_manifest_parses_via_load_from_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = format!(
+        "\u{feff}wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"bom-plugin\"\nkind = \"tool\"\n\
+         name = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nwasm = \"bom-plugin.wasm\"\n\
+         \n[config-schema]\ngreeting = \"string\"\n",
+        "a".repeat(64)
+    );
+    std::fs::write(dir.path().join("plugin.toml"), manifest).expect("write manifest");
+    let (m, _) = PluginManifest::load_from_dir(dir.path()).expect("BOM 前缀不得拒绝合法 manifest");
+    assert_eq!(m.slug, "bom-plugin");
 }

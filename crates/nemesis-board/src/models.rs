@@ -4,6 +4,7 @@
 //! Unix 秒（i64，与 nemesis-data::RequestLog 一致）。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // 枚举
@@ -227,6 +228,11 @@ pub struct TaskOrigin {
     pub origin_type: String,
     /// 来源 id（cron job id、通道消息 id 等）。
     pub origin_id: String,
+    /// 来源坐标映射（JSON 落 origin_meta 列；flow 模板 land 时写入）。
+    /// 语义由来源方定义（如 `{"owner":..,"repo":..,"number":..}`），board
+    /// 只存取不解释；v1 旧单无此字段（DEFAULT 空 map）。
+    #[serde(default)]
+    pub origin_meta: BTreeMap<String, String>,
 }
 
 /// 评论（表 `comment`；`parent_id` 支持一层线程，P3 UI 展开）。
@@ -600,7 +606,7 @@ pub struct Autopilot {
     /// 规则触发时先验父会话存活（jsonl 在档且非空）：存活 = 建单继承父会话
     /// 近段上下文（description 注入）+ 单据可溯源父会话；消失（清空/删除）
     /// = 规则自动暂停 + 留痕评论，不孤儿运行。None = 未绑定 = 现行行为
-    /// 零变化。DB 列 v21 迁移（空串归一 None）。
+    /// 零变化。DB 列 v22 迁移（空串归一 None）。
     #[serde(default)]
     pub session_key: Option<String>,
     pub enabled: bool,

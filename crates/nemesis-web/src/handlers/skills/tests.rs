@@ -22,6 +22,173 @@ use super::*;
 use std::io::Write;
 use std::sync::Arc;
 
+#[cfg(windows)]
+#[tokio::test]
+async fn review_nov02_old_aged_skill_survives_failed_force_update() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_clawhub_config(dir.path(), &server.uri(), true);
+    let skill = dir.path().join("skills/old-aged");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# original").unwrap();
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(0x100)
+        .custom_flags(0x02000000)
+        .open(&skill)
+        .unwrap();
+    handle
+        .set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600),
+            ),
+        )
+        .unwrap();
+    drop(handle);
+    let result = SkillsHandler::new()
+        .install(
+            &serde_json::json!({"slug":"old-aged","registry":"clawhub","force":true}),
+            &dir.path().to_string_lossy(),
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+        "# original"
+    );
+    println!("REVIEW aged_skill_update={result:?} original_restored=true");
+}
+
+// F4（2026-11-02 复评）回归锁：并发安装的恢复式清扫必须跳过 in-flight
+// 备份（登记表识别），无关安装失败也不得把别的在途更新回滚掉。缺陷形态
+// （清扫时机只有注释约定、无代码强制）：无关/非法安装先跑恢复式清扫 →
+// 把刚建的新备份误判遗孤搬回原位 → 在途 force 更新被毁、旧版回魂。
+// 现在：守卫构造即登记（先行于备份 rename），清扫跳过在册条目——无关
+// 安装各自失败，在途更新照常完成。
+#[tokio::test]
+async fn review_nov02_unrelated_install_does_not_adopt_inflight_backup() {
+    use wiremock::matchers::{body_partial_json, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    // live-skill：getBySlug 正常 + ZIP 下载延迟 2s（拉长在途窗口供断言）。
+    Mock::given(method("POST")).and(path("/api/query"))
+        .and(body_partial_json(serde_json::json!({
+            "path": "skills:getBySlug", "args": {"slug": "live-skill"}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            convex_ok(serde_json::json!({
+                "owner":{"handle":"alice"},
+                "skill":{"slug":"live-skill","displayName":"Live","summary":"new","stats":{"downloads":0.0}},
+                "latestVersion":{"version":"2.0.0"},"resolvedSlug":""
+            })))).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .and(query_param("slug", "live-skill"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/zip")
+                .set_body_bytes(zip_with(&[(
+                    "live-skill/SKILL.md",
+                    "# New skill\nnew version",
+                )]))
+                .set_delay(std::time::Duration::from_secs(2)),
+        )
+        .mount(&server)
+        .await;
+    // other-skill：getBySlug 报错——失败发生在恢复式清扫**之后**的安装
+    // 阶段，保证无关请求真实经过清扫这一步，回归锁才咬得住「跳过」行为。
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .and(body_partial_json(serde_json::json!({
+            "path": "skills:getBySlug", "args": {"slug": "other-skill"}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "error", "value": null, "errorMessage": "db down"
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_clawhub_config(dir.path(), &server.uri(), true);
+    let old = dir.path().join("skills/live-skill/SKILL.md");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, "# Original working skill").unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let first_ws = ws.clone();
+    let first = tokio::spawn(async move {
+        SkillsHandler::new()
+            .install(
+                &serde_json::json!({"slug":"live-skill","registry":"clawhub","force":true}),
+                &first_ws,
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.method.as_str() == "GET")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // 备份 rename 先于下载（守卫已登记，目标已挪走）。
+    assert!(
+        !old.exists(),
+        "backup rename should have moved the old dir away"
+    );
+
+    // 关键断言：无关安装（registry 合法、失败发生在清扫之后的 getBySlug）
+    // 不得收编在途备份——目标缺席保持缺席，备份原样留在回滚根。
+    let second = SkillsHandler::new()
+        .install(
+            &serde_json::json!({"slug":"other-skill","registry":"clawhub"}),
+            &ws,
+        )
+        .await;
+    assert!(second.is_err());
+    assert!(
+        !old.exists(),
+        "unrelated request prematurely restores active backup"
+    );
+    let rb = dir.path().join(".skill-rollback");
+    let backups: Vec<String> = std::fs::read_dir(&rb)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("live-skill.old-"))
+        .collect();
+    assert_eq!(
+        backups.len(),
+        1,
+        "in-flight backup must stay untouched: {backups:?}"
+    );
+
+    // 在途更新照常完成：新版本落位，备份被消费（登记随守卫 Drop 注销）。
+    let outcome = first.await.unwrap();
+    println!("REVIEW unrelated_install={second:?} live_update={outcome:?}");
+    assert!(
+        outcome.is_ok(),
+        "in-flight update must complete: {outcome:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&old).unwrap(),
+        "# New skill\nnew version"
+    );
+}
+
 // R6（2026-10-24 复核）回归锁：force 更新失败必须保留已装技能。
 // 旧形态「先卸后验源」——registry 名不存在时旧目录已被删（可用技能被
 // 销毁）。现在：registry 预检在动旧目录**之前**报错，旧目录原样保留。

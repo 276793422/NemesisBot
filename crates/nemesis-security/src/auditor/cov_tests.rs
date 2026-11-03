@@ -665,6 +665,12 @@ fn permission_with_ctx_falls_back_to_trait_default_delegation() {
 
 #[test]
 fn audit_jsonl_empty_dir_skips_file_write() {
+    // BUG-20261102-322：名字承诺 skips_file_write——实现契约（auditor.rs
+    // 空串 dir 守卫注释）是「不得穿透成 CWD 相对路径落盘」；回归（守卫
+    // 被删）会把 Path::new("").join("audit.jsonl") 落到 CWD。哨兵断言收口。
+    let cwd_audit = std::env::current_dir().unwrap().join("audit.jsonl");
+    let existed_before = cwd_audit.exists();
+
     let auditor = enabled_auditor();
     auditor.set_audit_jsonl_log(true, String::new());
     auditor.log_audit_event(&AuditEvent {
@@ -675,6 +681,13 @@ fn audit_jsonl_empty_dir_skips_file_write() {
         timestamp: chrono::Local::now().to_rfc3339(),
         policy_rule: "cov".into(),
     });
+
+    assert_eq!(
+        cwd_audit.exists(),
+        existed_before,
+        "空 dir 不得穿透成 CWD 相对路径落盘（{}）",
+        cwd_audit.display()
+    );
 }
 
 #[test]

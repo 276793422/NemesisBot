@@ -9,7 +9,7 @@
 //! `capture_logs()`。
 
 use super::*;
-use crate::test_support::capture_logs;
+use crate::test_support::{capture_logs, capture_logs_to_buf};
 
 fn tempdir() -> std::path::PathBuf {
     tempfile::tempdir().expect("tempdir").keep()
@@ -53,18 +53,24 @@ fn subagent_info() -> super::SubagentInfo {
 /// SubagentStop 钩子 exit 2 → 无阻断语义，warn 记录（788-790 参数行）。
 #[tokio::test]
 async fn subagent_stop_exit2_hook_warns_loudly() {
-    let _logs = capture_logs();
+    let (_guard, buf) = capture_logs_to_buf();
     let tmp = tempdir();
     let b = bridge_with(&hooks_doc("SubagentStop", &block_cmd("too late")), &tmp);
     b.dispatch_subagent_stop(&subagent_info(), "completed", None)
         .await;
-    // 走到这里即观察型语义成立；warn 臂已在 capture subscriber 下求值。
+    // BUG-20261102-322：名字承诺 warns_loudly 就得真断言级别——只求值不断言
+    // 时日志臂降级为 info/debug 测试照绿（可观测性契约分叉，同 BUG-321 族）。
+    let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    assert!(
+        captured.contains("WARN") && captured.contains("SubagentStop hook tried to block"),
+        "SubagentStop exit 2 必须以 WARN 级响亮记录\n--- captured ---\n{captured}"
+    );
 }
 
 /// Notification 钩子 exit 2 → 纯观察，debug 记录（814 参数行）。
 #[tokio::test]
 async fn notification_exit2_hook_debug_logged() {
-    let _logs = capture_logs();
+    let (_guard, buf) = capture_logs_to_buf();
     let tmp = tempdir();
     let b = bridge_with(
         &hooks_doc("Notification", &block_cmd("no window yet")),
@@ -72,19 +78,35 @@ async fn notification_exit2_hook_debug_logged() {
     );
     b.dispatch_notification("sk", "security_ask", "auditor", serde_json::json!({}))
         .await;
+    let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    assert!(
+        captured.contains("DEBUG") && captured.contains("Notification hook exit 2 ignored"),
+        "Notification exit 2 必须以 DEBUG 级记录（纯观察不升级）\n--- captured ---\n{captured}"
+    );
 }
 
 /// compact 钩子 stdout 非空 → info 记录（1082 参数行）。
 /// 现有用例全是重定向到文件的 echo（stdout 空），此臂需真 stdout。
 #[tokio::test]
 async fn compact_hook_stdout_gets_info_logged() {
-    let _logs = capture_logs();
+    let (_guard, buf) = capture_logs_to_buf();
     let tmp = tempdir();
     let echo = "echo covw6b-compact-stdout";
     let b = bridge_with(&hooks_doc("PreCompact", echo), &tmp);
     b.run_compact_hooks("auto", "pre").await;
     let b2 = bridge_with(&hooks_doc("PostCompact", echo), &tmp);
     b2.run_compact_hooks("auto", "post").await;
+    // BUG-20261102-322：pre 与 post 两臂的 stdout 都必须以 INFO 级记录。
+    let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    assert!(
+        captured.contains("INFO") && captured.contains("stdout: covw6b-compact-stdout"),
+        "compact 钩子 stdout 必须以 INFO 级记录\n--- captured ---\n{captured}"
+    );
+    assert_eq!(
+        captured.matches("stdout: covw6b-compact-stdout").count(),
+        2,
+        "PreCompact 与 PostCompact 两臂都要记录\n--- captured ---\n{captured}"
+    );
 }
 
 // ---------------------------------------------------------------------------

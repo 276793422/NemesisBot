@@ -181,3 +181,34 @@ fn escape_like_escapes_wildcards_and_backslash_first() {
     // 混合：一次覆盖三字符 + 无关字符。
     assert_eq!(escape_like("50_100\\200%"), "50\\_100\\\\200\\%");
 }
+
+// ---------- BUG-20261102-328：OWASP CSV Injection 公式前缀守卫 ----------
+
+#[test]
+fn csv_formula_prefixes_get_quote_guard() {
+    // 五类公式前缀（OWASP CSV Injection / CWE-1236）：Excel/WPS/LibreOffice
+    // 打开 CSV 时 = 开头单元格被当公式求值（=HYPERLINK 外呼、=cmd| 形态
+    // 命令注入）；+/-/@/\t 是同族变体。守卫 = 前置 `'`（Excel 文本标记，
+    // 显示时隐藏；pandas 等非 Excel 消费者读到的 ' 前缀是已知代价）。
+    assert_eq!(
+        sanitize_csv("=HYPERLINK(\"http://evil\",\"x\")"),
+        "\"'=HYPERLINK(\"\"http://evil\"\",\"\"x\"\")\""
+    );
+    assert_eq!(sanitize_csv("=1+1"), "'=1+1");
+    assert_eq!(sanitize_csv("+SUM(A1:A2)"), "'+SUM(A1:A2)");
+    assert_eq!(sanitize_csv("-2-2 cmd"), "'-2-2 cmd");
+    assert_eq!(sanitize_csv("@SUM(1)"), "'@SUM(1)");
+    assert_eq!(sanitize_csv("\t=cmd"), "'\t=cmd");
+    // 守卫 + RFC 包裹叠加：公式前缀且含逗号 → ' 内嵌于引号包裹。
+    assert_eq!(sanitize_csv("=x,y"), "\"'=x,y\"");
+}
+
+#[test]
+fn csv_non_formula_fields_unaffected_by_guard() {
+    // 无公式前缀的合法字段（含连字符中缀、数字串、空串、中文）零变化。
+    assert_eq!(sanitize_csv("task-a1"), "task-a1");
+    assert_eq!(sanitize_csv("a-b-c"), "a-b-c");
+    assert_eq!(sanitize_csv("42"), "42");
+    assert_eq!(sanitize_csv(""), "");
+    assert_eq!(sanitize_csv("节点 甲"), "节点 甲");
+}

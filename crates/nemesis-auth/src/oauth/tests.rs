@@ -2429,3 +2429,98 @@ async fn login_device_code_hung_endpoint_must_not_hang_forever() {
         "超时必须冒泡为 usercode 请求失败，实际: {err}"
     );
 }
+
+// ---------- BUG-20261103-330：device-flow 轮询等待必须被 deadline 有界化 ----------
+
+fn poll_pending()
+-> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<AuthCredential>, String>>>> {
+    Box::pin(async { Ok(None) })
+}
+
+fn poll_success_once()
+-> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<AuthCredential>, String>>>> {
+    Box::pin(async {
+        Ok(Some(AuthCredential {
+            access_token: "at".to_string(),
+            refresh_token: None,
+            expires_at: None,
+            provider: "openai".to_string(),
+            auth_method: "oauth".to_string(),
+            account_id: None,
+        }))
+    })
+}
+
+#[tokio::test]
+async fn device_flow_loop_self_terminates_at_deadline_despite_huge_interval() {
+    // 轮询间隔是远端可控值（原始 i32 上限 ≈68 年；parse_flexible_int 的
+    // i64→i32 截断同样可造出荒谬大值）。间隔 ≥ 剩余 deadline 时，裸
+    // tick.tick().await 会永久挂起——deadline 只在 loop 顶检查，await
+    // 期间不生效，15 分钟期限形同虚设（BUG-20261028-104a「auth login
+    // 无限卡住」的第二个向量）。循环必须在 deadline 处自终止。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        OAuthProviderConfig::device_code_poll_loop(poll_pending, i64::MAX, deadline),
+    )
+    .await;
+    let inner = result.expect("轮询循环 3s 内不自终止——裸 tick.await 越过 deadline 挂死实锤");
+    let err = inner.unwrap_err();
+    assert!(
+        err.contains("timed out after"),
+        "必须以 deadline 超时终态退出，实际: {err}"
+    );
+}
+
+#[tokio::test]
+async fn device_flow_loop_success_on_first_poll_ignores_interval() {
+    // 首个 tick 立即触发（tokio interval 语义）：成功路径不受病态间隔影响。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        OAuthProviderConfig::device_code_poll_loop(poll_success_once, i64::MAX, deadline),
+    )
+    .await;
+    let inner = result.expect("成功路径必须在首个 tick 即返回");
+    let cred = inner.expect("轮询返回凭据必须是 Ok");
+    assert_eq!(cred.access_token, "at");
+}
+
+#[tokio::test]
+async fn device_flow_loop_normal_interval_still_times_out_at_deadline() {
+    // 正常间隔（钳制 <1 → 5s）下 deadline 照常生效（既有正确行为回归锚）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        OAuthProviderConfig::device_code_poll_loop(poll_pending, 0, deadline),
+    )
+    .await;
+    let inner = result.expect("正常间隔下循环必须在 8s 看护窗内自终止");
+    let err = inner.unwrap_err();
+    assert!(err.contains("timed out after"), "实际: {err}");
+}
+
+#[test]
+fn bounded_poll_wait_never_exceeds_remaining() {
+    use std::time::Duration;
+    // 红证对照：旧公式（裸 from_secs(interval)）对病态间隔无上界。
+    let huge = Duration::from_secs(i64::MAX as u64);
+    let remaining = Duration::from_secs(890);
+    assert!(huge > remaining, "旧公式对照：裸间隔无 deadline 上界");
+    assert_eq!(bounded_poll_wait(huge, remaining), remaining);
+    // 正常间隔保持原节奏。
+    assert_eq!(
+        bounded_poll_wait(Duration::from_secs(5), remaining),
+        Duration::from_secs(5)
+    );
+    // 剩余耗尽 → 零（loop 顶 deadline 检查随即终态，不自旋）。
+    assert_eq!(
+        bounded_poll_wait(Duration::from_secs(5), Duration::ZERO),
+        Duration::ZERO
+    );
+    // 亚秒剩余不被截断放大（min 保真）。
+    assert_eq!(
+        bounded_poll_wait(Duration::from_secs(5), Duration::from_millis(250)),
+        Duration::from_millis(250)
+    );
+}

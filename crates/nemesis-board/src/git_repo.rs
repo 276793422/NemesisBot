@@ -220,6 +220,15 @@ pub fn head_commit_hex(root: &Path) -> Result<Option<String>, String> {
     Ok(head_commit(&repo).map(|c| c.id().to_string()))
 }
 
+/// HEAD tree hex（空仓库 = None）：树等值核验用。exec 捕获路径的交付基线
+/// commit 在 worker 侧 exec 仓（fresh init），主仓 commit 永远对不上——
+/// 内容态一致（树等值）才是跨仓可移植的不变量。
+pub fn head_tree_hex(root: &Path) -> Result<Option<String>, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
+    Ok(head_commit(&repo).map(|c| c.tree_id().to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // P1 外循环：远端克隆（任务专属副本物化，2026-10-25）
 // ---------------------------------------------------------------------------
@@ -230,7 +239,8 @@ pub fn head_commit_hex(root: &Path) -> Result<Option<String>, String> {
 /// 不重置**——副本一旦物化，后续合并/交付历史不能被外部重写打断）。
 ///
 /// 凭据：`None` = 匿名（本地路径 / file:// / 公共仓库）；`Some((user,
-/// pass))` = basic auth（Gitea PAT 形态：user=令牌属主、pass=token）。
+/// pass))` = basic auth（PAT 形态由 connector 配置声明 user/pass 语义，
+/// 本层只收通用二元组）。
 /// 本地 config 钉 `core.autocrlf=false`（契约同 [`ensure_repo`]——基线
 /// tree 字节精确对账依赖行尾稳定）。
 ///
@@ -257,11 +267,22 @@ pub fn clone_repo(url: &str, dest: &Path, cred: Option<(&str, &str)>) -> Result<
     fo.download_tags(git2::AutotagOption::None);
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(fo);
+    // 克隆自带的 checkout **必须关过滤器**：local config 尚未落钉、libgit2
+    // 落到系统/全局层（本机 autocrlf=true）会把 LF blob smudge 成 CRLF
+    // 工作树——合并三方 base(blob LF) 与 ours/theirs(工作树 CRLF) 行尾
+    // 不同源，未触及行全部伪冲突（2026-11-01 T1 全文件伪冲突冻结实录）。
+    // 事后 reset --hard 不可靠（index oid 与目标相同时跳过重写，行尾漂移
+    // 不被归一）——在 checkout 本身禁过滤器，工作树恒为 blob 原始字节。
+    let mut co = git2::build::CheckoutBuilder::new();
+    co.force();
+    co.disable_filters(true);
+    builder.with_checkout(co);
     builder
         .clone(url, dest)
         .map_err(|e| format!("clone {url} → {} 失败: {e}", dest.display()))?;
-    // 钉 autocrlf（克隆后的 local config；机器全局 true 会经 add/checkout
-    // 改写行尾——字节精确契约同 ensure_repo 注记）。
+    // 钉 autocrlf（克隆后的 local config，管 clone 之后的 add/commit 路径
+    // ——checkout 过滤器已由上面 with_checkout 关死；字节精确契约同
+    // ensure_repo 注记）。
     {
         let repo = Repository::open(dest)
             .map_err(|e| format!("打开克隆产物 {} 失败: {e}", dest.display()))?;
@@ -311,8 +332,11 @@ pub fn push_branch(
 ///
 /// 失败语义（全部确定失败，仓库零残留）：
 /// - 工作区有未提交/未跟踪改动 = Err（发布不混入无关改动）；
-/// - 目标分支已存在 = Err（发布幂等在交付 payload 的 pr_number 判断，git
-///   层不静默复用旧分支）；
+/// - 目标分支已存在：校验「单父 == 当前 HEAD 且内容与同一 patch 应用到同一
+///   HEAD 的 tree 一致」→ **幂等复用**既有 commit（2026-11-02 复评 F1：push/
+///   PR 阶段失败后重试续作，git 层不再被自己上次的分支挡死）；校验不过 =
+///   Err（分支内容与本次交付不匹配，拒绝覆盖转人工——不静默吞下异源分支）；
+///   探测经 index 旁路完成、工作区零触碰；
 /// - patch 应用后零变更 = Err（空交付不产空 PR）；
 /// - apply/commit 中途失败 = 回滚新建分支后 Err。
 pub fn apply_patch_new_branch(
@@ -339,9 +363,27 @@ pub fn apply_patch_new_branch(
         .map_err(|e| format!("仓库无 HEAD: {e}"))?
         .peel_to_commit()
         .map_err(|e| format!("HEAD 解析 commit 失败: {e}"))?;
-    if repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+    if let Ok(existing) = repo.find_branch(branch, git2::BranchType::Local) {
+        // 重试续作路径：分支已存在 = 上次发布的 git 半边可能已完成。校验
+        // 通过（父基线一致 + 内容一致）→ 幂等复用既有 commit（上层续作
+        // push/PR）；校验不过 → 维持拒绝（人工核查，不覆盖）。
+        let commit = existing.get().peel_to_commit().map_err(|e| {
+            format!("分支 {branch} 解析 commit 失败: {e}——上次发布残留异常，请人工核查")
+        })?;
+        let same_baseline = commit.parent_count() == 1
+            && commit.parent_id(0).map(|p| p == head.id()).unwrap_or(false);
+        let same_content =
+            same_baseline && patch_tree_over_head(&repo, &head, patch)? == commit.tree_id();
+        if same_content {
+            tracing::info!(
+                branch = %branch,
+                commit = %commit.id(),
+                "[git_repo] 交付分支已存在且与本次交付一致——幂等复用"
+            );
+            return Ok(commit.id().to_string());
+        }
         return Err(format!(
-            "分支 {branch} 已存在——上次发布的 git 半边可能未清理，请人工核查"
+            "分支 {branch} 已存在且与本次交付不一致（父基线或内容不匹配）——拒绝覆盖，请人工核查"
         ));
     }
     let branch_ref = format!("refs/heads/{branch}");
@@ -388,6 +430,79 @@ pub fn apply_patch_new_branch(
             Err(e)
         }
     }
+}
+
+/// 纯探测：计算把 patch 应用到 head 之后的目标 tree id（**不触碰工作区**
+/// ——index 从 head 树重建、应用后写 tree、随后还原 index 到 head 树）。
+/// 供分支已存在时的幂等复用校验（「同一 patch 应用到同一基线 = 同一 tree」）。
+fn patch_tree_over_head(
+    repo: &Repository,
+    head: &git2::Commit<'_>,
+    patch: &[u8],
+) -> Result<git2::Oid, String> {
+    let diff = git2::Diff::from_buffer(patch)
+        .map_err(|e| format!("patch 解析失败: {e}（交付 patch 已损坏？）"))?;
+    let head_tree = head.tree().map_err(|e| format!("读 HEAD tree 失败: {e}"))?;
+    let mut index = repo.index().map_err(|e| format!("读 index 失败: {e}"))?;
+    index
+        .read_tree(&head_tree)
+        .map_err(|e| format!("index 重建失败: {e}"))?;
+    index.write().map_err(|e| format!("写 index 失败: {e}"))?;
+    repo.apply(&diff, git2::ApplyLocation::Index, None)
+        .map_err(|e| format!("patch 应用失败: {e}（副本基线与交付基线漂移？）"))?;
+    let mut index = repo.index().map_err(|e| format!("重读 index 失败: {e}"))?;
+    let tree_id = index
+        .write_tree()
+        .map_err(|e| format!("写 tree 失败: {e}"))?;
+    // 还原 index 到 HEAD 树（探测不留痕；失败无害——工作区本就停在 HEAD，
+    // 下次 add_all 会重建）。
+    let mut index = repo.index().map_err(|e| format!("重读 index 失败: {e}"))?;
+    let _ = index.read_tree(&head_tree);
+    let _ = index.write();
+    Ok(tree_id)
+}
+
+/// 发布链本地半边（第三臂）：交付已并入副本 main 时（preflight 内容级等值
+/// 判定：副本 HEAD 树 == 交付 payload 树），发布分支直接指向 HEAD——不套
+/// patch、不产新 commit，返回 HEAD commit hex。分支已存在 = Err（与 patch
+/// 路径契约一致：git 层不静默复用旧分支）。工作区脏态不检（分支指向已提交
+/// 内容，不触工作区——HEAD 树已由 preflight 等值交付树）。
+pub fn branch_at_head(root: &Path, branch: &str) -> Result<String, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
+    let head = repo
+        .head()
+        .map_err(|e| format!("仓库无 HEAD: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("HEAD 解析 commit 失败: {e}"))?;
+    if repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+        return Err(format!(
+            "分支 {branch} 已存在——上次发布的 git 半边可能未清理，请人工核查"
+        ));
+    }
+    repo.branch(branch, &head, false)
+        .map_err(|e| format!("建分支 {branch} 失败: {e}"))?;
+    Ok(head.id().to_string())
+}
+
+/// 查询分支当前指向（不修改仓库）：分支在场 → `Some((commit_hex, tree_hex))`；
+/// 缺席 → `None`。供发布重试幂等判断（分支树 == 交付树 → 上次 git 半边已
+/// 产物化，直接复用），仓库打开失败 → Err。
+pub fn branch_tree_if_exists(
+    root: &Path,
+    branch: &str,
+) -> Result<Option<(String, String)>, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
+    let Ok(b) = repo.find_branch(branch, git2::BranchType::Local) else {
+        return Ok(None);
+    };
+    let commit = b
+        .get()
+        .peel_to_commit()
+        .map_err(|e| format!("分支 {branch} 解析 commit 失败: {e}"))?;
+    let tree_hex = commit.tree().map_err(|e| e.to_string())?.id().to_string();
+    Ok(Some((commit.id().to_string(), tree_hex)))
 }
 
 // ---------------------------------------------------------------------------

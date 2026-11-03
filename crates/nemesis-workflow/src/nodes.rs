@@ -1720,6 +1720,69 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
 // HTTP Node
 // ---------------------------------------------------------------------------
 
+/// HTTP 节点 SSRF 闸槽（BUG-20261102-324）：`SecurityPlugin::ssrf_guard()` 的
+/// 克隆（Guard Clone 共享 inner，闸配置热更新对节点执行同效）。gateway 在
+/// 安全插件构建后注入；None（security feature 关 / security.enabled=false /
+/// ssrf 层关）= 直通——但重定向纪律（手动循环 + 跳数上限）不受槽影响。
+/// release_fetch::SSRF_GUARD_SLOT 同构形态（init 顺序解耦 + 静态槽）。
+#[cfg(feature = "security")]
+static HTTP_SSRF_GUARD_SLOT: parking_lot::RwLock<Option<nemesis_security::ssrf::Guard>> =
+    parking_lot::RwLock::new(None);
+
+/// gateway 装配点：注入 HTTP 节点 SSRF 闸（与装配顺序无关）。
+#[cfg(feature = "security")]
+pub fn set_http_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
+    *HTTP_SSRF_GUARD_SLOT.write() = guard;
+}
+
+/// BUG-20261102-324：为当前跳构建 no-redirect client（重定向由调用方手动
+/// 循环，每跳重建 = 每跳重新过闸）。security 构建下闸槽在场时先过闸
+/// （Err = 拦，调用方转 failed_node_result）；闸返回解析 IP 集时钉死 DNS
+///（防 rebinding TOCTOU——闸解析过 ≠ reqwest 连接用的 IP；TLS SNI/证书
+/// 校验仍按原 host）。闸缺席（feature 关 / security.enabled=false / ssrf
+/// 层关 / 白名单直通）= 无闸直通，重定向纪律由调用方循环承担。
+fn http_hop_client(url: &str) -> Result<reqwest::Client, String> {
+    #[cfg(feature = "security")]
+    {
+        let guard_opt = HTTP_SSRF_GUARD_SLOT.read().clone();
+        if let Some(guard) = guard_opt {
+            return match guard.resolve_and_validate_collect(url) {
+                Ok(ips) if !ips.is_empty() => {
+                    let parsed = reqwest::Url::parse(url)
+                        .map_err(|e| format!("invalid URL '{url}': {e}"))?;
+                    let host = parsed
+                        .host_str()
+                        .ok_or_else(|| format!("URL without host: {url}"))?
+                        .to_string();
+                    let port = parsed
+                        .port_or_known_default()
+                        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+                    let mut builder =
+                        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+                    for ip in ips {
+                        builder = builder.resolve(&host, std::net::SocketAddr::new(ip, port));
+                    }
+                    builder
+                        .build()
+                        .map_err(|e| format!("HTTP client build failed: {e}"))
+                }
+                Ok(_) => no_redirect_http_client(),
+                Err(e) => Err(format!("SSRF blocked: {e}")),
+            };
+        }
+    }
+    let _ = url; // security 关时无闸可查（loop_tools 同款钳制）
+    no_redirect_http_client()
+}
+
+/// 不跟随重定向的 plain client（闸缺席 / 白名单直通路径共用）。
+fn no_redirect_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("HTTP client build failed: {e}"))
+}
+
 /// Built-in HTTP node executor.
 ///
 /// Makes an actual HTTP request using reqwest and returns the response.
@@ -1776,28 +1839,17 @@ impl NodeExecutor for HTTPNodeExecutor {
             Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
         };
 
-        // Build the request
-        let client = reqwest::Client::new();
-        let req_builder = match method.as_str() {
-            "POST" => client.post(&url),
-            "PUT" => client.put(&url),
-            "PATCH" => client.patch(&url),
-            "DELETE" => client.delete(&url),
-            "HEAD" => client.head(&url),
-            _ => client.get(&url),
-        };
-
         // Optional per-request timeout (default 30s). Without this, a slow
         // or unresponsive endpoint would hang the entire workflow indefinitely.
         // `timeout_secs: 0` is treated as "use default" since 0 isn't a useful
-        // timeout for an actual HTTP round-trip.
+        // timeout for an actual HTTP round-trip. 手动循环后按跳计（web_fetch /
+        // release_fetch 同语义），节点总墙钟由引擎层节点超时兜底。
         let timeout_secs = node
             .config
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .filter(|&n| n > 0)
             .unwrap_or(30);
-        let req_builder = req_builder.timeout(std::time::Duration::from_secs(timeout_secs));
 
         // Resolve {{var}} in headers (values only; keys are static).
         let headers_raw = node
@@ -1815,25 +1867,95 @@ impl NodeExecutor for HTTPNodeExecutor {
             Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
         };
 
-        let mut req_builder = req_builder;
-        if let Some(obj) = resolved_headers.as_object() {
-            for (k, v) in obj {
+        // BUG-20261102-324：手动重定向循环替代 `Client::new()` 默认自动跟随
+        //（≤10 跳）——「先校验再发请求」的闸只覆盖显式 URL，对端 302 指内网
+        // /元数据端点即整条绕闸（web_fetch J2a / http-pool R36 同判例；
+        // workflow http 节点的 url 支持 {{var}} 运行时注入，威胁面与
+        // web_fetch 同级）。语义对齐 reqwest 默认跟随：301/302/303 把非
+        // GET/HEAD 转为 GET 并剥 body；307/308 保持 method+body；跳到不同
+        // host 时剥敏感头；跳数上限 5。
+        const HTTP_MAX_HOPS: usize = 5;
+        const SENSITIVE_HEADERS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
+
+        let mut current_url = url;
+        let mut current_method = method;
+        let mut current_body = body;
+        let mut current_headers = resolved_headers.as_object().cloned().unwrap_or_default();
+
+        let mut hops: usize = 0;
+        let mut resp;
+        loop {
+            let client = match http_hop_client(&current_url) {
+                Ok(c) => c,
+                Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+            };
+            let mut req_builder = match current_method.as_str() {
+                "POST" => client.post(&current_url),
+                "PUT" => client.put(&current_url),
+                "PATCH" => client.patch(&current_url),
+                "DELETE" => client.delete(&current_url),
+                "HEAD" => client.head(&current_url),
+                _ => client.get(&current_url),
+            };
+            for (k, v) in &current_headers {
                 if let Some(s) = v.as_str() {
                     req_builder = req_builder.header(k.as_str(), s);
                 }
             }
-        }
-
-        // Set body if provided
-        if !body.is_empty() {
-            req_builder = req_builder.body(body.to_string());
-        }
-
-        // Execute request
-        let mut resp = req_builder
-            .send()
+            if !current_body.is_empty() {
+                req_builder = req_builder.body(current_body.to_string());
+            }
+            let hop_resp = tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                req_builder.send(),
+            )
             .await
+            .map_err(|_| format!("HTTP request timed out after {timeout_secs}s"))?
             .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+            let status = hop_resp.status();
+            if status.is_redirection() {
+                hops += 1;
+                if hops > HTTP_MAX_HOPS {
+                    return Ok(failed_node_result(
+                        &node.id,
+                        now,
+                        &format!(
+                            "too many redirects (limit {HTTP_MAX_HOPS}), stopped at {current_url}"
+                        ),
+                    ));
+                }
+                let location = hop_resp
+                    .headers()
+                    .get("location")
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        format!("HTTP {status} redirect without Location header at {current_url}")
+                    })?
+                    .to_string();
+                let base = reqwest::Url::parse(&current_url)
+                    .map_err(|e| format!("invalid URL '{}': {}", current_url, e))?;
+                let next = base
+                    .join(&location)
+                    .map_err(|e| format!("invalid redirect target '{}': {}", location, e))?;
+                if matches!(status.as_u16(), 301..=303)
+                    && current_method != "GET"
+                    && current_method != "HEAD"
+                {
+                    current_method = "GET".to_string();
+                    current_body.clear();
+                }
+                if next.host_str() != base.host_str() || next.port() != base.port() {
+                    current_headers
+                        .retain(|k, _| !SENSITIVE_HEADERS.contains(&k.to_lowercase().as_str()));
+                }
+                current_url = next.to_string();
+                continue;
+            }
+
+            resp = hop_resp;
+            break;
+        }
 
         let status_code = resp.status().as_u16();
 

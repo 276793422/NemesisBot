@@ -23,7 +23,7 @@ use crate::host_impl::{
 };
 use crate::limits::{PluginLimits, PolicyPoint};
 use crate::manifest::{PluginKind, PluginManifest};
-use crate::runtime::{CallFrame, ExecContext, ExecOutput, PluginRuntime};
+use crate::runtime::{CallFrame, ExecContext, ExecOutput, PluginRuntime, extract_session_key};
 use crate::trust::PluginTrustState;
 
 /// 注册进宿主的插件工具全名前缀（LLM 可见；`plugin.<slug>.<base>`）。
@@ -88,6 +88,15 @@ impl PolicyMetaSnapshot {
     }
 }
 
+/// flow 步骤元数据快照（注册进宿主的唯一事实源；来自安装期
+/// get-step-metadata 对账，2026-11-03 guest step 批）。flow 引擎路由按此
+/// 对账——模板引用的 op 必须在词表内（越权 kind = 诚实拒绝）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StepMetaSnapshot {
+    /// 自报能跑的步骤 kind 词表（如 `"jira:fetch"`）。
+    pub kinds: Vec<String>,
+}
+
 /// 观察者事件队列发送端（宿主持有于 observers map；drop 即关 worker）。
 type ObserverSender = tokio::sync::mpsc::Sender<String>;
 
@@ -103,6 +112,8 @@ pub struct RegisteredPlugin {
     pub tool_meta: Option<ToolMetaSnapshot>,
     /// 策略接管快照（kind=policy 必有）。
     pub policy_meta: Option<PolicyMetaSnapshot>,
+    /// flow 步骤元数据快照（kind=flow-step 必有；2026-11-03 guest step 批）。
+    pub step_meta: Option<StepMetaSnapshot>,
     /// 宿主日志环形缓冲。
     pub logs: Arc<PluginLogBuffer>,
     /// 出站策略。
@@ -513,6 +524,7 @@ impl PluginManager {
         component: u64,
         tool_meta: Option<ToolMetaSnapshot>,
         policy_meta: Option<PolicyMetaSnapshot>,
+        step_meta: Option<StepMetaSnapshot>,
     ) -> Result<Arc<RegisteredPlugin>, PluginError> {
         let slug = manifest.slug.clone();
         if let Some(m) = tool_meta.as_ref() {
@@ -568,6 +580,63 @@ impl PluginManager {
                 "policy plugin missing metadata snapshot".into(),
             ));
         }
+        // 面板注册面（2026-10-31 面板扩展批）：不携 tool/policy 元数据
+        // （扩展点本体 = ui/flow 声明面 + 可选 guest 命令通道，不走这两张
+        // 快照）；有载荷面板必须有编译句柄，纯声明式用 0 哨兵（无组件可
+        // drop，壳对 0 容忍）；路由跨插件唯一（前端 /panel/<route> 动态
+        // 挂载键，双声明 = 后装者诚实拒绝）。
+        if *manifest.kind == PluginKind::Panel {
+            if tool_meta.is_some() || policy_meta.is_some() {
+                return Err(PluginError::Manifest(
+                    "panel plugin must not carry tool/policy metadata".into(),
+                ));
+            }
+            if manifest.wasm_sha256.is_some() && component == 0 {
+                return Err(PluginError::Manifest(
+                    "panel plugin with payload requires a compiled component".into(),
+                ));
+            }
+            for reg in self.list() {
+                if *reg.manifest.kind != PluginKind::Panel {
+                    continue;
+                }
+                for page in &reg.manifest.ui.pages {
+                    if manifest.ui.pages.iter().any(|p| p.route == page.route) {
+                        return Err(PluginError::MetadataMismatch(format!(
+                            "ui route '{}' already declared by plugin '{}'",
+                            page.route, reg.manifest.slug
+                        )));
+                    }
+                }
+            }
+        }
+        // flow 步骤注册面（2026-11-03 guest step 批）：必须携 step 元数据
+        // 快照（扩展点本体 = run-step 出口，安装期 get-step-metadata 对账
+        // 产物）；kind 词表非空 + 形态校验（运行期路由按此对账，越权 kind
+        // 诚实拒绝）。
+        if let Some(sm) = step_meta.as_ref() {
+            if *manifest.kind != PluginKind::FlowStep {
+                return Err(PluginError::Manifest(
+                    "step metadata provided for non-flow-step plugin".into(),
+                ));
+            }
+            if sm.kinds.is_empty() {
+                return Err(PluginError::MetadataMismatch(
+                    "flow-step component must report at least one step kind".into(),
+                ));
+            }
+            for k in &sm.kinds {
+                if !crate::manifest::valid_step_op(k) {
+                    return Err(PluginError::MetadataMismatch(format!(
+                        "invalid step kind '{k}' (1-64 chars, no whitespace/control)"
+                    )));
+                }
+            }
+        } else if *manifest.kind == PluginKind::FlowStep {
+            return Err(PluginError::MetadataMismatch(
+                "flow-step plugin missing metadata snapshot".into(),
+            ));
+        }
         let (limits, ignored) = self.limits.tighten_with(&manifest.limits);
         for k in &ignored {
             tracing::warn!(slug = %slug, key = %k, "[WasmPlugin] manifest limits 放宽请求被忽略（只允许收紧）");
@@ -599,6 +668,7 @@ impl PluginManager {
             component,
             tool_meta,
             policy_meta,
+            step_meta,
             logs,
             egress,
             limits,
@@ -667,13 +737,23 @@ impl PluginManager {
             workspace_root: self.workspace_root.clone(),
             egress: reg.egress.clone(),
             invoker: self.invoker.lock().clone(),
-            // LLM 面只授策略插件（契约 = host_impl::LlmInvoker「只有策略帧
-            // 可用」；调用时闸在 cb_llm_complete，这里供给面再收一道纵深：
-            // tool/observer 帧构造期即 None。2026-10-24 R70 帧纪律补齐）。
-            llm: if *reg.manifest.kind == PluginKind::Policy {
-                self.llm.lock().clone()
-            } else {
-                None
+            // LLM 面授予（供给面单一裁决点；调用时闸在 cb_llm_complete 再收
+            // 一道纵深）：policy 帧按 kind 硬规则授（2026-10-24 R70 帧纪律）；
+            // panel 帧走双闸 = manifest `[permissions] x-llm` 声明 × 宿主总闸
+            // `panel_llm_enabled`（2026-11-01 决策 C；总闸每调用现读无缓存
+            // ——翻转即时生效，帧是 fresh-store-per-call 无驻留会话）。
+            // tool/observer 帧构造期即 None。
+            llm: match *reg.manifest.kind {
+                PluginKind::Policy => self.llm.lock().clone(),
+                PluginKind::Panel
+                    if reg.manifest.permissions.x_llm
+                        && nemesis_config::plugin_wasm::panel_llm_enabled(
+                            &self.workspace_root.join("config"),
+                        ) =>
+                {
+                    self.llm.lock().clone()
+                }
+                _ => None,
             },
             data_dir: reg.data_dir.clone(),
             audit: self.audit.lock().clone(),
@@ -703,6 +783,45 @@ impl PluginManager {
         self.runtime
             .execute_tool(reg.component, frame, args_json, exec_ctx)
             .await
+    }
+
+    /// 面板命令转发（WSAPI `plugins.ui.invoke` 桥层入口；kind=panel 且启用）。
+    ///
+    /// 纯声明式插件（无载荷）在此诚实报错——`flow://` 绑定由 flow 引擎代答
+    /// （不经本通道），`cmd://` 绑定需要 guest，无载荷即无命令可转发。
+    /// 审计链对每次转发留痕（面板信任级 = dashboard 登录用户，无审批卡）。
+    pub async fn invoke_ui(&self, slug: &str, input_json: String) -> Result<String, PluginError> {
+        let Some(reg) = self.get(slug) else {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin not loaded: {slug}"
+            )));
+        };
+        if *reg.manifest.kind != PluginKind::Panel {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' is not a panel (kind={})",
+                reg.manifest.kind.as_str()
+            )));
+        }
+        if !self.is_enabled() || !reg.enabled.load(Ordering::SeqCst) {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' disabled"
+            )));
+        }
+        if reg.component == 0 {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' is declarative (no guest payload; cmd:// bind unavailable)"
+            )));
+        }
+        self.audit_event(
+            "plugin_ui_invoke",
+            "allow",
+            slug,
+            "LOW",
+            "panel command forwarded to guest",
+            "",
+        );
+        let frame = self.build_frame(&reg, false);
+        self.runtime.call_ui(reg.component, frame, input_json).await
     }
 
     /// 找出接管某策略点的启用组件（桥层路由入口；None = 无接管 → 调用方
@@ -769,15 +888,92 @@ impl PluginManager {
                 "wasm plugin subsystem disabled".into(),
             ));
         }
+        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关 = 本注释
+        // 承诺的「子系统总开关关」臂——此前只实装了 estop 臂，策略面在翻关
+        // 后仍会咨询 guest。NotAvailable 语义下调用方静默回退内置策略
+        // （PolicyBridge 已有映射），开关改回即时恢复。
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled (runtime master gate)".into(),
+            ));
+        }
         let frame = self.build_frame(&reg, false);
         self.runtime
             .call_policy(reg.component, frame, point, input_json)
             .await
     }
 
+    /// 投递一次 flow 插件步骤（flow 引擎入口；slug+op 对账自安装期元数据
+    /// 快照——模板引用的 op 必须在组件自报词表内，越权 kind 诚实拒绝）。
+    ///
+    /// 责任划分（2026-11-03 拍板）：幂等/重试防重在 guest（宿主每 tick
+    /// 重投，入参带 attempts）；审批一次在安装期漏斗，运行期不弹卡。闸链
+    /// 与 call_policy_point 同构：装载存在性 → kind → op 对账 → 子系统总
+    /// 开关 → 插件开关 → 运行期总闸 → 审计 → 帧投递。
+    pub async fn run_flow_step(
+        &self,
+        slug: &str,
+        op: &str,
+        input_json: String,
+    ) -> Result<String, PluginError> {
+        let Some(reg) = self.get(slug) else {
+            return Err(PluginError::NotAvailable(format!(
+                "flow step plugin not loaded: {slug}"
+            )));
+        };
+        if *reg.manifest.kind != PluginKind::FlowStep {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' is not a flow-step plugin (kind={})",
+                reg.manifest.kind.as_str()
+            )));
+        }
+        if !reg
+            .step_meta
+            .as_ref()
+            .is_some_and(|sm| sm.kinds.iter().any(|k| k == op))
+        {
+            return Err(PluginError::MetadataMismatch(format!(
+                "op '{op}' not in plugin '{slug}' reported step kinds (installation-time reconciliation)"
+            )));
+        }
+        if !self.is_enabled() {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled".into(),
+            ));
+        }
+        if !reg.enabled.load(Ordering::SeqCst) {
+            return Err(PluginError::NotAvailable(format!(
+                "plugin '{slug}' disabled"
+            )));
+        }
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled (runtime master gate)".into(),
+            ));
+        }
+        let session_key = extract_session_key(&input_json);
+        self.audit_event(
+            "plugin_flow_step",
+            "allow",
+            slug,
+            "LOW",
+            "flow step dispatched to guest",
+            &session_key,
+        );
+        let frame = self.build_frame(&reg, false);
+        self.runtime
+            .call_flow_step(reg.component, frame, input_json)
+            .await
+    }
+
     /// 投递一条观察者事件给全部启用的观察者插件（fire-and-forget；满丢弃+计数）。
     pub fn enqueue_observer_event(&self, event_json: String) {
         if !self.is_enabled() {
+            return;
+        }
+        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关后观察者
+        // 泵静默停投（fire-and-forget 语义一致）；开关改回即时恢复。
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
             return;
         }
         for reg in self.list() {
@@ -814,6 +1010,13 @@ impl PluginManager {
         tokio::spawn(async move {
             while let Some(event_json) = rx.recv().await {
                 let Some(mgr) = mgr.upgrade() else { break };
+                // 运行期总闸（2026-11-01 BUG 修复）：入队闸只挡新增，翻关
+                // 前已排队的在途事件由这里兜住——「翻关后 guest 不执行任何
+                // 代码」的严格口径。丢弃与入队满丢语义一致（fire-and-forget
+                // 事件无回执）；开关改回即时恢复投递。
+                if !nemesis_config::plugin_wasm::runtime_enabled(&mgr.workspace_root) {
+                    continue;
+                }
                 let Some(reg) = mgr.get(&slug) else { break };
                 if !reg.enabled.load(Ordering::SeqCst) {
                     continue;

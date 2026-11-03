@@ -6,7 +6,7 @@
 //! - 220/245：write_long_term / append_today 的 if-let 块收尾。
 
 use super::*;
-use crate::test_support::capture_logs;
+use crate::test_support::{capture_logs, capture_logs_to_buf};
 
 fn turn(role: &str, content: &str) -> ConversationTurn {
     ConversationTurn {
@@ -44,10 +44,12 @@ fn summarize_without_system_prompt_hits_noop_arm_and_logs() {
     assert!(!mem.get_context().is_empty());
 }
 
-/// MemoryStore::new 的 info! 参数行（186）。
+/// MemoryStore::new 的 info! 参数行（195）。
 #[test]
 fn memory_store_new_logs_info_line() {
-    let _logs = capture_logs();
+    // BUG-20261102-322：名字承诺 logs_info_line——此前只装 sink 丢弃
+    // subscriber（参数行求值），零断言。换捕获形态断言级别+文案双边界。
+    let (_guard, buf) = capture_logs_to_buf();
     let dir = std::env::temp_dir().join(format!(
         "nemesis_memstore_new_{}_{}",
         std::process::id(),
@@ -56,6 +58,11 @@ fn memory_store_new_logs_info_line() {
     let _ = std::fs::remove_dir_all(&dir);
     let _store = MemoryStore::new(dir.to_string_lossy().as_ref());
     let _ = std::fs::remove_dir_all(&dir);
+    let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    assert!(
+        captured.contains("INFO") && captured.contains("[MemoryStore] Initialized"),
+        "MemoryStore::new 必须以 INFO 级记录初始化行\n--- captured ---\n{captured}"
+    );
 }
 
 /// write_long_term 的 debug! 参数行（216）+ if-let 收尾（220）。

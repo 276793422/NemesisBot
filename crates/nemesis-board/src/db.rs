@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 21;
+const SCHEMA_VERSION: i32 = 22;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -394,17 +394,26 @@ const SCHEMA_V20: &str = r#"
 ALTER TABLE issue ADD COLUMN required_backend TEXT;
 "#;
 
-/// v21（三期 L23 定时任务父子上下文语义，2026-11-03）：autopilot 加可选
+/// v21（外循环域剥离批 C-1，2026-11-02）：issue 加 origin_meta 列（TEXT，
+/// JSON object 字符串；`''` = 空 map）。来源坐标映射（owner/repo/number 等）
+/// 在建单时由来源方写入，board 只存取不解释；v1 旧单空 map → 消费方（flow
+/// 模板 on_transition 回写）按模板 parse 表达式兜底。
+const SCHEMA_V21: &str = r#"
+ALTER TABLE issue ADD COLUMN origin_meta TEXT NOT NULL DEFAULT '';
+"#;
+
+/// v22（三期 L23 定时任务父子上下文语义，2026-11-03）：autopilot 加可选
 /// 父会话绑定列（TEXT，空串 = 未绑定 = 现行行为零变化）。绑定的规则触发
 /// 时先验父会话存活（jsonl 在档且非空）：存活 = 建单继承父会话近段上下文
 /// （description 注入，plan/派发/评审三条既有链路自动看到）+ 单据可溯源
 /// 父会话；消失（清空截空/删除移走）= 规则自动暂停 + 留痕评论，不孤儿
 /// 运行。沿 v15 的 NOT NULL DEFAULT '' 单值 ALTER 模式（存量规则零迁移）。
-const SCHEMA_V21: &str = r#"
+/// v22 顺延（v21 已被 origin_meta 占用，合并重排）。
+const SCHEMA_V22: &str = r#"
 ALTER TABLE autopilot ADD COLUMN session_key TEXT NOT NULL DEFAULT '';
 "#;
 
-/// L20 门面迁移链（v1-v21 数组化；语义与原散装 if 链等价：每步原子
+/// L20 门面迁移链（v1-v22 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
 const fn mig(
     version: i32,
@@ -506,7 +515,12 @@ static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
     mig(
         21,
         SCHEMA_V21,
-        "Database migrated to v21 (L23 parent-session binding: autopilot.session_key)",
+        "Database migrated to v21 (task origin_meta coordinates: issue.origin_meta)",
+    ),
+    mig(
+        22,
+        SCHEMA_V22,
+        "Database migrated to v22 (L23 parent-session binding: autopilot.session_key)",
     ),
 ];
 

@@ -307,7 +307,15 @@ pub fn save_embedding_config(config: &EmbeddingConfig, config_dir: &Path) {
     let path = config_path(config_dir);
     match serde_json::to_string_pretty(config) {
         Ok(content) => {
-            if let Err(e) = std::fs::write(&path, content) {
+            // BUG-20261103-339：落盘走 write_file_atomic（BUG-20261025-59 原子
+            // 写家族）——裸 std::fs::write 直写终路径，写一半（进程被杀/磁盘
+            // 满）残留半截 JSON；load 解析失败回落 default（enabled=false），
+            // 损坏文件滞留盘上，增强记忆静默自禁且需手工清理。
+            if let Err(e) = nemesis_utils::file::write_file_atomic(
+                &path.to_string_lossy(),
+                content.as_bytes(),
+                0o644,
+            ) {
                 warn!(
                     "[EmbeddingConfig] Failed to save embedding config to {}: {}",
                     path.display(),
@@ -417,8 +425,12 @@ pub fn resolve_model_files(
 
 /// 零字节文件 = 中断下载的残骸（BUG-20261031-241）：存在但为空不能当
 /// 「已下载/已安装」放行，调用方应走重下路径。metadata 读失败视为不存在。
+/// 目录形态同样不算（BUG-20261103-339：ext4 上目录 metadata len>0 会
+/// 误判「非空」，且目录本就不是可加载的模型/分词器资产）。
 fn is_non_empty_file(p: &Path) -> bool {
-    std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
 }
 
 /// Download model and tokenizer files for the active tier.
@@ -498,17 +510,38 @@ pub fn download_model_files(
     // Resolve or download tokenizer file
     let tokenizer_path = model_path.join("tokenizer.json");
     if !is_non_empty_file(&tokenizer_path) {
-        if !model_conf.local_tokenizer_path.is_empty()
-            && Path::new(&model_conf.local_tokenizer_path).exists()
-        {
-            let src = Path::new(&model_conf.local_tokenizer_path);
-            if let Err(e) = std::fs::copy(src, &tokenizer_path) {
-                warn!(
-                    "[EmbeddingConfig] Failed to copy tokenizer to model dir: {}",
+        // BUG-20261103-339：拷贝源判定与目标/模型臂同语义（is_non_empty_file =
+        // 零字节/目录形态残骸 = 未安装）。旧代码裸 exists() 把残骸当有效源，
+        // fs::copy 拷出 0 字节 tokenizer 后照常报成功——残骸被合法化、下方 URL
+        // 下载臂被遮蔽，重装永远跳不过（BUG-20261031-241 在 model 臂修掉的
+        // 病理在本地拷贝臂重演）。fs::copy 非原子（中断残留半截文件）→ 改读
+        // 全量 + write_file_atomic（BUG-20261025-59 原子写家族）；拷贝失败
+        // 不再静默——落 URL 臂兜底，两臂皆不成由下方最终校验诚实报错。
+        let local_src = (!model_conf.local_tokenizer_path.is_empty())
+            .then(|| Path::new(&model_conf.local_tokenizer_path))
+            .filter(|p| is_non_empty_file(p));
+        let mut copied = false;
+        if let Some(src) = local_src {
+            let copied_res = std::fs::read(src)
+                .map_err(|e| format!("read {}: {}", src.display(), e))
+                .and_then(|bytes| {
+                    nemesis_utils::file::write_file_atomic(
+                        &tokenizer_path.to_string_lossy(),
+                        &bytes,
+                        0o644,
+                    )
+                    .map_err(|e| format!("write {}: {}", tokenizer_path.display(), e))
+                });
+            match copied_res {
+                Ok(()) => copied = true,
+                Err(e) => warn!(
+                    "[EmbeddingConfig] Failed to copy tokenizer from {}: {}",
+                    src.display(),
                     e
-                );
+                ),
             }
-        } else if !model_conf.tokenizer_url.is_empty() {
+        }
+        if !copied && !model_conf.tokenizer_url.is_empty() {
             info!(
                 "[EmbeddingConfig] Downloading tokenizer from {}...",
                 model_conf.tokenizer_url
@@ -520,6 +553,17 @@ pub fn download_model_files(
                 tokenizer_path.display()
             );
         }
+    }
+
+    // BUG-20261103-339：安装最终校验——无论本地拷贝/下载哪条臂，tokenizer
+    // 必须真实非空才算安装成功。旧形态两臂皆不成时静默 Ok（tokenizer 缺失
+    // /零字节），插件 init 以晦涩错误失败 → with_config_dir 写 enabled:false
+    // 永久自禁增强记忆（BUG-20261031-241 定义的失败链）。
+    if !is_non_empty_file(&tokenizer_path) {
+        return Err(format!(
+            "tokenizer 文件未安装或为空: {}。请检查 local_tokenizer_path / tokenizer_url 配置后重试安装",
+            tokenizer_path.display()
+        ));
     }
 
     // Write updated paths back to config

@@ -17,9 +17,11 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::{
-    DelegateManager, DelegateOutputTool, DelegateProtocolKind, DelegateSendTool, DelegateStartTool,
-    DelegateStopTool, MAX_DELEGATES, resolve_env_allowlist, rewrite_rpc_id,
+    DelegateEntry, DelegateManager, DelegateOutputTool, DelegateProtocolKind, DelegateSendTool,
+    DelegateStartTool, DelegateStopTool, MAX_DELEGATES, resolve_env_allowlist, rewrite_rpc_id,
+    rpc_round,
 };
+use crate::background_registry::{DEFAULT_MAX_OUTPUT_BYTES, OutputBuffer};
 use crate::r#loop::Tool;
 
 /// 真子进程用例串行锁（B4 纪律）。
@@ -1252,4 +1254,102 @@ fn truncate_diag_multibyte_safe_at_400() {
 
     // 短串原样返回（不补省略号）。
     assert_eq!(super::truncate_diag("短"), "短");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-341：rpc_round 增量扫描劈行丢失
+// ---------------------------------------------------------------------------
+
+/// 红证：JSON-RPC 响应行跨两次 50ms 轮询到达（spawn_pump 8KB read() 部分
+/// 送达 / read_chunk 8KB 截断都会造成），rpc_round 按 read_mark 增量消费
+/// 后两片各自无法通过 serde_json 权威解析——头片（含 needle `"id":1`）
+/// 被消费丢弃、尾片无 needle 语义 → 响应永久丢失 → 握手假超时误杀子进程。
+/// 修复 = 行重组 carry（只切完整行，不完整尾行留 carry 下轮拼接）。
+/// 哑子进程只占 child/stdin 字段（entry 全程 running，死亡分支不可达）。
+#[tokio::test]
+async fn rpc_round_reassembles_response_line_split_across_polls() {
+    let _serial = TEST_LOCK.lock().await;
+
+    // 哑子进程：Windows=cmd /c more（stdin 管道保持存活），Unix=cat。
+    let mut cmd = if cfg!(windows) {
+        let mut c = tokio::process::Command::new("cmd");
+        c.args(["/c", "more"]);
+        c
+    } else {
+        tokio::process::Command::new("cat")
+    };
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW（与生产 spawn 同纪律；tokio Command 自带
+        // creation_flags，无需 CommandExt trait）
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd.spawn().expect("spawn dummy delegate child");
+    let stdin = child.stdin.take().expect("stdin piped");
+
+    let entry = DelegateEntry {
+        protocol: DelegateProtocolKind::CodexAppServer,
+        cli_display: "dummy-codex".to_string(),
+        cwd: std::env::temp_dir().to_string_lossy().to_string(),
+        started_at: std::time::SystemTime::now(),
+        max_lifetime: Duration::from_secs(600),
+        pid: child.id().unwrap_or(0),
+        child: Arc::new(tokio::sync::Mutex::new(child)),
+        stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+        output: Arc::new(tokio::sync::Mutex::new(OutputBuffer::new(
+            DEFAULT_MAX_OUTPUT_BYTES,
+        ))),
+        status: Arc::new(tokio::sync::Mutex::new(None)),
+        kill_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        peer_session: parking_lot::Mutex::new(None),
+        next_rpc_id: std::sync::atomic::AtomicU64::new(3),
+    };
+
+    // 头片先落缓冲：含 needle（`"id":1`）但 JSON 截断（最难形态——needle
+    // 匹配在头片，权威解析失败）。rpc_round 启动后第一拍必消费并推进
+    // read_mark（旧码从此永久丢失头片）。
+    entry
+        .output
+        .lock()
+        .await
+        .append(br#"{"jsonrpc":"2.0","id":1,"res"#);
+
+    let entry = Arc::new(entry);
+    let entry_bg = entry.clone();
+    let mut read_mark: u64 = 0;
+    let bg = tokio::spawn(async move {
+        rpc_round(
+            &entry_bg,
+            &mut read_mark,
+            1,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"nemesisbot"}}}"#,
+            Duration::from_millis(800),
+        )
+        .await
+    });
+    // ≥3 个 50ms 轮询拍：确保头片已被消费（read_mark 前移到 produced）。
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // 尾片跨拍到达（生产形态：spawn_pump 部分 read 或 8KB 截断的另一半，
+    // 行尾换行符随尾片一起来）。
+    let mut tail = br#"ult":{"thread":{"id":"split-line"},"sessionId":"split-line"}}"#.to_vec();
+    tail.push(b'\n');
+    entry.output.lock().await.append(&tail);
+
+    let resp = bg
+        .await
+        .expect("join ok")
+        .expect("split response line must be reassembled, not lost to the read_mark scan");
+
+    let v: Value =
+        serde_json::from_str(&resp).expect("reassembled line must parse as JSON-RPC response");
+    assert_eq!(v["id"].as_u64(), Some(1), "response id must match request");
+    assert!(
+        v["result"]["thread"]["id"].as_str().is_some(),
+        "thread.id present (codex_handshake downstream consumer): {resp}"
+    );
 }

@@ -374,6 +374,81 @@ fn validate_op_args_enforces_schema() {
     assert!(validate_op_args(None, &serde_json::json!({"anything": [1, 2, 3]})).is_ok());
 }
 
+// --- schema 驱动 wire 规整（2026-11-02 外循环域剥离批 C）---------------------
+// 消费方（flow 引擎回写/publish 组包）args 值恒为字符串（BTreeMap<String,String>
+// + token 渲染），类型事实只在 schema：整串可解析 → 规整成 typed JSON；不可
+// 解析保持字符串 → 类型错诚实浮出（畸形模板声明不被静默吞掉）。
+
+#[test]
+fn coerce_op_args_converts_parseable_strings_by_schema() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer"},
+            "qty": {"type": "number"},
+            "flag": {"type": "boolean"},
+            "title": {"type": "string"},
+            "no_decl": {"description": "无 type 声明"}
+        }
+    });
+    let coerced = coerce_op_args(
+        Some(&schema),
+        &serde_json::json!({
+            "index": "12",
+            "qty": "2.5",
+            "flag": "true",
+            "title": "12345",
+            "no_decl": "9"
+        }),
+    );
+    // 整串可解析 → typed（schema 是类型真相，字符串形态只是传输载体）
+    assert_eq!(coerced["index"], serde_json::json!(12i64));
+    assert_eq!(coerced["qty"], serde_json::json!(2.5));
+    assert_eq!(coerced["flag"], serde_json::json!(true));
+    // string 声明不转（数字形态字符串是合法 string 值）
+    assert_eq!(coerced["title"], serde_json::json!("12345"));
+    // 无 type 声明不猜
+    assert_eq!(coerced["no_decl"], serde_json::json!("9"));
+    // 规整后过校验（规整与校验同深度：顶层 properties）
+    assert!(validate_op_args(Some(&schema), &coerced).is_ok());
+}
+
+#[test]
+fn coerce_op_args_leaves_unparseable_strings_for_honest_type_error() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"index": {"type": "integer"}}
+    });
+    // 不可解析（模板拼错的 token 残留/文本）→ 保持字符串 → 校验层类型错
+    let coerced = coerce_op_args(
+        Some(&schema),
+        &serde_json::json!({"index": "{{origin_meta.number}}"}),
+    );
+    assert_eq!(
+        coerced["index"],
+        serde_json::json!("{{origin_meta.number}}")
+    );
+    let e = validate_op_args(Some(&schema), &coerced).unwrap_err();
+    assert!(e.contains("类型"), "{e}");
+    // 边界内越界值照常被 minimum/maximum 拦（规整不吞边界语义）
+    let bounded = serde_json::json!({"type": "object", "properties": {"n": {"type": "integer", "maximum": 10}}});
+    let c = coerce_op_args(Some(&bounded), &serde_json::json!({"n": "11"}));
+    assert!(
+        validate_op_args(Some(&bounded), &c)
+            .unwrap_err()
+            .contains("上限")
+    );
+    // 无 schema / 非对象 args = 原样透传
+    assert_eq!(
+        coerce_op_args(None, &serde_json::json!({"a": "1"})),
+        serde_json::json!({"a": "1"})
+    );
+    assert_eq!(
+        coerce_op_args(Some(&schema), &serde_json::json!([1])),
+        serde_json::json!([1])
+    );
+}
+
 #[test]
 fn manifest_args_schema_shape_scan_rejects_unsupported() {
     let ws = tmpws();

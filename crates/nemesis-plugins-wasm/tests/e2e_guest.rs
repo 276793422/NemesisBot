@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nemesis_plugins_wasm::host_impl::SecretResolver;
+use nemesis_plugins_wasm::host_impl::{LlmInvoker, SecretResolver};
 use nemesis_plugins_wasm::install::{
     AutoApprove, InstallApprover, InstallReview, PluginInstaller, WASM_MAX_BYTES,
 };
@@ -747,4 +747,415 @@ async fn hand_copied_unsigned_denied_by_card_stays_out() {
         mgr.get_config("translate").enabled,
         "开关先落盘（失败保持 true = 重试态）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-31 面板扩展批：panel-echo 夹具全链（install → enable → invoke_ui
+// 五行为面：echo 往返 / rows 投影 / fail 业务失败 / unknown 回执 / probe
+// 能力探针 + guest 日志 + 审计链）
+// ---------------------------------------------------------------------------
+
+const PANEL_ECHO_TOML: &str = r#"api-version = 1
+slug = "panel-echo"
+kind = "panel"
+name = "Panel Echo"
+version = "0.1.0"
+description = "e2e fixture panel"
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+[[ui.page]]
+route = "echo"
+title = "回显面板"
+
+[[ui.page.views]]
+kind = "table"
+bind = "cmd://rows"
+
+[[ui.page.views.columns]]
+key = "id"
+label = "编号"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "回显"
+command = "echo"
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_install_roundtrip_and_ui_invoke() {
+    let Some(wasm) = fixture_wasm("panel-echo", "panel_echo_plugin") else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let audit_dir = tempfile::tempdir().expect("audit tmp");
+    let logger = nemesis_security::audit_log::AuditLogger::new(
+        nemesis_security::audit_log::AuditLogConfig {
+            audit_log_dir: audit_dir.path().to_path_buf(),
+            enabled: true,
+        },
+    )
+    .expect("audit logger");
+    mgr.set_audit(Arc::new(std::sync::Mutex::new(logger)));
+
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), PANEL_ECHO_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let outcome = installer.install(&src, true).await.expect("install");
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    let reg = installer
+        .set_enabled("panel-echo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+
+    // ① 基线往返：echo 带中文（CABI 串跨界）。
+    let reply = mgr
+        .invoke_ui(
+            "panel-echo",
+            r#"{"command":"echo","args":{"text":"面板你好"}}"#.into(),
+        )
+        .await
+        .expect("echo");
+    assert!(reply.contains("\"ok\":true"), "reply: {reply}");
+    assert!(reply.contains("面板你好"), "reply: {reply}");
+
+    // ② table 数据投影（声明面 cmd://rows 绑定的guest 回执形态）。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"rows"}"#.into())
+        .await
+        .expect("rows");
+    assert!(reply.contains("NB-1"), "reply: {reply}");
+    assert!(reply.contains("样例行"), "reply: {reply}");
+
+    // ③ 业务失败形态（{"error":...} 约定回执，非 trap——宿主照常返回）。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"fail"}"#.into())
+        .await
+        .expect("fail passthrough");
+    assert!(reply.contains("演示性业务失败"), "reply: {reply}");
+
+    // ④ 未知命令 → guest 约定错误回执。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"nope"}"#.into())
+        .await
+        .expect("unknown cmd");
+    assert!(reply.contains("unknown command: nope"), "reply: {reply}");
+
+    // ⑤ 能力面探针：log + now + tool-invoke（独立运行时无接线 = unavailable）。
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"probe"}"#.into())
+        .await
+        .expect("probe");
+    assert!(reply.contains("tool-invoke=unavailable"), "reply: {reply}");
+    assert!(reply.contains("\"now\":"), "reply: {reply}");
+    let (lines, _dropped) = reg.logs.snapshot();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.message.contains("panel probe begin")),
+        "log lines: {lines:?}"
+    );
+
+    // 审计链：每次 invoke 落 plugin_ui_invoke allow 事件。
+    let body = audit_body(audit_dir.path());
+    assert!(body.contains("plugin_ui_invoke"), "audit body: {body}");
+    // 开关关 → 真摘除（2026-10-22 纪律：disable = unregister，无「注册但拒
+    // 调用」半态）→ invoke 诚实报 not loaded（动作面随开关冻结）。
+    installer
+        .set_enabled("panel-echo", false)
+        .await
+        .expect("disable");
+    let err = mgr
+        .invoke_ui("panel-echo", r#"{"command":"echo"}"#.into())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not loaded"), "{err}");
+    let _ = ws; // tempdir 生命周期保持到断言结束
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-01 决策 C：面板 llm-complete 双闸（manifest `x-llm` 声明 ×
+// `panel_llm.enabled` 总闸，缺省 false）。授予裁决在 registry::build_frame
+// （私有，无公开帧访问器——crate 纪律 src 零内联测试），可观察面 = guest
+// 夹具 `llm_probe` 命令消费帧内 llm 是否在场。宿主 invoker 用测试桩。
+// ---------------------------------------------------------------------------
+
+/// LLM 双闸变体：同面板 + `[permissions] x-llm = true`（单源派生防漂移）。
+fn panel_echo_llm_toml() -> String {
+    PANEL_ECHO_TOML.replace(
+        "description = \"e2e fixture panel\"\n",
+        "description = \"e2e fixture panel\"\n\n[permissions]\nx-llm = true\n",
+    )
+}
+
+/// 测试桩 invoker：恒回固定标记文本。
+struct StubLlm;
+
+impl LlmInvoker for StubLlm {
+    fn complete(
+        &self,
+        _prompt: &str,
+        _max_tokens: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        Box::pin(async { Ok("stub-llm-ok".to_string()) })
+    }
+}
+
+/// 装好 panel-echo（给定 manifest）并接好 llm 桩，返回 (workspace, manager)。
+async fn staged_llm_panel(
+    toml_body: String,
+) -> Result<(tempfile::TempDir, Arc<PluginManager>, PluginInstaller), Box<dyn std::error::Error>> {
+    let Some(wasm) = fixture_wasm("panel-echo", "panel_echo_plugin") else {
+        return Err("fixture missing".into());
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), toml_body, &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("panel-echo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+    mgr.set_llm(Arc::new(StubLlm));
+    Ok((ws, mgr, installer))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_llm_dual_gate_hot() {
+    let Ok((ws, mgr, _installer)) = staged_llm_panel(panel_echo_llm_toml()).await else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let config_dir = mgr.workspace_root().join("config");
+    let probe = |mgr: &Arc<PluginManager>| {
+        let mgr = mgr.clone();
+        async move {
+            mgr.invoke_ui("panel-echo", r#"{"command":"llm_probe"}"#.into())
+                .await
+                .expect("llm_probe")
+        }
+    };
+
+    // ① 总闸缺省 false（文件缺席）→ 帧内 llm 缺席 → guest 诚实报 unavailable。
+    let reply = probe(&mgr).await;
+    assert!(reply.contains("\"llm\":\"unavailable\""), "reply: {reply}");
+
+    // ② 开闸（写真相源）→ 下一次调用即生效（fresh-store-per-call 热语义）。
+    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, true).expect("set on");
+    let reply = probe(&mgr).await;
+    assert!(
+        reply.contains("\"llm\":\"ok:stub-llm-ok\""),
+        "双闸齐 → invoker 文本透传: {reply}"
+    );
+
+    // ③ 关闸 → 立刻回到 unavailable（无缓存，关也是热的）。
+    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, false).expect("set off");
+    let reply = probe(&mgr).await;
+    assert!(reply.contains("\"llm\":\"unavailable\""), "reply: {reply}");
+    let _ = ws;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panel_llm_missing_declaration_stays_denied() {
+    // 总闸开 + 无 `x-llm` 声明 → 仍然 denied（双闸是 AND，声明位不可省）。
+    let Ok((_ws, mgr, _installer)) = staged_llm_panel(PANEL_ECHO_TOML.to_string()).await else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let config_dir = mgr.workspace_root().join("config");
+    nemesis_config::plugin_wasm::set_panel_llm(&config_dir, true).expect("set on");
+    let reply = mgr
+        .invoke_ui("panel-echo", r#"{"command":"llm_probe"}"#.into())
+        .await
+        .expect("llm_probe");
+    assert!(
+        reply.contains("\"llm\":\"unavailable\""),
+        "未声明 x-llm 的面板即使总闸开也不得拿到 llm 面: {reply}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 guest step 批：stepdemo 夹具（kind=flow-step）全链
+// install → enable → run_flow_step 八行为面：echo done（中文 CABI）/
+// tally running×2→done（guest 数据目录记账幂等）/ chaos failed / chaos
+// skipped 形态透传 / 越权 op 对账拒绝 / unknown slug / host-error → Trap /
+// disable 真摘除 + 审计链。
+// ---------------------------------------------------------------------------
+
+const STEPDEMO_TOML: &str = r#"api-version = 1
+slug = "stepdemo"
+kind = "flow-step"
+name = "StepDemo"
+version = "0.1.0"
+description = "e2e fixture flow step"
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flow_step_install_roundtrip_and_run() {
+    let Some(wasm) = fixture_wasm("stepdemo", "stepdemo_plugin") else {
+        eprintln!("{}", skip_reason("stepdemo"));
+        return;
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let audit_dir = tempfile::tempdir().expect("audit tmp");
+    let logger = nemesis_security::audit_log::AuditLogger::new(
+        nemesis_security::audit_log::AuditLogConfig {
+            audit_log_dir: audit_dir.path().to_path_buf(),
+            enabled: true,
+        },
+    )
+    .expect("audit logger");
+    mgr.set_audit(Arc::new(std::sync::Mutex::new(logger)));
+
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), STEPDEMO_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let outcome = installer.install(&src, true).await.expect("install");
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    let reg = installer
+        .set_enabled("stepdemo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+
+    // 安装期对账快照：kinds 词表自报（echo/tally/chaos）。
+    let kinds = reg.step_meta.as_ref().expect("step meta").kinds.clone();
+    assert_eq!(kinds, vec!["echo", "tally", "chaos"], "kinds: {kinds:?}");
+
+    // ① echo：同步 done，args 回显带中文（CABI 串跨界）。
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "echo",
+            r#"{"op":"echo","args":{"text":"流程你好"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("echo");
+    assert!(out.contains("流程你好"), "out: {out}");
+    assert!(out.contains("\"status\":\"done\""), "out: {out}");
+
+    // ② tally：前两次 running（guest 数据目录记账幂等），第三次 done。
+    let tally_input = r#"{"op":"tally","instance":{"instance":"e2e-i"},"session_key":"flow:t/i"}"#;
+    for n in 1..3 {
+        let out = mgr
+            .run_flow_step("stepdemo", "tally", tally_input.into())
+            .await
+            .expect("tally running");
+        assert!(out.contains("\"status\":\"running\""), "poll {n}: {out}");
+    }
+    let out = mgr
+        .run_flow_step("stepdemo", "tally", tally_input.into())
+        .await
+        .expect("tally done");
+    assert!(out.contains("\"status\":\"done\""), "out: {out}");
+    assert!(out.contains("\"polls\":3"), "out: {out}");
+
+    // ③ failed：业务失败形态透传（四态解析归 flow 引擎，宿主只投递）。
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"failed"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("failed passthrough");
+    assert!(out.contains("注定失败"), "out: {out}");
+
+    // ④ skipped 形态透传；malformed 字符串出参同样原样（畸形判定归 flow 引擎）。
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"skipped"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("skipped passthrough");
+    assert!(out.contains("\"status\":\"skipped\""), "out: {out}");
+    let out = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"malformed"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("malformed passthrough");
+    assert_eq!(out, "not-json-at-all");
+
+    // ⑤ 越权 op：词表外 = 安装期对账拒绝（MetadataMismatch）。
+    let err = mgr
+        .run_flow_step(
+            "stepdemo",
+            "not_in_kinds",
+            r#"{"op":"not_in_kinds"}"#.into(),
+        )
+        .await
+        .expect_err("unauthorized op");
+    assert!(
+        matches!(err, PluginError::MetadataMismatch(ref m) if m.contains("not in plugin 'stepdemo'")),
+        "err: {err:?}"
+    );
+
+    // ⑥ 未知 slug：未装载 = NotAvailable。
+    let err = mgr
+        .run_flow_step("ghost", "echo", r#"{"op":"echo"}"#.into())
+        .await
+        .expect_err("unknown slug");
+    assert!(
+        matches!(err, PluginError::NotAvailable(ref m) if m.contains("not loaded: ghost")),
+        "err: {err:?}"
+    );
+
+    // ⑦ host-error：guest Err 经 wire err 载荷 = Trap（策略点同款 decode
+    // 前缀惯例 + host-error Debug 形态携带 guest 报错原文）。
+    let err = mgr
+        .run_flow_step(
+            "stepdemo",
+            "chaos",
+            r#"{"op":"chaos","args":{"mode":"err"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect_err("host error");
+    assert!(
+        matches!(err, PluginError::Trap(ref m) if m.contains("unavailable") && m.contains("guest 侧异常（mode=err）")),
+        "err: {err:?}"
+    );
+
+    // 审计链：每次投递落 plugin_flow_step allow 事件。
+    let body = audit_body(audit_dir.path());
+    assert!(body.contains("plugin_flow_step"), "audit body: {body}");
+
+    // ⑧ disable = 真摘除（2026-10-22 纪律）→ 投递诚实报 not loaded。
+    installer
+        .set_enabled("stepdemo", false)
+        .await
+        .expect("disable");
+    let err = mgr
+        .run_flow_step("stepdemo", "echo", r#"{"op":"echo"}"#.into())
+        .await
+        .expect_err("after disable");
+    assert!(
+        matches!(err, PluginError::NotAvailable(ref m) if m.contains("not loaded")),
+        "err: {err:?}"
+    );
+    let _ = ws;
 }
