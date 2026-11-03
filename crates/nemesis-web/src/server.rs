@@ -2584,6 +2584,17 @@ pub(crate) async fn auth_middleware(
         return next.run(req).await;
     }
     let token = extract_request_token(&req).unwrap_or_default();
+    // LLM 代理调用方 key 回落臂（docs/PLAN/2026-11-03_LLM代理调用方key管理.md）：
+    // 代理 key 匹配在主 token 校验**之前**——master token 为空 = allow-all 的
+    // 文档化约定下，先查 key 才能保住代理调用方的身份归属。命中 = 白名单内
+    // 代理 lane + enabled key + 恒时比对全过 → 注入 caller 身份放行（白名单
+    // 外路径 match 恒 None，代理 key 打 Dashboard API 落回主 token 校验必 401）。
+    // 不命中 = 零配置/老行为完全不变。
+    if let Some(caller) = crate::proxy_keys::match_proxy_caller(&state, &token, req.uri().path()) {
+        let mut req = req;
+        req.extensions_mut().insert(caller);
+        return next.run(req).await;
+    }
     if crate::api_handlers::verify_token(&token, &state.auth_token) {
         next.run(req).await
     } else {

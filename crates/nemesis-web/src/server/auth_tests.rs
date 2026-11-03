@@ -241,3 +241,91 @@ async fn test_auth_empty_expected_token_allows_all() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200, "空 expected token 不设闸");
 }
+
+// ============================================================
+// LLM 代理调用方 key 回落臂（2026-11-03 LLM代理调用方key管理 P3）
+// ============================================================
+
+/// 带代理 key 表的 router + oneshot（workspace 指向临时目录，key 文件由
+/// 调用方先落盘； TempDir 句柄返回给调用方持有防提前清理）。
+async fn proxy_router_oneshot(
+    dir: &tempfile::TempDir,
+    uri: &str,
+    bearer: Option<&str>,
+) -> axum::response::Response {
+    let config = WebServerConfig {
+        auth_token: "sekret".to_string(),
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    };
+    let app = WebServer::new(config).build_router();
+    let mut builder = axum::http::Request::builder().uri(uri);
+    if let Some(b) = bearer {
+        builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {b}"));
+    }
+    use tower::ServiceExt;
+    app.oneshot(builder.body(axum::body::Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+fn seed_proxy_key(dir: &tempfile::TempDir) {
+    nemesis_config::proxy_keys_file::add_key(
+        &dir.path().join("config"),
+        nemesis_config::proxy_keys_file::ProxyKeyEntry {
+            name: "bot-a".to_string(),
+            key: "nbk_aaa".to_string(),
+            enabled: true,
+            created_at: 0,
+            note: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_proxy_key_hit_passes_proxy_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_proxy_key(&dir);
+    // 代理 key（Bearer）打代理 lane：非 401 即过了鉴权闸（空 body 进
+    // completions handler 按 JSON 解析失败回 4xx 业务错，非鉴权错）。
+    let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;
+    assert_ne!(resp.status(), 401, "代理 key 命中必须放行（非 401）");
+}
+
+#[tokio::test]
+async fn test_proxy_key_rejected_on_dashboard_path() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_proxy_key(&dir);
+    // 代理 key 打 Dashboard API（白名单外）：match 恒 None → 落回主 token
+    // 校验（key ≠ sekret）→ 必 401，防借道提权。
+    let resp = proxy_router_oneshot(&dir, "/api/status", Some("nbk_aaa")).await;
+    assert_eq!(resp.status(), 401, "代理 key 打白名单外路径必须 401");
+}
+
+#[tokio::test]
+async fn test_proxy_key_master_token_unaffected() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_proxy_key(&dir);
+    // 共享主 token 老行为完全不变（回归钉子）。
+    let resp = proxy_router_oneshot(&dir, "/api/status", Some("sekret")).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_proxy_key_disabled_rejected_without_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_proxy_key(&dir);
+    let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;
+    assert_ne!(resp.status(), 401);
+    // 禁用即失效（热生效：同一 router 不重建）。
+    nemesis_config::proxy_keys_file::set_enabled(&dir.path().join("config"), "bot-a", false)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20)); // 不赌 mtime 粒度
+    let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;
+    assert_eq!(
+        resp.status(),
+        401,
+        "禁用的代理 key 必须 401（回落主 token 校验）"
+    );
+}
