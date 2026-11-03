@@ -135,12 +135,9 @@ impl AgentLoop {
 
     /// 准备：原始字节 → JSON 解析（= 校验）。解析在锁外；基线代号在解析
     /// 成功后现取（尽量缩小被取代窗口；CAS 兜底竞态）。
-    pub(crate) fn prepare_config_generation(
-        &self,
-        raw: Vec<u8>,
-    ) -> Result<PreparedConfig, String> {
-        let value: serde_json::Value = serde_json::from_slice(&raw)
-            .map_err(|e| format!("config 解析失败: {e}"))?;
+    pub(crate) fn prepare_config_generation(&self, raw: Vec<u8>) -> Result<PreparedConfig, String> {
+        let value: serde_json::Value =
+            serde_json::from_slice(&raw).map_err(|e| format!("config 解析失败: {e}"))?;
         let base_generation = self
             .config_gen
             .read()
