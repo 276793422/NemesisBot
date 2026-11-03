@@ -1,10 +1,9 @@
 //! Tests for `HotReloader`（热重载统一收编，2026-08-29）——经公开 API 验证
-//! mtime 变更重载/未变 no-op/缺失文件与垃圾内容兜底。
+//! 内容变更重载/未变 no-op/缺失文件与垃圾内容兜底（BUG-20261104-359：
+//! 变更检测为内容比对，测试不再 sleep 赌 mtime 粒度）。
 
 use nemesis_config::{CommandsConfig, HotReloader, load_commands_config};
 use std::path::Path;
-use std::thread::sleep;
-use std::time::Duration;
 
 fn load_commands(path: &Path) -> CommandsConfig {
     // 与生产 load_commands_config 同语义（缺失文件 = 空表）。
@@ -25,16 +24,15 @@ fn hot_reloader_picks_up_table_edits_and_unchanged_is_noop() {
     assert_eq!(hot.get().commands.len(), 1);
 
     // 未变化 → check() false（no-op）。
-    assert!(!hot.check(), "unchanged mtime must not reload");
+    assert!(!hot.check(), "unchanged content must not reload");
 
-    // 变化 → check() true + 内容更新。
-    sleep(Duration::from_millis(20));
+    // 变化 → check() true + 内容更新（内容比对，无需 sleep 推 mtime）。
     std::fs::write(
         &path,
         r#"{ "commands": [ { "name": "a", "prompt": "P1" }, { "name": "b", "prompt": "P2" } ] }"#,
     )
     .unwrap();
-    assert!(hot.check(), "changed mtime must reload");
+    assert!(hot.check(), "changed content must reload");
     assert_eq!(hot.get().commands.len(), 2);
     assert_eq!(hot.get().commands[1].name, "b");
 }
@@ -46,9 +44,8 @@ fn hot_reloader_tolerates_missing_file_and_garbage() {
     let hot: HotReloader<CommandsConfig> = HotReloader::new(path.clone(), load_commands);
     assert_eq!(hot.get().commands.len(), 0, "缺失文件 = 空表");
 
-    // 空表 → 垃圾内容：mtime 变化触发重载，load 侧按空表兜底（不 panic）。
-    sleep(Duration::from_millis(20));
+    // 空表 → 垃圾内容：内容变化触发重载，load 侧按空表兜底（不 panic）。
     std::fs::write(&path, "{ not json").unwrap();
-    assert!(hot.check(), "mtime changed → reload happens");
+    assert!(hot.check(), "content changed → reload happens");
     assert_eq!(hot.get().commands.len(), 0);
 }

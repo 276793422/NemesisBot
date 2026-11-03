@@ -276,7 +276,9 @@ impl MandatePolicy {
     /// - mandate 在场 → [`verify_mandate_full`] 全链（吊销 → 钉存 → 签名
     ///   → 绑定 → 时限），通过 = 投影 enforcement；钉存钥缺席（簿未激活/
     ///   对端未钉）时 Verify → 放行 + warn（regime 休眠降级，BUG-20261104
-    ///   全新集群默认形态死锁修复）/ Require → 拒。
+    ///   全新集群默认形态死锁修复）/ Require → 拒；**簿在场但读失败**
+    ///   （TrustBookUnreadable，BUG-20261104-358 分立）Verify/Require 均
+    ///   拒——降级只给 regime 休眠，不给已激活 regime 的坏簿。
     ///
     /// 失败返回 [`MandateViolation`]（Display 即 ACK reason 文案）。
     pub fn check(
@@ -362,6 +364,12 @@ pub enum MandateViolation {
     /// 放行（regime 休眠，见 [`MandatePolicy::check`] 降级臂）；仅 Require
     /// 硬拒。底层 [`verify_mandate_full`] 保持无条件 Err（低层不识 posture）。
     NoPinnedKey,
+    /// 信任簿 trust.toml 在场但不可读（损坏/编码非法）——regime 已激活而
+    /// 验签基础设施失效。**不做降级**（Verify/Require 均拒）：降级只给
+    /// 「簿缺席（regime 休眠）」，不给「基础设施在场但坏」——否则管理员
+    /// 激活的验签面会被一次坏簿无声降级为放行态（announce 闸同方向
+    /// fail-closed）。
+    TrustBookUnreadable,
     /// 签名验不过（伪造/篡改/钉存钥与签发钥不一致）。
     BadSignature,
     /// mandate.task_id ≠ 载荷任务 id（移植攻击）。
@@ -380,6 +388,10 @@ impl std::fmt::Display for MandateViolation {
             Self::NoPinnedKey => write!(
                 f,
                 "mandate 拒绝: 无钉存公钥（等待 announce 分发或人工 mandate-pin）"
+            ),
+            Self::TrustBookUnreadable => write!(
+                f,
+                "mandate 拒绝: 信任簿 trust.toml 在场但不可读（损坏/编码非法）——验签基础设施失效，修复或删除 trust.toml 后恢复"
             ),
             Self::BadSignature => write!(f, "mandate 拒绝: 签名验证失败"),
             Self::TaskIdMismatch => write!(f, "mandate 拒绝: task_id 绑定不匹配"),
@@ -469,6 +481,11 @@ pub fn verify_mandate_full(
     let pinned = match state {
         MandateKeyVerdict::Revoked => return Err(MandateViolation::Revoked),
         MandateKeyVerdict::Absent => return Err(MandateViolation::NoPinnedKey),
+        // 簿在场但坏 = regime 已激活而基础设施失效 → 专用违例（policy 层
+        // 不降级，Verify/Require 均拒——与 Absent 的「休眠可降级」分立）。
+        MandateKeyVerdict::BookUnreadable => {
+            return Err(MandateViolation::TrustBookUnreadable);
+        }
         MandateKeyVerdict::Pinned(k) => k,
     };
     let env = parse_envelope(mandate_value)?;

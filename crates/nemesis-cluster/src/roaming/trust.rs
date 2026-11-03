@@ -57,7 +57,10 @@ impl TrustBook {
         if !path.exists() {
             return Ok(None);
         }
-        let text = std::fs::read_to_string(&path)
+        // fsutil 剥 BOM 单一真相源（trust.toml 是手工管理面文件，与
+        // peers.toml 同暴露级；BUG-20261031-260 横扫漏网补齐——记事本
+        // UTF-8-BOM 形态不再构成坏簿 fail-closed 的意外来源）。
+        let text = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
         let data: TrustBookData =
             toml::from_str(&text).map_err(|e| format!("trust.toml 解析失败: {e}"))?;
@@ -173,8 +176,10 @@ pub fn normalize_mandate_pubkey(s: &str) -> Option<String> {
     if ok { Some(v) } else { None }
 }
 
-/// mandate 钉存状态三态（L13-b 验签消费点：Revoked 拒 / Pinned 验签 /
-/// Absent 维持现行行为——mandate 缺失兼容旧节点）。
+/// mandate 钉存状态四态（L13-b 验签消费点：Revoked 拒 / Pinned 验签 /
+/// Absent 维持现行行为——mandate 缺失兼容旧节点 / BookUnreadable 拒——
+/// 簿在场但读失败 = regime 已激活而验签基础设施失效，与「簿缺席（regime
+/// 休眠）」语义分立，消费侧不得并入 Absent 做降级放行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MandateKeyVerdict {
     /// 已钉存（值为归一小写 hex）。
@@ -183,6 +188,10 @@ pub enum MandateKeyVerdict {
     Revoked,
     /// 无钉存（该节点未分发过 mandate 公钥）。
     Absent,
+    /// 簿在场但读失败（损坏/编码非法）——与 Absent 的区别：trust.toml
+    /// 在场即 regime 已激活，管理员预期验签在跑；坏簿必须 fail-closed
+    /// （announce 闸同方向），静默放行 = 已激活 regime 被无声降级。
+    BookUnreadable,
 }
 
 /// mandate TOFU 钉存裁决（[`mandate_tofu_pin`] 返回）。
@@ -289,12 +298,15 @@ fn mandate_pin_locked(
     }
 }
 
-/// mandate 钉存状态查询（L13-b 验签消费点）。簿缺席/读失败 = Absent
-/// （查询是读面，fail-open——验签侧对 Absent 的处置由 L13-b 决定）。
+/// mandate 钉存状态查询（L13-b 验签消费点）。簿缺席 = Absent（regime
+/// 未激活，verify 侧可降级）；**读失败 = BookUnreadable**（regime 已激活
+/// 而簿坏，验签侧 fail-closed——不可与 Absent 合并，否则管理员激活的
+/// regime 会被一次坏盘/手改无声降级为放行态）。
 pub fn mandate_key_state(workspace: &Path, node_id: &str) -> MandateKeyVerdict {
     let book = match TrustBook::load(workspace) {
         Ok(Some(b)) => b,
-        _ => return MandateKeyVerdict::Absent,
+        Ok(None) => return MandateKeyVerdict::Absent,
+        Err(_) => return MandateKeyVerdict::BookUnreadable,
     };
     mandate_state_locked(&book, node_id)
 }

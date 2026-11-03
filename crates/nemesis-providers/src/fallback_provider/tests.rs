@@ -1,5 +1,6 @@
 use super::*;
 use crate::failover::FailoverReason;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A mock provider that always succeeds with a fixed response.
 struct MockSuccessProvider {
@@ -66,6 +67,44 @@ impl LLMProvider for MockFailProvider {
                 status: 401,
             })
         }
+    }
+
+    fn default_model(&self) -> &str {
+        &self.model
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// A mock provider that succeeds and counts its invocations.
+struct MockCountingSuccessProvider {
+    name: String,
+    model: String,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LLMProvider for MockCountingSuccessProvider {
+    async fn chat(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _model: &str,
+        _options: &ChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(LLMResponse {
+            content: format!("response from {}", self.name),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+            reasoning_content: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
     }
 
     fn default_model(&self) -> &str {
@@ -147,6 +186,146 @@ async fn test_fallback_second_succeeds() {
     assert_eq!(resp.content, "response from p2");
 }
 
+fn hello_messages() -> Vec<Message> {
+    vec![Message {
+        role: "user".to_string(),
+        content: "Hello".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }]
+}
+
+/// BUG（cooldown 键碰撞）回归锁：生产装配下同 lane 链各级 provider.name()
+/// 相同（factory 对 HttpCompat 恒发 "http-compat"，anthropic/codex lane
+/// 同理）。冷却键若只按 lane 名，第一级 retriable 失败 mark_failure 后，
+/// **同一请求内**第二级 is_available 即 false 被 skip——故障转移整链失效。
+/// 修复后（键 = lane 名 + 本级生效模型名），第二级必须仍被尝试并接住。
+#[tokio::test]
+async fn test_fallback_same_provider_name_chain_still_rotates() {
+    let provider = FallbackProvider::new(
+        "test-fallback",
+        vec![
+            FallbackEntry {
+                provider: Arc::new(MockFailProvider {
+                    name: "http-compat".to_string(),
+                    model: "m1".to_string(),
+                    retriable: true,
+                }),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "http-compat".to_string(),
+                    model: "m2".to_string(),
+                }),
+                model: "m2".to_string(),
+            },
+        ],
+    );
+
+    let resp = provider
+        .chat(&hello_messages(), &[], "", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "response from http-compat");
+}
+
+/// 同键隔离回归锁：第一级失败只冷却自己的（lane, model）键。请求 1 里
+/// 第二级接住后，请求 2 第一级冷却中被 skip、但第二级**不受牵连**仍被
+/// 尝试并成功——修复前两级共享 lane 名键，请求 2 全链 skip、整体返回
+/// Unknown（不带真实根因）。
+#[tokio::test]
+async fn test_fallback_same_name_cooldown_isolated_per_level() {
+    let second = Arc::new(MockCountingSuccessProvider {
+        name: "http-compat".to_string(),
+        model: "m2".to_string(),
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let second_calls = Arc::clone(&second.calls);
+    let provider = FallbackProvider::new(
+        "test-fallback",
+        vec![
+            FallbackEntry {
+                provider: Arc::new(MockFailProvider {
+                    name: "http-compat".to_string(),
+                    model: "m1".to_string(),
+                    retriable: true,
+                }),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: second,
+                model: "m2".to_string(),
+            },
+        ],
+    );
+
+    // 请求 1：第一级 retriable 失败 → 第二级接住（第 1 次调用）。
+    let resp = provider
+        .chat(&hello_messages(), &[], "", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "response from http-compat");
+    assert_eq!(second_calls.load(Ordering::SeqCst), 1);
+
+    // 请求 2：第一级在冷却（键 http-compat:m1）被 skip；第二级
+    // （键 http-compat:m2）不在冷却 → 仍被尝试（第 2 次调用）。
+    let resp = provider
+        .chat(&hello_messages(), &[], "", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "response from http-compat");
+    assert_eq!(
+        second_calls.load(Ordering::SeqCst),
+        2,
+        "第二级不得被第一级的失败冷却牵连"
+    );
+}
+
+/// execute_detailed 同键路径回归锁：同 lane 链第一级 retriable 失败后，
+/// 第二级在同一请求内仍被真实尝试（修复前 attempts 只有 1 条真实尝试，
+/// 第二级是 "skipped: in cooldown" 占位）。
+#[tokio::test]
+async fn test_fallback_detailed_same_name_chain_rotates() {
+    let provider = FallbackProvider::new(
+        "test-fallback",
+        vec![
+            FallbackEntry {
+                provider: Arc::new(MockFailProvider {
+                    name: "http-compat".to_string(),
+                    model: "m1".to_string(),
+                    retriable: true,
+                }),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "http-compat".to_string(),
+                    model: "m2".to_string(),
+                }),
+                model: "m2".to_string(),
+            },
+        ],
+    );
+
+    let result = provider
+        .execute_detailed(&hello_messages(), &[], "", &ChatOptions::default())
+        .await;
+    assert!(result.response.is_some());
+    assert!(result.exhausted_error.is_none());
+    let real_attempts: Vec<&FallbackAttempt> = result
+        .attempts
+        .iter()
+        .filter(|a| a.error.as_deref() != Some("skipped: in cooldown"))
+        .collect();
+    assert_eq!(real_attempts.len(), 2, "两级都必须是真实尝试，无 skip 占位");
+    assert!(real_attempts[0].error.is_some(), "第一级真实失败");
+    assert!(real_attempts[1].success, "第二级接住请求");
+}
+
 #[tokio::test]
 async fn test_fallback_non_retriable_stops() {
     let provider = FallbackProvider::new(
@@ -210,7 +389,8 @@ async fn test_fallback_empty_chain() {
 #[tokio::test]
 async fn test_fallback_cooldown_skips() {
     let cooldown = Arc::new(CooldownTracker::new());
-    cooldown.mark_failure("p1", FailoverReason::RateLimit, None);
+    // 冷却键 = lane 名 + 本级生效模型名（级唯一，见 cooldown_key 注记）。
+    cooldown.mark_failure("p1:m1", FailoverReason::RateLimit, None);
 
     let provider = FallbackProvider::with_cooldown(
         "test-fallback",
@@ -690,7 +870,8 @@ async fn test_execute_image_size_error_aborts() {
 #[tokio::test]
 async fn test_execute_detailed_cooldown_skips() {
     let cooldown = Arc::new(CooldownTracker::new());
-    cooldown.mark_failure("p1", FailoverReason::RateLimit, None);
+    // 冷却键 = lane 名 + 本级生效模型名（级唯一，见 cooldown_key 注记）。
+    cooldown.mark_failure("p1:m1", FailoverReason::RateLimit, None);
 
     let provider = FallbackProvider::with_cooldown(
         "test-fallback",
@@ -841,9 +1022,10 @@ fn w4c_msg() -> Vec<Message> {
 #[tokio::test]
 async fn test_w4c_execute_detailed_all_in_cooldown_falls_through_exhausted() {
     // 两个 provider 都在冷却 → 循环全部 continue → 落到尾部 exhausted 返回
+    // （冷却键 = lane 名 + 本级生效模型名，级唯一，见 cooldown_key 注记）。
     let cooldown = Arc::new(CooldownTracker::new());
-    cooldown.mark_failure("p1", FailoverReason::RateLimit, None);
-    cooldown.mark_failure("p2", FailoverReason::RateLimit, None);
+    cooldown.mark_failure("p1:m1", FailoverReason::RateLimit, None);
+    cooldown.mark_failure("p2:m2", FailoverReason::RateLimit, None);
 
     let provider = FallbackProvider::with_cooldown(
         "all-cooled",
@@ -1060,7 +1242,7 @@ async fn test_fallback_cooldown_honors_retry_after_hint() {
         .await;
 
     let remaining = cooldown
-        .cooldown_remaining("ra1")
+        .cooldown_remaining("ra1:m")
         .expect("provider should be in cooldown");
     assert!(
         remaining <= Duration::from_secs(30) && remaining > Duration::from_secs(28),

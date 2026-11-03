@@ -174,7 +174,7 @@ fn test_find_new_servers_all_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// mtime detection
+// content-change detection（BUG-20261104-359：内容比对不赌 mtime 粒度）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -182,7 +182,7 @@ fn test_check_config_changed_no_change() {
     let tmp = TempDir::new().unwrap();
     let path = make_config_path(&tmp);
     let mut mgr = McpManager::new(path);
-    // No file was written, so no mtime to compare
+    // No file was written, so nothing recorded to compare
     assert!(!mgr.check_config_changed());
 }
 
@@ -195,8 +195,7 @@ fn test_check_config_changed_detects_write() {
     // Initially no file
     assert!(!mgr.check_config_changed());
 
-    // Write a config file externally
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Write a config file externally（内容比对，无需 sleep 推 mtime）
     write_config(
         &path,
         &McpConfig {
@@ -211,6 +210,56 @@ fn test_check_config_changed_detects_write() {
     assert_eq!(mgr.list_servers().len(), 1);
 
     // Second check should not trigger again
+    assert!(!mgr.check_config_changed());
+}
+
+/// BUG-20261104-359 回归钉：同刻改写（mtime 钉回旧值）必须检出——
+/// Dashboard `save_mcp_config` 直写与热更检查撞同刻（Windows 毫秒级粒度
+/// CI 实证同族）时旧 mtime 闸漏检 = 新 server 永不挂载。
+#[test]
+fn test_check_config_changed_detects_same_tick_write() {
+    let tmp = TempDir::new().unwrap();
+    let path = make_config_path(&tmp);
+    write_config(
+        &path,
+        &McpConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("srv-a", "cmd_a")],
+            timeout: 30,
+        },
+    );
+    let mut mgr = McpManager::new(path.clone());
+    assert!(!mgr.check_config_changed());
+    let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    // 同刻外部写：加 srv-b，mtime 钉回旧值。
+    write_config(
+        &path,
+        &McpConfig {
+            enabled: true,
+            servers: vec![
+                ServerConfig::new("srv-a", "cmd_a"),
+                ServerConfig::new("srv-b", "cmd_b"),
+            ],
+            timeout: 30,
+        },
+    );
+    {
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+            .unwrap();
+    }
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        old_mtime,
+        "mtime 已钉回旧值（前置成立）"
+    );
+
+    assert!(
+        mgr.check_config_changed(),
+        "同刻改写（mtime 不变）也必须检出——内容比对不赌钟"
+    );
+    assert_eq!(mgr.list_servers().len(), 2, "srv-b 已被热更加载");
     assert!(!mgr.check_config_changed());
 }
 
@@ -231,7 +280,7 @@ fn test_discover_tools_timeout_nonexistent_command() {
 }
 
 // ---------------------------------------------------------------------------
-// Full mtime → find_new_servers flow
+// Full content-change → find_new_servers flow
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -250,11 +299,10 @@ fn test_mtime_detects_new_server_after_add() {
     );
     let mut mgr = McpManager::new(path);
 
-    // Consume initial mtime
+    // Consume initial content
     assert!(!mgr.check_config_changed());
 
     // Simulate "mcp add" writing a new server to config
-    std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &mgr.config_path().to_path_buf(),
         &McpConfig {
@@ -267,7 +315,7 @@ fn test_mtime_detects_new_server_after_add() {
         },
     );
 
-    // mtime should detect change and reload config
+    // change detection picks up external write and reloads config
     assert!(mgr.check_config_changed());
     assert_eq!(mgr.list_servers().len(), 2);
 
@@ -296,7 +344,6 @@ fn test_find_new_servers_after_mtime_reload() {
     assert!(new_srvs.is_empty(), "srv-a already registered");
 
     // Add srv-b externally
-    std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &mgr.config_path().to_path_buf(),
         &McpConfig {
@@ -438,17 +485,15 @@ fn test_check_config_changed_reload_failure_keeps_mtime() {
     let mut mgr = McpManager::new(path.clone());
     assert!(!mgr.check_config_changed());
 
-    // Corrupt the file on disk (mtime changes), then ask for changes.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Corrupt the file on disk (content changes), then ask for changes.
     std::fs::write(&path, "{ broken json").unwrap();
 
     // Reload fails — check_config_changed must report false AND must NOT
-    // update last_mtime (so the next round retries the broken file).
+    // update last_content (so the next round retries the broken file).
     assert!(!mgr.check_config_changed());
 
-    // Because mtime was not updated, fixing the file makes the next round
-    // detect and reload successfully.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Because the record was not updated, fixing the file makes the next
+    // round detect and reload successfully.
     write_config(
         &path,
         &McpConfig {

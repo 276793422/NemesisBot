@@ -23,6 +23,19 @@ pub struct FallbackEntry {
     pub model: String,
 }
 
+/// 冷却键（级唯一）：`provider.name()` 是 lane 级静态名——factory 对
+/// HttpCompat 各级恒发 `"http-compat"`（anthropic/codex/cli lane 同理），
+/// 同 lane 多级链若直接拿它当 CooldownTracker 键，第一级 retriable 失败
+/// 会把后续各级一并打进冷却，**同一请求内**即被全部 skip，跨模型故障转移
+/// 整链失效；冷却窗口内的新请求更是全链短路、返回不带真实根因的 Unknown。
+/// 键必须区分到「级」：对齐 [`FallbackProvider::resolve_candidates`] 既有
+/// 键形态，lane 名 + 本级生效模型名组合（生产装配各级 model_list 别名互异
+/// → 键互异；同 lane 同模型名多级属配置歧义，本就应避免）。effective_model
+/// 而非 entry.model：entry.model 缺失时请求面真实 Wire 模型才是健康单元。
+fn cooldown_key(entry: &FallbackEntry, effective_model: &str) -> String {
+    format!("{}:{}", entry.provider.name(), effective_model)
+}
+
 /// Record of a single fallback attempt.
 #[derive(Debug, Clone)]
 pub struct FallbackAttempt {
@@ -366,10 +379,13 @@ impl FallbackProvider {
             } else {
                 &entry.model
             };
+            // 冷却键级唯一（同 chat()，见 cooldown_key 注记）。
+            let cooldown_k = cooldown_key(entry, effective_model);
 
-            if !self.cooldown.is_available(provider_name) {
+            if !self.cooldown.is_available(&cooldown_k) {
                 tracing::debug!(
                     provider = provider_name,
+                    model = effective_model,
                     "[Provider] Skipping provider in cooldown during detailed execution"
                 );
                 attempts.push(FallbackAttempt {
@@ -387,7 +403,7 @@ impl FallbackProvider {
                 .await
             {
                 Ok(resp) => {
-                    self.cooldown.mark_success(provider_name);
+                    self.cooldown.mark_success(&cooldown_k);
                     tracing::info!(
                         provider = provider_name,
                         model = effective_model,
@@ -409,7 +425,7 @@ impl FallbackProvider {
                     let reason = err.reason();
                     // J1：服务端 Retry-After 优先于公式退避（hint 为 None 时公式生效）。
                     self.cooldown
-                        .mark_failure(provider_name, reason, err.retry_after_hint());
+                        .mark_failure(&cooldown_k, reason, err.retry_after_hint());
                     let error_msg = format!("{}", err);
                     tracing::warn!(
                         provider = provider_name,
@@ -476,15 +492,6 @@ impl LLMProvider for FallbackProvider {
         for entry in &self.chain {
             let provider_name = entry.provider.name();
 
-            // Skip providers in cooldown
-            if !self.cooldown.is_available(provider_name) {
-                tracing::debug!(
-                    provider = provider_name,
-                    "[Provider] Skipping provider in cooldown"
-                );
-                continue;
-            }
-
             // BUG-20261031-225 根修：每级恒用**本级装配模型名**（entry.model），
             // 级名缺失才退调用方请求名。旧语义（调用方非空名覆盖所有级）在
             // 生产装配形态下恒错：agent_factory fallback_to 链每级带自己的
@@ -498,6 +505,18 @@ impl LLMProvider for FallbackProvider {
             } else {
                 &entry.model
             };
+            // 冷却键级唯一（lane 名恒同，不能单独做键——见 cooldown_key 注记）。
+            let cooldown_k = cooldown_key(entry, effective_model);
+
+            // Skip providers in cooldown
+            if !self.cooldown.is_available(&cooldown_k) {
+                tracing::debug!(
+                    provider = provider_name,
+                    model = effective_model,
+                    "[Provider] Skipping provider in cooldown"
+                );
+                continue;
+            }
 
             match entry
                 .provider
@@ -505,14 +524,14 @@ impl LLMProvider for FallbackProvider {
                 .await
             {
                 Ok(resp) => {
-                    self.cooldown.mark_success(provider_name);
+                    self.cooldown.mark_success(&cooldown_k);
                     return Ok(resp);
                 }
                 Err(err) => {
                     let reason = err.reason();
                     // J1：同 detailed 路径——Retry-After hint 优先于公式退避。
                     self.cooldown
-                        .mark_failure(provider_name, reason, err.retry_after_hint());
+                        .mark_failure(&cooldown_k, reason, err.retry_after_hint());
 
                     // Classify the error for additional context
                     let error_msg = format!("{}", err);

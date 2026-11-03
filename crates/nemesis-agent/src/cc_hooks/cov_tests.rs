@@ -229,11 +229,11 @@ fn load_from_dir_fail_open_semantics() {
 // spawn_notification 无 runtime 降级
 // ---------------------------------------------------------------------------
 
-/// 构造绑定盘上 hooks.json 的桥（seen_mtime 置 None 强制首检走重载）。
+/// 构造绑定盘上 hooks.json 的桥（seen_raw 置 None（未记账）强制首检走重载）。
 fn hot_bridge(json: &str, hooks_json: &std::path::Path) -> CcHookBridge {
     let mut b = CcHookBridge::from_json(json, std::env::temp_dir()).expect("parse");
     b.hooks_path = Some(hooks_json.to_path_buf());
-    *b.seen_mtime.lock().unwrap() = None;
+    *b.seen_raw.lock().unwrap() = None;
     b
 }
 
@@ -242,7 +242,7 @@ fn current_events_hot_reload_three_branches() {
     let dir = tempfile::tempdir().unwrap();
     let hooks_json = dir.path().join("hooks.json");
 
-    // ① mtime 变化 + 解析成功 → 原子换装（脚本计数可见）。
+    // ① 内容变化 + 解析成功 → 原子换装（脚本计数可见）。
     std::fs::write(
         &hooks_json,
         r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"cmd /C echo hi"}]}]}}"#,
@@ -252,14 +252,12 @@ fn current_events_hot_reload_three_branches() {
     let ev = bridge.current_events();
     assert_eq!(ev.total_scripts(), 1, "reloaded config takes effect");
 
-    // ② mtime 再变 + 解析失败 → 保留旧配置（fail-open 保旧）。
-    *bridge.seen_mtime.lock().unwrap() = Some(std::time::SystemTime::UNIX_EPOCH);
+    // ② 内容再变 + 解析失败 → 保留旧配置（fail-open 保旧）。
     std::fs::write(&hooks_json, "{broken").unwrap();
     let ev = bridge.current_events();
     assert_eq!(ev.total_scripts(), 1, "parse failure keeps old config");
 
     // ③ 文件消失 → 换装为空 = 事实注销。
-    *bridge.seen_mtime.lock().unwrap() = Some(std::time::SystemTime::UNIX_EPOCH);
     std::fs::remove_file(&hooks_json).unwrap();
     let ev = bridge.current_events();
     assert_eq!(ev.total_scripts(), 0, "file gone = deactivated");

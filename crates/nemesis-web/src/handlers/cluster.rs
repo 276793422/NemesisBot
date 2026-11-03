@@ -616,6 +616,9 @@ fn roaming_mandate_payload(workspace: &Path) -> Result<serde_json::Value, String
                         nemesis_cluster::roaming::trust::MandateKeyVerdict::Pinned(_) => "pinned",
                         nemesis_cluster::roaming::trust::MandateKeyVerdict::Revoked => "revoked",
                         nemesis_cluster::roaming::trust::MandateKeyVerdict::Absent => "absent",
+                        nemesis_cluster::roaming::trust::MandateKeyVerdict::BookUnreadable => {
+                            "unreadable"
+                        }
                     };
                 states.insert(
                     node_id.clone(),
