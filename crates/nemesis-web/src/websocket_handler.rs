@@ -386,7 +386,10 @@ pub async fn handle_websocket_upgrade(
         // Dashboard path: verify the dashboard token (if configured).
         if !state.auth_token.is_empty() {
             let token = query.token.unwrap_or_default();
-            if token != state.auth_token {
+            // BUG-20261104-355：恒时比较（F6 纵深防御覆盖缺口——REST 面走
+            // verify_token 常数时间形态，WS 升级面三处漏跟）。expected 非空
+            // （上行闸），verify_token 语义与 `==` 逐字节等价。
+            if !crate::api_handlers::verify_token(&token, &state.auth_token) {
                 tracing::warn!("[WebSocket] Authentication failed");
                 return axum::http::StatusCode::UNAUTHORIZED.into_response();
             }

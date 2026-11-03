@@ -204,9 +204,11 @@ pub(crate) async fn handle_pty_upgrade(
         return (axum::http::StatusCode::NOT_FOUND, "terminal disabled").into_response();
     };
     // token 闸（镜像 websocket_handler 主 WS 语义：未配 token = 放行）。
+    // BUG-20261104-355：恒时比较（F6 纵深防御覆盖缺口，expected 非空下
+    // verify_token 语义与 `==` 逐字节等价）。
     if !state.auth_token.is_empty() {
         let token = query.token.unwrap_or_default();
-        if token != state.auth_token {
+        if !crate::api_handlers::verify_token(&token, &state.auth_token) {
             tracing::warn!("[Pty] WebSocket authentication failed");
             return (axum::http::StatusCode::UNAUTHORIZED, "unauthorized").into_response();
         }
