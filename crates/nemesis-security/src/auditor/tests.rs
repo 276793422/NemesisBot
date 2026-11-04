@@ -3474,3 +3474,84 @@ fn l01_f3_memory_rule_flag_gate_e2e() {
     );
     assert_eq!(auditor.pending_count(), 1, "fall through 后必须入 pending");
 }
+
+// BUG-20261104-386：audit.jsonl 追加的行原子性——`writeln!` 是正文与
+// "\n" 两次 write，append 模式下每片段独立定位 EOF，多线程安全判定并发
+// 落审计可把别人的行插进本行中间粘成一行；读端 `get_audit_log` 对 parse
+// 失败行 trace 级静默跳过 = 审计事件丢失（人工放行 CRITICAL 的 approved
+// 事件恰在此链，A-F5 可追溯性要求不得丢）。修复 = 整行（含换行）单次
+// write_all（O_APPEND / FILE_APPEND_DATA 每次 write 定位原子）。与
+// chat_log R100 同族。
+//
+// 真红注记：撕裂是时序竞态，旧代码下本测试红是概率性的（长 reason +
+// 多线程 + 高频次提高命中面）；修复后按 OS 追加原子性应当确定性绿。
+#[test]
+fn b386_concurrent_audit_jsonl_appends_never_tear() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditorConfig {
+        audit_log_file_enabled: false,
+        ..Default::default()
+    };
+    let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+    auditor.set_audit_jsonl_log(true, dir.path().to_str().unwrap().to_string());
+
+    const THREADS: usize = 8;
+    const EVENTS: usize = 100;
+    // 长 reason（≈420B）加宽旧实现两个 write 片段之间被插入的窗口。
+    let filler = "x".repeat(400);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let mut handles = Vec::new();
+    for t in 0..THREADS {
+        let barrier = barrier.clone();
+        let auditor = auditor.clone();
+        let filler = filler.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..EVENTS {
+                auditor.log_audit_event(&AuditEvent {
+                    event_id: format!("b386-t{t}-{i}"),
+                    request: OperationRequest {
+                        id: format!("req-{t}-{i}"),
+                        op_type: OperationType::ProcessExec,
+                        danger_level: DangerLevel::High,
+                        user: "b386".to_string(),
+                        source: "test".to_string(),
+                        target: format!("echo {t}-{i}"),
+                        timestamp: None,
+                        ..Default::default()
+                    },
+                    decision: "allowed".to_string(),
+                    reason: format!("t{t}-e{i} {filler}"),
+                    timestamp: "2026-11-04T00:00:00Z".to_string(),
+                    policy_rule: "b386_tear_lock".to_string(),
+                });
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // 断言一：读回条数恰好（粘行 = 两事件粘一行 parse 失败静默丢条）。
+    let all = get_audit_log(&auditor, &AuditFilter::default());
+    assert_eq!(
+        all.len(),
+        THREADS * EVENTS,
+        "并发审计事件不得粘行丢失（预期 {}，实际 {}）",
+        THREADS * EVENTS,
+        all.len()
+    );
+    // 断言二：逐条 reason 两端完整（粘行截断会丢尾部 filler）。
+    for ev in &all {
+        assert!(
+            ev.reason.starts_with('t') && ev.reason.contains("-e"),
+            "事件 reason 形态异常 = 撕裂: {:?}",
+            &ev.reason[..ev.reason.len().min(20)]
+        );
+        assert!(
+            ev.reason.ends_with(&filler),
+            "事件 reason 尾部缺失 = 撕裂: {}",
+            ev.event_id
+        );
+    }
+}

@@ -132,3 +132,54 @@ fn list_skips_corrupt_lines() {
     assert_eq!(all.len(), 2, "损坏行跳过不中断");
     assert_eq!(all[0].receipt_id, "RCPT-1000-0002");
 }
+
+// BUG-20261104-386：回执 jsonl 追加的行原子性——`append_receipt` 无锁，
+// 多会话 agent loop 并发执行 connector 工具时 `writeln!`（正文与 "\n" 两
+// 次 write）可粘行，list_receipts 对损坏行 warn + 跳过 = 回执（可撤销
+// 凭据）静默丢失 → 撤销面缺口。修复 = 整行（含换行）单次 write_all
+// （O_APPEND / FILE_APPEND_DATA 每次 write 定位原子）。与 auditor
+// audit.jsonl / chat_log R100 同族。真红是概率性的（竞态），修复后确定性绿。
+#[test]
+fn b386_concurrent_receipt_appends_never_tear() {
+    let ws = tmpws();
+    const THREADS: usize = 8;
+    const N: usize = 100;
+    // 长 summary（≈220B）加宽旧实现两个 write 片段之间被插入的窗口。
+    let filler = "y".repeat(200);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let mut handles = Vec::new();
+    for t in 0..THREADS {
+        let barrier = barrier.clone();
+        let ws_path = ws.path().to_path_buf();
+        let filler = filler.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..N {
+                let n = (t * N + i) as u64;
+                let mut r = sample_receipt(n, "paper-broker");
+                r.summary = format!("第 {n} 笔 {}", filler);
+                append_receipt(&ws_path, &r).expect("append");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let all = list_receipts(ws.path(), THREADS * N, None).expect("list");
+    assert_eq!(
+        all.len(),
+        THREADS * N,
+        "并发回执不得粘行丢失（预期 {}，实际 {}）",
+        THREADS * N,
+        all.len()
+    );
+    // 逐条 summary 尾部完整（粘行截断会丢 filler）。
+    for r in &all {
+        assert!(
+            r.summary.ends_with(&filler),
+            "回执 summary 尾部缺失 = 撕裂: {}",
+            r.receipt_id
+        );
+    }
+}

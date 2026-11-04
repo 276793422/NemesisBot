@@ -104,7 +104,14 @@ pub fn append_receipt(workspace: &Path, r: &Receipt) -> Result<(), String> {
         .open(&path)
         .map_err(|e| format!("打开回执文件失败 {}: {e}", path.display()))?;
     let line = serde_json::to_string(r).map_err(|e| format!("序列化回执失败: {e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("写回执失败: {e}"))?;
+    // BUG-20261104-386：整行（含换行）单次 write_all 行原子性——多会话
+    // agent loop 并发执行 connector 工具时无锁 append 的 `writeln!`（正文
+    // 与 "\n" 两次 write）可粘行，回执（可撤销凭据）读端损坏行静默跳过 =
+    // 撤销面缺口。与 auditor audit.jsonl（chat_log R100 同族）同修法。
+    let mut buf = line;
+    buf.push('\n');
+    f.write_all(buf.as_bytes())
+        .map_err(|e| format!("写回执失败: {e}"))?;
     Ok(())
 }
 
