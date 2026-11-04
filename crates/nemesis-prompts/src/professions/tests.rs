@@ -5,7 +5,7 @@ use super::meta::{
     CATALOG, SlugError, find_builtin, normalize_slug, split_slug, tier_allows, validate_slug,
 };
 use super::render::{SuffixRender, builtin_method, render_profession_suffix};
-use crate::board::planner_system_prompt;
+use crate::board::{REVIEW_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT_FAST, planner_system_prompt};
 use crate::professions::{CLUSTER_WORKER_CONTRACT, PLANNER_METHOD};
 
 // ---------------------------------------------------------------------------
@@ -455,6 +455,90 @@ fn worker_contract_carries_aor_discipline_sections() {
         assert!(
             CLUSTER_WORKER_CONTRACT.contains(kw),
             "cluster_worker.md 缺 AOR 纪律关键词 {kw}"
+        );
+    }
+}
+
+/// 失败诊断四态（2026-11-04）：worker 侧排查结论四态 + 三条铁律的防误删
+/// 关键词（本文件惯例：非字节快照）。
+#[test]
+fn worker_contract_carries_diagnosis_outcome_states() {
+    for kw in [
+        "失败诊断四态",
+        "未重现",
+        "取证缺口",
+        "路径未达",
+        "假设排除",
+        "互不等价",
+        "不构成修复证据",
+    ] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺四态诊断关键词 {kw}"
+        );
+    }
+    // 四态各自都附「不代表/不等于」边界——防互换表述的语义锚。
+    for kw in ["不代表", "不等于"] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺四态边界措辞 {kw}"
+        );
+    }
+}
+
+/// 声明分类纪律（2026-11-04）：worker 侧三类声明与 dev 契约指针行、评审
+/// 侧配对条款（REVIEW_SYSTEM_PROMPT/FAST 双档）成对在场——任一侧缺席=
+/// 声明契约断链（worker 标了没人认，或评审被要求认无人标的类型）。
+#[test]
+fn statement_classification_paired_on_worker_and_reviewer() {
+    // worker 侧：三类 + 成立条件/效力锚。
+    for kw in [
+        "声明分类纪律",
+        "口径援引",
+        "取舍留痕",
+        "修复断言",
+        "不等于实现正确",
+        "留痕不豁免",
+        "可重放的证据",
+    ] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺声明分类关键词 {kw}"
+        );
+    }
+    assert!(
+        CLUSTER_WORKER_CONTRACT.contains("按最严的一类"),
+        "归类不明陈述须从严按修复断言对待"
+    );
+    // dev 契约指针行：指向集群契约的两节纪律（dev:cpp 共享同一正文，
+    // 查 dev 即覆盖）。
+    let dev_contract = find_builtin("dev").expect("dev 内置").contract;
+    assert!(
+        dev_contract.contains("口径援引 / 取舍留痕 / 修复断言"),
+        "dev.md 缺声明分类指针"
+    );
+    assert!(
+        dev_contract.contains("失败诊断四态"),
+        "dev.md 缺四态诊断指针"
+    );
+    // 评审侧：双档纪律同步（判定纪律 10/11）。
+    for prompt in [REVIEW_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT_FAST] {
+        for kw in [
+            "声明归类",
+            "取舍留痕",
+            "未标注的定性陈述",
+            "从严按",
+            "缺口清账",
+        ] {
+            assert!(prompt.contains(kw), "验收提示词缺声明/清账纪律关键词 {kw}");
+        }
+        assert!(
+            prompt.contains("gap_closure"),
+            "验收提示词 JSON 形状缺 gap_closure 字段"
+        );
+        assert!(
+            prompt.contains("verdict 不得为 PASS"),
+            "验收提示词缺清账 PASS 闸表述"
         );
     }
 }

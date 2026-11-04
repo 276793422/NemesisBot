@@ -218,6 +218,9 @@ pub(crate) async fn run_review_llm_vision(
     system_prompt: &str,
     prompt: &mut String,
     images: &[ReviewImage],
+    // 缺口清账清单语境：解析失败回灌重试时显式带上（整 prompt 被重试文
+    // 本替换，注入段不在场；prior 为空 = 首评，与旧行为字节一致）。
+    prior_gaps: &[nemesis_board::LedgerItem],
 ) -> Result<nemesis_board::ReviewOutput, String> {
     use nemesis_providers::types::{
         ChatOptions, ContentPart, ImageSource, Message, MessageContent,
@@ -268,7 +271,11 @@ pub(crate) async fn run_review_llm_vision(
         match nemesis_board::parse_review(&resp.content) {
             Ok(out) => return Ok(out),
             Err(e) => {
-                *prompt = nemesis_board::review::build_retry_prompt(&resp.content, &e);
+                *prompt = nemesis_board::review::build_gap_closure_retry_prompt(
+                    &resp.content,
+                    &e,
+                    prior_gaps,
+                );
                 last_err = e.message;
             }
         }

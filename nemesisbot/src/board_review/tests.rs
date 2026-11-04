@@ -524,11 +524,12 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
     assert!(reviewed, "短路 FAIL 应完成评审闭环（非跳过）");
 
     // 明细评论落库：逐条差距条目可读（批一c：锚点短路输出恒带 criteria，
-    // 差距评论为条目渲染形态——失败锚点原文在条目行，实核明细在证据行）。
+    // 差距评论为缺口清账条目形态——失败锚点原文在 G 条目行，实核明细在
+    // 条目内联证据段）。
     let comments = deps.store.list_comments(issue.id).unwrap();
     let fail = comments
         .iter()
-        .find(|c| c.content.contains("逐条差距"))
+        .find(|c| c.content.contains("【评审差距】"))
         .expect("必须有锚点失败差距评论（短路产物）");
     assert!(
         fail.content
@@ -632,7 +633,7 @@ async fn task_card_echo_is_not_delivery_evidence_for_anchors() {
 
     let comments = deps.store.list_comments(issue.id).unwrap();
     assert!(
-        comments.iter().any(|c| c.content.contains("逐条差距")),
+        comments.iter().any(|c| c.content.contains("【评审差距】")),
         "回显不得满足锚点：必须落失败差距评论"
     );
     assert!(
@@ -1836,6 +1837,7 @@ fn f3_output(verdict: nemesis_board::ReviewVerdict, gap: &str) -> nemesis_board:
         evidence_request: None,
         criteria: Vec::new(),
         unknowns: Vec::new(),
+        gap_closure: Vec::new(),
     }
 }
 
@@ -1992,6 +1994,7 @@ fn pv(verdict: ReviewVerdict) -> nemesis_board::ReviewOutput {
         evidence_request: None,
         criteria: Vec::new(),
         unknowns: Vec::new(),
+        gap_closure: Vec::new(),
     }
 }
 
@@ -2929,6 +2932,7 @@ fn reasons_skipped_when_gap_carries_details() {
         evidence_request: None,
         criteria: Vec::new(),
         unknowns: Vec::new(),
+        gap_closure: Vec::new(),
     };
     let mut c1 = String::from("head");
     super::append_reasons_unless_gapped(&mut c1, &mk("客观锚点检查失败（明细在场）"));
@@ -5196,6 +5200,7 @@ async fn sweep_run_review_llm_call_failure_fails_immediately() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect_err("调用失败必须报错");
@@ -5228,6 +5233,7 @@ async fn sweep_run_review_llm_exhausts_three_parse_rounds() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect_err("3 轮解析全败必须报错");
@@ -5260,6 +5266,7 @@ async fn sweep_run_review_llm_retries_then_succeeds_and_readonly_mode() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect("重试后必须成功");
@@ -5289,6 +5296,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect("单路必须成功");
@@ -5316,6 +5324,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect("多数票聚合必须成功");
@@ -5339,6 +5348,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect_err("全路解析失败必须报错");
@@ -5367,6 +5377,7 @@ async fn sweep_run_review_panel_overload_rejects_whole_batch_without_llm() {
         nemesis_prompts::board::ReviewTier::Thorough,
         None,
         None,
+        &[],
     )
     .await
     .expect_err("字节超限必须全批拒绝");

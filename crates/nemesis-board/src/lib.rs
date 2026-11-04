@@ -101,9 +101,11 @@ pub use planner::{
 };
 pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, TASK_CARD_HEADER, parse_delivery_report};
 pub use review::{
-    CriterionVerdict, ExperienceNote, REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError,
-    ReviewVerdict, build_review_user_prompt, build_review_user_prompt_with_limits, parse_review,
-    render_gap_with_criteria, selfcheck_request_text, strip_directive_lines,
+    CriterionVerdict, ExperienceNote, GAP_LEDGER_MARKER, GapDisposition, GapStatus, LedgerItem,
+    REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError, ReviewVerdict, build_review_user_prompt,
+    build_review_user_prompt_with_limits, check_gap_closure, parse_gap_ledger, parse_review,
+    render_gap_ledger_prompt, render_gap_with_criteria, render_gap_with_ledger,
+    selfcheck_request_text, strip_directive_lines,
 };
 pub use service::BoardService;
 pub use state_machine::{can_transition, validate_transition};

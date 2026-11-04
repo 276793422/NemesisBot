@@ -1087,6 +1087,20 @@ async fn review_issue(
         })
         .collect();
 
+    // 跨轮缺口清账：最近一份本节点评审落下的缺口清单（❌ 重派评论的
+    // 【评审差距】标记段）= 本轮待清账缺口。作者限定评审节点——worker
+    // 汇报/讨论线程里出现同形标记不采信（防伪造清单注入「上一轮评审已
+    // 判定」语境）。无标记（首评/旧格式评论）= 空清单零注入。
+    let prior_gaps: Vec<nemesis_board::LedgerItem> = comments
+        .iter()
+        .rev()
+        .filter(|c| c.author.kind == "agent" && c.author.id == self_node_id)
+        .find_map(|c| {
+            let ledger = nemesis_board::parse_gap_ledger(&c.content);
+            (!ledger.is_empty()).then_some(ledger)
+        })
+        .unwrap_or_default();
+
     let round = dispatches.len().saturating_sub(1) as u64;
 
     // 转人工评论的 @人对象 = 创建者是人（admin）时 @ 创建者（impl-plan
@@ -1114,6 +1128,7 @@ async fn review_issue(
         &worker_report,
         &thread,
         nemesis_board::report::MAX_INLINE_BYTES + 8 * 1024,
+        &prior_gaps,
     );
     // 父单口径注入（2026-10-17 NB-123 误升级根修）：返工单/子单被派的差距
     // 常引用父单验收标准的语义（如某条 AC「以台账+待人工签核清单为口径，
@@ -1587,15 +1602,33 @@ async fn review_issue(
                         &vision_system,
                         &mut vision_prompt,
                         &review_images,
+                        &prior_gaps,
                     )
                     .await
                     {
                         Ok(out) => {
-                            info!(
-                                "[BoardReview] issue {issue_id} vision 评审出结论（{} 张附图）",
-                                review_images.len()
-                            );
-                            Some(out)
+                            // 缺口清账机械闸（视觉臂）：视觉 prompt 是基础
+                            // prompt 的克隆，清单注入在场——产出却没过对账
+                            // 校验 = 视觉评审本次不可靠，按通道不可用处理
+                            // 回落文本评审（文本臂有重试闸兜底）。
+                            if let Err(e) = nemesis_board::check_gap_closure(&out, &prior_gaps) {
+                                warn!(
+                                    "[BoardReview] issue {issue_id} vision 评审缺口对账未过 → 回落文本评审：{}",
+                                    e.message
+                                );
+                                prompt.push_str(&format!(
+                                    "\n## 交付图像（视觉评审不可用）\n{} 张交付图像已取回 master 本地：{paths_note}。自动视觉评审本次不可用（{}），请按文本证据评审；图像请转人工查看。\n",
+                                    review_images.len(),
+                                    e.message
+                                ));
+                                None
+                            } else {
+                                info!(
+                                    "[BoardReview] issue {issue_id} vision 评审出结论（{} 张附图）",
+                                    review_images.len()
+                                );
+                                Some(out)
+                            }
                         }
                         Err(e) => {
                             warn!(
@@ -1651,6 +1684,8 @@ async fn review_issue(
             need_evidence: None,
             evidence_request: None,
             unknowns: Vec::new(),
+            // 锚点短路无上一轮清单对账面（客观核验，非 LLM 输出）。
+            gap_closure: Vec::new(),
         }
     } else if let Some(out) = vision_output {
         out
@@ -1697,6 +1732,7 @@ async fn review_issue(
             review_tier,
             review_lens,
             lens_reference.as_deref(),
+            &prior_gaps,
         )
         .await
         {
@@ -2662,7 +2698,9 @@ async fn review_issue(
             // UNSURE（无限模式）无 gap——给诚实占位意见，重派 prompt 不空转。
             // AOR 批一c §③：带逐条判定时渲染条目清单（worker 知道具体哪条
             // 没过、缺什么证据）；旧格式/无条目回落 gap 原文（行为不变）。
-            let gap = nemesis_board::render_gap_with_criteria(&output);
+            // 缺口清账：上一轮清单里未声明闭合的条目结转 + 本轮新增条目
+            // 一起重新编号（parse/render 互逆，下轮评审从评论解析回清单）。
+            let gap = nemesis_board::render_gap_with_ledger(&output, &prior_gaps);
             let gap = if gap.is_empty() {
                 "验收 agent 无法定案（UNSURE）。请对照验收标准逐条自查，补充客观证据后重新汇报。"
                     .to_string()
@@ -2997,6 +3035,8 @@ async fn run_review_llm(
     // 端预取的禁令节引用（只进 constraint 镜；None = 历史行为字节等价）。
     lens: Option<&'static nemesis_prompts::board::ReviewLens>,
     lens_reference: Option<&str>,
+    // 缺口清账机械闸：上一轮落下的编号清单（空 = 首评，只查虚构编号）。
+    prior_gaps: &[nemesis_board::LedgerItem],
 ) -> Result<nemesis_board::ReviewOutput, String> {
     // 评审分层（gap ②）：Thorough = 历史 REVIEW_SYSTEM_PROMPT 字节一致；
     // Fast = 精简档（保留注入防线与三态 JSON 契约，关取证/经验）。
@@ -3044,11 +3084,27 @@ async fn run_review_llm(
             ));
         }
         match nemesis_board::parse_review(&raw) {
-            Ok(out) => return Ok(out),
+            Ok(out) => {
+                // 缺口清账机械闸（改进 1）：清单非空时上一轮缺口必须逐条
+                // 声明归宿、closed/obsolete 必须附证据、PASS 与未清账缺口
+                // 互斥——违例与解析失败同通道回灌重试；重试 prompt 显式
+                // 带上清单（错误消息只报编号不带条目原文，注入段已被重试
+                // 文本替换，没有清单模型无法对着内容自纠）；3 轮耗尽 =
+                // 评审自身失败 → 转人工。
+                if let Err(e) = nemesis_board::check_gap_closure(&out, prior_gaps) {
+                    *prompt =
+                        nemesis_board::review::build_gap_closure_retry_prompt(&raw, &e, prior_gaps);
+                    last_err = e.message;
+                    continue;
+                }
+                return Ok(out);
+            }
             Err(e) => {
-                // 限定路径：根导出的 build_retry_prompt 是 planner 的
-                //（review 同名函数不进根，避免撞名歧义）。
-                *prompt = nemesis_board::review::build_retry_prompt(&raw, &e);
+                // 解析失败回灌同样带清单语境：清单非空时 gap_closure 是
+                // JSON 契约的一部分，重试需要契约要求文本与条目原文才能
+                // 一次性自纠（prior 为空时与旧 build_retry_prompt 字节一致）。
+                *prompt =
+                    nemesis_board::review::build_gap_closure_retry_prompt(&raw, &e, prior_gaps);
                 last_err = e.message;
             }
         }
@@ -3111,6 +3167,8 @@ async fn run_review_panel(
     tier: nemesis_prompts::board::ReviewTier,
     profession_lens: Option<&'static nemesis_prompts::board::ReviewLens>,
     lens_reference: Option<&str>,
+    // 缺口清账机械闸的清单来源（透传给每路检查员；空 = 首评）。
+    prior_gaps: &[nemesis_board::LedgerItem],
 ) -> Result<nemesis_board::ReviewOutput, String> {
     let checkers = checkers.clamp(1, MAX_REVIEW_CHECKERS) as usize;
     if checkers == 1 {
@@ -3122,6 +3180,7 @@ async fn run_review_panel(
             tier,
             profession_lens,
             lens_reference,
+            prior_gaps,
         )
         .await;
     }
@@ -3131,6 +3190,8 @@ async fn run_review_panel(
         max_input_bytes: PANEL_MAX_INPUT_BYTES,
     });
     let mut tasks = Vec::with_capacity(checkers);
+    // 'static 闭包约束：清单按路克隆进任务（条目各 ≤512B，量级可忽略）。
+    let prior_owned = prior_gaps.to_vec();
     for i in 0..checkers {
         let lens = nemesis_prompts::board::checker_lens_for_index(i);
         let reference = if lens.id == nemesis_prompts::board::CONSTRAINT_LENS_ID {
@@ -3138,6 +3199,7 @@ async fn run_review_panel(
         } else {
             None
         };
+        let prior = prior_owned.clone();
         let prompt = format!(
             "{base_prompt}\n\n（你是第 {} 号检查员：请独立评审，不受其他检查员意见影响）",
             i + 1
@@ -3153,6 +3215,7 @@ async fn run_review_panel(
                 tier,
                 Some(lens),
                 reference.as_deref(),
+                &prior,
             )
             .await
         });
@@ -3288,6 +3351,13 @@ fn aggregate_verdicts(
         .find(|o| !o.criteria.is_empty())
         .map(|o| o.criteria.clone())
         .unwrap_or_default();
+    // 缺口清账聚合：同 criteria 策略取首个非空（对账是逐编号声明，按条
+    // 多数决脆弱；多数票下取最完整一份与条目清单同源一致）。
+    let gap_closure = outputs
+        .iter()
+        .find(|o| !o.gap_closure.is_empty())
+        .map(|o| o.gap_closure.clone())
+        .unwrap_or_default();
     let mut unknowns = Vec::new();
     for o in &outputs {
         for u in &o.unknowns {
@@ -3316,6 +3386,7 @@ fn aggregate_verdicts(
         evidence_request,
         criteria,
         unknowns,
+        gap_closure,
     }
 }
 
@@ -4422,6 +4493,9 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         // 汇总段），不带入。
         &[],
         CLOSURE_WORKER_REPORT_MAX_BYTES,
+        // 父单收口不走跨轮缺口清账（子单评审的清单语义不适用于父单汇总
+        // 面；返工承接有自己的轮数预算）。
+        &[],
     );
 
     // ---- 客观锚点双检（P2/B1，父单同款）：先便宜后昂贵 ----
@@ -4576,6 +4650,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             need_evidence: None,
             evidence_request: None,
             unknowns: Vec::new(),
+            gap_closure: Vec::new(),
         }
     } else {
         if !anchor_results.is_empty() {
@@ -4612,6 +4687,8 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
             review_lens,
             lens_reference.as_deref(),
+            // 父单收口不走跨轮缺口清账（见 prompt 构建处注释）。
+            &[],
         )
         .await
         {
@@ -5427,6 +5504,8 @@ async fn review_project_completion(
         &summary,
         &[],
         CLOSURE_WORKER_REPORT_MAX_BYTES,
+        // 项目收口不走跨轮缺口清账（同父单口径）。
+        &[],
     );
 
     // ---- 客观锚点双检（父单/子单同款）：workspace 根，先便宜后昂贵 ----
@@ -5559,6 +5638,7 @@ async fn review_project_completion(
             need_evidence: None,
             evidence_request: None,
             unknowns: Vec::new(),
+            gap_closure: Vec::new(),
         }
     } else {
         if !anchor_results.is_empty() {
@@ -5589,6 +5669,8 @@ async fn review_project_completion(
             nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
             None,
             lens_reference.as_deref(),
+            // 项目收口不走跨轮缺口清账（同父单口径）。
+            &[],
         )
         .await
         {
