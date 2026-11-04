@@ -5257,3 +5257,379 @@ async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
     assert_eq!(after.state, ExecutionState::Waiting);
     assert!(engine.cancel_tokens.is_empty());
 }
+
+/// 多等待同层（BUG-20261103-349）：human_review 与 sub_workflow 并联（无
+/// 依赖）同时 Waiting。resume human_review 后，公共尾段 schedule_resume
+/// **不得整体重跑**仍 Waiting 的 sub_workflow 节点——SubWorkflowNodeExecutor
+/// 每次 execute 都 spawn 新子执行，重跑 = 旧子执行孤儿化（永停 Waiting、
+/// 重启被 restore 复活成幽灵执行）+ 路由锚 metadata.execution_id 被换新。
+/// 旧实现只堵了「resume 目标是 sub_workflow」的臂（engine.rs 早期收口），
+/// 目标是同层其他节点时尾段照样重跑兄弟 sub_workflow 节点。
+#[tokio::test]
+async fn test_multi_waiting_subworkflow_sibling_not_respawned() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "mw_child_wf",
+            vec![make_node("review", "human_review", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "mw_parent_wf",
+            vec![
+                make_node("review_a", "human_review", vec![]),
+                make_node("call", "sub_workflow", vec![]),
+            ],
+        ))
+        .unwrap();
+    {
+        let mut wf = engine.workflows.get_mut("mw_parent_wf").unwrap();
+        wf.nodes[1]
+            .config
+            .insert("workflow".to_string(), serde_json::json!("mw_child_wf"));
+    }
+
+    let parent = engine
+        .run("mw_parent_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Waiting);
+    assert_eq!(
+        parent.node_results["review_a"].state,
+        ExecutionState::Waiting
+    );
+    assert_eq!(parent.node_results["call"].state, ExecutionState::Waiting);
+    let child_id = parent.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        engine.executions.read().await.len(),
+        2,
+        "父 + 子 = 2 个执行"
+    );
+
+    // resume human_review 分支（定向，多等待集合 loud 拒绝无定向请求）：
+    // sub_workflow 兄弟节点保持原样等待，不重跑、不 spawn 新子执行。
+    let resumed = engine
+        .resume_execution_node(
+            &parent.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+            Some("review_a"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.state,
+        ExecutionState::Waiting,
+        "兄弟审批仍在等待，父执行必须再次暂停"
+    );
+    assert_eq!(
+        resumed.node_results["review_a"].state,
+        ExecutionState::Completed
+    );
+    assert_eq!(resumed.node_results["call"].state, ExecutionState::Waiting);
+    let anchor_after = resumed.node_results["call"].metadata["execution_id"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        anchor_after, child_id,
+        "路由锚不得被换新（重跑会 spawn 新子执行并覆盖 execution_id）"
+    );
+    assert_eq!(
+        engine.executions.read().await.len(),
+        2,
+        "不得孤儿化旧子执行（重跑形态会变 3：父 + 孤儿 + 新子）"
+    );
+    let child = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child.state, ExecutionState::Waiting, "原子执行保持等待");
+
+    // resume sub_workflow 分支：路由进原子执行，评审落地后全链走完。
+    let finished = engine
+        .resume_execution(
+            &parent.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(finished.state, ExecutionState::Completed);
+    assert_eq!(
+        finished.node_results["call"].state,
+        ExecutionState::Completed
+    );
+    let child = engine.get_execution(&child_id).await.unwrap();
+    assert_eq!(child.state, ExecutionState::Completed, "评审落在原子执行上");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261104-382：sub_workflow 跨 workflow 引用环检测（注册期闸）
+// ---------------------------------------------------------------------------
+
+fn make_sub_node(id: &str, target: &str, depends_on: Vec<&str>) -> NodeDef {
+    let mut node = make_node(id, "sub_workflow", depends_on);
+    node.config
+        .insert("workflow".to_string(), serde_json::json!(target));
+    node
+}
+
+fn make_parallel_with_sub_child(id: &str, target: &str) -> NodeDef {
+    let mut node = make_node(id, "parallel", vec![]);
+    node.config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            {"id": "c1", "node_type": "sub_workflow", "config": {"workflow": target}}
+        ]),
+    );
+    node
+}
+
+#[tokio::test]
+async fn b382_self_reference_cycle_rejected() {
+    let engine = WorkflowEngine::new();
+    let wf = make_workflow("solo", vec![make_sub_node("call", "solo", vec![])]);
+    let err = engine.register_workflow(wf).unwrap_err().to_string();
+    assert!(err.contains("环"), "错误应点名环：{err}");
+    assert!(err.contains("solo"), "错误应点名 workflow 名：{err}");
+    // 注册被拒后引擎里没有该 workflow。
+    assert!(engine.get_workflow("solo").is_none());
+}
+
+#[tokio::test]
+async fn b382_two_workflow_cycle_rejected_on_second_register() {
+    let engine = WorkflowEngine::new();
+    // A 先注册（引用尚未注册的 B——放行，既有语义）。
+    engine
+        .register_workflow(make_workflow(
+            "wf_a",
+            vec![make_sub_node("call", "wf_b", vec![])],
+        ))
+        .unwrap();
+    // B 注册（B→A）时环闭合成型 → 拒。
+    let err = engine
+        .register_workflow(make_workflow(
+            "wf_b",
+            vec![make_sub_node("call", "wf_a", vec![])],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("wf_a → wf_b") || err.contains("wf_b → wf_a"),
+        "错误应点名环路径：{err}"
+    );
+    assert!(engine.get_workflow("wf_b").is_none());
+    // A 保留（先注册的合法定义不受牵连）。
+    assert!(engine.get_workflow("wf_a").is_some());
+}
+
+#[tokio::test]
+async fn b382_three_node_cycle_rejected() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "c1",
+            vec![make_sub_node("call", "c2", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "c2",
+            vec![make_sub_node("call", "c3", vec![])],
+        ))
+        .unwrap();
+    let err = engine
+        .register_workflow(make_workflow(
+            "c3",
+            vec![make_sub_node("call", "c1", vec![])],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("c1"), "错误应点名环：{err}");
+}
+
+#[tokio::test]
+async fn b382_acyclic_chain_and_dangling_reference_allowed() {
+    let engine = WorkflowEngine::new();
+    // 无环链 A→B→C 全部放行。
+    engine
+        .register_workflow(make_workflow(
+            "cha",
+            vec![make_sub_node("call", "chb", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "chb",
+            vec![make_sub_node("call", "chc", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow("chc", vec![make_node("leaf", "llm", vec![])]))
+        .unwrap();
+    assert!(engine.get_workflow("cha").is_some());
+    assert!(engine.get_workflow("chb").is_some());
+    assert!(engine.get_workflow("chc").is_some());
+    // 悬空引用（目标不存在）放行——run 时 WorkflowNotFound 诚实失败。
+    engine
+        .register_workflow(make_workflow(
+            "dangling",
+            vec![make_sub_node("call", "ghost", vec![])],
+        ))
+        .unwrap();
+    assert!(engine.get_workflow("dangling").is_some());
+}
+
+#[tokio::test]
+async fn b382_overwrite_breaking_cycle_via_removal_then_re_register() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("ov_a", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "ov_b",
+            vec![make_sub_node("call", "ov_a", vec![])],
+        ))
+        .unwrap();
+    // 覆盖 A 为引用 B → 环，拒绝。
+    let err = engine
+        .register_workflow(make_workflow(
+            "ov_a",
+            vec![make_sub_node("call", "ov_b", vec![])],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("环"), "{err}");
+    // 拒绝后 A 仍是旧定义（无 sub_workflow 引用）。
+    let a = engine.get_workflow("ov_a").unwrap();
+    assert!(a.nodes.iter().all(|n| n.node_type != "sub_workflow"));
+}
+
+#[tokio::test]
+async fn b382_composite_child_subworkflow_reference_in_cycle() {
+    let engine = WorkflowEngine::new();
+    // parallel 子节点里的 sub_workflow 指向 workflow 自身 → 复合收集进环。
+    let wf = make_workflow("comp", vec![make_parallel_with_sub_child("par", "comp")]);
+    let err = engine.register_workflow(wf).unwrap_err().to_string();
+    assert!(err.contains("环"), "复合子节点引用应参与环检测：{err}");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261104-383：event trigger 自触发/互触发环闸（TRIGGER_CHAIN_KEY）
+// ---------------------------------------------------------------------------
+
+/// 事件终态 data 里的触发链保留键（与引擎发布点同源）。
+use crate::event_dispatcher::TRIGGER_CHAIN_KEY as B383_CHAIN_KEY;
+
+#[test]
+fn b383_matching_excludes_workflows_on_trigger_chain() {
+    use crate::event_dispatcher::TriggerEvent;
+    use crate::types::TriggerConfig;
+    let mut wf = make_workflow("self_listener", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "event".to_string(),
+        config: HashMap::from([(
+            "event_type".to_string(),
+            serde_json::json!("workflow.completed"),
+        )]),
+    }];
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).expect("register");
+
+    // 链已含本 workflow（自触发形态）→ 环闸拒绝，不再 spawn。
+    let ev_self = TriggerEvent::new(
+        "workflow.completed",
+        HashMap::from([
+            (
+                "workflow_name".to_string(),
+                serde_json::json!("self_listener"),
+            ),
+            (
+                B383_CHAIN_KEY.to_string(),
+                serde_json::json!(["self_listener"]),
+            ),
+        ]),
+    );
+    assert!(
+        engine.workflows_matching_event(&ev_self).is_empty(),
+        "链上已出现的 workflow 必须被环闸抑制"
+    );
+
+    // 链只含别的 workflow（合法链式：A 完成 → 触发 B）→ 放行。
+    let ev_other = TriggerEvent::new(
+        "workflow.completed",
+        HashMap::from([
+            ("workflow_name".to_string(), serde_json::json!("other_wf")),
+            (B383_CHAIN_KEY.to_string(), serde_json::json!(["other_wf"])),
+        ]),
+    );
+    assert_eq!(
+        engine.workflows_matching_event(&ev_other),
+        vec!["self_listener".to_string()]
+    );
+
+    // 无链键（手动 fire_event / 非引擎发布形态）→ 放行。
+    let ev_manual = TriggerEvent::new(
+        "workflow.completed",
+        HashMap::from([(
+            "workflow_name".to_string(),
+            serde_json::json!("self_listener"),
+        )]),
+    );
+    assert_eq!(
+        engine.workflows_matching_event(&ev_manual),
+        vec!["self_listener".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn b383_completion_event_carries_trigger_chain() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "chain_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    let mut rx = engine.event_dispatcher().subscribe();
+    let exec = engine.run("chain_wf", HashMap::new(), None).await.unwrap();
+    let ev = rx.try_recv().expect("终态事件应已发布到 dispatcher");
+    assert_eq!(ev.event_type, "workflow.completed");
+    // 非事件触发来源 → 链从空起算，只含本 workflow。
+    assert_eq!(
+        ev.data.get(B383_CHAIN_KEY),
+        Some(&serde_json::json!(["chain_wf"]))
+    );
+    assert_eq!(ev.source_execution_id.as_deref(), Some(exec.id.as_str()));
+}
+
+#[tokio::test]
+async fn b383_chain_extends_through_event_triggered_execution() {
+    use crate::types::TriggerSource;
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "link_b",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    let mut rx = engine.event_dispatcher().subscribe();
+    // 模拟 link_b 由事件触发（前代链 = ["link_a"]）→ 完成事件的链应延长
+    // 为 ["link_a", "link_b"]：环闸据此拒绝把链上任何名字再次触发，
+    // A→B→A 互触发环在第二圈被打断。
+    let trigger = TriggerSource::Event {
+        event_type: "workflow.completed".to_string(),
+        data: serde_json::json!({ "__wf_trigger_chain": ["link_a"] }),
+    };
+    let _ = engine
+        .run("link_b", HashMap::new(), Some(trigger))
+        .await
+        .unwrap();
+    let ev = rx.try_recv().expect("终态事件应已发布到 dispatcher");
+    assert_eq!(
+        ev.data.get(B383_CHAIN_KEY),
+        Some(&serde_json::json!(["link_a", "link_b"]))
+    );
+}

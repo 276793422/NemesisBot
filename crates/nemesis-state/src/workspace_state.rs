@@ -44,6 +44,10 @@ pub struct WorkspaceStateManager {
     workspace: PathBuf,
     state: Arc<RwLock<WorkspaceState>>,
     state_file: PathBuf,
+    /// 测试钩子（仅 test 构建）：快照→落盘之间注入**一次性**停顿（首个
+    /// 保存消费后归零），确定性复现并发保存交错（release 构建不存在）。
+    #[cfg(test)]
+    save_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl WorkspaceStateManager {
@@ -68,6 +72,8 @@ impl WorkspaceStateManager {
             workspace,
             state: Arc::new(RwLock::new(state)),
             state_file,
+            #[cfg(test)]
+            save_delay_ms: std::sync::atomic::AtomicU64::new(0),
         });
 
         // Try to load from new location first
@@ -95,22 +101,26 @@ impl WorkspaceStateManager {
 
     /// Atomically update the last channel and save.
     pub fn set_last_channel(&self, channel: &str) -> Result<(), String> {
-        {
-            let mut state = self.state.write();
-            state.last_channel = channel.to_string();
-            state.timestamp = Local::now();
-        }
-        self.save_atomic()
+        // BUG-20261103-335：变异+快照+落盘全程同一把写锁——旧形态变异锁
+        // 释放后 save_atomic 重新取读锁快照，「快照→rename」对无闸：两写
+        // 并发（主 loop max_concurrent_turns 生产默认 8，并发 turn 各自
+        // record_last_channel）时旧快照的 rename 可晚于新快照落盘
+        // （last-rename-wins = 磁盘丢更新，重启后 last_channel 回退）。
+        // BUG-20261030-213 同族（session 侧已修 save_gate，本位点横向扫漏）。
+        // 状态文件极小，写锁持穿 fsync 的争用代价可忽略。
+        let mut state = self.state.write();
+        state.last_channel = channel.to_string();
+        state.timestamp = Local::now();
+        self.persist(&state)
     }
 
     /// Atomically update the last chat ID and save.
     pub fn set_last_chat_id(&self, chat_id: &str) -> Result<(), String> {
-        {
-            let mut state = self.state.write();
-            state.last_chat_id = chat_id.to_string();
-            state.timestamp = Local::now();
-        }
-        self.save_atomic()
+        // BUG-20261103-335：同 set_last_channel——变异+快照+落盘同一把写锁。
+        let mut state = self.state.write();
+        state.last_chat_id = chat_id.to_string();
+        state.timestamp = Local::now();
+        self.persist(&state)
     }
 
     /// Get the last channel from the state.
@@ -133,19 +143,43 @@ impl WorkspaceStateManager {
         self.state.read().clone()
     }
 
-    /// Atomically persist state（BUG-20261025-51：委托唯一临时名权威 helper
-    /// ——旧手搓固定 `json.tmp` 并发互踩；fsync/失败清理语义由 helper 承担）。
-    fn save_atomic(&self) -> Result<(), String> {
-        let state = self.state.read();
+    /// 序列化给定状态快照并原子落盘。调用方必须**已持 state 写锁**且覆盖
+    /// 「变异→本函数落盘」整段——锁跨度分离即复现 BUG-20261103-335 竞态
+    /// （旧快照 rename 晚落覆盖新值）。测试钩子停顿也在锁内（并发方在写锁
+    /// 上排队，无法插入交错窗口）。
+    fn persist(&self, state: &WorkspaceState) -> Result<(), String> {
         let data =
-            serde_json::to_string_pretty(&*state).map_err(|e| format!("marshal state: {}", e))?;
-        drop(state);
+            serde_json::to_string_pretty(state).map_err(|e| format!("marshal state: {}", e))?;
+        // 测试钩子：确定性制造「快照后、落盘前」的并发窗口（仅 test 构建；
+        // 一次性——首个保存消费后归零）。BUG-20261103-335 红证/回归锁用。
+        #[cfg(test)]
+        {
+            let d = self
+                .save_delay_ms
+                .swap(0, std::sync::atomic::Ordering::SeqCst);
+            if d > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(d));
+            }
+        }
         nemesis_utils::file::write_file_atomic(
             &self.state_file.to_string_lossy(),
             data.as_bytes(),
             0o644,
         )
         .map_err(|e| format!("atomic write state file: {e}"))
+    }
+
+    /// 迁移路径专用（new() 旧位置收编）：写锁内快照+落盘。
+    fn save_atomic(&self) -> Result<(), String> {
+        let state = self.state.write();
+        self.persist(&state)
+    }
+
+    /// 装备一次性「快照后、落盘前」停顿（测试钩子，仅 test 构建）。
+    #[cfg(test)]
+    fn test_arm_save_delay_ms(&self, ms: u64) {
+        self.save_delay_ms
+            .store(ms, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Load state from disk.

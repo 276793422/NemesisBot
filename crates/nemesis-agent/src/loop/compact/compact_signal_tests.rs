@@ -541,3 +541,137 @@ async fn clamp_notice_fires_once_even_below_soft() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let _ = std::fs::remove_file(&cfg_path);
 }
+
+// ---------------------------------------------------------------------------
+// 空转前缀闸（2026-11-05 小窗口实测根修）：system turn 占据前缀时
+// `new_c > c` 是假前进——空转曾按失败记账，两轮烧掉 stuck 闩暂停自动压缩。
+// ---------------------------------------------------------------------------
+
+/// 纯函数：前缀只剩 system（边界停在 1）→ false（无事可做）。
+#[test]
+fn gate_blocks_system_only_prefix() {
+    let history = vec![
+        turn("system", "sys prompt"),
+        turn("user", "hi"),
+        turn("assistant", "yo"),
+    ];
+    assert!(
+        !summarize_advance_worthwhile(&history, 0, 1, 100),
+        "new_c=1 前缀=[system]，无可摘要内容 → 不值得发起调用"
+    );
+}
+
+/// 纯函数：新增段含有效 user/assistant 轮 → true（真实前进）。
+#[test]
+fn gate_passes_when_new_segment_has_valid_turn() {
+    let history = vec![
+        turn("system", "sys prompt"),
+        turn("user", "hi"),
+        turn("assistant", "yo"),
+    ];
+    assert!(summarize_advance_worthwhile(&history, 0, 2, 100));
+    assert!(summarize_advance_worthwhile(&history, 0, 3, 100));
+    // c≥1（system 已覆盖）时新增段含有效轮同样 true。
+    assert!(summarize_advance_worthwhile(&history, 1, 3, 100));
+}
+
+/// 纯函数：新增段只有超限轮 → false（summarize 内部也会全跳过，闸门先行
+/// 免去失败记账）。window=100 → 单消息上限 50 tok（125 字符）。
+#[test]
+fn gate_blocks_oversized_only_segment() {
+    let huge = "y".repeat(200); // 估算 80 tok > 50
+    let history = vec![
+        turn("system", "sys"),
+        turn("user", &huge),
+        turn("assistant", "yo"),
+    ];
+    assert!(!summarize_advance_worthwhile(&history, 0, 2, 100));
+    // 超限与有效混合：存在任一有效轮即 true。
+    let history2 = vec![
+        turn("system", "sys"),
+        turn("user", &huge),
+        turn("user", "ok"),
+        turn("assistant", "yo"),
+    ];
+    assert!(summarize_advance_worthwhile(&history2, 0, 4, 100));
+}
+
+/// 行为回归（死亡螺旋逆向）：巨大 system + 小尾巴预算 → 首次触发被闸门
+/// 拦截（provider 零调用、失败计数零），历史长过尾巴预算后闸门自然放开
+/// → 摘要正常发生（covers 推进）。旧代码在第一段就烧掉 stuck 闩。
+#[tokio::test]
+async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
+    let (provider, calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    // keep=30：尾巴装得下 system 之后的前两轮（各 10 tok），装不下
+    // system（100 tok）→ 边界停在 1（前缀只有 system）。
+    let cfg_path = keep_tokens_config("noop", 30);
+    agent_loop.set_config_path(cfg_path.clone());
+
+    // 巨大 system（估算 100 tok）+ 1 组问答。tail 120 ≥ threshold 75 → 触发。
+    let huge_system = "S".repeat(250);
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100);
+    instance.set_history(vec![
+        turn("system", &huge_system),
+        turn("user", &"x".repeat(25)),
+        turn("assistant", &"x".repeat(25)),
+    ]);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "空转前缀：不发起摘要调用（旧代码此处瞬时失败一次）"
+    );
+    assert!(
+        instance.get_summary_cache().is_none(),
+        "无事可摘要，covers 不推进"
+    );
+    let failures = agent_loop
+        .compact_state
+        .lock()
+        .get("s")
+        .map(|s| s.consecutive_failures);
+    assert_eq!(
+        failures,
+        Some(0),
+        "空转不计失败（旧代码此处 +1，两轮烧掉 stuck 闩）"
+    );
+
+    // 历史长过尾巴预算（2 组问答，边界到 2）→ 闸门放开，摘要发生。
+    instance.set_history(vec![
+        turn("system", &huge_system),
+        turn("user", &"x".repeat(25)),
+        turn("assistant", &"x".repeat(25)),
+        turn("user", &"x".repeat(25)),
+        turn("assistant", &"x".repeat(25)),
+    ]);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "边界前进到有效轮后闸门放开，摘要调用发生"
+    );
+    let cache = instance.get_summary_cache().expect("有效前进 → 摘要被采用");
+    assert_eq!(cache.covers_up_to, 2);
+    let failures_after = agent_loop
+        .compact_state
+        .lock()
+        .get("s")
+        .map(|s| s.consecutive_failures);
+    assert_eq!(failures_after, Some(0), "全程零失败记账");
+    let _ = std::fs::remove_file(&cfg_path);
+}

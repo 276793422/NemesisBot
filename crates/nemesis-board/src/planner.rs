@@ -362,7 +362,8 @@ fn extract_json_array(raw: &str) -> Option<String> {
 }
 
 /// 批内依赖环检测（DFS 三色标记；发现环指明成员，便于回灌自纠）。
-fn detect_cycle(plan: &[PlannedSubIssue]) -> Result<(), PlanParseError> {
+/// pub(crate)：replan 的 add 批依赖环检测共用（同一单一真相源，AOR 批三 5.3）。
+pub(crate) fn detect_cycle(plan: &[PlannedSubIssue]) -> Result<(), PlanParseError> {
     // 0=未访问 1=在栈 2=已完成
     let mut color = vec![0u8; plan.len()];
     let mut stack: Vec<usize> = Vec::new();

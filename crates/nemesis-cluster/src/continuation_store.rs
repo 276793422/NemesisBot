@@ -204,7 +204,9 @@ impl ContinuationStore {
     /// Remove snapshots older than `max_age`.
     ///
     /// Deletes snapshot files from disk whose modification time exceeds
-    /// the specified duration. Also removes them from memory.
+    /// the specified duration. Also removes them from memory. Additionally
+    /// sweeps crash-orphaned `.tmp-` atomic-write residue older than the
+    /// fixed grace window（BUG-20261104-356，与 max_age 无关的固定宽限）。
     pub async fn cleanup_old(
         &self,
         max_age: std::time::Duration,
@@ -219,6 +221,50 @@ impl ContinuationStore {
         let mut entries = tokio::fs::read_dir(&self.cache_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
+
+            // BUG-20261104-356：崩溃残留 `.tmp-` 孤儿清扫。write_file_atomic
+            // 的错误路径自清理临时文件，但进程崩溃/断电留在 create↔rename
+            // 窗口时孤儿永存——此前所有清扫/列表路径只认 `.json` 扩展名，
+            // 孤儿在 Dashboard 快照页不可见、`snapshots.cleanup`（ZERO 清
+            // 全部）也删不掉；且 load 的 might_be_saving 探测扫 `.tmp-` 前
+            //缀，孤儿会把（未来重新接线时的）每次缺失快照 load 拖成 5s 白
+            // 等。固定 1h 保守宽限（nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE，
+            // 远超在写临时文件毫秒~秒级生命周期）：max_age=ZERO 也绝不误删
+            // 在写临时文件；刚崩出来的新鲜孤儿留到下一轮 sweep，无正确性
+            // 影响。删除失败 warn-and-continue（卫生清扫不因单文件中断；
+            // `.json` 臂的 Err 上抛语义不变——R389 观察项③裁决在案）。
+            let is_tmp_orphan = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(nemesis_utils::ATOMIC_TMP_PREFIX));
+            if is_tmp_orphan {
+                let stale = if let Ok(metadata) = entry.metadata().await {
+                    metadata.modified().is_ok_and(|modified| {
+                        modified
+                            < std::time::SystemTime::now() - nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE
+                    })
+                } else {
+                    false
+                };
+                if stale {
+                    let p = path.clone();
+                    let ok = tokio::task::spawn_blocking(move || {
+                        crate::fsutil::remove_file_resilient(&p)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if ok {
+                        removed += 1;
+                    } else {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "[ContinuationStore] Failed to delete stale tmp orphan（下轮 sweep 重试）"
+                        );
+                    }
+                }
+                continue;
+            }
+
             if path.extension().map(|e| e == "json").unwrap_or(false)
                 && let Ok(metadata) = entry.metadata().await
                 && let Ok(modified) = metadata.modified()

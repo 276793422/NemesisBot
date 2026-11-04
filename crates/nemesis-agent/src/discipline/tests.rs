@@ -52,6 +52,8 @@ fn call(name: &str, path: &str) -> HookToolCall {
         channel: "web".to_string(),
         chat_id: "1".to_string(),
         session_key: "sk-1".to_string(),
+        dispatch_started: None,
+        call_id: None,
     }
 }
 

@@ -498,6 +498,48 @@ impl ContinuationStore {
         stale
     }
 
+    /// Sweep crash-orphaned `.tmp-` atomic-write residue older than `grace`.
+    ///
+    /// BUG-20261104-356：`write_file_atomic` 的错误路径自清理临时文件，但
+    /// 进程崩溃/断电留在 create↔rename 窗口时孤儿永存——所有 `.json` 过滤
+    /// 的扫描路径（本 store 的 list_pending / stale_task_ids 刻意如此，R14
+    /// 靠扩展名过滤防误判 pending）都无视它，此前没有任何路径能删掉它。
+    /// 固定宽限（远超在写临时文件毫秒~秒级生命周期）保证绝不误删并发在写
+    /// 临时文件；刚崩出来的新鲜孤儿留到下一轮 sweep。单文件失败
+    /// warn-and-continue：卫生清扫不因单文件中断。返回删除数。
+    pub fn sweep_stale_tmp_orphans(&self, grace: std::time::Duration) -> usize {
+        let cutoff = std::time::SystemTime::now() - grace;
+        let mut removed = 0;
+        let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_tmp = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(nemesis_utils::ATOMIC_TMP_PREFIX));
+            if !is_tmp {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if modified >= cutoff {
+                continue; // 在写或新鲜孤儿——保留，下轮再说
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) => warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "[Continuation] Failed to delete stale tmp orphan（下轮 sweep 重试）"
+                ),
+            }
+        }
+        removed
+    }
+
     fn snapshot_path(&self, task_id: &str) -> PathBuf {
         // SAN-02：task_id 可能模型影响（cluster_rpc args）——路径成分前
         // 白名单消毒（真实 `task_*`/`bg_*` id 映射不变）。
@@ -1030,7 +1072,8 @@ impl ContinuationManager {
     /// Mirrors the SessionStore 7-day TTL (`cleanup_old_sessions`) and the
     /// nemesis-cluster `ContinuationStore::cleanup_old` semantics (same
     /// directory, other implementation). No-op without a disk store.
-    /// Returns the number of continuations removed.
+    /// Returns the number of entries removed（快照 + `.tmp-` 崩溃残留孤儿，
+    /// 后者走固定宽限与 max_age 无关，BUG-20261104-356）.
     pub async fn cleanup_old_snapshots(&self, max_age: Duration) -> usize {
         let Some(store) = self.disk_store.as_ref() else {
             return 0;
@@ -1040,7 +1083,14 @@ impl ContinuationManager {
             self.continuations.lock().await.remove(task_id);
             store.delete(task_id);
         }
-        stale.len()
+        let tmp_removed = store.sweep_stale_tmp_orphans(nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE);
+        if tmp_removed > 0 {
+            info!(
+                tmp_removed,
+                "[Continuation] Swept stale tmp orphans from rpc_cache"
+            );
+        }
+        stale.len() + tmp_removed
     }
 
     /// Check whether a continuation exists in memory (synchronous).
@@ -1230,6 +1280,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // config）。provider.chat 从 None（lane 默认）改显式 Some(ChatOptions)，
     // 截断判定与续写预算锚在同一可知值上。
     max_tokens_cap: u32,
+    // L28+（改进项三期）：翻倍阶梯封顶（agents.defaults.max_output_ceiling，
+    // 解析在 loop 侧 `current_max_output_ceiling` 完成，与主循环阶梯同源）。
+    // 续写再撞顶翻倍升档不超此值（拍板：阶梯 2 档封顶防单任务 token 失控）。
+    max_tokens_ceiling: u64,
     tools: &T,
     outbound_tx: &tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -1397,6 +1451,14 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // L28：连续空内容撞 cap 计数（主循环器官 6 同款守卫，阈值复用
     // MAX_EMPTY_LENGTH_CONTINUATIONS）。
     let mut empty_length_streak: u32 = 0;
+    // L28+（改进项三期）：续写再撞顶翻倍阶梯的当前档位（起点 = max_tokens_cap；
+    // 升档公式与地板复用主循环 §6.2 length_escalation 单一真相源）。
+    let mut effective_cap = max_tokens_cap as u64;
+    // 拍板（改进项三期计划表）：阶梯 **2 档封顶**——防单任务 token 失控
+    // （主循环阶梯无次数封顶但受 iteration 语义约束，续行单任务长文场景
+    // 显式限 2 次升档）。到顶后维持现档续写，iteration 预算照旧兜底。
+    const MAX_CAP_ESCALATIONS: u32 = 2;
+    let mut cap_escalations: u32 = 0;
 
     for iteration in 1..=max_iterations {
         debug!(
@@ -1429,8 +1491,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 
         let round_start = std::time::Instant::now();
         // L28：options 显式带 cap（此前 None = lane 默认，截断不可知）。
+        // L28+：cap 用当前阶梯档位（续写再撞顶时翻倍升档）。
         let chat_options = crate::types::ChatOptions {
-            max_tokens: Some(max_tokens_cap),
+            max_tokens: Some(effective_cap.min(u32::MAX as u64) as u32),
             ..Default::default()
         };
         let mut response = match provider
@@ -1482,8 +1545,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // 一律丢弃（执行半截 args 是写坏文件事故），只保留正文；②空内容撞
         // cap 不烧预算（M4-B 同款 2 连守卫）；③续写轮消耗同一 1..=20 迭代
         // 预算，耗尽仍截断 → 半截正文 + 诚实注记终局（不再无声冒充完整）。
-        if is_length_truncated(&response, max_tokens_cap) {
-            let token_cap = response.escalated_to.unwrap_or(max_tokens_cap as u64);
+        if is_length_truncated(&response, effective_cap as u32) {
+            let token_cap = response.escalated_to.unwrap_or(effective_cap);
             if response.content.trim().is_empty() {
                 empty_length_streak += 1;
             } else {
@@ -1525,6 +1588,21 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 "[Continuation] task {task_id} truncated at max_tokens cap ({token_cap}); \
                  continue-generation {iteration}/{max_iterations}"
             );
+            // L28+（改进项三期）：续写再撞顶 → 翻倍升档（对齐主循环 §6.2
+            // length_escalation 公式：next = max(current × 2, 32K 地板)），
+            // 受双闸约束：拍板 2 档封顶 + 全局 ceiling（与主循环同源）。
+            // 升档只影响下一迭代请求的 max_tokens；本轮已截断正文照常入
+            // 对话续写（已有半截不丢）。升不了档（到顶）= 维持现档继续，
+            // iteration 预算照旧兜底。
+            let next = (effective_cap * 2).max(crate::r#loop::length_escalation::ESCALATION_FLOOR);
+            if cap_escalations < MAX_CAP_ESCALATIONS && next <= max_tokens_ceiling {
+                cap_escalations += 1;
+                warn!(
+                    "[Continuation] task {task_id} 续写撞 max_tokens 顶（{effective_cap}），\
+                     翻倍至 {next} 续写（第 {cap_escalations}/{MAX_CAP_ESCALATIONS} 次升档，封顶 {max_tokens_ceiling}）"
+                );
+                effective_cap = next;
+            }
             messages.push(LlmMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),

@@ -5963,3 +5963,173 @@ async fn bug324_http_node_302_converts_post_to_get() {
     assert_eq!(*log1.lock(), vec![format!("POST /a HTTP/1.1")]);
     assert_eq!(*log2.lock(), vec![format!("GET /b HTTP/1.1")]);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-352：重定向跨源判定（剥敏感头开关）漏 scheme 维度
+// ---------------------------------------------------------------------------
+
+/// bug352 变体 mock：记录每个连接的完整请求头（剥头断言要看 Authorization
+/// 行，首行 mock 只记 "METHOD /path"）。其余同 bug324_sequenced_mock。
+fn bug352_sequenced_mock_heads(
+    responses: Vec<String>,
+) -> (u16, Arc<parking_lot::Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let log = requests.clone();
+    std::thread::spawn(move || {
+        for resp in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            log.lock().push(head);
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    (port, requests)
+}
+
+/// 判定纯函数单测（RED 主证）：scheme 变化即跨源（reqwest
+/// remove_sensitive_headers 同判）。红证（修复前）：裸 `port()` 对无显式
+/// 端口 URL 恒 `None`，`None==None` + host 相同 → `https://host →
+/// http://host` 默认端口降级不触发剥头，Authorization/cookie 明文跟随。
+#[test]
+fn bug352_redirect_cross_origin_scheme_change_is_cross_origin() {
+    use super::redirect_cross_origin;
+    // 默认端口降级（本 BUG 主形态）。
+    let base = reqwest::Url::parse("https://api.example.com/v1").unwrap();
+    let next = reqwest::Url::parse("http://api.example.com/v1/final").unwrap();
+    assert!(
+        redirect_cross_origin(&base, &next),
+        "https→http 同 host 默认端口降级必须视为跨源（剥凭据头）"
+    );
+    // 升级方向同判（reqwest 语义：跨 scheme 即剥，不区分升降）。
+    let base = reqwest::Url::parse("http://api.example.com/v1").unwrap();
+    let next = reqwest::Url::parse("https://api.example.com/v1/final").unwrap();
+    assert!(
+        redirect_cross_origin(&base, &next),
+        "http→https 同 host 升级同样跨源"
+    );
+    // 显式端口形态：端口相同、scheme 不同 → 仍跨源（裸 port() 比较完全漏掉）。
+    let base = reqwest::Url::parse("https://api.example.com:8443/v1").unwrap();
+    let next = reqwest::Url::parse("http://api.example.com:8443/v1/final").unwrap();
+    assert!(
+        redirect_cross_origin(&base, &next),
+        "https:8443→http:8443 显式端口跨 scheme 必须跨源"
+    );
+}
+
+/// 行为锁（修复前后都绿，实测确认）：`Url` 解析时把显式默认端口归一化掉
+///（`http://host:80` 的 `port()` 已是 None），显式与省略形态本就同源。
+/// 同时钉住 `port_or_known_default()` 契约面：解析产物下它与 `port()`
+/// 等值（默认端口必为 None），选它纯为对齐 reqwest 判定形态。
+#[test]
+fn bug352_redirect_cross_origin_default_port_forms_same_origin() {
+    use super::redirect_cross_origin;
+    let base = reqwest::Url::parse("http://api.example.com:80/v1").unwrap();
+    let next = reqwest::Url::parse("http://api.example.com/v1/final").unwrap();
+    assert!(
+        !redirect_cross_origin(&base, &next),
+        "http:80 → http（省略默认端口）同源，不得触发剥头（reqwest 契约）"
+    );
+}
+
+/// 行为锁（修复前后都应绿）：同源（host+port+scheme 全同）不剥；host 变 /
+/// port 变各自独立触发剥头。
+#[test]
+fn bug352_redirect_cross_origin_behavior_locks() {
+    use super::redirect_cross_origin;
+    let base = reqwest::Url::parse("http://api.example.com/a").unwrap();
+    // 同源不剥。
+    let next = reqwest::Url::parse("http://api.example.com/b").unwrap();
+    assert!(!redirect_cross_origin(&base, &next));
+    // host 变。
+    let next = reqwest::Url::parse("http://other.example.com/b").unwrap();
+    assert!(redirect_cross_origin(&base, &next));
+    // port 变。
+    let next = reqwest::Url::parse("http://api.example.com:8080/b").unwrap();
+    assert!(redirect_cross_origin(&base, &next));
+}
+
+/// 集成行为锁（修复前后都应绿）：跨源（不同端口）302 → 第二跳请求头剥掉
+/// Authorization——证明纯函数判定已接线进手动重定向循环（端到端机械有效）。
+#[tokio::test]
+async fn bug352_http_node_redirect_strips_auth_cross_origin() {
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let (p2, heads2) = bug352_sequenced_mock_heads(vec![bug324_ok_body("final")]);
+    let (p1, heads1) = bug352_sequenced_mock_heads(vec![format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        p2
+    )]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/a", p1)),
+        ),
+        ("method".to_string(), serde_json::json!("GET")),
+        (
+            "headers".to_string(),
+            serde_json::json!({"Authorization": "Bearer secret-cred"}),
+        ),
+    ]);
+    let node = make_node("r352a", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let h1 = heads1.lock()[0].to_lowercase();
+    assert!(
+        h1.contains("authorization: bearer secret-cred"),
+        "hop1 必须携带 Authorization: {h1}"
+    );
+    let h2 = heads2.lock()[0].to_lowercase();
+    assert!(
+        !h2.contains("authorization"),
+        "hop2（跨源）必须剥掉 Authorization: {h2}"
+    );
+}
+
+/// 集成行为锁（修复前后都应绿）：同源（同 host+port）302 → Authorization
+/// 保留（reqwest 契约：同源不剥——重定向到同站路径是常态操作，误剥会破坏
+/// 带 cookie 的站点跟随）。
+#[tokio::test]
+async fn bug352_http_node_redirect_keeps_auth_same_origin() {
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let (p, heads) = bug352_sequenced_mock_heads(vec![
+        // 相对 Location：base.join("/b") 解析回同源（同 host+port）。
+        "HTTP/1.1 302 Found\r\nLocation: /b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string(),
+        bug324_ok_body("final"),
+    ]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/a", p)),
+        ),
+        ("method".to_string(), serde_json::json!("GET")),
+        (
+            "headers".to_string(),
+            serde_json::json!({"Authorization": "Bearer secret-cred"}),
+        ),
+    ]);
+    let node = make_node("r352b", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(heads.lock().len(), 2, "两跳都应到达 mock");
+    let h2 = heads.lock()[1].to_lowercase();
+    assert!(
+        h2.contains("authorization: bearer secret-cred"),
+        "hop2（同源）必须保留 Authorization: {h2}"
+    );
+}

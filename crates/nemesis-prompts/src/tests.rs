@@ -664,3 +664,83 @@ fn all_migrated_prompt_constants_are_nonempty() {
     assert!(fixed.contains(&format!("{}u3", persona_gen::AUTHOR_MISSING_HINT_PREFIX)));
     assert!(persona_gen::AUDIT_PROMPT.contains("完整性审计员"));
 }
+
+// ---------------------------------------------------------------------------
+// AOR 提示词纪律吸收（2026-11-04 批一a）：拆解判据/依赖语义/UNKNOWN +
+// 两档评审 ANTI-LOOP——防误删关键词快照（本文件惯例：非字节快照）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn planner_prompt_carries_decomposition_discipline_additions() {
+    // ①-A 拆解判据五维 + 单任务合法（防凑数量式机械拆分）。
+    for kw in [
+        "拆解判据",
+        "所有权不同",
+        "重试行为不同",
+        "验收边界不同",
+        "只拆出 1 个子任务的结果合法",
+    ] {
+        assert!(
+            board::PLANNER_SYSTEM_PROMPT.contains(kw),
+            "planner 缺拆解判据关键词 {kw}"
+        );
+    }
+    // ①-B 依赖语义六类型 + UNKNOWN 探明纪律（恢复依赖禁止预留）。
+    for kw in [
+        "信息依赖",
+        "产物依赖",
+        "验证依赖",
+        "顺序依赖",
+        "资源依赖",
+        "恢复依赖",
+        "不许猜测着拆",
+    ] {
+        assert!(
+            board::PLANNER_SYSTEM_PROMPT.contains(kw),
+            "planner 缺依赖/UNKNOWN 纪律关键词 {kw}"
+        );
+    }
+}
+
+#[test]
+fn review_prompts_both_tiers_carry_anti_loop_discipline() {
+    // ①-C 防循环纪律：两档评审提示词都在场（快速档为压缩形态）。
+    for (name, text) in [
+        ("thorough", board::REVIEW_SYSTEM_PROMPT),
+        ("fast", board::REVIEW_SYSTEM_PROMPT_FAST),
+    ] {
+        for kw in ["防循环纪律", "疑似不可满足"] {
+            assert!(
+                text.contains(kw),
+                "{name} 评审提示词缺 ANTI-LOOP 关键词 {kw}"
+            );
+        }
+    }
+    // 全量档完整措辞（改标/转人工裁决建议）在场。
+    assert!(
+        board::REVIEW_SYSTEM_PROMPT.contains("建议修订验收标准或转人工裁决"),
+        "全量档 ANTI-LOOP 缺改标/转人工建议措辞"
+    );
+}
+
+#[test]
+fn review_prompts_both_tiers_carry_per_criterion_discipline() {
+    // AOR 批一c §③：逐条三态判定纪律——两档都要带 criteria/unknowns
+    // schema、[anchor] 条目纪律与「宁细勿粗」拆条要求。
+    for (name, text) in [
+        ("thorough", board::REVIEW_SYSTEM_PROMPT),
+        ("fast", board::REVIEW_SYSTEM_PROMPT_FAST),
+    ] {
+        for kw in ["逐条判定", "criteria", "unknowns", "[anchor]", "宁细勿粗"] {
+            assert!(
+                text.contains(kw),
+                "{name} 评审提示词缺逐条判定纪律关键词 {kw}"
+            );
+        }
+        // 一致性注记：FAIL 条与整体 PASS 互斥（parse_review 回灌的提示词侧镜像）。
+        assert!(
+            text.contains("整体不得为 PASS"),
+            "{name} 评审提示词缺 FAIL 条/整体 PASS 一致性注记"
+        );
+    }
+}

@@ -793,6 +793,54 @@ async fn test_websocket_send_when_running_no_client() {
     ch.stop().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+// BUG-20261103-344 横向同族红证：静默 TCP 连接（不发 HTTP 升级请求——
+// 本地扫描/挂死客户端形态）旧实现内联 await accept_hdr_async，永久冻结
+// accept 循环，通道对一切后续客户端失联。不变量：静默连接按单连接墙钟
+// 上限淘汰，真客户端照常完成升级并收到欢迎帧。
+// start_paused 时钟：10s WS_UPGRADE_TIMEOUT 瞬时快进，墙钟毫秒级完成。
+async fn bug344_silent_tcp_connection_does_not_block_channel_accept_loop() {
+    use futures::StreamExt;
+    use tokio_tungstenite::connect_async;
+
+    let port = find_free_port();
+    let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    // 随机端口绑定后等监听就绪（既有 lifecycle 测试同款）。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 静默连接：TCP 握手成功后不发任何升级请求。
+    let _stall = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    // 虚拟时钟睡眠瞬时快进：让 accept 循环接住静默连接并进入升级等待。
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 静默连接之后，真客户端必须照常完成升级并收到欢迎帧。
+    // 外层 30s 必须大于内部 WS_UPGRADE_TIMEOUT 10s——start_paused 自动
+    // 快进总是跳到最近的 timer，只有内部淘汰 timer 先到，验收才成立
+    // （旧代码无内部 timer，30s 外层超时触发 = 红证）。
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let served = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
+        let (ws, _resp) = connect_async(url).await.unwrap();
+        let (_write, mut read) = ws.split();
+        read.next().await
+    })
+    .await;
+    assert!(
+        matches!(served, Ok(Some(_))),
+        "silent TCP connection must not block the channel accept loop (BUG-20261103-344)"
+    );
+    ch.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_websocket_send_with_active_client() {
     use futures::StreamExt;

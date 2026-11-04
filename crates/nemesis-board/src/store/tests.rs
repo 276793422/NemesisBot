@@ -938,25 +938,78 @@ fn test_dispatch_crud_lifecycle() {
     assert!(store.finish_dispatch("task-1", "cancelled").is_err());
 
     // 原子占用闸（R5-BUG-2）：同 issue 已有在途派发 → 二次 claim 返回
-    // Ok(false)（不写行、不报错）——多触发源并发派发的统一拒绝语义。
+    // Ok(None)（不写行、不报错）——多触发源并发派发的统一拒绝语义。
     // （上一节已把 task-1/task-2 都终结，这里先重新 seed 一行 active。）
     store
         .insert_dispatch("task-1c", issue.id, "node-b", &admin())
         .unwrap();
     assert!(
-        !store
+        store
             .try_claim_dispatch("task-1b", issue.id, "node-d", &admin())
             .unwrap()
+            .is_none()
     );
     assert!(store.get_dispatch("task-1b").unwrap().is_none());
-    // 无在途 → claim 放行。
+    // 无在途 → claim 放行（AOR 批二a：代际号 = 既有行数；本 issue 此前
+    // task-1/task-2/task-1c 三行 → 本次为第 4 行，generation = 3）。
     store
         .finish_dispatch("task-1c", dispatch_state::FAILED)
         .unwrap();
-    assert!(
+    assert_eq!(
         store
             .try_claim_dispatch("task-1d", issue.id, "node-d", &admin())
+            .unwrap(),
+        Some(3)
+    );
+    let rec = store.get_dispatch("task-1d").unwrap().unwrap();
+    assert_eq!(rec.generation, 3);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_dispatch_generation_v22_legacy_db_upgrades_existing_rows_to_zero() {
+    // v23 迁移回归（AOR 批二a ④）：真实 v23 库手工降级成 v22 形态
+    // （issue_dispatch 去 generation 列 + user_version 回拨 22）→ 重开
+    // 触发 ALTER ... ADD COLUMN generation DEFAULT 0 → 存量行代际读 0
+    // （首派语义，旧行为兼容）；此后新派发照常按行数计数（存量行占一代）。
+    let dir =
+        std::env::temp_dir().join(format!("nb-board-v23-gen-migration-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("board.db");
+    {
+        let store = BoardStore::open(&db_path, "NB").unwrap();
+        let issue = store.create_issue(new_issue("存量单")).unwrap();
+        store
+            .insert_dispatch("legacy-task", issue.id, "node-b", &admin())
+            .unwrap();
+    }
+    {
+        // 手工降级：去列 + 回拨 user_version（模拟 v22 存量库）。
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE issue_dispatch DROP COLUMN generation;
+             PRAGMA user_version = 22;",
+        )
+        .unwrap();
+    }
+    let store2 = BoardStore::open(&db_path, "NB").unwrap();
+    let rec = store2.get_dispatch("legacy-task").unwrap().unwrap();
+    assert_eq!(rec.generation, 0, "存量行迁移后代际 = 0（首派语义）");
+    // 占用闸放行前提：终结存量行（否则在途派发挡新 claim）。
+    assert!(
+        store2
+            .finish_dispatch("legacy-task", dispatch_state::DONE)
             .unwrap()
+    );
+    let issue = store2.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(
+        store2
+            .try_claim_dispatch("new-task", issue.id, "node-c", &admin())
+            .unwrap(),
+        Some(1),
+        "迁移后新派发代际照常按行数计数"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1613,6 +1666,73 @@ fn test_fail_dispatch_timeout_race_and_activity() {
     cleanup(&dir);
 }
 
+/// AOR 批三 5.2：`fail_dispatch_checked` 代际闸——generation 等值才允许
+/// 失败落定（sweep 持有的 record 快照与库里行同代才算竞态赢家；代际不匹配
+/// = Ok(None) 且行原样不动）。generation = 该 issue 派发行数（插入序，0 起）。
+#[test]
+fn test_fail_dispatch_checked_generation_gate() {
+    let (store, dir) = temp_store("fail-checked-gen");
+    let issue = store.create_issue(new_issue("代际闸")).unwrap();
+
+    // 第 0 代：等值 → 赢家 Some + failed。
+    store
+        .insert_dispatch("task-g0", issue.id, "node-b", &admin())
+        .unwrap();
+    let rec = store
+        .fail_dispatch_checked("task-g0", "sweep gen0", 0)
+        .unwrap()
+        .expect("等值代际必须赢");
+    assert_eq!(rec.state, dispatch_state::FAILED);
+    assert_eq!(rec.generation, 0);
+    // 已 failed 再来（等值代际）→ 状态闸拦截 → None。
+    assert!(
+        store
+            .fail_dispatch_checked("task-g0", "again", 0)
+            .unwrap()
+            .is_none()
+    );
+
+    // 第 1 代（重派）：新行等值 → 赢家。
+    store
+        .insert_dispatch("task-g1", issue.id, "node-c", &admin())
+        .unwrap();
+    let rec1 = store
+        .fail_dispatch_checked("task-g1", "sweep gen1", 1)
+        .unwrap()
+        .expect("第 1 代等值必须赢");
+    assert_eq!(rec1.generation, 1);
+
+    // 第 2 代：持旧代际快照（1）失败新行 → Ok(None)，行保持活跃。
+    store
+        .insert_dispatch("task-g2", issue.id, "node-b", &admin())
+        .unwrap();
+    assert!(
+        store
+            .fail_dispatch_checked("task-g2", "stale sweep", 1)
+            .unwrap()
+            .is_none()
+    );
+    let untouched = store.get_dispatch("task-g2").unwrap().expect("行在");
+    assert_eq!(untouched.state, dispatch_state::DISPATCHED);
+    assert!(untouched.completed_at.is_none(), "代际失配不得写完结时间");
+
+    // 等值代际补刀 → 正常落定。
+    let rec2 = store
+        .fail_dispatch_checked("task-g2", "fresh sweep", 2)
+        .unwrap()
+        .expect("第 2 代等值必须赢");
+    assert_eq!(rec2.generation, 2);
+
+    // 不存在的 task → None（状态闸 0 行命中）。
+    assert!(
+        store
+            .fail_dispatch_checked("task-none", "ghost", 0)
+            .unwrap()
+            .is_none()
+    );
+    cleanup(&dir);
+}
+
 #[test]
 fn test_list_active_dispatches_across_issues() {
     let (store, dir) = temp_store("active-list");
@@ -1759,6 +1879,7 @@ fn new_ap(name: &str) -> NewAutopilot {
         enabled: true,
         auto_plan: false,
         acceptance_criteria: None,
+        session_key: None,
     }
 }
 
@@ -2845,6 +2966,80 @@ fn test_autopilot_acceptance_criteria_roundtrip() {
         legacy.acceptance_criteria, None,
         "存量 JSON 缺键反序列化为 None（行为不变）"
     );
+}
+
+#[test]
+fn test_autopilot_session_key_roundtrip() {
+    // L23（三期 2026-11-03）：父会话绑定字段 create/update 全链
+    // round-trip + 空串归一 None + 存量 JSON 缺键反序列化 None。
+    let (store, dir) = temp_store("autopilot-session-key");
+
+    // create 带 → Some；不填（None）→ 读回 None（DB 存 ''）。
+    let mut n = new_ap("带绑定");
+    n.session_key = Some("agent:main:session:l23store".to_string());
+    let ap = store.create_autopilot(&n).unwrap();
+    assert_eq!(
+        ap.session_key.as_deref(),
+        Some("agent:main:session:l23store")
+    );
+    let ap_none = store.create_autopilot(&new_ap("无绑定")).unwrap();
+    assert_eq!(ap_none.session_key, None);
+
+    // update 覆盖 / 清空（Some("")）/ 不改（None）。
+    let ap = store
+        .update_autopilot(
+            ap.id,
+            &AutopilotPatch {
+                session_key: Some("k2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(ap.session_key.as_deref(), Some("k2"));
+    let cleared = store
+        .update_autopilot(
+            ap.id,
+            &AutopilotPatch {
+                session_key: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(cleared.session_key, None, "Some(\"\") = 清空");
+    let untouched = store
+        .update_autopilot(
+            cleared.id,
+            &AutopilotPatch {
+                name: Some("改名".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        untouched.session_key, None,
+        "patch None = 不改（保持清空态）"
+    );
+
+    // 跨连接持久化复核：重开同一 DB 读回（真相源在盘上）。
+    let db = dir.join("board.db");
+    drop(store);
+    let reopened = BoardStore::open(&db, "NB").unwrap();
+    let rules = reopened.list_autopilots().unwrap();
+    let bound = rules.iter().find(|a| a.id == cleared.id).unwrap();
+    assert_eq!(bound.session_key, None);
+    let other = rules.iter().find(|a| a.id == ap_none.id).unwrap();
+    assert_eq!(other.session_key, None);
+
+    // 存量 JSON（v22 前，无 session_key 键）→ 反序列化 None（行为不变）。
+    let legacy_json = r#"{"id":9,"name":"老规则","cron":"0 9 * * *","title":"t","priority":1,
+        "project_id":null,"target":"","enabled":true,"auto_plan":false,"cron_job_id":null,
+        "last_run_at":null,"created_at":0,"updated_at":0}"#;
+    let legacy: Autopilot = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(
+        legacy.session_key, None,
+        "存量 JSON 缺键反序列化为 None（行为不变）"
+    );
+    cleanup(&dir);
 }
 
 #[test]

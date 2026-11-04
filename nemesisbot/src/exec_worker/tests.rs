@@ -1205,3 +1205,30 @@ fn parse_extra_roots_env_multi() {
     let joined = std::env::join_paths(&roots).unwrap();
     assert_eq!(parse_extra_roots_env(Some(joined)), roots);
 }
+
+// ---------------------------------------------------------------------------
+// BUG 修复 2026-11-04：围栏 restrict 镜像 env 解析（缺省 true；显式 "0"
+// = false；其余值视同 true——省 env 不含语义，不静默纠偏）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restrict_env_defaults_true_when_unset_or_other_values() {
+    assert!(restrict_from_env(None), "env 未设 = true 旧行为");
+    assert!(
+        restrict_from_env(Some(std::ffi::OsStr::new(""))),
+        "空串视同缺省"
+    );
+    assert!(restrict_from_env(Some(std::ffi::OsStr::new("1"))));
+    assert!(
+        restrict_from_env(Some(std::ffi::OsStr::new("false"))),
+        "非 \"0\" 值视同 true（不静默纠偏，与 lease 同族）"
+    );
+}
+
+#[test]
+fn restrict_env_zero_disables() {
+    assert!(
+        !restrict_from_env(Some(std::ffi::OsStr::new("0"))),
+        "显式 \"0\" = 镜像主进程 restrict=false"
+    );
+}

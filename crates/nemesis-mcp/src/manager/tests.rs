@@ -174,7 +174,7 @@ fn test_find_new_servers_all_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// mtime detection
+// content-change detection（BUG-20261104-359：内容比对不赌 mtime 粒度）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -182,7 +182,7 @@ fn test_check_config_changed_no_change() {
     let tmp = TempDir::new().unwrap();
     let path = make_config_path(&tmp);
     let mut mgr = McpManager::new(path);
-    // No file was written, so no mtime to compare
+    // No file was written, so nothing recorded to compare
     assert!(!mgr.check_config_changed());
 }
 
@@ -195,8 +195,7 @@ fn test_check_config_changed_detects_write() {
     // Initially no file
     assert!(!mgr.check_config_changed());
 
-    // Write a config file externally
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Write a config file externally（内容比对，无需 sleep 推 mtime）
     write_config(
         &path,
         &McpConfig {
@@ -211,6 +210,56 @@ fn test_check_config_changed_detects_write() {
     assert_eq!(mgr.list_servers().len(), 1);
 
     // Second check should not trigger again
+    assert!(!mgr.check_config_changed());
+}
+
+/// BUG-20261104-359 回归钉：同刻改写（mtime 钉回旧值）必须检出——
+/// Dashboard `save_mcp_config` 直写与热更检查撞同刻（Windows 毫秒级粒度
+/// CI 实证同族）时旧 mtime 闸漏检 = 新 server 永不挂载。
+#[test]
+fn test_check_config_changed_detects_same_tick_write() {
+    let tmp = TempDir::new().unwrap();
+    let path = make_config_path(&tmp);
+    write_config(
+        &path,
+        &McpConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("srv-a", "cmd_a")],
+            timeout: 30,
+        },
+    );
+    let mut mgr = McpManager::new(path.clone());
+    assert!(!mgr.check_config_changed());
+    let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    // 同刻外部写：加 srv-b，mtime 钉回旧值。
+    write_config(
+        &path,
+        &McpConfig {
+            enabled: true,
+            servers: vec![
+                ServerConfig::new("srv-a", "cmd_a"),
+                ServerConfig::new("srv-b", "cmd_b"),
+            ],
+            timeout: 30,
+        },
+    );
+    {
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+            .unwrap();
+    }
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        old_mtime,
+        "mtime 已钉回旧值（前置成立）"
+    );
+
+    assert!(
+        mgr.check_config_changed(),
+        "同刻改写（mtime 不变）也必须检出——内容比对不赌钟"
+    );
+    assert_eq!(mgr.list_servers().len(), 2, "srv-b 已被热更加载");
     assert!(!mgr.check_config_changed());
 }
 
@@ -231,7 +280,7 @@ fn test_discover_tools_timeout_nonexistent_command() {
 }
 
 // ---------------------------------------------------------------------------
-// Full mtime → find_new_servers flow
+// Full content-change → find_new_servers flow
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -250,11 +299,10 @@ fn test_mtime_detects_new_server_after_add() {
     );
     let mut mgr = McpManager::new(path);
 
-    // Consume initial mtime
+    // Consume initial content
     assert!(!mgr.check_config_changed());
 
     // Simulate "mcp add" writing a new server to config
-    std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &mgr.config_path().to_path_buf(),
         &McpConfig {
@@ -267,7 +315,7 @@ fn test_mtime_detects_new_server_after_add() {
         },
     );
 
-    // mtime should detect change and reload config
+    // change detection picks up external write and reloads config
     assert!(mgr.check_config_changed());
     assert_eq!(mgr.list_servers().len(), 2);
 
@@ -296,7 +344,6 @@ fn test_find_new_servers_after_mtime_reload() {
     assert!(new_srvs.is_empty(), "srv-a already registered");
 
     // Add srv-b externally
-    std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &mgr.config_path().to_path_buf(),
         &McpConfig {
@@ -438,17 +485,15 @@ fn test_check_config_changed_reload_failure_keeps_mtime() {
     let mut mgr = McpManager::new(path.clone());
     assert!(!mgr.check_config_changed());
 
-    // Corrupt the file on disk (mtime changes), then ask for changes.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Corrupt the file on disk (content changes), then ask for changes.
     std::fs::write(&path, "{ broken json").unwrap();
 
     // Reload fails — check_config_changed must report false AND must NOT
-    // update last_mtime (so the next round retries the broken file).
+    // update last_content (so the next round retries the broken file).
     assert!(!mgr.check_config_changed());
 
-    // Because mtime was not updated, fixing the file makes the next round
-    // detect and reload successfully.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Because the record was not updated, fixing the file makes the next
+    // round detect and reload successfully.
     write_config(
         &path,
         &McpConfig {
@@ -591,7 +636,9 @@ for line in sys.stdin:
             sys.stdout.flush()
             continue
         if args.get("img"):
-            result = {"content": [{"type": "image", "text": "b64x"}], "isError": False}
+            # BUG-20261104-380：规范形态（base64 在 data 字段 + mimeType）——
+            # 此前 fixture 用违例形态（text 塞载荷）迁就实现缺陷，恒产空占位。
+            result = {"content": [{"type": "image", "data": "b64x", "mimeType": "image/png"}], "isError": False}
         elif args.get("slow"):
             import time
             time.sleep(10)
@@ -647,10 +694,15 @@ async fn test_w4c_discover_tools_success_and_execute_matrix() {
     assert!(!r.is_error);
     assert_eq!(r.content, "called");
 
-    // image 内容分支
+    // image 内容分支（规范形态 data+mimeType → 诚实注记，BUG-20261104-380）
     let r = tools[0].execute(serde_json::json!({"img": true})).await;
     assert!(!r.is_error);
-    assert!(r.content.contains("[Image: b64x]"));
+    assert!(
+        r.content
+            .contains("[Image: image/png, 4 bytes base64 (data not passed through)]"),
+        "actual: {}",
+        r.content
+    );
 
     // 服务器侧 isError → "returned error"
     let r = tools[0].execute(serde_json::json!({"fail": true})).await;
@@ -1158,4 +1210,35 @@ fn r47_save_config_atomic_no_tmp_residue_and_round_trips() {
     assert_eq!(reloaded.servers.len(), 1);
     assert_eq!(reloaded.servers[0].name, "atomic-srv");
     assert_eq!(reloaded, config, "round-trip must be lossless");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-336 回归锁：one-shot 探测的内层逐请求超时必须跟随外层预算
+// （+1s 让位宽限）。此前两处 one-shot（stdio / HTTP）走裸 McpClient::new()，
+// 内层硬编码 30s——调用方传 timeout>30 放宽预算被内层静默截断（外层形同
+// 虚设，报错形态是内层 -3 timeout）。2026-10-15 第十二轮只修了
+// from_server_config 注册路径，本位点同族漏配。红证（CLI 实跑）：31s 慢
+// server + --timeout 35 → 修复前 32s 失败于内层；修复后 ~31s 成功。
+// 行为级区分度需 >30s 墙钟（不可入 CI），接线咬合以纯函数断言钉死：
+// 两处 one-shot 构造点消费 one_shot_request_timeout_ms（编译器强制存在），
+// 推导值与 from_server_config_with_profile 的「外层+1s」纪律同源。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r336_one_shot_budget_defaults_to_15s_on_zero() {
+    assert_eq!(super::one_shot_budget(0).as_secs(), 15);
+    assert_eq!(super::one_shot_budget(15).as_secs(), 15);
+    assert_eq!(super::one_shot_budget(35).as_secs(), 35);
+}
+
+#[test]
+fn r336_one_shot_inner_timeout_follows_outer_budget_plus_grace() {
+    // 缺省/零 → 外层 15s → 内层 16s
+    assert_eq!(super::one_shot_request_timeout_ms(0), 16_000);
+    assert_eq!(super::one_shot_request_timeout_ms(15), 16_000);
+    // 临界：外层 30s（旧硬编码值）→ 内层 31s（恒大于外层，不再平齐）
+    assert_eq!(super::one_shot_request_timeout_ms(30), 31_000);
+    // 缺陷显形区间：外层 >30s → 内层跟随，不再被旧 30s 硬编码截断
+    assert_eq!(super::one_shot_request_timeout_ms(35), 36_000);
+    assert_eq!(super::one_shot_request_timeout_ms(120), 121_000);
 }

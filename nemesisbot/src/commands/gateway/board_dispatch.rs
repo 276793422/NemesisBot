@@ -37,6 +37,7 @@ pub(crate) fn write_back_board_dispatch(
     status: &str,
     response: &str,
     fail_class: &str,
+    echoed_generation: Option<i64>,
 ) -> BoardWritebackOutcome {
     use nemesis_board::models::dispatch_state;
 
@@ -85,6 +86,38 @@ pub(crate) fn write_back_board_dispatch(
             "[Gateway] board dispatch {task_id} already terminal ({}), skip",
             disp.state
         );
+        return BoardWritebackOutcome {
+            is_board_task: true,
+            issue_for_review: None,
+            settled: false,
+        };
+    }
+    // AOR 批二a ④：代际写回闸。worker 原样回声派发代际号——回声与当前
+    // 行代际不一致 = 旧代迟到回调（重派后新一代已接手该 issue），拒绝
+    // 覆盖：不落终态、不收账、不评论 worker 结果、不触发评审，系统评论
+    // 留痕后诚实早退（settled=false，互斥释放波不误触发）。回声缺席
+    // （旧 B 端不认识该键 / CD3 恢复路径无 payload）= 放行，向后兼容。
+    if let Some(echo) = echoed_generation
+        && echo != disp.generation
+    {
+        warn!(
+            "[Gateway] board dispatch {task_id} generation mismatch (echo={echo}, current={}), stale callback rejected",
+            disp.generation
+        );
+        if let Err(e) = bstore.add_comment(nemesis_board::NewComment {
+            issue_id: disp.issue_id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "第 {echo} 代写回被拒：该 issue 已被第 {} 代派发接手，旧代回调迟到，状态不覆盖。",
+                disp.generation
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        }) {
+            warn!(
+                "[Gateway] board writeback generation-reject comment failed (task_id={task_id}): {e}"
+            );
+        }
         return BoardWritebackOutcome {
             is_board_task: true,
             issue_for_review: None,

@@ -765,6 +765,12 @@ def handle(msg):
             # C3 回归：rust-analyzer 形态——工作区就绪先推空数组（清屏），
             # 随后沉默。空推送不得解锁 quiet 收敛（否则真诊断前提前返回）。
             push_empty(last_doc_uri[0])
+        if MODE == "wedged-after-open":
+            # R337：记录后**活着但停止消费 stdin**（长 sleep，不退出也不
+            # 继续读）——模拟语言服务器僵死。后续超管道缓冲的大 didChange
+            # 写会塞满管道缓冲、永久阻塞写方（无超时包裹时测试进程挂死）。
+            time.sleep(60)
+            return
         if MODE == "uri-normalize":
             # C3 回归（2026-09-05 实机根修）：服务器按 WHATWG 规范化回显
             # URI——rust-analyzer 真机实锤：Windows 盘符 `C:` → `c:`。
@@ -1330,6 +1336,61 @@ async fn c3_normalized_uri_echo_still_matches() {
     assert_eq!(diags[0].severity, 1);
     // 被动快照同键可读。
     assert_eq!(mgr.diagnostics_for(&go).await.len(), 1);
+    let _ = mgr.shutdown_all().await;
+}
+
+// ===========================================================================
+// R337（BUG-20261103-337）：通知写无界挂死 → 超时预算 + 中毒驱逐
+// ===========================================================================
+
+/// BUG-20261103-337 red→green：server **活着但停止消费 stdin**（僵死）时，
+/// didOpen/didChange 带文件全文的通知写会塞满管道缓冲并永久阻塞——request
+/// 路径的写有外层 timeout 包裹，通知路径（touch_file/notify_change →
+/// sync_doc）此前裸写，agent 工具会卡满 executor 看门狗（默认 1800s）。
+/// 修复前本测试挂死（外部 timeout 强杀 = 红证实录）；修复后 notify_change
+/// 在 request_timeout 预算内诚实报错，wedged 会话被驱逐（session_count
+/// 归零），下一次 touch 自愈到新会话。
+#[tokio::test]
+async fn r337_notify_change_on_wedged_server_times_out_and_evicts() {
+    let (dir, _path) = plant_fake_gopls("wedged-after-open");
+    // request_timeout 兼任通知写预算（2s 足以区分「缓冲写入立即完成」与
+    // 「阻塞等待 server 消费」——前者毫秒级，后者撞预算）。
+    let mgr = LspManager::new(Some(Duration::from_secs(2)), None);
+    let go = dir.path().join("main.go");
+
+    // didOpen 是小消息（28 字节文件全文）：写入进缓冲即完成，server 还在
+    // 读，消费成功（jsonl 记录在 wedged sleep 之前落盘）。
+    mgr.touch_file(&go).await.unwrap();
+    wait_docs_seen(dir.path(), 1).await;
+    assert_eq!(mgr.session_count().await, 1);
+
+    // didChange 带超管道缓冲（Windows ~4KB / Linux 64KB）的大全文：server
+    // 已 wedged，缓冲写满后阻塞等消费。
+    let big = format!("package main\n\n{}", "x".repeat(512 * 1024));
+    let t0 = std::time::Instant::now();
+    let err = mgr.notify_change(&go, &big).await.unwrap_err();
+    let elapsed = t0.elapsed();
+    assert!(
+        err.contains("timed out"),
+        "写超时必须诚实报错而非永久挂死: {err}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "必须在 request_timeout 预算量级返回（2s 预算），实际 {elapsed:?}"
+    );
+    // 写超时 = 会话中毒（同 "timed out" 的 poisoning 语义）：wedged 会话
+    // 被驱逐，而非滞留表里让后续同步每次都卡满预算。
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "wedged 会话必须被驱逐（下次同步/查询自愈新会话）"
+    );
+
+    // 下一次 touch 自愈：spawn 新会话（wedged-after-open 对新进程同样生效
+    // ——didOpen 小消息消费成功后再次 wedged，但小消息写总能完成）。
+    mgr.touch_file(&go).await.unwrap();
+    wait_docs_seen(dir.path(), 2).await;
+    assert_eq!(mgr.session_count().await, 1, "下一次同步应自愈到新会话");
     let _ = mgr.shutdown_all().await;
 }
 

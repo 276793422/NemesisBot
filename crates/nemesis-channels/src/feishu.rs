@@ -441,6 +441,21 @@ impl FeishuChannel {
         }
     }
 
+    /// 循环尾退避等待：睡满 `backoff` 返回 true；等待期间取消被触发
+    /// （oneshot 完成，含 sender 侧 drop）返回 false。
+    /// BUG-20261104-384：循环尾旧形态 `select! { sleep => {}, async {} => {} }`
+    /// 空 async 臂首个 poll 即 Ready，select 恒立即返回，退避 sleep 被完全
+    /// 短路（断连后零间隔重连）。抽成独立函数以便单测锁语义。
+    async fn backoff_wait(
+        backoff: std::time::Duration,
+        cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    ) -> bool {
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => true,
+            _ = cancel_rx => false,
+        }
+    }
+
     /// Spawns the WebSocket receive loop.
     fn spawn_receive_loop(&self) {
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
@@ -673,17 +688,15 @@ impl FeishuChannel {
                     }
                 }
 
-                // Reset cancel_rx for next iteration (it was consumed)
+                // cancel_rx 在取消路径经 return/break 退出循环，到循环尾
+                // 并未被消费（&mut 借用 cancel-safe），仍可与退避 sleep
+                // 一起 select——与循环内其余退避点同款形态。
                 if !*running.read() {
                     break;
                 }
 
-                tokio::select! {
-                    _ = tokio::time::sleep(backoff) => {}
-                    _ = async {
-                        // Can't reuse cancel_rx since it may have been consumed.
-                        // Just wait for the sleep.
-                    } => {}
+                if !Self::backoff_wait(backoff, &mut cancel_rx).await {
+                    break;
                 }
 
                 backoff = (backoff * 2).min(MAX_BACKOFF);

@@ -108,7 +108,13 @@ async function adminApi(path, method, body) {
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
-function esc(s) { return String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// BUG-20261104-379：属性上下文（option value/title）必须连引号一起转义——
+// 只转 &<> 时含 " 的持久化数据（issuer name 等任意 admin 输入）逃逸属性
+// 注入 JS = 存储型 XSS。文本上下文行为不变（&quot;/&#39; 在文本处原样渲染
+// 回引号字符）。边界：L163 quickRevoke 的 onclick 内嵌是 HTML属性+JS字符串
+// 双层上下文，esc 不覆盖 JS 层——该位点安全靠 sig_hash 数据源封闭（服务端
+// hex_str 生成）保证；若未来接自由文本数据须换 data-* 属性+事件委托。
+function esc(s) { return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtTime(t) { return t ? new Date(t*1000).toLocaleString() : ''; }
 
 async function loadIssuers() {

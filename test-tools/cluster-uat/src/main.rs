@@ -4587,13 +4587,19 @@ async fn main() {
             };
 
             // 6. 轮询 session_logs（恢复循环 120s tick + 2min 新鲜保护，
-            //    预计 2-4 分钟内完成；deadline 300s）。
+            //    预计 2-4 分钟内完成）。
+            //    BUG-20261103：deadline 300s 只有 2.5 个 tick 机会——满载
+            //    runner（T-WAN-1 判词自证「前置测试极端慢速」段预算耗尽）
+            //    一次 tick miss 即超窗（scheduled ET 41596006276 core a1
+            //    08:06Z 实录：54 过 1 红即此）。与 T43/T46 同族慢批形态，
+            //    同房规修：等窗 ≥ 3 tick + 余量 = 540s（4.5 tick，2.25×
+            //    4min 上界预期），慢段才延伸、正常段 2-4min 照旧完赛。
             let session_logs_dir = ws_a
                 .home()
                 .join("workspace")
                 .join("logs")
                 .join("session_logs");
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(540);
             let mut recovered = false;
             while tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -4636,7 +4642,7 @@ async fn main() {
                 return fail(
                     "T19",
                     format!(
-                        "300s 内恢复未完成：session_logs 无 marker user 行 + 「好的，我知道了」assistant 行（dir={}）——检查 first_start 登记/恢复循环/回灌 bus 链路",
+                        "540s 内恢复未完成：session_logs 无 marker user 行 + 「好的，我知道了」assistant 行（dir={}）——检查 first_start 登记/恢复循环/回灌 bus 链路",
                         session_logs_dir.display()
                     ),
                 );
@@ -10123,9 +10129,35 @@ async fn main() {
                 ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
                 ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
 
-                // 1. 胜者先合并（in_review/done）→ 立刻 kill 双 worker：在硬解
-                //    3 轮失败窗口（Delay=4s×3 ≈ 12s）内完成，t0 探针必扑空。
-                wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                // 1. 胜者先合并（in_review/done）→ 等**败者执行档案安置**
+                //    （records/<败者>/execution/ 出现）→ kill 双 worker：kill
+                //    仍落在硬解 3 轮失败窗口（Delay=4s×3 ≈ 12s）内，t0 探针
+                //    必扑空。BUG-20261104 CI mrg-b2 实录：split 一见胜者
+                //    in_review 就杀，败者 C 的档案推送差 ~50ms（9/9 块已到
+                //    A、transfer_end 未发）→ 档案永不安置 → 冲突合并永不
+                //    触发 → spawn_conflict_resolver 唯一入口（落地腿，
+                //    board_archive_ingest::handle_merge_conflict）整链不启动
+                //    （硬解/探针/换人零日志），D5 兜底拉取对死节点每 60s
+                //    空转 → 600s 墙钟爆。board API 对档案安置零早期投影
+                //    （状态停 in_progress、无注释无审计），文件系统是唯一
+                //    确定性信号；落地正常 ~1s（exec 目录删除重试不对称最坏
+                //    ~5s，Windows os error 32 拖推送 4.4s 实录），30s 超时
+                //    诚实 bail 免楔死。安置→冲突合并→resolver spawn 全链在
+                //    A 本地（不依赖 B/C 存活），kill 晚于安置即安全。
+                let (_win_id, lose_id) = wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                let lose_num = if lose_id == id1 { &num1 } else { &num2 };
+                let placed_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                loop {
+                    if tokio::time::Instant::now() >= placed_deadline {
+                        anyhow::bail!(
+                            "等待败者 {lose_num} 执行档案落地超时——kill 锚定必须在安置后（过早杀=投递途中截断，硬解/换人链不启动）"
+                        );
+                    }
+                    if !execution_dirs(&pdir, lose_num).is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
                 gw_b.kill().await;
                 gw_c.kill().await;
 

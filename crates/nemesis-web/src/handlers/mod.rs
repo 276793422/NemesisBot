@@ -129,6 +129,12 @@ pub mod tasks;
 // 角色目录 WSAPI（2026-09-28 角色目录与分档供给）：roles.list——委派卡
 // 角色下拉数据源（目录全量 + tier 分档可见性，与 dispatch 闸同源裁决）。
 pub mod roles;
+// 子代理任务注册表 WSAPI（子代理可见性 P1/P2，2026-11-03）：subagents.list/
+// detail/cancel——三形态统一台账读面 + 用户面终止。
+pub mod subagents;
+// 子代理 WSAPI handler 测试（全局注册表纯内存态；断言按唯一 marker 过滤）。
+#[cfg(test)]
+mod subagents_handler_tests;
 // 独立代理配置 WSAPI（2026-10-31 代理设置三项改造）：proxy.get/save——
 // `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
 // （独立文件不依赖任何子系统）。
@@ -179,6 +185,12 @@ mod sessions_snooze_tests;
 #[cfg(test)]
 mod sessions_trash_tests;
 
+// L22（2026-11-03 snooze 排队 + 跨设备移动 + session PR）：import/
+// changed_files 两动词 + 重放 hook（unsnooze delivered / wake 消费 /
+// 无 hook 滞留保留）+ orphan 兜底四臂 + list pendingCount 投影。
+#[cfg(test)]
+mod sessions_l22_tests;
+
 // L6++ G4（2026-09-08）：projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]
@@ -201,6 +213,11 @@ mod m5_session_usage_tests;
 // 阈值建议 / 窗口夹取 / 账本未装配诚实空。
 #[cfg(test)]
 mod models_health_tests;
+
+// BUG-20261104-361 回归钉: models.add 模型 identifier 形态校验（穿越段/
+// 反斜杠/空段 loud 拒，且先于 config 触达）。
+#[cfg(test)]
+mod models_add_validation_tests;
 
 // L1 (2026-09-06, devtool-upgrade 阶段 6): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + docs/INFO/wsapi-commands.md 文档生成 +
@@ -360,6 +377,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(deliveries::DeliveriesHandler));
     // 角色目录（2026-09-28 角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
+    // 子代理可见性（2026-11-03）：subagents.list/detail/cancel。
+    router.register(Arc::new(subagents::SubagentsHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));

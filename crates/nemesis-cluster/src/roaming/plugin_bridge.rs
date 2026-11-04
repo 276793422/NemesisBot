@@ -481,5 +481,61 @@ impl RoamingDialer for BridgeDialer {
     }
 }
 
+/// 从拨号地址提取 iroh hex（`iroh:<hex>` / `iroh:<hex>@<relay>` 完整形态）。
+/// 非 iroh 形态（TCP `host:port`）返回 None——无信任面；只剥前缀/后缀，
+/// 不做 on-curve 校验（veto 裁决是簿匹配，非身份构造）。
+pub fn extract_iroh_hex(addr: &str) -> Option<&str> {
+    let rest = addr.trim().strip_prefix(crate::IROH_ADDR_PREFIX)?;
+    let hex = match rest.split_once('@') {
+        Some((h, _relay)) => h,
+        None => rest,
+    };
+    if hex.is_empty() { None } else { Some(hex) }
+}
+
+/// 带信任闸的生产 dialer（L16② 吊销后拒连出站臂）：拨号前查本地 TrustBook
+/// 吊销名单——revoked 一票 veto（诚实 Err，调用方 ⛔ 重试语义照常），其余
+/// （簿缺席 / unknown / trusted）透传内层拨号臂。close 无信任面直透传。
+///
+/// 默认内层 = [`BridgeDialer`]（生产装配 `Arc::new(TrustGateDialer {
+/// workspace })` 即可）；测试经 `inner` 注入记录型假 dialer。
+#[derive(Debug, Clone)]
+pub struct TrustGateDialer<D = BridgeDialer> {
+    /// workspace 根（trust.toml = `<workspace>/cluster/trust.toml`）。
+    pub workspace: std::path::PathBuf,
+    /// 放行后的内层拨号臂。
+    pub inner: D,
+}
+
+impl<D: RoamingDialer + Clone> RoamingDialer for TrustGateDialer<D> {
+    fn dial(
+        &self,
+        addr: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u16, u64), String>> + Send>>
+    {
+        let addr = addr.to_string();
+        let workspace = self.workspace.clone();
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            if let Some(hex) = extract_iroh_hex(&addr)
+                && super::trust::dial_vetoed(&workspace, hex)
+            {
+                tracing::warn!(
+                    addr = %addr,
+                    "[TrustGateDialer] 出站 iroh 拨号被吊销名单 veto"
+                );
+                return Err(format!(
+                    "iroh 对端已被本节点吊销（trust.toml revoked）: {addr}"
+                ));
+            }
+            inner.dial(&addr).await
+        })
+    }
+
+    fn close(&self, conn_id: u64) {
+        self.inner.close(conn_id);
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -49,6 +49,10 @@ pub(crate) struct CompactState {
     /// W2：未知窗口停用注记的一次性闸（per-session
     /// 发过不再发；限频之外的第二道防刷屏）。
     suppressed_noticed: bool,
+    /// 空转前缀一次性注记闸（2026-11-05 小窗口实测根修）：边界只覆盖
+    /// system/超限轮（无可摘要内容）时跳过摘要并发一次性注记——不发注记
+    /// 用户就面对「pct 长期 100% 却零解释」的无声态（本次事故的起点）。
+    noop_noticed: bool,
 }
 
 /// ⑩ Summarize tier: at this fraction, trigger summarization. 2026-10-20
@@ -316,6 +320,12 @@ pub(crate) fn compaction_note_text(
 /// 按真实修复路径改为引导配置 `context_window`。）
 pub(crate) const COMPACT_SUPPRESSED_NOTE: &str = "[压缩已停用] 当前模型上下文窗口未知（按 128k 保守估计显示），自动压缩已停用（避免猜错窗口过早失忆）——为模型配置 context_window（Dashboard 模型管理或 config.json，或改用价目表可命中的标准模型名）后自动恢复；手动 /compact 不受影响。";
 
+/// 空转前缀一次性注记（2026-11-05 小窗口实测根修）：触发点已过但边界
+/// 无可摘要内容（逐字尾巴预算覆盖全部对话轮，前缀只剩 system/超限轮）时
+/// 发。此前该状态静默——触发侧把空转当失败记账，两轮烧掉 stuck 闩暂停
+/// 自动压缩，且日志只有一条误导性 WARN（「LLM failure」——实际零 LLM 调用）。
+pub(crate) const COMPACT_NOOP_PREFIX_NOTE: &str = "[自动摘要无事可做] 上下文已过压缩触发点，但逐字保留尾巴已覆盖全部对话内容，没有可折叠的前缀（system 提示与超限单消息不可摘要）。本次跳过摘要且不计失败；若 context 百分比长期偏高，多为 system/工具常量超出窗口配置——调大 context_window 或调小 compact_keep_recent_tokens 可缓解。";
+
 /// W1：自动压缩注记的档位仲裁（resumed 标志位 → 档位；纯函数便于钉死
 /// 「恢复档一次性消费」由调用方负责清除的契约）。
 pub(crate) fn resolve_auto_note_reason(resumed_from_pause: bool) -> CompactReason {
@@ -352,6 +362,34 @@ pub(crate) fn token_budget_boundary(
         start -= 1;
     }
     start
+}
+
+/// 摘要请求单消息 token 上限的单一真相源（[`summarize_prefix_owned`] 的
+/// 超限守卫与触发侧「值得摘要」闸共用同一常量，防两处口径漂移）。
+pub(crate) fn summarizer_max_msg_tokens(context_window: usize) -> usize {
+    context_window / 2
+}
+
+/// 边界前进是否「真实」（2026-11-05 小窗口实测根修）：新增可折叠段
+/// `history[max(c,1)..new_c]` 里必须存在至少一条可摘要的 user/assistant 轮
+/// （且不超摘要单消息上限）。`new_c > c` 本身可能是假前进——history[0] 是
+/// system turn（[`project_history_for_request`] 每轮重建、永不摘要），当
+/// 逐字尾巴预算覆盖全部对话轮时边界停在 1，前缀只剩 system：此前该状态
+/// 会被当失败记账（瞬时 None + WARN），两轮烧掉 stuck 闩暂停自动压缩，
+/// 而真相只是「无事可做」。false = 跳过调用、不记失败。
+pub(crate) fn summarize_advance_worthwhile(
+    history: &[crate::types::ConversationTurn],
+    c: usize,
+    new_c: usize,
+    context_window: usize,
+) -> bool {
+    let max_msg_tokens = summarizer_max_msg_tokens(context_window);
+    let start = c.max(1).min(history.len());
+    let end = new_c.min(history.len());
+    history[start..end].iter().any(|t| {
+        (t.role == "user" || t.role == "assistant")
+            && crate::session::estimate_tokens(&t.content) <= max_msg_tokens
+    })
 }
 
 /// P5 前的旧尾巴语义，现降级为回退路径：`compact_keep_recent_tokens = 0`
@@ -620,6 +658,34 @@ impl AgentLoop {
             }
         }
 
+        // 空转前缀闸（2026-11-05 小窗口实测根修）：物理可能性优先于策略
+        // 意志——前缀没有可摘要内容时任何策略的 Compact 都只能产出瞬时
+        // None。闸门拦截发生在失败记账（⑩ 块）之前，空转不再烧 stuck 闩；
+        // 一次性系统注记对齐 W2 停用态（用户侧 pct 长期偏高不再零解释）。
+        if will_summarize && !summarize_advance_worthwhile(&history, c, new_c, context_window) {
+            will_summarize = false;
+            info!(
+                "[AgentLoop] summarize skipped for {}: new boundary {new_c} covers no summarizable content (system turn / oversized messages only); no attempt made, no failure counted",
+                session_key
+            );
+            let fire = {
+                let mut states = self.compact_state.lock();
+                if states.len() > SESSION_STATE_MAX_ENTRIES {
+                    states.clear();
+                }
+                let st = states.entry(session_key.to_string()).or_default();
+                if st.noop_noticed {
+                    false
+                } else {
+                    st.noop_noticed = true;
+                    true
+                }
+            };
+            if fire {
+                crate::chat_log::append_chat_log(session_key, "system", COMPACT_NOOP_PREFIX_NOTE);
+            }
+        }
+
         // ⑩ Graded tiers (soft / summarize) + stuck self-check on the tail.
         // Soft is info-log-only. The stuck counter only ticks when summarize
         // will ACTUALLY run — otherwise a chronically-over-threshold tail that
@@ -630,6 +696,11 @@ impl AgentLoop {
         // W1：soft 预警注记待发旗（emit 内部要再取 compact_state 锁——
         // parking_lot 不可重入，必须在下方锁作用域外发）。
         let mut soft_note_fired = false;
+        // BUG 可见性修复（2026-11-03）：stuck 闩置位时的一次性聊天注记
+        // （此前只落 warn 日志，用户侧「98% 永不压缩」零解释——与 W2
+        // COMPACT_SUPPRESSED_NOTE 的停用态注记不对称）。锁内置文本，
+        // 锁外 append_chat_log（同 soft_note_fired 纪律）。
+        let mut stuck_note: Option<String> = None;
         {
             let mut states = self.compact_state.lock();
             if states.len() > SESSION_STATE_MAX_ENTRIES {
@@ -675,6 +746,10 @@ impl AgentLoop {
                             st.consecutive_failures
                         );
                         st.stuck = true;
+                        stuck_note = Some(format!(
+                            "[自动压缩已暂停] 连续 {} 次摘要未有效缩减上下文（摘要产出为空或无实效），自动压缩已暂停——上下文将继续增长。可手动 /compact 强制压缩；思考型（thinking）模型的摘要输出常被思考 token 烧穿，请检查模型配置。",
+                            st.consecutive_failures
+                        ));
                     }
                 } else {
                     st.last_summary_tokens = signal;
@@ -704,6 +779,10 @@ impl AgentLoop {
                 soft,
                 trig.window_source,
             );
+        }
+        // stuck 停用注记（false→true 转变沿一次性；锁外发送）。
+        if let Some(note) = stuck_note {
+            crate::chat_log::append_chat_log(session_key, "system", &note);
         }
         if paused_stuck {
             return;
@@ -858,6 +937,7 @@ impl AgentLoop {
                     session_key, projected
                 );
                 let mut states = self.compact_state.lock();
+                let mut stuck_note: Option<String> = None;
                 if let Some(st) = states.get_mut(session_key) {
                     st.no_progress += 1;
                     if st.no_progress >= COMPACT_NO_PROGRESS_LIMIT && !st.stuck {
@@ -866,7 +946,17 @@ impl AgentLoop {
                             "[AgentLoop] compaction paused for {}: {COMPACT_NO_PROGRESS_LIMIT} consecutive no-progress summarizations (manual /compact still available)",
                             session_key
                         );
+                        // BUG 可见性修复（2026-11-03）：同失效轴——停用态发
+                        // 一次性聊天注记，不留「98% 永不压缩」无解释态。
+                        stuck_note = Some(format!(
+                            "[自动压缩已暂停] 连续 {} 次摘要无进展（省幅不足阈值被弃用），自动压缩已暂停。可手动 /compact 强制压缩，或检查摘要模型/上下文窗口配置。",
+                            st.no_progress
+                        ));
                     }
+                }
+                drop(states);
+                if let Some(note) = stuck_note {
+                    crate::chat_log::append_chat_log(session_key, "system", &note);
                 }
             } else {
                 instance.set_summary_cache(Some(crate::instance::SummaryCache {
@@ -1489,14 +1579,15 @@ pub(crate) async fn summarize_bare_concat_owned(
         observer_manager.as_ref(),
         "summarize-bare-concat",
         model,
-        || {
+        &llm_messages,
+        |max_tokens| {
             let llm_messages = llm_messages.clone();
             async move {
                 provider
                     .chat(
                         model,
                         llm_messages,
-                        Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+                        Some(aux_chat_options(max_tokens)),
                         vec![],
                     )
                     .await
@@ -1605,14 +1696,15 @@ pub(crate) async fn summarize_multipart_owned(
         observer_manager.as_ref(),
         "summarize-multipart-merge",
         model,
-        || {
+        &llm_messages,
+        |max_tokens| {
             let llm_messages = llm_messages.clone();
             async move {
                 provider
                     .chat(
                         model,
                         llm_messages,
-                        Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+                        Some(aux_chat_options(max_tokens)),
                         vec![],
                     )
                     .await
@@ -1681,16 +1773,12 @@ pub(crate) async fn summarize_batch_owned(
         observer_manager.as_ref(),
         "summarize-batch",
         model,
-        || {
+        &messages,
+        |max_tokens| {
             let messages = messages.clone();
             async move {
                 provider
-                    .chat(
-                        model,
-                        messages,
-                        Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
-                        vec![],
-                    )
+                    .chat(model, messages, Some(aux_chat_options(max_tokens)), vec![])
                     .await
             }
         },
@@ -1723,17 +1811,26 @@ pub(crate) async fn summarize_batch_owned(
 /// Emit observer events (ConversationStart, LlmRequest, LlmResponse, ConversationEnd)
 /// around a synchronous LLM call closure. Used by standalone summarization functions.
 ///
-/// `make_call` 是工厂闭包（每次调用产出一个新请求 future）：空输出/瞬态失败
-/// 由 [`with_one_retry`] 在同一超时窗口内重建请求重试一次（采样抖动兜底；
-/// 总墙钟预算不随重试翻倍）。
+/// `messages` 是本次调用实际发出的请求消息（供 LlmRequest 观测事件记录
+/// 「摘了什么」——此前硬编码 `vec![]`，aux_ 日志请求侧永远空壳，无法事后
+/// 定性压缩在摘哪段历史；2026-11-04 记录面缺陷①）。
+///
+/// `make_call` 是工厂闭包（**入参 max_tokens**，每次调用产出一个新请求
+/// future）：空输出/瞬态失败由 [`with_one_retry`] 在同一超时窗口内同预算
+/// 重试一次（采样抖动兜底）；默认预算两连空再以 4× 预算升档重试一次
+/// （thinking 系模型默认 effort 烧穿输出预算的根因兜底，2026-11-03——
+/// 根修在 codex lane 的 reasoning_effort 翻译，此处是无根修前的旧模型/
+/// 旧 lane 兜底）。总墙钟预算不随重试翻倍（外层 AUX_SUMMARY_TIMEOUT
+/// 统一约束）。
 pub(crate) async fn emit_observer_events_around_llm<F, Fut>(
     observer_manager: Option<&Arc<nemesis_observer::Manager>>,
     label: &str,
     model: &str,
+    messages: &[LlmMessage],
     make_call: F,
 ) -> Option<Result<LlmResponse, String>>
 where
-    F: Fn() -> Fut,
+    F: Fn(u32) -> Fut,
     Fut: std::future::Future<Output = Result<LlmResponse, String>>,
 {
     use crate::loop_executor::ObserverEvent;
@@ -1749,13 +1846,29 @@ where
 
     // Emit ConversationStart + LlmRequest before the call (await, no block_in_place).
     if let Some(mgr) = observer_manager {
+        // 00.request.md 的 Message 段此前恒空——aux 流没有「用户消息」概念，
+        // 真实请求全量在 LlmRequest 事件（raw envelope）。填一次性预览
+        // （首条 user 消息截断），打开 aux 目录不必翻 raw json 就知道这次
+        // 摘要折的是什么。
+        let preview = messages
+            .iter()
+            .find(|m| m.role == "user")
+            .map(|m| {
+                let total = m.content.chars().count();
+                let mut c: String = m.content.chars().take(200).collect();
+                if total > 200 {
+                    c.push('…');
+                }
+                format!("[摘要任务 · {} 条消息预览]\n{}", messages.len(), c)
+            })
+            .unwrap_or_default();
         let start_event = ObserverEvent::ConversationStart {
             trace_id: trace_id.clone(),
             session_key: label.to_string(),
             channel: String::new(),
             chat_id: String::new(),
             sender_id: "summarizer".to_string(),
-            content: String::new(),
+            content: preview,
         };
         mgr.emit(start_event.to_conversation_event()).await;
 
@@ -1763,10 +1876,10 @@ where
             trace_id: trace_id.clone(),
             round: 0,
             model: model.to_string(),
-            messages: vec![],
-            tools: vec![],
-            messages_count: 0,
+            messages_count: messages.len(),
             tools_count: 0,
+            messages: observer_msg_values(messages),
+            tools: vec![],
             provider_name: String::new(),
             api_key: String::new(),
             api_base: String::new(),
@@ -1783,20 +1896,53 @@ where
     // 形态）永远不触发重试（2026-09-28 复查修正；与 bypass_llm::
     // guarded_llm_call_retrying 同构）。工厂闭包重建请求；总墙钟预算不随
     // 重试翻倍。
+    //
+    // 升档重试（2026-11-03 空摘要根因兜底）：默认预算两连空（with_one_retry
+    // 同预算重试一次后仍空）= thinking 占用烧穿输出预算的主要形态 → 以
+    // 4× 预算再试一次，给足思考+正文空间。只对「空输出」形态升档（provider
+    // 错误/超时不是预算问题，重金再试无益）；归一 Err 文本带
+    // EMPTY_OUTPUT_MARK 标记与 reasoning 长度证据。总墙钟预算仍由外层
+    // AUX_SUMMARY_TIMEOUT 统一约束。
+    const EMPTY_OUTPUT_MARK: &str = "aux-empty-output";
     let start = std::time::Instant::now();
-    let attempt = || {
-        let r = make_call();
+    let attempt = |max_tokens: u32| {
+        let r = make_call(max_tokens);
         async move {
             match r.await {
                 Ok(resp) if resp.content.trim().is_empty() => {
-                    warn!("[bypass:{label}] 模型返回空输出，按失败处理");
-                    Err(format!("[bypass:{label}] 空输出，按失败处理"))
+                    let reasoning_chars =
+                        resp.reasoning_content.as_deref().map(str::len).unwrap_or(0);
+                    warn!(
+                        "[bypass:{label}] 模型返回空输出（budget={max_tokens} reasoning_chars={reasoning_chars}），按失败处理"
+                    );
+                    Err(format!(
+                        "[bypass:{label}] 空输出，按失败处理 ({EMPTY_OUTPUT_MARK} budget={max_tokens} reasoning_chars={reasoning_chars})"
+                    ))
                 }
                 other => other,
             }
         }
     };
-    let mut response = tokio::time::timeout(AUX_SUMMARY_TIMEOUT, with_one_retry(label, attempt))
+    let inner = async {
+        let first = with_one_retry(label, || attempt(AUX_SUMMARY_MAX_TOKENS)).await;
+        if !matches!(&first, Err(m) if m.contains(EMPTY_OUTPUT_MARK)) {
+            return first;
+        }
+        warn!(
+            "[AgentLoop] summarize 预算 {} 两连空输出（thinking 烧穿形态），升档 {} tokens 重试一次",
+            AUX_SUMMARY_MAX_TOKENS,
+            AUX_SUMMARY_MAX_TOKENS * 4
+        );
+        let escalated = attempt(AUX_SUMMARY_MAX_TOKENS * 4).await;
+        if escalated.is_ok() {
+            info!(
+                "[AgentLoop] summarize 升档重试成功（budget {}）",
+                AUX_SUMMARY_MAX_TOKENS * 4
+            );
+        }
+        escalated
+    };
+    let mut response = tokio::time::timeout(AUX_SUMMARY_TIMEOUT, inner)
         .await
         .unwrap_or_else(|_| {
             Err(format!(
@@ -1806,14 +1952,18 @@ where
         });
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let (response_content, raw_req, raw_resp) = match &mut response {
+    // 事件载荷按 Ok/Err 分态（2026-11-04 记录面缺陷②③）：失败不再伪装
+    // 成功——content 带 Error 前缀文本、finish_reason 如实标 error（对齐
+    // 主链路 recovery.rs 失败事件惯例），Err 文本进 request_log 留失败现场。
+    // Ok 路径内容必然非空（空输出已被 attempt() 归一为 Err）。
+    let (response_content, finish_reason, raw_req, raw_resp) = match &mut response {
         Ok(r) => {
             let content = r.content.clone();
             let req = r.raw_request_body.take();
             let resp = r.raw_response_body.take();
-            (content, req, resp)
+            (content, Some("stop".to_string()), req, resp)
         }
-        Err(_) => (String::new(), None, None),
+        Err(e) => (format!("Error: {e}"), Some("error".to_string()), None, None),
     };
 
     // Emit LlmResponse + ConversationEnd after the call (await, sequential —
@@ -1827,7 +1977,7 @@ where
             content: response_content.clone(),
             tool_calls: vec![],
             tool_calls_count: 0,
-            finish_reason: Some("stop".to_string()),
+            finish_reason,
             usage: None,
             raw_request_body: raw_req,
             raw_response_body: raw_resp,
@@ -1931,7 +2081,7 @@ pub(crate) async fn summarize_prefix_owned(
     };
 
     // Oversized message guard.
-    let max_msg_tokens = context_window / 2;
+    let max_msg_tokens = summarizer_max_msg_tokens(context_window);
     let mut valid_messages: Vec<&crate::types::ConversationTurn> = Vec::new();
     let mut omitted = false;
 

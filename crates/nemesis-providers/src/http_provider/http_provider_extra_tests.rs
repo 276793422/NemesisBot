@@ -1930,6 +1930,110 @@ async fn test_chat_stream_trailing_usage_after_tool_calls() {
     assert_eq!(usage.total_tokens, 16);
 }
 
+#[tokio::test]
+async fn test_chat_stream_usage_chunk_without_choices_key_forwarded() {
+    // BUG-20261104-366：兼容端点的 usage 专用 chunk 常省略 choices 键
+    //（旧闸只认「choices 在场且为空数组」→ 该形态被当噪音丢弃，stream=yes
+    // 账本断粮）。缺失视同空数组，端到端必须收下 usage。
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":6,\"total_tokens\":17}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let resp = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.content, "答案");
+    assert_eq!(resp.finish_reason, "stop");
+    let usage = resp
+        .usage
+        .expect("usage chunk without choices key must be captured");
+    assert_eq!(usage.prompt_tokens, 11);
+    assert_eq!(usage.completion_tokens, 6);
+    assert_eq!(usage.total_tokens, 17);
+}
+
+#[tokio::test]
+async fn test_chat_stream_null_usage_not_fabricated_as_zero_row() {
+    // BUG-20261104-366 同族：OpenAI 形态每个 chunk 带 "usage":null（含
+    // finish chunk）。端点不支持 include_usage 时旧代码把 null 提取成
+    // 0/0/0 行当最终记账（假 0 token 账本）——null 必须视作无 usage。
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let resp = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.content, "hi");
+    assert!(resp.usage.is_none(), "usage:null 不得被伪造为 0/0/0 记账行");
+}
+
+#[tokio::test]
+async fn test_chat_null_usage_field_not_fabricated_as_zero_row() {
+    // BUG-20261104-366 同族（非流式）：body "usage":null → None，不造 0 行。
+    let server = MockServer::start().await;
+
+    let response_body = serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": null
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+        .mount(&server)
+        .await;
+
+    let provider = HttpProvider::new(basic_config(server.uri()));
+    let resp = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "ok");
+    assert!(resp.usage.is_none());
+}
+
 // ---------------------------------------------------------------------------
 // BUG-20261029-153 回归锁：非流式 200 body 读传输失败 ≠ Format
 // ---------------------------------------------------------------------------

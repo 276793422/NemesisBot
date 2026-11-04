@@ -1074,6 +1074,7 @@ fn invalid_rule_gap_wording_without_file_gaps() {
     write_healthy_report(&dir, "prompt");
 
     let rules = RulesFile {
+        version: CURRENT_RULES_VERSION,
         rules: vec![
             Rule {
                 id: "bad-source".into(),
@@ -1125,6 +1126,7 @@ fn invalid_rule_gap_wording_without_file_gaps() {
 fn min_count_zero_behaves_like_one() {
     // min_count: 0 语义 = 默认 1（不得"零命中也触发"）。
     let rules = RulesFile {
+        version: CURRENT_RULES_VERSION,
         rules: vec![Rule {
             id: "zero-min".into(),
             description: "d".into(),
@@ -1630,7 +1632,10 @@ fn zero_enabled_rules_direct_pass_is_unknown_not_safe() {
     let dir = tmp.path().join("report");
     write_healthy_report(&dir, "prompt");
 
-    let rules = RulesFile { rules: vec![] };
+    let rules = RulesFile {
+        version: CURRENT_RULES_VERSION,
+        rules: vec![],
+    };
     let r = assess(&dir, &rules);
     assert_eq!(r.conclusion, Conclusion::Unknown);
     assert!(
@@ -1661,6 +1666,7 @@ fn all_enabled_rules_invalid_is_unknown_with_detail() {
     let dir = tmp.path().join("report");
     write_healthy_report(&dir, "prompt");
     let rules = RulesFile {
+        version: CURRENT_RULES_VERSION,
         rules: vec![Rule {
             id: "bad".into(),
             description: "d".into(),
@@ -1893,6 +1899,7 @@ fn save_rules_rename_failure_cleans_tmp_and_errs() {
     let err = save_rules(
         &dest,
         &RulesFile {
+            version: CURRENT_RULES_VERSION,
             rules: vec![minimal_rule()],
         },
     )
@@ -2031,6 +2038,7 @@ fn assess_regex_condition_with_non_string_value_is_skipped_as_invalid() {
     let dir = tmp.path().join("report");
     write_healthy_report(&dir, "prompt");
     let rules = RulesFile {
+        version: CURRENT_RULES_VERSION,
         rules: vec![Rule {
             id: "regex-num-value".into(),
             description: "d".into(),
@@ -2064,6 +2072,7 @@ fn assess_evidence_over_400_bytes_is_truncated_at_char_boundary() {
     let long_text = format!("{}{}", "观察执行内容。".repeat(60), "END");
     std::fs::write(dir.join("subject.txt"), &long_text).unwrap();
     let rules = RulesFile {
+        version: CURRENT_RULES_VERSION,
         rules: vec![Rule {
             id: "long-subject-hit".into(),
             description: "d".into(),
@@ -2092,4 +2101,77 @@ fn assess_evidence_over_400_bytes_is_truncated_at_char_boundary() {
         "evidence must be truncated, len={}",
         ev.len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// L20（改进项三期 2026-11-03）：版本漂移检测 + 覆写前备份
+// ---------------------------------------------------------------------------
+
+#[test]
+fn l20_default_seed_carries_current_version() {
+    let file = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    assert_eq!(
+        file.version, CURRENT_RULES_VERSION,
+        "默认种子带当前版本字段"
+    );
+}
+
+#[test]
+fn l20_legacy_file_without_version_still_loads() {
+    // 旧形态（无 version 字段）零迁移照常载入（serde default = 1）。
+    let legacy = r#"{"rules":[{"id":"r","description":"d","level":"low","source":"subject","conditions":[{"field":"f","op":"exists"}]}]}"#;
+    let file = parse_rules(legacy).unwrap();
+    assert_eq!(file.version, 1, "缺省 version = 1（旧文件零迁移）");
+    assert_eq!(file.rules.len(), 1);
+}
+
+#[test]
+fn l20_newer_version_rejected_with_readable_error() {
+    let newer = format!(
+        r#"{{"version": {}, "rules": []}}"#,
+        CURRENT_RULES_VERSION + 1
+    );
+    let err = parse_rules(&newer).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("newer than supported"),
+        "拒载文案可读（含两侧版本）: {msg}"
+    );
+    assert!(msg.contains("1"), "文案带版本数字: {msg}");
+}
+
+#[test]
+fn l20_save_rules_rotates_bak_before_overwrite() {
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("rules.json");
+    // 首存：文件不存在 → 不产生备份。
+    let v1 = parse_rules(r#"{"rules":[]}"#).unwrap();
+    save_rules(&p, &v1).unwrap();
+    assert!(
+        !p.with_extension("json.bak").exists(),
+        "首存（无旧文件）不产生备份"
+    );
+    // 第二存：旧文件轮换为 .bak，新文件为本次内容。
+    let v2 = parse_rules(
+        r#"{"rules":[{"id":"r","description":"d","level":"low","source":"subject","conditions":[{"field":"f","op":"exists"}]}]}"#,
+    )
+    .unwrap();
+    save_rules(&p, &v2).unwrap();
+    let bak = p.with_extension("json.bak");
+    assert!(bak.exists(), "覆写前备份在场");
+    let bak_val: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&bak).unwrap()).unwrap();
+    assert_eq!(
+        bak_val["rules"].as_array().unwrap().len(),
+        0,
+        "bak 持旧内容（0 规则）"
+    );
+    let cur: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    assert_eq!(
+        cur["rules"].as_array().unwrap().len(),
+        1,
+        "当前文件持新内容"
+    );
+    assert_eq!(cur["version"].as_u64(), Some(1), "保存回写带版本字段");
 }

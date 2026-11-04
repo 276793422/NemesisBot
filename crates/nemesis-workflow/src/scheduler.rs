@@ -315,8 +315,23 @@ async fn schedule_inner(
         // 不可证伪（可能是可选入参/被丢弃的分支）→ 整条条件按不成立处理
         // （跳过分支，保持既有语义），绝不静默选边。
         let mut runnable: Vec<String> = Vec::new();
+        let mut level_paused = false;
         for id in level {
             if skip.contains(&id) {
+                continue;
+            }
+            // Preserved Waiting（BUG-20261103-349）：仍停在审批的节点是
+            // **暂停屏障**，不是「待运行」——重跑会重新执行其副作用
+            // （sub_workflow 每次 execute 都 spawn 新子执行：旧子执行孤儿化、
+            // 路由锚 metadata.execution_id 被换新）。跳过执行，靠本层收尾
+            // 的 Waiting 检查据原结果暂停整轮；本层 runnable 为空时同样
+            // 就此打住——「审批未落地下游不抢跑」（缺陷 9）对 skip 集之外
+            // 的屏障同样成立，不得 `continue` 落空进下游层。
+            if wf_ctx
+                .get_node_result(&id)
+                .is_some_and(|r| r.state == ExecutionState::Waiting)
+            {
+                level_paused = true;
                 continue;
             }
             match eval_edge_conditions(&id, &cond_edges, wf_ctx) {
@@ -327,6 +342,9 @@ async fn schedule_inner(
         }
 
         if runnable.is_empty() {
+            if level_paused {
+                return Ok(ScheduleOutcome::Completed);
+            }
             continue;
         }
 

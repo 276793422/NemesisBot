@@ -415,6 +415,16 @@ pub async fn sweep_missing_archives(
                     "[BoardArchive] D5 兜底拉取：worker 已重推入队"
                 );
             }
+            Ok(v) if v.get("status").and_then(|s| s.as_str()) == Some("assembling") => {
+                // BUG-20261104-361：worker 装配未完（变更集还在组装）——
+                // 不入队也不记 seen，下个 sweep 周期再看；正常完成腿会带
+                // 完整载荷（执行记录 + 变更集）交付。
+                tracing::debug!(
+                    task_id = %task_id,
+                    worker = %latest.worker_id,
+                    "[BoardArchive] D5 兜底拉取：worker 装配未完（观望，下轮重试）"
+                );
+            }
             Ok(v) => {
                 // no_archive：worker 无执行记录可回（可能 LLM 没产生本地活动）。
                 tracing::debug!(

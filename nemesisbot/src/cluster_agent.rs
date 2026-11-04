@@ -427,6 +427,13 @@ async fn execute_new_task(
         return Ok(());
     }
 
+    // L13-b：mandate 执行面守卫装配（B 端前置闸验签产物随任务投影；任务无
+    // mandate = 不装配 = 旧行为）。set/take 对称——run 结束摘除，违规记录
+    // 随回调 response 追加块交回 master。
+    if let Some(mandate) = task.mandate.as_ref() {
+        agent_loop.set_mandate_guard(mandate.clone(), &task.source.session_key);
+    }
+
     // Restore history from SessionStore (same pattern as main AgentLoop).
     // Without this, every peer_chat starts with empty context, so "give me the
     // code from last time" can't be answered — Alex would have no memory of
@@ -480,6 +487,10 @@ async fn execute_new_task(
     // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用
     // 这一份记录；只有 success 臂的交付捕获真正消费，其余臂诚实丢弃）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
+    // L13-b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加进
+    // response。cancel 臂不带——控制面回执不是工作交付；async 臂不带——
+    // 任务未终局，续行腿重新装配守卫时重新计数）。
+    let mandate_guard = agent_loop.take_mandate_guard();
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
@@ -585,7 +596,7 @@ async fn execute_new_task(
     // 交付评审后盲重派（同节点重放同一任务大概率复现同一循环）。
     let error_text = terminal_error(&events);
     let escalation_stop = error_text.is_none() && result.contains(ESCALATION_MARKER);
-    let status = if escalation_stop {
+    let mut status = if escalation_stop {
         (result.clone(), "error")
     } else {
         match (&error_text, result.trim().is_empty()) {
@@ -597,6 +608,17 @@ async fn execute_new_task(
             (None, false) => (String::new(), "success"),
         }
     };
+    // L13-b：违规记录块追加（success/error 都带——master 评审/审计可见；
+    // classify 按 Error 事件文本**前缀**识别 fail_class，尾部追加不影响）。
+    if let Some(g) = mandate_guard.as_ref()
+        && let Some(report) = g.violation_report()
+    {
+        if status.1 == "error" {
+            status.0.push_str(&report);
+        } else {
+            result.push_str(&report);
+        }
+    }
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
@@ -694,6 +716,13 @@ async fn resume_task(
         .ok_or("No callback_result")?;
     instance.replace_tool_result(tool_call_id, callback_result);
 
+    // L13-b：mandate 守卫续行腿重新装配（授权面不变；token 基线/调用计数
+    // 按本腿重新快照——多跳任务的每腿预算口径是「本腿 delta」，终局时限
+    // expires_at 仍全局约束）。
+    if let Some(mandate) = task.mandate.as_ref() {
+        agent_loop.set_mandate_guard(mandate.clone(), &task.source.session_key);
+    }
+
     let context = build_context(agent_loop, task);
     // 交付捕获前置：档案任务 exec 副本基线就绪（续行/重派重入 = 优先读
     // 持久化锚点取回定格基线，幂等；HEAD 已可能被 worker 合法提交移动——
@@ -742,6 +771,8 @@ async fn resume_task(
         .await;
     // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
+    // L13-b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加）。
+    let mandate_guard = agent_loop.take_mandate_guard();
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
@@ -841,7 +872,7 @@ async fn resume_task(
     // 停止告知不是工作交付（详见 execute_new_task 同段注释）。
     let error_text = terminal_error(&events);
     let escalation_stop = error_text.is_none() && result.contains(ESCALATION_MARKER);
-    let status = if escalation_stop {
+    let mut status = if escalation_stop {
         (result.clone(), "error")
     } else {
         match (&error_text, result.trim().is_empty()) {
@@ -853,6 +884,17 @@ async fn resume_task(
             (None, false) => (String::new(), "success"),
         }
     };
+    // L13-b：违规记录块追加（同 execute_new_task；续行腿的记录在此追加——
+    // 首跳 async 臂的记录诚实丢弃，见 execute_new_task 摘槽注释）。
+    if let Some(g) = mandate_guard.as_ref()
+        && let Some(report) = g.violation_report()
+    {
+        if status.1 == "error" {
+            status.0.push_str(&report);
+        } else {
+            result.push_str(&report);
+        }
+    }
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
@@ -1419,6 +1461,7 @@ async fn send_task_callback(
         usage,
         fail_class,
         delivery,
+        task.dispatch_generation,
     )
     .await;
 
@@ -1539,18 +1582,59 @@ async fn deliver_files_back(
 ///   loop 硬停与入口拒接两类文案同前缀
 ///   [`nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER`]；master
 ///   board_review 识别后转人工不重派
-/// - `exec_failed`：其它失败（兜底）。success 回调返回 None（不落字段）。
+/// - `mandate_violation`（L13-b，2026-11-03 三期）：mandate 执行面守卫
+///   终局（时限/token 预算/调用次数超限，稳定前缀
+///   [`nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER`]）——授权
+///   状态不变时重放大概率复现，board_review 按能力类失败处理；②批一b 起
+///   worker 自报 `失败类别：权限不足` 亦归此类（授权面语义，换节点或转人工）
+/// - `environmental`（② fail_class 扩展，AOR 批一b）：执行环境缺失——
+///   worker 自报 `失败类别：环境缺失`（六词失败纪律解析桥）或 exec 兜底
+///   文本命中窄环境特征（permission denied / command not found /
+///   connection refused 等）。换节点重试有意义（不同节点环境不同）
+/// - `resource_conflict`（② 批一b）：worker 自报 `失败类别：资源冲突`
+///   ——[TOUCH] 声明外的并发资源竞争；换节点或错峰重派有意义
+/// - `unknown_side_effect`（② 批一b）：副作用后果不明——当前无 B 端自动
+///   生产者（worker 六词无对应项，留待人工标记/阶段三 Replanner 面），
+///   A 端 KNOWN 白名单 + 冻结策略映射已备（识别即冻结不自动重派）
+/// - `exec_failed`：其它失败（兜底；环境特征不命中仍落此类）。success 回
+///   调返回 None（不落字段）。
+///
+/// 解析顺序：worker 六词自报桥（`失败类别：` 前缀，最具体的信号）优先于
+/// 系统侧稳定前缀——worker 明确说了类别，系统侧前缀不覆盖。
 fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Option<&'static str> {
     if status != "error" {
         return None;
     }
     let text = if error.is_empty() { response } else { error };
+    // 六词失败纪律桥（批一a worker 契约 + 批一b 解析）：worker 失败上报
+    // 第一行自报类别 → fail_class。词→类映射与 board_review 的重派策略
+    // 对齐（环境缺失/资源冲突→环境类换节点、参数问题→escalation 改写
+    // 任务、超时→transient 加时长、权限不足→授权面）。类别词后可跟一句
+    // 话事实，故用 starts_with。
+    if let Some(cat) = text.strip_prefix("失败类别：") {
+        return Some(if cat.starts_with("环境缺失") {
+            "environmental"
+        } else if cat.starts_with("资源冲突") {
+            "resource_conflict"
+        } else if cat.starts_with("参数问题") {
+            "escalation"
+        } else if cat.starts_with("超时") {
+            "llm_timeout"
+        } else if cat.starts_with("权限不足") {
+            "mandate_violation"
+        } else {
+            // 其他（六词兜底）：现象不明，保守按 exec_failed。
+            "exec_failed"
+        });
+    }
     if text.starts_with("工具参数校验连续失败") {
         Some("validation_budget")
     } else if text.starts_with(nemesis_agent::turn_guard::ESCALATION_MARKER) {
         Some("escalation")
     } else if text.starts_with(nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER) {
         Some("token_budget")
+    } else if text.starts_with(nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER) {
+        Some("mandate_violation")
     } else if text.starts_with("worker 返回空结果") {
         Some("empty_result")
     } else if text.starts_with("Error:") {
@@ -1563,7 +1647,25 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
             Some("llm_failure")
         }
     } else {
-        Some("exec_failed")
+        // exec 兜底细分（② 批一b）：窄环境特征命中 → environmental（换
+        // 节点重试有意义）；不命中仍按 exec_failed（能力类保守）。「not
+        // found」太宽不收（任务级缺文件 ≠ 环境缺失），只收强环境信号。
+        let lower = text.to_ascii_lowercase();
+        if [
+            "permission denied",
+            "access is denied",
+            "command not found",
+            "is not recognized",
+            "connection refused",
+        ]
+        .iter()
+        .any(|p| lower.contains(p))
+            || text.contains("拒绝访问")
+        {
+            Some("environmental")
+        } else {
+            Some("exec_failed")
+        }
     }
 }
 

@@ -183,11 +183,32 @@ pub fn path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
     })
 }
 
-/// 执行体运输层内部变量——本进程直 spawn 前必须剥掉（见模块文档「env 清洗」）。
+/// 执行体运输层内部变量全集——本进程直 spawn 前必须剥掉（见模块文档「env
+/// 清洗」）。BUG-20261104-388：此前只列 ROLE/WORKSPACE/PIPE 三键，漏掉
+/// SANDBOX/HOME/RESTRICT/REEXEC/EXTRA_ROOTS/AGENT_ID/LEASE/BACKEND/CONSOLE
+/// 九个后来陆续加入的运输层键——脚本继承后跑 `nemesisbot` CLI 会被误路由
+/// 进角色 worker（main.rs 短路加 args 条件是根修，这里是纵深：workflow
+/// 直 spawn 车道不再成为漏网传播面）。
+///
+/// 刻意**枚举**而非 `NEMESISBOT_` 前缀判定：前缀内还有用户配置语义的
+/// `NEMESISBOT_HOME`（CLI home 定位优先级 2）等非运输层变量——剥掉会改变
+/// 脚本里 CLI 的 home 解析行为（与用户 shell 跑 CLI 分叉）。本表只剥
+/// 「只属于 executor/eval 子进程」的运输层标记，新增运输层 env 必须同步
+/// 入表（与 env_sanitize 的全前缀凭据剥除分工不同：那边安全优先宁可错杀，
+/// 这边精确剥离保 CLI 语义）。
 pub const EXECUTOR_INTERNAL_ENV: &[&str] = &[
     "NEMESISBOT_ROLE",
     "NEMESISBOT_EXECUTOR_WORKSPACE",
     "NEMESISBOT_EXECUTOR_PIPE",
+    "NEMESISBOT_EXECUTOR_SANDBOX",
+    "NEMESISBOT_EXECUTOR_HOME",
+    "NEMESISBOT_EXECUTOR_RESTRICT",
+    "NEMESISBOT_EXECUTOR_REEXEC",
+    "NEMESISBOT_EXECUTOR_EXTRA_ROOTS",
+    "NEMESISBOT_EXECUTOR_AGENT_ID",
+    "NEMESISBOT_LEASE",
+    "NEMESISBOT_SANDBOX_BACKEND",
+    "NEMESISBOT_CONSOLE",
 ];
 
 /// env 清洗：从继承环境里剥执行体内部变量，再叠加显式 overrides。
@@ -229,11 +250,14 @@ pub async fn guarded_direct_spawn(
     let timeout = Duration::from_secs(job.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1));
 
     let mut cmd = tokio::process::Command::new(&job.program);
-    cmd.args(&job.args)
-        .env_remove("NEMESISBOT_ROLE")
-        .env_remove("NEMESISBOT_EXECUTOR_WORKSPACE")
-        .env_remove("NEMESISBOT_EXECUTOR_PIPE")
-        .stdin(std::process::Stdio::piped())
+    cmd.args(&job.args);
+    // BUG-20261104-388：剥除面从手写三键改为遍历 EXECUTOR_INTERNAL_ENV
+    // 全表——表是唯一真相源，spawn 侧不再自带第二份清单（漏键漂移根除）。
+    // 其余 env 照常继承（env_clear 会误清 PATH 等运行底座，不可用）。
+    for k in EXECUTOR_INTERNAL_ENV {
+        cmd.env_remove(k);
+    }
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -251,13 +275,23 @@ pub async fn guarded_direct_spawn(
         .map_err(|e| format!("spawn {:?}: {}", job.program, e))?;
 
     if let Some(stdin_data) = &job.stdin
-        && let Some(mut stdin) = child.stdin.take()
+        && let Some(stdin) = child.stdin.take()
     {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(stdin_data.as_bytes()).await;
-        let _ = stdin.shutdown().await;
+        // BUG-20261103-337 同族（BUG-20261102-312 修复模式）：stdin 写放
+        // 独立任务——payload 超管道缓冲且 spawned 进程不读 stdin 时，
+        // inline write_all 会阻塞到对方退出，下方 timeout 只包
+        // wait_with_output 管不到这里，等于超时保护整段失效。独立任务
+        // 写：写完 shutdown+drop 关写端（脚本型子进程依赖 EOF 退出）；
+        // 超时 kill 后管道断裂，write 返回错误、任务自然结束，无泄漏。
+        let data = stdin_data.as_bytes().to_vec();
+        tokio::spawn(async move {
+            let mut stdin = stdin;
+            let _ = stdin.write_all(&data).await;
+            let _ = stdin.shutdown().await;
+        });
     }
-    // stdin drop（take 后离开作用域）= EOF，脚本型子进程正常退出。
+    // stdin drop（写任务结束）= EOF，脚本型子进程正常退出。
 
     let fut = child.wait_with_output();
     match tokio::time::timeout(timeout, fut).await {

@@ -386,7 +386,10 @@ pub async fn handle_websocket_upgrade(
         // Dashboard path: verify the dashboard token (if configured).
         if !state.auth_token.is_empty() {
             let token = query.token.unwrap_or_default();
-            if token != state.auth_token {
+            // BUG-20261104-355：恒时比较（F6 纵深防御覆盖缺口——REST 面走
+            // verify_token 常数时间形态，WS 升级面三处漏跟）。expected 非空
+            // （上行闸），verify_token 语义与 `==` 逐字节等价。
+            if !crate::api_handlers::verify_token(&token, &state.auth_token) {
                 tracing::warn!("[WebSocket] Authentication failed");
                 return axum::http::StatusCode::UNAUTHORIZED.into_response();
             }
@@ -777,6 +780,14 @@ fn handle_chat_send(
         /// （open_files 同款单点模式，AgentLoop 侧 `inbox::priority_of` 解析）。
         #[serde(default)]
         priority: Option<String>,
+        /// L12（改进项三期 2026-11-02）：客户端幂等键。同一
+        /// (session_id, client_msg_id) 重复提交 = 服务端去重（回原 seq +
+        /// `deduped:true`，不二次触发 agent）；不带 = 旧行为零变化。
+        /// 经 metadata["client_msg_id"] 透传到 server.rs 入站咽喉点
+        /// （去重裁决点，chat_dedup 模块）；上限 256 字符（超限诚实拒绝
+        /// ——截断会让两个不同 id 假相等误吞消息）。
+        #[serde(default)]
+        client_msg_id: Option<String>,
     }
     let data: ChatData = msg.decode_data()?;
     // BUG-1（2026-09-03 二次回归）：纯图片消息合法——前端支持只传 media 不带
@@ -847,6 +858,19 @@ fn handle_chat_send(
         .filter(|p| !p.is_empty())
     {
         metadata.insert("priority".to_string(), p.to_ascii_lowercase());
+    }
+    // L12：幂等键进 metadata（缺省/空白 = 不写键，老客户端零影响；超限
+    // 诚实拒绝——截断会造成不同 id 假相等误吞消息）。
+    if let Some(cmid) = data
+        .client_msg_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if cmid.chars().count() > 256 {
+            return Err("client_msg_id too long (max 256 chars)".to_string());
+        }
+        metadata.insert("client_msg_id".to_string(), cmid.to_string());
     }
 
     Ok(Some(IncomingMessage {

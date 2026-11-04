@@ -453,7 +453,7 @@ async fn test_mcp_adapter_execute_error_result_no_text() {
     mock.with_call_result(ToolCallResult {
         content: vec![ToolContent {
             content_type: "image".to_string(),
-            text: None,
+            ..Default::default()
         }],
         is_error: true,
     });
@@ -478,6 +478,7 @@ async fn test_mcp_adapter_execute_image_content() {
         content: vec![ToolContent {
             content_type: "image".to_string(),
             text: Some("base64data".to_string()),
+            ..Default::default()
         }],
         is_error: false,
     });
@@ -503,6 +504,7 @@ async fn test_mcp_adapter_execute_resource_content() {
         content: vec![ToolContent {
             content_type: "resource".to_string(),
             text: Some("resource_data".to_string()),
+            ..Default::default()
         }],
         is_error: false,
     });
@@ -528,6 +530,7 @@ async fn test_mcp_adapter_execute_unknown_content_type() {
         content: vec![ToolContent {
             content_type: "custom_type".to_string(),
             text: Some("custom_data".to_string()),
+            ..Default::default()
         }],
         is_error: false,
     });
@@ -806,10 +809,12 @@ async fn test_w4c_named_adapter_execute_image_and_resource_content() {
             ToolContent {
                 content_type: "image".to_string(),
                 text: Some("b64data".to_string()),
+                ..Default::default()
             },
             ToolContent {
                 content_type: "resource".to_string(),
                 text: Some("res-data".to_string()),
+                ..Default::default()
             },
         ],
         is_error: false,
@@ -1024,9 +1029,12 @@ fn test_w4c_sanitize_schema_keeps_existing_additional_properties() {
 async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
     let mock = MockClient::new("test", vec![]);
     mock.with_call_result(ToolCallResult {
+        // BUG-20261104-380 起 audio 有专属臂（规范 data/mimeType 消费），
+        // 未知回退臂语义改用真未知类型保留原测试意图。
         content: vec![ToolContent {
-            content_type: "audio".to_string(),
+            content_type: "custom_binary".to_string(),
             text: Some("raw-audio-marker".to_string()),
+            ..Default::default()
         }],
         is_error: false,
     });
@@ -1043,6 +1051,188 @@ async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
     assert!(!result.is_error);
     // Unknown content types fall through with their raw text, no decoration.
     assert_eq!(result.content, "raw-audio-marker");
+}
+
+// --- BUG-20261104-380：规范形态 image/audio/resource content 消费 ----------
+
+/// 规范 image content（base64 在 `data` 字段）→ 诚实元信息注记，
+/// 不再依赖规范不存在的 `text` 字段（修复前恒产空占位 `[Image: ]`）。
+#[tokio::test]
+async fn test_b380_spec_shape_image_content_yields_honest_note() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "image".to_string(),
+            data: Some("iVBORw0KGgo=".to_string()),
+            mime_type: Some("image/png".to_string()),
+            ..Default::default()
+        }],
+        is_error: false,
+    });
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        McpTool {
+            name: "img_tool".to_string(),
+            ..Default::default()
+        },
+    );
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert!(!result.is_error);
+    assert!(
+        result
+            .content
+            .contains("[Image: image/png, 12 bytes base64 (data not passed through)]"),
+        "actual: {}",
+        result.content
+    );
+    // base64 载荷本体不透传（token 爆炸且非 vision 链路）。
+    assert!(!result.content.contains("iVBORw0KGgo"));
+}
+
+/// 无 `data`（违例 server 把载荷放 `text`）→ 回落既有 `[Image: {text}]` 行为。
+#[tokio::test]
+async fn test_b380_image_falls_back_to_text_when_no_data() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "image".to_string(),
+            text: Some("legacy-text-payload".to_string()),
+            ..Default::default()
+        }],
+        is_error: false,
+    });
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        McpTool {
+            name: "img_tool".to_string(),
+            ..Default::default()
+        },
+    );
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert!(result.content.contains("[Image: legacy-text-payload]"));
+}
+
+/// `data` 与 `text` 双无（server 违例空 content）→ 诚实 `(no data)` 注记，
+/// 不再产误导性的空占位 `[Image: ]`。
+#[tokio::test]
+async fn test_b380_image_empty_content_yields_no_data_note() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "image".to_string(),
+            ..Default::default()
+        }],
+        is_error: false,
+    });
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        McpTool {
+            name: "img_tool".to_string(),
+            ..Default::default()
+        },
+    );
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert_eq!(result.content, "[Image: (no data)]");
+}
+
+/// 规范 audio content（同 `data`/`mimeType` 形态）→ 专属臂诚实注记；
+/// 修复前落 `_` 臂产空串（连占位都没有）。
+#[tokio::test]
+async fn test_b380_spec_shape_audio_content_yields_honest_note() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "audio".to_string(),
+            data: Some("T2RvbCBBU0ZV".to_string()),
+            mime_type: Some("audio/wav".to_string()),
+            ..Default::default()
+        }],
+        is_error: false,
+    });
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        McpTool {
+            name: "aud_tool".to_string(),
+            ..Default::default()
+        },
+    );
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert!(
+        result
+            .content
+            .contains("[Audio: audio/wav, 12 bytes base64 (data not passed through)]"),
+        "actual: {}",
+        result.content
+    );
+}
+
+/// 规范 resource content：文本资源（嵌套 `resource.text`）真内容透传——
+/// 资源嵌入的本意；修复前恒产空占位 `[Resource: ]`。
+#[tokio::test]
+async fn test_b380_spec_shape_resource_text_content_passes_through() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "resource".to_string(),
+            resource: Some(crate::types::EmbeddedResource {
+                uri: "file:///workspace/notes.txt".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: Some("the actual notes body".to_string()),
+                blob: None,
+            }),
+            ..Default::default()
+        }],
+        is_error: false,
+    });
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        McpTool {
+            name: "res_tool".to_string(),
+            ..Default::default()
+        },
+    );
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert!(
+        result
+            .content
+            .contains("[Resource file:///workspace/notes.txt]\nthe actual notes body"),
+        "actual: {}",
+        result.content
+    );
+}
+
+/// 规范 resource content：二进制资源（`blob`）→ 诚实元信息注记不透传。
+#[tokio::test]
+async fn test_b380_spec_shape_resource_blob_content_yields_honest_note() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "resource".to_string(),
+            resource: Some(crate::types::EmbeddedResource {
+                uri: "file:///workspace/asset.bin".to_string(),
+                mime_type: Some("application/octet-stream".to_string()),
+                text: None,
+                blob: Some("AAECAw==".to_string()),
+            }),
+            ..Default::default()
+        }],
+        is_error: false,
+    });
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        McpTool {
+            name: "res_tool".to_string(),
+            ..Default::default()
+        },
+    );
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert!(
+        result
+            .content
+            .contains("[Resource file:///workspace/asset.bin] binary (8 bytes base64, data not passed through)"),
+        "actual: {}",
+        result.content
+    );
 }
 
 // --- 第十四轮缺陷 17：sanitize 前缀碰撞检测（单一真相源 helper）-------

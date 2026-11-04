@@ -1117,6 +1117,117 @@ async fn schedule_resume_skip_set_independent_of_conditional_edges() {
     assert!(!ran.contains(&"a".to_string()));
 }
 
+/// 已 Waiting 的节点在 resume 路径是**暂停屏障**，不是「待运行」——重跑会
+/// 重新执行其副作用（sub_workflow 执行器每次 execute 都 spawn 新子执行：
+/// 旧子执行孤儿化、路由锚被换新；BUG-20261103-349）。且本层全被跳过时
+/// 不得落空 `continue` 进下游层——「审批未落地下游不抢跑」（缺陷 9）对
+/// skip 集之外的暂停屏障同样成立。
+#[tokio::test]
+async fn schedule_resume_preserved_waiting_is_pause_barrier() {
+    struct WaitingExecutor {
+        calls: Arc<parking_lot::Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl NodeExecutor for WaitingExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            self.calls.lock().push(node.id.clone());
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({"status": "waiting_for_review"}),
+                error: None,
+                state: ExecutionState::Waiting,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
+    );
+    // 重跑即红灯：屏障节点不得触达执行器（两种类型共用同一记录向量）。
+    registry.register(
+        "wait",
+        Arc::new(WaitingExecutor {
+            calls: calls.clone(),
+        }),
+    );
+
+    let nodes = vec![
+        make_typed_node("paused", "wait", vec![]),
+        make_typed_node("done", "rec", vec![]),
+        make_typed_node("down", "rec", vec!["paused", "done"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    // 预置 preserved 结果（engine resume 尾段从 execution.node_results 重建
+    // wf_ctx 后调进来）：paused 停在 Waiting，done 已完成。
+    wf_ctx.set_node_result(
+        "paused",
+        NodeResult {
+            node_id: "paused".to_string(),
+            output: serde_json::json!({"message": "approve?", "status": "waiting_for_review"}),
+            error: None,
+            state: ExecutionState::Waiting,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+    wf_ctx.set_node_result(
+        "done",
+        NodeResult {
+            node_id: "done".to_string(),
+            output: serde_json::json!({"ran": "done"}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+
+    let completed: HashSet<String> = HashSet::from(["done".to_string()]);
+
+    let outcome = schedule_resume(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+    assert!(
+        calls.lock().is_empty(),
+        "屏障节点不得重跑、下游不得抢跑，got {:?}",
+        *calls.lock()
+    );
+    assert_eq!(
+        wf_ctx.get_node_result("paused").unwrap().state,
+        ExecutionState::Waiting,
+        "屏障节点的原等待结果必须原样保留（路由锚不得被换新）"
+    );
+    assert!(
+        wf_ctx.get_node_result("down").is_none(),
+        "审批未落地下游不得抢跑"
+    );
+}
+
 // =========================================================================
 // W4a coverage batch — scheduler.rs gap closure
 // =========================================================================

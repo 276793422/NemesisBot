@@ -1906,8 +1906,56 @@ pub async fn process_messages_with_router(
         // request_type=="history"（loop.rs 两处），其余按用户消息处理。
         let is_history_request =
             msg.metadata.get("request_type").map(String::as_str) == Some("history");
+        // L12（改进项三期 2026-11-02）：写入侧幂等键——(session_key,
+        // client_msg_id) 命中去重索引 = 不重复入环、不二次触发 agent（短路
+        // bus 转发），回声帧带**原 seq + deduped:true**。幂等窗口有界
+        // （chat_dedup LRU cap，超窗重复 = 正常重复处理，文档口径）。
+        // history_request 恒不参与（查询面无幂等语义）；不带 id = 零变化。
+        let client_msg_id = if is_history_request {
+            None
+        } else {
+            msg.metadata
+                .get("client_msg_id")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+        };
+        if let Some(cmid) = client_msg_id
+            && let Some(orig_seq) = crate::chat_dedup::lookup(&session_key, cmid)
+        {
+            tracing::info!(
+                session_key = %session_key,
+                client_msg_id = %cmid,
+                orig_seq = orig_seq,
+                "[Web] chat.send deduped (client_msg_id hit; agent not re-triggered)"
+            );
+            // 环行回声（seq>0）带 deduped 旗重发（游标推进语义与首投一致）；
+            // 纯图消息（seq=0 无环行）沿用 P8 不回声语义，只短路转发。
+            if orig_seq > 0
+                && let Some(ref sm) = session_manager
+            {
+                let mut echo = serde_json::json!({
+                    "role": "user",
+                    "content": msg.content,
+                    "seq": orig_seq,
+                    "deduped": true,
+                });
+                if let Some(sid) = session_key.strip_prefix("agent:main:session:") {
+                    echo["session_id"] = serde_json::Value::String(sid.to_string());
+                }
+                let frame =
+                    crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(echo));
+                if let Ok(bytes) = frame.to_json() {
+                    let _ = sm.broadcast_droppable(&msg.session_id, &bytes);
+                }
+            }
+            continue;
+        }
         if !msg.content.is_empty() && !is_history_request {
             let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None, None);
+            // L12：首投登记幂等键（seq = 本次环行原 seq）。
+            if let Some(cmid) = client_msg_id {
+                crate::chat_dedup::insert(&session_key, cmid, seq);
+            }
             if let Some(ref sm) = session_manager {
                 let mut echo = serde_json::json!({
                     "role": "user",
@@ -1927,6 +1975,11 @@ pub async fn process_messages_with_router(
                     let _ = sm.broadcast_droppable(&msg.session_id, &bytes);
                 }
             }
+        } else if let Some(cmid) = client_msg_id {
+            // L12：纯图消息（content 空带 media）——不入环不回声（P8 语义
+            // 不变），幂等键照常登记（seq=0 标记「无环行」；重复提交仍被
+            // 上方 lookup 短路，回声臂 seq>0 闸自动跳过）。
+            crate::chat_dedup::insert(&session_key, cmid, 0);
         }
 
         let inbound = InboundMessage {
@@ -2315,6 +2368,55 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
+                // 委派回执落会话（2026-11-04 委派 UX）：WS push `subagent_reply`
+                // 定向父会话房间（broadcast 必达——低频完成信号非洪泛源），
+                // 前端 ChatPanel 据此 resyncFromLog 刷新落盘行。不走默认
+                // tool_event 路径（语义不同）；不入 chat_event_log 环（回复
+                // 正文已持久化在 chat_log——resync 全量重拉即恢复，断线窗口
+                // 靠下一次任意 resync 兜底，重放只会让前端重复刷新）；不发
+                // SSE（LogsView 不消费）。
+                if let nemesis_types::agent::AgentEvent::SubagentReplyLanded {
+                    session_key,
+                    chat_id,
+                    subagent_id,
+                    status,
+                    summary,
+                    ..
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "subagent_id": subagent_id,
+                        "status": status,
+                        "summary": summary,
+                    });
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    if let Some(session_id) = chat_id.strip_prefix("web:") {
+                        let frame = crate::protocol::ProtocolMessage::new(
+                            "push",
+                            "chat",
+                            "subagent_reply",
+                            Some(payload),
+                        );
+                        match frame.to_json() {
+                            Ok(bytes) => {
+                                if let Err(e) = session_manager.broadcast(session_id, &bytes).await
+                                {
+                                    tracing::debug!(
+                                        session_id = %session_id,
+                                        error = %e,
+                                        "[AgentEventPump] subagent_reply broadcast failed (session gone?)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "[AgentEventPump] subagent_reply frame marshal failed; dropped");
+                            }
+                        }
+                    }
+                    continue;
+                }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是
                 // 连接级（`web:{连接id}`，session.rs create_session_with_method
                 // 派生），与前端会话 id（sessionStore.currentId，create/list
@@ -2346,10 +2448,33 @@ pub async fn pump_agent_events(
                     let tool_seq = crate::chat_event_log::record_tool(sk, data.clone());
                     data["seq"] = serde_json::Value::from(tool_seq);
                 }
+                // 子代理可见性（D3，2026-11-03）：子代理事件的 chat_id =
+                // 注册表 id（detached RequestContext 以 session_key 顶替，
+                // `subagent:{uuid}` 形态），天然够不着下面的 `web:` 房间
+                // 广播——查注册表取 parent_chat_id 作为投递房间；payload
+                // 补 subagent_id（SSE 与 WS 帧同形，前端抽屉/页面按注册表
+                // id 精确过滤，不必对 session_key 尾段做字符串手术）。
+                // 注册表 miss（重启后失忆的历史事件 / 非子代理的非 web
+                // 事件）= 诚实不投递，与 web: 缺席同语义。
+                let chat_id = event.chat_id().to_string();
+                let subagent_parent = if !chat_id.is_empty() && !chat_id.starts_with("web:") {
+                    nemesis_agent::subagent_registry::global()
+                        .get(&chat_id)
+                        .map(|t| t.parent_chat_id)
+                } else {
+                    None
+                };
+                if subagent_parent.is_some() {
+                    data["subagent_id"] = serde_json::Value::String(chat_id.clone());
+                }
                 event_hub.publish("tool_event", data.clone());
 
-                let chat_id = event.chat_id().to_string();
-                if let Some(session_id) = chat_id.strip_prefix("web:") {
+                let target_room = chat_id.strip_prefix("web:").or_else(|| {
+                    subagent_parent
+                        .as_deref()
+                        .and_then(|p| p.strip_prefix("web:"))
+                });
+                if let Some(session_id) = target_room {
                     // BUG 2026-09-22 慢客户端洪泛：带 seq = 已落
                     // chat_event_log 环，丢帧可被前端 chat.sync 补拉自愈
                     // → 走可丢通道（满即丢，事件泵绝不被单个慢客户端的
@@ -2584,6 +2709,17 @@ pub(crate) async fn auth_middleware(
         return next.run(req).await;
     }
     let token = extract_request_token(&req).unwrap_or_default();
+    // LLM 代理调用方 key 回落臂（docs/PLAN/2026-11-03_LLM代理调用方key管理.md）：
+    // 代理 key 匹配在主 token 校验**之前**——master token 为空 = allow-all 的
+    // 文档化约定下，先查 key 才能保住代理调用方的身份归属。命中 = 白名单内
+    // 代理 lane + enabled key + 恒时比对全过 → 注入 caller 身份放行（白名单
+    // 外路径 match 恒 None，代理 key 打 Dashboard API 落回主 token 校验必 401）。
+    // 不命中 = 零配置/老行为完全不变。
+    if let Some(caller) = crate::proxy_keys::match_proxy_caller(&state, &token, req.uri().path()) {
+        let mut req = req;
+        req.extensions_mut().insert(caller);
+        return next.run(req).await;
+    }
     if crate::api_handlers::verify_token(&token, &state.auth_token) {
         next.run(req).await
     } else {

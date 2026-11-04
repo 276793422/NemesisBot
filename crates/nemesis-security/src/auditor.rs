@@ -166,6 +166,11 @@ pub struct ApprovalContext {
     /// args（pipeline 从 `ToolInvocation.args` 透传）。`Value::Null`
     /// （Default）= 无 args（旧调用方 / limits 直发路径），预览不产。
     pub tool_args: serde_json::Value,
+    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：批号（`batch-{uuid}`）。
+    /// pipeline 从 `ToolInvocation.metadata["approval_batch_id"]` 提取；
+    /// 空 = 无批上下文（串行路径 / limits 直发旧形态），管理器单卡渲染
+    /// 不进聚合。经 `request_approval_sync_ctx` 原样透传到卡 entry。
+    pub batch_id: String,
 }
 
 pub trait ApprovalManager: Send + Sync {
@@ -1575,7 +1580,16 @@ impl SecurityAuditor {
                         .open(&log_path)
                     {
                         Ok(mut file) => {
-                            if let Err(e) = writeln!(file, "{}", line) {
+                            // BUG-20261104-386：整行（含换行）单次 write_all
+                            // 行原子性——`writeln!` 是正文与 "\n" 两次 write，
+                            // append 模式下每片段独立定位 EOF，多线程安全判定
+                            // 并发落审计时可把别的行插进本行中间粘成一行，读
+                            // 端 parse 失败 trace 级静默跳过 = 审计事件丢失
+                            // （人工放行 CRITICAL 的 approved 事件恰在此链）。
+                            // 与 chat_log R100（BUG-20261025-25）同族同修法。
+                            let mut buf = line;
+                            buf.push('\n');
+                            if let Err(e) = file.write_all(buf.as_bytes()) {
                                 tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to write audit event");
                             }
                         }
@@ -1607,7 +1621,11 @@ impl SecurityAuditor {
                         .open(log_path)
                     {
                         Ok(mut file) => {
-                            if let Err(e) = writeln!(file, "{}", line) {
+                            // BUG-20261104-386：同上——log_file_path 通道同款
+                            // 行原子性（并发审计事件不得粘行）。
+                            let mut buf = line;
+                            buf.push('\n');
+                            if let Err(e) = file.write_all(buf.as_bytes()) {
                                 tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to write audit event to log file");
                             }
                         }

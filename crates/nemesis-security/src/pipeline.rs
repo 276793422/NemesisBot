@@ -271,14 +271,29 @@ impl SecurityPlugin {
                 .audit_chain_path
                 .as_deref()
                 .unwrap_or("audit_chain.jsonl");
-            Some(AuditChain::new(AuditChainConfig {
+            let chain = AuditChain::new(AuditChainConfig {
                 enabled: true,
                 storage_path: path.into(),
                 max_file_size: 50 * 1024 * 1024,
                 verify_on_load: false,
                 max_events_per_segment: 100_000,
                 signing_key: None,
-            }))
+            });
+            // 链尾回载（BUG-20261104-374）：链状态（last_hash）是进程内存
+            // 态，而 storage_path 是固定路径续写——不回载则重启后首个事件
+            // prev_hash=全零，与盘上既有链断裂，logs.chain_verify 全量校验
+            // 恒 FAIL，防篡改链被正常重启本身打穿（load_segments 假持久化：
+            // 方法在、测试在、装配缺失）。首启文件不存在 = Ok(0) 不动全零
+            // 链尾，行为不变；回载失败 warn 继续（不因历史链损坏阻断新链）。
+            if let Err(e) = chain.load_segments() {
+                tracing::warn!(
+                    target: "nemesis_security::integrity",
+                    path = %path,
+                    error = %e,
+                    "[Security] audit chain disk replay failed: {e}; continuing with fresh chain state"
+                );
+            }
+            Some(chain)
         } else {
             None
         };
@@ -859,6 +874,13 @@ impl SecurityPlugin {
             // L07：原始 args 透传——审批卡 diff 预览的数据源（preview 在
             // 挂起点生成，args 只在这里可见）。
             tool_args: invocation.args.clone(),
+            // 并行批审批聚合（BUG-A 第三层）：批号随行（loop 在构造
+            // invocation 时对并行批工具调用填入）；缺键 = 串行路径单卡。
+            batch_id: invocation
+                .metadata
+                .get("approval_batch_id")
+                .cloned()
+                .unwrap_or_default(),
         };
         let (allowed, err, approval_id) = self
             .auditor

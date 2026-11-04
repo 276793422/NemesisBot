@@ -5,7 +5,8 @@ import { useToast } from '../../composables/useToast'
 // 角色目录与客户端委派（2026-09-28）：委派弹窗测试。
 // mock useWSAPI（roles.list / chat.spawn 的后端契约由 Rust 侧
 // roles_spawn_tests.rs + role_catalog_tests.rs 钉住，这里测弹窗交互层：
-// 目录渲染与置灰、校验、提交载荷、失败回显不关弹窗）。
+// 目录渲染与置灰、校验、提交载荷、fire-and-forget 发出即关 +
+// 完成/失败 toast 异步通知（2026-11-04 委派 UX）。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -83,11 +84,12 @@ describe('DelegateDialog 委派提交', () => {
     expect(requestMock).not.toHaveBeenCalledWith('chat', 'spawn', expect.anything())
   })
 
-  it('成功：chat.spawn 带载荷 → toast + emit done + 关闭', async () => {
+  it('fire-and-forget：发出即 emit done+close，完成 toast 异步补报', async () => {
+    let resolveSpawn!: (v: any) => void
     requestMock.mockImplementation((module: string, cmd: string) => {
       if (module === 'roles' && cmd === 'list') return Promise.resolve(ROLES_LIST)
       if (module === 'chat' && cmd === 'spawn')
-        return Promise.resolve({ session_id: 'sid-1', role: 'qa', tools_profile: 'readonly', result: '测试全绿' })
+        return new Promise(res => { resolveSpawn = res })
       return Promise.resolve({})
     })
     const w = mountDialog()
@@ -99,14 +101,23 @@ describe('DelegateDialog 委派提交', () => {
     await w.findAll('button').find(b => b.text() === '委派')!.trigger('click')
     await flushPromises()
 
+    // 第 4 参 timeoutMs=0：委派是分钟级任务，禁用 30s 默认超时（假失败根因修复）。
     expect(requestMock).toHaveBeenCalledWith('chat', 'spawn', {
       session_id: 'sid-1',
       task: '跑一遍单元测试',
       role: 'qa',
       tools_profile: 'readonly',
-    })
-    expect(w.emitted('done')![0]).toEqual([{ role: 'qa', result: '测试全绿' }])
+    }, 0)
+    // 发出即关（done 在发送时触发，payload 只有 task/role——结果尚不存在）；
+    // 子代理还在跑（spawn 未 resolve）弹窗就已经关闭 = 不阻塞用户前台工作。
+    expect(w.emitted('done')![0]).toEqual([{ task: '跑一遍单元测试', role: 'qa' }])
     expect(w.emitted('close')).toBeTruthy()
+    expect(useToast().toasts.some(t => t.type === 'info' && t.message.includes('委派已发出'))).toBe(true)
+    expect(useToast().toasts.some(t => t.type === 'success')).toBe(false)
+
+    // 完成后（server 落盘 + subagent_reply push）toast 异步补报结果。
+    resolveSpawn({ role: 'qa', result: '测试全绿' })
+    await flushPromises()
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('委派完成'))).toBe(true)
   })
 
@@ -117,10 +128,10 @@ describe('DelegateDialog 委派提交', () => {
     await w.find('.task-input').setValue('重构这个模块')
     await w.findAll('button').find(b => b.text() === '委派')!.trigger('click')
     await flushPromises()
-    expect(requestMock).toHaveBeenCalledWith('chat', 'spawn', expect.objectContaining({ tools_profile: 'full' }))
+    expect(requestMock).toHaveBeenCalledWith('chat', 'spawn', expect.objectContaining({ tools_profile: 'full' }), 0)
   })
 
-  it('失败：错误原文回显、不 emit done、按钮复位可重试', async () => {
+  it('失败：不回显弹窗（已关闭），错误走 toast 通知', async () => {
     requestMock.mockImplementation((module: string, cmd: string) => {
       if (module === 'roles' && cmd === 'list') return Promise.resolve(ROLES_LIST)
       if (module === 'chat' && cmd === 'spawn')
@@ -130,23 +141,13 @@ describe('DelegateDialog 委派提交', () => {
     const w = mountDialog()
     await flushPromises()
     await w.find('.task-input').setValue('审查这个 diff')
-    const btn = w.findAll('button').find(b => b.text() === '委派')!
-    await btn.trigger('click')
+    await w.findAll('button').find(b => b.text() === '委派')!.trigger('click')
     await flushPromises()
-    expect(w.emitted('done')).toBeFalsy()
-    expect(w.find('.inline-error').text()).toContain('not available')
-    expect(useToast().toasts.some(t => t.type === 'error')).toBe(true)
-    expect(btn.attributes('disabled')).toBeUndefined()
-
-    // 重试成功
-    requestMock.mockImplementation((module: string, cmd: string) => {
-      if (module === 'roles' && cmd === 'list') return Promise.resolve(ROLES_LIST)
-      if (module === 'chat' && cmd === 'spawn')
-        return Promise.resolve({ role: 'qa', result: 'ok' })
-      return Promise.resolve({})
-    })
-    await btn.trigger('click')
-    await flushPromises()
+    // fire-and-forget：失败不阻塞——弹窗照常关闭、done 照常发出，错误只经
+    // toast 通知（回复/失败注记由服务端落进会话，subagent_reply resync）。
     expect(w.emitted('done')).toBeTruthy()
+    expect(w.emitted('close')).toBeTruthy()
+    expect(w.find('.inline-error').exists()).toBe(false)
+    expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('委派失败'))).toBe(true)
   })
 })

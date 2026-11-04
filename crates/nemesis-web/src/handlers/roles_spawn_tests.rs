@@ -96,7 +96,9 @@ fn make_ctx(
     });
     RequestContext {
         session_id: "s".to_string(),
-        chat_id: "c".to_string(),
+        // 房间形态（与生产 create_session_with_method 的 chat_id 同构：
+        // `web:{连接id}`——spawn 的 parent_chat_id 直接透传此值）。
+        chat_id: "web:conn-1".to_string(),
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
@@ -112,7 +114,7 @@ fn role_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
 }
 
 /// SpawnFn 实参捕获记录：(agent_id, task, model, channel, chat_id,
-/// tools_profile, depth, background, role)。
+/// tools_profile, depth, background, role, parent_session_key)。
 type CapturedSpawn = Arc<
     parking_lot::Mutex<
         Vec<(
@@ -124,6 +126,7 @@ type CapturedSpawn = Arc<
             String,
             usize,
             bool,
+            String,
             String,
         )>,
     >,
@@ -142,7 +145,8 @@ fn recording_spawn(
               tools_profile: &str,
               depth: usize,
               background: bool,
-              role: &str|
+              role: &str,
+              _psk: &str|
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'static>,
         > {
@@ -156,6 +160,7 @@ fn recording_spawn(
             let chat_id = chat_id.to_string();
             let tools_profile = tools_profile.to_string();
             let role = role.to_string();
+            let _psk = _psk.to_string();
             Box::pin(async move {
                 captured.lock().push((
                     agent_id,
@@ -167,6 +172,7 @@ fn recording_spawn(
                     depth,
                     background,
                     role,
+                    _psk,
                 ));
                 Ok(reply.to_string())
             })
@@ -372,14 +378,20 @@ async fn spawn_happy_path_invokes_slot_fn_with_client_identity() {
 
     let calls = captured.lock();
     assert_eq!(calls.len(), 1);
-    let (agent_id, task, model, channel, chat_id, tools_profile, depth, background, role) =
+    let (agent_id, task, model, channel, chat_id, tools_profile, depth, background, role, _psk) =
         &calls[0];
     assert_eq!(agent_id, "client");
     assert_eq!(task, "跑一遍单元测试");
     assert_eq!(model, "", "model 空 = detached 沿用主模型");
     assert_eq!(channel, "web");
-    assert_eq!(chat_id, "", "detached 不经通道路由");
-    assert_eq!(tools_profile, "");
+    // 父会话标识随行（BUG 修复 2026-11-04 + 路由修正同日）：chat_id 用发起
+    // 连接级房间 id（`web:{连接id}`，即 ctx.chat_id 原样透传——SessionManager
+    // send_queue 的键；事件泵剥前缀查房间表投递，deliverables/tool_event
+    // 同款语义。会话级 id 查不到房间 = 帧静默丢弃）。回复本身仍走 spawn
+    // 同步返回值不经通道路由。
+    assert_eq!(chat_id, "web:conn-1");
+    // 空缺省归一化 readonly 后传 loop（不再透传空串炸 detached_tools_for_profile）。
+    assert_eq!(tools_profile, "readonly");
     assert_eq!(*depth, 1, "深度 = 直接子代理");
     assert!(!background, "客户端委派前台等待最终回复");
     assert_eq!(role, "qa");

@@ -355,6 +355,12 @@ pub struct WorkflowEngine {
     /// `set_execution_world` 重注册 script 执行器时保留 tools 车道用；
     /// 其余构造器恒 `None`。
     script_tools: Option<Arc<nemesis_tools::registry::ToolRegistry>>,
+    /// BUG-20261104-382：注册序列化锁。环检测（读全表引用图）与
+    /// `workflows.insert` 必须原子——两个并发 register（A→B 与 B→A 同刻
+    /// 提交）在无锁时可在彼此的图快照里都看不到对方，双双过闸后插入
+    /// 成环。注册/更新是低频操作，整段持锁无代价。`unregister` 只删边
+    /// 不成环，无需参与。
+    register_lock: parking_lot::Mutex<()>,
 }
 
 impl WorkflowEngine {
@@ -383,6 +389,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            register_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -411,6 +418,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            register_lock: parking_lot::Mutex::new(()),
         });
 
         // Wire the engine into the sub_workflow executor. `register` works
@@ -446,6 +454,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            register_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -471,6 +480,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            register_lock: parking_lot::Mutex::new(()),
         });
 
         engine.node_executors.register(
@@ -501,6 +511,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            register_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -527,6 +538,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            register_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -604,6 +616,7 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: Some(tools.clone()),
+            register_lock: parking_lot::Mutex::new(()),
         });
 
         // Override mock node executors with real ones. Pass the engine's
@@ -1225,7 +1238,57 @@ impl WorkflowEngine {
             )));
         }
 
+        // BUG-20261104-382：sub_workflow 跨 workflow 引用环检测（persist_workflow
+        // 同闸——成环只可能经这两个入口发生，见方法 doc）。check+insert 在
+        // register_lock 内原子完成：并发双 register（A→B 与 B→A 同刻提交）
+        // 在无锁时可在彼此的图快照里都看不到对方、双双过闸后插入成环。
+        let _register_guard = self.register_lock.lock();
+        self.check_subworkflow_cycle(&workflow)?;
+
         self.workflows.insert(workflow.name.clone(), workflow);
+        Ok(())
+    }
+
+    /// BUG-20261104-382：sub_workflow 跨 workflow 引用环检测（注册期闸）。
+    ///
+    /// [`crate::nodes::SubWorkflowNodeExecutor`] 经
+    /// `engine.run(name, input, None)` 触发子执行——`TriggerSource::None` 的
+    /// `depth_from_trigger` = 0，[`MAX_RECURSION_DEPTH`] 闸只数 `AgentTool`
+    /// 帧，sub_workflow 链完全绕过。而 `parser::validate` 只查**单 workflow**
+    /// DAG（跨 workflow 引用零检查），因此 A→B→A（甚至单 workflow 自引用
+    /// A→A）两个定义各自合法、都能注册，运行期 A→B→A→… 无限 spawn 子执行：
+    /// 每层新 Execution + checkpoint + JSONL persist + call_stack 帧，直到
+    /// 内存/磁盘耗尽。跨 workflow 引用环只可能经 [`Self::register_workflow`]
+    /// / [`Self::persist_workflow`]（新增或覆盖引用边）形成——两个入口同闸
+    /// 即全覆盖（unregister 只删边不成环；盘上互环定义组加载时后者被拒，
+    /// 前者引用的目标不存在 → run 时 `WorkflowNotFound` 诚实失败）。
+    ///
+    /// 引用收集含 parallel/loop 复合子节点（运行时经 registry 同样分派到
+    /// SubWorkflowNodeExecutor）。未注册目标放行（既有语义：run 时诚实
+    /// WorkflowNotFound，不成环）。覆盖同名注册时以**新定义**的边参与
+    /// 检测（旧边随覆盖失效）。
+    fn check_subworkflow_cycle(&self, incoming: &Workflow) -> Result<(), EngineError> {
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        for entry in self.workflows.iter() {
+            graph.insert(
+                entry.key().clone(),
+                workflow_subworkflow_targets(entry.value()),
+            );
+        }
+        let incoming_targets = workflow_subworkflow_targets(incoming);
+        graph.insert(incoming.name.clone(), incoming_targets);
+
+        // 新环必然包含本次注册引入/覆盖的出边（既有节点间的边不变——若
+        // 它们之间已有环，早前任一次注册时就该被拒），所以从 incoming 出发
+        // 找回到自己的路径即可。
+        if let Some(cycle) = find_path_back_to_start(&incoming.name, &graph) {
+            return Err(EngineError::ExecutionFailed(format!(
+                "workflow {:?} 的 sub_workflow 引用构成环 [{}]：跨 workflow 循环引用会在运行期无限递归 \
+                 spawn 子执行（递归深度闸不覆盖 sub_workflow 链），请打断环",
+                incoming.name,
+                cycle.join(" → ")
+            )));
+        }
         Ok(())
     }
 
@@ -1255,7 +1318,30 @@ impl WorkflowEngine {
                 );
             }
         }
-        mgr.match_trigger_event(event)
+        // BUG-20261104-383：事件触发环闸。引擎发布的终态事件 data 携带
+        // TRIGGER_CHAIN_KEY（产出它的触发链，见发布点注释）；链上已出现的
+        // workflow 不再触发——否则「监听 workflow.completed」的工作流完成即
+        // 匹配自己，每次完成 spawn 新执行再完成再发布，无限风暴（A→B→A
+        // 互触发环同理）。链随 TriggerSource::Event.data 逐代增长且环名被
+        // 本闸拒绝，所以环必然在链第一次含重复名时被打断。手动 fire_event
+        // （无链键）不受影响；链键形态异常按无链处理（放行，宁可少拦不误拦）。
+        let chain =
+            trigger_chain_from_value(event.data.get(crate::event_dispatcher::TRIGGER_CHAIN_KEY));
+        let matched = mgr.match_trigger_event(event);
+        if chain.is_empty() {
+            return matched;
+        }
+        let suppressed: Vec<&String> = matched.iter().filter(|n| chain.contains(n)).collect();
+        if !suppressed.is_empty() {
+            warn!(
+                target: "nemesis_workflow::engine",
+                event_type = %event.event_type,
+                suppressed = ?suppressed,
+                chain = ?chain,
+                "event trigger suppressed: target workflow already on its own trigger chain (loop guard)"
+            );
+        }
+        matched.into_iter().filter(|n| !chain.contains(n)).collect()
     }
 
     /// Find workflows whose `message` trigger matches the given inbound
@@ -1489,6 +1575,13 @@ impl WorkflowEngine {
                 "workflow_defs_dir not set; call set_workflow_defs_dir() first".to_string(),
             )
         })?;
+
+        // BUG-20261104-382：环检测 + 落盘 + 内存注册整段在 register_lock 内
+        // 原子完成（与 register_workflow 同闸同锁）——check 与 insert 之间隔
+        // 着写盘 IO，无锁窗口足以让并发注册互相漏看成环。锁内失败臂（碰撞
+        // 守卫/写守卫/fs::write/check）先于 insert 返回，盘面不会留半注册态。
+        let _register_guard = self.register_lock.lock();
+        self.check_subworkflow_cycle(&workflow)?;
 
         std::fs::create_dir_all(&dir)
             .map_err(|e| EngineError::PersistenceError(format!("create dir {:?}: {}", dir, e)))?;
@@ -1973,6 +2066,22 @@ impl WorkflowEngine {
         // observers see Started, then either Completed/Failed/Cancelled).
         let workflow_name_for_event = execution.workflow_name.clone();
         let execution_id_for_event = execution.id.clone();
+        // BUG-20261104-383：三个终态事件共享同一份 data 骨架；触发链 =
+        // 上代事件携带的链（若本执行由事件触发）+ 本 workflow 名，随
+        // TRIGGER_CHAIN_KEY 发布——订阅端（workflows_matching_event）据此
+        // 拒绝把链上已出现的 workflow 再次触发，断掉 event trigger
+        // 自触发/互触发环。
+        let mut trigger_chain_for_event = event_trigger_chain_of(execution.trigger_source.as_ref());
+        trigger_chain_for_event.push(workflow_name_for_event.clone());
+        let mut shared_event_data = std::collections::HashMap::new();
+        shared_event_data.insert(
+            "workflow_name".to_string(),
+            serde_json::json!(workflow_name_for_event),
+        );
+        shared_event_data.insert(
+            crate::event_dispatcher::TRIGGER_CHAIN_KEY.to_string(),
+            serde_json::json!(trigger_chain_for_event),
+        );
         match execution.state {
             ExecutionState::Completed => {
                 let event_name = workflow_name_for_event.clone();
@@ -1984,13 +2093,7 @@ impl WorkflowEngine {
                         timestamp: Local::now(),
                     })
                     .await;
-                // Also publish on the trigger-event dispatcher so any workflow
-                // with an `event` trigger matching `workflow.completed` fires.
-                let mut data = std::collections::HashMap::new();
-                data.insert(
-                    "workflow_name".to_string(),
-                    serde_json::json!(workflow_name_for_event),
-                );
+                let mut data = shared_event_data.clone();
                 data.insert("status".to_string(), serde_json::json!("completed"));
                 self.publish_event(
                     crate::event_dispatcher::TriggerEvent::new("workflow.completed", data)
@@ -2009,11 +2112,7 @@ impl WorkflowEngine {
                         timestamp: Local::now(),
                     })
                     .await;
-                let mut data = std::collections::HashMap::new();
-                data.insert(
-                    "workflow_name".to_string(),
-                    serde_json::json!(workflow_name_for_event),
-                );
+                let mut data = shared_event_data.clone();
                 data.insert("status".to_string(), serde_json::json!("failed"));
                 self.publish_event(
                     crate::event_dispatcher::TriggerEvent::new("workflow.failed", data)
@@ -2030,11 +2129,7 @@ impl WorkflowEngine {
                         timestamp: Local::now(),
                     })
                     .await;
-                let mut data = std::collections::HashMap::new();
-                data.insert(
-                    "workflow_name".to_string(),
-                    serde_json::json!(workflow_name_for_event),
-                );
+                let mut data = shared_event_data.clone();
                 data.insert("status".to_string(), serde_json::json!("cancelled"));
                 self.publish_event(
                     crate::event_dispatcher::TriggerEvent::new("workflow.cancelled", data)
@@ -3051,6 +3146,129 @@ impl WorkflowEngine {
 impl Default for WorkflowEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// BUG-20261104-382 同族单一真相源：收集一个 workflow 定义的全部
+/// sub_workflow 引用目标（顶层节点 + parallel/loop 复合子节点递归——
+/// composite children 运行时经 registry 同样分派到 SubWorkflowNodeExecutor
+/// → engine.run，逃过收集就是逃过环闸）。空目标名跳过（执行器同样拒绝空名）。
+fn workflow_subworkflow_targets(wf: &Workflow) -> Vec<String> {
+    let mut refs = Vec::new();
+    for n in &wf.nodes {
+        if n.node_type == "sub_workflow" {
+            if let Some(target) = n.config.get("workflow").and_then(|v| v.as_str())
+                && !target.is_empty()
+            {
+                refs.push(target.to_string());
+            }
+        } else if matches!(n.node_type.as_str(), "parallel" | "loop") {
+            let cfg: serde_json::Map<String, serde_json::Value> =
+                n.config.clone().into_iter().collect();
+            collect_composite_subworkflow_targets(&cfg, &mut refs);
+        }
+    }
+    refs
+}
+
+/// 递归收集复合节点 config 里 children（`nodes`/`branches` 数组，形态同
+/// `get_config_node_list`）的 sub_workflow 引用目标；嵌套 composite 继续下钻。
+fn collect_composite_subworkflow_targets(
+    config: &serde_json::Map<String, serde_json::Value>,
+    refs: &mut Vec<String>,
+) {
+    for key in &["nodes", "branches"] {
+        let Some(arr) = config.get(*key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for child in arr {
+            let Some(obj) = child.as_object() else {
+                continue;
+            };
+            let child_type = obj
+                .get("node_type")
+                .or_else(|| obj.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if child_type == "sub_workflow"
+                && let Some(target) = obj
+                    .get("config")
+                    .and_then(|c| c.get("workflow"))
+                    .and_then(|v| v.as_str())
+                && !target.is_empty()
+            {
+                refs.push(target.to_string());
+            }
+            if matches!(child_type, "parallel" | "loop")
+                && let Some(child_config) = obj.get("config").and_then(|c| c.as_object())
+            {
+                collect_composite_subworkflow_targets(child_config, refs);
+            }
+        }
+    }
+}
+
+/// DFS：从 `start` 沿引用图出发，找回到 `start` 的路径（含 start 自环）。
+/// 返回 `[start, …, start]` 完整环路径；无环 None。visited 按节点去重
+/// （多出边 DAG 有限展开）。
+fn find_path_back_to_start(
+    start: &str,
+    graph: &HashMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
+    fn dfs(
+        node: &str,
+        start: &str,
+        graph: &HashMap<String, Vec<String>>,
+        path: &mut Vec<String>,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Option<Vec<String>> {
+        let targets = graph.get(node)?;
+        for next in targets {
+            if next == start {
+                let mut cycle = path.clone();
+                cycle.push(next.clone());
+                return Some(cycle);
+            }
+            if visited.insert(next.clone()) {
+                path.push(next.clone());
+                if let Some(c) = dfs(next, start, graph, path, visited) {
+                    return Some(c);
+                }
+                path.pop();
+            }
+        }
+        None
+    }
+    let mut path = vec![start.to_string()];
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(start.to_string());
+    dfs(start, start, graph, &mut path, &mut visited)
+}
+
+/// BUG-20261104-383：从事件 data / `TriggerSource::Event.data` 里读出触发链
+/// （[`crate::event_dispatcher::TRIGGER_CHAIN_KEY`] → JSON 字符串数组）。
+/// 缺键/形态不对一律按空链处理——链只由引擎发布点写入，读到脏形态放行
+/// （宁可少拦不误拦；手动 fire_event 本就没有链键）。
+fn trigger_chain_from_value(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 本执行的来源触发链：只有 `TriggerSource::Event` 携带上代事件的 data
+/// （链就藏在其中，见 [`trigger_chain_from_value`]）；其余触发来源没有
+/// 前代链，从空链起算。
+fn event_trigger_chain_of(trigger: Option<&TriggerSource>) -> Vec<String> {
+    match trigger {
+        Some(TriggerSource::Event { data, .. }) => {
+            trigger_chain_from_value(data.get(crate::event_dispatcher::TRIGGER_CHAIN_KEY))
+        }
+        _ => Vec::new(),
     }
 }
 

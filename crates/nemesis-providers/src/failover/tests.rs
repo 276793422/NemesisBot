@@ -414,4 +414,78 @@ fn stream_interrupted_display_headline_prefix_and_tail_full_partial() {
         display.contains("connection reset by peer"),
         "根因链不丢（诚实化纪律）: {display:?}"
     );
+    // L29 契约：分隔符与 tc 标记常量出现在 Display（agent 侧解析器用同
+    // 常量解析——字面量与常量漂移在此钉死）。
+    assert!(
+        display.contains(super::STREAM_PARTIAL_SEPARATOR),
+        "partial 分隔符常量必须在 Display（跨 crate 解析契约）: {display:?}"
+    );
+    assert!(
+        headline.contains(super::STREAM_TOOL_CALLS_TRUNCATED_MARK),
+        "has_partial_tool_calls=true 头行必须带截断标记（L29 拼接续写判定面）: {headline:?}"
+    );
+}
+
+#[test]
+fn stream_interrupted_display_no_tool_calls_mark_when_false() {
+    // L29 契约另一半：has_partial_tool_calls=false 头行不带标记（可拼接续写）。
+    let e = FailoverError::StreamInterrupted {
+        provider: "openai".to_string(),
+        model: "gpt-5".to_string(),
+        reason: "channel closed".to_string(),
+        partial_content: "half text".to_string(),
+        has_partial_tool_calls: false,
+    };
+    let display = e.to_string();
+    let headline = display.lines().next().unwrap_or("");
+    assert!(
+        !headline.contains(super::STREAM_TOOL_CALLS_TRUNCATED_MARK),
+        "false 不得带标记: {headline:?}"
+    );
+    assert!(
+        display.contains(super::STREAM_PARTIAL_SEPARATOR),
+        "分隔符恒在: {display:?}"
+    );
+}
+
+// BUG-20261103-351 回归锁：classify_message_error 与真相源同判——自由文案
+// （流内错误事件 / CLI stderr）此前恒 Unknown 不可重试，上游显式瞬态文案
+// 放弃 fallback 轮转。
+#[test]
+fn test_classify_message_error_transient_maps_retriable() {
+    // 限流文案 → RateLimit（可轮转）。
+    let e = super::classify_message_error("codex", "gpt-4o", " quota exceeded ");
+    assert!(
+        matches!(e, FailoverError::RateLimit { ref model, retry_after: None, .. }
+        if model == "gpt-4o"),
+        "quota exceeded 应归 RateLimit: {e:?}"
+    );
+    assert!(e.is_retriable(), "限流必须可轮转");
+
+    // overloaded 文案按既有约定同归 RateLimit（class_by_message 同判）。
+    let e =
+        super::classify_message_error("codex", "m", "The model is overloaded, please try again");
+    assert!(matches!(e, FailoverError::RateLimit { .. }), "{e:?}");
+    assert!(e.is_retriable());
+
+    // 认证文案 → Auth（诚实归因；不可轮转语义正确）。
+    let e = super::classify_message_error("codex", "m", "invalid api key");
+    assert!(matches!(e, FailoverError::Auth { .. }), "{e:?}");
+    assert!(!e.is_retriable());
+}
+
+#[test]
+fn test_classify_message_error_unclassifiable_falls_back_unknown() {
+    // 分类不出维持 Unknown（不可重试兜底语义不变；原文案随 message 保留）。
+    let msg = "totally novel failure mode";
+    let e = super::classify_message_error("codex-cli", "m", msg);
+    match e {
+        FailoverError::Unknown { ref message, .. } => assert_eq!(message, msg),
+        other => panic!("未收录文案应维持 Unknown，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+
+    // Format 类文案同兜底（与流内 lane 行为一致）。
+    let e = super::classify_message_error("claude-cli", "m", "invalid request format: x");
+    assert!(matches!(e, FailoverError::Unknown { .. }), "{e:?}");
 }

@@ -191,6 +191,11 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     // 不装配（未安装时 record 静默跳过广播，单测零开销）。
     nemesis_web::chat_event_log::install_event_hub(web_server.event_hub().clone());
 
+    // L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键 sidecar 根装配
+    // （`<workspace>/logs/session_logs/*.dedup.json`，惰性加载重启不失）。
+    // 未安装 = 纯内存模式（重启后幂等窗口清零，诚实降级不报错）。
+    nemesis_web::chat_dedup::install_workspace(&home.join("workspace"));
+
     // 反向桥中继服务端（goal：反向桥与多设备汇聚，一期批次一）：配置了
     // bridge.server.token 才开放接入门（fail-closed）——未配置则桥路由
     // 不存在。`--relay` 纯中继不走此路径（run_relay 独立轻量启动）。

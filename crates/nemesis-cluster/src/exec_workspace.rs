@@ -41,6 +41,31 @@ pub const EXEC_DIR_NAME: &str = "exec";
 /// 基线 sidecar 文件名（exec 目录内；diff 扫描时排除）。
 pub const BASELINE_SIDECAR_NAME: &str = ".baseline.json";
 
+/// 装配中标记路径（exec **根**下、工作副本树外——照 `.cs-{task}` 暂存目
+/// 录同款模式，绝不进 diff/变更集；`finish_task_exec` 装配期间在场，D5
+/// 兜底拉取据此观望）。
+pub fn assembling_marker_path(exec_root: &Path, task_id: &str) -> PathBuf {
+    exec_root.join(format!(".assembling-{}", sanitize_transfer_id(task_id)))
+}
+
+/// 装配中标记守卫：创建即落盘，Drop 即清——Ok（exec 目录随清扫消失）、
+/// Err（现场保留但可被下轮兜底按旧语义重推）两条出口都不留残标（残标
+/// 会让 master D5 兜底永久观望）。
+struct AssemblingMarker(PathBuf);
+
+impl AssemblingMarker {
+    fn new(path: PathBuf) -> Self {
+        let _ = std::fs::write(&path, b"");
+        Self(path)
+    }
+}
+
+impl Drop for AssemblingMarker {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// 基线 sidecar（工作副本内持久化——任务终结时 diff 的对照清单）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineSidecar {
@@ -151,8 +176,15 @@ impl ExecReceiveHook {
             files,
         };
         let json = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
-        std::fs::write(exec_dir.join(BASELINE_SIDECAR_NAME), json)
-            .map_err(|e| format!("写基线 sidecar 失败: {e}"))?;
+        // BUG-20261104-365 横向同族：sidecar 是终结侧 diff 的对照清单，
+        // 半截文件 = finish_task_exec 每次解析失败、任务档案永久卡死
+        // （现场保留 WARN 无自愈）。原子写对齐全仓持久化纪律。
+        nemesis_utils::file::write_file_atomic(
+            &exec_dir.join(BASELINE_SIDECAR_NAME).to_string_lossy(),
+            json.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("写基线 sidecar 失败: {e}"))?;
         Ok((exec_dir, count))
     }
 }
@@ -205,6 +237,16 @@ pub fn finish_task_exec(
         // 无 sidecar = 非档案管线（或解包失败的诚实降级形态）。
         return Ok(false);
     }
+    // BUG-20261104-361（T-MRG-1 吞变更集）：装配期间落 `.assembling-*`
+    // 标记——D5 兜底拉取（`TransferOutbox::request_pull`）据此暂不重推。
+    // 否则 master sweep 在装配窗口命中时，无变更集的执行记录抢先入队，发
+    // 件箱幂等闸会吞掉随后带变更集的正常入队，master 空集宽容把 worker
+    // 的实际改动静默合并为「无变更」（ET mrg-a T-MRG-1 实录：B 的 PATCH
+    // 行被吞）。
+    let _assembling = AssemblingMarker::new(assembling_marker_path(
+        &exec_root_in_workspace(workspace),
+        task_id,
+    ));
     // BUG-2026-10-15 NB-120（A 治本）：任务派生但未被树杀覆盖的残留进程
     // （浏览器实测的 Edge/crashpad 等）会占住工作副本内文件锁，让全树 diff
     // 与清扫整体失败。组装变更集**之前**按命令行清扫（best-effort，护栏见

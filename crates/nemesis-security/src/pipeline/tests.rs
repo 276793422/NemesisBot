@@ -2423,3 +2423,59 @@ async fn execute_tracked_propagates_interactive_approval_ref() {
         "pipeline must surface the interactive approval ref to the receipt layer"
     );
 }
+
+// BUG-20261104-374 红证（管线级）：SecurityPlugin::new 构造 AuditChain 后
+// 不回载盘上链尾——audit_chain_path 是固定路径续写，重启（重新 new）后
+// 首个事件 prev_hash=全零，与盘上既有链断裂，logs.chain_verify 全量校验
+// 恒 FAIL（防篡改链被正常重启本身打穿；load_segments 方法在、测试在、
+// 装配缺失）。修复 = 构造点接入 load_segments。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_bug374_plugin_restart_replays_audit_chain_tail() {
+    // 必须 multi_thread：execute() 的 Layer 7 走 block_in_place + Handle::current，
+    // 同步 #[test] 无 runtime / current_thread flavor 都会 panic。
+    let dir = tempfile::tempdir().unwrap();
+    let chain_path = dir.path().join("audit_chain.jsonl");
+    let make_config = || SecurityPluginConfig {
+        enabled: true,
+        audit_chain_enabled: true,
+        audit_chain_path: Some(chain_path.to_string_lossy().to_string()),
+        default_action: "allow".to_string(),
+        ..Default::default()
+    };
+    let make_inv = |cmd: &str| ToolInvocation {
+        tool_name: "exec".to_string(),
+        args: serde_json::json!({ "command": cmd }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+
+    // 第一生命周期：放行一个工具调用（入链 1 条）
+    let plugin = SecurityPlugin::new(make_config());
+    let (allowed, err) = plugin.execute(&make_inv("echo life-one"));
+    assert!(allowed, "echo 必须放行入链，err={err:?}");
+    let tail1 = plugin.audit_chain().unwrap().current_hash();
+
+    // 模拟网关重启：全新 plugin 实例（内存链尾回全零），续写同一固定路径
+    drop(plugin);
+    let plugin2 = SecurityPlugin::new(make_config());
+    assert_eq!(
+        plugin2.audit_chain().unwrap().current_hash(),
+        tail1,
+        "重启后新实例的链尾必须已回载衔接盘上最后一行（修复前=全零断链）"
+    );
+    let (allowed, err) = plugin2.execute(&make_inv("echo life-two"));
+    assert!(allowed, "重启后 echo 必须放行入链，err={err:?}");
+
+    // 读盘全量 verify：跨重启链完整
+    let content = std::fs::read_to_string(&chain_path).unwrap();
+    let events: Vec<crate::integrity::AuditEvent> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("parse event"))
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(
+        AuditChain::verify_chain(&events),
+        "跨重启的盘上链必须 verify 通过"
+    );
+}

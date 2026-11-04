@@ -14,7 +14,13 @@ use std::collections::HashMap;
 /// 缓存读单列 `cache_read_tokens`。OpenAI/DeepSeek 族 wire 的 prompt/input
 /// 均含缓存（子集语义），此处统一剥出；miss 段就是普通输入——OpenAI 族
 /// 没有缓存写概念，恒不落 `cache_creation_tokens`（Anthropic 族除外）。
-fn extract_usage(u: &serde_json::Value) -> UsageInfo {
+///
+/// BUG-20261104-389：这是 OpenAI chat/completions 形态 usage 归一的**单一
+/// 真相源**——openai_compat lane 的 `parse_response` 委托本函数（此前它自带
+/// 第三份裸减法归一，缺 `.clamp(0, prompt_raw.max(0))` 守卫，畸形上游
+/// cached > prompt_raw 时落负 prompt_tokens 记账；同族两处
+/// （本函数 DeepSeek/OpenAI 臂 + codex lane Responses 形态）均有守卫）。
+pub(crate) fn extract_usage(u: &serde_json::Value) -> UsageInfo {
     let prompt_raw = u["prompt_tokens"].as_i64().unwrap_or(0);
 
     // DeepSeek: prompt_cache_hit_tokens + prompt_cache_miss_tokens
@@ -467,7 +473,11 @@ impl HttpProvider {
                                     .collect()
                             })
                             .unwrap_or_default();
-                    let usage = parsed.get("usage").map(extract_usage);
+                    // "usage":null 不伪造 0 行（与 SSE 路径同口径）。
+                    let usage = parsed
+                        .get("usage")
+                        .filter(|u| u.is_object())
+                        .map(extract_usage);
                     // message.reasoning_content 同源提取（对齐非流式 parse
                     // 的字段口径）：该字段是多轮回放的功能性输入——deepseek
                     // 形态 API 第二轮缺它直接 400；合成路径此前硬编码 None，
@@ -777,12 +787,22 @@ impl HttpProvider {
                             && tool_calls.is_empty()
                         {
                             // 终态后 usage 专用 chunk（include_usage 形态：
-                            // choices 空数组 + usage，finish 已随前一帧发出）
-                            // ——转发 usage 给覆盖式聚合侧（stream_util 出现
-                            // 即覆盖收下）；其余无内容 chunk 照旧丢弃。不碰
+                            // choices 空数组或键缺失 + usage，finish 已随前一
+                            // 帧发出）——转发 usage 给覆盖式聚合侧（stream_util
+                            // 出现即覆盖收下）；其余无内容 chunk 照旧丢弃。不碰
                             // finish_emitted（终态已发，[DONE]/EOF 收尾不变）。
-                            if parsed["choices"].as_array().is_some_and(|a| a.is_empty())
-                                && let Some(usage) = parsed.get("usage").map(extract_usage)
+                            // choices 键缺失视同空数组（兼容端点常见省略形态，
+                            // 旧闸只认 choices 在场 → usage 静默丢失）；usage
+                            // 必须是对象（"usage":null 不造 0 行）。
+                            let usage_only = parsed
+                                .get("choices")
+                                .and_then(|c| c.as_array())
+                                .is_none_or(|a| a.is_empty());
+                            if usage_only
+                                && let Some(usage) = parsed
+                                    .get("usage")
+                                    .filter(|u| u.is_object())
+                                    .map(extract_usage)
                             {
                                 let chunk = StreamChunk {
                                     delta: String::new(),
@@ -798,8 +818,15 @@ impl HttpProvider {
                             continue;
                         }
 
+                        // OpenAI 形态每个 chunk 带 "usage":null（含 finish
+                        // chunk）——null 提取会伪造 0/0/0 行；端点不支持
+                        // include_usage 时该 0 行就是最终记账（假 0 token
+                        // 账本）。null 视作无 usage。
                         let usage = if finish_reason.is_some() {
-                            parsed.get("usage").map(extract_usage)
+                            parsed
+                                .get("usage")
+                                .filter(|u| u.is_object())
+                                .map(extract_usage)
                         } else {
                             None
                         };
@@ -1059,7 +1086,11 @@ impl LLMProvider for HttpProvider {
             .unwrap_or("stop")
             .to_string();
 
-        let usage = data.get("usage").map(extract_usage);
+        // "usage":null 不伪造 0 行（与流式路径同口径）。
+        let usage = data
+            .get("usage")
+            .filter(|u| u.is_object())
+            .map(extract_usage);
 
         let mut tool_calls =
             if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {

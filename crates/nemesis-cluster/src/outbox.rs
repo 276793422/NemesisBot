@@ -122,6 +122,17 @@ pub(crate) fn residual_dir_older_than(
     }
 }
 
+/// 进程级入队互斥（BUG-20261104-365）：enqueue 的 check→remove→copy→write
+/// 序列必须原子——四路触发源（终态钩子 `finish_task_exec` / master 兜底
+/// pull 的 RPC handler / 启动清扫 / 周期残留清扫的独立线程）可对同一
+/// task_id 并发入队，无锁时 B 侧 `remove_dir_all` 会删掉 A 侧复制到一半
+/// 的载荷，最坏留下「entry.json 在场 + payload 半套」——「entry.json 在场
+/// = 载荷完整」不变量被破坏，半套载荷推送 master content_hash 校验永不
+/// 过 → 卡死信且手动重放救不了（payload 不会自愈）。与推送循环的单任务
+/// 串行哲学一致；enqueue 是同步 fn，std Mutex 不跨 await，tokio 上下文
+/// 与 std::thread 上下文都安全。
+static OUTBOX_ENQUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ---------------------------------------------------------------------------
 // 传输抽象（可注入：单测用 fake，生产用 RpcClient）
 // ---------------------------------------------------------------------------
@@ -314,6 +325,9 @@ pub struct TransferOutbox {
     outbox_root: PathBuf,
     /// `<workspace>/logs/cluster_logs`（入队源；nemesis-path 唯一拼接点）。
     logs_root: PathBuf,
+    /// `<workspace>/cluster/exec`（档案管线工作副本根；D5 兜底拉取的装配
+    /// 观望探针用，BUG-20261104-361）。
+    exec_root: PathBuf,
     self_node_id: String,
     transport: Arc<dyn TransferTransport>,
     /// D4 护栏现读 provider（gateway 从 config 现读注入，热生效；0=不限）。
@@ -339,6 +353,7 @@ impl TransferOutbox {
         Self {
             outbox_root,
             logs_root: nemesis_path::resolve_cluster_logs_dir_in_workspace(workspace),
+            exec_root: crate::exec_workspace::exec_root_in_workspace(workspace),
             self_node_id,
             transport,
             max_bytes,
@@ -396,6 +411,10 @@ impl TransferOutbox {
                 cs.display()
             ));
         }
+        // BUG-20261104-365：入队全程互斥（见 OUTBOX_ENQUEUE_LOCK）。
+        let _enqueue = OUTBOX_ENQUEUE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = self.entry_dir(task_id);
         if dir.join("entry.json").exists() {
             return Ok(()); // 幂等
@@ -452,6 +471,22 @@ impl TransferOutbox {
         // （该腿不依赖 seen）——语义闭环。
         if let Some(state) = self.parked_state(task_id) {
             return state;
+        }
+        // BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线
+        // sidecar + `.assembling-*` 标记在场，见
+        // `exec_workspace::finish_task_exec`）时不得兜底重推——此刻入队
+        // 只会送出无变更集的执行记录，发件箱幂等闸随后吞掉带变更集的正
+        // 常入队，master 空集宽容把 worker 的实际改动静默合并为「无变
+        // 更」。诚实答 assembling 让 master 观望，等正常完成腿交付完整
+        // 载荷（执行记录 + 变更集同载荷原子落地）。
+        let sanitized = crate::transfer::sanitize_transfer_id(task_id);
+        let exec_dir = self.exec_root.join(&sanitized);
+        if exec_dir
+            .join(crate::exec_workspace::BASELINE_SIDECAR_NAME)
+            .exists()
+            && crate::exec_workspace::assembling_marker_path(&self.exec_root, task_id).exists()
+        {
+            return "assembling";
         }
         let Ok(devices) = std::fs::read_dir(&self.logs_root) else {
             return "no_archive";

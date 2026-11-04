@@ -213,6 +213,7 @@ impl AgentLoop {
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
+            mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             draining: std::sync::atomic::AtomicBool::new(false),
@@ -269,13 +270,15 @@ impl AgentLoop {
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
             pending_workflow_edit: parking_lot::RwLock::new(None),
+            tool_schema_unlocks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
-            config_mtime: parking_lot::RwLock::new(None),
+            config_gen: parking_lot::RwLock::new(None),
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
+            loop_origin: parking_lot::RwLock::new("main".to_string()),
             voice_prompt: parking_lot::RwLock::new(None),
             workspace_boundary: parking_lot::RwLock::new(None),
             plan_products_root: parking_lot::RwLock::new(None),
@@ -292,7 +295,8 @@ impl AgentLoop {
 
     /// Dispatch a cluster continuation: inline (permits=0) or spawned (permits>0).
     /// Called from both `run_bus_owned` (test) and `run_bus_arc` (production).
-    async fn dispatch_continuation(
+    /// `pub(crate)`：delegate 台账终态回写测试直驱（D5，2026-11-03）。
+    pub(crate) async fn dispatch_continuation(
         &self,
         task_id: String,
         msg: &nemesis_types::channel::InboundMessage,
@@ -321,6 +325,24 @@ impl AgentLoop {
         // 要求 'static（与 task_error 同款）。
         let task_source_node = task_metadata.get("source_node").cloned();
 
+        // 子代理可见性（D5，2026-11-03）：delegate 任务终态回写（begin 在
+        // `__ASYNC__` marker 落地侧 save_async_continuation）。后台子代理
+        // 续行（`subagent_continuation`）的 task_id 不在注册表（行 id 是
+        // `subagent:{uuid}`）→ finish 静默 miss，语义正是「不在册不回写」。
+        // 用户侧 cancel 的本地视图会被真实结局覆盖——B 端结果才是任务真相，
+        // cancel 只代表「不再等待显示」。
+        crate::subagent_registry::global().finish(
+            &task_id,
+            if task_failed {
+                crate::subagent_registry::SubagentStatus::Failed
+            } else {
+                crate::subagent_registry::SubagentStatus::Done
+            },
+            None,
+            (!task_response.is_empty()).then(|| task_response.clone()),
+            task_metadata.get("error").map(|v| v.to_string()),
+        );
+
         if self.max_continuation_permits == 0 {
             // Inline: process directly in the main loop (no spawn).
             // The main loop is blocked until continuation completes,
@@ -339,6 +361,8 @@ impl AgentLoop {
                 let max_tokens_cap = self
                     .current_max_tokens_override(Some(&model))
                     .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
+                // L28+：阶梯封顶与主循环同源（agents.defaults.max_output_ceiling）。
+                let max_tokens_ceiling = self.current_max_output_ceiling();
 
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -349,6 +373,7 @@ impl AgentLoop {
                     provider.as_ref(),
                     &model,
                     max_tokens_cap,
+                    max_tokens_ceiling,
                     &tools,
                     tx,
                     self.observer_manager.clone(),
@@ -376,6 +401,8 @@ impl AgentLoop {
             let max_tokens_cap = self
                 .current_max_tokens_override(Some(&model))
                 .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
+            // L28+：阶梯封顶同样 spawn 前解析（闭包要求 'static）。
+            let max_tokens_ceiling = self.current_max_output_ceiling();
 
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
@@ -391,6 +418,7 @@ impl AgentLoop {
                         provider.as_ref(),
                         &model,
                         max_tokens_cap,
+                        max_tokens_ceiling,
                         &tools,
                         tx,
                         observer_manager,
@@ -991,6 +1019,8 @@ impl AgentLoop {
             let max_tokens_cap = self
                 .current_max_tokens_override(Some(&cont_model))
                 .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
+            // L28+：阶梯封顶与主循环同源。
+            let max_tokens_ceiling = self.current_max_output_ceiling();
             if let Some(ref tx) = self.outbound_tx {
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -1001,6 +1031,7 @@ impl AgentLoop {
                     cont_provider.as_ref(),
                     &cont_model,
                     max_tokens_cap,
+                    max_tokens_ceiling,
                     &self.tools,
                     tx,
                     self.observer_manager.clone(),

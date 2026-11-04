@@ -169,6 +169,25 @@ describe('导航模型与路由一致性（契约 vs router）', () => {
     const all = new Set(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)))
     for (const id of grouped) expect(all.has(id)).toBe(true)
   })
+
+  it('router 与侧栏的 feature 门控是同一映射（R497：一边加门控另一边漏改 = 红）', () => {
+    // navModel ITEM_FEATURE 注释承诺「与 router/index.ts 的门控保持同一映射」，
+    // 但此前无任何测试兑现——BUG-20261104-363（connectors/coding/local-models
+    // 路由有、侧栏无门控）正是漏改一边漏出来的。本测试钉死两侧 VITE_FEATURE
+    // 名集合相等：router 加了门控没同步 navModel（或反向）直接红。
+    const routerSrc = readFileSync(resolve(import.meta.dirname, '../../router/index.ts'), 'utf8')
+    const navSrc = readFileSync(resolve(import.meta.dirname, '../navModel.ts'), 'utf8')
+    const routerFeatures = new Set(
+      [...routerSrc.matchAll(/VITE_FEATURE_([A-Z_]+) !== 'false'/g)].map((m) => m[1]),
+    )
+    const table = navSrc.slice(
+      navSrc.indexOf('const ITEM_FEATURE'),
+      navSrc.indexOf('export const NAV_GROUPS'),
+    )
+    const navFeatures = new Set([...table.matchAll(/: '([A-Z_]+)'/g)].map((m) => m[1]))
+    expect(navFeatures.size).toBeGreaterThan(10) // 表解析失败（空集）= 红，防假绿
+    expect([...routerFeatures].sort()).toEqual([...navFeatures].sort())
+  })
 })
 
 describe('config schema 漂移防线（v2 修订）', () => {

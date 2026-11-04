@@ -1571,9 +1571,11 @@ impl CheckpointStore {
         // git 形态：全树 diff 的未声明路径补进 unchecked（见 fn 文档）。排
         // 除集 = 声明路径 ∪ 已报冲突路径（后者已有精确封印判定，不得再以
         // unchecked 身份重复出现）∪ R31 其他会话路径（已单列波及面）；补进
-        // 时对既有 unchecked 去重。
-        // from_turn 后无 checkpoint（restore no-op）或无 target tree（hybrid
-        // 兜底路径）时 restore 不做 tree 恢复，这里同样不报。
+        // 时对既有 unchecked 去重。BUG-20261103-347：tree delta 路径是
+        // repo 相对形态，排除集元素必须过 repo_relative_path 归一（声明串
+        // 常态是绝对路径，原样 contains 恒 miss → 声明过的路径全量漏进
+        // unchecked 假警告）；归一 None（界外/不可定）= 不会出现在 tree
+        // delta 里，丢弃。
         #[cfg(feature = "checkpoint-git")]
         if has_post
             && let Some(gb) = self.git.as_ref()
@@ -1582,12 +1584,19 @@ impl CheckpointStore {
                 self.latest_tree_hex(),
             )
         {
-            let mut excluded = declared;
+            let mut excluded: std::collections::HashSet<String> = declared
+                .iter()
+                .filter_map(|p| self.repo_relative_path(p))
+                .collect();
             for c in &report.conflicts {
-                excluded.insert(c.path.clone());
+                if let Some(r) = self.repo_relative_path(&c.path) {
+                    excluded.insert(r);
+                }
             }
             for p in &report.other_session_paths {
-                excluded.insert(p.clone());
+                if let Some(r) = self.repo_relative_path(p) {
+                    excluded.insert(r);
+                }
             }
             let extra = match gb.open() {
                 // open 失败 = 全树 diff 预检不可用，按既有降级语义取空集
@@ -2034,6 +2043,72 @@ impl CheckpointStore {
         &self.root
     }
 
+    /// 纯字符串路径归一（零 IO）：剥 Windows verbose 前缀（`\\?\UNC\` →
+    /// `//` 保 UNC 绝对性；`\\?\` 直剥）、反斜杠 → 正斜杠、剥前导 `./`、
+    /// 去尾 `/`。
+    fn norm_path_form(p: &str) -> String {
+        let s = if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+            format!("//{rest}")
+        } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            p.to_string()
+        };
+        let s = s.replace('\\', "/");
+        let s = s.strip_prefix("./").unwrap_or(&s).to_string();
+        s.trim_end_matches('/').to_string()
+    }
+
+    fn is_windows_abs(p: &str) -> bool {
+        let b = p.as_bytes();
+        b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()
+    }
+
+    /// 树接口路径归一（BUG-20261103-347 单一入口，M3 会话 diff / F6 预检
+    /// 排除集共用）：任意调用方/声明形态 → 影子库 repo 相对路径（正斜杠）。
+    /// 影子 tree 条目是 `add_all` 工作区扫描产物（repo 相对），而声明侧存
+    /// 工具入参逐字串（常态绝对路径）——不归一直接喂树接口必错位。工作区
+    /// 内绝对路径剥根：先词法剥，失败再双方 canonicalize（8.3 短名 / 大小
+    /// 写 / `\\?\` 形态差异兜底，已删文件此路不可达）；相对输入原样归一；
+    /// `..` / 界外 / 无法确定 → None（消费方按 hybrid/raw 兜底，绝不猜）。
+    pub(crate) fn repo_relative_path(&self, path: &str) -> Option<String> {
+        if path.contains("..") {
+            return None; // 保守：与 path_inside_root 同语义
+        }
+        let norm = Self::norm_path_form(path);
+        if !norm.is_empty() && !norm.starts_with('/') && !Self::is_windows_abs(&norm) {
+            return Some(norm); // 相对输入
+        }
+        // 绝对：词法剥根。
+        let root_norm = Self::norm_path_form(&self.root.to_string_lossy());
+        let prefix = format!("{root_norm}/");
+        if let Some(rest) = norm.strip_prefix(&prefix) {
+            if rest.is_empty() {
+                return None; // path == root 本身
+            }
+            return Some(rest.to_string());
+        }
+        // 词法形态不齐（8.3 短名 / 大小写 / `\\?\` 差异）：canonicalize
+        // 双方兜底（要求文件当前在盘）。
+        let file = std::fs::canonicalize(path).ok()?;
+        let root_c = std::fs::canonicalize(&self.root).ok()?;
+        let rel = file.strip_prefix(&root_c).ok()?;
+        if rel.as_os_str().is_empty() {
+            return None;
+        }
+        Some(Self::norm_path_form(&rel.to_string_lossy()))
+    }
+
+    /// `base_for_path` 的可比形态：工作区内 → `rel:<repo 相对>`；界外/
+    /// 不可定 → `raw:<字符串归一形态>`。声明侧与查询侧同函数归一，形态差
+    /// 异（绝对 vs 相对、分隔符、`\\?\`）不再造成索引漏匹配。
+    fn comparable_path_form(&self, p: &str) -> String {
+        match self.repo_relative_path(p) {
+            Some(rel) => format!("rel:{rel}"),
+            None => format!("raw:{}", Self::norm_path_form(p)),
+        }
+    }
+
     /// M3：某文件的最早基线锚——索引里（done 按 turn 序 + cur）第一个
     /// 声明过该文件的条目（`paths` 命中或 `files` 含该路径；后者兼容
     /// D2 之前没有 `paths` 字段的老 JSON 条目）。
@@ -2042,23 +2117,32 @@ impl CheckpointStore {
     /// 时基线可能取自更早会话的 turn（消费方 session_file_diff 以此为
     /// 「最早已知 pre-edit 态」语义）。
     pub fn base_for_path(&self, path: &str) -> Option<CheckpointBase> {
+        // BUG-20261103-347：声明侧存工具入参逐字串（常态绝对路径），查询
+        // 侧形态任意——双侧 comparable 归一后再匹配，形态差异不再漏命中。
+        let target = self.comparable_path_form(path);
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
         // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
         all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
-            .filter(|c| c.paths.iter().any(|p| p == path) || c.files.iter().any(|f| f.path == path))
+            .find(|c| {
+                c.paths
+                    .iter()
+                    .any(|p| self.comparable_path_form(p) == target)
+                    || c.files
+                        .iter()
+                        .any(|f| self.comparable_path_form(&f.path) == target)
+            })
             .map(|c| CheckpointBase {
                 turn: c.turn,
                 tree: c.tree.clone(),
                 content: c
                     .files
                     .iter()
-                    .find(|f| f.path == path)
+                    .find(|f| self.comparable_path_form(&f.path) == target)
                     .and_then(|f| f.content.clone()),
             })
-            .next()
     }
 
     /// M3：从影子 tree 读单文件内容（git 形态专用）。文件不在 tree 里 →

@@ -162,23 +162,43 @@ async fn gate_and_write_without_security_writes_all_files() {
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "fn a() {}");
     assert_eq!(std::fs::read_to_string(&b).unwrap(), "fn b() {}");
 
-    // 写盘中途失败（第二个文件路径非法）→ Err，第一个已如实上报过。
-    let bad = vec![AppliedFileEdit {
-        path: dir
-            .path()
-            .join("no-such-dir")
-            .join("x.rs")
-            .to_string_lossy()
-            .into_owned(),
-        new_text: "x".to_string(),
-        edit_count: 1,
-    }];
+    // 写盘中途失败（第二个文件目录不存在）→ Err 且**自带已落盘清单**
+    // （BUG-20261104-381：此前 `?` 直接返回丢现场——模型只看到失败，
+    // 不知道第一个文件已经落盘，半改名状态不可见会盲目重试整个 rename）。
+    let ok_file = dir.path().join("good.rs");
+    let bad = vec![
+        AppliedFileEdit {
+            path: ok_file.to_string_lossy().into_owned(),
+            new_text: "fn good() {}".to_string(),
+            edit_count: 1,
+        },
+        AppliedFileEdit {
+            path: dir
+                .path()
+                .join("no-such-dir")
+                .join("x.rs")
+                .to_string_lossy()
+                .into_owned(),
+            new_text: "x".to_string(),
+            edit_count: 1,
+        },
+    ];
     let err = gate_and_write(&bad, None, None, &cov_ctx())
         .await
         .expect_err("unwritable target must fail");
     assert!(
         err.contains("write") && err.contains("failed"),
         "got: {err}"
+    );
+    // 已落盘清单必须在错误消息里（第一个文件实际写到了磁盘）。
+    assert!(
+        err.contains("already written") && err.contains("good.rs"),
+        "错误消息必须带已落盘清单, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&ok_file).unwrap(),
+        "fn good() {}",
+        "失败点之前的文件确实已落盘"
     );
 }
 

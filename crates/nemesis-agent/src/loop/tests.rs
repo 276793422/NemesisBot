@@ -541,6 +541,115 @@ async fn handle_tool_call_runs_when_estop_disengaged() {
 }
 
 #[tokio::test]
+async fn estop_interrupts_in_flight_tool_and_emits_tool_finished() {
+    // 修②⑥（BUG-C 2026-11-04 交叉态回归锁）：工具执行到一半触发急停——
+    // dispatch 的 estop select 臂 drop 在飞执行链 future（工具体 + around
+    // hooks），被 drop 的 hook 链发不出 ToolFinished，dispatch 按**同一
+    // call_id**（turn_wal::call_id_for 派生点）补发 interrupted 终态
+    // （ok=false、estop 预览、真实墙钟），UI 卡片与 Work 时间线不悬空。
+    // 观察面：同一 broadcast tx 同时喂 ToolEventHook（正常链事件）与
+    // agent_event_tx（中断补发事件），单 rx 收全两路。
+    // 文案判别：入口级拒绝是「拒绝」，此处 select 臂是「打断」——断言
+    // 「打断」保证命中的是修②臂而非 checkpoint C。
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct HangingTool {
+        entered: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl Tool for HangingTool {
+        async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+            self.entered.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let entered = Arc::new(AtomicBool::new(false));
+    let provider = MockLlmProvider::new(vec![]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.add_tool_hook(Arc::new(crate::tool_event_hook::ToolEventHook::new(
+        tx.clone(),
+        crate::work_timeline::WorkRecorder::default(),
+    )));
+    agent_loop.set_agent_event_tx(Some(tx.clone()));
+    agent_loop.register_tool(
+        "hanging_tool".to_string(),
+        Box::new(HangingTool {
+            entered: entered.clone(),
+        }),
+    );
+    let estop = Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop.clone());
+
+    let tc = ToolCallInfo {
+        id: "tc_est_tool_1".to_string(),
+        name: "hanging_tool".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let ctx = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let al = Arc::new(agent_loop);
+    let call_task = tokio::spawn(async move { al.handle_tool_call(&tc, &ctx).await });
+
+    // 等工具体已被 poll（execute 进入翻标志），再触发急停——保证命中
+    // dispatch select 臂（在飞中断），而不是入口级拒绝 / estop 前置闸。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !entered.load(Ordering::SeqCst) {
+        if std::time::Instant::now() > deadline {
+            panic!("hanging_tool.execute 从未被 poll——没走到工具执行链");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    estop.trigger();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), call_task)
+        .await
+        .expect("handle_tool_call 应在 estop 中断挂起工具后返回")
+        .expect("task 不应 panic");
+    assert!(
+        result.contains("ESTOP") && result.contains("打断"),
+        "应得到在飞中断文案（非入口拒绝、非工具结果），实际: {result}"
+    );
+
+    // 事件面：ToolStarted（hook 正常链发出）→ ToolFinished（dispatch 中断
+    // 补发，同 call_id、ok=false、estop 预览）。
+    let started = rx.recv().await.expect("ToolStarted 事件缺失");
+    let finished = rx.recv().await.expect("interrupted ToolFinished 事件缺失");
+    let expected_call_id = crate::turn_wal::call_id_for("tc_est_tool_1", "hanging_tool");
+    match started {
+        nemesis_types::agent::AgentEvent::ToolStarted { call_id, tool, .. } => {
+            assert_eq!(tool, "hanging_tool");
+            assert_eq!(call_id, expected_call_id, "Started 必须携带派生 call_id");
+        }
+        other => panic!("首事件应为 ToolStarted，实际: {other:?}"),
+    }
+    match finished {
+        nemesis_types::agent::AgentEvent::ToolFinished {
+            call_id,
+            tool,
+            ok,
+            result_preview,
+            ..
+        } => {
+            assert_eq!(
+                call_id, expected_call_id,
+                "补发终态必须与 Started 同 call_id（UI 卡片不悬空的根基）"
+            );
+            assert_eq!(tool, "hanging_tool");
+            assert!(!ok, "interrupted 终态必须 ok=false");
+            assert!(
+                result_preview.contains("interrupted by e-stop"),
+                "预览必须带 estop 中断说明，实际: {result_preview}"
+            );
+        }
+        other => panic!("次事件应为 ToolFinished，实际: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn estop_blocks_remaining_tools_in_batch() {
     // checkpoint B（批次每条工具前）：第一个工具执行时触发 estop，
     // 第二个工具应被 checkpoint B 拦下、不执行。
@@ -2877,9 +2986,10 @@ async fn test_force_compression_short_history() {
     // (MockLlmProvider returns "No more responses" when exhausted, which is
     // non-empty, so use explicit empty responses to exercise the None path.)
     // 2026-09-28 重试版护栏：空输出按失败归一进重试内层 → 两个空响应分别
-    // 承载首次尝试与重试；两次全空 → 诚实 None（mock 耗尽回落的
+    // 承载首次尝试与重试；两次全空触发 4× 预算升档重试（2026-11-03）→
+    // 第三个空响应承载升档尝试；三次全空 → 诚实 None（mock 耗尽回落的
     // "No more responses" 非空，绝不能让它被当摘要收编）。
-    let provider = MockLlmProvider::new(vec![llm_text(""), llm_text("")]);
+    let provider = MockLlmProvider::new(vec![llm_text(""), llm_text(""), llm_text("")]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     let instance = AgentInstance::new(test_config());
@@ -3055,18 +3165,23 @@ async fn test_summarize_empty_output_retries_then_succeeds() {
     assert_eq!(provider.call_count(), 2, "exactly attempt + one retry");
 }
 
-/// 两次全空 → 诚实 None（摘要不产出、历史保持不折叠），恰好两次调用；
+/// 两次全空 → 4× 预算升档重试（2026-11-03）→ 仍空 → 诚实 None（摘要不产出、
+/// 历史保持不折叠），恰好三次调用（默认预算 attempt+retry + 升档一次）；
 /// mock 耗尽回落串绝不进摘要。
 #[tokio::test]
 async fn test_summarize_both_empty_outputs_return_none() {
-    let provider = OutcomeMockProvider::new(vec![Ok(llm_text("")), Ok(llm_text(""))]);
+    let provider = OutcomeMockProvider::new(vec![
+        Ok(llm_text("")),
+        Ok(llm_text("")),
+        Ok(llm_text("")), // escalation attempt (4× budget) — still empty
+    ]);
     let history = g1_history(3);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
     let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_none(), "both attempts empty → honest None");
-    assert_eq!(provider.call_count(), 2);
+    assert_eq!(provider.call_count(), 3);
 }
 
 /// prefix_reuse=false (bare-concat shape): failure → None as well.

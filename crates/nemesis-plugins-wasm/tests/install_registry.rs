@@ -208,6 +208,73 @@ async fn egress_proxy_arm_skips_local_dns() {
     );
 }
 
+// BUG-20261103-346：egress allowlist IPv6 条目形态（钉端口此前永不命中）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn egress_allowlist_ipv6_entry_forms() {
+    use nemesis_plugins_wasm::egress::{EgressPolicy, allowlisted};
+
+    // bracketed + 钉端口：端口精确命中 / 错端口不命中 / host 不同不命中。
+    let pol = EgressPolicy::from_permissions(vec!["[2001:db8::5]:443".into()], false);
+    assert!(
+        allowlisted(&pol, "2001:db8::5", 443),
+        "bracketed 钉端口命中"
+    );
+    assert!(
+        !allowlisted(&pol, "2001:db8::5", 8443),
+        "钉端口条目错端口不命中"
+    );
+    assert!(!allowlisted(&pol, "2001:db8::6", 443), "host 不同不命中");
+
+    // bracketed 无端口：任意端口。
+    let pol = EgressPolicy::from_permissions(vec!["[::1]".into()], true);
+    assert!(allowlisted(&pol, "::1", 80));
+    assert!(allowlisted(&pol, "::1", 8080));
+
+    // 裸 IPv6 字面量（含冒号整串）：任意端口。
+    let pol = EgressPolicy::from_permissions(vec!["2001:db8::9".into()], false);
+    assert!(allowlisted(&pol, "2001:db8::9", 80));
+    assert!(allowlisted(&pol, "2001:db8::9", 443));
+    assert!(
+        !allowlisted(&pol, "2001:db8::10", 80),
+        "裸地址 host 不同不命中"
+    );
+    // `::1:8080` 整串是合法 IPv6 地址（末组 hex 8080）——按裸地址语义
+    // 任意端口，钉端口必须走 bracketed 形态。
+    let pol = EgressPolicy::from_permissions(vec!["::1:8080".into()], true);
+    assert!(allowlisted(&pol, "::1:8080", 80));
+    assert!(!allowlisted(&pol, "::1", 8080));
+
+    // 域名形态不回归（v4/域名钉端口 + 裸域名任意端口）。
+    let pol = EgressPolicy::from_permissions(
+        vec!["api.example.com".into(), "pin.example.com:8443".into()],
+        false,
+    );
+    assert!(allowlisted(&pol, "api.example.com", 80));
+    assert!(allowlisted(&pol, "api.example.com", 443));
+    assert!(allowlisted(&pol, "pin.example.com", 8443));
+    assert!(
+        !allowlisted(&pol, "pin.example.com", 443),
+        "域名钉端口错端口不命中"
+    );
+    assert!(!allowlisted(&pol, "other.example.com", 80));
+
+    // 大小写不敏感（条目 from_permissions 已归一小写，host 侧直给大写）。
+    let pol = EgressPolicy::from_permissions(vec!["[2001:DB8::5]:443".into()], false);
+    assert!(allowlisted(&pol, "2001:db8::5", 443));
+
+    // 畸形条目不 panic、不误命中（>u16 端口不命中且不短路后续条目）。
+    let pol = EgressPolicy::from_permissions(
+        vec!["pin.example.com:99999".into(), "pin.example.com".into()],
+        false,
+    );
+    assert!(
+        allowlisted(&pol, "pin.example.com", 80),
+        "超界端口条目不短路后续裸条目"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3.2 / L6：开关记录写路径（config.plugin.wasm.json 单一真相源；2026-10-22
 // 「默认不加载」语义——开关写经 installer.set_enabled，配置键经 manager）
@@ -2281,4 +2348,22 @@ fn register_step_meta_gate_matrix() {
         )
         .expect("pure panel accepted");
     assert!(reg.step_meta.is_none(), "纯面板不得带 step 快照");
+}
+
+// BUG-20261103-334 横向排查定性钉（非缺陷修复）：三方开发者以记事本
+// （带 BOM UTF-8）手写 plugin.toml 后，manifest 装载照常解析（canonical
+// loader 单点：load_from_dir）。实测 toml crate parse 容忍前导 BOM——
+// 本测试把容忍行为钉死，crate 升级若翻转此处先行红出来。
+#[test]
+fn bom_prefixed_manifest_parses_via_load_from_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = format!(
+        "\u{feff}wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"bom-plugin\"\nkind = \"tool\"\n\
+         name = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nwasm = \"bom-plugin.wasm\"\n\
+         \n[config-schema]\ngreeting = \"string\"\n",
+        "a".repeat(64)
+    );
+    std::fs::write(dir.path().join("plugin.toml"), manifest).expect("write manifest");
+    let (m, _) = PluginManifest::load_from_dir(dir.path()).expect("BOM 前缀不得拒绝合法 manifest");
+    assert_eq!(m.slug, "bom-plugin");
 }

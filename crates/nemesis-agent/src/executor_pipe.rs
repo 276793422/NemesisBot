@@ -29,7 +29,7 @@ pub fn pipe_name(id: &str) -> String {
 }
 
 /// Build the Win32 pipe path for a per-agent persistent-executor child
-/// (P3 T5): `\\.\pipe\NemesisAgent_<agent_id>_<unique>`.
+/// (P3 T5): `\\.\pipe\NemesisAgent_<agent_id_sanitized>_<unique>`.
 ///
 /// The `NemesisAgent_` prefix is pinned by tests in both crates against
 /// `nemesis_sandbox::ini::AGENT_BOX_PREFIX` — the ini `OpenPipePath`
@@ -37,8 +37,26 @@ pub fn pipe_name(id: &str) -> String {
 /// this name form or the boxed child can never connect. (nemesis-agent does
 /// not depend on nemesis-sandbox, so the constant is test-pinned, not
 /// imported.)
+///
+/// BUG-20261104-387：agent_id 段本地消毒（只保留字母数字 `_` `-`，其余替换
+/// `_`，与 nemesis-sandbox `ini::sanitize_box_suffix` 同规则——两 crate 互
+/// 不依赖，两侧测试用同一字面量组互钉防漂移）。此前管道名用原始 agent_id
+/// 而 ini 白名单 pattern 用消毒后形态——手工 id 含特殊字符（点/空格/路径
+/// 分隔符等）时实际管道名逃出 `OpenPipePath` glob，Sandboxie 拒绝盒内
+/// connect，常驻执行体 spawn 硬故障。消毒后尾段仍有 `<pid>_<counter>` 唯一
+/// id，同名碰撞不构成新风险。
 pub fn agent_pipe_name(agent_id: &str, id: &str) -> String {
-    format!(r"\\.\pipe\NemesisAgent_{agent_id}_{id}")
+    let sanitized: String = agent_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(r"\\.\pipe\NemesisAgent_{sanitized}_{id}")
 }
 
 static PIPE_COUNTER: AtomicU64 = AtomicU64::new(0);

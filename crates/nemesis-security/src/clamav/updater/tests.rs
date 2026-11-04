@@ -626,7 +626,26 @@ async fn auto_update_loop_reports_failure_and_stops() {
     let h = tokio::spawn(async move {
         u2.start_auto_update().await;
     });
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    // BUG-20261103：CI 取证（03:11Z shard4 实录）——120ms 定值睡眠假设循环
+    // 任务在窗内被持续轮询；重载 runner 上线程休眠可跨越整窗（捕获只有
+    // started→stopped 零失败臂，循环首次醒来 running 已 false 静默 break，
+    // 本机绿/23:17Z CI 绿/03:11Z CI 红三态并存=时序闪红）。改事件驱动：
+    // 等首条失败臂落盘（上限 5s）再 stop，不再依赖轮询节奏。
+    let mut saw_failure = false;
+    for _ in 0..500 {
+        if String::from_utf8_lossy(&buf.lock().unwrap().clone())
+            .contains("[Scanner] Auto-update failed")
+        {
+            saw_failure = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        saw_failure,
+        "每个失败周期必须记录失败臂\n--- captured ---\n{}",
+        String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+    );
     u.stop();
     // BUG-20261102-322：stops 承诺此前被 `let _ = timeout(...)` 整个丢弃——
     // 循环挂死（stop 旗标失效）时测试照绿。现在必须真终止且不 panic。
@@ -636,11 +655,46 @@ async fn auto_update_loop_reports_failure_and_stops() {
         .expect("auto-update task must not panic");
     let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(
-        captured.contains("[Scanner] Auto-update failed"),
-        "每个失败周期必须记录失败臂\n--- captured ---\n{captured}"
-    );
-    assert!(
         captured.contains("[Scanner] Auto-update stopped"),
         "stop() 后必须记录停止臂\n--- captured ---\n{captured}"
     );
+}
+
+/// BUG-20261104-376：新鲜度闸必须认 freshclam 日常滚动的文件。freshclam
+/// 每日更新 daily.cvd，main.cvd 数月一更——旧实现只看 main.cvd，DB 明明
+/// 新鲜也恒判 stale（每次 Manager.start 白跑 freshclam）。本用例钉：
+/// daily.cvd 新鲜 + main.cvd 缺席 → NOT stale（修复前 = stale，红）。
+#[test]
+fn test_bug376_stale_check_uses_daily_cvd_freshness() {
+    let dir = tempfile::tempdir().unwrap();
+    // 只落 daily.cvd（freshclam 日常实际滚动的文件），不落 main.cvd
+    std::fs::write(dir.path().join("daily.cvd"), "test").unwrap();
+    let config = UpdaterConfig {
+        clamav_path: "/usr/bin".to_string(),
+        database_dir: dir.path().to_string_lossy().to_string(),
+        config_file: String::new(),
+        update_interval: Duration::from_secs(3600),
+        mirror_urls: Vec::new(),
+    };
+    let updater = Updater::new(config);
+    assert!(
+        !updater.is_database_stale(Duration::from_secs(86400)),
+        "daily.cvd 新鲜时不得判 stale（修复前只看 main.cvd = 恒 stale）"
+    );
+}
+
+/// BUG-20261104-376 反向语义：全家族文件都超龄 → 必须仍判 stale
+/// （新鲜度闸不能被修复放宽成「有任何文件就不 stale」）。
+#[test]
+fn test_bug376_stale_check_all_files_missing_is_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = UpdaterConfig {
+        clamav_path: "/usr/bin".to_string(),
+        database_dir: dir.path().to_string_lossy().to_string(),
+        config_file: String::new(),
+        update_interval: Duration::from_secs(3600),
+        mirror_urls: Vec::new(),
+    };
+    let updater = Updater::new(config);
+    assert!(updater.is_database_stale(Duration::from_secs(86400)));
 }

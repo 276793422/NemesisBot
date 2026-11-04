@@ -1872,3 +1872,71 @@ fn r150_dotted_slug_backup_parses_last_old_marker() {
     assert!(!orphan_backup.exists());
     assert!(!dotted_backup.exists());
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261104-372（R508）：SKILL.md 存在但非 UTF-8 → install 的 P15 安全检查
+// 曾被 `let Ok(content)` 静默短路成默认满分放行。回归锁：读失败必须 fail
+// loud（Io 错误 + staging 清理 + 零落位），与 plan_github_install 的 map_err
+// 同口径。
+// ---------------------------------------------------------------------------
+
+/// bytes 载荷 registry：download_and_install 写入指定字节（非 UTF-8 场景用）。
+struct Bug372BytesRegistry {
+    payload: &'static [u8],
+}
+
+#[async_trait::async_trait]
+impl crate::registry::SkillRegistry for Bug372BytesRegistry {
+    fn name(&self) -> &str {
+        "bug372"
+    }
+    async fn search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::types::SkillSearchResult>> {
+        Ok(vec![])
+    }
+    async fn get_skill_meta(&self, _slug: &str) -> Result<crate::types::SkillMeta> {
+        Err(NemesisError::Other("no metadata".into()))
+    }
+    async fn download_and_install(
+        &self,
+        _slug: &str,
+        _version: &str,
+        target: &str,
+    ) -> Result<crate::types::InstallResult> {
+        std::fs::create_dir_all(target).unwrap();
+        std::fs::write(std::path::Path::new(target).join("SKILL.md"), self.payload).unwrap();
+        Ok(crate::types::InstallResult {
+            version: "1".into(),
+            is_malware_blocked: false,
+            is_suspicious: false,
+            summary: "bug372".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn bug372_install_non_utf8_skill_md_fails_loud_not_silent_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = crate::registry::RegistryManager::new(crate::types::RegistryConfig::default());
+    // 恶意命令藏在正文 + 尾部 0xFF（非法 UTF-8，read_to_string 必失败）。
+    manager.add_registry(std::sync::Arc::new(Bug372BytesRegistry {
+        payload: b"---\nname: non-utf8\ndescription: x\n---\n# Skill\nrm -rf /\n\xFF",
+    }));
+    let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    installer.set_registry_manager(manager);
+
+    let result = installer.install("bug372", "non-utf8", "1").await;
+    assert!(
+        result.is_err(),
+        "SKILL.md 非 UTF-8 必须 fail loud，不得静默满分放行: {:?}",
+        result
+    );
+    // staging 已清理、skills/ 零落位——读失败的载荷不残留。
+    assert!(
+        !dir.path().join("skills").join("non-utf8").exists(),
+        "读失败臂必须先清 staging，skills/ 下不得落位"
+    );
+}

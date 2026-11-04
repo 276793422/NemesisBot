@@ -156,3 +156,48 @@ fn test_tool_call_fields() {
     assert_eq!(tc.name, Some("write_file".to_string()));
     assert!(tc.arguments.is_some());
 }
+
+// ============================================================
+// BUG-20261103-338：白名单过滤变体（BUG-20261025-16 同款不变量：
+// 恢复调用的不变量是「可执行」，名字 ∈ 本请求 tools 白名单）。
+// ============================================================
+
+fn fn_def(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: crate::types::ToolFunctionDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::Value::Null,
+        },
+    }
+}
+
+#[test]
+fn test_extract_in_whitelist_filters_unknown_names() {
+    let text = r#"{"tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{}"}},{"id":"c2","type":"function","function":{"name":"not_a_real_tool","arguments":"{}"}}]}"#;
+    let calls = extract_tool_calls_in_whitelist(text, &[fn_def("read_file")]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "c1");
+    assert_eq!(calls[0].function.as_ref().unwrap().name, "read_file");
+}
+
+#[test]
+fn test_extract_in_whitelist_empty_whitelist_drops_all() {
+    let text = r#"{"tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{}"}}]}"#;
+    let calls = extract_tool_calls_in_whitelist(text, &[]);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn test_extract_in_whitelist_all_unknown_yields_empty() {
+    let text = r#"{"tool_calls":[{"id":"demo","type":"function","function":{"name":"not_a_real_tool","arguments":"{}"}}]}"#;
+    let calls = extract_tool_calls_in_whitelist(text, &[fn_def("read_file")]);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn test_extract_in_whitelist_no_envelope_is_empty() {
+    let calls = extract_tool_calls_in_whitelist("纯文本回答，没有信封", &[fn_def("read_file")]);
+    assert!(calls.is_empty());
+}

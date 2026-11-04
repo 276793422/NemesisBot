@@ -98,10 +98,43 @@ fn keys_json_v2_roundtrip() {
     assert_eq!(kh.root_cert.to_der(), kh2.root_cert.to_der());
     assert_eq!(kh.issuing_cert.to_der(), kh2.issuing_cert.to_der());
     assert_eq!(kh.leaf_cert.to_der(), kh2.leaf_cert.to_der());
-
     // 重载体系闭环仍绿、锚一致。
     assert_eq!(kh2.root_anchor_fingerprint(), kh.root_anchor_fingerprint());
     verify_chain(&kh2.chain(), &kh2.root_anchor_fingerprint(), NOW).unwrap();
+}
+
+/// BUG-20261104-378 回归锁：全量包 save 必须与 bundle 三类型化 saver 同源走
+/// save_private_json——unix 下私钥文件 0600（新文件 + 覆盖收紧存量宽权限
+/// 文件双形态）。Windows 形态编译期消失（ACL 前提不同），红实证在 WSL/Linux。
+#[cfg(unix)]
+#[test]
+fn save_full_hierarchy_is_0600_and_tightens_preexisting() {
+    use std::os::unix::fs::PermissionsExt;
+    let kh = generate_at(NOW).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.json");
+    let path_str = path.to_str().unwrap();
+
+    // ① 新文件：0600（修复前裸 fs::write 落 umask 默认 = 0644，本断言红）。
+    kh.save(path_str).unwrap();
+    let m = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(m, 0o600, "新落盘 keys.json 必须 0600，got {:o}", m);
+
+    // ② 存量宽权限文件覆盖写：显式收紧到 0600（open(O_CREAT) 不改已存在
+    // 文件的 mode，靠 set_permissions 收尾；旧版本产物 0644 的修复路径）。
+    std::fs::write(&path, b"stale").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    kh.save(path_str).unwrap();
+    let m2 = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        m2, 0o600,
+        "覆盖存量宽权限 keys.json 必须收紧 0600，got {:o}",
+        m2
+    );
+
+    // ③ save 语义未变：内容仍是合法全量包。
+    let loaded = KeyHierarchy::load(path_str).unwrap();
+    assert_eq!(loaded.root_cert.to_der(), kh.root_cert.to_der());
 }
 
 #[test]

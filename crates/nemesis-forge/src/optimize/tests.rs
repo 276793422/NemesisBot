@@ -285,6 +285,31 @@ fn clarify_keeps_code_block_intact_with_mixed_markers() {
 }
 
 #[test]
+fn clarify_does_not_remove_identical_line_inside_code_block() {
+    // 代码块内存在与正文约束**字节相同**的行：移除相按值相等过滤会把
+    // fence 内同文行一并挖走（拾取相 fence 感知、移除相不感知 = 不对称），
+    // 产出代码块挖洞的损坏候选——违反本算子注释宣示的「代码块内行不参与」
+    // 不变量。修复语义：按行序号移除，只动拾取时确认过的 fence 外行。
+    let body = "说明。\n\n避免使用根权限执行\n\n```text\n避免使用根权限执行\n后续步骤\n```\n\n## 输出\n\n结果。\n";
+    let c = apply(
+        Operator::ClarifyConstraints,
+        body,
+        None,
+        OPTIMIZE_BUDGET_TOKENS,
+    )
+    .unwrap();
+    assert!(
+        c.content
+            .contains("```text\n避免使用根权限执行\n后续步骤\n```"),
+        "代码块内同文行不得被挖走: {}",
+        c.content
+    );
+    // 正文约束照常收拢（拾取语义不变）。
+    assert!(c.content.contains("## 约束"), "{}", c.content);
+    assert_eq!(c.summary, "收拢 1 条散点约束为显式段");
+}
+
+#[test]
 fn reorder_does_not_anchor_on_code_block_pseudo_heading() {
     // 代码块内的 `## 注意` 是示例文本——当约束锚点会把代码块中部拆散
     // 前置。fence 感知下无真实约束段 = 诚实拒绝。

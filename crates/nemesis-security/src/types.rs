@@ -433,7 +433,10 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 闸，读自有缓冲/杀自属子进程不构成新攻击面）——W5 盲点修复前走
         // 「未知名放行」分支，修复后未知名 = CRITICAL fail-closed，这里
         // 显式映射 Internal（LOW）保留原例外语义，不靠未知名兜底。
-        "exec" | "execute_command" | "shell" | "exec_async" | "background_start" | "cron"
+        // L11（2026-11-03）：background_steer 向自有任务 stdin 注入文本 =
+        // 操控进程行为，风险与起进程同级 → exec 类审批口径（清单拍板项），
+        // 与 background_output/kill 的 Internal 例外**刻意不同档**。
+        "exec" | "execute_command" | "shell" | "exec_async" | "background_start" | "background_steer" | "cron"
         | "run_script"
         // C8：构建/测试 runner（MOVE_TOOLS 成员，写 target/；plan 模式
         // 同源派生拦截）。
@@ -544,6 +547,15 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .to_string(),
         "exec" | "execute_command" | "spawn" | "shell" | "exec_async" | "background_start" => args
             .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // L11（2026-11-03）：background_steer 与 exec 同档 ProcessExec——
+        // target 取注入文本本体，让 Layer 2 命令守卫与凭据扫描对 steer
+        // 载荷照常工作（同 run_script 的 BUG-20261028-118 纪律：ProcessExec
+        // 档工具不得空 target 过闸）。
+        "background_steer" => args
+            .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),

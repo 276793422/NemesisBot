@@ -2167,19 +2167,22 @@ impl BoardStore {
     /// 持锁内完成「在途检查 + INSERT」——单写者 Mutex 串行化下，检查与
     /// 写入之间不可能插入其他派发，多触发源并发（依赖闸补派 × 停车场
     /// sweep 同刻触发，真机实证 NB-18 双行 dispatched）不再能双双过闸。
-    /// 返回 `Ok(false)` = 该 issue 已有在途派发（`dispatched`/`running`），
-    /// 本行未写入——调用方诚实弃派并清理本地 task。旧实现检查与 INSERT
-    /// 分离，竞态交错留下永不完结的 `dispatched` 幽灵行 → worker inflight
-    /// 永久占满 → 后续派发全部静默 deferred。审计活动与登记同事务写入；
-    /// 重复 task_id 拒绝——一个 task 只挂一个 issue。派发入口统一走本
-    /// 方法；绕过占用闸的直接登记用 [`Self::insert_dispatch`]。
+    /// 返回 `Ok(None)` = 该 issue 已有在途派发（`dispatched`/`running`），
+    /// 本行未写入——调用方诚实弃派并清理本地 task。`Ok(Some(generation))`
+    /// = 占用成功，generation 是本次派发的代际号（AOR 批二a ④：同一
+    /// 临界区内按既有行数计算，首派 0、第 N 次重派 N-1——计算与写入
+    /// 同锁，并发交错不可能算错）。旧实现检查与 INSERT 分离，竞态交错
+    /// 留下永不完结的 `dispatched` 幽灵行 → worker inflight 永久占满 →
+    /// 后续派发全部静默 deferred。审计活动与登记同事务写入；重复
+    /// task_id 拒绝——一个 task 只挂一个 issue。派发入口统一走本方法；
+    /// 绕过占用闸的直接登记用 [`Self::insert_dispatch`]。
     pub fn try_claim_dispatch(
         &self,
         task_id: &str,
         issue_id: i64,
         worker_id: &str,
         actor: &Actor,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<i64>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         // D0b（goal P2）：running（已开跑）同样算在途——防同单重复派发。
         let n: i64 = conn
@@ -2194,15 +2197,18 @@ impl BoardStore {
             )
             .map_err(|e| e.to_string())?;
         if n > 0 {
-            return Ok(false);
+            return Ok(None);
         }
-        insert_dispatch_locked(&conn, task_id, issue_id, worker_id, actor)?;
-        Ok(true)
+        let generation = current_generation(&conn, issue_id)?;
+        insert_dispatch_locked(&conn, task_id, issue_id, worker_id, actor, generation)?;
+        Ok(Some(generation))
     }
 
     /// 直接登记派发行（无占用闸）：存储层原语，供测试 fixture / 数据
     /// 修复构造「同 issue 多行派发历史」等合法形态；业务派发入口必须走
-    /// [`Self::try_claim_dispatch`]（原子占用，防并发幽灵行）。
+    /// [`Self::try_claim_dispatch`]（原子占用，防并发幽灵行）。代际号在
+    /// 同一锁内按既有行数计算（与 try_claim 同源语义，fixture 数据与
+    /// 生产数据形态一致）。
     pub fn insert_dispatch(
         &self,
         task_id: &str,
@@ -2211,14 +2217,15 @@ impl BoardStore {
         actor: &Actor,
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        insert_dispatch_locked(&conn, task_id, issue_id, worker_id, actor)
+        let generation = current_generation(&conn, issue_id)?;
+        insert_dispatch_locked(&conn, task_id, issue_id, worker_id, actor, generation)
     }
 
     /// 按 task_id 查派发记录（peer_chat_callback 写回路由用）。
     pub fn get_dispatch(&self, task_id: &str) -> Result<Option<DispatchRecord>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
-            "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
+            "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at, generation
              FROM issue_dispatch WHERE task_id = ?1",
             params![task_id],
             row_to_dispatch,
@@ -2236,7 +2243,7 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
+                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at, generation
                  FROM issue_dispatch WHERE issue_id = ?1 ORDER BY rowid ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -2493,7 +2500,7 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         // D0b（goal P2）：running（已开跑）同样算在途。
         conn.query_row(
-            "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
+            "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at, generation
              FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)
              ORDER BY rowid DESC LIMIT 1",
             params![
@@ -2514,7 +2521,7 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
+                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at, generation
                  FROM issue_dispatch WHERE state IN (?1, ?2) ORDER BY rowid ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -2638,7 +2645,7 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
+                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at, generation
                  FROM issue_dispatch
                  WHERE state = ?1 AND worker_id != ?2
                  ORDER BY rowid ASC",
@@ -2719,11 +2726,51 @@ impl BoardStore {
         task_id: &str,
         details: &str,
     ) -> Result<Option<DispatchRecord>, String> {
+        self.fail_dispatch_inner(task_id, details, None)
+    }
+
+    /// 竞态闸代际扩展（AOR 批三 5.2 双闸）：与 [`Self::fail_dispatch`] 同形
+    /// （state IN dispatched/running 守卫 + dispatch_timeout 活动），再加
+    /// `generation = expected_generation` 等值校验——sweep 的失败判定基于
+    /// 列表快照，若终态写之间记录代际已变（同 conn 锁内可见），视为竞态输
+    /// （`Ok(None)`），不落终态。与写回闸（write_back 的 echo 代际校验，
+    /// 批二a）形态对称。
+    pub fn fail_dispatch_checked(
+        &self,
+        task_id: &str,
+        details: &str,
+        expected_generation: i64,
+    ) -> Result<Option<DispatchRecord>, String> {
+        self.fail_dispatch_inner(task_id, details, Some(expected_generation))
+    }
+
+    /// 单一真相源：`expected_generation = Some(g)` 时 WHERE 追加代际等值。
+    fn fail_dispatch_inner(
+        &self,
+        task_id: &str,
+        details: &str,
+        expected_generation: Option<i64>,
+    ) -> Result<Option<DispatchRecord>, String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = Self::now();
-        let n = tx
-            .execute(
+        let n = if let Some(expected) = expected_generation {
+            tx.execute(
+                "UPDATE issue_dispatch
+                 SET state = ?2, completed_at = ?3
+                 WHERE task_id = ?1 AND state IN (?4, ?5) AND generation = ?6",
+                params![
+                    task_id,
+                    dispatch_state::FAILED,
+                    now,
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING,
+                    expected
+                ],
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            tx.execute(
                 "UPDATE issue_dispatch
                  SET state = ?2, completed_at = ?3
                  WHERE task_id = ?1 AND state IN (?4, ?5)",
@@ -2735,7 +2782,8 @@ impl BoardStore {
                     dispatch_state::RUNNING
                 ],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+        };
         if n == 0 {
             return Ok(None); // 写回回调先到——竞态输了
         }
@@ -2781,8 +2829,8 @@ impl BoardStore {
         let now = Self::now();
         conn.execute(
             "INSERT INTO autopilot
-             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, session_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
             params![
                 n.name,
                 n.cron,
@@ -2794,6 +2842,7 @@ impl BoardStore {
                 n.enabled as i64,
                 n.auto_plan as i64,
                 n.acceptance_criteria.as_deref().unwrap_or(""),
+                n.session_key.as_deref().unwrap_or(""),
                 now,
             ],
         )
@@ -2869,11 +2918,16 @@ impl BoardStore {
             .acceptance_criteria
             .clone()
             .unwrap_or(old.acceptance_criteria.clone().unwrap_or_default());
+        // L23：父会话绑定，语义同 acceptance_criteria（`Some("")` = 清空）。
+        let session_key = patch
+            .session_key
+            .clone()
+            .unwrap_or(old.session_key.clone().unwrap_or_default());
         conn.execute(
             "UPDATE autopilot
              SET name = ?2, cron = ?3, title = ?4, description = ?5, priority = ?6,
                  project_id = ?7, target = ?8, enabled = ?9, auto_plan = ?10,
-                 acceptance_criteria = ?11, updated_at = ?12
+                 acceptance_criteria = ?11, session_key = ?12, updated_at = ?13
              WHERE id = ?1",
             params![
                 id,
@@ -2887,6 +2941,7 @@ impl BoardStore {
                 enabled as i64,
                 auto_plan as i64,
                 acceptance_criteria,
+                session_key,
                 Self::now(),
             ],
         )
@@ -4016,6 +4071,19 @@ fn insert_activity(
     Ok(())
 }
 
+/// 派发代际号计算（AOR 批二a ④）：该 issue 当前全部派发行数（含历史
+/// 终态行）——首派 0、第 N 次重派 N-1。调用方须已持 conn 锁（与写入
+/// 同临界区，防并发交错算错代际）。终态历史行计入：重派语义是「轮次
+/// 序号」，不是「在途序号」。
+fn current_generation(conn: &Connection, issue_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM issue_dispatch WHERE issue_id = ?1",
+        params![issue_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// 派发行写入 + `dispatched` 审计活动（调用方须已持 conn 锁——
 /// [`BoardStore::try_claim_dispatch`] 的原子性与本函数共享同一临界区）。
 fn insert_dispatch_locked(
@@ -4024,17 +4092,19 @@ fn insert_dispatch_locked(
     issue_id: i64,
     worker_id: &str,
     actor: &Actor,
+    generation: i64,
 ) -> Result<(), String> {
     let now = BoardStore::now();
     conn.execute(
-        "INSERT INTO issue_dispatch (task_id, issue_id, worker_id, state, dispatched_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO issue_dispatch (task_id, issue_id, worker_id, state, dispatched_at, generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             task_id,
             issue_id,
             worker_id,
             dispatch_state::DISPATCHED,
-            now
+            now,
+            generation
         ],
     )
     .map_err(|e| format!("insert_dispatch: {e}"))?;
@@ -4123,6 +4193,7 @@ fn row_to_dispatch(row: &rusqlite::Row<'_>) -> rusqlite::Result<DispatchRecord> 
         state: row.get(3)?,
         dispatched_at: row.get(4)?,
         completed_at: row.get(5)?,
+        generation: row.get(6)?,
     })
 }
 
@@ -4160,6 +4231,8 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     // F-U5-1：列 NOT NULL DEFAULT ''——空串归一为 None（「没填」统一语义，
     // 与 issue.acceptance_criteria 的 Option 用法对齐）。
     let acceptance_criteria: String = row.get("acceptance_criteria")?;
+    // L23：父会话绑定列，同款空串归一 None。
+    let session_key: String = row.get("session_key")?;
     Ok(Autopilot {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -4172,6 +4245,7 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
         enabled: enabled != 0,
         auto_plan: auto_plan != 0,
         acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
+        session_key: Some(session_key).filter(|s| !s.trim().is_empty()),
         cron_job_id: row.get("cron_job_id")?,
         last_run_at: row.get("last_run_at")?,
         created_at: row.get("created_at")?,

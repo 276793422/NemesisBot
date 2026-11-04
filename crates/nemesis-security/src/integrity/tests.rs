@@ -1011,3 +1011,97 @@ fn test_append_persist_failure_does_not_advance_chain() {
         "失败恢复后的盘上链必须 verify 通过"
     );
 }
+
+/// BUG-20261104-374：链尾回载（重启断链）。链状态（last_hash）是进程内存
+/// 态而 storage_path 固定路径续写——重启后不回载则首个事件 prev_hash=全零，
+/// 与盘上既有链断裂，verify_chain 全量校验恒 FAIL。回归锁：第一生命周期
+/// 落两个事件 → 模拟重启（全新 AuditChain + load_segments）→ 续写一个
+/// 事件 → 全量读盘 verify 必须通过（含重启衔接点）。
+#[test]
+fn test_bug374_chain_restart_replays_tail_from_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let make_config = || AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    };
+
+    // 第一生命周期：落两个事件
+    let chain = AuditChain::new(make_config());
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    let ev2 = chain
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r2")
+        .unwrap();
+
+    // 模拟网关重启：全新实例（内存链尾回全零）+ 盘上回载
+    let restarted = AuditChain::new(make_config());
+    assert_eq!(
+        restarted.current_hash(),
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "新实例链尾必须从全零起步（回载前）"
+    );
+    let loaded = restarted.load_segments().unwrap();
+    assert_eq!(loaded, 2, "回载必须读到盘上 2 个事件");
+    assert_eq!(
+        restarted.current_hash(),
+        ev2.hash,
+        "回载后链尾必须接上盘上最后一行"
+    );
+
+    // 重启后续写：prev 必须衔接回载链尾，不得回全零
+    let ev3 = restarted
+        .append("file_read", "read_file", "u", "cli", "/t3", "allowed", "r3")
+        .unwrap();
+    assert_eq!(
+        ev3.prev_hash, ev2.hash,
+        "重启后首事件 prev_hash 必须衔接盘上链尾（修复前为全零=断链）"
+    );
+
+    // 全量读盘 verify：重启衔接点前后链完整
+    let content = std::fs::read_to_string(&path).unwrap();
+    let events: Vec<AuditEvent> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("parse event"))
+        .collect();
+    assert_eq!(events.len(), 3);
+    assert!(
+        AuditChain::verify_chain(&events),
+        "跨重启的盘上链必须 verify 通过"
+    );
+}
+
+/// BUG-20261104-374 反向语义：回载缺失形态（不调 load_segments 直接续写）
+/// 必然产生断链——钉住缺陷机理本身，防未来有人误删回载接线后测试静默变绿。
+#[test]
+fn test_bug374_without_replay_chain_breaks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let make_config = || AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    };
+
+    let chain = AuditChain::new(make_config());
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+
+    // 不回载直接续写（旧缺陷形态）：盘上链在衔接点断裂
+    let restarted = AuditChain::new(make_config());
+    restarted
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r2")
+        .unwrap();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    let events: Vec<AuditEvent> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("parse event"))
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(
+        !AuditChain::verify_chain(&events),
+        "无回载续写的盘上链必须 verify FAIL（缺陷机理钉死）"
+    );
+}

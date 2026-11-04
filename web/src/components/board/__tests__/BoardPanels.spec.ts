@@ -902,7 +902,8 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     })
     const w = mount(BoardConfigPanel)
     await flushPromises()
-    const sel = w.find('select')
+    // select 顺序（2026-11-04 AOR 5.1）：[0]=自治模式、[1]=兜底档位。
+    const sel = w.findAll('select')[1]
     expect((sel.element as HTMLSelectElement).value).toBe('off')
     // off → 兜底客户端输入框不渲染。
     expect(w.find('input[placeholder="留空 = 自动选在线节点"]').exists()).toBe(false)
@@ -969,6 +970,54 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     const w = await mountPanel({ unlimited_mode: true, auto_accept: true })
     expect(w.text()).toContain('无限模式已开启')
     expect(w.text()).not.toContain('PASS 自动收货未开启')
+  })
+
+  // 自治模式总开关（AOR 批三 5.1）：select 控件 + 矛盾态前端拦截
+  // （autonomous 前置要求 unlimited_mode=true；两个方向都拦）。
+  it('自治模式下拉：默认 assisted、矛盾态拦截不发 config.set', async () => {
+    const w = await mountPanel({ unlimited_mode: false })
+    const sel = w.findAll('select')[0]
+    expect((sel.element as HTMLSelectElement).value).toBe('assisted')
+    // 未开 unlimited → 切 autonomous 被前端拦下：warn toast + 回读，不发 config.set。
+    await sel.setValue('autonomous')
+    await sel.trigger('change')
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.type === 'warn')).toBe(true)
+    expect(requestMock.mock.calls.some((c) => c[1] === 'config.set')).toBe(false)
+    // 回读后仍显示 assisted（服务端从未收到写入）。
+    expect((w.findAll('select')[0].element as HTMLSelectElement).value).toBe('assisted')
+  })
+
+  it('自治模式：已开 unlimited → 切 autonomous 发 config.set + 回读显示 autonomous', async () => {
+    const saved: Record<string, unknown> = { unlimited_mode: true }
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'config.get') return Promise.resolve({ ...fullFlags, ...saved })
+      if (cmd === 'config.set') {
+        Object.assign(saved, { [data.key]: data.value })
+        return Promise.resolve({ updated: true })
+      }
+      return Promise.resolve({ updated: true })
+    })
+    const w = mount(BoardConfigPanel)
+    await flushPromises()
+    const sel = w.findAll('select')[0]
+    await sel.setValue('autonomous')
+    await sel.trigger('change')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'config.set')!
+    expect(call[2]).toEqual({ key: 'autonomy', value: 'autonomous' })
+    expect((w.findAll('select')[0].element as HTMLSelectElement).value).toBe('autonomous')
+  })
+
+  it('自治模式开着时关 unlimited → 前端拦截不发 config.set', async () => {
+    const w = await mountPanel({ unlimited_mode: true, autonomy: 'autonomous' })
+    // toggles 顺序：[7]=unlimited_mode。
+    await w.findAll('input[type="checkbox"]')[7].setValue(false)
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.type === 'warn')).toBe(true)
+    expect(requestMock.mock.calls.some((c) => c[1] === 'config.set')).toBe(false)
+    // 回读后开关回滚为 true（服务端真实值）。
+    expect((w.findAll('input[type="checkbox"]')[7].element as HTMLInputElement).checked).toBe(true)
   })
 
   it('数字参数修改 → config.set 提交数值', async () => {

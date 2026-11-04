@@ -268,17 +268,21 @@ fn clarify_constraints(body: &str) -> Result<(String, String), String> {
     const MARKERS: &[&str] = &["不要", "必须", "避免", "禁止", "不允许"];
     // 围栏内的行是代码/注释内容，不是 skill 约束——抓走会挖洞代码块并
     // 产出语境错乱的假约束（fence 感知，与 split_sections 同一识别）。
+    // 拾取/移除两相统一按**行序号**：移除若按值相等过滤，围栏内与拾取行
+    // 同文的行会被一并挖走（拾取相 fence 感知、移除相不感知 = 不对称）。
+    let lines: Vec<&str> = body.lines().collect();
     let mut in_code = false;
-    let picked: Vec<&str> = body
-        .lines()
-        .filter(|l| {
-            if is_fence_line(l) {
-                in_code = !in_code;
-                return false;
-            }
-            !in_code && !l.starts_with('#') && MARKERS.iter().any(|m| l.contains(m))
-        })
-        .collect();
+    let mut picked_idx: Vec<usize> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if is_fence_line(l) {
+            in_code = !in_code;
+            continue;
+        }
+        if !in_code && !l.starts_with('#') && MARKERS.iter().any(|m| l.contains(m)) {
+            picked_idx.push(i);
+        }
+    }
+    let picked: Vec<&str> = picked_idx.iter().map(|&i| lines[i]).collect();
     if picked.is_empty() {
         return Err("no inline constraint lines found to clarify".into());
     }
@@ -290,8 +294,14 @@ fn clarify_constraints(body: &str) -> Result<(String, String), String> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    // 散点行从原位置移除（去重收拢语义）。
-    let remaining: Vec<&str> = body.lines().filter(|l| !picked.contains(l)).collect();
+    // 散点行按拾取序号从原位置移除（值相等过滤会把围栏内同文行一并
+    // 挖走——见上方拾取相注释）。
+    let remaining: Vec<&str> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !picked_idx.contains(i))
+        .map(|(_, l)| *l)
+        .collect();
     let mut new_body = remaining.join("\n");
     if !new_body.ends_with('\n') && !new_body.is_empty() {
         new_body.push('\n');

@@ -937,10 +937,23 @@ fn stub_agent(stub: StubConnector) -> Arc<AgentLoop> {
     Arc::new(lp)
 }
 
+/// file:// URL 组装：Linux 绝对路径带前导 `/`，`file:///` 基座再拼 = 四斜杠
+/// 非法 URI（libgit2 class=Config 拒推——BUG-20261103 Linux ET 四测连红实录
+/// `'file:////tmp/...' is not a valid local file URI`）；Windows 盘符路径无
+/// 前导斜杠需补足三杠。按首字符分治，双平台同式。
+fn file_url(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
 /// 给副本配 origin（file:// bare）并建 bare——push 真跑通。
 fn wire_remote(f: &PreflightFixture) {
     let remote = f.copy_root.parent().unwrap().join("remote.git");
-    let remote_url = format!("file:///{}", remote.to_string_lossy().replace('\\', "/"));
+    let remote_url = file_url(&remote);
     git2::Repository::open(&f.copy_root)
         .unwrap()
         .remote("origin", &remote_url)
@@ -981,7 +994,7 @@ async fn review_nov02_publish_push_failure_retry_continues_after_remote_repaired
     )
     .unwrap();
     let remote = f.copy_root.parent().unwrap().join("remote.git");
-    let remote_url = format!("file:///{}", remote.to_string_lossy().replace('\\', "/"));
+    let remote_url = file_url(&remote);
     git2::Repository::open(&f.copy_root)
         .unwrap()
         .remote("origin", &remote_url)

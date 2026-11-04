@@ -407,6 +407,31 @@ pub(crate) fn pick_redispatch_target(
     }
 }
 
+/// AOR 批三 5.2（sweep 监察环策略化）：换节点目标选取——在线 ranked 候选
+/// 经指纹/耗时加权排序后，取第一个非排除节点（排除 = 刚失败/离线的
+/// worker）。`pick_redispatch_target` 的「连续 <2 次 → Same」决策表面向
+/// 评审重派（同 worker 偶发失败优先原地重试），监察环的失败形态是
+/// 超时/离线，原节点必须排除或降权——独立入口，复用同一加权链
+/// （rank → fingerprint → duration）。返回 None = 无可换节点。
+pub(crate) fn pick_sweep_switch_target(
+    deps: &BoardReviewDeps,
+    issue: &nemesis_board::Issue,
+    exclude_worker: &str,
+) -> Option<String> {
+    let ranked =
+        nemesis_web::handlers::board::rank_dispatch_candidates(&deps.store, &deps.cluster, issue);
+    let ranked = fingerprint_weighted_ranked(deps, issue, ranked);
+    let ranked = duration_weighted_ranked(&deps.store, issue, ranked);
+    let picked = ranked.into_iter().find(|c| c != exclude_worker);
+    if let Some(t) = &picked {
+        info!(
+            "[BoardReview] issue {} sweep 换节点候选：排除 {exclude_worker} 后取 {t}",
+            issue.id
+        );
+    }
+    picked
+}
+
 /// P34 指纹稳定加权（`pick_redispatch_target` 的次级重排）：`board.
 /// fingerprint_weighting=true` 时按 (worker, 任务类型) 历史成功率把候选
 /// 分 prefer → neutral → avoid 三段（段内保匹配器序）。旗标 off / 配置
@@ -715,17 +740,51 @@ pub(crate) fn decide_review_action(
 // 校验预算耗尽连烧两轮重派预算）。
 // ---------------------------------------------------------------------------
 
-/// 能力类失败类集：这些 fail_class 同目标重派前必须换节点或人工介入。
-const CAPABILITY_FAIL_CLASSES: [&str; 2] = ["validation_budget", "escalation"];
+/// ② 分类→重派策略映射（AOR 批一b 泛化，替代原 CAPABILITY_FAIL_CLASSES
+/// 三值集合）：fail_class → 重派处置语义的单一真相源。分类存在时映射表
+/// 优先于纯预算逻辑；无分类（None）保持现状预算逻辑（兼容不变）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailClassPolicy {
+    /// 瞬态：同节点重试有意义（llm_timeout / llm_rate_limit / llm_failure /
+    /// empty_result）——现状预算逻辑，不加闸。
+    TransientRetry,
+    /// 能力/授权类：同目标重放大概率复现——换节点优先（validation_budget /
+    /// escalation / mandate_violation / exec_failed），无可换节点转人工。
+    /// 原三值能力集（P2A）语义 + exec_failed（保守：同能力类处理）。
+    CapabilitySwitch,
+    /// 环境类：换节点重试（environmental / resource_conflict）——不同节点
+    /// 环境不同，同目标重放无意义；无可换节点转人工（装配/错峰建议）。
+    SwitchNode,
+    /// 冻结：副作用后果不明，不自动重派转人工（unknown_side_effect；
+    /// token_budget 语义同族——其专用闸在 Redispatch 臂更早处拦截，此处
+    /// 收录是为映射矩阵完整性）——unlimited 不豁免。
+    Freeze,
+}
+
+/// 纯函数映射（单测钉死全矩阵）：类值 → 重派策略。值集与
+/// latest_fail_class 的 KNOWN 白名单一一对应（双端同步纪律）。
+pub(crate) fn redispatch_policy(fc: &str) -> FailClassPolicy {
+    match fc {
+        "environmental" | "resource_conflict" => FailClassPolicy::SwitchNode,
+        "unknown_side_effect" | "token_budget" => FailClassPolicy::Freeze,
+        "llm_timeout" | "llm_rate_limit" | "llm_failure" | "empty_result" => {
+            FailClassPolicy::TransientRetry
+        }
+        // validation_budget / escalation / mandate_violation / exec_failed
+        _ => FailClassPolicy::CapabilitySwitch,
+    }
+}
 
 /// 从评论线程提取最新一条结构化失败分类（write_back_board_dispatch 在
 /// ⛔ 失败评论尾部落 `fail_class: <class>` 标记行，gateway.rs 唯一写入点）。
 /// 只认已知类值（防 worker 文本/人工评论误触发未知值）；找不到 = None
 ///（旧 worker / 无失败评论路径）。扫描自最新评论起——重派轮次取最新失败。
-fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str> {
+pub(crate) fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str> {
     // 与 classify_terminal_failure 的值集同步演化（该函数发出什么，这里才
-    // 认什么；llm_rate_limit 2026-09-17 补认、token_budget 2026-10-10 P8）。
-    const KNOWN: [&str; 8] = [
+    // 认什么；llm_rate_limit 2026-09-17 补认、token_budget 2026-10-10 P8、
+    // ② AOR 批一b 2026-11-04 补 environmental/resource_conflict/
+    // unknown_side_effect——环境特征细分 + worker 六词自报桥）。
+    const KNOWN: [&str; 12] = [
         "validation_budget",
         "llm_timeout",
         "llm_failure",
@@ -733,7 +792,16 @@ fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str
         "empty_result",
         "escalation",
         "token_budget",
+        // L13-b（2026-11-03 三期）：worker 侧 mandate 执行面守卫终局
+        //（授权面/时限/预算违规——同目标重派授权状态不变，大概率复现）。
+        "mandate_violation",
         "exec_failed",
+        // ② AOR 批一b（2026-11-04）：环境/资源类（worker 六词自报 + exec
+        // 兜底环境特征细分——换节点重试有意义）与副作用不明类（当前无 B 端
+        // 自动生产者，识别即冻结不自动重派，防伪造面同步收口）。
+        "environmental",
+        "resource_conflict",
+        "unknown_side_effect",
     ];
     comments.iter().rev().find_map(|c| {
         c.content.lines().find_map(|line| {
@@ -744,7 +812,9 @@ fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str
     })
 }
 
-/// 能力类失败的转人工建议文案（与类值一一对应；未知类走兜底）。
+/// 失败类别的转人工建议文案（与类值一一对应；未知类走兜底）。② 批一b
+/// 起 caption 文案随 redispatch_policy 映射同步扩展（映射新增闸类别 =
+/// hint 必有对应条目）。
 fn capability_fail_hint(fc: &str) -> &'static str {
     match fc {
         "validation_budget" => {
@@ -752,6 +822,21 @@ fn capability_fail_hint(fc: &str) -> &'static str {
         }
         "escalation" => {
             "可选处置：\n- 改写任务描述或拆小粒度后人工重派（换一种思路打破循环）\n- 人工改派其它节点尝试"
+        }
+        "mandate_violation" => {
+            "可选处置：\n- 换节点重派（master 将重签新 mandate，重新授权）\n- 人工检查授权模板/时限/预算设置，或检查节点用户权限"
+        }
+        "exec_failed" => {
+            "可选处置：\n- 查看失败评论中的现象与失败类别，人工判断环境/任务形态问题\n- 换节点重派；确认是任务形态问题则改写任务描述后重派"
+        }
+        "environmental" => {
+            "可选处置：\n- 换节点重派（目标节点可能具备缺失依赖）\n- 人工在本节点装配缺失环境（worker 契约已授权便携装配，装配事实应已留证于失败评论）"
+        }
+        "resource_conflict" => {
+            "可选处置：\n- 换节点或错峰重派（避开资源冲突窗口）\n- 人工检查 [TOUCH] 声明与并行任务是否冲突，必要时调整派发时序"
+        }
+        "unknown_side_effect" => {
+            "可选处置：\n- 人工检查失败报告中的副作用描述，确认影响范围\n- 处置干净（清理/回滚）后人工重派；影响不明时不要盲目重派"
         }
         _ => "请人工检查 worker 状态后裁决（重派 / 换节点 / 调整模型）。",
     }
@@ -787,7 +872,10 @@ impl ReviewCtx {
 /// 2026-10-11 事故固化：planner 截断 panic 杀死规划任务、看板零留痕，
 /// 用户体感「建了不动」——无人值守链路的后台任务死亡必须看板可见
 /// （日志只有翻日志的人看得到）。
-fn spawn_watched<F>(
+/// 后台任务 panic 看护（评审/重规划等 fire-and-forget 任务共用）：任务
+/// panic → 日志 + issue 评论显形；取消（关机/estop）= 正常流静默。
+/// pub(crate)：board_replan.rs 重规划起草共用（AOR 批三 5.3）。
+pub(crate) fn spawn_watched<F>(
     store: Arc<nemesis_board::BoardStore>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
     issue_id: Option<i64>,
@@ -999,6 +1087,20 @@ async fn review_issue(
         })
         .collect();
 
+    // 跨轮缺口清账：最近一份本节点评审落下的缺口清单（❌ 重派评论的
+    // 【评审差距】标记段）= 本轮待清账缺口。作者限定评审节点——worker
+    // 汇报/讨论线程里出现同形标记不采信（防伪造清单注入「上一轮评审已
+    // 判定」语境）。无标记（首评/旧格式评论）= 空清单零注入。
+    let prior_gaps: Vec<nemesis_board::LedgerItem> = comments
+        .iter()
+        .rev()
+        .filter(|c| c.author.kind == "agent" && c.author.id == self_node_id)
+        .find_map(|c| {
+            let ledger = nemesis_board::parse_gap_ledger(&c.content);
+            (!ledger.is_empty()).then_some(ledger)
+        })
+        .unwrap_or_default();
+
     let round = dispatches.len().saturating_sub(1) as u64;
 
     // 转人工评论的 @人对象 = 创建者是人（admin）时 @ 创建者（impl-plan
@@ -1026,6 +1128,7 @@ async fn review_issue(
         &worker_report,
         &thread,
         nemesis_board::report::MAX_INLINE_BYTES + 8 * 1024,
+        &prior_gaps,
     );
     // 父单口径注入（2026-10-17 NB-123 误升级根修）：返工单/子单被派的差距
     // 常引用父单验收标准的语义（如某条 AC「以台账+待人工签核清单为口径，
@@ -1499,15 +1602,33 @@ async fn review_issue(
                         &vision_system,
                         &mut vision_prompt,
                         &review_images,
+                        &prior_gaps,
                     )
                     .await
                     {
                         Ok(out) => {
-                            info!(
-                                "[BoardReview] issue {issue_id} vision 评审出结论（{} 张附图）",
-                                review_images.len()
-                            );
-                            Some(out)
+                            // 缺口清账机械闸（视觉臂）：视觉 prompt 是基础
+                            // prompt 的克隆，清单注入在场——产出却没过对账
+                            // 校验 = 视觉评审本次不可靠，按通道不可用处理
+                            // 回落文本评审（文本臂有重试闸兜底）。
+                            if let Err(e) = nemesis_board::check_gap_closure(&out, &prior_gaps) {
+                                warn!(
+                                    "[BoardReview] issue {issue_id} vision 评审缺口对账未过 → 回落文本评审：{}",
+                                    e.message
+                                );
+                                prompt.push_str(&format!(
+                                    "\n## 交付图像（视觉评审不可用）\n{} 张交付图像已取回 master 本地：{paths_note}。自动视觉评审本次不可用（{}），请按文本证据评审；图像请转人工查看。\n",
+                                    review_images.len(),
+                                    e.message
+                                ));
+                                None
+                            } else {
+                                info!(
+                                    "[BoardReview] issue {issue_id} vision 评审出结论（{} 张附图）",
+                                    review_images.len()
+                                );
+                                Some(out)
+                            }
                         }
                         Err(e) => {
                             warn!(
@@ -1544,6 +1665,17 @@ async fn review_issue(
                 .filter(|r| !r.passed)
                 .map(|r| format!("锚点失败: {} — {}", r.anchor.raw, r.detail))
                 .collect(),
+            // AOR 批一c §③：失败锚点自动成 FAIL 条目（[anchor] 标记），
+            // 条目清单渲染/重派反馈消费面与 LLM 评审输出同构。
+            criteria: anchor_results
+                .iter()
+                .filter(|r| !r.passed)
+                .map(|r| nemesis_board::CriterionVerdict {
+                    criterion: format!("[anchor] {}", r.anchor.raw),
+                    verdict: nemesis_board::ReviewVerdict::Fail,
+                    evidence: r.detail.clone(),
+                })
+                .collect(),
             gap: format!(
                 "客观锚点检查失败（确定性核验，未进入 AI 语义评审）：\n{}",
                 nemesis_board::render_anchor_failures(&anchor_results)
@@ -1551,6 +1683,9 @@ async fn review_issue(
             experience: None,
             need_evidence: None,
             evidence_request: None,
+            unknowns: Vec::new(),
+            // 锚点短路无上一轮清单对账面（客观核验，非 LLM 输出）。
+            gap_closure: Vec::new(),
         }
     } else if let Some(out) = vision_output {
         out
@@ -1597,6 +1732,7 @@ async fn review_issue(
             review_tier,
             review_lens,
             lens_reference.as_deref(),
+            &prior_gaps,
         )
         .await
         {
@@ -2057,6 +2193,11 @@ async fn review_issue(
         }
     }
 
+    // AOR 批一c §③ unknowns 落盘：评审存疑事项转 issue 系统评论的
+    // `unknown: <事项>` 结构化标记行（批二b ⑥ FINISH 谓词消费此标记；
+    // 人工评论回应即裁决）。落盘时机 = 全部降级闸走完、verdict 终态后。
+    persist_unknowns(store, issue_id, &output.unknowns);
+
     // P2 coding_delivery 整包行（2026-10-25）：所有闸走完、结论终态后把
     // 整包证据索引 + 终态结论入账（kind="coding_delivery"，幂等键 =
     // `{task_id}:coding_delivery`——复评重放幂等跳过，同一交付只出一行整
@@ -2408,19 +2549,86 @@ async fn review_issue(
                 );
                 return Ok(true);
             }
-            // P2A 能力类失败保护（2026-09-12 NB-15 根修）：预判重派目标——
-            // 能力类失败（validation_budget / escalation）+ 目标未换（同一
-            // worker）= 同模型同环境大概率原样复现。非无限模式不盲派，转
-            // 人工并给模型/档位建议；无限模式（无条件流转契约，estop 是
-            // 保险丝）仅 WARN 留痕继续。目标预判放在 ❌ 评论/审计之前
-            //（pick 纯读无副作用）；下方既有决策点原样保留，通过闸后再走
-            // 正常重派（届时二次调用读同一派发历史，结果一致——本闸是
-            // 启发式护栏，非正确性不变量）。
+            // P2A 能力类失败保护（2026-09-12 NB-15 根修；② AOR 批一b 泛化
+            // 为分类→重派策略映射）：分类存在时映射表优先于纯预算逻辑。
+            // Freeze（副作用不明）无论目标是否已换、unlimited 与否一律冻结
+            // 转人工（unlimited 放大的是重派次数，不是副作用知情权——
+            // token_budget 专用闸同语义先例）；CapabilitySwitch /
+            // SwitchNode 仅在目标未换时加闸（换节点 = 新环境/新 mandate，
+            // 重放可能成）；TransientRetry 与无分类走现状预算逻辑（兼容
+            // 不变）。目标预判放在 ❌ 评论/审计之前（pick 纯读无副作用）；
+            // 通过闸后走正常重派（启发式护栏，非正确性不变量）。
             let preview_target = pick_redispatch_target(deps, &issue, &dispatches).ok();
-            let capability_fail = (!preview_target.as_ref().is_some_and(|c| c.is_switch()))
-                .then(|| latest_fail_class(&comments))
+            let target_switched = preview_target.as_ref().is_some_and(|c| c.is_switch());
+            let latest_fc = latest_fail_class(&comments);
+            let frozen = latest_fc.filter(|fc| redispatch_policy(fc) == FailClassPolicy::Freeze);
+            if let Some(fc) = frozen {
+                fail_streaks.clear(issue_id);
+                // U-A：停车现场落盘。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "fail_class_freeze",
+                        suggested_action: "manual_check",
+                        hint: format!(
+                            "失败分类（fail_class: {fc}）语义为副作用后果不明——自动重派无法评估影响范围，已冻结：人工检查处置后重派"
+                        ),
+                        resume_entry: "issue.dispatch（人工处置后重派）/ review.retrigger（复评）"
+                            .into(),
+                        environment: last_dispatch_env(&dispatches),
+                        attempted: vec![serde_json::json!({
+                            "action": "redispatch",
+                            "result": format!("冻结类失败 {fc}（副作用不明不自动重派）"),
+                        })],
+                    },
+                );
+                let comment = format!(
+                    "{}🧯 失败冻结保护（fail_class: {fc}）：该失败分类的副作用后果不明，自动重派可能扩大影响，已停止自动重派，请人工检查处置。\n\n{}{handoff_note}",
+                    human_mention,
+                    capability_fail_hint(fc)
+                );
+                store.add_comment(NewComment {
+                    issue_id,
+                    author: reviewer.clone(),
+                    content: comment,
+                    parent_id: None,
+                    ctype: CommentType::Comment,
+                })?;
+                record_auto_decide(
+                    deps,
+                    issue_id,
+                    "escalate_human",
+                    output.verdict.as_str(),
+                    serde_json::json!({
+                        "round": round,
+                        "fail_class": fc,
+                        "reason": "fail_class_freeze",
+                        "reasons": render_reasons(&output.reasons),
+                    }),
+                );
+                warn!(
+                    "[BoardReview] issue {issue_id} 冻结类失败（{fc}）→ 转人工不重派（副作用不明）"
+                );
+                // AOR 批三 5.3 触发点①：重派无意义停车 → 重规划起草
+                // （建议≠授权；fire-and-forget，失败不影响本臂结论）。
+                crate::board_replan::spawn_replan_draft(
+                    deps.clone(),
+                    issue_id,
+                    "fail_class_freeze",
+                );
+                return Ok(true);
+            }
+            let capability_fail = (!target_switched)
+                .then_some(latest_fc)
                 .flatten()
-                .filter(|fc| CAPABILITY_FAIL_CLASSES.contains(fc));
+                .filter(|fc| {
+                    matches!(
+                        redispatch_policy(fc),
+                        FailClassPolicy::CapabilitySwitch | FailClassPolicy::SwitchNode
+                    )
+                });
             if let Some(fc) = capability_fail {
                 if unlimited {
                     let note = format!(
@@ -2478,15 +2686,26 @@ async fn review_issue(
                     info!(
                         "[BoardReview] issue {issue_id} 能力类失败（{fc}）+ 同目标 → 转人工（保持 in_review）"
                     );
+                    // AOR 批三 5.3 触发点①：重派无意义停车 → 重规划起草。
+                    crate::board_replan::spawn_replan_draft(
+                        deps.clone(),
+                        issue_id,
+                        "capability_fail",
+                    );
                     return Ok(true);
                 }
             }
             // UNSURE（无限模式）无 gap——给诚实占位意见，重派 prompt 不空转。
-            let gap_raw = output.gap.trim();
-            let gap = if gap_raw.is_empty() {
+            // AOR 批一c §③：带逐条判定时渲染条目清单（worker 知道具体哪条
+            // 没过、缺什么证据）；旧格式/无条目回落 gap 原文（行为不变）。
+            // 缺口清账：上一轮清单里未声明闭合的条目结转 + 本轮新增条目
+            // 一起重新编号（parse/render 互逆，下轮评审从评论解析回清单）。
+            let gap = nemesis_board::render_gap_with_ledger(&output, &prior_gaps);
+            let gap = if gap.is_empty() {
                 "验收 agent 无法定案（UNSURE）。请对照验收标准逐条自查，补充客观证据后重新汇报。"
+                    .to_string()
             } else {
-                gap_raw
+                gap
             };
             let next_round = round + 1;
             let budget_display = if unlimited {
@@ -2521,13 +2740,14 @@ async fn review_issue(
             // 行），本轮刚落的差距评论**不在**里面——曾 skip(1) 想跳「刚落
             // 的本轮评论」，实际跳掉的是上一轮的差距评论（本该比对的对象）
             // ：停滞告警晚一轮触发（同差距要连续 3 轮才响）甚至 2 轮即收敛
-            // 时永不触发。
-            if unlimited && round >= 2 && !gap_raw.is_empty() {
+            // 时永不触发。批一c §③：比对文本 = 渲染后差距（条目清单轮次间
+            // 同构可比；旧格式一轮过渡后回落 gap 原文，语义不变）。
+            if unlimited && round >= 2 && !gap.is_empty() {
                 let stale = comments
                     .iter()
                     .rev()
                     .find(|c| c.ctype == CommentType::Comment && c.content.contains("## 差距"))
-                    .is_some_and(|c| c.content.contains(gap_raw));
+                    .is_some_and(|c| c.content.contains(gap.as_str()));
                 if stale {
                     warn!(
                         "[BoardReview] issue {issue_id} 停滞嫌疑：第 {next_round} 轮重派差距与上轮相同（unlimited_mode 仅告警不停，estop 可随时止血）"
@@ -2589,6 +2809,12 @@ async fn review_issue(
                         }),
                     );
                     info!("[BoardReview] issue {issue_id} 预算超限 → 停止重派转人工（{breach}）");
+                    // AOR 批三 5.3 触发点①：重派无意义停车 → 重规划起草。
+                    crate::board_replan::spawn_replan_draft(
+                        deps.clone(),
+                        issue_id,
+                        "budget_breach",
+                    );
                     return Ok(true);
                 }
             }
@@ -2655,7 +2881,7 @@ async fn review_issue(
                     store,
                     issue_id,
                     &reviewer,
-                    Some(gap),
+                    Some(&gap),
                 )
             } else {
                 nemesis_web::handlers::board::dispatch_issue_core(
@@ -2664,7 +2890,7 @@ async fn review_issue(
                     issue_id,
                     &target,
                     &reviewer,
-                    Some(gap),
+                    Some(&gap),
                 )
             };
             match dispatch_result {
@@ -2773,10 +2999,11 @@ async fn review_issue(
             );
             let mut comment = format!("{}🤷 验收 agent 无法定案，请人工裁决\n", human_mention);
             if output.verdict == nemesis_board::ReviewVerdict::Fail {
+                // AOR 批一c §③：渲染逐条条目清单（有非 PASS 条目时）；旧格式回落 gap 原文。
                 comment.push_str(&format!(
                     "\n重派预算已耗尽（{} 次），最新差距仍在：\n{}\n",
                     cfg.max_redispatch,
-                    output.gap.trim()
+                    nemesis_board::render_gap_with_criteria(&output)
                 ));
             }
             append_reasons_unless_gapped(&mut comment, &output);
@@ -2792,6 +3019,9 @@ async fn review_issue(
                 "[BoardReview] issue {issue_id} verdict={} → 转人工（保持 in_review）",
                 output.verdict.as_str()
             );
+            // AOR 批三 5.3 触发点①：重派无意义停车（预算耗尽/单轮 UNSURE）
+            // → 重规划起草。
+            crate::board_replan::spawn_replan_draft(deps.clone(), issue_id, "escalate_human");
         }
     }
     Ok(true)
@@ -2820,6 +3050,8 @@ async fn run_review_llm(
     // 端预取的禁令节引用（只进 constraint 镜；None = 历史行为字节等价）。
     lens: Option<&'static nemesis_prompts::board::ReviewLens>,
     lens_reference: Option<&str>,
+    // 缺口清账机械闸：上一轮落下的编号清单（空 = 首评，只查虚构编号）。
+    prior_gaps: &[nemesis_board::LedgerItem],
 ) -> Result<nemesis_board::ReviewOutput, String> {
     // 评审分层（gap ②）：Thorough = 历史 REVIEW_SYSTEM_PROMPT 字节一致；
     // Fast = 精简档（保留注入防线与三态 JSON 契约，关取证/经验）。
@@ -2867,11 +3099,27 @@ async fn run_review_llm(
             ));
         }
         match nemesis_board::parse_review(&raw) {
-            Ok(out) => return Ok(out),
+            Ok(out) => {
+                // 缺口清账机械闸（改进 1）：清单非空时上一轮缺口必须逐条
+                // 声明归宿、closed/obsolete 必须附证据、PASS 与未清账缺口
+                // 互斥——违例与解析失败同通道回灌重试；重试 prompt 显式
+                // 带上清单（错误消息只报编号不带条目原文，注入段已被重试
+                // 文本替换，没有清单模型无法对着内容自纠）；3 轮耗尽 =
+                // 评审自身失败 → 转人工。
+                if let Err(e) = nemesis_board::check_gap_closure(&out, prior_gaps) {
+                    *prompt =
+                        nemesis_board::review::build_gap_closure_retry_prompt(&raw, &e, prior_gaps);
+                    last_err = e.message;
+                    continue;
+                }
+                return Ok(out);
+            }
             Err(e) => {
-                // 限定路径：根导出的 build_retry_prompt 是 planner 的
-                //（review 同名函数不进根，避免撞名歧义）。
-                *prompt = nemesis_board::review::build_retry_prompt(&raw, &e);
+                // 解析失败回灌同样带清单语境：清单非空时 gap_closure 是
+                // JSON 契约的一部分，重试需要契约要求文本与条目原文才能
+                // 一次性自纠（prior 为空时与旧 build_retry_prompt 字节一致）。
+                *prompt =
+                    nemesis_board::review::build_gap_closure_retry_prompt(&raw, &e, prior_gaps);
                 last_err = e.message;
             }
         }
@@ -2906,18 +3154,26 @@ pub(crate) fn is_system_terminal_text(raw: &str) -> bool {
 const PANEL_CONCURRENCY: usize = 4;
 /// 检查员路数收敛上限（配置面同步 clamp；防手滑写 5000 路烧穿 LLM 配额）。
 pub(crate) const MAX_REVIEW_CHECKERS: u32 = 5;
+/// L19 手法3：检查员面板 retained input 字节上限（prompt 总账）。8 MiB
+/// 刻意宽于任何现实评审 prompt，只有病态大包才被诚实拒绝。
+const PANEL_MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// B3 多检查员面板评审：`checkers > 1` 时并行发出 N 路独立 `run_review_llm`
-/// （每路独立 prompt 副本 + 编号后缀去相关，`Semaphore` 限并发，`join_all`
-/// 保序），`aggregate_verdicts` 多数票聚合。`checkers = 1`（默认）直接单路
-/// 调用，与历史行为字节等价。全路解析失败 → 返回末路错误（与单路 3 轮
-/// 全败语义一致）。
+/// （每路独立 prompt 副本 + 编号后缀去相关，WorkPool 限并发（permits =
+/// [`PANEL_CONCURRENCY`]，L19 spawn 形态），join 保序），`aggregate_verdicts`
+/// 多数票聚合。`checkers = 1`（默认）直接单路调用，与历史行为字节等价。
+/// 全路解析失败 → 返回末路错误（与单路 3 轮全败语义一致）。
 ///
 /// B3/C2（profession-capability-evolution 2026-10-14）：单路 = B3 职能分镜
 /// （`profession_lens`，按 issue.required_profession 选）；多路 = C2 异构
 /// 三镜按 index 轮换（`checker_lens_for_index`，不再 N 个同质评委，「第
 /// N 号检查员」编号去相关保留）——预取的禁令节引用只注入 constraint 镜
 /// （[`nemesis_prompts::board::CONSTRAINT_LENS_ID`]）。
+///
+/// L19 手法3（改进项三期 2026-11-03）：双上限背压——pending 上限 =
+/// [`MAX_REVIEW_CHECKERS`]（clamp 后全批可提交）、retained input 字节上限 =
+/// [`PANEL_MAX_INPUT_BYTES`]。超限 = 类型化 overloaded **全批诚实拒绝**
+/// （已提交任务取消释放，不部分执行——与 U5 并行批同款批级原子性）。
 async fn run_review_panel(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     base_prompt: &str,
@@ -2926,6 +3182,8 @@ async fn run_review_panel(
     tier: nemesis_prompts::board::ReviewTier,
     profession_lens: Option<&'static nemesis_prompts::board::ReviewLens>,
     lens_reference: Option<&str>,
+    // 缺口清账机械闸的清单来源（透传给每路检查员；空 = 首评）。
+    prior_gaps: &[nemesis_board::LedgerItem],
 ) -> Result<nemesis_board::ReviewOutput, String> {
     let checkers = checkers.clamp(1, MAX_REVIEW_CHECKERS) as usize;
     if checkers == 1 {
@@ -2937,36 +3195,63 @@ async fn run_review_panel(
             tier,
             profession_lens,
             lens_reference,
+            prior_gaps,
         )
         .await;
     }
-    let sem = Arc::new(tokio::sync::Semaphore::new(PANEL_CONCURRENCY));
-    let mut futs = Vec::with_capacity(checkers);
+    let pool = nemesis_utils::workpool::WorkPool::new(nemesis_utils::workpool::PoolLimits {
+        permits: PANEL_CONCURRENCY,
+        max_pending: MAX_REVIEW_CHECKERS as usize,
+        max_input_bytes: PANEL_MAX_INPUT_BYTES,
+    });
+    let mut tasks = Vec::with_capacity(checkers);
+    // 'static 闭包约束：清单按路克隆进任务（条目各 ≤512B，量级可忽略）。
+    let prior_owned = prior_gaps.to_vec();
     for i in 0..checkers {
         let lens = nemesis_prompts::board::checker_lens_for_index(i);
         let reference = if lens.id == nemesis_prompts::board::CONSTRAINT_LENS_ID {
-            lens_reference
+            lens_reference.map(str::to_string)
         } else {
             None
         };
-        let mut prompt = format!(
+        let prior = prior_owned.clone();
+        let prompt = format!(
             "{base_prompt}\n\n（你是第 {} 号检查员：请独立评审，不受其他检查员意见影响）",
             i + 1
         );
-        let sem = Arc::clone(&sem);
+        let input_bytes = prompt.len();
         let agent_loop = Arc::clone(agent_loop);
-        futs.push(async move {
-            let _permit = sem.acquire_owned().await;
-            run_review_llm(&agent_loop, &mut prompt, mode, tier, Some(lens), reference).await
+        let submitted = pool.try_submit(input_bytes, async move {
+            let mut prompt = prompt;
+            run_review_llm(
+                &agent_loop,
+                &mut prompt,
+                mode,
+                tier,
+                Some(lens),
+                reference.as_deref(),
+                &prior,
+            )
+            .await
         });
+        match submitted {
+            Ok(t) => tasks.push(t),
+            Err(err) => {
+                // 超限 = 全批诚实拒绝（已提交任务 Drop=取消 → worker 下一
+                // 悬挂点停止释放；不部分执行、不挂起排队）。
+                drop(tasks);
+                warn!("[BoardReview] Reviewer panel rejected by pool: {err}");
+                return Err(format!("评审检查员面板过载，已拒绝执行（{err}）"));
+            }
+        }
     }
-    let results = futures::future::join_all(futs).await;
     let mut oks = Vec::new();
     let mut last_err = String::new();
-    for r in results {
-        match r {
-            Ok(out) => oks.push(out),
-            Err(e) => last_err = e,
+    for task in tasks {
+        match task.join().await {
+            Ok(Ok(out)) => oks.push(out),
+            Ok(Err(e)) => last_err = e,
+            Err(_cancelled) => last_err = "检查员任务被取消".to_string(),
         }
     }
     if oks.is_empty() {
@@ -2978,9 +3263,54 @@ async fn run_review_panel(
 /// 多数票聚合（纯函数，穷举可测）：多数 PASS → Pass；多数 FAIL → Fail；
 /// 其余（平票/全 Unsure）→ Unsure（转人工，fail-safe 不偏向自动收货）。
 /// reasons 首条注入投票注记（含无效路注记），其余按路合并去重保序；gap
-/// 取首个非空；experience 取首个非空；need_evidence/evidence_request 仅在
+/// 取首个非空；criteria 取首个非空、unknowns 按序去重合并（批一c §③）；
+/// experience 取首个非空；need_evidence/evidence_request 仅在
 /// 聚合结论为 Unsure 时保留——多数已定案的结论不被个别证据请求改写
 /// （B2b 挂起只服务"评不了"，不推翻"评得了"）。
+/// AOR 批一c §③ unknowns 落盘（评审存疑事项 → issue 系统评论的
+/// `unknown: <事项>` 结构化标记行；批二b ⑥ FINISH 谓词消费此标记，
+/// 人工评论回应即裁决）。去重：历史轮已落的 `unknown: <同文>` 行不
+/// 重复落，本轮有新增盲区才落一条聚合评论。失败只 warn 不炸评审
+/// （评论是可观测面，非语义闸）。
+fn persist_unknowns(store: &nemesis_board::BoardStore, issue_id: i64, unknowns: &[String]) {
+    if unknowns.is_empty() {
+        return;
+    }
+    let seen: Vec<String> = store
+        .list_comments(issue_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.content)
+        .collect();
+    let fresh: Vec<&str> = unknowns
+        .iter()
+        .map(|u| u.trim())
+        .filter(|u| {
+            if u.is_empty() {
+                return false;
+            }
+            let marker = format!("unknown: {u}");
+            !seen.iter().any(|c| c.contains(&marker))
+        })
+        .collect();
+    if fresh.is_empty() {
+        return;
+    }
+    let mut body = String::from("❓ 评审存疑事项（unknown 清单，自动收口检查会核对裁决状态）：");
+    for u in fresh {
+        body.push_str(&format!("\nunknown: {u}"));
+    }
+    if let Err(e) = store.add_comment(nemesis_board::NewComment {
+        issue_id,
+        author: nemesis_board::Actor::system("board-review"),
+        content: body,
+        parent_id: None,
+        ctype: CommentType::System,
+    }) {
+        warn!("[BoardReview] issue {issue_id} unknown 清单落盘失败（不阻塞评审）: {e}");
+    }
+}
+
 fn aggregate_verdicts(
     requested: usize,
     outputs: Vec<nemesis_board::ReviewOutput>,
@@ -3026,6 +3356,32 @@ fn aggregate_verdicts(
         .unwrap_or("")
         .to_string();
     let experience = outputs.iter().find_map(|o| o.experience.clone());
+    // AOR 批一c §③ 聚合语义：criteria 取首个非空（条目文本难以逐字对齐，
+    // 按条目多数决脆弱——取最完整的一份比逐条投票稳健）；unknowns 按序
+    // 去重合并（保守收集全部检查员的盲区）。聚合 verdict==Pass 但 criteria
+    // 带 FAIL 条（少数意见）不在此强制改判——渲染层照实列条目（parse_review
+    // 的互斥校验只管单路 LLM 输出，聚合是系统合成）。
+    let criteria = outputs
+        .iter()
+        .find(|o| !o.criteria.is_empty())
+        .map(|o| o.criteria.clone())
+        .unwrap_or_default();
+    // 缺口清账聚合：同 criteria 策略取首个非空（对账是逐编号声明，按条
+    // 多数决脆弱；多数票下取最完整一份与条目清单同源一致）。
+    let gap_closure = outputs
+        .iter()
+        .find(|o| !o.gap_closure.is_empty())
+        .map(|o| o.gap_closure.clone())
+        .unwrap_or_default();
+    let mut unknowns = Vec::new();
+    for o in &outputs {
+        for u in &o.unknowns {
+            let u = u.trim();
+            if !u.is_empty() && !unknowns.iter().any(|x: &String| x.trim() == u) {
+                unknowns.push(u.to_string());
+            }
+        }
+    }
     let (need_evidence, evidence_request) = if verdict == nemesis_board::ReviewVerdict::Unsure {
         let need = outputs.iter().any(|o| o.need_evidence == Some(true));
         let req = outputs
@@ -3043,6 +3399,9 @@ fn aggregate_verdicts(
         experience,
         need_evidence,
         evidence_request,
+        criteria,
+        unknowns,
+        gap_closure,
     }
 }
 
@@ -3878,13 +4237,15 @@ fn try_parent_remediation(
         ));
     }
     let store = &deps.store;
-    let gap = output.gap.trim();
-    // 承接任务文本：FAIL 用差距原文；UNSURE（gap 常空）用评审理由渲染——
-    // 理由里就是「哪些证据缺失/哪些产物未归档」的可行动清单。
+    // AOR 批一c §③：逐条条目清单渲染（有非 PASS 条目时）；旧格式回落 gap 原文。
+    let gap = nemesis_board::render_gap_with_criteria(output);
+    // 承接任务文本：FAIL 用差距（渲染后条目清单/原文）；空（旧格式 UNSURE，
+    // gap 常空）用评审理由渲染——理由里就是「哪些证据缺失/哪些产物未归档」
+    // 的可行动清单。
     let task_text = if gap.is_empty() {
         render_reasons(&output.reasons)
     } else {
-        gap.to_string()
+        gap
     };
     let reset_epoch = store.remediation_reset_epoch(parent.id);
     // 轮数清点（2026-10-17 前缀方言宽容）：旧版前端打回建单用半角
@@ -4026,12 +4387,24 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         warn!("[BoardReview] 父单 {parent_id} 收口挂起：LLM 端点不可用封存中（恢复后自动续评）");
         return Ok(false);
     }
-    // 范围缺口边界：子树（Subtree 闭包，SAN-08——旧单层 children 扫描看
-    // 不见 done 子单之下的 cancelled 孙单，收口会带着隐藏缺口宣称完成）
-    // 存在 cancelled → 范围缺口要人裁决，验收补不了。
+    // AOR 批二b（⑥ FINISH 谓词·入口面）：环境干净三条件（③ 活跃派发 /
+    // ④ 未决 unknown / ⑤ cancelled 缺口闸——原 cancelled 检查并入谓词，语义
+    // 不变）。①②（终态闭包/fail_class）刻意不在入口：in-flight 子单在场时
+    // 缺陷闸（M8 停车泊车）/ 父单分流 / FAIL 返工承接链必须照常跑，谓词在
+    // 入口挡 ①② 会漏停车。完整五条件在 Pass 臂落 done 前终检（收口面）。
+    // 不满足 → 缺口评论显式列出（C-F4 去重）+ 不自动收口（转人工）。
     let subtree = store.descendants(&[parent_id], nemesis_board::store::DescendantEdges::Subtree);
-    if subtree.iter().any(|c| c.status == IssueStatus::Cancelled) {
-        info!("[BoardReview] 父单 {parent_id} 子树存在 cancelled 单，不自动收口（转人工）");
+    let unsatisfied = nemesis_board::finish::evaluate_parent_entry_finish(store, &subtree);
+    if !unsatisfied.is_empty() {
+        info!(
+            "[BoardReview] 父单 {parent_id} FINISH 入口闸未满足（{} 条），不进入自动收口（转人工）",
+            unsatisfied.len()
+        );
+        if let Err(e) =
+            nemesis_board::finish::write_finish_gap_comment(store, parent_id, &unsatisfied)
+        {
+            warn!("[BoardReview] 父单 {parent_id} FINISH 缺口评论写入失败：{e}");
+        }
         return Ok(false);
     }
     let children = store.list_children(parent_id)?;
@@ -4135,6 +4508,9 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         // 汇总段），不带入。
         &[],
         CLOSURE_WORKER_REPORT_MAX_BYTES,
+        // 父单收口不走跨轮缺口清账（子单评审的清单语义不适用于父单汇总
+        // 面；返工承接有自己的轮数预算）。
+        &[],
     );
 
     // ---- 客观锚点双检（P2/B1，父单同款）：先便宜后昂贵 ----
@@ -4271,6 +4647,16 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 .filter(|r| !r.passed)
                 .map(|r| format!("锚点失败: {} — {}", r.anchor.raw, r.detail))
                 .collect(),
+            // AOR 批一c §③：失败锚点自动成 FAIL 条目（同子单短路路径）。
+            criteria: anchor_results
+                .iter()
+                .filter(|r| !r.passed)
+                .map(|r| nemesis_board::CriterionVerdict {
+                    criterion: format!("[anchor] {}", r.anchor.raw),
+                    verdict: nemesis_board::ReviewVerdict::Fail,
+                    evidence: r.detail.clone(),
+                })
+                .collect(),
             gap: format!(
                 "客观锚点检查失败（确定性核验，未进入 AI 语义评审）：\n{}",
                 nemesis_board::render_anchor_failures(&anchor_results)
@@ -4278,6 +4664,8 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             experience: None,
             need_evidence: None,
             evidence_request: None,
+            unknowns: Vec::new(),
+            gap_closure: Vec::new(),
         }
     } else {
         if !anchor_results.is_empty() {
@@ -4314,6 +4702,8 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
             review_lens,
             lens_reference.as_deref(),
+            // 父单收口不走跨轮缺口清账（见 prompt 构建处注释）。
+            &[],
         )
         .await
         {
@@ -4384,6 +4774,25 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     }
     match output.verdict {
         nemesis_board::ReviewVerdict::Pass => {
+            // AOR 批二b（⑥ FINISH 谓词·收口面终检）：评审耗时数分钟，子树
+            // 状态可能变化——落盘前以新鲜子树重验完整五条件，宁阻塞不盲收
+            // 口。阻塞 → 缺口评论（C-F4 去重）+ 不落 PASS 评论不记
+            // parent_auto_close；缺口消除后既有 settle 钩子自动复评。
+            let subtree_now =
+                store.descendants(&[parent_id], nemesis_board::store::DescendantEdges::Subtree);
+            let unsatisfied = nemesis_board::finish::evaluate_parent_finish(store, &subtree_now);
+            if !unsatisfied.is_empty() {
+                info!(
+                    "[BoardReview] 父单 {parent_id} FINISH 收口闸未满足（{} 条），评审通过但不落 done（缺口消除后自动复评）",
+                    unsatisfied.len()
+                );
+                if let Err(e) =
+                    nemesis_board::finish::write_finish_gap_comment(store, parent_id, &unsatisfied)
+                {
+                    warn!("[BoardReview] 父单 {parent_id} FINISH 缺口评论写入失败：{e}");
+                }
+                return Ok(false);
+            }
             store.add_comment(NewComment {
                 issue_id: parent_id,
                 author: reviewer.clone(),
@@ -4432,7 +4841,10 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             // 双空（真无事可做）才落下方转人工路径。承接被拒/失败 → 落下方
             // 既有转人工路径（原因注记进评论）。
             let remediable = match verdict {
-                nemesis_board::ReviewVerdict::Fail => !output.gap.trim().is_empty(),
+                nemesis_board::ReviewVerdict::Fail => {
+                    // AOR 批一c §③：可返工性按渲染后差距判（条目清单在场即承接）。
+                    !nemesis_board::render_gap_with_criteria(&output).is_empty()
+                }
                 nemesis_board::ReviewVerdict::Unsure => {
                     !output.gap.trim().is_empty() || !output.reasons.is_empty()
                 }
@@ -4457,11 +4869,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                             num = t.number,
                             round = t.round,
                             max = t.max,
-                            gap = if output.gap.trim().is_empty() {
-                                render_reasons(&output.reasons)
-                            } else {
-                                output.gap.trim().to_string()
-                            },
+                            gap = nemesis_board::render_gap_with_criteria(&output),
                         );
                         append_reasons_unless_gapped(&mut comment, &output);
                         store.add_comment(NewComment {
@@ -4525,7 +4933,11 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 ver = verdict.as_str()
             );
             if verdict == nemesis_board::ReviewVerdict::Fail {
-                comment.push_str(&format!("\n差距：\n{}\n", output.gap.trim()));
+                // AOR 批一c §③：人读评论用渲染后条目清单（旧格式回落 gap 原文）。
+                comment.push_str(&format!(
+                    "\n差距：\n{}\n",
+                    nemesis_board::render_gap_with_criteria(&output)
+                ));
             }
             append_reasons_unless_gapped(&mut comment, &output);
             // 说清楚（2026-10-16 用户裁决）：升级必须带自动返工全程账目
@@ -4575,6 +4987,16 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 "[BoardReview] 父单 {parent_id} 收口验收 verdict={} → 转人工（保持 in_review）",
                 verdict.as_str()
             );
+            // AOR 批三 5.3 触发点②：父单收口评审 FAIL 转人工 → 重规划起草
+            //（UNSURE 是证据缺口不是计划缺口，不触发；返工承接已覆盖 FAIL
+            // 可返工形态，本钩子只承接承接失败/被拒/预算用尽的残留流）。
+            if verdict == nemesis_board::ReviewVerdict::Fail {
+                crate::board_replan::spawn_replan_draft(
+                    deps.clone(),
+                    parent_id,
+                    "parent_review_fail",
+                );
+            }
         }
     }
     Ok(true)
@@ -4715,7 +5137,15 @@ async fn dispatch_selfcheck(
     // 任务从未开始，不能当派发成功——返回 Err 走调用方既有取证失败
     // 路径，评审链不被悬挂等待一个永不会来的回调。
     if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(resp.result.as_ref()) {
-        return Err("取证派发被 worker 拒单（B 端工作队列满，ACK status=error）".into());
+        // L13-b：ACK error 字段（mandate 拒绝原因等）优先透传。
+        let reason = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("error"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "B 端工作队列满，任务未被接受（ACK status=error）".into());
+        return Err(format!("取证派发被 worker 拒单（{reason}）"));
     }
     Ok(task_id)
 }
@@ -5089,6 +5519,8 @@ async fn review_project_completion(
         &summary,
         &[],
         CLOSURE_WORKER_REPORT_MAX_BYTES,
+        // 项目收口不走跨轮缺口清账（同父单口径）。
+        &[],
     );
 
     // ---- 客观锚点双检（父单/子单同款）：workspace 根，先便宜后昂贵 ----
@@ -5203,6 +5635,16 @@ async fn review_project_completion(
                 .filter(|r| !r.passed)
                 .map(|r| format!("锚点失败: {} — {}", r.anchor.raw, r.detail))
                 .collect(),
+            // AOR 批一c §③：失败锚点自动成 FAIL 条目（同子单短路路径）。
+            criteria: anchor_results
+                .iter()
+                .filter(|r| !r.passed)
+                .map(|r| nemesis_board::CriterionVerdict {
+                    criterion: format!("[anchor] {}", r.anchor.raw),
+                    verdict: nemesis_board::ReviewVerdict::Fail,
+                    evidence: r.detail.clone(),
+                })
+                .collect(),
             gap: format!(
                 "客观锚点检查失败（确定性核验，未进入 AI 语义评审）：\n{}",
                 nemesis_board::render_anchor_failures(&anchor_results)
@@ -5210,6 +5652,8 @@ async fn review_project_completion(
             experience: None,
             need_evidence: None,
             evidence_request: None,
+            unknowns: Vec::new(),
+            gap_closure: Vec::new(),
         }
     } else {
         if !anchor_results.is_empty() {
@@ -5240,6 +5684,8 @@ async fn review_project_completion(
             nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
             None,
             lens_reference.as_deref(),
+            // 项目收口不走跨轮缺口清账（同父单口径）。
+            &[],
         )
         .await
         {
@@ -5458,7 +5904,11 @@ fn apply_project_review_outcome(
                 ver = verdict.as_str()
             );
             if output.verdict == nemesis_board::ReviewVerdict::Fail {
-                comment.push_str(&format!("\n差距：\n{}\n", output.gap.trim()));
+                // AOR 批一c §③：人读评论用渲染后条目清单（旧格式回落 gap 原文）。
+                comment.push_str(&format!(
+                    "\n差距：\n{}\n",
+                    nemesis_board::render_gap_with_criteria(output)
+                ));
             }
             append_reasons_unless_gapped(&mut comment, output);
             comment.push_str(

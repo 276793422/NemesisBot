@@ -329,3 +329,44 @@ fn test_write_file_atomic_concurrent_no_interleave() {
         .count();
     assert_eq!(leftovers, 0, "no temp files may survive concurrent writes");
 }
+
+// ============================================================
+// BUG-20261104-356：临时名形态单一真相钉死
+// ============================================================
+
+/// 临时名形态契约（消费方依赖面）：[`atomic_tmp_path`] 产出的名字以
+/// [`ATOMIC_TMP_PREFIX`] 开头（孤儿清扫按前缀扫描）且**无扩展名**
+/// （`Path::extension` 为 None——`.json` 过滤的清单/恢复/清扫路径不会把
+/// 临时文件误当内容文件）。独立函数直调断言，无需写窗口内竞速观测。
+#[test]
+fn test_atomic_tmp_path_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = atomic_tmp_path(dir.path());
+    let name = a.file_name().unwrap().to_string_lossy().to_string();
+    assert!(
+        name.starts_with(ATOMIC_TMP_PREFIX),
+        "tmp name must carry the published prefix: {name}"
+    );
+    assert_eq!(
+        Path::new(&name).extension(),
+        None,
+        "tmp name must not carry an extension (json-filtered scans rely on this)"
+    );
+    // 同进程连续调用绝对唯一（单调序数承担；时间戳兜底）。
+    let b = atomic_tmp_path(dir.path());
+    assert_ne!(a, b, "sequential tmp paths must be unique");
+}
+
+/// 宽限常量语义自检：必须远大于一次小文件的 write+fsync+rename（毫秒~秒），
+/// 又必须不大于清扫节奏（每日）量级，1h 落在中间。若调整该值，先想清楚两端。
+#[test]
+fn test_atomic_tmp_orphan_grace_bounds() {
+    assert!(
+        ATOMIC_TMP_ORPHAN_GRACE >= std::time::Duration::from_secs(600),
+        "grace below 10min risks deleting an in-flight tmp on a pathologically slow disk"
+    );
+    assert!(
+        ATOMIC_TMP_ORPHAN_GRACE <= std::time::Duration::from_secs(6 * 3600),
+        "grace beyond one sweep cadence leaves orphans visible indefinitely"
+    );
+}

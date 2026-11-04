@@ -42,6 +42,11 @@ nemesis-plugin = { workspace = true }
 ed25519-dalek = { workspace = true }
 # roaming 密钥 hex 编解码（node_id/seed 的文本形态）。
 hex = { workspace = true }
+# L13-b（2026-11-03 三期）：mandate 签名（ECDSA P-256 + SHA-256，RFC 6979）。
+# 直依赖 p256 而非 nemesis-verify（后者 reqwest 重依赖不适合 cluster 传输面）；
+# 密钥形态与算法栈与 v4 leaf 同口径（130 hex SEC1 uncompressed / 64B r||s），
+# 摘要与 v4_content_digest 的字节等价由 parity 测试钉住。
+p256 = { workspace = true }
 if-addrs = "0.13"
 socket2 = { workspace = true }
 # per-task cancel（W2 P4）：CancellationToken 供 cluster_agent 的 agent loop
@@ -74,6 +79,9 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3"
 serial_test = "3"
 tracing-subscriber = { workspace = true }
+# L13-b mandate parity 测试（digest 等价契约钉）：仅 dev 树——运行时依赖
+# 面保持轻（不引 nemesis-verify 的 reqwest/rustls 进生产构建）。
+nemesis-verify = { workspace = true }
 
 [lints]
 workspace = true

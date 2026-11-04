@@ -95,6 +95,7 @@ pub(crate) async fn init_agent(
     let cluster_rpc_call_fn = cluster.cluster_rpc_call_fn.clone();
     let cluster_rpc_config = cluster.cluster_rpc_config.clone();
     let cluster_peers_fn = cluster.cluster_peers_fn.clone();
+    let cluster_auto_target_fn = cluster.cluster_auto_target_fn.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let cluster_adapter_refs = &cluster.cluster_adapter_refs;
 
@@ -283,6 +284,7 @@ pub(crate) async fn init_agent(
         cluster_rpc_call_fn,
         cluster_rpc_config,
         cluster_peers_fn,
+        cluster_auto_target_fn,
         cluster_rpc_enabled: parking_lot::RwLock::new(None::<Arc<std::sync::atomic::AtomicBool>>),
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,

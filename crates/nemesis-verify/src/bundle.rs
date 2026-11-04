@@ -124,12 +124,15 @@ fn check_valid_at(c: &Certificate, now: u64, what: &str) -> Result<()> {
 }
 
 /// 含私钥材料的 JSON 落盘（unix 0600；Windows 沿用用户目录 ACL 默认收敛）。
-fn save_private_json(j: &KeyHierarchyJson, path: &str) -> Result<()> {
+/// `pub(crate)`：全量包 [`crate::keygen::KeyHierarchy::save`] 同源消费——
+/// 全量包敏感度最高（三级私钥俱全），裸 `fs::write` 会落 umask 默认权限
+/// （Linux 常态 0644 = 同机其他用户可读），BUG-20261104-378。
+pub(crate) fn save_private_json(j: &KeyHierarchyJson, path: &str) -> Result<()> {
     let json = serde_json::to_vec_pretty(j)?;
     #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -137,6 +140,9 @@ fn save_private_json(j: &KeyHierarchyJson, path: &str) -> Result<()> {
             .mode(0o600)
             .open(path)?;
         f.write_all(&json)?;
+        // 覆盖已存在的宽权限文件（旧版本产物 0644）时 open(O_CREAT) 不改
+        // mode——显式收紧（新文件 create-time mode 已是 0600，幂等）。
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
     {

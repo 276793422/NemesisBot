@@ -733,6 +733,7 @@ async fn test_handle_cluster_continuation_no_data() {
         &MockContinuationProvider::new(vec![]),
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -785,6 +786,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -841,6 +843,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -923,6 +926,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &tools,
         &outbound_tx,
         None,
@@ -966,6 +970,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1036,6 +1041,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1353,6 +1359,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1434,6 +1441,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1515,6 +1523,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1584,6 +1593,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1738,6 +1748,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1882,6 +1893,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         &provider,
         "model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &tools,
         &outbound_tx,
         Some(Arc::clone(&observer)),
@@ -1937,6 +1949,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         &provider,
         "model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -2547,6 +2560,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -2606,6 +2620,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         Some(Arc::new(nemesis_observer::Manager::new())),
@@ -3171,6 +3186,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         &provider_no_vision,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3226,6 +3242,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         &provider_vision,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3470,6 +3487,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3539,6 +3557,7 @@ async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3595,6 +3614,7 @@ async fn test_cluster_continuation_no_source_node_meta_absent() {
         &provider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3658,4 +3678,101 @@ fn test_persist_final_reply_no_source_node_omits_key() {
     );
 
     crate::chat_log::delete_chat_log(&key);
+}
+
+// ============================================================
+// BUG-20261104-356：崩溃残留 `.tmp-` 原子写孤儿清扫
+// ============================================================
+
+/// mtime 回拨 helper（std File::set_times；append 打开不改内容）。
+fn backdate_mtime(path: &std::path::Path, ago: std::time::Duration) {
+    let f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - ago))
+        .unwrap();
+}
+
+/// store base_dir 与落盘文件共用同一解析（`<root>/cluster/rpc_cache`），
+/// 测试直接摆文件时不允许各自手拼路径。
+fn store_dir(root: &std::path::Path) -> std::path::PathBuf {
+    nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(root)
+}
+
+/// 清扫臂：超龄孤儿删、新鲜孤儿与 .json 内容文件保留。
+#[test]
+fn test_sweep_stale_tmp_orphans_removes_old_keeps_fresh_and_json() {
+    let dir = TempDir::new().unwrap();
+    let store = ContinuationStore::new(dir.path());
+    let base = store_dir(dir.path());
+
+    let old = base.join(".tmp-old-1-2-3");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(&old, b"partial").unwrap();
+    backdate_mtime(&old, std::time::Duration::from_secs(2 * 3600));
+
+    let fresh = base.join(".tmp-fresh-1-2-4");
+    std::fs::write(&fresh, b"partial").unwrap();
+
+    let json = base.join("task_x.json");
+    std::fs::write(&json, b"{}").unwrap();
+
+    let removed = store.sweep_stale_tmp_orphans(nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE);
+    assert_eq!(removed, 1, "only the aged orphan is removed");
+    assert!(!old.exists(), "aged orphan must be gone");
+    assert!(fresh.exists(), "fresh orphan must survive the grace window");
+    assert!(json.exists(), "content files are not tmp orphans");
+}
+
+/// 空目录 / 目录缺席：零删除不报错。
+#[test]
+fn test_sweep_stale_tmp_orphans_empty_and_missing_dir() {
+    let dir = TempDir::new().unwrap();
+    let store = ContinuationStore::new(dir.path());
+    assert_eq!(store.sweep_stale_tmp_orphans(std::time::Duration::ZERO), 0);
+
+    let missing = dir.path().join("no-such-dir");
+    let store2 = ContinuationStore::new(&missing);
+    assert_eq!(store2.sweep_stale_tmp_orphans(std::time::Duration::ZERO), 0);
+}
+
+/// Manager TTL 清理接线：同轮顺带清孤儿，返回数 = 快照 + 孤儿。
+#[tokio::test]
+async fn test_cleanup_old_snapshots_also_sweeps_tmp_orphans() {
+    let dir = TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(dir.path());
+
+    // 一份超龄快照（mtime 回拨 8 天 > TTL 7 天）。
+    let snapshot = ContinuationSnapshot {
+        task_id: "task-old".into(),
+        messages: "[]".into(),
+        tool_call_id: "tc".into(),
+        channel: "web".into(),
+        chat_id: "c".into(),
+        session_key: "s".into(),
+        peer_id: "".into(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(),
+        created_at: String::new(),
+        final_persisted: false,
+    };
+    if let Some(ref store) = manager.disk_store {
+        store.save(&snapshot).unwrap();
+        let p = store_dir(dir.path()).join("task-old.json");
+        backdate_mtime(&p, std::time::Duration::from_secs(8 * 24 * 3600));
+    }
+
+    // 一个超龄孤儿。
+    let base = store_dir(dir.path());
+    let orphan = base.join(".tmp-crash-1-2-5");
+    std::fs::write(&orphan, b"partial").unwrap();
+    backdate_mtime(&orphan, std::time::Duration::from_secs(2 * 3600));
+
+    let removed = manager
+        .cleanup_old_snapshots(std::time::Duration::from_secs(7 * 24 * 3600))
+        .await;
+    assert_eq!(removed, 2, "stale snapshot + stale orphan");
+    assert!(!base.join("task-old.json").exists());
+    assert!(
+        !orphan.exists(),
+        "stale orphan must be swept in the same round"
+    );
 }

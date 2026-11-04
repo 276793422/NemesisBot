@@ -87,8 +87,12 @@ const LEGACY_FILE_NAME: &str = "plugins_native.json";
 /// 惰性迁移：新版文件缺席且旧版在场 → 旧内容原样落到新版文件名，删除旧
 /// 文件。失败不阻塞读路径（WARN + 留守旧位，下次再试）。
 ///
-/// 写侧（`set_enabled`）自带罩锁；本函数在锁内调用，读侧（`load_enabled`）
-/// 单读不改盘，重复调用靠「新版在场即短路」幂等。
+/// **调用方必须已持 `config_write_lock`**（BUG-20261104-370：读路径
+/// `load_enabled` 的迁移调用曾零锁——rename 会把并发 `set_enabled` 刚落盘
+/// 的开关文件整个替换成旧内容（Windows/Unix rename 皆覆盖已存在目标），
+/// 用户切换静默回退；同族先例 BUG-20261103-333 在 plugin_wasm
+/// load_switches 修过同构位点）。写侧（`set_enabled`）自带罩锁；重复调用
+/// 靠「新版在场即短路」幂等。
 fn migrate_legacy_file(path: &Path) {
     let Some(parent) = path.parent() else { return };
     let legacy = parent.join(LEGACY_FILE_NAME);
@@ -136,7 +140,14 @@ fn default_true() -> bool {
 /// 读开关。文件/键缺席 = 启用（向后兼容缺省）；非法 JSON = 启用 + 保守
 /// 放行（开关文件损坏不应肢解产品功能——损坏本身由写入方负责，读侧诚实
 /// 放行并让日志可见性留给调用方）。首次调用完成旧文件名惰性迁移。
+///
+/// BUG-20261104-370：本函数**非纯读**（首读可能触发迁移 rename 落盘），
+/// 全程罩 `config_write_lock`——不入「读路径不入锁」豁免（与 plugin_wasm
+/// `load_switches` 同款纪律；本函数在 gateway 是热路径：wasm 运行期总闸
+/// 每 guest 命令/面板帧经 `runtime_enabled` 到此，迁移窗口内与 Dashboard
+/// `set_enabled` 并发时零锁 rename 会覆盖刚落盘的开关文件）。
 pub fn load_enabled(config_dir: &Path, id: NativePluginId) -> bool {
+    let _serial = crate::config_write_lock();
     let path = plugins_native_config_path(config_dir);
     migrate_legacy_file(&path);
     let Ok(content) = nemesis_utils::fsutil::read_config_string(&path) else {

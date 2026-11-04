@@ -5,7 +5,7 @@ use super::meta::{
     CATALOG, SlugError, find_builtin, normalize_slug, split_slug, tier_allows, validate_slug,
 };
 use super::render::{SuffixRender, builtin_method, render_profession_suffix};
-use crate::board::planner_system_prompt;
+use crate::board::{REVIEW_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT_FAST, planner_system_prompt};
 use crate::professions::{CLUSTER_WORKER_CONTRACT, PLANNER_METHOD};
 
 // ---------------------------------------------------------------------------
@@ -195,6 +195,19 @@ fn tier_gate_fail_open_on_unknown_node_tier() {
     // 旧节点无 tier 信息 → 放行（D3）。
     assert!(tier_allows(None, "big"));
     assert!(tier_allows(None, "normal"));
+}
+
+#[test]
+fn tier_gate_fail_open_on_empty_tier_string() {
+    // BUG-20261103-345：空串/纯空白档位 = 「无信息」，与 None 同语义
+    // fail-open（本文件 tier_gate_rank_semantics 自身的口径注释：fail-open
+    // 只对「无信息」）。手改 peers.toml `tier = ""` 或对端 wire 空字段经
+    // serde 落成 Some("")——旧实现 rank("")=0 按最低档排除，tier 闸永不
+    // 松弛 = 该节点静默永久失配全部 normal/big 职能任务。
+    assert!(tier_allows(Some(""), "normal"), "空串 = 未宣告，放行");
+    assert!(tier_allows(Some("  "), "big"), "纯空白同语义");
+    // 对照：非空垃圾串仍是「有信息但档位低」（既有钉死语义，不得松动）。
+    assert!(!tier_allows(Some("whatever"), "normal"));
 }
 
 #[test]
@@ -416,6 +429,116 @@ fn reasoning_closure_discipline_present_on_both_sides() {
         assert!(
             CLUSTER_WORKER_CONTRACT.contains(kw),
             "cluster_worker.md 缺推理收尾关键词 {kw}"
+        );
+    }
+}
+
+/// AOR ① worker 纪律吸收（2026-11-04 批一a）：STATE-FIRST / 资源边界 /
+/// 换策略 ANTI-LOOP / 六词汇报 / 失败类别 / 汇报是证据候选——稳定前缀
+/// 新增纪律段的防误删关键词快照（本文件惯例：非字节快照）。
+#[test]
+fn worker_contract_carries_aor_discipline_sections() {
+    for kw in [
+        "执行纪律",
+        "STATE-FIRST",
+        "资源边界",
+        "[TOUCH] 声明",
+        "换策略纪律",
+        "禁止第三次原样重试",
+        "六词汇报",
+        "PROPOSAL 不是授权",
+        "失败类别",
+        "环境缺失",
+        "资源冲突",
+        "汇报是证据候选",
+    ] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺 AOR 纪律关键词 {kw}"
+        );
+    }
+}
+
+/// 失败诊断四态（2026-11-04）：worker 侧排查结论四态 + 三条铁律的防误删
+/// 关键词（本文件惯例：非字节快照）。
+#[test]
+fn worker_contract_carries_diagnosis_outcome_states() {
+    for kw in [
+        "失败诊断四态",
+        "未重现",
+        "取证缺口",
+        "路径未达",
+        "假设排除",
+        "互不等价",
+        "不构成修复证据",
+    ] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺四态诊断关键词 {kw}"
+        );
+    }
+    // 四态各自都附「不代表/不等于」边界——防互换表述的语义锚。
+    for kw in ["不代表", "不等于"] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺四态边界措辞 {kw}"
+        );
+    }
+}
+
+/// 声明分类纪律（2026-11-04）：worker 侧三类声明与 dev 契约指针行、评审
+/// 侧配对条款（REVIEW_SYSTEM_PROMPT/FAST 双档）成对在场——任一侧缺席=
+/// 声明契约断链（worker 标了没人认，或评审被要求认无人标的类型）。
+#[test]
+fn statement_classification_paired_on_worker_and_reviewer() {
+    // worker 侧：三类 + 成立条件/效力锚。
+    for kw in [
+        "声明分类纪律",
+        "口径援引",
+        "取舍留痕",
+        "修复断言",
+        "不等于实现正确",
+        "留痕不豁免",
+        "可重放的证据",
+    ] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺声明分类关键词 {kw}"
+        );
+    }
+    assert!(
+        CLUSTER_WORKER_CONTRACT.contains("按最严的一类"),
+        "归类不明陈述须从严按修复断言对待"
+    );
+    // dev 契约指针行：指向集群契约的两节纪律（dev:cpp 共享同一正文，
+    // 查 dev 即覆盖）。
+    let dev_contract = find_builtin("dev").expect("dev 内置").contract;
+    assert!(
+        dev_contract.contains("口径援引 / 取舍留痕 / 修复断言"),
+        "dev.md 缺声明分类指针"
+    );
+    assert!(
+        dev_contract.contains("失败诊断四态"),
+        "dev.md 缺四态诊断指针"
+    );
+    // 评审侧：双档纪律同步（判定纪律 10/11）。
+    for prompt in [REVIEW_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT_FAST] {
+        for kw in [
+            "声明归类",
+            "取舍留痕",
+            "未标注的定性陈述",
+            "从严按",
+            "缺口清账",
+        ] {
+            assert!(prompt.contains(kw), "验收提示词缺声明/清账纪律关键词 {kw}");
+        }
+        assert!(
+            prompt.contains("gap_closure"),
+            "验收提示词 JSON 形状缺 gap_closure 字段"
+        );
+        assert!(
+            prompt.contains("verdict 不得为 PASS"),
+            "验收提示词缺清账 PASS 闸表述"
         );
     }
 }

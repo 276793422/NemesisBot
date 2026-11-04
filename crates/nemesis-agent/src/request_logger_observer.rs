@@ -185,7 +185,17 @@ impl RequestLoggerObserver {
         timestamp: chrono::DateTime<Local>,
         data: &ConversationStartData,
     ) {
-        let logger = RequestLogger::new(self.config.clone(), &self.workspace);
+        // 压缩/摘要杂务调用（sender_id="summarizer"，compact.rs
+        // emit_observer_events_around_llm 发出的 observer 事件）此前照常落成
+        // `{timestamp}_{rand}` 对话目录——消息与回复皆空、时长秒级，看着像
+        // 「bot 在跟谁说话」（2026-11-03 BUG-3 实录：4 个空 summarizer 目录
+        // 混进对话档案）。识别该身份改落 aux_ 前缀目录（杂务隔离，一眼可辨；
+        // 内容照常记录不丢证据）。
+        let logger = if data.sender_id == "summarizer" {
+            RequestLogger::new_with_session_prefix(self.config.clone(), &self.workspace, "aux")
+        } else {
+            RequestLogger::new(self.config.clone(), &self.workspace)
+        };
         if !logger.is_enabled() {
             return;
         }

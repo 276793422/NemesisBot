@@ -27,6 +27,32 @@ pub struct Task {
     pub completed_at: Option<String>,
 }
 
+/// L13-b（2026-11-03 三期）：mandate 执行期守卫投影。B 端（PeerChatHandler）
+/// 验签通过后从 mandate body 派生（剥掉签名/时间戳，只留执行期约束），随
+/// ClusterTask 进执行面。类型放 nemesis-types 而非 nemesis-cluster：
+/// nemesis-agent 不能依赖 nemesis-cluster（工具面 crate 依赖纪律），单类型
+/// 免映射共享。serde default 全字段——旧任务记录/async state 回读兼容。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MandateEnforcement {
+    /// 本 mandate 绑定的任务 id（绑定校验通过后的镜像；防移植双保险的
+    /// 执行期一致性锚）。
+    #[serde(default)]
+    pub task_id: String,
+    /// 工具白名单：`None` = 不限；`Some(空)` = 零授权（一切工具调用拒绝）；
+    /// `Some(list)` = 精确名单（v1 无通配符，`mcp_*` 形态不做）。
+    #[serde(default)]
+    pub tool_allowlist: Option<Vec<String>>,
+    /// 到期时刻（unix secs；0 = 不限）。执行中轮顶检超时 = 任务终局。
+    #[serde(default)]
+    pub expires_at: u64,
+    /// token 预算上限（session ledger delta 口径；0 = 不限）。耗尽 = 任务终局。
+    #[serde(default)]
+    pub max_tokens: u64,
+    /// 工具调用次数上限（0 = 不限）。超限 = 拒该次调用 + 违规计数。
+    #[serde(default)]
+    pub max_tool_calls: u64,
+}
+
 /// Node information in the cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {

@@ -336,13 +336,19 @@ fn get_blocklist() -> &'static BlockList {
             // 形态必须命中（复核 2026-09-16：`(^|\s)` 前缀把旧版 `\b` 能拦
             // 的 `cd /tmp;rm -rf ~` 族全部放跑——拦截回归）。
             ("rm_rf", r"(?i)\brm\s+(\S+\s+)*-{1,2}[a-z]*[rf][a-z]*(\s|$)"),
-            // del_force：/s（递归）/f（强制）/q（安静）与组合（/sf）。
-            ("del_force", r"(?i)\bdel(\.exe)?\s+/[a-z]*[sfq]"),
+            // del_force：/s（递归）/f（强制）/q（安静）与组合（/sf）；
+            // flag 后置形态（`del file /f`，cmd.exe 合法）用 rm_rf 同款
+            // `(\S+\s+)*` 中间组覆盖（BUG-20261104-373 横向；同文件内
+            // robocopy_mir 早已是任意位置形态）。
+            ("del_force", r"(?i)\bdel(\.exe)?\s+(\S+\s+)*/[a-z]*[sfq]"),
             // remove_item_recurse：PowerShell 的 rm -rf 等价物——
             // `Remove-Item -Recurse`（可 `-Force` 组合）。
             ("remove_item_recurse", r"(?i)\bremove-item\s+.*-recurse"),
-            ("rd_s", r"(?i)\brd(\.exe)?\s+/[a-z]*[sfq]"),
-            ("erase_recursive", r"(?i)\berase(\.exe)?\s+/[a-z]*[sfq]"),
+            ("rd_s", r"(?i)\brd(\.exe)?\s+(\S+\s+)*/[a-z]*[sfq]"),
+            (
+                "erase_recursive",
+                r"(?i)\berase(\.exe)?\s+(\S+\s+)*/[a-z]*[sfq]",
+            ),
             // format：只拦带盘符/设备目标的形态——裸 `\bformat\b` 会误伤
             // `git format-patch`、`npm run format`、`dotnet format`。
             ("format", r"(?i)(\bformat\s+[a-z]:|\bmkfs)"),
@@ -350,7 +356,9 @@ fn get_blocklist() -> &'static BlockList {
             ("shutdown", r"(?i)\b(shutdown|reboot|poweroff|halt)\b"),
             ("wipefs", r"(?i)\bwipefs\b"),
             ("shred", r"(?i)\bshred\b"),
-            ("truncate", r"(?i)\btruncate\s+-s\s+0\b"),
+            // truncate：`-s0` 紧凑值与 `-s 0` 同义（GNU getopt），`\s*` 覆盖
+            // 两者（BUG-20261104-373 横向）。
+            ("truncate", r"(?i)\btruncate\s+-s\s*0\b"),
             ("srm", r"(?i)\bsrm\b"),
             // catastrophic_pipe：classic 冒号炸弹（`:(){ :|:& };:`）——
             // 旧正则要求 `;` 在 `}` 前而 canonical 形态 `;` 在后，恒打不中
@@ -371,11 +379,19 @@ fn get_blocklist() -> &'static BlockList {
             // Process killing (4)
             ("pkill", r"(?i)\bpkill\b"),
             ("killall", r"(?i)\bkillall\b"),
-            ("kill_9", r"(?i)\bkill\s+-9\b"),
+            // kill_9：`-s 9`/`-s sigkill` 与 `-9` 等价（含 `-s9` 紧凑），
+            // 等价写法一并拦（BUG-20261104-373 横向）。
+            ("kill_9", r"(?i)\bkill\s+(-9\b|-s\s*(9|sigkill)\b)"),
             ("taskkill", r"(?i)\btaskkill\b"),
             // Network recon (4)
             ("nmap", r"(?i)\bnmap\b"),
-            ("netcat_bind", r"(?i)\bnc\s+.*-\b[l]\b"),
+            // netcat_bind：listen flag 组合形态（`-lvp`/`-lnp`/`-vl`）与
+            // chmod_recursive 同族——旧 `-\b[l]\b` 要求 l 独立成词，组合
+            // flag 里 l 后跟其他字母无词边界恒打不中，bind shell 组合形态
+            // 全部漏网（BUG-20261104-373）。误伤面：`nc --help`/`-help`
+            // 等含 l 的 flag 串会命中——安全条目误拦走审批出路（与
+            // chmod_recursive 对 --reference 同取向）。
+            ("netcat_bind", r"(?i)\bnc\s+.*-[a-z]*l"),
             ("tcpdump", r"(?i)\btcpdump\b"),
             ("wireshark", r"(?i)\b(tshark|wireshark)\b"),
             // Remote execution (4)

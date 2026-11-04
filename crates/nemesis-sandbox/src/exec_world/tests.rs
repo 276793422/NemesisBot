@@ -145,6 +145,42 @@ fn sanitize_env_strips_executor_internals_and_applies_overrides() {
     assert_eq!(out.get("MY_FLAG").map(String::as_str), Some("1"));
 }
 
+/// BUG-20261104-388：运输层 env 表完整性——全部 12 个 spawn 侧注入的
+/// executor/eval 角色标记键必须在表内（漏键 = workflow 直 spawn 车道成为
+/// CLI 嵌套劫持的传播面）。表键逐字面量钉死：新增运输层 env 不入表这条
+/// 测试红出来兜底；`NEMESISBOT_HOME` 等用户配置语义键**必须不在**表内
+/// （剥掉会改变脚本里 CLI 的 home 解析行为，与用户 shell 分叉）。
+#[test]
+fn executor_internal_env_table_is_complete() {
+    use super::EXECUTOR_INTERNAL_ENV;
+    for key in [
+        "NEMESISBOT_ROLE",
+        "NEMESISBOT_EXECUTOR_WORKSPACE",
+        "NEMESISBOT_EXECUTOR_PIPE",
+        "NEMESISBOT_EXECUTOR_SANDBOX",
+        "NEMESISBOT_EXECUTOR_HOME",
+        "NEMESISBOT_EXECUTOR_RESTRICT",
+        "NEMESISBOT_EXECUTOR_REEXEC",
+        "NEMESISBOT_EXECUTOR_EXTRA_ROOTS",
+        "NEMESISBOT_EXECUTOR_AGENT_ID",
+        "NEMESISBOT_LEASE",
+        "NEMESISBOT_SANDBOX_BACKEND",
+        "NEMESISBOT_CONSOLE",
+    ] {
+        assert!(
+            EXECUTOR_INTERNAL_ENV.contains(&key),
+            "运输层 env {key} 缺席 EXECUTOR_INTERNAL_ENV——直 spawn 车道剥不掉它"
+        );
+    }
+    // 非运输层键不得误剥。
+    for keep in ["NEMESISBOT_HOME", "PATH", "NEMESISBOT_BARE_CHILD"] {
+        assert!(
+            !EXECUTOR_INTERNAL_ENV.contains(&keep),
+            "{keep} 是用户配置/网关自身语义，不属于运输层剥除面"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // guarded_direct_spawn（真子进程；平台无关的 echo/exit）
 // ---------------------------------------------------------------------------
@@ -396,5 +432,60 @@ async fn spawn_pipes_stdin_to_child() {
         out.stdout.trim().contains("needle-line"),
         "子进程必须真读到 stdin: stdout={}",
         out.stdout
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261103-337 同族回归锁：超管道缓冲的 stdin 载荷 + 不读 stdin 的
+// 子进程——stdin 写不得绕过超时保护。修复前 inline write_all 先阻塞
+// （64MB >> 任何管道/内核缓冲；Windows 实测 1MB 会被内核缓冲吃掉写不
+// 阻塞——红证载荷必须远超缓冲），子进程 ~5s 内不消费 stdin 也不退出，
+// timeout 只包 wait_with_output 管不到写侧 → 整段卡到子进程自然退出且
+// timed_out=false（写侧断管错误后 wait 正常返回，超时形态丢失）。修复后
+// （BUG-20261102-312 同款：stdin 写放独立任务）timeout 按预算 ~2s 返回
+// timed_out=true。
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn stdin_ignore_sleeper() -> SpawnOp {
+    SpawnOp {
+        program: "sh".into(),
+        args: vec!["-c".into(), "sleep 5".into()],
+        cwd: None,
+        stdin: Some("x".repeat(64 * 1024 * 1024)),
+        timeout_secs: Some(2),
+    }
+}
+#[cfg(windows)]
+fn stdin_ignore_sleeper() -> SpawnOp {
+    SpawnOp {
+        program: "cmd".into(),
+        args: vec!["/C".into(), "ping -n 5 127.0.0.1 >nul".into()],
+        cwd: None,
+        stdin: Some("x".repeat(64 * 1024 * 1024)),
+        timeout_secs: Some(2),
+    }
+}
+
+#[tokio::test]
+async fn spawn_stdin_write_honors_timeout_budget() {
+    let root = tmp();
+    let start = std::time::Instant::now();
+    let out = guarded_direct_spawn(&stdin_ignore_sleeper(), &[root])
+        .await
+        .expect("timeout is an outcome, not Err");
+    let elapsed = start.elapsed();
+    // 预算 2s，子进程寿命 ~5s：写侧受预算 → 必须按 timed_out 收场，且
+    // 墙钟远小于子进程寿命（放宽到 10s 容 CI 慢机 spawn 抖动；修复前
+    // 形态 = 卡满 ~5s 且 timed_out=false，两个断言都抓得住）。
+    assert!(
+        out.timed_out,
+        "expected timed_out, got exit={:?} stderr={}",
+        out.exit_code, out.stderr
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "stdin 写未受超时预算保护：墙钟 {:?}（= 卡到子进程自然退出的修复前形态）",
+        elapsed
     );
 }

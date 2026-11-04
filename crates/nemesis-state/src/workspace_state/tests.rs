@@ -693,3 +693,46 @@ fn test_workspace_state_partial_serialization() {
     assert_eq!(parsed.last_channel, "web:partial");
     assert_eq!(parsed.last_chat_id, "");
 }
+
+// ==================== BUG-20261103-335 回归锁 ====================
+//
+// 旧形态：set_last_channel 在写锁内变异后释放，save_atomic 重新取读锁
+// 快照再落盘——「快照→rename」对无闸。主 loop max_concurrent_turns 生产
+// 默认 8（并发 turn 各自 record_last_channel，turn.rs 每 turn 开头调用），
+// 两写并发时旧快照的 rename 可晚于新快照落盘（last-rename-wins = 磁盘丢
+// 更新）：内存态正确、state.json 回退，重启后设备通知 last-channel 路由
+// 读陈旧值（BUG-20261030-213 同族——session 侧已修 save_gate，本位点当年
+// 横向扫漏）。修复 = 变异+快照+落盘全程同一把写锁（状态文件极小，持锁
+// persist 的争用代价可忽略）。测试钩子（一次性停顿）确定性制造交错窗口。
+
+#[test]
+fn concurrent_set_last_channel_last_snapshot_wins_on_disk() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().to_path_buf();
+    // new() 已返回 Arc<Self>，线程间直接克隆。
+    let mgr = WorkspaceStateManager::new(&path);
+
+    // T1 变异 "web:a"，在其快照后、落盘前注入一次性停顿（80ms 窗口）。
+    mgr.test_arm_save_delay_ms(80);
+    let h1 = {
+        let mgr = Arc::clone(&mgr);
+        std::thread::spawn(move || mgr.set_last_channel("web:a").unwrap())
+    };
+    // 等 T1 进入停顿窗口（"web:a" 已快照、未落盘）。
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    // T2 变异 "web:b" 并完整落盘（钩子已被 T1 消费，无停顿）。
+    let h2 = {
+        let mgr = Arc::clone(&mgr);
+        std::thread::spawn(move || mgr.set_last_channel("web:b").unwrap())
+    };
+    h1.join().unwrap();
+    h2.join().unwrap();
+
+    // 重启形态重读（新实例从磁盘装载）：磁盘必须是最后完成的 "web:b"。
+    let mgr2 = WorkspaceStateManager::new(&path);
+    assert_eq!(
+        mgr2.get_last_channel(),
+        "web:b",
+        "BUG-20261103-335: 并发保存不得让旧快照的 rename 晚落覆盖新值（重启后 last_channel 回退）"
+    );
+}

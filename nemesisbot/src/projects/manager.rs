@@ -31,8 +31,9 @@ mod tests;
 
 /// 一条入站消息的去向。三值与 impl plan M2 的桥过滤语义一一对应：
 /// - `System`：`channel=="system"` 的系统消息（cluster_continuation /
-///   subagent_continuation / heartbeat 等内部回灌）——项目调度丢弃，主桥
-///   照常消费（系统语义只属于主 loop）。
+///   heartbeat 等内部回灌）——项目调度丢弃，主桥照常消费（系统语义只属于
+///   主 loop）。**例外**：后台子代理完成回灌（[`owned_subagent_continuation`]）
+///   带 parent session_key，按归属路由回派发它的 loop（D7，2026-11-03）。
 /// - `ToProject(pid)`：归属索引命中——项目调度转发到对应项目 loop，主桥 skip。
 /// - `ToMain`：无归属（对话组会话 / 纯新会话）——主桥放行，项目调度丢弃。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,9 +43,29 @@ pub enum RouteDecision {
     System,
 }
 
+/// 子代理可见性（D7）：后台子代理完成回灌识别——`system` 通道 +
+/// `SUBAGENT_CONTINUATION_PREFIX` sender + parent session_key 非空。这类
+/// 消息不走「system 只归主 loop」的老语义：后台子代理由哪个 loop 派发
+/// （session_key 即派发会话），完成消息就路由回哪个 loop（该 loop 的
+/// continuation manager 持有快照，只有它能 dispatch_continuation）。
+pub fn owned_subagent_continuation(msg: &InboundMessage) -> bool {
+    msg.channel == "system"
+        && msg
+            .sender_id
+            .starts_with(nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX)
+        && !msg.session_key.is_empty()
+}
+
 /// 桥过滤纯函数：`owner` 是归属索引对该消息 session_key 的查询结果
 /// （None = 无绑定）。可穷举测试（G2 门）。
 pub fn route_decision(msg: &InboundMessage, owner: Option<&str>) -> RouteDecision {
+    // D7：子代理完成回灌先于 System 臂——按 parent 会话归属路由。
+    if owned_subagent_continuation(msg) {
+        return match owner {
+            Some(pid) => RouteDecision::ToProject(pid.to_string()),
+            None => RouteDecision::ToMain,
+        };
+    }
     if msg.channel == "system" {
         return RouteDecision::System;
     }
@@ -383,8 +404,9 @@ impl ProjectLoopManager {
     /// 丢弃非项目消息」这一对互补过滤实现。
     ///
     /// 桥内语义（`route_one`）：`channel=="system"` 与无归属消息丢弃
-    /// （主 loop 已消费）；归属命中转发进对应项目 mpsc；归属命中但目标
-    /// 不可用（inactive/已移除/loop 刚停）→ 回诚实出站错误，不静默丢。
+    /// （主 loop 已消费；例外 = 子代理完成回灌按归属路由，D7）；归属命中
+    /// 转发进对应项目 mpsc；归属命中但目标不可用（inactive/已移除/loop
+    /// 刚停）→ 回诚实出站错误，不静默丢。
     pub fn start_routing(self: &Arc<Self>) {
         if self.routing_started.swap(true, Ordering::SeqCst) {
             return;
@@ -414,8 +436,10 @@ impl ProjectLoopManager {
     pub(crate) async fn route_one(&self, msg: &InboundMessage) {
         // system 永不进项目 loop（热路径短路，与 route_decision 首臂一致
         // ——cluster_continuation 等系统回灌即使 session_key 带项目归属也
-        // 只归主 loop 消费）。
-        if msg.channel == "system" {
+        // 只归主 loop 消费）。例外（D7）：后台子代理完成回灌按 parent
+        // 会话归属路由——项目 loop 派发的子代理，快照在该 loop 的
+        // continuation manager 里，只有它能续行。
+        if msg.channel == "system" && !owned_subagent_continuation(msg) {
             return;
         }
         let owner = self.owner_of(&msg.session_key);
@@ -641,9 +665,11 @@ impl ProjectLoopManager {
     /// 主桥 skip 谓词（装配进 `AgentLoopServiceAdapter`）：只有
     /// `route_decision` 判 ToProject 的消息才跳过主 loop——system 永不
     /// 跳过（系统回灌语义只属于主 loop），无归属消息照常进主 loop。
+    /// 例外（D7）：归属命中的子代理完成回灌跳过主 loop（由项目 loop 消费）。
     pub(crate) fn bridge_should_skip(&self, msg: &InboundMessage) -> bool {
-        // 热路径短路（与 route_decision 首臂一致，省一次 owner 查询/兜底读）。
-        if msg.channel == "system" {
+        // 热路径短路（与 route_decision 首臂一致，省一次 owner 查询/兜底读）；
+        // 子代理回灌例外放行到 route_decision 裁决。
+        if msg.channel == "system" && !owned_subagent_continuation(msg) {
             return false;
         }
         matches!(

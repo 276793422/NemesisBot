@@ -66,6 +66,10 @@ mod board_evidence_tool;
 /// execute_plan_chain 四入口单一真相源）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_issue_tool;
+/// AOR 批三 5.3：重规划器编排（四类触发点挂接 + LLM 起草 + assisted
+/// 审批/autonomous 策略闸执行；建议≠授权；纯逻辑层在 nemesis_board::replan）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_replan;
 /// Swarm M4：验收 agent 编排（in_review 批作业三态处置；触发挂
 /// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -684,6 +688,20 @@ fn main() -> Result<()> {
     result
 }
 
+/// BUG-20261104-388：角色短路条件 = env 标记 **且无 CLI args**。
+///
+/// gateway/eval spawn 的角色子进程无子命令（"spawned with no subcommand"
+/// 前提），而 CLI 嵌套（executor/eval 盒内工具再 spawn `nemesisbot <sub>`）
+/// 会从父进程继承污染的 NEMESISBOT_ROLE env——只认 env 会把用户 CLI 调用
+/// 劫持进角色 worker（静默等协议输入或连失效管道，子命令从未执行）。带
+/// 子命令 = 正常 CLI，不短路。该条件是最后一道结构防线：spawn 侧 env 剥
+/// 除（env_sanitize 闸 / exec_world 表）都靠家族清点维护，漏一个点或用户
+/// 关闸（`security.sanitize_child_env=false`）即破；args 条件在入口处
+/// 一次性堵死全部形态。
+fn executor_role_short_circuit(role: &str) -> bool {
+    std::env::args().nth(1).is_none() && std::env::var("NEMESISBOT_ROLE").as_deref() == Ok(role)
+}
+
 #[cfg(not(target_os = "macos"))]
 async fn async_main() -> Result<()> {
     // Executor role short-circuit: if spawned as a tool-executor child (env
@@ -692,7 +710,8 @@ async fn async_main() -> Result<()> {
     // dispatch. Must precede Cli::parse_from — the child is spawned with no
     // subcommand. The early return also prevents any fork loop: the child never
     // reaches the gateway code that spawns executors.
-    if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("executor") {
+    // BUG-20261104-388：短路同时要求无 CLI args——见 helper 文档。
+    if executor_role_short_circuit("executor") {
         return exec_worker::run().await;
     }
 
@@ -701,7 +720,7 @@ async fn async_main() -> Result<()> {
     // no CLI parsing, workspace comes from env, never runs path resolution.
     #[cfg(feature = "eval")]
     {
-        if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("eval-agent") {
+        if executor_role_short_circuit("eval-agent") {
             common::ensure_default_logger();
             return eval_worker::run().await;
         }
@@ -831,7 +850,8 @@ fn main() -> Result<()> {
     // Executor role short-circuit (see the non-mac entry for rationale). macOS
     // main is sync, so drive the async executor entrypoint on a current-thread
     // runtime. The executor never needs the main-thread tray handoff.
-    if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("executor") {
+    // BUG-20261104-388：短路同时要求无 CLI args（helper 文档）。
+    if executor_role_short_circuit("executor") {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -846,7 +866,7 @@ fn main() -> Result<()> {
     // Eval-agent role short-circuit (see the non-mac entry for rationale).
     #[cfg(feature = "eval")]
     {
-        if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("eval-agent") {
+        if executor_role_short_circuit("eval-agent") {
             common::ensure_default_logger();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

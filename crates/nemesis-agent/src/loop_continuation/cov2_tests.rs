@@ -217,6 +217,7 @@ async fn claim_failure_early_returns_without_processing() {
         &NeverProvider,
         "test-model",
         4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

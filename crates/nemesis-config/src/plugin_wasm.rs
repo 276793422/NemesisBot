@@ -110,7 +110,11 @@ pub fn runtime_enabled(workspace_root: &Path) -> bool {
         .parent()
         .map(|home| home.join("config.json"))
         .unwrap_or_else(|| workspace_root.join("config.json"));
-    if let Ok(raw) = std::fs::read_to_string(&config_json)
+    // BUG-20261103-334：走 read_config_string 剥 BOM（记事本保存的
+    // config.json）——旧形态裸 read_to_string 时 BOM → serde_json parse
+    // 失败 → 本源按缺省 true 跳过，用户 `plugins.wasm.enabled=false` 被静默
+    // 忽略。与 197/246 行同源纪律。
+    if let Ok(raw) = nemesis_utils::fsutil::read_config_string(&config_json)
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw)
     {
         let on = v

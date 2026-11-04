@@ -268,7 +268,7 @@ fn test_cleanup_completed_removes_old_tasks() {
     // the store interface, so we test the logic indirectly)
     // The cleanup function checks completed_at. Since we just created it,
     // it won't be cleaned up.
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
 
     // Task should still exist (completed_at is recent)
     assert!(store.get("old-completed").is_ok());
@@ -316,7 +316,7 @@ fn test_cleanup_pending_timeout() {
     };
     store.create(recent_task).unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout());
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
 
     // Old pending should be failed
     let old = store.get("old-pending").unwrap();
@@ -328,6 +328,50 @@ fn test_cleanup_pending_timeout() {
 
     // Callback should have been called once
     assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_cleanup_h4_timeout_records_route_failure() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+
+    let captured: Arc<parking_lot::Mutex<Vec<(String, bool)>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let captured_clone = Arc::clone(&captured);
+    let route_record: Option<Arc<RouteRecordCallback>> =
+        Some(Arc::new(move |task_id: &str, ok: bool| {
+            captured_clone.lock().push((task_id.to_string(), ok));
+        }));
+
+    // Running 卡死任务：恢复 sweep 只扫 Pending，H4 是唯一回收路径——
+    // 不补记账则「领了任务挂死」的坏节点信号永久丢失。
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    store
+        .create(Task {
+            id: "h4-running-stuck".to_string(),
+            status: TaskStatus::Running,
+            action: "peer_chat".to_string(),
+            peer_id: "worker-h4".to_string(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: "rpc".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_time,
+            completed_at: None,
+        })
+        .unwrap();
+
+    cleanup_completed(&store, &None, &test_pending_timeout(), &route_record);
+
+    let stuck = store.get("h4-running-stuck").unwrap();
+    assert_eq!(stuck.status, TaskStatus::Failed);
+    let got = captured.lock();
+    assert_eq!(got.len(), 1, "H4 判死必须补记账一次: {:?}", *got);
+    assert_eq!(got[0], ("h4-running-stuck".to_string(), false));
+    drop(got);
+
+    // 二次清理：已终态任务不再判死、不重复记账
+    cleanup_completed(&store, &None, &test_pending_timeout(), &route_record);
+    assert_eq!(captured.lock().len(), 1);
 }
 
 #[test]
@@ -659,7 +703,7 @@ fn test_cleanup_completed_removes_cancelled_tasks() {
         .unwrap();
 
     // Since just created, should not be cleaned up
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
     assert!(store.get("cancelled-task").is_ok());
 }
 
@@ -683,7 +727,7 @@ fn test_cleanup_completed_with_invalid_created_at() {
     store.create(task).unwrap();
 
     // Should not panic with invalid date
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
     assert!(store.get("bad-date").is_ok());
 }
 
@@ -713,7 +757,7 @@ fn test_cleanup_completed_with_invalid_completed_at() {
         .unwrap();
 
     // Should not panic
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
 }
 
 #[test]
@@ -810,7 +854,7 @@ fn test_cleanup_completed_removes_old_completed_tasks() {
     assert!(store.get("old-completed-v2").is_ok());
     assert!(store.get("old-failed-v2").is_ok());
 
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
 
     // Both should be deleted (older than 2 hours)
     assert!(store.get("old-completed-v2").is_err());
@@ -837,7 +881,7 @@ fn test_cleanup_completed_keeps_recent_completed_tasks() {
     };
     store.create(recent_task).unwrap();
 
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
 
     // Should still exist (completed only 5 min ago)
     let t = store.get("recent-completed").unwrap();
@@ -885,7 +929,7 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
     };
     store.create(recent_pending).unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout());
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
 
     // Old pending task should now be Failed
     let timed_out = store.get("timed-out-task").unwrap();
@@ -983,7 +1027,7 @@ fn test_cleanup_timeout_does_not_fire_callback_on_lost_race() {
         })
         .unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout());
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
 
     // 并发 settle 的终态保持原样：status=Completed、result 是竞态胜者的
     // 结果——不得被 timeout 分支改写成 Failed，也不得重复 fire callback。
@@ -1213,7 +1257,7 @@ fn test_s4_cleanup_completed_deletes_old_completed_task() {
     };
     store.create(fresh_done).unwrap();
 
-    cleanup_completed(&store, &None, &test_pending_timeout());
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
 
     assert!(store.get("s4-old-done").is_err(), "3h-old task deleted");
     assert!(store.get("s4-fresh-done").is_ok(), "fresh task kept");
@@ -1382,7 +1426,7 @@ fn test_cleanup_running_timeout() {
         ))
         .unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout());
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
 
     let old = store.get("old-running").unwrap();
     assert_eq!(old.status, TaskStatus::Failed);

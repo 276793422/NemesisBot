@@ -342,6 +342,9 @@ test-harness = { path = "../test-tools/test-harness" }
 # 午夜清扫调度测试（midnight_tests）：真实 DST 时区（哈瓦那等午夜跳变带）
 # 驱动 secs_until_next_local_midnight 的 LocalResult::None 免疫断言。
 chrono-tz = { workspace = true }
+# L16 roaming trust 管理面测试：入参走 on-curve 校验（node_id_from_hex），
+# 测试身份必须真派生（任意 hex 会被 loud 拒）——仅测试用，不进生产依赖图。
+ed25519-dalek = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console"] }

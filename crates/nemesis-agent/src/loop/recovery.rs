@@ -14,6 +14,47 @@
 use super::prelude::*;
 use super::*;
 
+/// L29（2026-11-02 改进项三期）流中断 partial 分隔符与 tool_calls 截断标记。
+///
+/// ⚠ 分层约束：`nemesis-providers` 只是 agent 的 dev-dependency（生产依赖
+/// 图不含），跨层通道只有 Display 文本——本常量为**字面量副本**，与
+/// providers 侧 `failover::STREAM_PARTIAL_SEPARATOR` /
+/// `STREAM_TOOL_CALLS_TRUNCATED_MARK` 同文互锚（providers 侧测试钉
+/// 「Display contains 常量」，本 crate 测试钉字面量值——任一端改文本两端
+/// 测试必红）。提取只对头行（首个 `\n` 前）做标记判定，模型任意输出
+/// （partial 全文在尾段）污染不了判定。
+pub(crate) const STREAM_PARTIAL_SEPARATOR: &str = "\n\n--- 以下为中断前已生成的部分内容 ---\n";
+pub(crate) const STREAM_TOOL_CALLS_TRUNCATED_MARK: &str = "，工具调用已截断（不可拼接续写）";
+
+/// L29 流中断 partial 提取纯函数。
+///
+/// 从错误串解析 partial 与 tool_calls 截断标记：
+/// - 前缀锚 `stream interrupted from provider` 不命中 → `None`（非流中断）；
+/// - 分隔符不命中 → `None`（Display 契约破坏，保守不续写）；
+/// - 头行含 tool_calls 截断标记 → `has_tool_calls=true`（半截工具调用
+///   不可当纯文本续用——L02 纪律，调用方不拼接只重试）；
+/// - partial 全空白 → `None`（零产出无可续，等同「重试从头」旧行为）。
+pub(crate) fn extract_stream_partial(err: &str) -> Option<StreamPartial> {
+    if !err.starts_with("stream interrupted from provider") {
+        return None;
+    }
+    let (head, partial) = err.split_once(STREAM_PARTIAL_SEPARATOR)?;
+    let has_tool_calls = head.contains(STREAM_TOOL_CALLS_TRUNCATED_MARK);
+    if partial.trim().is_empty() {
+        return None;
+    }
+    Some(StreamPartial {
+        content: partial.to_string(),
+        has_tool_calls,
+    })
+}
+
+/// 提取产物（[`extract_stream_partial`]）。
+pub(crate) struct StreamPartial {
+    pub(crate) content: String,
+    pub(crate) has_tool_calls: bool,
+}
+
 impl AgentLoop {
     /// 器官 4：首呼（cancel/estop 可打断 + 超时包装）→ 失败分类进三恢复环 →
     /// post-hooks 终裁。`Ok` = 本轮响应；`Err` = 终局事件（含「已取消」/
@@ -898,6 +939,25 @@ impl AgentLoop {
         // ②A：transient 环内调用同样包超时——挂死的
         // 「真网络等待」形态不再把有限重试环变成无限挂。
         let call_timeout = self.current_provider_call_timeout_secs();
+        // L29（2026-11-02 改进项三期）：流中断拼接续写——首错为流中断且
+        // partial 可续（非空、无半截 tool_calls）且开关开（拍板默认开，
+        // `agents.stream_concat_retry` 可回退）时，每次重试请求在末尾追加
+        // assistant(partial) + user(续写提示)（L28 同族语义），成功后把
+        // partial 前拼到续写段（history/出站只见完整文本；r_msgs 是局部
+        // 变量不落 instance history，无重复 turn）。重试再撞流中断 → 新
+        // partial 覆盖（更长 = 更接近完整）。环外读取开关 + 首错解析一次。
+        let concat_enabled = self.current_stream_concat_retry();
+        let mut partial = if concat_enabled {
+            extract_stream_partial(&last_err).filter(|p| !p.has_tool_calls)
+        } else {
+            None
+        };
+        if let Some(p) = &partial {
+            info!(
+                "[AgentLoop] 流中断拼接续写：partial {} 字符作 assistant 前缀续写（agents.stream_concat_retry 开）",
+                p.content.chars().count()
+            );
+        }
         // 退避资格（2026-09-18 CI 实调）：失败耗时 <1s =
         // 上游**立即**拒绝（连接拒绝 / DNS / mock 类）——
         // sleep 无意义（门已关上，等待解决不了），立即重试；
@@ -951,7 +1011,27 @@ impl AgentLoop {
                     _ = tokio::time::sleep(backoff) => {}
                 }
             }
-            let r_msgs = self.build_messages(instance);
+            let mut r_msgs = self.build_messages(instance);
+            // L29：拼接续写——partial 作 assistant 前缀 + 续写提示（局部
+            // messages，不落 instance history；成功后前拼出完整文本）。
+            if let Some(p) = &partial {
+                r_msgs.push(LlmMessage {
+                    role: "assistant".to_string(),
+                    content: p.content.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                    images: Vec::new(),
+                });
+                r_msgs.push(LlmMessage {
+                    role: "user".to_string(),
+                    content: STREAM_CONTINUE_PROMPT.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                    images: Vec::new(),
+                });
+            }
             let r_tools = self.effective_tool_defs(instance);
             let attempt_start = std::time::Instant::now();
             match self
@@ -966,11 +1046,26 @@ impl AgentLoop {
                 .await
             {
                 Ok(resp) => {
+                    let mut resp = resp;
+                    // L29：拼接出完整文本（partial 是失败请求已产出的工作
+                    // 成果；续写段只是后半截）。usage 只记续写轮（失败请求
+                    // 的 usage 随错误丢失——诚实边界，终端计费以 providers
+                    // 上报为准）。
+                    if let Some(p) = &partial {
+                        resp.content = format!("{}{}", p.content, resp.content);
+                    }
                     maybe_resp = Some(resp);
                     break;
                 }
                 Err(e) => {
                     last_err = e;
+                    // L29：每轮以「最新错误的 partial」为准——重试再撞流
+                    // 中断 → 新 partial 覆盖（更长 = 更接近完整）；撞其他
+                    // transient（timeout 等）→ extract None → 回退从头。
+                    // 不可续形态（tc 标记）同回退。
+                    if concat_enabled {
+                        partial = extract_stream_partial(&last_err).filter(|p| !p.has_tool_calls);
+                    }
                     let failed_after = attempt_start.elapsed();
                     // 下一轮退避资格按本次实际耗时重判
                     // （立即拒绝 ↔ 真等待可能在重试间切换）。

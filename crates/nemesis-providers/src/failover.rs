@@ -2,6 +2,18 @@
 
 use thiserror::Error;
 
+/// L29（2026-11-02 改进项三期）：StreamInterrupted Display 的 partial 分隔符
+/// ——Display 字面量引用本常量（thiserror format 内联展开）。⚠ 分层约束：
+/// `nemesis-providers` 只是 agent 的 dev-dependency，agent 侧解析器持**同文
+/// 字面量副本**互锚——providers 侧测试钉「Display contains 本常量」，agent
+/// 侧测试钉副本值，任一端改文本两端测试必红。
+pub const STREAM_PARTIAL_SEPARATOR: &str = "\n\n--- 以下为中断前已生成的部分内容 ---\n";
+
+/// L29：`has_partial_tool_calls=true` 时头行追加的标记（只出现在头行——
+/// agent 侧拼接续写解析只对头行做 contains 判定，模型任意输出污染不了
+/// 判定）。与 agent 侧字面量副本互锚（同上）。
+pub const STREAM_TOOL_CALLS_TRUNCATED_MARK: &str = "，工具调用已截断（不可拼接续写）";
+
 /// Reason for provider failover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FailoverReason {
@@ -44,7 +56,10 @@ pub enum FailoverError {
     // 约束）。头行只含 reason 不含 partial——分类器对整段文本 contains 匹配
     // 会被模型生成的任意内容污染（对抗用例 A1/A2），前缀锚 + 头行根因隔离
     // 是分类诚实性的前提。
-    #[error("stream interrupted from provider {provider}/{model}: {reason}（已接收 {} 字符，中断前部分文本随错误通知保留）\n\n--- 以下为中断前已生成的部分内容 ---\n{partial_content}", .partial_content.chars().count())]
+    // L29（2026-11-02 改进项三期）：头行追加 `has_partial_tool_calls` 标记
+    //（「工具调用已截断」字样只出现在头行）——半截 tool_calls 不可当纯文本
+    // 续用的判定面经 Display 跨层（L02 仅携带字段未消费，L29 拼接续写消费）。
+    #[error("stream interrupted from provider {provider}/{model}: {reason}（已接收 {} 字符{}，中断前部分文本随错误通知保留）\n\n{STREAM_PARTIAL_SEPARATOR}{partial_content}", .partial_content.chars().count(), if *.has_partial_tool_calls { STREAM_TOOL_CALLS_TRUNCATED_MARK } else { "" })]
     StreamInterrupted {
         provider: String,
         model: String,
@@ -245,6 +260,44 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         src = s.source();
     }
     parts.join(": ")
+}
+
+/// 上游自由文案 → `FailoverError`，与真相源（`llm_error_class`）同判。
+///
+/// 流内错误事件（anthropic `error` / codex `response.failed`）与 CLI 型 lane
+/// 的 stderr/事件文案此前恒落 `Unknown`（不带 "connect error" 前缀 = 不可
+/// 重试）——上游显式瞬态文案（"quota exceeded"/"overloaded"）反而放弃
+/// fallback 轮转，比断流（Timeout 可重试）处置更差（BUG-20261103-351）。
+/// 分类命中 → 对应变体（轮转语义与同类 HTTP 状态码同判）；Format / 未收录
+/// → `Unknown`（原文案随 message 保留，不可重试兜底语义不变）。
+pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> FailoverError {
+    use nemesis_utils::llm_error_class::{LlmErrorClass, classify_llm_error};
+    match classify_llm_error(msg) {
+        // 文本层「overloaded 文案按限流对待」是既有约定（class_by_message
+        // 同判）——两者同臂归 RateLimit（可轮转 + 退避），与 HTTP 429 处置
+        // 一致。
+        Some(LlmErrorClass::RateLimit | LlmErrorClass::Overloaded) => FailoverError::RateLimit {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            retry_after: None,
+        },
+        Some(LlmErrorClass::Timeout) => FailoverError::Timeout {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        },
+        Some(LlmErrorClass::Auth) => FailoverError::Auth {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            status: 0,
+        },
+        Some(LlmErrorClass::Billing) => FailoverError::Billing {
+            provider: provider.to_string(),
+        },
+        Some(LlmErrorClass::Format) | None => FailoverError::Unknown {
+            provider: provider.to_string(),
+            message: msg.to_string(),
+        },
+    }
 }
 
 #[cfg(test)]

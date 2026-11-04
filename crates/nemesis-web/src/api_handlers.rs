@@ -902,23 +902,10 @@ fn sanitize_value(value: &mut serde_json::Value) {
 
 /// Verify auth token from query or header.
 ///
-/// F6（2026-10-14）：比较换手写 XOR 折叠常数时间形态（不引 `subtle`
-/// 依赖；理论时序侧信道现实门槛高，纵深防御）。空期望=放行是文档化
-/// 约定（旧配置合法形态；新装已由 onboard 落引导令牌 + 回环绑定，
-/// 空 token 家族的消灭归 F1 方案 3，不在此处改语义）。
-pub fn verify_token(token: &str, expected: &str) -> bool {
-    if expected.is_empty() {
-        return true;
-    }
-    if token.len() != expected.len() {
-        return false;
-    }
-    token
-        .bytes()
-        .zip(expected.bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
-}
+/// 实现已下沉 nemesis-utils 单一真相源（BUG-20261104-368：nemesis-channels
+/// websocket 升级闸需跨 crate 消费同一恒时比较；F6 XOR 折叠形态不变）。
+/// 此处 re-export 保持 `crate::api_handlers::verify_token` 路径兼容。
+pub use nemesis_utils::verify::verify_token;
 
 /// Write a JSON response body from a serializable value.
 /// Returns the serialized JSON bytes suitable for HTTP response bodies.
@@ -1037,7 +1024,7 @@ pub async fn handle_api_internal(
             let Some(manager) = nemesis_ziwei::session::global() else {
                 return Ok(Json(serde_json::json!({
                     "status": "error",
-                    "error": "紫微会话管理器未装配（config ziwei.enabled=false）",
+                    "error": nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG,
                 })));
             };
             // 四命令都在此终结——直接 return 内层 match 的结果（外层 match

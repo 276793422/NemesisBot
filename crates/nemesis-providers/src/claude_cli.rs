@@ -2,7 +2,7 @@
 
 use crate::failover::FailoverError;
 use crate::router::LLMProvider;
-use crate::tool_call_extract::{extract_tool_calls_from_text, strip_tool_calls_from_text};
+use crate::tool_call_extract::{extract_tool_calls_in_whitelist, strip_tool_calls_from_text};
 use crate::types::*;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -152,7 +152,11 @@ impl ClaudeCliProvider {
     }
 
     /// Parse the JSON output from the claude CLI.
-    fn parse_response(&self, output: &str) -> Result<LLMResponse, FailoverError> {
+    fn parse_response(
+        &self,
+        output: &str,
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse, FailoverError> {
         let resp: ClaudeCliResponse =
             serde_json::from_str(output).map_err(|e| FailoverError::Format {
                 provider: "claude-cli".to_string(),
@@ -166,7 +170,12 @@ impl ClaudeCliProvider {
             });
         }
 
-        let tool_calls = extract_tool_calls_from_text(&resp.result);
+        // 白名单过滤（BUG-20261103-338，BUG-20261025-16 同款不变量）：提取器
+        // 对 `{"tool_calls"` 文本零校验，文档性 JSON 会被劫持成幻影工具调用
+        // + finish 强改 "tool_calls" + 正文剥离（用户要看的示例被静默删掉）。
+        // 恢出的名字必须命中本请求的 tools 白名单；全滤空 = 维持原 finish
+        // 与原文，宁可不修复不可误修复。
+        let tool_calls = extract_tool_calls_in_whitelist(&resp.result, tools);
         let finish_reason = if !tool_calls.is_empty() {
             "tool_calls"
         } else {
@@ -272,10 +281,14 @@ impl LLMProvider for ClaudeCliProvider {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
-                return Err(FailoverError::Unknown {
-                    provider: "claude-cli".to_string(),
-                    message: format!("claude cli error: {}", stderr),
-                });
+                // stderr 是 CLI 对上游/API 错误的透传主通道——交真相源分类
+                //（瞬态文案可轮转；BUG-20261103-351），分类不出维持 Unknown
+                // 兜底。
+                return Err(crate::failover::classify_message_error(
+                    "claude-cli",
+                    model,
+                    &format!("claude cli error: {stderr}"),
+                ));
             }
             return Err(FailoverError::Unknown {
                 provider: "claude-cli".to_string(),
@@ -284,7 +297,7 @@ impl LLMProvider for ClaudeCliProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        self.parse_response(&stdout)
+        self.parse_response(&stdout, tools)
     }
 
     fn default_model(&self) -> &str {

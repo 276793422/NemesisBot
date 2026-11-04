@@ -212,6 +212,7 @@ async fn run_continuation(
         provider,
         "test-model",
         CAP,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
         tools,
         &outbound_tx,
         None,
@@ -267,11 +268,10 @@ async fn empty_truncated_content_stops_after_two_rounds() {
         truncated_empty_resp(CAP),
         truncated_empty_resp(CAP), // 第三轮不该被消费
     ]);
-    let mut outbound_rx = run_continuation(
-        &provider,
-        &HashMap::<String, Arc<dyn crate::r#loop::Tool>>::new(),
-    )
-    .await;
+    // ceiling 钉在 cap（4096）= 阶梯被 ceiling 闸死不升档，测试专注空内容
+    // 守卫本体（L28 语义基线；阶梯行为有专项测试）。
+    let mut outbound_rx =
+        run_continuation_with_ceiling(&provider, &HashMap::new(), CAP as u64).await;
 
     assert_eq!(
         provider.call_count(),
@@ -293,11 +293,10 @@ async fn budget_exhaustion_emits_truncation_notice() {
         .map(|i| truncated_content_resp(&format!("seg{i}"), CAP))
         .collect();
     let provider = ScriptedProvider::new(responses);
-    let mut outbound_rx = run_continuation(
-        &provider,
-        &HashMap::<String, Arc<dyn crate::r#loop::Tool>>::new(),
-    )
-    .await;
+    // ceiling 钉在 cap = 不升档（20 轮恒 4096 截断语义基线；升档行为有
+    // 专项测试 continuation_escalates_cap_on_repeated_truncation_two_step_cap）。
+    let mut outbound_rx =
+        run_continuation_with_ceiling(&provider, &HashMap::new(), CAP as u64).await;
 
     assert_eq!(provider.call_count(), 20, "续写轮消耗同一 1..=20 预算");
     let out = outbound_rx.try_recv().expect("notice sent");
@@ -354,4 +353,99 @@ async fn truncated_tool_calls_are_dropped_not_executed() {
 
     let out = outbound_rx.try_recv().expect("final response sent");
     assert_eq!(out.content, "done after drop");
+}
+
+// ---------------------------------------------------------------------------
+// L28+（改进项三期）：续写再撞顶翻倍阶梯（拍板 2 档封顶）
+// ---------------------------------------------------------------------------
+
+/// run_continuation 的自定义 ceiling 版（阶梯封顶测试需要不同 ceiling 值）。
+async fn run_continuation_with_ceiling(
+    provider: &ScriptedProvider,
+    tools: &HashMap<String, Arc<dyn crate::r#loop::Tool>>,
+    ceiling: u64,
+) -> tokio::sync::mpsc::Receiver<nemesis_types::channel::OutboundMessage> {
+    let manager = ContinuationManager::new();
+    let task = format!("l28plus_{}", std::process::id());
+    manager
+        .save_continuation(
+            &task,
+            vec![make_message("user", "do work")],
+            "tc_0",
+            "web",
+            "chat-l28p",
+            "",
+            "",
+        )
+        .await;
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
+    handle_cluster_continuation(
+        &manager,
+        &task,
+        "task result",
+        false,
+        None,
+        provider,
+        "test-model",
+        CAP,
+        ceiling,
+        tools,
+        &outbound_tx,
+        None,
+        None,
+        true,
+        None,
+    )
+    .await;
+    outbound_rx
+}
+
+/// 截断响应（usage 恰好命中指定 cap——升档后判定锚随档位走）。
+fn truncated_at(content: &str, cap: u64) -> LlmResponse {
+    truncated_content_resp(content, cap as u32)
+}
+
+/// 阶梯行为（拍板 2 档封顶 + 公式对齐主循环 `(c×2).max(32K 地板)`）：
+/// 4096 撞顶 → 首升档直接跳 32K（地板抬升）→ 32K 再撞顶 → 次升档 65K
+/// → 65K 档完整回复终局。断言：三轮调用 + 末轮 messages 首轮 + 两对
+/// 续写追加 + 出站为完整回复。
+#[tokio::test]
+async fn continuation_escalates_cap_on_repeated_truncation_two_step_cap() {
+    let _logs = capture_logs();
+    let provider = ScriptedProvider::new(vec![
+        truncated_at("seg at 4096", 4096),
+        truncated_at(
+            "seg at 32768",
+            crate::r#loop::length_escalation::ESCALATION_FLOOR,
+        ),
+        full_resp("final after escalation"),
+    ]);
+    let mut outbound_rx = run_continuation_with_ceiling(&provider, &HashMap::new(), 262_144).await;
+
+    assert_eq!(provider.call_count(), 3, "两次截断 + 一次终答");
+    let out = outbound_rx.try_recv().expect("final response sent");
+    assert_eq!(out.content, "final after escalation");
+    // 第三轮（65K 档）messages = 首轮 + 两对续写追加。
+    let first = provider.call_messages(0);
+    let third = provider.call_messages(2);
+    assert_eq!(third.len(), first.len() + 4);
+}
+
+/// ceiling 闸：cap 4096、ceiling 20000——首升档 (4096*2).max(32K)=32768 超
+/// ceiling → 不升档，维持 4096 续写到底（iteration 预算兜底）。
+#[tokio::test]
+async fn continuation_escalation_respects_ceiling() {
+    let _logs = capture_logs();
+    let provider = ScriptedProvider::new(vec![
+        truncated_at("seg1", 4096),
+        truncated_at("seg2", 4096),
+        full_resp("done within old cap"),
+    ]);
+    let mut outbound_rx = run_continuation_with_ceiling(&provider, &HashMap::new(), 20_000).await;
+
+    // ceiling 20000 < 首升档 32768 → 全程不升档，行为与 L28 基线一致：
+    // 三轮调用（截断→截断→终答）。
+    assert_eq!(provider.call_count(), 3);
+    let out = outbound_rx.try_recv().expect("final response sent");
+    assert_eq!(out.content, "done within old cap");
 }

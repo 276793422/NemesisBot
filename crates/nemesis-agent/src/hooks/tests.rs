@@ -101,6 +101,8 @@ fn hook_call() -> HookToolCall {
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
         session_key: "session1".to_string(),
+        dispatch_started: None,
+        call_id: None,
     }
 }
 

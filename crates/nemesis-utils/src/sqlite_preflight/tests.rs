@@ -145,3 +145,119 @@ fn wal_lenient_read_only_conn_no_panic() {
         .unwrap();
     assert_ne!(mode, "wal", "只读连接不应进入 WAL");
 }
+
+// ------------------------------------------------------------- L20 门面
+
+/// 门面测试用最小两步迁移链（真实迁移链归属各存储 crate，这里只验装配序）。
+static FACADE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+        log_note: "Database initialized (v1)",
+    },
+    Migration {
+        version: 2,
+        sql: "ALTER TABLE items ADD COLUMN tag TEXT NOT NULL DEFAULT '';",
+        log_note: "Database migrated to v2 (facade test: tag column)",
+    },
+];
+
+fn facade_spec() -> StoreSpec {
+    StoreSpec {
+        label: "[FacadeStore]",
+        db_noun: "facade database",
+        migrate_label: "Facade schema",
+        schema_version: 2,
+        migrations: FACADE_MIGRATIONS,
+    }
+}
+
+#[test]
+fn open_sqlite_store_fresh_creates_and_migrates() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = temp_db(dir.path(), "facade_fresh");
+    let conn = open_sqlite_store(&p, &facade_spec(), &["PRAGMA busy_timeout = 5000"]).unwrap();
+
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2, "版本戳落在 schema_version");
+
+    // 两步迁移全部生效：v1 表 + v2 列。
+    let n: i32 = conn
+        .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    conn.execute_batch("INSERT INTO items(name, tag) VALUES ('a', 't');")
+        .unwrap();
+
+    // 语义 PRAGMA：foreign_keys 恒开 + extra_pragmas 透传。
+    let fk: i32 = conn
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .unwrap();
+    assert_eq!(fk, 1, "foreign_keys 恒为语义闸");
+    let bt: i32 = conn
+        .pragma_query_value(None, "busy_timeout", |r| r.get(0))
+        .unwrap();
+    assert_eq!(bt, 5000, "extra_pragmas 透传生效");
+}
+
+#[test]
+fn open_sqlite_store_idempotent_second_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = temp_db(dir.path(), "facade_reopen");
+    open_sqlite_store(&p, &facade_spec(), &[]).unwrap();
+    // 二次打开：迁移链全跳过（current_version == schema_version），零副作用。
+    let conn = open_sqlite_store(&p, &facade_spec(), &[]).unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2);
+    assert!(!p.with_extension("db.bak.1").exists(), "无迁移不触发备份");
+}
+
+#[test]
+fn open_sqlite_store_rejects_foreign_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = temp_db(dir.path(), "facade_foreign");
+    std::fs::write(&p, b"definitely not a sqlite file header at all!!").unwrap();
+    let err = open_sqlite_store(&p, &facade_spec(), &[]).unwrap_err();
+    // Foreign 路径 = 手法① 原生 foreign_header_error（与 board/data 现状
+    // 一致，不带 db_noun；db_noun 只进 inspect/open 两处文案）。
+    assert!(
+        err.contains("不是 SQLite 格式") && err.contains("646566696e6974656c79"),
+        "Foreign 头拒绝文案（hex 摘要在场）：{err}"
+    );
+}
+
+#[test]
+fn open_sqlite_store_rejects_newer_version_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = temp_db(dir.path(), "facade_drift");
+    {
+        let conn = rusqlite::Connection::open(&p).unwrap();
+        conn.pragma_update(None, "user_version", 99).unwrap();
+    }
+    let err = open_sqlite_store(&p, &facade_spec(), &[]).unwrap_err();
+    assert!(err.contains("99"), "drift 拒绝文案带库版本：{err}");
+}
+
+#[test]
+fn open_sqlite_store_old_version_migrates_with_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = temp_db(dir.path(), "facade_oldver");
+    // 手工构造 v1 库（只跑链上第一步）。
+    {
+        let conn = rusqlite::Connection::open(&p).unwrap();
+        conn.execute_batch(FACADE_MIGRATIONS[0].sql).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+    let conn = open_sqlite_store(&p, &facade_spec(), &[]).unwrap();
+
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2, "v1 → v2 迁移完成");
+    // 手法③：迁移前轮换备份在场。
+    assert!(p.with_extension("db.bak.1").exists(), "迁移前备份落盘");
+}

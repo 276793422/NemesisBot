@@ -41,6 +41,7 @@ fn cleanup_completed_deletes_only_stale_finished_tasks() {
         &(store.clone() as Arc<dyn TaskStore>),
         &None,
         &pending_timeout,
+        &None,
     );
 
     assert!(store.get("t-stale").is_err(), "超龄完成态必须被清");

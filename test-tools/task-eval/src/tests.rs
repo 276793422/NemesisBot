@@ -304,6 +304,7 @@ fn baseline_compare_semantics() {
             .into_iter()
             .collect(),
         pass_rate: 0.5,
+        bench_build_unix: 0,
     };
     let cur = report_with(0.5, &["a", "b"]);
     assert!(compare_baseline(&base, &cur).is_empty());
@@ -336,6 +337,53 @@ fn baseline_roundtrip_preserves_verdicts() {
     let text = serde_json::to_string(&bl).unwrap();
     let back: Baseline = serde_json::from_str(&text).unwrap();
     assert_eq!(back.tasks, bl.tasks);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261104-369：构建戳注入链 + 漂移提示语义（agent-bench 同修）
+// ---------------------------------------------------------------------------
+
+/// 注入链锁：build.rs 的 rustc-env 必须真实可达 option_env!——注入断 =
+/// 恒 0（未知）→ 构建戳对比静默失效，特性死到达。
+#[test]
+fn bench_build_unix_injected_from_build_rs() {
+    assert!(
+        bench_build_unix() > 0,
+        "build.rs 构建戳未注入（恒 0=未知，对比侧静默失效）"
+    );
+}
+
+/// 漂移提示三臂：不一致 → note；一致 → 静默；老基线 0 → 静默。
+#[test]
+fn build_stamp_note_arms() {
+    let base = Baseline {
+        saved_at: String::new(),
+        tasks: std::collections::BTreeMap::new(),
+        pass_rate: 1.0,
+        bench_build_unix: bench_build_unix() + 1,
+    };
+    let note = build_stamp_note(&base).expect("不一致必须给 note");
+    assert!(note.contains("构建戳不一致"), "{note}");
+
+    let base = Baseline {
+        bench_build_unix: bench_build_unix(),
+        ..base
+    };
+    assert!(build_stamp_note(&base).is_none(), "一致时静默");
+
+    let base = Baseline {
+        bench_build_unix: 0,
+        ..base
+    };
+    assert!(build_stamp_note(&base).is_none(), "老基线缺字段静默");
+}
+
+/// 老基线兼容：缺 bench_build_unix 字段 serde 落 0（不炸加载、对比静默）。
+#[test]
+fn baseline_old_format_missing_stamp_loads_as_zero() {
+    let text = r#"{"saved_at":"","tasks":{},"pass_rate":1.0}"#;
+    let bl: Baseline = serde_json::from_str(text).expect("老基线必须可加载");
+    assert_eq!(bl.bench_build_unix, 0);
 }
 
 // ---------------------------------------------------------------------------

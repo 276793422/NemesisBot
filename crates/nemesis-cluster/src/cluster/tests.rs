@@ -3449,6 +3449,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",
     );
@@ -3500,6 +3501,7 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -3537,6 +3539,7 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -3738,6 +3741,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,       // 桥接成员登记：无 source_addr
         "",
     );
@@ -3771,6 +3775,7 @@ fn test_discovered_node_malformed_id_charset_gate_rejected() {
             Vec::new(),
             None,
             None,
+            None, // mandate 公钥：未宣告
             None,
             "",
         );
@@ -6636,6 +6641,57 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
     );
 }
 
+// BUG-20261103-334 横向排查定性钉（非缺陷修复）：记事本（带 BOM UTF-8）
+// 手工维护的 peers.toml 走 upgrade 时照常解析并原位升级（占位条目被摘除、
+// 真实条目并入、[node] 段保留）。实测 toml crate parse 容忍前导 BOM——
+// 本测试把该容忍行为钉死：若未来 crate 升级翻转，此处先行红出来（届时
+// upgrade_peer_in_peers_toml 等裸读位点需迁 read_config_string）。
+#[test]
+fn test_upgrade_peer_in_peers_toml_bom_file_upgrades_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    let body =
+        "[node]\nid = \"local-node-001\"\n\n[peers.\"Node-A\"]\naddress = \"10.0.0.1:9000\"\n";
+    std::fs::write(cluster_dir.join("peers.toml"), format!("\u{feff}{body}")).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.upgrade_peer_in_peers_toml(
+        "Node-A",
+        "real-bom",
+        &RealNodeInfo {
+            id: "real-bom".into(),
+            name: "Bom Peer".into(),
+            address: "10.0.0.1:21949".into(),
+            rpc_port: 0,
+            addresses: Vec::new(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            category: "test".into(),
+            capabilities: vec![],
+            tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
+            agents: Vec::new(),
+            runtime_backend: None,
+            node_type: "agent".into(),
+            build: String::new(),
+        },
+    );
+
+    let content = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(
+        !content.contains("Node-A"),
+        "BUG-20261103-334: 占位条目必须被原位摘除（降级 append 会残留）: {}",
+        content
+    );
+    assert!(
+        content.contains("real-bom"),
+        "真实条目必须落盘: {}",
+        content
+    );
+    assert!(content.contains("[node]"), "[node] 段必须保留: {}", content);
+}
+
 #[test]
 fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
     let dir = tempfile::tempdir().unwrap();
@@ -6871,6 +6927,8 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         callback_result: None,
         required_profession: None,
         async_usage_stash: None,
+        mandate: None,
+        dispatch_generation: None,
     });
     tl.save_async_state(
         "parent-1",
@@ -6942,6 +7000,8 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         callback_result: None,
         required_profession: None,
         async_usage_stash: None,
+        mandate: None,
+        dispatch_generation: None,
     });
     tl.save_async_state(
         "parent-2",
@@ -9346,6 +9406,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9381,6 +9442,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9420,6 +9482,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9633,6 +9696,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         Some("203.0.113.99"),
         "",
     );
@@ -9660,6 +9724,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         Some("203.0.113.96"),
         "",
     );
@@ -9738,6 +9803,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
+        None,       // mandate 公钥：未宣告
         Some("203.0.113.29"),
         "",
     );
@@ -9909,6 +9975,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_a.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9932,6 +9999,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_a.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9953,6 +10021,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_b.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -9987,6 +10056,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Vec::new(),
         None, // iroh_id：未宣告
         Some("vm".into()),
+        None, // mandate 公钥：未宣告
         None,
         "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10010,6 +10080,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Vec::new(),
         None, // iroh_id：未宣告
         Some("vm".into()),
+        None, // mandate 公钥：未宣告
         None,
         "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10031,6 +10102,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Vec::new(),
         None, // iroh_id：未宣告
         None,
+        None, // mandate 公钥：未宣告
         None,
         "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10110,6 +10182,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         roster.clone(),
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None,
         "",
     );
@@ -10259,6 +10332,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         vec![],
         Some(hex.clone()),
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10297,6 +10371,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         vec![],
         Some(hex.clone()),
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10335,6 +10410,7 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
             vec![],
             Some(bad.to_string()),
             None, // 自报运行时后端形态：未宣告
+            None, // mandate 公钥：未宣告
             None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
             "",   // build：未宣告（P5 期测试补齐 A1 参数）
         );
@@ -10371,6 +10447,7 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
         vec![],
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
+        None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
@@ -10443,6 +10520,7 @@ fn test_announce_build_propagates_to_registry_new_entry() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "6f96d056",
     );
@@ -10471,6 +10549,7 @@ fn test_announce_build_refreshes_existing_entry() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "aaaa1111",
     );
@@ -10490,6 +10569,7 @@ fn test_announce_build_refreshes_existing_entry() {
         Vec::new(),
         None,
         None,
+        None, // mandate 公钥：未宣告
         None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "bbbb2222",
     );
@@ -10701,5 +10781,815 @@ id = broken ===",
     assert!(
         !logs2.contains("failed to parse"),
         "首次启动（无 peers.toml）不得 warn，实际日志: {logs2}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// L16（2026-11-02 三期）：iroh 互信 announce 采信闸接线（handle_discovered_
+// node_ex 单一漏斗）。身份用 random_valid_iroh_hex 真实派生（valid_iroh_id
+// on-curve 校验拒绝任意 hex）。
+// ---------------------------------------------------------------------------
+
+/// revoked 一票不采信：整条 veto（registry 无条目），且**换 node_id 洗白
+/// 无效**（trust 簿按 iroh hex 键控，密钥级吊销——同一 hex 换 id 重宣告
+/// 同样拒）。
+#[test]
+fn l16_revoked_announce_veto_whole_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let revoked_hex = crate::roaming::random_valid_iroh_hex();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.revoke(&revoked_hex);
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "revoked-peer",
+        "revoked-worker",
+        vec!["10.0.0.20".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(revoked_hex.clone()),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(!changed, "revoked announce 必须整条拒绝");
+    assert!(
+        cluster.get_node_info("revoked-peer").is_none(),
+        "吊销节点不得入册"
+    );
+
+    // 换 node_id 洗白（hex 不变）：同样 veto。
+    let changed2 = cluster.handle_discovered_node_ex(
+        "laundered-id",
+        "laundered-worker",
+        vec!["10.0.0.21".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(revoked_hex),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(!changed2, "换 node_id 不换 hex = 密钥级吊销仍然 veto");
+    assert!(cluster.get_node_info("laundered-id").is_none());
+}
+
+/// unknown（regime 已激活）→ TOFU 首见钉存：announce 入册 + trust.toml
+/// 盘上回读含新 hex，既有 trusted 条目不受影响。
+#[test]
+fn l16_unknown_announce_tofu_pins_and_registers() {
+    let dir = tempfile::tempdir().unwrap();
+    let veteran_hex = crate::roaming::random_valid_iroh_hex();
+    let newcomer_hex = crate::roaming::random_valid_iroh_hex();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.trust(&veteran_hex);
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "newcomer-peer",
+        "newcomer-worker",
+        vec!["10.0.0.22".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(newcomer_hex.clone()),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(changed, "unknown 首见 = TOFU 采信入册");
+    let node = cluster.get_node_info("newcomer-peer").expect("新节点入册");
+    assert_eq!(node.base.name, "newcomer-worker");
+
+    let reloaded = crate::roaming::trust::TrustBook::load(dir.path())
+        .expect("load")
+        .expect("簿已在");
+    assert!(
+        reloaded.is_trusted(&newcomer_hex),
+        "TOFU 钉存必须落盘: {:?}",
+        reloaded.data()
+    );
+    assert!(reloaded.is_trusted(&veteran_hex), "既有条目不受影响");
+}
+
+/// 簿缺席 = regime 未激活：携合法 iroh hex 的 announce 照常入册，且**绝不
+/// 因 announce 创建 trust.toml**（零回归锁——发现链不激活 allowlist）。
+#[test]
+fn l16_no_book_announce_adopts_without_creating_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let hex = crate::roaming::random_valid_iroh_hex();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "plain-peer",
+        "plain-worker",
+        vec!["10.0.0.23".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(hex),
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(changed, "无簿 = 未启用 = 采信入册（字节级现状）");
+    assert!(cluster.get_node_info("plain-peer").is_some());
+    assert!(
+        !crate::roaming::trust::trust_book_path(dir.path()).exists(),
+        "announce 闸不得创建 trust.toml"
+    );
+}
+
+/// 无 key 旧节点（iroh_id=None）= 维持现行行为：regime 激活与否都照常
+/// 入册（信任簿无从键控，诚实跳过）。
+#[test]
+fn l16_announce_without_iroh_skips_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.trust(&"aa".repeat(32));
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "legacy-peer",
+        "legacy-worker",
+        vec!["10.0.0.24".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None, // mandate 公钥：未宣告
+        None,
+        "",
+    );
+    assert!(changed, "无 iroh 身份 = 闸跳过 = 现行行为入册");
+    assert!(cluster.get_node_info("legacy-peer").is_some());
+}
+
+// ---------------------------------------------------------------------------
+// L13-a（2026-11-03 三期）：mandate 公钥分发面集成（TOFU 钉存三态 +
+// L16 veto 短路）
+// ---------------------------------------------------------------------------
+
+/// 合法 uncompressed 130 hex 测试钥（04 头 + tag + 126 hex）。
+fn l13a_pk(tag: u8) -> String {
+    format!("04{:02x}{}", tag, "ab".repeat(63))
+}
+
+/// 激活簿 + announce 携合法 mandate 公钥 → TOFU 首见钉存落盘，入册照常。
+#[test]
+fn l13a_announce_pubkey_pins_into_active_book() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.trust(&"aa".repeat(32));
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "mandate-peer",
+        "mandate-worker",
+        vec!["10.0.0.31".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        Some(l13a_pk(1)),
+        None,
+        "",
+    );
+    assert!(changed, "带 mandate 公钥的 announce 照常入册");
+    let reloaded = crate::roaming::trust::TrustBook::load(dir.path())
+        .unwrap()
+        .expect("簿已在");
+    assert_eq!(
+        reloaded
+            .data()
+            .mandate_keys
+            .get("mandate-peer")
+            .map(String::as_str),
+        Some(l13a_pk(1).as_str()),
+        "TOFU 首见钉存必须落盘: {:?}",
+        reloaded.data()
+    );
+}
+
+/// 簿缺席（regime 未激活）+ announce 携公钥 → 不建文件不钉存，入册照常
+/// （announce 抵达绝不激活 trust.toml，L16 纪律镜像）。
+#[test]
+fn l13a_announce_pubkey_book_absent_no_touch() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "mandate-peer",
+        "mandate-worker",
+        vec!["10.0.0.32".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        Some(l13a_pk(2)),
+        None,
+        "",
+    );
+    assert!(changed, "无簿时 announce 照常入册");
+    assert!(
+        !crate::roaming::trust::trust_book_path(dir.path()).exists(),
+        "mandate 钉存不得创建 trust.toml"
+    );
+    assert_eq!(
+        crate::roaming::trust::mandate_key_state(dir.path(), "mandate-peer"),
+        crate::roaming::trust::MandateKeyVerdict::Absent,
+        "簿缺席 = Absent"
+    );
+}
+
+/// 已有 pin + 异值公钥 announce → strict TOFU 保留首见，入册照常不拒
+/// （Conflict 是 warn 不是拒绝——分发面 fail-open）。
+#[test]
+fn l13a_announce_pubkey_conflict_keeps_first_and_registers() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::roaming::trust::mandate_pin_forced(dir.path(), "mandate-peer", &l13a_pk(3)).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "mandate-peer",
+        "mandate-worker",
+        vec!["10.0.0.33".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        Some(l13a_pk(4)),
+        None,
+        "",
+    );
+    assert!(changed, "冲突只 warn，announce 照常采信入册");
+    assert_eq!(
+        crate::roaming::trust::mandate_key_state(dir.path(), "mandate-peer"),
+        crate::roaming::trust::MandateKeyVerdict::Pinned(l13a_pk(3)),
+        "strict TOFU 保留首见"
+    );
+}
+
+/// L16 revoked veto 短路在 mandate hook 之前：节点 iroh 身份被吊销时整条
+/// 不采信（return false 提前），mandate 公钥不钉存。
+#[test]
+fn l13a_revoked_iroh_veto_skips_mandate_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let hex = crate::roaming::random_valid_iroh_hex();
+    let mut book = crate::roaming::trust::TrustBook::from_data(
+        crate::roaming::trust::TrustBookData::default(),
+    );
+    book.revoke(&hex);
+    book.save(dir.path()).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let changed = cluster.handle_discovered_node_ex(
+        "revoked-peer",
+        "revoked-worker",
+        vec!["10.0.0.34".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        Some(hex),
+        None,
+        Some(l13a_pk(5)),
+        None,
+        "",
+    );
+    assert!(!changed, "iroh revoked veto 整条不采信");
+    let reloaded = crate::roaming::trust::TrustBook::load(dir.path())
+        .unwrap()
+        .expect("簿已在");
+    assert!(
+        reloaded.data().mandate_keys.is_empty(),
+        "veto 短路 → mandate 公钥不钉存: {:?}",
+        reloaded.data()
+    );
+}
+
+// ===== 负载感知路由（最小版）：结局记账 + auto 选点 =====
+
+/// 构造测试 peer（ExtendedNodeInfo 全字段；status 可指定 Online/Offline）。
+fn route_peer(id: &str, status: NodeStatus) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: id.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.10:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec!["llm".into()],
+        tags: Vec::new(),
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    }
+}
+
+#[test]
+fn test_route_stats_recorded_on_complete_and_fail() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("worker-a", NodeStatus::Online));
+
+    let t1 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+    let t2 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi2" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true })));
+    assert!(cluster.fail_task(&t2, "boom"));
+
+    let snap = cluster.route_stats_snapshot();
+    let s = snap
+        .get("worker-a")
+        .expect("peer-attributed outcome must be recorded");
+    assert_eq!(s.completed, 1, "一次成功入账");
+    assert_eq!(s.failed, 1, "一次失败入账");
+    assert_eq!(
+        s.response_samples, 2,
+        "Completed/Failed 都写 completed_at → 两条都采样耗时"
+    );
+    assert!((s.success_rate() - 0.5).abs() < 1e-9);
+    assert_eq!(s.avg_response_ms(), s.total_response_ms / 2);
+}
+
+#[test]
+fn test_route_stats_dedupes_idempotent_replays() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("worker-a", NodeStatus::Online));
+
+    let t1 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+    let t2 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi2" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true })));
+    // 幂等重放（送达重试/B 端重发）：settle_task 幂等成功仍返回 true，
+    // 记账侧必须去重——每任务只计首次 settle，不得双计。
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true, "replay": 1 })));
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true, "replay": 2 })));
+
+    assert!(cluster.fail_task(&t2, "boom"));
+    assert!(cluster.fail_task(&t2, "boom-replay"));
+
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-a").expect("peer entry present");
+    assert_eq!(s.completed, 1, "重复 complete 幂等重放不得双计");
+    assert_eq!(s.failed, 1, "重复 fail 幂等重放不得双计");
+    assert_eq!(
+        s.response_samples, 2,
+        "耗时样本同样只计首次（每任务一条样本）"
+    );
+    assert!((s.success_rate() - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn test_route_stats_skips_unattributed_and_self() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // 无 peer 归因（submit_task 不带 peer）→ 不入账
+    let t = cluster.submit_task("peer_chat", serde_json::json!({}), "web", "c1");
+    assert!(cluster.complete_task(&t, serde_json::json!({})));
+    // 归因到本节点 → 不入账（路由只关心「派给谁」，本节点不在候选集）
+    let t2 = cluster.submit_task("peer_chat", serde_json::json!({}), "web", "c1");
+    assert!(cluster.assign_task(&t2, "local-node-001"));
+    assert!(cluster.complete_task(&t2, serde_json::json!({})));
+
+    assert!(
+        cluster.route_stats_snapshot().is_empty(),
+        "无归因/自归因任务不进路由统计"
+    );
+}
+
+/// 负载感知路由：恢复轮询 sweep 的旁路 settle 也补记账（二轮回头检查修复）。
+/// done 回灌分支记成功 + 耗时样本；终态任务离开 pending 列表——重跑 sweep
+/// 不双计（去重集兜底，与回调漏斗共用同一记账核心）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_recovery_sweep_done() {
+    let cluster = Cluster::new(make_config());
+    let t = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, payload| {
+        let id = payload
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let resp = serde_json::json!({
+            "status": "done",
+            "task_id": id,
+            "result_status": "success",
+            "response": "ok",
+            "error": "",
+        });
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
+
+    assert_eq!(
+        cluster.task_manager.get_task(&t).unwrap().status,
+        TaskStatus::Completed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-a").expect("sweep done 分支补记账");
+    assert_eq!(s.completed, 1);
+    assert_eq!(s.failed, 0);
+    assert_eq!(s.response_samples, 1, "completed_at 已落 → 耗时样本照采");
+
+    // 终态任务不再出现在 pending 列表——重跑 sweep 不得双计。
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
+    assert_eq!(
+        cluster
+            .route_stats_snapshot()
+            .get("worker-a")
+            .unwrap()
+            .completed,
+        1,
+        "重跑 sweep 不得双计"
+    );
+}
+
+/// 负载感知路由：安全网超时判死分支补记账失败样本（慢/坏节点信号——
+/// 恰是路由最需要看到的观测，漏记会乐观偏向慢节点）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_recovery_sweep_timeout() {
+    let cluster = Cluster::new(make_config());
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    cluster
+        .task_manager
+        .submit(Task {
+            id: "sweep-timeout-route".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "worker-slow".to_string(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: "rpc".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_time,
+            completed_at: None,
+        })
+        .unwrap();
+
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
+
+    assert_eq!(
+        cluster
+            .task_manager
+            .get_task("sweep-timeout-route")
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-slow").expect("超时判死补记账失败样本");
+    assert_eq!(s.completed, 0);
+    assert_eq!(s.failed, 1);
+}
+
+/// 负载感知路由：恢复轮询 sweep not_found 判死分支补记账（三轮回头检查
+/// 补测——worker 丢任务（典型：重启）= 该节点失败样本）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_recovery_sweep_not_found() {
+    let cluster = Cluster::new(make_config());
+    let t = cluster
+        .submit_peer_chat(
+            "worker-amnesia",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, payload| {
+        let id = payload
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let resp = serde_json::json!({ "status": "not_found", "task_id": id });
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
+
+    assert_eq!(
+        cluster.task_manager.get_task(&t).unwrap().status,
+        TaskStatus::Failed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap
+        .get("worker-amnesia")
+        .expect("not_found 判死补记账失败样本");
+    assert_eq!(s.completed, 0);
+    assert_eq!(s.failed, 1);
+}
+
+/// 负载感知路由：默认 peer_chat_callback handler 兜底臂补记账（gateway
+/// 覆盖注册失败 `let _ =` 静默时由默认 handler 服务——三轮回头检查补测）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_default_callback_handler() {
+    let cluster = Cluster::new(make_config());
+    let t = cluster
+        .submit_peer_chat(
+            "worker-d",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    let handler = cluster.build_callback_handler();
+    let resp = handler(serde_json::json!({
+        "task_id": t,
+        "status": "success",
+        "response": "ok",
+        "error": "",
+    }))
+    .expect("handler accepted");
+    assert_eq!(resp["status"], "accepted");
+
+    assert_eq!(
+        cluster.task_manager.get_task(&t).unwrap().status,
+        TaskStatus::Completed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-d").expect("默认 handler 兜底臂补记账");
+    assert_eq!(s.completed, 1);
+    assert_eq!(s.failed, 0);
+    assert_eq!(s.response_samples, 1);
+
+    // 幂等重放（送达重试再投递）：settle 幂等 + 去重集兜底，不双计。
+    handler(serde_json::json!({
+        "task_id": t,
+        "status": "success",
+        "response": "ok",
+        "error": "",
+    }))
+    .expect("replay accepted");
+    assert_eq!(
+        cluster
+            .route_stats_snapshot()
+            .get("worker-d")
+            .unwrap()
+            .completed,
+        1,
+        "重放不得双计"
+    );
+}
+
+#[test]
+fn test_pick_auto_route_all_offline_none() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    assert_eq!(cluster.pick_auto_route_target(), None, "无候选 → None");
+
+    cluster.register_node(route_peer("worker-off", NodeStatus::Offline));
+    assert_eq!(cluster.pick_auto_route_target(), None, "离线节点不入候选");
+}
+
+#[test]
+fn test_pick_auto_route_prefers_success_over_failure() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("worker-good", NodeStatus::Online));
+    cluster.register_node(route_peer("worker-bad", NodeStatus::Online));
+
+    for _ in 0..2 {
+        let g = cluster
+            .submit_peer_chat(
+                "worker-good",
+                "peer_chat",
+                serde_json::json!({}),
+                "web",
+                "c",
+            )
+            .expect("submit");
+        assert!(cluster.complete_task(&g, serde_json::json!({})));
+        let b = cluster
+            .submit_peer_chat("worker-bad", "peer_chat", serde_json::json!({}), "web", "c")
+            .expect("submit");
+        assert!(cluster.fail_task(&b, "x"));
+    }
+    assert_eq!(
+        cluster.pick_auto_route_target().as_deref(),
+        Some("worker-good"),
+        "成功率先行：good(1.0) 赢 bad(0.0)"
+    );
+}
+
+#[test]
+fn test_pick_auto_route_penalizes_pending_backlog() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("idle", NodeStatus::Online));
+    cluster.register_node(route_peer("busy", NodeStatus::Online));
+
+    // busy 挂 3 个 Pending（submit_peer_chat 建任务即 Pending，不 settle）
+    for _ in 0..3 {
+        cluster
+            .submit_peer_chat("busy", "peer_chat", serde_json::json!({}), "web", "c")
+            .expect("submit");
+    }
+    assert_eq!(
+        cluster.pick_auto_route_target().as_deref(),
+        Some("idle"),
+        "同胜率（都零样本乐观 1.0）下待办少者优先"
+    );
+}
+
+#[test]
+fn test_pick_auto_route_exploratory_neutral() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("veteran", NodeStatus::Online));
+    let t = cluster
+        .submit_peer_chat("veteran", "peer_chat", serde_json::json!({}), "web", "c")
+        .expect("submit");
+    assert!(cluster.complete_task(&t, serde_json::json!({})));
+    cluster.register_node(route_peer("fresh", NodeStatus::Online));
+
+    assert_eq!(
+        cluster.pick_auto_route_target().as_deref(),
+        Some("fresh"),
+        "零样本节点乐观中性（success 1.0 / avg 0）= 探索优先：同胜率下 avg=0 \
+         赢 veteran 的实测 avg>0，新节点不饿死"
     );
 }

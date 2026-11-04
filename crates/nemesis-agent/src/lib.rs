@@ -51,6 +51,12 @@ pub mod delegate_registry;
 pub mod discipline;
 pub mod estop;
 pub mod event_ledger;
+/// 修6（BUG-C 执行体面，2026-11-04）：同步 exec 族子进程树守卫 +
+/// 会话级注册表——Windows Job Object / Unix 进程组，estop/超时/drop
+/// 收整棵后代树；会话级 sweep（`kill_session_trees`）供 estop 联动。
+/// 只收同步 exec 族（exec / run_script / run_checks 注入内核），
+/// B4 background_start 不碰。
+pub mod exec_tree;
 pub mod executor_pipe;
 pub mod executor_transport;
 pub mod formatter;
@@ -75,6 +81,9 @@ pub mod r#loop;
 pub mod loop_continuation;
 pub mod loop_executor;
 pub mod loop_tools;
+/// L13-b（2026-11-03 三期）：任务 mandate 执行面守卫——marker + 纯裁决
+/// （loop 侧接线在 `r#loop::mandate_guard`）。
+pub mod mandate_guard;
 pub mod mcp_bridge;
 pub mod memory;
 pub mod message_preprocess;
@@ -94,6 +103,8 @@ pub mod session_fork;
 pub mod session_stats;
 pub mod skills_digest;
 pub mod spill;
+/// 子代理任务注册表（子代理可见性 P1）：三形态统一台账 + 落盘 + 取消面。
+pub mod subagent_registry;
 pub mod todo_closeout;
 /// P8（集群无人值守硬化 A2）：会话 token 预算闸——marker 文案单一真相源 +
 /// per-session 累计账本（loop 侧接线在 `r#loop::token_budget`）。

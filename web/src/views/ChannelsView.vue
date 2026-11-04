@@ -36,6 +36,10 @@ const isVoiceTab = computed(() => activeTab.value === 'voice')
 const isBridgeTab = computed(() => activeTab.value === 'bridge')
 // 中继通道（QUIC，iroh 内网穿透中继；与桥接是两套独立设施）
 const isRelayTab = computed(() => activeTab.value === 'relay')
+// voice feature 门控（R497）：VoiceTab 的 WSAPI 消费面（voice.* 模块）随 voice
+// cargo feature 整包裁剪（IoT 预设 voice=false），Tab 必须同步隐藏——按钮摘除后
+// activeTab 永远到不了 'voice'，内容分支自然不可达。
+const voiceEnabled = import.meta.env.VITE_FEATURE_VOICE !== 'false'
 
 async function loadChannels() {
   try {
@@ -88,7 +92,7 @@ onMounted(loadChannels)
         <div style="display: flex; border-bottom: 1px solid var(--border); margin-bottom: var(--space-3);">
           <button class="ch-tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'cloud' }" @click="activeTab = 'cloud'">云端通道</button>
-          <button class="ch-tab" :class="{ active: activeTab === 'voice' }" @click="activeTab = 'voice'">语音通道</button>
+          <button v-if="voiceEnabled" class="ch-tab" :class="{ active: activeTab === 'voice' }" @click="activeTab = 'voice'">语音通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'bridge' }" @click="activeTab = 'bridge'">桥接通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'relay' }" @click="activeTab = 'relay'">中继通道</button>
         </div>

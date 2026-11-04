@@ -470,6 +470,7 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
         reject_note: Some("拒绝后果".to_string()),
         preview: None,
         preview_format: None,
+        batch_id: None,
     };
     let v = serde_json::to_value(&ev).unwrap();
     // serde(tag = "kind", content = "data") 形状——web pump 原样转 SSE/WS。
@@ -480,6 +481,8 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
     assert_eq!(v["data"]["risk_level"], "HIGH");
     assert_eq!(v["data"]["timeout_secs"], 300);
     assert_eq!(v["data"]["pattern"], "cargo publish *");
+    // 空批号不出现在载荷（skip_serializing_if——串行路径事件字节不变）。
+    assert!(v["data"].get("batch_id").is_none());
     // 反序列化回事件并逐字段核对（AgentEvent 未 derive PartialEq）。
     match serde_json::from_value::<AgentEvent>(v).unwrap() {
         AgentEvent::ApprovalRequested {
@@ -532,6 +535,7 @@ fn test_agent_event_approval_requested_accessors() {
         reject_note: None,
         preview: None,
         preview_format: None,
+        batch_id: None,
     };
     assert_eq!(ev.chat_id(), "web:x");
     assert_eq!(ev.kind(), "ApprovalRequested");

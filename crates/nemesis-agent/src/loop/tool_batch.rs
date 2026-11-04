@@ -108,6 +108,37 @@ impl AgentLoop {
             .cloned()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| target_id.clone());
+
+        // 子代理可见性（D5，2026-11-03）：集群 delegate 任务并入注册表
+        //（P3「delegate 并入同一列表」）。A 端生命周期视图——begin= 本处
+        //（`__ASYNC__` marker 落地），finish= 续行回灌（dispatch_continuation）；
+        // B 端 transcript 留在对端节点不拉取（诚实边界：本行 events 环恒空）。
+        // id/bg_task_id 直接用集群 task_id（gateway 侧跨节点状态面同键）。
+        // 任务文本取 cluster_rpc args 的 message 字段（解析失败 = 空，诚实
+        // 留白，不编造）。
+        let delegate_task = serde_json::from_str::<serde_json::Value>(&tc.arguments)
+            .ok()
+            .and_then(|v| {
+                v.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        crate::subagent_registry::global().begin(crate::subagent_registry::SubagentBegin {
+            id: task_id.clone(),
+            parent_session_key: context.session_key.clone(),
+            parent_chat_id: context.chat_id.clone(),
+            origin: "delegate".to_string(),
+            agent_id: target_id.clone(),
+            task: delegate_task,
+            role: String::new(),
+            tools_profile: String::new(),
+            depth: 0,
+            background: true,
+            loop_origin: self.loop_origin(),
+            bg_task_id: Some(task_id.clone()),
+        });
+
         if let Some(ref mgr) = self.continuation_manager {
             // Get messages up to this point (including the assistant's tool_call).
             // We use build_messages() to convert history → LlmMessage format.
@@ -727,6 +758,22 @@ impl AgentLoop {
         // The serial path (precomputed.is_none()) keeps the per-item checks
         // byte-identical.
         let skip_cancel_estop = precomputed.is_some();
+        // 修④（BUG-C 2026-11-04）：批后急停检查点——并行批窗口内到达的急停
+        // （precompute 内 biased select 已中断在飞收集并补发中断面
+        // ToolFinished，见 tool_defs.rs 同款注释）在此收口：拒绝整批回灌、
+        // 终局本轮（旧语义 = 批照跑完且回灌照常、下一轮边界才停）。per-item
+        // estop 臂同款单发 Done + terminal_reason 纪律（turn_end 不谎报 done）。
+        if precomputed.is_some() && self.security.is_engaged() {
+            info!(
+                "[AgentLoop] E-stop engaged during/after parallel batch ({} calls) — stopping turn.",
+                tool_calls.len()
+            );
+            st.terminal_reason = Some("estop");
+            return TurnFlow::Stop(AgentEvent::Done(
+                "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
+                    .to_string(),
+            ));
+        }
         for (batch_idx, tc) in tool_calls.iter().enumerate() {
             // Check cancellation before each tool execution.
             if !skip_cancel_estop && cancel_token.is_cancelled() {
@@ -805,21 +852,22 @@ impl AgentLoop {
                 }
                 (p.result.clone(), p.duration_ms)
             } else {
-                let r = match super::tool_dispatch::detached_tool_refusal(instance, &tc.name)
-                    .or_else(|| {
-                        // B2 职能工具围栏派发闸——任务装配白名单外的调用在
-                        // 派发现场权威拒绝（与 detached 闸同位同形：供给层
-                        // 只管 defs 可见性）。文案单一真相源
-                        // [`profession_fence_refusal_for`]。
-                        super::tool_dispatch::profession_fence_refusal(instance, &tc.name)
-                    }) {
+                // 修2（2026-11-04）：环境约束预拒统一注册点——detached +
+                // 职能围栏两约束一处声明，串行/并行同源（并行预检消费
+                // 值形态 [`super::tool_dispatch::
+                // environment_constraint_refusal_for`]）。环境性拒绝在
+                // 安全段之前权威拒绝：不弹审批卡、不进风险管线（BUG-A
+                // 2026-11-04 阻塞链的派发侧护栏之一）。
+                let r = match super::tool_dispatch::environment_constraint_refusal(
+                    instance, &tc.name,
+                ) {
                     // 压测①a（2026-09-30）：detached 工具闸——no_tools/白名单外
                     // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
                     // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游
                     // observer/turn_guard/spill 守卫照常按序跑。
                     Some(refusal) => {
                         warn!(
-                            "[AgentLoop] Detached tool gate refused '{}': {}",
+                            "[AgentLoop] Environment constraint refused '{}': {}",
                             tc.name,
                             refusal.trim_start_matches("Error: ")
                         );
@@ -862,7 +910,13 @@ impl AgentLoop {
                                 "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
                                 tc.name, tc.id, class, message
                             );
-                            format!("Tool error: {}", message)
+                            // L10-建设：回灌单一真相源（与并行预计算臂同源——
+                            // 惰性供给时附 tools_schema_get 取回指引）。
+                            super::tool_defs::validation_error_feedback(
+                                &message,
+                                self.current_lazy_tool_schema(),
+                                &tc.name,
+                            )
                         }
                     },
                 };

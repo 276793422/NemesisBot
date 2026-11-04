@@ -111,6 +111,16 @@ impl ModuleHandler for ClusterHandler {
             "roaming.status",
             "roaming.enable",
             "roaming.disable",
+            // L16 互信 allowlist 管理面（宿主 TrustBook 文件直操作，零插件依赖）
+            "roaming.trust.list",
+            "roaming.trust.add",
+            "roaming.trust.revoke",
+            "roaming.trust.unrevoke",
+            // L13-a mandate 公钥钉存管理面（同簿异段；验签消费在 L13-b）
+            "roaming.mandate.list",
+            "roaming.mandate.pin",
+            "roaming.mandate.revoke",
+            "roaming.mandate.unrevoke",
             // QUIC 自建中继管理面已迁 handlers/quic.rs（2026-10-23 与集群
             // 解耦：quic.relay.* / quic.registry.members）
         ]
@@ -233,6 +243,35 @@ impl ModuleHandler for ClusterHandler {
             "roaming.status" => self.roaming_status(ctx).await,
             "roaming.enable" => self.roaming_enable(ctx).await,
             "roaming.disable" => self.roaming_disable(ctx).await,
+            // L16 互信 allowlist 管理面（与 CLI roaming trust-add/revoke 同源）
+            "roaming.trust.list" => self.roaming_trust_list(ctx).await,
+            "roaming.trust.add" => {
+                let data = data.ok_or("missing data")?;
+                self.roaming_trust_mutate(&data, ctx, TrustOp::Add).await
+            }
+            "roaming.trust.revoke" => {
+                let data = data.ok_or("missing data")?;
+                self.roaming_trust_mutate(&data, ctx, TrustOp::Revoke).await
+            }
+            "roaming.trust.unrevoke" => {
+                let data = data.ok_or("missing data")?;
+                self.roaming_trust_mutate(&data, ctx, TrustOp::Unrevoke)
+                    .await
+            }
+            // L13-a mandate 公钥钉存管理面（与 CLI roaming mandate-* 同源）
+            "roaming.mandate.list" => self.roaming_mandate_list(ctx).await,
+            "roaming.mandate.pin" => {
+                let data = data.ok_or("missing data")?;
+                self.roaming_mandate_pin(&data, ctx).await
+            }
+            "roaming.mandate.revoke" => {
+                let data = data.ok_or("missing data")?;
+                self.roaming_mandate_revoke(&data, ctx).await
+            }
+            "roaming.mandate.unrevoke" => {
+                let data = data.ok_or("missing data")?;
+                self.roaming_mandate_unrevoke(&data, ctx).await
+            }
             // QUIC 自建中继管理面已迁 handlers/quic.rs（2026-10-23 与集群
             // 解耦：quic.relay.* / quic.registry.members；零 Cluster 类型依赖）
             _ => Err(format!("unknown command: cluster.{}", cmd)),
@@ -485,6 +524,195 @@ fn peers_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_peers_path_in_workspace(Path::new(workspace))
 }
 
+// ---------------------------------------------------------------------------
+// L16（2026-11-02 三期）：iroh 互信 allowlist 管理面（roaming.trust.*）
+// ---------------------------------------------------------------------------
+
+/// L16 管理面三操作（TrustOp → TrustBook 方法 + 响应键）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustOp {
+    Add,
+    Revoke,
+    Unrevoke,
+}
+
+/// 信任簿快照载荷（regime 状态 + trusted/revoked 全量 hex——管理面/列表
+/// 命令共用）。
+fn roaming_trust_payload(workspace: &Path) -> Result<serde_json::Value, String> {
+    match TrustBook::load(workspace) {
+        Ok(Some(book)) => {
+            let d = book.data();
+            Ok(serde_json::json!({
+                "enabled": true,
+                "trusted": d.trusted,
+                "revoked": d.revoked,
+            }))
+        }
+        Ok(None) => Ok(serde_json::json!({
+            "enabled": false,
+            "trusted": [],
+            "revoked": [],
+        })),
+        Err(e) => Err(e),
+    }
+}
+
+/// L16 管理面共享变更臂：hex 校验归一（64 hex + on-curve loud 拒——管理面
+/// 入簿条目影响插件 accept 闸，垃圾条目 = 无声死区）→ load-or-new → op →
+/// 原子落盘（TrustBook::save）→ 返回变更后快照。首次写入即建文件 = regime
+/// 激活唯一路径（与 CLI trust-add/revoke 同源宿主 TrustBook 直操作，零插件
+/// 依赖——CLI 进程/网关进程都可管）。
+fn roaming_trust_mutate_impl(
+    workspace: &str,
+    node_id: &str,
+    op: TrustOp,
+) -> Result<Option<serde_json::Value>, String> {
+    // 剥 `iroh:` 前缀再校验（node_id_from_hex 只吃裸 hex；管理面接受前缀形态）。
+    let bare = node_id.trim().trim_start_matches("iroh:").trim();
+    let arr = nemesis_cluster::roaming::node_id_from_hex(bare)
+        .map_err(|e| format!("node_id 非法: {e}"))?;
+    let hex: String = arr.iter().map(|b| format!("{b:02x}")).collect();
+    let wspath = Path::new(workspace);
+    let mut book = match TrustBook::load(wspath)? {
+        Some(b) => b,
+        None => TrustBook::from_data(Default::default()),
+    };
+    match op {
+        TrustOp::Add => book.trust(&hex),
+        TrustOp::Revoke => book.revoke(&hex),
+        TrustOp::Unrevoke => book.unrevoke(&hex),
+    }
+    book.save(wspath)?;
+    let trust = roaming_trust_payload(wspath)?;
+    let changed_key = match op {
+        TrustOp::Add => "added",
+        TrustOp::Revoke => "revoked",
+        TrustOp::Unrevoke => "unrevoked",
+    };
+    let mut out = serde_json::Map::new();
+    out.insert(
+        changed_key.to_string(),
+        serde_json::Value::String(hex.clone()),
+    );
+    out.insert("trust".to_string(), trust);
+    tracing::info!("[roaming] 信任簿管理操作 {changed_key}: iroh:{hex}");
+    Ok(Some(serde_json::Value::Object(out)))
+}
+
+// ---------------------------------------------------------------------------
+// L13-a（2026-11-03 三期）：mandate 公钥钉存管理面（roaming.mandate.*）
+// ---------------------------------------------------------------------------
+
+/// mandate 公钥簿快照载荷（enabled + mandate_keys/mandate_revoked 全量 +
+/// 每节点验签态）。
+fn roaming_mandate_payload(workspace: &Path) -> Result<serde_json::Value, String> {
+    match TrustBook::load(workspace) {
+        Ok(Some(book)) => {
+            let d = book.data();
+            let mut states = serde_json::Map::new();
+            for node_id in d.mandate_keys.keys() {
+                let state =
+                    match nemesis_cluster::roaming::trust::mandate_key_state(workspace, node_id) {
+                        nemesis_cluster::roaming::trust::MandateKeyVerdict::Pinned(_) => "pinned",
+                        nemesis_cluster::roaming::trust::MandateKeyVerdict::Revoked => "revoked",
+                        nemesis_cluster::roaming::trust::MandateKeyVerdict::Absent => "absent",
+                        nemesis_cluster::roaming::trust::MandateKeyVerdict::BookUnreadable => {
+                            "unreadable"
+                        }
+                    };
+                states.insert(
+                    node_id.clone(),
+                    serde_json::Value::String(state.to_string()),
+                );
+            }
+            Ok(serde_json::json!({
+                "enabled": true,
+                "mandate_keys": d.mandate_keys,
+                "mandate_revoked": d.mandate_revoked,
+                "states": states,
+            }))
+        }
+        Ok(None) => Ok(serde_json::json!({
+            "enabled": false,
+            "mandate_keys": {},
+            "mandate_revoked": [],
+            "states": {},
+        })),
+        Err(e) => Err(e),
+    }
+}
+
+/// mandate 管理面共享变更臂：pin=mandate_pin_forced（管理面显式写簿激活，
+/// 覆盖/轮换唯一通道；hex 形态校验在 trust.rs 内 loud 拒绝）；revoke/
+/// unrevoke=对应 API（簿缺席 = Err——对不存在的信任域吊销是操作错误）。
+/// 返回变更后快照。与 CLI `roaming mandate-*` 同源宿主直操作，零插件依赖。
+fn roaming_mandate_mutate_impl(
+    workspace: &str,
+    node_id: &str,
+    pubkey: Option<&str>,
+    op: MandateOp,
+) -> Result<Option<serde_json::Value>, String> {
+    let wspath = Path::new(workspace);
+    let changed_key = match op {
+        MandateOp::Pin => {
+            let pubkey = pubkey.ok_or("missing pubkey")?;
+            let outcome =
+                nemesis_cluster::roaming::trust::mandate_pin_forced(wspath, node_id, pubkey)?;
+            if !outcome.persisted() {
+                // Unchanged/Conflict：pin 未落盘变化也回快照（前端可对比），
+                // 但语义上标记冲突让调用方感知轮换被拒。
+                let mut out = serde_json::Map::new();
+                out.insert(
+                    "outcome".to_string(),
+                    serde_json::Value::String(
+                        match &outcome {
+                            nemesis_cluster::roaming::trust::MandatePinOutcome::Unchanged => {
+                                "unchanged"
+                            }
+                            nemesis_cluster::roaming::trust::MandatePinOutcome::Conflict {
+                                ..
+                            } => "conflict_kept_first",
+                            _ => "ok",
+                        }
+                        .to_string(),
+                    ),
+                );
+                out.insert("mandate".to_string(), roaming_mandate_payload(wspath)?);
+                tracing::warn!(
+                    "[roaming] mandate pin 未变更（保留首见，轮换需先 revoke 或确认同值）: {node_id}"
+                );
+                return Ok(Some(serde_json::Value::Object(out)));
+            }
+            "pinned"
+        }
+        MandateOp::Revoke => {
+            nemesis_cluster::roaming::trust::mandate_revoke(wspath, node_id)?;
+            "revoked"
+        }
+        MandateOp::Unrevoke => {
+            nemesis_cluster::roaming::trust::mandate_unrevoke(wspath, node_id)?;
+            "unrevoked"
+        }
+    };
+    let mandate = roaming_mandate_payload(wspath)?;
+    let mut out = serde_json::Map::new();
+    out.insert(
+        changed_key.to_string(),
+        serde_json::Value::String(node_id.to_string()),
+    );
+    out.insert("mandate".to_string(), mandate);
+    tracing::info!("[roaming] mandate 管理操作 {changed_key}: {node_id}");
+    Ok(Some(serde_json::Value::Object(out)))
+}
+
+/// mandate 管理面三操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MandateOp {
+    Pin,
+    Revoke,
+    Unrevoke,
+}
+
 /// peers.toml [node] 段 RMW 事务唯一入口——写串行锁在函数内取得，罩
 /// 「load（缺失从默认节点起）→ 闭包改 → 写回」全程；闭包返回 Err 不落盘
 ///（abort 语义）。调用方结构上不可能忘锁（2026-10-13 闭包事务收口）。
@@ -616,6 +844,25 @@ impl ClusterHandler {
                 Err(_) => serde_json::json!([]),
             };
 
+            // L13-b（2026-11-03 三期）：mandate 签名授权状态（A 端签名器 +
+            // B 端 posture）。signer = null 表示未装配（密钥不可用或
+            // sign_enabled=false——出站不签名，对端 verify 对缺失放行）。
+            let mandate_state = {
+                let mcfg =
+                    nemesis_cluster::config_loader::load_app_config(Path::new(workspace)).mandate;
+                let signer = cluster
+                    .rpc_client_arc()
+                    .and_then(|c| c.mandate_signer_state());
+                serde_json::json!({
+                    "mode": mcfg.mode,
+                    "sign_enabled": mcfg.sign_enabled,
+                    "signer": signer.map(|(public_key, key_fp)| serde_json::json!({
+                        "key_fp": key_fp,
+                        "public_key": public_key,
+                    })),
+                })
+            };
+
             return Ok(Some(serde_json::json!({
                 "running": running,
                 "health_score": health_score,
@@ -630,6 +877,8 @@ impl ClusterHandler {
                 // L2（2026-09-27）：token 失配丢弃账本（异 token 来源互不发现是
                 // 预期安全行为，诊断按需查询；null = discovery 未启动）。
                 "discovery_drops": cluster.discovery_decrypt_drops(),
+                // L13-b：mandate 授权状态。
+                "mandate": mandate_state,
             })));
         }
 
@@ -1627,10 +1876,17 @@ impl ClusterHandler {
                                 task_id = %task_id_for_ack,
                                 "[Cluster] peer_chat rejected by worker (work queue full)"
                             );
-                            cluster_for_ack.fail_task(
-                                &task_id_for_ack,
-                                "worker 拒单：B 端工作队列满，任务未被接受",
-                            );
+                            // L13-b：ACK error 字段（mandate 拒绝原因等）优先透传。
+                            let reason = resp
+                                .result
+                                .as_ref()
+                                .and_then(|r| r.get("error"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| format!("worker 拒单：{s}"))
+                                .unwrap_or_else(|| {
+                                    "worker 拒单：B 端工作队列满，任务未被接受".into()
+                                });
+                            cluster_for_ack.fail_task(&task_id_for_ack, &reason);
                         } else {
                             tracing::info!("[Cluster] peer_chat RPC ACK received");
                         }
@@ -2092,6 +2348,92 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         self.roaming_set_enabled(ctx, false).await
+    }
+
+    // ------------------------------------------------------------------
+    // L16（2026-11-02 三期）：iroh 互信 allowlist 管理面（roaming.trust.*）
+    // ------------------------------------------------------------------
+
+    /// `roaming.trust.list`：信任簿快照（regime 状态 + 全量 hex）。
+    async fn roaming_trust_list(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        Ok(Some(roaming_trust_payload(Path::new(&workspace))?))
+    }
+
+    /// `roaming.trust.add / revoke / unrevoke`：共享变更臂（data.node_id）。
+    async fn roaming_trust_mutate(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+        op: TrustOp,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        let node_id = data
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or("missing node_id")?;
+        roaming_trust_mutate_impl(&workspace, node_id, op)
+    }
+
+    // ------------------------------------------------------------------
+    // L13-a（2026-11-03 三期）：mandate 公钥钉存管理面（roaming.mandate.*）
+    // ------------------------------------------------------------------
+
+    /// `roaming.mandate.list`：mandate 公钥簿快照。
+    async fn roaming_mandate_list(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        Ok(Some(roaming_mandate_payload(Path::new(&workspace))?))
+    }
+
+    /// `roaming.mandate.pin`：强制钉存/轮换（data.node_id + data.pubkey）。
+    async fn roaming_mandate_pin(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        let node_id = data
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or("missing node_id")?;
+        let pubkey = data
+            .get("pubkey")
+            .and_then(|v| v.as_str())
+            .ok_or("missing pubkey")?;
+        roaming_mandate_mutate_impl(&workspace, node_id, Some(pubkey), MandateOp::Pin)
+    }
+
+    /// `roaming.mandate.revoke / unrevoke`：吊销臂（data.node_id）。
+    async fn roaming_mandate_revoke(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        let node_id = data
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or("missing node_id")?;
+        roaming_mandate_mutate_impl(&workspace, node_id, None, MandateOp::Revoke)
+    }
+
+    async fn roaming_mandate_unrevoke(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        let node_id = data
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or("missing node_id")?;
+        roaming_mandate_mutate_impl(&workspace, node_id, None, MandateOp::Unrevoke)
     }
 
     // ------------------------------------------------------------------

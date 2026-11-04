@@ -244,8 +244,10 @@ async fn runtime_flip_unhides_without_restart() {
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert!(out.contains("hidden by configuration"), "实际: {out}");
 
-    // 阶段 2：改盘解除隐藏 → 供给回来 + dispatch 放行执行。
+    // 阶段 2：改盘解除隐藏 → 下一轮 round start 发布新代（L18 世代化）→
+    // 供给回来 + dispatch 放行执行。
     std::fs::write(&cfg_path, r#"{"agents": {"hidden_tools": []}}"#).unwrap();
+    agent_loop.check_config_reload();
     let names = def_names(&agent_loop.build_tool_defs());
     assert_eq!(names, vec!["echo_alpha".to_string()], "实际 {names:?}");
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;

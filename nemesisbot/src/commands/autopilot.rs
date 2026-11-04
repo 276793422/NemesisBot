@@ -40,6 +40,10 @@ pub enum AutopilotAction {
         /// 验收标准（触发建单时透传；空 = 不填，评审将保守转人工）
         #[arg(long, default_value = "")]
         acceptance_criteria: String,
+        /// 绑定发起会话 session_key（L23：父会话存活时建单继承其上下文；父会话
+        /// clear/删除后规则自动暂停。空 = 不绑定，行为与旧版一致）
+        #[arg(long, default_value = "")]
+        session_key: String,
         /// 创建为停用状态（默认启用）
         #[arg(long)]
         disabled: bool,
@@ -65,6 +69,9 @@ pub enum AutopilotAction {
         /// 验收标准（提供即覆盖；`--acceptance-criteria ""` = 清空）
         #[arg(long)]
         acceptance_criteria: Option<String>,
+        /// 绑定发起会话 session_key（提供即覆盖；`--session-key ""` = 解除绑定）
+        #[arg(long)]
+        session_key: Option<String>,
     },
     /// Enable a rule
     Enable { id: i64 },
@@ -102,7 +109,7 @@ fn print_autopilot(ap: &nemesis_board::Autopilot) {
         .map(|t| format!("{t}"))
         .unwrap_or_else(|| "从未运行".to_string());
     println!(
-        "#{} [{}] {} — cron `{}` 标题 `{}` 目标 {}（{}；最近运行: {last_run}）",
+        "#{} [{}] {} — cron `{}` 标题 `{}` 目标 {}（{}；最近运行: {last_run}）{}",
         ap.id,
         if ap.enabled { "启用" } else { "停用" },
         ap.name,
@@ -113,7 +120,12 @@ fn print_autopilot(ap: &nemesis_board::Autopilot) {
         } else {
             &ap.target
         },
-        cron_state
+        cron_state,
+        // L23：父会话绑定显示（绑定 = 建单继承父会话上下文）。
+        ap.session_key
+            .as_deref()
+            .map(|k| format!(" 父会话: {k}"))
+            .unwrap_or_default(),
     );
 }
 
@@ -141,6 +153,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             project_id,
             target,
             acceptance_criteria,
+            session_key,
             disabled,
         } => {
             // 语法 + 语义双闸（BUG-20261025-18）：解析通过但永不匹配的
@@ -160,6 +173,8 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     auto_plan: false,
                     // F-U5-1：验收标准透传（CLI 空串 = 不填）。
                     acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
+                    // L23：父会话绑定（CLI 空串 = 不绑定）。
+                    session_key: Some(session_key).filter(|s| !s.trim().is_empty()),
                 })
                 .map_err(err)?;
             println!(
@@ -178,6 +193,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             project_id,
             target,
             acceptance_criteria,
+            session_key,
         } => {
             // 语法 + 语义双闸（BUG-20261025-18）：按「合并后的有效
             // cron + 有效 enabled」校验，与 WSAPI 同一校验单点。
@@ -200,6 +216,8 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                         enabled: None,
                         auto_plan: None,
                         acceptance_criteria,
+                        // L23：`--session-key ""` = 解除绑定；不提供 = 不改。
+                        session_key: session_key.map(|s| s.trim().to_string()),
                     },
                 )
                 .map_err(err)?;

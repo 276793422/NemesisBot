@@ -300,12 +300,19 @@ fn gc_decision_table() {
 // 磁盘 GC：孤儿 overlay / 陈旧换装残留（P5-R4）
 // ---------------------------------------------------------------------------
 
+/// 三碰 [`IMAGE_SWAP_GATE`] 的测试（决策表 + bug196 两臂）用模块级锁串行：
+/// sweep_disk_garbage 对该闸是 `try_lock` 撞闸即跳过（闸忙返回 0），cargo
+/// 并行调度下持闸测试与验「闸空闲」测试同跑会互踩假红（同
+/// background_registry TEST_LOCK 先例，2026-11-04 全量实录）。
+static GC_GATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// sweep_disk_garbage 决策表：引用三族（run 目录名 / 记录 sanitize id /
 /// 记录 overlay stem）全保留；无引用孤儿回收；registry 损坏的 run 目录
 /// 由目录名兜底保守保留；canonical base 在场时 base.new 残留回收、canonical
 /// 缺席时 base.new 是唯一落点绝不碰。
-#[test]
-fn disk_garbage_sweep_decision_table() {
+#[tokio::test]
+async fn disk_garbage_sweep_decision_table() {
+    let _serial = GC_GATE_TEST_LOCK.lock().await;
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     std::fs::create_dir_all(vm_overlays_root(ws)).unwrap();
@@ -389,6 +396,7 @@ fn disk_garbage_sweep_decision_table() {
 /// 悬空）。闸忙 = GC 本轮整体跳过（best-effort，watchdog 下轮重试）。
 #[tokio::test]
 async fn bug196_sweep_disk_garbage_skipped_while_swap_gate_held() {
+    let _serial = GC_GATE_TEST_LOCK.lock().await;
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     std::fs::create_dir_all(vm_images_root(ws)).unwrap();
@@ -413,6 +421,7 @@ async fn bug196_sweep_disk_garbage_skipped_while_swap_gate_held() {
 /// 「canonical 在场 → base.new 回收」臂同义，钉住闸不改变空闲路径）。
 #[tokio::test]
 async fn bug196_sweep_disk_garbage_still_collects_when_gate_free() {
+    let _serial = GC_GATE_TEST_LOCK.lock().await;
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     std::fs::create_dir_all(vm_images_root(ws)).unwrap();

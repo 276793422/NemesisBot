@@ -120,6 +120,8 @@ fn edit_call(args: &str) -> HookToolCall {
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
         session_key: "session1".to_string(),
+        dispatch_started: None,
+        call_id: None,
     }
 }
 
@@ -1056,6 +1058,8 @@ async fn post_tool_use_failure_hook_runs_script() {
         channel: "web".into(),
         chat_id: "c1".into(),
         session_key: "agent:main:session:s9".into(),
+        dispatch_started: None,
+        call_id: None,
     };
     // 走 ToolHook::post_tool_use_failure（生产 Err 分支的入口）。
     use crate::hooks::ToolHook as _;
@@ -1117,13 +1121,14 @@ fn migrate_is_noop_without_legacy_or_with_existing_target() {
 }
 
 // ---------------------------------------------------------------------------
-// 热更五态（2026-09-24 hooks 三合一收口件1）：盘上桥分发入口惰性 mtime 检查
+// 热更五态（2026-09-24 hooks 三合一收口件1）：盘上桥分发入口惰性内容检查
+// （BUG-20261104-359：mtime 等值判定收编为内容比对——测试不再 sleep 强推
+// mtime 赌粒度，同刻改写由钉 mtime 回归测试确定性覆盖）
 // ---------------------------------------------------------------------------
 
-/// 覆写 hooks.json 并保证 mtime 前进（文件系统时间戳粒度可能粗于两次写间隔）。
+/// 覆写 hooks.json（内容比对不赌时钟，无需 sleep 强推 mtime）。
 fn rewrite_hooks(cfg: &std::path::Path, doc: &str) {
     std::fs::write(cfg.join("hooks.json"), doc).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(25));
 }
 
 fn block_reason(d: crate::hooks::HookDecision) -> String {
@@ -1144,33 +1149,29 @@ async fn hot_reload_five_states() {
         &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v1"), None),
     );
     let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
-    let seen = || *b.seen_mtime.lock().unwrap();
-    let file_mtime = || {
-        std::fs::metadata(cfg.join("hooks.json"))
-            .ok()
-            .and_then(|m| m.modified().ok())
-    };
+    let seen = || b.seen_raw.lock().unwrap().clone();
+    let file_text = || std::fs::read_to_string(cfg.join("hooks.json")).ok();
 
-    // ① 无变化不重载：mtime 未动，seen_mtime 与盘上一致（检查直通），
+    // ① 无变化不重载：文件未动，seen_raw 与盘上文本一致（检查直通），
     //    行为持续 = 旧配置顶住。
-    assert_eq!(seen(), file_mtime());
+    assert_eq!(seen(), file_text());
     assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v1"));
-    assert_eq!(seen(), file_mtime());
+    assert_eq!(seen(), file_text());
 
-    // ② 变化换装生效：改文件 → 新脚本顶替旧脚本，seen_mtime 跟进。
+    // ② 变化换装生效：改文件 → 新脚本顶替旧脚本，seen_raw 跟进。
     rewrite_hooks(
         &cfg,
         &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v2"), None),
     );
     assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v2"));
-    assert_eq!(seen(), file_mtime());
+    assert_eq!(seen(), file_text());
 
     // ③ 坏文件保旧：解析失败 → 维持上一版有效配置（fail-open 不炸会话）；
-    //    seen_mtime 照记——同版坏文件只 warn 一次。
+    //    seen_raw 照记——同版坏文件只 warn 一次。
     rewrite_hooks(&cfg, "{not json");
     assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v2"));
-    assert_eq!(seen(), file_mtime());
-    // 改好（mtime 再变）→ 恢复重载。
+    assert_eq!(seen(), file_text());
+    // 改好（内容再变）→ 恢复重载。
     rewrite_hooks(
         &cfg,
         &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v3"), None),
@@ -1187,10 +1188,55 @@ async fn hot_reload_five_states() {
 
     // ⑤ 文件消失同清空：路径没了 = 注销。
     std::fs::remove_file(cfg.join("hooks.json")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(25));
     assert_eq!(
         b.pre_tool_use(&edit_call("{}")).await,
         crate::hooks::HookDecision::Allow
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+/// BUG-20261104-359 回归钉：同刻改写（mtime 不变）必须换装。写 v1 装桥 →
+/// 写 v2 → 把 mtime 钉回 v1 的旧值（复现 Windows 毫秒级粒度同 tick 形态）
+/// → 分发入口必须读到 v2。旧 mtime 闸在此必漏检。
+#[tokio::test]
+async fn hot_reload_same_tick_content_change_reloads() {
+    let cfg = tempdir();
+    let proj = tempdir();
+    let path = cfg.join("hooks.json");
+    rewrite_hooks(
+        &cfg,
+        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v1"), None),
+    );
+    let old_mtime = {
+        let f = std::fs::File::open(&path).unwrap();
+        f.metadata().unwrap().modified().unwrap()
+    };
+
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    assert!(
+        block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v1"),
+        "sanity: v1 active"
+    );
+
+    // 同刻改写：内容换 v2，mtime 钉回旧值（FileTimes 写式打开改时间戳，
+    // 内容不动——旧实现 mtime 等值闸在此直接跳过 = 漏检）。
+    rewrite_hooks(
+        &cfg,
+        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v2"), None),
+    );
+    {
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+            .unwrap();
+    }
+    let pinned = std::fs::metadata(&path).unwrap().modified().unwrap();
+    assert_eq!(pinned, old_mtime, "mtime 已钉回旧值（前置成立）");
+
+    assert!(
+        block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v2"),
+        "同刻改写（mtime 不变）也必须换装——内容比对不赌钟"
     );
 
     let _ = std::fs::remove_dir_all(&cfg);
@@ -1206,7 +1252,7 @@ fn in_memory_bridge_has_no_hot_reload() {
         &tmp,
     );
     assert!(b.hooks_path.is_none());
-    assert!(b.seen_mtime.lock().unwrap().is_none());
+    assert!(b.seen_raw.lock().unwrap().is_none());
 }
 
 /// 伴生态跨热更保留：SessionStart 判重与 Stop 阻断计数不因换装清零。
@@ -1594,6 +1640,7 @@ async fn observing_approval_manager_notifies_then_delegates() {
                 sender_id: "u".to_string(),
                 session_key: String::new(),
                 tool_args: serde_json::Value::Null,
+                batch_id: String::new(),
             },
         )
         .expect("delegated");

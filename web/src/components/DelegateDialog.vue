@@ -23,7 +23,7 @@ interface RoleEntry {
 }
 
 const props = defineProps<{ sessionId: string }>()
-const emit = defineEmits<{ (e: 'close'): void; (e: 'done', payload: { role: string; result: string }): void }>()
+const emit = defineEmits<{ (e: 'close'): void; (e: 'done', payload: { task: string; role: string }): void }>()
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -58,7 +58,7 @@ watch(
   { immediate: true },
 )
 
-async function submit() {
+function submit() {
   inlineError.value = ''
   const t = task.value.trim()
   if (!t) {
@@ -67,24 +67,36 @@ async function submit() {
   }
   if (busy.value) return
   busy.value = true
-  try {
-    const resp = await request('chat', 'spawn', {
+  // timeoutMs=0 = 无超时等待：委派是分钟级子代理任务，默认 30s 请求超时
+  // 会在子代理仍在跑时弹「timeout: chat.spawn」假失败。
+  // fire-and-forget（2026-11-04 委派 UX）：发出即关弹窗，不阻塞用户前台
+  // 工作——委派请求/回复由服务端持久化进会话，完成后 `subagent_reply`
+  // push 触发 ChatPanel resyncFromLog，回复自动出现在会话里（进度看
+  // SubagentDrawer）。成功/失败完成通知走 toast（info 提示已发出、
+  // success/error 报结果），弹窗不留也不挡前台。
+  // 「已发出」toast 4s 自动消失，无需手动清理。
+  toast.info(`委派已发出（${role.value || '自动'}），回复完成后出现在会话里`)
+  request(
+    'chat',
+    'spawn',
+    {
       session_id: props.sessionId,
       task: t,
       role: role.value,
       tools_profile: toolsProfile.value,
+    },
+    0,
+  )
+    .then((resp: any) => {
+      const result: string = resp?.result ?? ''
+      toast.success(`委派完成（${resp?.role || '自动'}）：${result.slice(0, 80)}`)
     })
-    const result: string = resp?.result ?? ''
-    toast.success(`委派完成（${resp?.role || '自动'}）：${result.slice(0, 80)}`)
-    emit('done', { role: resp?.role ?? role.value, result })
-    emit('close')
-  } catch (e: any) {
-    // 后端权威拒绝（未知角色/档位外/隐藏/槽未装配…）→ 原文回显，modal 不关。
-    const msg = typeof e === 'string' ? e : e?.message || '委派失败'
-    inlineError.value = msg
-    toast.error(msg)
-  }
-  busy.value = false
+    .catch((e: any) => {
+      const msg = typeof e === 'string' ? e : e?.message || '委派失败'
+      toast.error(`委派失败：${msg}`)
+    })
+  emit('done', { task: t, role: role.value })
+  emit('close')
 }
 </script>
 

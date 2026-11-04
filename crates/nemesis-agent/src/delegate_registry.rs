@@ -950,6 +950,13 @@ async fn rpc_round(
     }
     let deadline = Instant::now() + timeout;
     let needle = format!("\"id\":{id}");
+    // BUG-20261103-341：响应行可能跨两次 50ms 轮询到达（spawn_pump 的
+    // 8KB read() 部分送达 / read_chunk 的 MAX_CHUNK_BYTES 截断）。旧实现
+    // 按轮询批次逐行解析——劈成两片的行各自过不了 serde_json 权威解析
+    // （头片被消费丢弃、尾片无 needle 语义）→ 响应永久丢失 → 握手
+    // CODEX_HANDSHAKE_TIMEOUT 假超时误杀子进程。行重组 carry：只切完整
+    // 行解析，不完整尾行留 carry 与下一批拼接（天然覆盖 >8KB 单行）。
+    let mut carry = String::new();
     loop {
         if !entry.is_running().await {
             // A4 装配纪律：死亡现场带退出码——status 槽（supervise 已填终态）
@@ -976,21 +983,26 @@ async fn rpc_round(
         if output.produced() > *read_mark {
             let (chunk, _) = output.read_chunk(*read_mark);
             *read_mark += chunk.len() as u64;
-            for line in String::from_utf8_lossy(&chunk).lines() {
-                let line = line.trim();
-                if line.is_empty() || !line.contains(&needle) {
-                    continue;
-                }
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    let id_match = v["id"].as_u64() == Some(id);
-                    if id_match && (v.get("result").is_some() || v.get("error").is_some()) {
-                        if v.get("error").is_some() {
-                            return Err(format!(
-                                "handshake rpc error: {}",
-                                truncate_diag(&v["error"].to_string())
-                            ));
+            carry.push_str(&String::from_utf8_lossy(&chunk));
+            if let Some(split) = carry.rfind('\n') {
+                let complete = carry[..=split].to_string();
+                carry.drain(..=split);
+                for line in complete.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || !line.contains(&needle) {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        let id_match = v["id"].as_u64() == Some(id);
+                        if id_match && (v.get("result").is_some() || v.get("error").is_some()) {
+                            if v.get("error").is_some() {
+                                return Err(format!(
+                                    "handshake rpc error: {}",
+                                    truncate_diag(&v["error"].to_string())
+                                ));
+                            }
+                            return Ok(line.to_string());
                         }
-                        return Ok(line.to_string());
                     }
                 }
             }

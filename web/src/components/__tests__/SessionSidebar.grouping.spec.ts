@@ -110,9 +110,11 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     expect(useSessionStore().currentId).toBe('s9')
 
     // 定时 / Skills → 路由跳转。（2026-10-30 起第 4 个 fn-btn 是「☑ 批量」
-    // ——批量管理入口，行为归 batch spec。）
+    // ——批量管理入口，行为归 batch spec；L22 起第 5 个是「⤓ 导入」
+    // ——跨设备移动入口，触发隐藏 file input。）
     const btns = w.findAll('.fn-btn').map((b: any) => b.text())
-    expect(btns).toHaveLength(4)
+    expect(btns).toHaveLength(5)
+    expect(btns[4]).toContain('导入')
     await w.findAll('.fn-btn')[0].trigger('click')
     expect(routerPushMock).toHaveBeenCalledWith('/tasks')
     await w.findAll('.fn-btn')[1].trigger('click')

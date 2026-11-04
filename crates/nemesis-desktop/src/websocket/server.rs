@@ -20,6 +20,11 @@ use tracing::{debug, info, warn};
 use crate::websocket::dispatcher::Dispatcher;
 use crate::websocket::protocol::Message;
 
+/// Bounded wait for the authentication message (BUG-20261103-344): a
+/// connection that never completes auth is dropped instead of pinning its
+/// spawned per-connection task forever.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Error type for WebSocket server operations.
 #[derive(Debug, thiserror::Error)]
 pub enum WsServerError {
@@ -255,7 +260,13 @@ impl WebSocketServer {
                 match accept_result {
                     Ok((stream, addr)) => {
                         debug!("[WebSocketServer] New connection from {}", addr);
-                        Self::handle_new_connection(stream, &state, &key_gen).await;
+                        // BUG-20261103-344: per-connection 处理必须 spawn——
+                        // 旧实现内联 await auth，TCP 连上后不发数据的静默
+                        // 客户端（挂死的子进程窗口/本地探测进程）会永久
+                        // 冻结 accept 循环，锁死全部后续子窗口连接。
+                        let state = state.clone();
+                        let key_gen = key_gen.clone();
+                        tokio::spawn(Self::handle_new_connection(stream, state, key_gen));
                     }
                     Err(e) => {
                         warn!("[WebSocketServer] Accept error: {}", e);
@@ -268,10 +279,15 @@ impl WebSocketServer {
     }
 
     /// Handle a new TCP connection: upgrade to WebSocket, authenticate, start read/write loops.
+    ///
+    /// Runs in its own spawned task (BUG-20261103-344): a stalled auth phase
+    /// must never block the accept loop. The auth read is bounded by
+    /// AUTH_TIMEOUT so connections that never complete authentication are
+    /// dropped instead of pinning their task forever.
     async fn handle_new_connection(
         stream: TcpStream,
-        state: &Arc<Mutex<ServerState>>,
-        key_gen: &Arc<KeyGenerator>,
+        state: Arc<Mutex<ServerState>>,
+        key_gen: Arc<KeyGenerator>,
     ) {
         // Upgrade to WebSocket
         let ws_stream = tokio_tungstenite::accept_async(stream).await;
@@ -285,11 +301,11 @@ impl WebSocketServer {
 
         let (mut ws_write, mut ws_read) = ws_stream.split();
 
-        // Read the first message for authentication
-        let auth_msg = match ws_read.next().await {
-            Some(Ok(WsMessage::Text(text))) => text,
+        // Read the first message for authentication (bounded — see fn docs)
+        let auth_msg = match tokio::time::timeout(AUTH_TIMEOUT, ws_read.next()).await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => text,
             _ => {
-                warn!("[WebSocketServer] Failed to read auth message");
+                warn!("[WebSocketServer] Auth message missing or timed out");
                 return;
             }
         };

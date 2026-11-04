@@ -171,7 +171,15 @@ impl GatewayLocalExecutor {
     }
 
     /// 写回 + 评审触发 + R-9 重估波（镜像 cluster_init.rs 回调 Route 0）。
-    fn finish(&self, task_id: &str, status: &str, response: &str, fail_class: &str) {
+    /// `generation` = 派发代际号回声（AOR 批二a ④ 写回闸拒绝旧代迟到回调）。
+    fn finish(
+        &self,
+        task_id: &str,
+        status: &str,
+        response: &str,
+        fail_class: &str,
+        generation: Option<i64>,
+    ) {
         let outcome = crate::commands::gateway::write_back_board_dispatch(
             &self.board_store,
             &self.workspace,
@@ -179,6 +187,7 @@ impl GatewayLocalExecutor {
             status,
             response,
             fail_class,
+            generation,
         );
         tracing::info!(
             "[LocalDispatch] task {task_id} 写回：is_board_task={} settled={} status={status}",
@@ -228,6 +237,7 @@ impl GatewayLocalExecutor {
         task_id: String,
         session_key: String,
         baseline: Option<DeliveryBaseline>,
+        generation: Option<i64>,
         mut rx: tokio::sync::broadcast::Receiver<OutboundMessage>,
         mut estop_rx: tokio::sync::watch::Receiver<bool>,
     ) {
@@ -248,6 +258,7 @@ impl GatewayLocalExecutor {
                     "error",
                     "本地执行中止：estop 急停触发",
                     "estop",
+                    generation,
                 );
                 return;
             }
@@ -258,6 +269,7 @@ impl GatewayLocalExecutor {
                     "error",
                     &format!("本地执行超时（{shown}s）无最终回复"),
                     "timeout",
+                    generation,
                 );
                 return;
             }
@@ -268,7 +280,7 @@ impl GatewayLocalExecutor {
                 // 捕获落账先行于写回（写回触发评审，账本先 settled）。
                 // 镜像集群纪律：只在成功收口捕获，任何失败 WARN 不阻断写回。
                 self.capture_delivery(&task_id, baseline.as_ref());
-                self.finish(&task_id, "completed", &content, "");
+                self.finish(&task_id, "completed", &content, "", generation);
             }
             // 总线关闭 = 网关正在停机：诚实报错（重启路径无本执行器内存
             // 态，看板单留 FAILED 由人工/复评接管）。
@@ -277,6 +289,7 @@ impl GatewayLocalExecutor {
                 "error",
                 "出站总线已关闭（网关停机），任务无最终回复",
                 "error",
+                generation,
             ),
         }
     }
@@ -343,8 +356,15 @@ impl LocalDispatchExecutor for GatewayLocalExecutor {
         let estop_rx = self.estop.subscribe();
         let me = self.clone();
         tokio::spawn(async move {
-            me.wait_and_write_back(req.task_id, session_key, baseline, rx, estop_rx)
-                .await
+            me.wait_and_write_back(
+                req.task_id,
+                session_key,
+                baseline,
+                req.generation,
+                rx,
+                estop_rx,
+            )
+            .await
         });
         Ok(())
     }

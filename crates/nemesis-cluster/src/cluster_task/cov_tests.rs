@@ -38,6 +38,8 @@ fn make_task(id: &str, status: TaskStatus) -> ClusterTask {
         callback_result: None,
         required_profession: None,
         async_usage_stash: None,
+        mandate: None,
+        dispatch_generation: None,
     }
 }
 

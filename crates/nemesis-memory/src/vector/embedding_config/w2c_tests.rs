@@ -272,9 +272,11 @@ fn download_model_files_connection_refused_errors() {
 // ============================================================
 
 #[test]
-fn download_model_files_tokenizer_copy_failure_warns_but_succeeds() {
-    // local_tokenizer_path exists but is a DIRECTORY → fs::copy fails →
-    // warn + continue (no tokenizer written, no download, Ok returned).
+fn download_model_files_directory_tokenizer_source_errors() {
+    // BUG-20261103-339：local_tokenizer_path 指向目录 → 不是有效源
+    // （is_non_empty_file 含 is_file 闸）→ 无 URL 可兜底 → 最终校验诚实
+    // Err。旧代码：exists() 放行 → fs::copy 失败 warn + continue → 静默
+    // Ok 返回但 tokenizer 缺失（插件 init 晦涩失败 + 永久自禁失败链）。
     let ws = tempfile::tempdir().unwrap();
     let config_dir = ws.path().join("config");
     std::fs::create_dir(&config_dir).unwrap();
@@ -296,11 +298,88 @@ fn download_model_files_tokenizer_copy_failure_warns_but_succeeds() {
         mc.local_tokenizer_path = tok_dir.to_string_lossy().to_string();
     }
 
+    let err = download_model_files(&mut cfg, &config_dir).unwrap_err();
+    assert!(
+        err.contains("tokenizer 文件未安装或为空"),
+        "invalid tokenizer source must fail honestly, got: {err}"
+    );
+    // 目录拷入失败 → tokenizer.json 不得以任何形态残留。
+    assert!(!data_dir.join("tokenizer.json").exists());
+}
+
+// ============================================================
+// BUG-20261103-339：tokenizer 本地拷贝臂残骸合法化 + 安装最终校验
+// （BUG-20261031-241 在 model 臂修掉的病理在本地拷贝臂重演）
+// ============================================================
+
+/// 零字节 local_tokenizer_path 是损坏源（不是有效源）：不得被 exists()
+/// 放行拷入 0 字节后报成功——必须落 URL 下载臂取 fresh 内容。
+/// 旧代码：exists() 短路 → 拷 0 字节 → Ok（URL 臂被遮蔽，本地 server
+/// 一个请求都收不到）。
+#[test]
+fn download_model_files_zero_byte_local_tokenizer_debris_falls_to_url_arm() {
+    let port = spawn_http_server(vec![("200 OK", "TOKENIZER-BYTES-FRESH")]);
+    let ws = tempfile::tempdir().unwrap();
+    let config_dir = ws.path().join("config");
+    std::fs::create_dir(&config_dir).unwrap();
+
+    // Model already present; tokenizer missing.
+    let data_dir = embedding_data_dir(&config_dir).join("test-model");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("model.onnx"), "fake-model").unwrap();
+
+    // 预置损坏源：0 字节 local_tokenizer_path。
+    let tok_src = ws.path().join("tokenizer-src-debris.json");
+    std::fs::write(&tok_src, b"").unwrap();
+
+    let mut cfg = base_config("medium");
+    {
+        let mc = cfg.models.get_mut("medium").unwrap();
+        mc.name = "test-model".into();
+        mc.dimension = 384;
+        mc.model_url = String::new();
+        mc.tokenizer_url = format!("http://127.0.0.1:{}/tokenizer.json", port);
+        mc.local_tokenizer_path = tok_src.to_string_lossy().to_string();
+    }
+
     let (dir, dim) = download_model_files(&mut cfg, &config_dir).unwrap();
     assert_eq!(dim, 384);
-    assert!(dir.contains("test-model"));
-    // Copy failed → tokenizer.json must NOT exist in the model dir.
-    assert!(!data_dir.join("tokenizer.json").exists());
+    // 旧代码：0 字节被拷入 → 本断言红（server 未命中，文件保持 0 字节）。
+    assert_eq!(
+        std::fs::read(std::path::Path::new(&dir).join("tokenizer.json")).unwrap(),
+        b"TOKENIZER-BYTES-FRESH"
+    );
+}
+
+/// 两臂皆不成（无有效 local 源 + 无 URL）→ 最终校验诚实 Err，
+/// 不得静默 Ok 返回缺 tokenizer 的「安装成功」。
+/// 旧代码：静默 Ok（插件 init 晦涩失败 → with_config_dir 写
+/// enabled:false 永久自禁增强记忆）。
+#[test]
+fn download_model_files_errors_when_tokenizer_unavailable() {
+    let ws = tempfile::tempdir().unwrap();
+    let config_dir = ws.path().join("config");
+    std::fs::create_dir(&config_dir).unwrap();
+
+    let data_dir = embedding_data_dir(&config_dir).join("test-model");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("model.onnx"), "fake-model").unwrap();
+
+    let mut cfg = base_config("medium");
+    {
+        let mc = cfg.models.get_mut("medium").unwrap();
+        mc.name = "test-model".into();
+        mc.dimension = 384;
+        mc.model_url = String::new();
+        mc.tokenizer_url = String::new();
+        mc.local_tokenizer_path.clear();
+    }
+
+    let err = download_model_files(&mut cfg, &config_dir).unwrap_err();
+    assert!(
+        err.contains("tokenizer 文件未安装或为空"),
+        "missing tokenizer must fail honestly, got: {err}"
+    );
 }
 
 #[test]

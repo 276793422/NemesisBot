@@ -59,6 +59,10 @@ pub(crate) struct ClusterWiring {
     >,
     pub cluster_rpc_config: Option<nemesis_agent::ClusterRpcConfig>,
     pub cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
+    /// 负载感知路由（最小版）：cluster_rpc `target="auto"` 的在线节点选择器
+    /// （成功率先行 → 待办压力 → 平均响应）。cluster 初始化块内填充，
+    /// cluster 停机后 upgrade 失败 → None（工具侧诚实报「无可用节点」）。
+    pub cluster_auto_target_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// （cluster, task_list, work_queue, persister）四元组——PB-5
     /// ClusterServiceAdapter 构建原料（原 run() 同名前向声明）。
     #[cfg(feature = "cluster")]
@@ -164,6 +168,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     let mut cluster_peers_fn: Option<
         Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>,
     > = None;
+    #[allow(unused_mut)]
+    let mut cluster_auto_target_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>> = None;
     // Cluster refs saved during init, used to create adapter after SharedResources is built.
     #[cfg(feature = "cluster")]
     #[allow(unused_assignments)] // always overwritten by the cluster init block below
@@ -592,6 +598,63 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         let rpc_client = cluster.rpc_client_arc();
         if let Some(client) = rpc_client.clone() {
             handler.set_rpc_client(client);
+        }
+
+        // --- L13-b（2026-11-03 三期）：mandate 签名授权装配 ---
+        // 密钥 load-or-generate（损坏 = Err 拒绝，禁用签名不静默换钥）→
+        // A 端签名器注入 RpcClient（dispatch 咽喉逐单签）+ 运行时公钥覆盖
+        // announce 槽位；B 端前置闸 MandatePolicy 注入 PeerChatHandler
+        //（mode=off 时也显式装配——None 语义是 verify，必须显式 Off 才能关）。
+        // 任何失败只降级 + warn，不阻断 cluster 启动。
+        let mandate_ws = home.join("workspace");
+        let mandate_cfg = &cluster_app_cfg.mandate;
+        let mandate_key =
+            nemesis_cluster::roaming::mandate::load_or_generate_mandate_key(&mandate_ws);
+        match mandate_key {
+            Ok(kf) => {
+                // peers.toml [node].pubkey 与运行时密钥的 mismatch warn 在
+                // set_mandate_pubkey 内部（槽位现值 = Cluster::new 种入的
+                // 静态声明）。
+                cluster.set_mandate_pubkey(kf.public_key.clone());
+                if mandate_cfg.sign_enabled {
+                    match nemesis_cluster::roaming::mandate::MandateSigner::from_key_file(
+                        &kf,
+                        mandate_cfg.allowlist_or_unlimited(),
+                        mandate_cfg.window_secs,
+                        mandate_cfg.max_tokens,
+                        mandate_cfg.max_tool_calls,
+                    ) {
+                        Ok(signer) => {
+                            let signer = std::sync::Arc::new(signer);
+                            if let Some(client) = rpc_client.as_ref() {
+                                client.set_mandate_signer(signer.clone());
+                                info!(
+                                    "[Gateway] mandate 签名器就绪（key_fp={}，window={}s，allowlist={}）",
+                                    signer.key_fp,
+                                    mandate_cfg.window_secs,
+                                    match mandate_cfg.allowlist_or_unlimited() {
+                                        Some(list) => list.join(","),
+                                        None => "不限".to_string(),
+                                    }
+                                );
+                            }
+                        }
+                        Err(e) => warn!(
+                            "[Gateway] mandate 签名器构造失败（出站不签名，B 端 verify 对缺失放行）: {e}"
+                        ),
+                    }
+                }
+            }
+            Err(e) => warn!(
+                "[Gateway] mandate 密钥不可用（本节点不签名不宣告公钥；对端 verify 模式对缺失放行）: {e}"
+            ),
+        }
+        handler.set_mandate_policy(nemesis_cluster::roaming::mandate::MandatePolicy {
+            workspace: mandate_ws,
+            mode: mandate_cfg.resolve_mode(),
+        });
+        if mandate_cfg.resolve_mode() == nemesis_cluster::config_loader::MandateMode::Require {
+            info!("[Gateway] mandate B 端 posture=require（缺失 mandate 的旧节点任务将被拒绝）");
         }
 
         // --- P3/D1-D5（看板项目档案 goal）：分块档案传输栈 ---
@@ -1079,7 +1142,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // --- W2 P4: 派发超时 sweep（board 派发无人回报的兜底）---
         // board.dispatch_timeout_secs = 0 关闭；扫描间隔
         // dispatch_sweep_interval_secs（下限 1s）。失败处置（⛔ 评论 + 通知）
-        // 在 sweep_dispatch_timeouts 内完成，赢 fail_dispatch 竞态才动账。
+        // 在 sweep_dispatch_timeouts 内完成，赢 fail_dispatch_checked 竞态才动账。
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let sweep_cfg = cfg.board.clone().unwrap_or_default();
@@ -1089,6 +1152,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let home_for_sweep = home.clone();
                 // M5-2（2026-10-10 机制加固）：清扫失败的 issue 回流验收
                 // 决策链——评审依赖集在此快照（与派发写回回调同一构造）。
+                // AOR 批三 5.2：sweep 策略化后自治链共用同一依赖集
+                // （estop/换节点加权/审计漏斗全走 BoardReviewDeps）。
                 let sweep_moderator = board_moderator_loop.clone();
                 let sweep_estop = estop.clone();
                 let sweep_estop_parked = board_estop_parked.clone();
@@ -1106,59 +1171,123 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     // CD6（裁决⑫，2026-09-17）：mtime 缓存——config 文件未
                     // 变化不重读，消除派发 sweep 每 20s tick 触发 load_config
                     // 两条 INFO 刷屏；热生效语义保留（R4：改文件 → mtime 变化
-                    // → 下个 tick 重新现读）。
-                    let mut sweep_timeout_cache: Option<(std::time::SystemTime, u64)> = None;
+                    // → 下个 tick 重新现读）。AOR 批三 5.2：缓存携带
+                    // autonomy + max_redispatch（同一次 load_config 取齐，
+                    // 三键同步热生效）。AOR 批三 5.3：再带 replan 开关 +
+                    // unknown 阻塞超时（触发点④ 周期体检的两个闸参数）。
+                    let mut sweep_cfg_cache: Option<(
+                        std::time::SystemTime,
+                        u64,
+                        bool,
+                        u32,
+                        bool,
+                        u64,
+                    )> = None;
                     loop {
                         ticker.tick().await;
                         let Some(store) = store_for_sweep.as_ref() else {
                             continue;
                         };
-                        // 超时阈值每 tick 现读（2026-09-15 R4 真机实证：
-                        // config.set dispatch_timeout_secs 改值后 sweep 仍用
-                        // 启动烘焙值跑到底——与旗标类键「每次现读」语义对齐；
-                        // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆。
-                        let timeout_secs = {
+                        // 超时阈值/自治开关/重派预算每 tick 现读（2026-09-15
+                        // R4 真机实证：config.set 改值后 sweep 仍用启动烘焙值
+                        // 跑到底——与旗标类键「每次现读」语义对齐；timeout
+                        // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆，
+                        // autonomy 回落 false（从严）。
+                        let (
+                            timeout_secs,
+                            autonomous,
+                            max_redispatch,
+                            replan_enabled,
+                            replan_unknown_timeout,
+                        ) = {
                             let path = home_for_sweep.join("config.json");
                             let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                            let cached = match (mtime.as_ref(), sweep_timeout_cache.as_ref()) {
-                                (Some(t), Some((cached_t, v))) if t == cached_t => Some(*v),
+                            let cached = match (mtime.as_ref(), sweep_cfg_cache.as_ref()) {
+                                (Some(t), Some((cached_t, v, a, m, re, ru))) if t == cached_t => {
+                                    Some((*v, *a, *m, *re, *ru))
+                                }
                                 _ => {
-                                    let v = nemesis_config::load_config(&path)
+                                    let parsed = nemesis_config::load_config(&path)
                                         .ok()
-                                        .and_then(|c| c.board)
+                                        .and_then(|c| c.board);
+                                    let v = parsed
+                                        .as_ref()
                                         .map(|b| b.dispatch_timeout_secs)
                                         .unwrap_or(sweep_cfg.dispatch_timeout_secs);
+                                    let a = parsed.as_ref().map(|b| {
+                                        b.autonomy == nemesis_config::BoardAutonomy::Autonomous
+                                    });
+                                    let m = parsed
+                                        .as_ref()
+                                        .map(|b| b.max_redispatch)
+                                        .unwrap_or(sweep_cfg.max_redispatch);
+                                    let re =
+                                        parsed.as_ref().map(|b| b.replan.enabled).unwrap_or(true);
+                                    let ru = parsed
+                                        .as_ref()
+                                        .map(|b| b.replan.unknown_block_timeout_secs)
+                                        .unwrap_or(0);
+                                    let tuple = (v, a.unwrap_or(false), m, re, ru);
                                     if let Some(t) = mtime {
-                                        sweep_timeout_cache = Some((t, v));
+                                        sweep_cfg_cache =
+                                            Some((t, tuple.0, tuple.1, tuple.2, tuple.3, tuple.4));
                                     }
-                                    Some(v)
+                                    Some(tuple)
                                 }
                             };
-                            cached.unwrap_or(sweep_cfg.dispatch_timeout_secs)
+                            cached.unwrap_or((
+                                sweep_cfg.dispatch_timeout_secs,
+                                false,
+                                sweep_cfg.max_redispatch,
+                                true,
+                                0,
+                            ))
                         };
                         if timeout_secs == 0 {
                             continue;
                         }
-                        // M5-2：清扫失败 → in_review 回流 + spawn 评审 agent
-                        //（视同验收 FAIL 走重派/预算/熔断漏斗）。
-                        for review_issue_id in
-                            sweep_dispatch_timeouts(store, &cluster_for_sweep, timeout_secs)
-                        {
+                        // AOR 批三 5.2：sweep 策略化——自治链（预算/冻结/换节点
+                        // 重派）在 sweep 内闭环，返回列表只剩回落评审链的
+                        // issue（assisted 全量 + 自治的无候选/重派失败臂）。
+                        let sweep_deps = crate::board_review::BoardReviewDeps {
+                            store: store.clone(),
+                            workspace: sweep_workspace.clone(),
+                            home: home_for_sweep.clone(),
+                            moderator_loop: sweep_moderator.clone(),
+                            cluster: cluster_for_sweep.clone(),
+                            estop: sweep_estop.clone(),
+                            estop_parked: sweep_estop_parked.clone(),
+                            selfcheck: sweep_selfcheck.clone(),
+                            #[cfg(feature = "security")]
+                            security_slot: Some(security_slot_for_sweep.clone()),
+                        };
+                        for review_issue_id in sweep_dispatch_timeouts(
+                            &sweep_deps,
+                            timeout_secs,
+                            autonomous,
+                            max_redispatch,
+                        ) {
                             crate::board_review::spawn_board_review(
-                                crate::board_review::BoardReviewDeps {
-                                    store: store.clone(),
-                                    workspace: sweep_workspace.clone(),
-                                    home: home_for_sweep.clone(),
-                                    moderator_loop: sweep_moderator.clone(),
-                                    cluster: cluster_for_sweep.clone(),
-                                    estop: sweep_estop.clone(),
-                                    estop_parked: sweep_estop_parked.clone(),
-                                    selfcheck: sweep_selfcheck.clone(),
-                                    #[cfg(feature = "security")]
-                                    security_slot: Some(security_slot_for_sweep.clone()),
-                                },
+                                sweep_deps.clone(),
                                 review_issue_id,
                             );
+                        }
+                        // AOR 批三 5.3 触发点④：子树全终态但 FINISH 谓词被未
+                        // 裁决 unknown 阻塞超时 → 起草重规划建议（周期体检
+                        // 兜底——终态后无事件可挂；0=关）。
+                        if replan_enabled && replan_unknown_timeout > 0 {
+                            for replan_issue_id in
+                                crate::board_replan::sweep_unknown_block_candidates(
+                                    &sweep_deps,
+                                    replan_unknown_timeout,
+                                )
+                            {
+                                crate::board_replan::spawn_replan_draft(
+                                    sweep_deps.clone(),
+                                    replan_issue_id,
+                                    "unknown_block_timeout",
+                                );
+                            }
                         }
                     }
                 });
@@ -1422,6 +1551,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 // （Route 3）照常，board 派发也登记了本地 task。
                 // Swarm M4：推进到 in_review 的写回携带评审触发目标，下方
                 // spawn 验收 agent。
+                // AOR 批二a ④：worker 回声的派发代际号（可选字段，旧 B 端
+                // 无此键 = None = 写回闸放行，向后兼容）。
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 let board_writeback = write_back_board_dispatch(
                     &board_store_for_cb,
@@ -1430,6 +1561,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     status,
                     fail_text,
                     fail_class,
+                    payload
+                        .get("dispatch_generation")
+                        .and_then(|v| v.as_i64()),
                 );
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 let is_board_task = board_writeback.is_board_task;
@@ -1580,7 +1714,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             //   true。返回 false 时 cluster 跳过 confirm，worker 副本留 TTL
             //   兜底（宁留勿丢）。
             // fail_class 对齐 peer_chat_callback 语义：恢复腿查询结果不携带
-            // 该字段，传空串（⛔ 评论降级为无分类文案）。
+            // 该字段，传空串（⛔ 评论降级为无分类文案）。代际回声同理缺席
+            //（查询结果 payload 不透传）→ None = 写回闸放行（AOR 批二a ④
+            // 向后兼容臂；存量行恢复写回不受影响）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             {
                 cluster.set_on_recovered_delivery(Arc::new(
@@ -1599,6 +1735,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             status,
                             text,
                             "",
+                            None,
                         );
                         if !outcome.is_board_task {
                             return true; // chat 任务：交付 = 已发 bus 续行
@@ -1867,6 +2004,17 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     None => Vec::new(),
                 }));
             }
+
+            // 负载感知路由（最小版）：target="auto" 的选择器闭包。cluster 停机
+            // 后 upgrade 失败 → None，工具侧诚实报「无可用节点」，不猜不降级。
+            {
+                let cluster_weak_for_auto = Arc::downgrade(&cluster);
+                cluster_auto_target_fn = Some(Arc::new(move || {
+                    cluster_weak_for_auto
+                        .upgrade()
+                        .and_then(|c| c.pick_auto_route_target())
+                }));
+            }
         } else {
             info!(
                 "[Gateway] Cluster initialized (inactive) — start via Dashboard or enable in config"
@@ -1890,6 +2038,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         cluster_rpc_call_fn,
         cluster_rpc_config,
         cluster_peers_fn,
+        cluster_auto_target_fn,
         #[cfg(feature = "cluster")]
         cluster_adapter_refs,
         #[cfg(feature = "cluster")]

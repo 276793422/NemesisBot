@@ -96,6 +96,11 @@ mod config_watch;
 pub use config_watch::*;
 #[allow(unused_imports)]
 pub(crate) use config_watch::*;
+mod config_gen;
+#[allow(unused_imports)]
+pub use config_gen::*;
+#[allow(unused_imports)]
+pub(crate) use config_gen::*;
 mod client_spawn;
 #[allow(unused_imports)]
 pub use client_spawn::*;
@@ -108,7 +113,9 @@ pub use fs_watch::*;
 pub(crate) use fs_watch::*;
 /// §6.2（2026-10-12 无人值守）：撞顶翻倍阶梯——空输出 `length` 烧穿时
 /// max_tokens 翻倍重发（32K 地板 / config 封顶）+ per-model 学习缓存。
-mod length_escalation;
+/// pub(crate)：L28+（改进项三期）续行续写再撞顶复用同一阶梯公式与
+/// ESCALATION_FLOOR 地板（单一真相源，不抄数字）。
+pub(crate) mod length_escalation;
 mod llm_types;
 #[allow(unused_imports)]
 pub use llm_types::*;
@@ -179,6 +186,11 @@ mod tool_dispatch;
 pub use tool_dispatch::*;
 #[allow(unused_imports)]
 pub(crate) use tool_dispatch::*;
+// L13-b（2026-11-03 三期）：mandate 执行面守卫 loop 侧接线（槽/轮顶检；
+// 纯类型+marker 在顶层 crate::mandate_guard）。
+mod mandate_guard;
+#[allow(unused_imports)]
+pub(crate) use mandate_guard::*;
 // P8（集群无人值守硬化 A2）：会话 token 预算闸 loop 侧接线（顶检器官/
 // 记账/观测；纯类型+账本在顶层 crate::token_budget）。
 mod token_budget;
@@ -514,6 +526,11 @@ pub struct AgentLoop {
     /// the token for the corresponding session is cancelled, causing the
     /// LLM loop to break at the next check point.
     cancel_tokens: dashmap::DashMap<String, tokio_util::sync::CancellationToken>,
+    /// L13-b（2026-11-03 三期）：mandate 执行面守卫槽（cluster_agent per-task
+    /// set/take；work queue 串行使 loop 级槽安全，与 cancel token 的
+    /// per-session DashMap 不同——mandate 授权书绑定单个任务而非会话族）。
+    /// None = 无守卫 = 旧行为直通。
+    mandate_guard: parking_lot::RwLock<Option<std::sync::Arc<crate::mandate_guard::MandateGuard>>>,
     /// Monotonic turn counter for checkpoints (one per inbound message). Global
     /// across sessions in this MVP — adequate for single-session deployments;
     /// multi-session isolation is a documented follow-up.
@@ -765,14 +782,24 @@ pub struct AgentLoop {
     /// 引擎引用只服务「已注册工作流」的当前定义读取；no-workflow 编译下
     /// 整个字段消失。
     pending_workflow_edit: parking_lot::RwLock<Option<nemesis_types::channel::WorkflowEditTarget>>,
+    /// L10-建设（改进项三期 2026-11-02）：惰性 schema 供给的 per-session
+    /// 解锁账（tools_schema_get 取回成功的工具名，按解锁顺序 append、只增
+    /// 不减、去重）。schema_unlock_section 渲染累积注记的真相源——
+    /// append-only 保证字节前缀稳定（prompt cache 只失效尾部）。进程内存
+    /// 态：重启即清，模型重取即回（诚实边界，不持久化）。
+    tool_schema_unlocks: parking_lot::RwLock<std::collections::HashMap<String, Vec<String>>>,
     /// 对话生成：工作流引擎引用（渲染 workflow_edit 命名会话的当前定义块 +
     /// agent_factory 装配；None = 引擎未装配，命名会话诚实注明）。
     #[cfg(feature = "workflow")]
     workflow_engine:
         parking_lot::RwLock<Option<std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>>>,
-    /// Last-seen mtime of config.json; `check_config_reload` compares against
-    /// this each round to detect on-disk changes without re-reading every turn.
-    config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
+    /// L18 配置世代快照（2026-11-03）：当前已发布代（None = standalone /
+    /// 绑定后从未发布成功）。读者经 `config_generation()` 持 Arc 引用（代内
+    /// 恒一致）；发布点唯一三处（绑定强制 / round start mtime 闸 / 模型切换
+    /// 对账），读者绝不发布——「执行开始钉代（嵌套不跨代）」由发布点分布
+    /// 保证。裸 mtime 锚 `config_mtime` 已退役并入代对象（mtime 与内容同源
+    /// 携带）。机制与刻意偏差见 `loop/config_gen.rs` 模块文档。
+    config_gen: parking_lot::RwLock<Option<std::sync::Arc<config_gen::ConfigGeneration>>>,
     /// 用户画像注入段缓存（B 线动态注入，2026-10-14）：`(profile_mtime_ns,
     /// 渲染段)`。build_messages 每轮按 `<workspace>/config/user_profile.json`
     /// mtime 门控重读——sweep 学习 / veto / disable 即时生效，文件未变时
@@ -799,6 +826,13 @@ pub struct AgentLoop {
     spawn_slot: parking_lot::RwLock<
         Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>,
     >,
+    /// 子代理可见性（D5，2026-11-03）：本 loop 的宿主形态标识（`main` /
+    /// `project:{pid}` / `agent:{id}`）。集群 delegate 任务入册
+    /// （`save_async_continuation` → `subagent_registry`）时抄给注册表
+    /// `loop_origin` 字段——详情/列表视图按它区分「哪个宿主委派的跨节点
+    /// 任务」。factory 组装后 `set_loop_origin` 注入；缺省 `main`（主 loop
+    /// 形态与其 spawn 闭包硬编码一致，standalone 测试形态同值）。
+    loop_origin: parking_lot::RwLock<String>,
     /// 语音 realtime P1（W4 L2）：语音对话模式提示词注入开关。gateway 侧把
     /// `chat.realtime.voice_prompt` 热态经 `set_voice_prompt` 接线（仿 estop
     /// late-binding 模式）；`build_messages` 每轮读取，`true` 且 tier≠mini 才
@@ -924,6 +958,7 @@ impl AgentLoop {
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
+            mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             draining: std::sync::atomic::AtomicBool::new(false),
@@ -997,13 +1032,15 @@ impl AgentLoop {
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
             pending_workflow_edit: parking_lot::RwLock::new(None),
+            tool_schema_unlocks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
-            config_mtime: parking_lot::RwLock::new(None),
+            config_gen: parking_lot::RwLock::new(None),
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
+            loop_origin: parking_lot::RwLock::new("main".to_string()),
             voice_prompt: parking_lot::RwLock::new(None),
             workspace_boundary: parking_lot::RwLock::new(None),
             plan_products_root: parking_lot::RwLock::new(None),
@@ -1098,6 +1135,42 @@ impl AgentLoop {
     /// Work 时间线累加器共享句柄（factory 注入 ToolEventHook 用）。
     pub fn work_recorder(&self) -> crate::work_timeline::WorkRecorder {
         self.work_recorder.clone()
+    }
+
+    /// 修⑥（BUG-C 2026-11-04）：急停中断面的 ToolFinished 补发。被 estop
+    /// select 臂 drop 的执行链（含 ToolEventHook）发不出终态——按 hook 同一
+    /// 发射点（Work 累加器 + broadcast）补发 interrupted 记录：同 call_id
+    /// （hook 侧 ToolStarted 已带）、真实墙钟（dispatch 入口起算，含审批
+    /// 等待）、ok=false。work 累加器找不到对应 started 轮 = 忽略（estop 在
+    /// 首次 poll 前翻真的微秒窗口，无卡片可悬空）。
+    fn emit_tool_interrupted(
+        &self,
+        session_key: &str,
+        chat_id: &str,
+        call_id: &str,
+        tool: &str,
+        started: std::time::Instant,
+        preview: &str,
+    ) {
+        let duration_ms = started.elapsed().as_millis() as u64;
+        let preview = crate::tool_event_hook::truncate_chars(
+            preview,
+            crate::tool_event_hook::RESULT_PREVIEW_CAP,
+        );
+        self.work_recorder
+            .tool_finished(session_key, call_id, false, duration_ms, &preview);
+        if let Some(tx) = self.agent_event_tx.read().as_ref() {
+            // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
+            let _ = tx.send(nemesis_types::agent::AgentEvent::ToolFinished {
+                session_key: session_key.to_string(),
+                chat_id: chat_id.to_string(),
+                call_id: call_id.to_string(),
+                tool: tool.to_string(),
+                duration_ms,
+                ok: false,
+                result_preview: preview,
+            });
+        }
     }
 
     /// 执行中 turn 的时间线快照（WSAPI `chat.work_current`，2026-10-30）：
@@ -1249,6 +1322,11 @@ pub mod limits;
 // P0 vault（C3）：注入机制测试（纯函数 + loop 级四表面防泄漏）。
 #[cfg(test)]
 mod credential_injection_tests;
+// L26②（2026-11-02 三期）：dispatch 凭据闸 v2——别名域绑定 loop 级测试
+// （出域拒绝零执行 / 域内直过 / 顶槽盖叶 / 精确叶收窄 / 无绑定 v1 零回归 /
+// 配置缺席与损坏 fail-secure）。
+#[cfg(test)]
+mod credential_domain_tests;
 // S2②（2026-10-09 高优差距批次一）：主线工具输出凭据/DLP 复扫（脱敏式；
 // 8 层管线只看入参，出侧此前零检查）。
 #[cfg(feature = "security")]
@@ -1277,6 +1355,10 @@ mod pre_pause_probe_tests;
 // G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
 #[cfg(test)]
 mod g4_background_spawn_tests;
+// D5（子代理可见性 2026-11-03）：集群 delegate 并入注册表咬合测试
+//（begin = save_async_continuation / finish = dispatch_continuation）。
+#[cfg(test)]
+mod delegate_registry_tests;
 // E6 (devtool-upgrade 阶段 2)：手动会话维护（/compact /clear）测试。
 #[cfg(test)]
 mod e6_maintenance_tests;
@@ -1433,6 +1515,10 @@ mod w6_drain_tests;
 // mcp_list schema 查询面）。
 #[cfg(test)]
 mod w7_lazy_supply_tests;
+// L10-建设（改进项三期 2026-11-02）：惰性 schema 供给测试（档位裁决矩阵 /
+// 折叠保真 / 解锁账与注记渲染 / dispatch 拦截臂 / 校验回灌指引）。
+#[cfg(test)]
+mod l10_lazy_schema_tests;
 // tools_trait.rs 覆盖率补充（enable_mcp_reload 两臂 / check_mcp_reload
 // 热重载 / record_tool_validation_stats 落账）。
 #[cfg(test)]
@@ -1450,7 +1536,13 @@ mod length_escalation_tests;
 // config_watch 值域防护测试：per-model max_output_tokens 解析的 u32 值域
 // 外坏值按缺席处理（不回绕/不截断）。
 #[cfg(test)]
+mod config_gen_tests;
+#[cfg(test)]
 mod config_watch_tests;
+// L29（2026-11-02 改进项三期）流中断拼接续写测试：extract 纯函数四态 /
+// 拼接行为 / 开关回退 / tc 不可续 / 重复中断覆盖 / 常量互锚。
+#[cfg(test)]
+mod recovery_concat_tests;
 // tool_dispatch.rs 安全管线后续层覆盖（limits 审批直通车三分支 /
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
@@ -1487,3 +1579,20 @@ mod bypass_llm_tests;
 // （connector-binding 回灌放行）的行为钉子。
 #[cfg(test)]
 mod b4_b2_gate_tests;
+
+// L10-量测（改进项三期 2026-11-02）：tool defs 字节量测埋点（单一真相源
+// 一致性 / hidden_tools 闸联动 / 序列化口径钉子——L10-建设惰性 schema
+// 前后对比基线的口径稳定性回归锁）。
+#[cfg(test)]
+mod tool_defs_metrics_tests;
+
+// L19（改进项三期 2026-11-03）：U5 并行批接统一 WorkPool 后的行为钉子
+// （批级预检全批拒绝零执行 / 累计字节口径 / 正常批源序不变）。
+#[cfg(test)]
+mod l19_parallel_batch_tests;
+
+// L22（改进项三期 2026-11-03 snooze 排队）：gate_inbound 暂停闸行为钉子
+// （用户排队回执 / cron 静默 Coalesced / 超限成对拒收 / slash 穿透 /
+// 未暂停准入）+ inject_inbound 重注入入口接线契约。
+#[cfg(test)]
+mod l22_snooze_gate_tests;

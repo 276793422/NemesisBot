@@ -238,7 +238,7 @@ async fn vision_review_attaches_image_parts_and_parses() {
         path: std::path::PathBuf::from("x/mock.png"),
     };
     let mut prompt = "评审这张图".to_string();
-    let out = run_review_llm_vision(provider, "vision-m", "sys", &mut prompt, &[img])
+    let out = run_review_llm_vision(provider, "vision-m", "sys", &mut prompt, &[img], &[])
         .await
         .unwrap();
     assert_eq!(out.verdict, nemesis_board::ReviewVerdict::Pass);
@@ -277,13 +277,14 @@ async fn vision_review_retry_recovers_with_replay_note() {
         path: std::path::PathBuf::from("x/a.jpg"),
     };
     let mut prompt = "评审".to_string();
-    let out = run_review_llm_vision(provider, "vision-m", "sys", &mut prompt, &[img])
+    let out = run_review_llm_vision(provider, "vision-m", "sys", &mut prompt, &[img], &[])
         .await
         .unwrap();
     assert_eq!(out.verdict, nemesis_board::ReviewVerdict::Pass);
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 3, "解析失败回灌重试 ≤2（共 3 轮）");
-    // 回灌语义：第三轮请求体带前轮原输出（build_retry_prompt）。
+    // 回灌语义：第三轮请求体带前轮原输出（回灌重试提示词；清单为空时
+    // 与旧 build_retry_prompt 字节一致）。
     let last = String::from_utf8_lossy(&reqs[2].body);
     assert!(last.contains(GARBAGE), "回灌带前轮输出: {last}");
     // 图 parts 在重试轮原样保留。
@@ -309,7 +310,7 @@ async fn vision_review_three_garbage_rounds_fail_honest() {
         path: std::path::PathBuf::from("x/a.webp"),
     };
     let mut prompt = "评审".to_string();
-    let err = run_review_llm_vision(provider, "vision-m", "sys", &mut prompt, &[img])
+    let err = run_review_llm_vision(provider, "vision-m", "sys", &mut prompt, &[img], &[])
         .await
         .unwrap_err();
     assert!(err.contains("3 轮"), "{err}");

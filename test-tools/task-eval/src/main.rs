@@ -352,6 +352,12 @@ struct Baseline {
     /// `<task_id>#<run_index>` → pass。
     tasks: std::collections::BTreeMap<String, bool>,
     pass_rate: f64,
+    /// BUG-20261104-369：task-eval 本体构建戳（unix 秒，build.rs 注入）。
+    /// 判定语义（TASKS 表 + 检查器）编译进二进制，陈旧二进制跑对比门会
+    /// 产生假回退/假通过——戳可见性让漂移在下结论前暴露。serde(default)
+    /// 兼容老基线缺字段 → 0 = 未知 → 对比侧静默跳过。
+    #[serde(default)]
+    bench_build_unix: u64,
 }
 
 fn baseline_from_report(report: &Report) -> Baseline {
@@ -363,6 +369,7 @@ fn baseline_from_report(report: &Report) -> Baseline {
         saved_at: report.finished_at.clone(),
         tasks,
         pass_rate: report.pass_rate,
+        bench_build_unix: bench_build_unix(),
     }
 }
 
@@ -383,6 +390,28 @@ fn compare_baseline(baseline: &Baseline, current: &Report) -> Vec<String> {
         ));
     }
     violations
+}
+
+/// BUG-20261104-369：task-eval 构建戳（unix 秒；build.rs 经 rustc-env
+/// 编译期注入，0 = 未知）。与 agent-bench 同源语义。
+fn bench_build_unix() -> u64 {
+    option_env!("TASK_EVAL_BUILD_UNIX")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// BUG-20261104-369：构建戳漂移提示（不判门——合法的跨机/跨时点构建
+/// 差异不该红；caller stderr 打印可见性）。任一侧 0（老基线/未知）= None。
+fn build_stamp_note(baseline: &Baseline) -> Option<String> {
+    let cur = bench_build_unix();
+    if baseline.bench_build_unix > 0 && cur > 0 && baseline.bench_build_unix != cur {
+        Some(format!(
+            "[note] task-eval 构建戳不一致（基线 {} vs 本轮 {cur}）——判定语义可能已漂移，先重编 task-eval 再下结论（必要时重录基线）",
+            baseline.bench_build_unix
+        ))
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +599,10 @@ async fn run() -> Result<i32> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("读基线失败: {}", path.display()))?;
         let baseline: Baseline = serde_json::from_str(&text)?;
+        // BUG-20261104-369：构建戳漂移可见性（不判门）。
+        if let Some(note) = build_stamp_note(&baseline) {
+            eprintln!("[task-eval] {note}");
+        }
         let violations = compare_baseline(&baseline, &report);
         if !violations.is_empty() {
             eprintln!("[task-eval] 门禁红（相对 {}）:", path.display());

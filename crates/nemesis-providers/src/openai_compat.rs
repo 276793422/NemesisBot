@@ -201,33 +201,17 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         .unwrap_or("stop")
         .to_string();
 
-    let usage = data.get("usage").map(|u| {
-        // Extract cached tokens from provider-specific fields:
-        // - DeepSeek: prompt_cache_hit_tokens
-        // - OpenAI: prompt_tokens_details.cached_tokens
-        let cached = u
-            .get("prompt_cache_hit_tokens")
-            .and_then(|v| v.as_i64())
-            .or_else(|| {
-                u.get("prompt_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(|v| v.as_i64())
-            });
-        // Normalize prompt_tokens to exclude cached tokens, matching Anthropic's
-        // semantics where prompt_tokens = non-cached input only.
-        // OpenAI: prompt_tokens already includes cached_tokens (subset)
-        // DeepSeek: prompt_tokens = cache_hit + cache_miss
-        let prompt_raw = u["prompt_tokens"].as_i64().unwrap_or(0);
-        let prompt_non_cached = prompt_raw - cached.unwrap_or(0);
-        UsageInfo {
-            prompt_tokens: prompt_non_cached,
-            completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
-            total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
-            cached_tokens: cached,
-            cache_creation_tokens: None,
-            cache_read_tokens: cached,
-        }
-    });
+    // usage 归一委托单一真相源（BUG-20261104-389）：此前这里自带第三份
+    // 缓存子集剥出归一（DeepSeek hit / OpenAI cached 两源 or 链），且缺
+    // `.clamp(0, prompt_raw.max(0))` 守卫——畸形上游 cached > prompt_tokens
+    // 时落**负 prompt_tokens** 记账（usage 面板/审计/board token 预算保险
+    // 丝全吃进负数；同族两处 http_provider::extract_usage 与 codex lane
+    // Responses 形态归一均有守卫，唯此处裸减）。委托后 DeepSeek/OpenAI/
+    // Anthropic 三源字段识别与 clamp 守卫随真相源统一。
+    let usage = data
+        .get("usage")
+        .filter(|u| u.is_object())
+        .map(crate::http_provider::extract_usage);
 
     let tool_calls = choices
         .and_then(|c| c.first())

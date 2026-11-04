@@ -23,16 +23,27 @@ pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
+// L15（改进项三期 2026-11-03）：存储世代化迁移链骨架（四条铁律的代码化
+// 模板——零接线，未来破坏性格式变更时按设计文档契约接线）。
+pub mod storage_gen;
+// L19（改进项三期 2026-11-03）：统一 WorkPool 设施（CPU 准入 max(1,N-1) /
+// reader-compute-writer 分池 / 双上限背压+类型化 overloaded / 取消三事实分离）。
+pub mod workpool;
 // B10（2026-10-18 存储韧性）：SQLite 打开面前置守卫——feature 门控，
 // 未启用 `sqlite-preflight` 的消费方不编译本模块（rusqlite 不进依赖图）。
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
+// BUG-20261104-368：恒时 token 比较单一真相源（原 nemesis-web api_handlers
+// 私有件；web re-export 保路径，nemesis-channels websocket 升级闸跨 crate 消费）。
+pub mod verify;
 pub mod wait_ready;
 pub mod zip_util;
 
 // Re-export the most commonly used functions
-pub use file::{ensure_dir, read_file_string, write_file_atomic};
+pub use file::{
+    ATOMIC_TMP_ORPHAN_GRACE, ATOMIC_TMP_PREFIX, ensure_dir, read_file_string, write_file_atomic,
+};
 #[cfg(feature = "http")]
 pub use http_retry::do_request_with_retry_reqwest;
 pub use http_retry::{
@@ -53,4 +64,5 @@ pub use string_utils::{
     deref_str, format_datetime_compact, format_timestamp, is_blank, json_get_bool, json_get_f64,
     json_get_i64, json_get_str, parse_json, pretty_json, random_id, random_short_id, truncate,
 };
+pub use verify::verify_token;
 pub use zip_util::{create_zip, extract_zip, is_path_within_dir, is_unsafe_rel_path};

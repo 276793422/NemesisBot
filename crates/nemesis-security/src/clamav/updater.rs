@@ -56,6 +56,12 @@ impl Updater {
 
         let mut cmd = Command::new(&freshclam_exe);
         cmd.current_dir(&self.config.clamav_path);
+        // kill_on_drop：外层超时（auto-update 300s / CLI install 120s） drop
+        // update() future 时，Child 句柄随之 drop——无此标志 freshclam 成孤儿
+        // 继续后台跑（占 DB 目录，下个 tick 撞 freshclam 内部锁）。对齐
+        // daemon.rs clamd 同款 belt-and-suspenders；正常路径 child.wait()
+        // 显式收尸，不受影响。
+        cmd.kill_on_drop(true);
 
         if !self.config.config_file.is_empty() {
             cmd.arg("--config-file").arg(&self.config.config_file);
@@ -114,10 +120,32 @@ impl Updater {
             None => {
                 // Check file modification times
                 if !self.config.database_dir.is_empty() {
-                    let main_cvd = Path::new(&self.config.database_dir).join("main.cvd");
-                    if let Ok(meta) = std::fs::metadata(&main_cvd)
-                        && let Ok(modified) = meta.modified()
-                        && modified.elapsed().unwrap_or(Duration::MAX) <= max_age
+                    // BUG-20261104-376：freshclam 日常只滚动 daily.cvd/cld
+                    // （main.cvd 数月一更，bytecode.cvd 偶更）——只看
+                    // main.cvd 的 mtime，DB 明明新鲜也恒判 stale，每次
+                    // Manager.start 都白跑一遍 freshclam（联网延迟 + 离线
+                    // 启动噪音），24h 新鲜度闸形同虚设。取全家族文件
+                    // （main/daily/bytecode × cvd/cld）的最新 mtime 做新鲜
+                    // 度 = 最后一次 freshclam 实际落盘时间；全缺 = stale。
+                    let dir = Path::new(&self.config.database_dir);
+                    let mut newest: Option<SystemTime> = None;
+                    for name in [
+                        "main.cvd",
+                        "main.cld",
+                        "daily.cvd",
+                        "daily.cld",
+                        "bytecode.cvd",
+                        "bytecode.cld",
+                    ] {
+                        if let Ok(meta) = std::fs::metadata(dir.join(name))
+                            && let Ok(m) = meta.modified()
+                            && newest.is_none_or(|n| m > n)
+                        {
+                            newest = Some(m);
+                        }
+                    }
+                    if let Some(n) = newest
+                        && n.elapsed().unwrap_or(Duration::MAX) <= max_age
                     {
                         return false;
                     }

@@ -184,6 +184,13 @@ pub struct ExecutorChannel {
     /// `exec_worker` 解析合并进子进程围栏——exec 分离开关两侧围栏同根。
     /// 空 = 单根旧行为（主 loop / 工作流引擎零变化）。
     pub extra_roots: Vec<PathBuf>,
+    /// 子进程围栏 restrict 开关透传（BUG 修复 2026-11-04）：镜像主进程
+    /// `WorkspaceBoundary.restrict`（`agents.defaults.restrict_to_workspace`，
+    /// 同为装配期值——loop 边界与通道同点装配，重启才变，两侧不会漂移）。
+    /// false 时 `env_pairs()` 写 `NEMESISBOT_EXECUTOR_RESTRICT=0`，子进程
+    /// 侧据此放开围栏只读闸；true / 缺省 = 不设 env，子进程按 true 处理
+    /// （老网关 spawn 的子进程字节不变）。
+    pub restrict_child: bool,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -213,6 +220,7 @@ impl ExecutorChannel {
             userland_fallback: None,
             dacl_spawn: None,
             extra_roots: Vec::new(),
+            restrict_child: true,
             timeout: Duration::from_secs(24 * 3600),
         }
     }
@@ -220,6 +228,13 @@ impl ExecutorChannel {
     /// B1：设置围栏第二根（项目 loop 装配侧注入；空 = 单根旧行为）。
     pub fn with_extra_roots(mut self, roots: Vec<PathBuf>) -> Self {
         self.extra_roots = roots;
+        self
+    }
+
+    /// BUG 修复 2026-11-04：设置子进程围栏 restrict 镜像（装配侧从同一
+    /// config 读主进程边界开关传入；true = 缺省不设 env，字节不变）。
+    pub fn with_restrict_child(mut self, restrict: bool) -> Self {
+        self.restrict_child = restrict;
         self
     }
 
@@ -302,6 +317,15 @@ impl ExecutorChannel {
                 "NEMESISBOT_EXECUTOR_HOME".to_string(),
                 home.to_string_lossy().into_owned(),
             ));
+        }
+        // BUG 修复 2026-11-04：围栏 restrict 镜像透传——只在 false 时设
+        // `NEMESISBOT_EXECUTOR_RESTRICT=0`（省 env 不含语义，子进程缺省
+        // true = 旧行为：老网关/裸构造 spawn 的子进程围栏逐字节不变）。
+        // 主进程 restrict=false 时子进程围栏同相放开（两侧同源 config，
+        // 装配期钉死），不再出现「用户关了 restrict、gateway 侧放行、
+        // executor 子进程仍拒写界外」的分叉。
+        if !self.restrict_child {
+            env.push(("NEMESISBOT_EXECUTOR_RESTRICT".to_string(), "0".to_string()));
         }
         // B1：围栏第二根透传（平台原生路径分隔符 join；空 = 不设 env——
         // 子进程缺省空 vec，单根行为与旧版逐字节一致）。join 失败（路径

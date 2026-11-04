@@ -112,6 +112,7 @@ fn ctx_of(channel: &str) -> ApprovalContext {
         sender_id: "user-1".into(),
         session_key: String::new(),
         tool_args: serde_json::Value::Null,
+        batch_id: String::new(),
     }
 }
 

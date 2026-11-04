@@ -234,6 +234,28 @@ impl RequestLogger {
         }
     }
 
+    /// Create a logger whose session directory carries a fixed prefix
+    /// （压缩杂务隔离，2026-11-03 BUG-3：sender_id="summarizer" 的事件改落
+    /// `aux_` 前缀目录，不再伪装成普通对话）。base_dir 派生同 [`Self::new`]
+    /// （resolve_log_path）；目录名 = `{prefix}_{微秒时间戳}`——微秒后缀防
+    /// 同秒碰撞（multipart 连发三次摘要调用是常态）。
+    pub fn new_with_session_prefix(config: LoggingConfig, workspace: &Path, prefix: &str) -> Self {
+        if !config.enabled {
+            return Self::new(config, workspace);
+        }
+        let base_dir = resolve_log_path(&config.log_dir, workspace);
+        let name = format!("{prefix}_{}", Local::now().format("%Y-%m-%d_%H-%M-%S%.6f"));
+        Self {
+            config,
+            base_dir,
+            session_name_override: Some(name),
+            session_dir: Mutex::new(None),
+            file_index: AtomicI32::new(0),
+            enabled: true,
+            start_time: Local::now(),
+        }
+    }
+
     /// Create a new request logger with explicit base_dir and optional session name.
     ///
     /// Used by `ClusterRequestLoggerObserver` to write logs under

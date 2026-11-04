@@ -350,6 +350,70 @@ async fn auto_summarize_emits_soft_and_summarize_notes() {
     let _ = std::fs::remove_file(&cfg_path);
 }
 
+/// ⑩ stuck 闩停用态聊天注记（2026-11-03 可见性修复）回归锁：空摘要
+/// （thinking 烧穿形态，provider 恒回空正文）连续 COMPACT_STUCK_LIMIT 次
+/// 触发失效轴置位 → 聊天流落一条「[自动压缩已暂停]」system 注记（此前
+/// 只落 warn 日志——用户侧「98% 永不压缩」零解释）；false→true 转变沿
+/// 一次性，后续调用不重复。
+#[tokio::test]
+async fn stuck_pause_emits_one_shot_chat_note() {
+    let key = unique_key("stuck-note");
+    let cfg_path = known_window_config("stuck-note", 40);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(OnceProvider {
+            reply: String::new(),
+        }),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // 阈值 75
+    // 2026-11-05 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
+    // ≤125 字符；125+前缀会超限整段被判「无事可做」烧不到计数）。stuck
+    // 场景走真失败形态 = 有效尺寸轮 + provider 恒回空正文。
+    for i in 0..6 {
+        instance.add_user_message(&format!("user {i} {}", "x".repeat(95)));
+        instance.add_assistant_message(&format!("reply {i} {}", "x".repeat(95)), Vec::new(), None);
+    }
+
+    // 三轮：round1 记账 last；round2/round3 失效轴连续计数到
+    // COMPACT_STUCK_LIMIT(2) → stuck 置位 + 注记。
+    for _ in 0..3 {
+        agent_loop
+            .maybe_update_summary(&instance, &key, "web", "c")
+            .await;
+    }
+
+    assert!(instance.get_summary_cache().is_none(), "空摘要绝不折叠历史");
+    let count_stuck = |rows: &[String]| -> usize {
+        rows.iter()
+            .filter(|r| r.contains("[自动压缩已暂停]"))
+            .count()
+    };
+    let rows = system_rows(&key);
+    assert_eq!(count_stuck(&rows), 1, "恰好一条 stuck 停用注记: {rows:?}");
+    let hit = rows
+        .iter()
+        .find(|r| r.contains("[自动压缩已暂停]"))
+        .expect("stuck 注记在文");
+    assert!(hit.contains("连续 2 次"), "{}", hit);
+
+    // 第四轮：闩保持（paused_stuck 提前返回），转变沿一次性不重复注记。
+    agent_loop
+        .maybe_update_summary(&instance, &key, "web", "c")
+        .await;
+    let rows = system_rows(&key);
+    assert_eq!(count_stuck(&rows), 1, "one-shot：不重复: {rows:?}");
+
+    crate::chat_log::delete_chat_log(&key);
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
 #[tokio::test]
 async fn emit_note_rate_limited_per_reason() {
     let key = unique_key("ratelimit");

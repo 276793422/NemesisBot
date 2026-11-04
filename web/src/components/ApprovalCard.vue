@@ -18,6 +18,9 @@ import {
  * F6：拒绝可携带备注（输入框 → respond note → auditor 拼进拒绝消息回灌
  * 给模型，帮它下一轮纠正）；裁决广播 `approval-resolved` 到达时 composable
  * 统一摘卡（竞速败方窗口无感关闭）。
+ * 并行批审批聚合（BUG-A 第三层，2026-11-05）：带 batch_id 的卡按批聚成
+ * 一张卡（N 项清单 + 全部拒绝/全部批准/全部总是允许，一次裁决整批——
+ * WSAPI `approval.respond_batch`）；无 batch_id 的卡保持原单卡渲染不变。
  * 挂载于 AppLayout 根层 —— 任意页面都能响应，与 ToastContainer 同层。
  *
  * M5（2026-10-10 集群无人值守硬化）：远程审批分区——worker 节点的 ABAC
@@ -28,12 +31,37 @@ import {
  * 复用本地卡样式。
  */
 
-const { pendingApprovals, pendingRemoteApprovals, now, respondTo, respondRemoteTo } =
+const { pendingApprovals, pendingRemoteApprovals, now, respondTo, respondBatch, respondRemoteTo } =
   useApprovals()
 
 const visible = computed(
   () => pendingApprovals.length > 0 || pendingRemoteApprovals.length > 0,
 )
+
+/** 并行批审批聚合（BUG-A 第三层）：本地卡按批号分组（保序）。batch_id
+ * 在场 = 批组（渲染一张批卡）；缺省 = 单卡组（key 含 request_id，组内恒
+ * 一项）。分组是纯派生——任一卡被裁决/超时摘除后组自动收缩，全空组消亡。 */
+interface ApprovalGroup {
+  key: string
+  batchId: string | null
+  items: ApprovalRequest[]
+}
+
+const groups = computed<ApprovalGroup[]>(() => {
+  const order: ApprovalGroup[] = []
+  const byKey = new Map<string, ApprovalGroup>()
+  for (const req of pendingApprovals) {
+    const key = req.batch_id ? `batch:${req.batch_id}` : `solo:${req.request_id}`
+    let g = byKey.get(key)
+    if (!g) {
+      g = { key, batchId: req.batch_id ?? null, items: [] }
+      byKey.set(key, g)
+      order.push(g)
+    }
+    g.items.push(req)
+  }
+  return order
+})
 
 /** F6: 每张卡的拒绝备注草稿（request_id → 输入内容；批准路径忽略）。
  * 本地/远程共用一张表（request_id 全局唯一）。 */
@@ -43,6 +71,48 @@ function deny(req: ApprovalRequest) {
   const note = (noteDrafts[req.request_id] ?? '').trim()
   respondTo(req.request_id, false, false, note || undefined)
   delete noteDrafts[req.request_id]
+}
+
+// --- 并行批聚合卡（BUG-A 第三层）辅助 ------------------------------------
+
+const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
+
+/** 批卡风险徽标 = 批内最高风险。 */
+function maxRisk(items: ApprovalRequest[]): string {
+  let best = 'LOW'
+  for (const it of items) {
+    const lvl = it.risk_level.toUpperCase()
+    if (RISK_ORDER.indexOf(lvl) > RISK_ORDER.indexOf(best)) best = lvl
+  }
+  return best
+}
+
+/** 批卡倒计时 = 批内最早到期（先超时的项先自动拒绝，倒计时诚实反映）。 */
+function batchExpires(items: ApprovalRequest[]): number {
+  return Math.min(...items.map(i => i.expiresAt))
+}
+
+/** 「全部总是允许」UX 镜像：仅当批内每一项都可记规则时显示。 */
+function batchCanAlways(items: ApprovalRequest[]): boolean {
+  return items.every(canAlways)
+}
+
+/** 回显将写入的 pattern 去重清单（同批不同 pattern 时逐项落规则）。 */
+function batchPatterns(items: ApprovalRequest[]): string[] {
+  return [...new Set(items.filter(canAlways).map(i => i.pattern as string))]
+}
+
+function denyBatch(g: ApprovalGroup) {
+  if (!g.batchId) return
+  const key = `batch:${g.batchId}`
+  const note = (noteDrafts[key] ?? '').trim()
+  respondBatch(g.batchId, false, false, note || undefined)
+  delete noteDrafts[key]
+}
+
+function approveBatch(g: ApprovalGroup, always = false) {
+  if (!g.batchId) return
+  respondBatch(g.batchId, true, always)
 }
 
 /** M5：远程拒绝（备注随裁决 RPC 下发 worker）。 */
@@ -107,93 +177,166 @@ function previewLineClass(line: string, format?: 'diff' | 'text'): string {
 
 <template>
   <div v-if="visible" class="modal-backdrop approval-backdrop">
-    <div
-      v-for="req in pendingApprovals"
-      :key="req.request_id"
-      class="modal approval-modal"
-    >
-      <div class="approval-card" :class="req.risk_level.toLowerCase()">
+    <div v-for="g in groups" :key="g.key" class="modal approval-modal">
+      <!-- 并行批聚合卡（BUG-A 第三层，2026-11-05）：同批 N 项一张卡，
+           一次裁决整批（respond_batch）；倒计时取批内最早到期，风险徽标
+           取批内最高。单项也有批号时仍走批卡（同批只剩一项语义一致）。 -->
+      <div v-if="g.batchId" class="approval-card batch" :class="maxRisk(g.items).toLowerCase()">
         <div class="approval-header">
-          <h3 style="margin: 0;">🔐 安全审批</h3>
-          <span :class="riskBadgeClass(req.risk_level)">{{ riskLabel(req.risk_level) }}</span>
+          <h3 style="margin: 0;">
+            🔐 安全审批
+            <span class="approval-batch-count">并行批 · {{ g.items.length }} 项</span>
+          </h3>
+          <span :class="riskBadgeClass(maxRisk(g.items))">{{ riskLabel(maxRisk(g.items)) }}</span>
         </div>
 
         <div class="approval-body">
-          <div class="approval-row">
-            <span class="approval-label">操作</span>
-            <code class="approval-value">{{ req.operation }}</code>
+          <div v-for="req in g.items" :key="req.request_id" class="approval-batch-item">
+            <div class="approval-batch-item-head">
+              <code class="approval-value">{{ req.operation }}</code>
+              <code class="approval-value approval-target">{{ req.target }}</code>
+              <span :class="riskBadgeClass(req.risk_level)">{{ riskLabel(req.risk_level) }}</span>
+            </div>
+            <div v-if="req.reason" class="approval-batch-item-reason">{{ req.reason }}</div>
+            <!-- L07 预览折叠：批内逐项预览（diff 染色同单卡），默认收起防
+                 N 项 × 大 diff 撑爆卡片。快照非授权面——批准的仍是操作。 -->
+            <details v-if="req.preview" class="approval-batch-item-preview">
+              <summary>{{ req.preview_format === 'diff' ? '变更预览' : '操作预览' }}</summary>
+              <div class="approval-preview-body">
+                <div
+                  v-for="(line, i) in previewLines(req.preview)"
+                  :key="i"
+                  :class="previewLineClass(line, req.preview_format)"
+                >{{ line.length ? line : ' ' }}</div>
+              </div>
+            </details>
           </div>
-          <div class="approval-row">
-            <span class="approval-label">目标</span>
-            <code class="approval-value approval-target">{{ req.target }}</code>
-          </div>
-          <div v-if="req.reason" class="approval-row">
-            <span class="approval-label">理由</span>
-            <span class="approval-value">{{ req.reason }}</span>
-          </div>
-          <!-- BUG-20261031-254：授权卡自解释三字段（感知层 §5 合同项，后端
-               approval_card_fields 派生、SSE 与 approval.pending 两路载荷都
-               带）——此前 FE 全链丢弃。why 在 reason 非空时恒等于 reason，
-               只在与理由不同（reason 空 → 风险级回落文案）时显示，防重复；
-               impact/reject_note 非空即显示（对齐 IM 通道审批卡同源三行）。 -->
-          <div v-if="req.why && req.why !== req.reason" class="approval-row">
-            <span class="approval-label">为什么</span>
-            <span class="approval-value">{{ req.why }}</span>
-          </div>
-          <div v-if="req.impact" class="approval-row">
-            <span class="approval-label">影响</span>
-            <span class="approval-value">{{ req.impact }}</span>
-          </div>
-          <div v-if="req.reject_note" class="approval-row approval-reject-note">
-            <span class="approval-label">拒绝后果</span>
-            <span class="approval-value">{{ req.reject_note }}</span>
-          </div>
-          <!-- F3：总是允许前的确认串回显——用户看到的就是将写入规则的 pattern。 -->
-          <div v-if="canAlways(req)" class="approval-row approval-always-scope">
+          <!-- F3 镜像：批内全部可记规则才显示（后端逐项落规则，失败 warn
+               不 fail——整批复决已送达优先）。 -->
+          <div v-if="batchCanAlways(g.items)" class="approval-row approval-always-scope">
             <span class="approval-label">记住</span>
-            <code class="approval-value approval-target">{{ req.pattern }}</code>
+            <code class="approval-value approval-target">{{ batchPatterns(g.items).join('；') }}</code>
           </div>
-          <!-- L07（2026-11-01）：操作预览快照（unified diff 染色 / 命令现场）。
-               快照非授权面——批准的仍是操作本身；后端保证截断（64KB）。 -->
-          <div v-if="req.preview" class="approval-preview">
-            <div class="approval-preview-title">
-              {{ req.preview_format === 'diff' ? '变更预览（即将写入的内容）' : '操作预览' }}
-            </div>
-            <div class="approval-preview-body">
-              <div
-                v-for="(line, i) in previewLines(req.preview)"
-                :key="i"
-                :class="previewLineClass(line, req.preview_format)"
-              >{{ line.length ? line : ' ' }}</div>
-            </div>
-          </div>
-          <!-- F6：拒绝备注（可选）——回灌给模型帮它下一轮纠正。 -->
+          <!-- F6：整批拒绝备注（可选）——随裁决送达，auditor 逐卡拼进拒绝消息。 -->
           <input
-            v-model="noteDrafts[req.request_id]"
+            v-model="noteDrafts[`batch:${g.batchId}`]"
             class="input approval-note-input"
             type="text"
             maxlength="500"
             placeholder="拒绝备注（可选，将告知模型原因）"
-            @keydown.enter.prevent="deny(req)"
+            @keydown.enter.prevent="denyBatch(g)"
           />
         </div>
 
         <div class="approval-footer">
-          <span class="approval-countdown">⏱ {{ remaining(req.expiresAt) }}s 后自动拒绝</span>
+          <span class="approval-countdown">
+            ⏱ {{ remaining(batchExpires(g.items)) }}s 后自动拒绝
+          </span>
           <div class="approval-actions">
-            <button class="btn btn-danger" @click="deny(req)">拒绝</button>
+            <button class="btn btn-danger" @click="denyBatch(g)">全部拒绝</button>
             <button
-              v-if="canAlways(req)"
+              v-if="batchCanAlways(g.items)"
               class="btn"
-              title="批准本次，并记住该 pattern（同类操作不再询问）"
-              @click="respondTo(req.request_id, true, true)"
+              title="批准整批，并记住各项 pattern（同类操作不再询问）"
+              @click="approveBatch(g, true)"
             >
-              总是允许
+              全部总是允许
             </button>
-            <button class="btn btn-success" @click="respondTo(req.request_id, true)">批准</button>
+            <button class="btn btn-success" @click="approveBatch(g)">全部批准</button>
           </div>
         </div>
       </div>
+
+      <!-- 单卡（串行路径 / 无批号）：原单卡渲染不变 -->
+      <template v-else>
+        <div
+          v-for="req in g.items"
+          :key="req.request_id"
+          class="approval-card"
+          :class="req.risk_level.toLowerCase()"
+        >
+          <div class="approval-header">
+            <h3 style="margin: 0;">🔐 安全审批</h3>
+            <span :class="riskBadgeClass(req.risk_level)">{{ riskLabel(req.risk_level) }}</span>
+          </div>
+
+          <div class="approval-body">
+            <div class="approval-row">
+              <span class="approval-label">操作</span>
+              <code class="approval-value">{{ req.operation }}</code>
+            </div>
+            <div class="approval-row">
+              <span class="approval-label">目标</span>
+              <code class="approval-value approval-target">{{ req.target }}</code>
+            </div>
+            <div v-if="req.reason" class="approval-row">
+              <span class="approval-label">理由</span>
+              <span class="approval-value">{{ req.reason }}</span>
+            </div>
+            <!-- BUG-20261031-254：授权卡自解释三字段（感知层 §5 合同项，后端
+                 approval_card_fields 派生、SSE 与 approval.pending 两路载荷都
+                 带）——此前 FE 全链丢弃。why 在 reason 非空时恒等于 reason，
+                 只在与理由不同（reason 空 → 风险级回落文案）时显示，防重复；
+                 impact/reject_note 非空即显示（对齐 IM 通道审批卡同源三行）。 -->
+            <div v-if="req.why && req.why !== req.reason" class="approval-row">
+              <span class="approval-label">为什么</span>
+              <span class="approval-value">{{ req.why }}</span>
+            </div>
+            <div v-if="req.impact" class="approval-row">
+              <span class="approval-label">影响</span>
+              <span class="approval-value">{{ req.impact }}</span>
+            </div>
+            <div v-if="req.reject_note" class="approval-row approval-reject-note">
+              <span class="approval-label">拒绝后果</span>
+              <span class="approval-value">{{ req.reject_note }}</span>
+            </div>
+            <!-- F3：总是允许前的确认串回显——用户看到的就是将写入规则的 pattern。 -->
+            <div v-if="canAlways(req)" class="approval-row approval-always-scope">
+              <span class="approval-label">记住</span>
+              <code class="approval-value approval-target">{{ req.pattern }}</code>
+            </div>
+            <!-- L07（2026-11-01）：操作预览快照（unified diff 染色 / 命令现场）。
+                 快照非授权面——批准的仍是操作本身；后端保证截断（64KB）。 -->
+            <div v-if="req.preview" class="approval-preview">
+              <div class="approval-preview-title">
+                {{ req.preview_format === 'diff' ? '变更预览（即将写入的内容）' : '操作预览' }}
+              </div>
+              <div class="approval-preview-body">
+                <div
+                  v-for="(line, i) in previewLines(req.preview)"
+                  :key="i"
+                  :class="previewLineClass(line, req.preview_format)"
+                >{{ line.length ? line : ' ' }}</div>
+              </div>
+            </div>
+            <!-- F6：拒绝备注（可选）——回灌给模型帮它下一轮纠正。 -->
+            <input
+              v-model="noteDrafts[req.request_id]"
+              class="input approval-note-input"
+              type="text"
+              maxlength="500"
+              placeholder="拒绝备注（可选，将告知模型原因）"
+              @keydown.enter.prevent="deny(req)"
+            />
+          </div>
+
+          <div class="approval-footer">
+            <span class="approval-countdown">⏱ {{ remaining(req.expiresAt) }}s 后自动拒绝</span>
+            <div class="approval-actions">
+              <button class="btn btn-danger" @click="deny(req)">拒绝</button>
+              <button
+                v-if="canAlways(req)"
+                class="btn"
+                title="批准本次，并记住该 pattern（同类操作不再询问）"
+                @click="respondTo(req.request_id, true, true)"
+              >
+                总是允许
+              </button>
+              <button class="btn btn-success" @click="respondTo(req.request_id, true)">批准</button>
+            </div>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- M5：远程审批分区（worker ask 经 master 代理）——无「总是允许」，
@@ -409,5 +552,58 @@ function previewLineClass(line: string, format?: 'diff' | 'text'): string {
 .approval-remote-issue {
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+
+/* 并行批聚合卡（BUG-A 第三层）：批数徽标 + 逐项清单 + 折叠预览。 */
+.approval-batch-count {
+  margin-left: var(--space-2);
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  vertical-align: middle;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.approval-batch-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.approval-batch-item-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.approval-batch-item-head .approval-value {
+  font-size: var(--text-xs);
+}
+
+.approval-batch-item-head span {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.approval-batch-item-reason {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.approval-batch-item-preview summary {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.approval-batch-item-preview .approval-preview-body {
+  margin-top: var(--space-1);
 }
 </style>

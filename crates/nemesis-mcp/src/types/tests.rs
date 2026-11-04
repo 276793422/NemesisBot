@@ -375,6 +375,38 @@ fn tool_content_text_helper() {
     assert_eq!(tc.text.as_deref(), Some("hello"));
 }
 
+/// BUG-20261104-380 回归锁：规范 image content（`data` + `mimeType`）反序列
+/// 化不再丢载荷——此前类型缺字段，serde 静默丢弃后 adapter 恒产空占位。
+#[test]
+fn tool_content_spec_image_deserializes_data_and_mime_type() {
+    let raw = r#"{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}"#;
+    let tc: ToolContent = serde_json::from_str(raw).unwrap();
+    assert_eq!(tc.content_type, "image");
+    assert_eq!(tc.data.as_deref(), Some("iVBORw0KGgo="));
+    assert_eq!(tc.mime_type.as_deref(), Some("image/png"));
+}
+
+/// BUG-20261104-380 回归锁：规范 resource content 的嵌套对象完整保留
+/// （uri/mimeType/text/blob），不再被 serde 静默丢弃。
+#[test]
+fn tool_content_spec_resource_deserializes_embedded_object() {
+    let raw = r#"{"type":"resource","resource":{"uri":"file:///x.txt","mimeType":"text/plain","text":"body"}}"#;
+    let tc: ToolContent = serde_json::from_str(raw).unwrap();
+    let r = tc.resource.expect("embedded resource should survive");
+    assert_eq!(r.uri, "file:///x.txt");
+    assert_eq!(r.mime_type.as_deref(), Some("text/plain"));
+    assert_eq!(r.text.as_deref(), Some("body"));
+    assert!(r.blob.is_none());
+}
+
+/// 兼容不变量：text content（无新字段）序列化字节与修复前一致——
+/// server.rs tools/call 响应与 client 请求的线上形态零漂移。
+#[test]
+fn tool_content_text_serialization_shape_unchanged() {
+    let json = serde_json::to_string(&ToolContent::text("hi")).unwrap();
+    assert_eq!(json, r#"{"type":"text","text":"hi"}"#);
+}
+
 #[test]
 fn tool_call_result_default() {
     let tcr = ToolCallResult::default();

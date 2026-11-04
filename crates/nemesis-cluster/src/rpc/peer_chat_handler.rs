@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::cluster_task::{ClusterTask, ClusterTaskList, ClusterWorkQueue, TaskSource, TaskStatus};
+use crate::roaming::mandate::now_unix;
 use crate::rpc::client::RpcClient;
 
 /// Default LLM request timeout (2 hours).
@@ -76,6 +77,10 @@ pub struct PeerChatAck {
     pub status: String,
     /// Task ID for tracking the async processing.
     pub task_id: String,
+    /// L13-b：拒单原因（status=error 时给 A 端失败漏斗可读文案——board
+    /// 派发侧把它带进 ⛔ 系统评论；None / 缺键 = 旧形态 wire 兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// 判定 peer_chat 的 RPC 响应载荷是否为 B 端拒单（BUG-1，2026-10-17）。
@@ -171,6 +176,10 @@ pub struct PeerChatHandler {
     /// Cluster agent work queue (preferred over llm_channel).
     cluster_task_list: Option<Arc<ClusterTaskList>>,
     cluster_work_queue: Option<Arc<ClusterWorkQueue>>,
+    /// L13-b：mandate 校验策略（workspace + posture；gateway 装配期注入）。
+    /// `None` = 未装配 = 全放行（旧节点/旧装配兼容——mandate 缺失即旧行为，
+    /// 在场即验需要 workspace 钉存钥面在场才有意义）。
+    mandate_policy: Option<crate::roaming::mandate::MandatePolicy>,
     /// Track active async tasks for graceful shutdown.
     active_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
@@ -190,6 +199,7 @@ impl PeerChatHandler {
             task_receive_hook: None,
             cluster_task_list: None,
             cluster_work_queue: None,
+            mandate_policy: None,
             active_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -233,6 +243,11 @@ impl PeerChatHandler {
         self.task_receive_hook = Some(hook);
     }
 
+    /// L13-b：注入 mandate 校验策略（workspace 钉存钥面 + posture）。
+    pub fn set_mandate_policy(&mut self, policy: crate::roaming::mandate::MandatePolicy) {
+        self.mandate_policy = Some(policy);
+    }
+
     /// Set the LLM request timeout（`Duration::MAX` = 不限，
     /// 经 [`llm_timeout_from_config_secs`] 从 config 换算）。
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -264,6 +279,7 @@ impl PeerChatHandler {
                 return PeerChatAck {
                     status: "error".into(),
                     task_id: String::new(),
+                    error: Some(format!("载荷解析失败: {e}")),
                 };
             }
         };
@@ -274,6 +290,7 @@ impl PeerChatHandler {
             return PeerChatAck {
                 status: "error".into(),
                 task_id: String::new(),
+                error: Some("missing content".into()),
             };
         }
 
@@ -311,6 +328,33 @@ impl PeerChatHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .to_string();
+
+        // 4.5 L13-b mandate 前置闸（四道校验：吊销/钉存/签名+绑定+时限；
+        // 拒绝 = status:error ACK，任务不进 set_running/不入队——B 端零
+        // 副作用，A 端既有失败漏斗收口）。拒绝文案带 `mandate 拒绝:` 前缀
+        // 经 ack.error 透传（board 派发侧系统评论 / chat 派发侧错误直达）。
+        let mandate_enforcement = match self.mandate_policy.as_ref() {
+            Some(policy) => match policy.check(&source_node_id, &payload, &task_id, now_unix()) {
+                Ok(enf) => enf,
+                Err(v) => {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        source_node = %source_node_id,
+                        violation = %v,
+                        "[PeerChat] mandate 校验拒绝"
+                    );
+                    return PeerChatAck {
+                        status: "error".into(),
+                        task_id,
+                        error: Some(v.to_string()),
+                    };
+                }
+            },
+            // 策略未装配 = verify 同语义放行（旧装配兼容；带 mandate 的
+            // 载荷不验——验收面没有 workspace 钉存钥就无从验起，宁放行
+            // 不误伤，与「缺失=旧行为」同方向）。
+            None => None,
+        };
 
         // 5. Mark running in result persister
         if !source_node_id.is_empty()
@@ -376,6 +420,12 @@ impl PeerChatHandler {
                 callback_result: None,
                 required_profession: required_profession_from_payload(&payload),
                 async_usage_stash: None,
+                // L13-b：验签通过的执行面守卫投影随任务走（cluster_agent
+                // set 进 AgentLoop guard 槽）；None = 无 mandate。
+                mandate: mandate_enforcement,
+                // AOR 批二a ④：派发代际号（可选键，旧 A 端不带 → None）。
+                // 随任务存进 task_list，回调时原样回声给 A 端写回闸。
+                dispatch_generation: payload.get("dispatch_generation").and_then(|v| v.as_i64()),
             };
             task_list.create_task(cluster_task);
             // 压测②（2026-09-30 三设备）：取证任务（board 评审链的
@@ -411,6 +461,7 @@ impl PeerChatHandler {
                 return PeerChatAck {
                     status: "error".into(),
                     task_id: String::new(),
+                    error: Some(format!("work queue 入队失败: {e}")),
                 };
             }
             tracing::info!(
@@ -464,6 +515,7 @@ impl PeerChatHandler {
         PeerChatAck {
             status: "accepted".into(),
             task_id,
+            error: None,
         }
     }
 
@@ -571,6 +623,7 @@ async fn process_async(
                 None,
                 Some("exec_failed"),
                 None,
+                None,
             )
             .await;
             return;
@@ -609,6 +662,7 @@ async fn process_async(
                 None,
                 Some("exec_failed"),
                 None,
+                None,
             )
             .await;
             return;
@@ -636,6 +690,7 @@ async fn process_async(
                 None,
                 Some("exec_failed"),
                 None,
+                None,
             )
             .await;
             return;
@@ -655,6 +710,7 @@ async fn process_async(
                 None,
                 Some("llm_timeout"),
                 None,
+                None,
             )
             .await;
             return;
@@ -672,6 +728,7 @@ async fn process_async(
         "success",
         &response,
         "",
+        None,
         None,
         None,
         None,
@@ -701,6 +758,7 @@ pub async fn send_callback_or_persist(
     usage: Option<serde_json::Value>,
     fail_class: Option<&str>,
     delivery: Option<serde_json::Value>,
+    dispatch_generation: Option<i64>,
 ) {
     let callback_ok = if !source_node_id.is_empty() {
         send_callback(
@@ -714,6 +772,7 @@ pub async fn send_callback_or_persist(
             usage,
             fail_class,
             delivery,
+            dispatch_generation,
         )
         .await
     } else {
@@ -758,6 +817,9 @@ pub async fn send_callback_or_persist(
 /// `delivery`（P4 交付门）：worker 侧交付分支证据（ref/commit/tree/patch
 /// 元数据 JSON，serde 兼容——旧 master 忽略未知字段；无交付 = None，
 /// 字段不落）。
+/// `dispatch_generation`（AOR 批二a ④）：派发代际号原样回声（None = 键
+/// 不落——wire 兼容与 usage 同款；A 端写回闸对回声缺席 = 放行，旧 B 端
+/// / legacy 路径 / CD3 恢复路径均走该兼容臂）。
 pub async fn send_callback(
     rpc_client: Option<&RpcClient>,
     source_node_id: &str,
@@ -769,6 +831,7 @@ pub async fn send_callback(
     usage: Option<serde_json::Value>,
     fail_class: Option<&str>,
     delivery: Option<serde_json::Value>,
+    dispatch_generation: Option<i64>,
 ) -> bool {
     let client = match rpc_client {
         Some(c) => c,
@@ -791,6 +854,9 @@ pub async fn send_callback(
     }
     if let Some(d) = delivery {
         payload["delivery"] = d;
+    }
+    if let Some(g) = dispatch_generation {
+        payload["dispatch_generation"] = serde_json::json!(g);
     }
 
     for attempt in 0..MAX_CALLBACK_RETRIES {

@@ -163,6 +163,48 @@ async fn enqueue_copies_records_and_is_idempotent() {
     assert!(ob.enqueue("no-such-task", "node-m").is_err());
 }
 
+/// BUG-20261104-365：并发入队互斥回归钉——四路触发源（终态钩子 / master
+/// 兜底 pull RPC / 启动清扫 / 周期残留清扫线程）可对同一 task_id 并发
+/// enqueue，无锁时后到者的 remove_dir_all 会删掉先到者复制到一半的载荷，
+/// 「entry.json 在场 = 载荷完整」不变量被破坏（半套载荷推送 master
+/// content_hash 校验永不过 → 卡死信且重放无效）。多线程同时 enqueue 后
+/// 断言：条目在场且 payload 与源逐字节一致（互斥在任何线程调度下确定绿；
+/// 删锁后此测试高概率红）。
+#[test]
+fn concurrent_enqueue_keeps_payload_intact() {
+    let ws = temp_ws("concurrent-enqueue");
+    make_task_records(&ws, "node-m", "task-conc", "concurrent payload");
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let ob = ob.clone();
+            std::thread::spawn(move || ob.enqueue("task-conc", "node-m"))
+        })
+        .collect();
+    let mut ok = 0;
+    for h in handles {
+        if h.join().expect("入队线程不得 panic").is_ok() {
+            ok += 1;
+        }
+    }
+    assert!(ok >= 1, "并发入队至少一路成功（幂等 no-op / Err 均合法）");
+    // 不变量：entry.json 在场 → payload 与源完全一致。
+    let dir = outbox_dir(&ws).join("task-conc");
+    assert!(dir.join("entry.json").exists(), "条目在场");
+    let payload = collect_dir_files(&dir.join("payload")).expect("载荷可完整收集");
+    let names: Vec<&str> = payload.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(names, vec!["00.request.md", "01.AI.Response.raw.json"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("payload").join("00.request.md")).unwrap(),
+        "concurrent payload"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 #[tokio::test]
 async fn push_delivers_and_deletes_local() {
     let ws = temp_ws("push");
@@ -568,6 +610,45 @@ fn request_pull_queues_when_records_exist() {
     // 未命中诚实 no_archive。
     assert_eq!(ob.request_pull("no-such"), "no_archive");
     assert_eq!(ob.request_pull(""), "no_archive");
+}
+
+/// BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线 sidecar
+/// 与 `.assembling-*` 标记都在场）时 request_pull 不得把无变更集的执行
+/// 记录抢先入队——幂等闸会吞掉随后带变更集的正常入队，master 空集宽容
+/// 把改动静默合并为「无变更」。诚实答 assembling 观望；装配完成（标记
+/// 清除、exec 清扫）后恢复 queued。
+#[test]
+fn request_pull_defers_while_assembling() {
+    let ws = temp_ws("pull_assembling");
+    make_task_records(&ws, "node-m", "task-a", "rescue-me");
+    // 档案管线装配中：exec 目录 + 基线 sidecar + 装配标记（exec 树外）。
+    let exec = crate::exec_workspace::exec_dir_for(&ws, "task-a");
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::write(
+        exec.join(crate::exec_workspace::BASELINE_SIDECAR_NAME),
+        b"{}",
+    )
+    .unwrap();
+    let marker = crate::exec_workspace::assembling_marker_path(
+        &crate::exec_workspace::exec_root_in_workspace(&ws),
+        "task-a",
+    );
+    std::fs::write(&marker, b"").unwrap();
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    assert_eq!(ob.request_pull("task-a"), "assembling");
+    assert!(
+        !outbox_dir(&ws).join("task-a").join("entry.json").exists(),
+        "装配中不得抢先入队"
+    );
+    // 装配完成（标记清除、exec 清扫）→ 恢复 queued 正常入队。
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::remove_dir_all(&exec).unwrap();
+    assert_eq!(ob.request_pull("task-a"), "queued");
+    assert!(outbox_dir(&ws).join("task-a").join("entry.json").exists());
 }
 
 // ---------------------------------------------------------------------------

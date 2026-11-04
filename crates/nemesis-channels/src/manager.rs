@@ -159,14 +159,68 @@ impl ChannelManager {
     /// each one to the appropriate channel. Skips internal channels and
     /// channels not in the allowed list. The loop exits when the sender
     /// is dropped (all clones go out of scope) **or** when the shutdown
-    /// flag is set (explicit `stop_all()` call).
+    /// flag is set (explicit `stop_all()` call). BUG-20261104-360: on the
+    /// shutdown-flag path the loop first performs a bounded flush of the
+    /// queued backlog (deadline 10s) before exiting, so replies of turns
+    /// that completed during the shutdown drain are delivered instead of
+    /// being dropped with the receiver; anything left after the deadline
+    /// is logged with an honest count (trace, not silence).
     async fn dispatch_loop(&self, mut rx: mpsc::Receiver<OutboundMessage>) {
         info!("[ChannelManager] outbound dispatcher started");
         loop {
             // Check shutdown flag before each recv, so stop_all() can break
             // the loop even if cloned senders are still alive.
             if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
-                info!("[ChannelManager] dispatch loop shutting down (shutdown flag set)");
+                // BUG-20261104-360：停机不再静默丢弃队列积压。旧形态旗标置位即
+                // break，rx 随任务退出 drop，mpsc 缓冲内已派发 turn 的最终回复
+                // 无声蒸发——停机 drain（BUG-20261025-33）等的就是这些 turn 完
+                // 成，最后一跳丢弃把 drain 的目的打折；且零痕迹违背
+                // BUG-20261102-315 确立的「丢失必须留痕」不变量。现 bounded
+                // 冲刷：队列清空或截止先到为止，截止后余额 warn 计数（诚实下
+                // 界——此后新推入不追）。
+                const SHUTDOWN_FLUSH_SECS: u64 = 10;
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_FLUSH_SECS);
+                let mut flushed = 0usize;
+                while std::time::Instant::now() < deadline {
+                    match rx.try_recv() {
+                        Ok(msg) => {
+                            // 镜像主循环：内部通道静默跳过并记账。
+                            if is_internal_channel(&msg.channel) {
+                                self.metrics
+                                    .dropped_internal
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                continue;
+                            }
+                            if let Err(e) = self.dispatch_outbound(msg).await {
+                                warn!(error = %e, "[ChannelManager] shutdown flush failed to send outbound message");
+                            }
+                            flushed += 1;
+                        }
+                        Err(mpsc::error::TryRecvError::Empty)
+                        | Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+                // 截止后余额一次性清点（此后 bridge 等存活发送方的新推入不再追）。
+                let mut dropped = 0usize;
+                while let Ok(_msg) = rx.try_recv() {
+                    dropped += 1;
+                }
+                if dropped > 0 {
+                    warn!(
+                        flushed,
+                        dropped,
+                        "[ChannelManager] shutdown flush deadline hit: {} queued message(s) flushed, {} dropped (trace-only)",
+                        flushed,
+                        dropped
+                    );
+                } else {
+                    info!(
+                        flushed,
+                        "[ChannelManager] dispatch loop shutting down (shutdown flag set; flushed {} queued message(s))",
+                        flushed
+                    );
+                }
                 break;
             }
 
@@ -299,7 +353,10 @@ impl ChannelManager {
     /// Iterates through all registered channels and calls `stop()` on each.
     /// Errors are logged but do not prevent stopping remaining channels.
     /// Also sets the shutdown flag so the dispatch loop exits even if
-    /// cloned senders are still alive.
+    /// cloned senders are still alive. The dispatch loop responds by
+    /// flushing its queued backlog within a bounded deadline before exit
+    /// (BUG-20261104-360) — `stop_all()` itself does not wait for the
+    /// flush; it runs concurrently in the dispatch task.
     pub async fn stop_all(&self) -> Result<()> {
         // Set shutdown flag so dispatch loop exits (M4).
         // In Go, cancelling the context stops the dispatch goroutine.

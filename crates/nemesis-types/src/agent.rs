@@ -184,6 +184,14 @@ pub enum AgentEvent {
         /// 等宽纯文本。随 preview 缺省。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preview_format: Option<String>,
+        /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：同一并行工具批内
+        /// N 个 ask 共享的批号（`batch-{uuid}`，`tool_defs` 批调度生成）。
+        /// Some = 前端按批聚卡（一张卡列 N 项 + 全部允许/全部拒绝，
+        /// WSAPI `approval.respond_batch` 一次裁决全批）；None = 串行路径
+        /// 单卡（行为不变）。serde default + skip 兼容旧事件流；空批号
+        /// （limits/凭据等无批上下文的卡）同样落 None 不进聚合。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        batch_id: Option<String>,
     },
     /// 审批已裁决事件（F6，devtool-upgrade 阶段 5）。任一前端 respond 成功
     /// 或服务端超时自动 deny 后由 WebApprovalManager 发布；web pump 转 SSE
@@ -240,6 +248,27 @@ pub enum AgentEvent {
         session_id: String,
         /// 完整会话键（web 层判别命名空间用）。
         session_key: String,
+    },
+    /// 客户端委派回执落会话事件（2026-11-04 委派 UX）。`client_spawn` 在
+    /// 委派回复（或失败注记）持久化进父会话 chat_log **之后**发布；web
+    /// pump 转 WS push `subagent_reply` 定向父会话房间，前端据此
+    /// resyncFromLog 把落盘行刷进视图——委派弹窗 fire-and-forget 化的
+    /// 完成信号（弹窗发出即关，回复以 chat_log 为权威源，本事件只带摘要
+    /// 不重复载荷）。session_key 为父会话键；chat_id 为发起连接级房间
+    /// id（投递路由锚）。
+    SubagentReplyLanded {
+        /// 父会话完整键。
+        session_key: String,
+        /// 发起连接级房间 id（`web:{连接id}`，SessionManager send_queue
+        /// 的键——事件泵剥前缀查房间表投递；会话级 id 查不到房间 = 帧静默
+        /// 丢弃）。
+        chat_id: String,
+        /// 子代理注册表条目 id（`subagent:{uuid}`，抽屉深链用）。
+        subagent_id: String,
+        /// 终态：`done` / `failed`。
+        status: String,
+        /// 回复/失败摘录（≤500 字符，toast 展示用；全文在 chat_log）。
+        summary: String,
     },
     /// P30（WS14）Canvas widget 打开事件。agent 终答里检出**全部合法**的
     /// ```canvas fenced 块后逐块发布（同一回复多块时 `index` 递增）；web
@@ -381,6 +410,8 @@ impl AgentEvent {
             | AgentEvent::CredentialResolved { .. }
             // 会话物化事件带裸 id 但无 chat 目标（全局广播语义）。
             | AgentEvent::SessionCreated { .. } => "",
+            // 委派回执绑定父会话（pump 专用臂定向推房间，不经默认路径）。
+            AgentEvent::SubagentReplyLanded { chat_id, .. } => chat_id,
         }
     }
 
@@ -401,7 +432,9 @@ impl AgentEvent {
             | AgentEvent::SessionCreated { session_key, .. }
             | AgentEvent::CanvasOpen { session_key, .. }
             | AgentEvent::ProviderStream { session_key, .. }
-            | AgentEvent::DeliverablesRegistered { session_key, .. } => Some(session_key),
+            | AgentEvent::DeliverablesRegistered { session_key, .. }
+            // 委派回执绑父会话。
+            | AgentEvent::SubagentReplyLanded { session_key, .. } => Some(session_key),
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
             // 凭据卡是进程级全局卡，无会话上下文。
             AgentEvent::CredentialRequested { .. } | AgentEvent::CredentialResolved { .. } => None,
@@ -421,6 +454,7 @@ impl AgentEvent {
             AgentEvent::QuestionAsked { .. } => "QuestionAsked",
             AgentEvent::QuestionResolved { .. } => "QuestionResolved",
             AgentEvent::SessionCreated { .. } => "SessionCreated",
+            AgentEvent::SubagentReplyLanded { .. } => "SubagentReplyLanded",
             AgentEvent::CanvasOpen { .. } => "CanvasOpen",
             AgentEvent::ProviderStream { .. } => "ProviderStream",
             AgentEvent::DeliverablesRegistered { .. } => "DeliverablesRegistered",
@@ -466,6 +500,23 @@ pub trait ApprovalResponder: Send + Sync {
     /// session_key 为空的卡不命中（空键卡只在全量清理时关闭）。
     fn resolve_orphans_for_session(&self, _session_key: &str, _reason: &str) -> usize {
         0
+    }
+
+    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：对批号下**全部**未决卡
+    /// 送同一裁决（Dashboard 聚合卡「全部允许 / 全部拒绝」）。返回
+    /// `Ok({responded, skipped})` 摘要（responded=裁决生效数；skipped=
+    /// 竞速败方——respond/超时已先裁决，记账让位不计入）；`Err`=批号下
+    /// 没有未决卡、批号为空、或 manager 不支持批量裁决（默认实现，IM 卡 /
+    /// 测试 stub 零改动）。`always`/`note` 语义同 [`Self::respond`]（逐卡
+    /// 生效；不可记忆项 warn 不 fail）。
+    fn respond_batch(
+        &self,
+        _batch_id: &str,
+        _approved: bool,
+        _always: bool,
+        _note: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("batch respond not supported".to_string())
     }
 }
 

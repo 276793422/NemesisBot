@@ -235,6 +235,36 @@ impl CodexProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
+        // reasoning_effort 翻译（2026-11-03 空摘要根修）：Responses API 的
+        // reasoning.effort 此前被本 lane 完全忽略——aux_chat_options 发的
+        // "off"（关思考省输出预算，压缩摘要等杂务调用）被静默丢弃，gpt-5 系
+        // 默认 effort 会把 max_output_tokens 整个烧在思考上、正文为空
+        // （8192 摘要预算空文本四连实录）。翻译规则：low/medium/high 原样
+        // 透传；"off" → gpt- 系用 minimal（该族支持的最低档）、o 系
+        // （o3*/o4*，不支持 minimal）退 low；其余未知值不发字段（不猜，
+        // 对齐 anthropic lane 的 unknown 语义——留给服务端默认）。
+        // 词表漂移（2026-11-04 真机实证）：gpt-6 系已砍掉 minimal（词表
+        // low/medium/high/xhigh/max），部分代理还会把 minimal 映射成 none
+        // 再发上游 → 400 unsupported_value。chat() 对该类错误按上游错误
+        // 信息自带的权威词表降档重试一次（见 effort_downgrade_target），
+        // 不在静态翻译里按模型名猜代际。
+        if let Some(ref effort) = options.reasoning_effort {
+            let translated = match effort.as_str() {
+                "low" | "medium" | "high" => Some(effort.as_str()),
+                "off" => {
+                    if model.starts_with("gpt-") {
+                        Some("minimal")
+                    } else {
+                        Some("low")
+                    }
+                }
+                _ => None,
+            };
+            if let Some(e) = translated {
+                body["reasoning"] = serde_json::json!({ "effort": e });
+            }
+        }
+
         // Translate tools
         if !tools.is_empty() || self.config.enable_web_search {
             let api_tools = translate_tools_for_codex(tools, self.config.enable_web_search);
@@ -244,6 +274,35 @@ impl CodexProvider {
         }
 
         body
+    }
+
+    /// 发送 /responses 请求（chat() 主跳与 effort 降档重试跳共用同一 wire
+    /// 形态——头/鉴权/错误诚实化单点，两跳不得漂移）。
+    async fn send_responses_request(
+        &self,
+        body: &serde_json::Value,
+        api_key: &str,
+        account_id: &str,
+        url: &str,
+        model: &str,
+    ) -> Result<reqwest::Response, FailoverError> {
+        let mut req = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .header("originator", "codex_cli_rs")
+            .header("OpenAI-Beta", "responses=experimental");
+        if !account_id.is_empty() {
+            req = req.header("Chatgpt-Account-Id", account_id);
+        }
+        req.json(body)
+            .send()
+            .await
+            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
+            // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
+            // Timeout——21s 恒定超时误导排查两天）。
+            .map_err(|e| transport_error("codex", model, &e))
     }
 }
 
@@ -584,10 +643,28 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
         match handle_sse_event(&ev) {
             SseOutcome::Finished(response) => return Ok(parse_codex_response(&response)),
             SseOutcome::Failed(msg) => {
-                return Err(FailoverError::Unknown {
-                    provider: "codex".to_string(),
-                    message: msg,
-                });
+                // BUG-20261103-351：流内 failed/error 文案与真相源同判
+                //（classify_llm_error 单一真相源）——此前恒 Unknown（不带
+                // "connect error" 前缀 = is_retriable false），上游显式瞬态
+                // 文案（"quota exceeded"/"overloaded"）反而放弃 fallback
+                // 轮转，比断流（Timeout 可重试）处置更差。分类命中 → 对应
+                // 变体（轮转语义与 HTTP 429/500 同判）；分类不出维持 Unknown
+                // 兜底（不可重试语义不变）。
+                let provider = "codex".to_string();
+                // 根因文案随日志保留（RateLimit/Auth 等变体槽位无 message，
+                // Display 不含上游原文）。
+                tracing::warn!(
+                    provider = "codex",
+                    model = %model,
+                    error_message = %msg,
+                    "[Provider] Codex SSE stream failed"
+                );
+                // BUG-20261103-351：与真相源同判（classify_message_error 单一
+                // 入口）——此前恒 Unknown 不可重试，上游显式瞬态文案放弃轮转
+                // 比断流（Timeout）处置更差。
+                return Err(crate::failover::classify_message_error(
+                    &provider, model, &msg,
+                ));
             }
             SseOutcome::Continue => {}
         }
@@ -611,6 +688,90 @@ async fn parse_sse_response(
         .await
         .map_err(|e| transport_error("codex", model, &e))?;
     parse_sse_text(&text, model)
+}
+
+/// 响应解码（自 chat() 抽出，2026-11-04：effort 降档重试跳复用同一分派）。
+/// Content-type 分派（流式线缆 2026-10-13）：SSE 走聚合解析；
+/// application/json（服务端忽略 stream 回整包）走既有 json 路径。
+async fn decode_codex_response(
+    resp: reqwest::Response,
+    model: &str,
+) -> Result<LLMResponse, FailoverError> {
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if content_type.contains("text/event-stream") {
+        return parse_sse_response(resp, model).await;
+    }
+
+    // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
+    // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
+    // 重试），fallback 链直接终止不轮转（本文件 parse_sse_response 的
+    // SSE 聚合路径早已 transport_error，此路径此前未对齐）。现传输失败
+    // →transport_error（可重试）；解析失败→Format 带 body 摘要。
+    let raw = resp
+        .text()
+        .await
+        .map_err(|e| transport_error("codex", model, &e))?;
+    let data: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
+            provider: "codex".to_string(),
+            message: format!(
+                "invalid JSON body: {} | body: {}",
+                e,
+                raw.chars().take(200).collect::<String>()
+            ),
+        })?;
+
+    Ok(parse_codex_response(&data))
+}
+
+/// effort 词表自愈降档目标（2026-11-04 真机实证）：gpt-6 系词表已变为
+/// low/medium/high/xhigh/max（minimal 被砍；部分代理还会把 minimal 映射成
+/// none 再发上游），上游 400 unsupported_value 的 message 自带权威词表
+///（"Supported values are: 'low', ... 'max'."）。从错误里解析词表、按已知
+/// 档位排序取最低档作为降档目标。非本类错误 / 缺词表句 / 首跳未发
+/// reasoning.effort / 当前已是最低档（无从降档且防循环）→ None（诚实失败，
+/// 不猜）。词表真相源交给服务端，不在代码里按模型名猜代际。
+fn effort_downgrade_target(body: &serde_json::Value, error_text: &str) -> Option<String> {
+    let current = body
+        .get("reasoning")
+        .and_then(|r| r.get("effort"))
+        .and_then(|e| e.as_str())
+        .map(str::to_string)?;
+    // 错误形态闸：error.code=unsupported_value + error.param=reasoning.effort
+    //（cc-switch 包装层与 OpenAI 直连都保留这两键）。
+    let parsed: serde_json::Value = serde_json::from_str(error_text).ok()?;
+    let err = parsed.get("error")?;
+    if err.get("code").and_then(|c| c.as_str()) != Some("unsupported_value") {
+        return None;
+    }
+    if err.get("param").and_then(|p| p.as_str()) != Some("reasoning.effort") {
+        return None;
+    }
+    let message = err.get("message").and_then(|m| m.as_str())?;
+    let idx = message.find("Supported values are:")?;
+    // 引号内段提取：按 ' 切分后奇数段即档名（跳过首段前缀、隔段取值）。
+    let tail = &message[idx + "Supported values are:".len()..];
+    let rank = |e: &str| match e {
+        "minimal" => 0,
+        "low" => 1,
+        "medium" => 2,
+        "high" => 3,
+        "xhigh" => 4,
+        "max" => 5,
+        _ => 99, // 未知档不选（未来新档名出现时宁可失败也不瞎降）
+    };
+    tail.split('\'')
+        .skip(1)
+        .step_by(2)
+        .filter(|s| rank(s) < 99)
+        .min_by_key(|s| rank(s))
+        .map(str::to_string)
+        .filter(|lowest| lowest != &current)
 }
 
 #[async_trait]
@@ -642,32 +803,47 @@ impl LLMProvider for CodexProvider {
         let url = format!("{}/responses", self.config.base_url.trim_end_matches('/'));
         let body = self.build_request_body(messages, tools, &resolved_model, options);
 
-        let mut req = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .header("originator", "codex_cli_rs")
-            .header("OpenAI-Beta", "responses=experimental");
-
-        if !account_id.is_empty() {
-            req = req.header("Chatgpt-Account-Id", &account_id);
-        }
-
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
-            // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
-            // Timeout——21s 恒定超时误导排查两天）。
-            .map_err(|e| transport_error("codex", &resolved_model, &e))?;
+        let resp = self
+            .send_responses_request(&body, &api_key, &account_id, &url, &resolved_model)
+            .await?;
 
         let status = resp.status().as_u16();
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = resp.text().await.unwrap_or_default();
+            // effort 词表自愈（2026-11-04 真机实证）：gpt-6 系砍掉 minimal
+            // 后首跳 off→minimal 撞 400 unsupported_value；上游错误信息自带
+            // 权威词表，按其最低档降档重试一次（仅此一跳，不循环——重试跳
+            // 再错即诚实上报）。
+            if status == 400
+                && let Some(lowest) = effort_downgrade_target(&body, &text)
+            {
+                let mut retry_body = body.clone();
+                retry_body["reasoning"] = serde_json::json!({ "effort": lowest });
+                let resp2 = self
+                    .send_responses_request(
+                        &retry_body,
+                        &api_key,
+                        &account_id,
+                        &url,
+                        &resolved_model,
+                    )
+                    .await?;
+                let status2 = resp2.status().as_u16();
+                if status2 >= 400 {
+                    let retry_after2 = crate::failover::retry_after_from_headers(resp2.headers());
+                    let text2 = resp2.text().await.unwrap_or_default();
+                    return Err(FailoverError::from_status(
+                        "codex",
+                        &resolved_model,
+                        status2,
+                        &text2,
+                        retry_after2,
+                    ));
+                }
+                return decode_codex_response(resp2, &resolved_model).await;
+            }
             return Err(FailoverError::from_status(
                 "codex",
                 &resolved_model,
@@ -677,38 +853,7 @@ impl LLMProvider for CodexProvider {
             ));
         }
 
-        // Content-type 分派（流式线缆 2026-10-13）：SSE 走聚合解析；
-        // application/json（服务端忽略 stream 回整包）走既有 json 路径。
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if content_type.contains("text/event-stream") {
-            return parse_sse_response(resp, &resolved_model).await;
-        }
-
-        // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
-        // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
-        // 重试），fallback 链直接终止不轮转（本文件 parse_sse_response 的
-        // SSE 聚合路径早已 transport_error，此路径此前未对齐）。现传输失败
-        // →transport_error（可重试）；解析失败→Format 带 body 摘要。
-        let raw = resp
-            .text()
-            .await
-            .map_err(|e| transport_error("codex", &resolved_model, &e))?;
-        let data: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
-                provider: "codex".to_string(),
-                message: format!(
-                    "invalid JSON body: {} | body: {}",
-                    e,
-                    raw.chars().take(200).collect::<String>()
-                ),
-            })?;
-
-        Ok(parse_codex_response(&data))
+        decode_codex_response(resp, &resolved_model).await
     }
 
     fn stream_preferred(&self, _model: &str) -> bool {

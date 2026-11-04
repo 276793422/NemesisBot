@@ -42,6 +42,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+/// BUG-20261104-383：事件触发链保留键。workflow.completed/failed/cancelled
+/// 事件的 `data` 携带本键（JSON 字符串数组 = 产出本事件的触发链上的
+/// workflow 名序列，含当前这个）；[`crate::engine::WorkflowEngine::workflows_matching_event`]
+/// 拒绝把链上已出现的 workflow 再次触发——否则「A 监听 workflow.completed」
+/// 完成即匹配自己，每次完成 spawn 新执行再完成再发布，无限风暴；A→B→A
+/// 互触发环同理。链经 `TriggerSource::Event.data` 逐代透传（gateway 订阅者
+/// 把事件 data 原样装进下一执行的 trigger），发布点追加当前 workflow 名，
+/// 环在链第一次出现重复名时被打断。手动 fire_event（无链键）不受影响。
+pub const TRIGGER_CHAIN_KEY: &str = "__wf_trigger_chain";
+
 /// A single event fired into the dispatcher. The `event_type` string is the
 /// primary match key (e.g. `"workflow.completed"`, `"forge.pattern_created"`).
 /// `data` carries optional fields the trigger config can match against.

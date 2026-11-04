@@ -113,6 +113,108 @@ async fn test_start_stop_all() {
     assert!(!ch2.is_started());
 }
 
+/// send 首次调用阻塞在闸上的 stub：确定性制造「loop 占用在慢通道 send、
+/// 队列有积压」的停机丢失形态（BUG-20261104-360 回归钉）。后续 send
+/// 直接通过（一次性闸），冲刷路径不被二次阻塞。
+struct GatedChannel {
+    name: String,
+    gate: Arc<tokio::sync::Notify>,
+    entered: Arc<std::sync::atomic::AtomicBool>,
+    sent: Arc<parking_lot::RwLock<Vec<String>>>,
+    started: Arc<parking_lot::RwLock<bool>>,
+}
+
+impl GatedChannel {
+    fn sent_messages(&self) -> Vec<String> {
+        self.sent.read().clone()
+    }
+}
+
+#[async_trait]
+impl Channel for GatedChannel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_running(&self) -> bool {
+        *self.started.read()
+    }
+
+    async fn start(&self) -> Result<()> {
+        *self.started.write() = true;
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        *self.started.write() = false;
+        Ok(())
+    }
+
+    async fn send(&self, msg: OutboundMessage) -> Result<()> {
+        if !self.entered.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            self.gate.notified().await;
+        }
+        self.sent.write().push(msg.content.clone());
+        Ok(())
+    }
+}
+
+/// BUG-20261104-360 回归钉：stop_all 置旗标时队列积压必须 bounded 冲刷，
+/// 不得随 rx drop 静默蒸发。旧形态此测试 sent == ["m1"]（m2/m3 随队列丢弃）。
+#[tokio::test]
+async fn test_stop_all_flushes_queued_backlog() {
+    let mgr = Arc::new(ChannelManager::new());
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ch = Arc::new(GatedChannel {
+        name: "slow".to_string(),
+        gate: gate.clone(),
+        entered: entered.clone(),
+        sent: Arc::new(parking_lot::RwLock::new(Vec::new())),
+        started: Arc::new(parking_lot::RwLock::new(false)),
+    });
+    mgr.register(ch.clone()).await.unwrap();
+    mgr.start_dispatch_loop().unwrap();
+
+    let tx = mgr.outbound_sender();
+    let mk = |c: &str| OutboundMessage {
+        channel: "slow".to_string(),
+        chat_id: "chat-1".to_string(),
+        content: c.to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+
+    // m1 被取走并阻塞在闸内（确定性：此后 m2/m3 必排队而非被取走）。
+    tx.send(mk("m1")).await.unwrap();
+    let wait_entered = async {
+        while !entered.load(std::sync::atomic::Ordering::Acquire) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), wait_entered)
+        .await
+        .expect("send(m1) 应进入闸");
+
+    tx.send(mk("m2")).await.unwrap();
+    tx.send(mk("m3")).await.unwrap();
+
+    // 置旗标 + 停通道（loop 仍阻塞在 m1 的 send 内，尚未见旗标）。
+    mgr.stop_all().await.unwrap();
+
+    // 放行 m1 → loop 见旗标 → bounded 冲刷队列中的 m2/m3 → 退出。
+    gate.notify_one();
+    let wait_flush = async {
+        while ch.sent_messages().len() < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), wait_flush)
+        .await
+        .expect("停机冲刷必须补发队列积压（m2/m3 不得随 rx 丢弃）");
+    assert_eq!(ch.sent_messages(), vec!["m1", "m2", "m3"]);
+}
+
 #[tokio::test]
 async fn test_dispatch_outbound_success() {
     let mgr = ChannelManager::new();
@@ -2102,8 +2204,9 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
 
 #[tokio::test]
 async fn test_w4c_dispatch_loop_breaks_after_shutdown_flag() {
-    // stop_all() 置 shutdown 标志后，即使克隆的 sender 还活着（mgr 自持
-    // outbound_tx），循环也必须在下一轮顶部 break。
+    // stop_all() 置 shutdown 标志后：队列积压先 bounded 冲刷补发
+    // （BUG-20261104-360），冲刷毕循环退出——其后到达的消息不再派发
+    // （sender 克隆存活也不处理，原 W4C 不变量保留）。
     let mgr = std::sync::Arc::new(ChannelManager::new());
     let stub = std::sync::Arc::new(StubChannel::new("stub"));
     mgr.register(stub.clone()).await.unwrap();
@@ -2118,20 +2221,34 @@ async fn test_w4c_dispatch_loop_breaks_after_shutdown_flag() {
     // 置 shutdown 标志（同时停止通道）
     mgr.stop_all().await.unwrap();
 
-    // 再发两条：循环若还活着会处理（race），但 break 之后必须全部静默丢弃
+    // 旗标置位前后立即入队的消息属冲刷面：必须补发。
     tx.send(OutboundMessage::new("stub", "c2", "two"))
         .await
         .unwrap();
     tx.send(OutboundMessage::new("stub", "c3", "three"))
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let wait_flush = async {
+        while stub.sent_messages().len() < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), wait_flush)
+        .await
+        .expect("冲刷必须补发旗标置位时的队列积压");
 
-    let sent = stub.sent_messages().len();
+    // 冲刷毕循环退出（Empty 即 break，亚毫秒级；rx 随任务 drop）：
+    // 其后发送直接被拒——比睡等更强的退出证明。
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let m4 = OutboundMessage::new("stub", "c4", "four");
     assert!(
-        sent <= 2,
-        "dispatch loop should have exited after shutdown flag; got {} messages",
-        sent
+        tx.send(m4).await.is_err(),
+        "冲刷毕循环必须退出（rx drop 后 send 必须失败）"
+    );
+    assert_eq!(
+        stub.sent_messages(),
+        vec!["one", "two", "three"],
+        "循环冲刷毕退出后不得再派发新消息"
     );
 }
 

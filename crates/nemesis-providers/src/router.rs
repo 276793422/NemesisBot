@@ -752,10 +752,14 @@ impl Router {
                         // the read lock and drop it before awaiting chat —
                         // the guard must not cross the network call.
                         let candidates = self.candidates.read().clone();
-                        for alt in candidates
-                            .iter()
-                            .filter(|c| c.model == resolved && c.provider != candidate.provider)
-                        {
+                        for alt in candidates.iter().filter(|c| {
+                            // 判据与上方 select 同源（model_matches）：前缀
+                            // 请求 + 裸名候选时主级可被选中，fallback 若用
+                            // `c.model == resolved` 精确相等就匹配不到任何
+                            // 候选 → 跨 provider 故障转移静默失效。
+                            model_matches(c.model.as_str(), &resolved)
+                                && c.provider != candidate.provider
+                        }) {
                             if let Some(alt_provider) = self.providers.get(&alt.provider) {
                                 tracing::warn!(
                                     from_provider = %candidate.provider,

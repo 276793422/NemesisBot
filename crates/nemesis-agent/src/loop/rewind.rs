@@ -941,6 +941,12 @@ impl AgentLoop {
     /// 文件已不在磁盘 → head 视为空串（diff 呈全删）+ `head_on_disk:
     /// false` 诚实标注；diff 为空 → note 说明（可能已被回退/手动恢复）。
     /// `session_key` v1 只用于将来按会话收窄基线（现留参保调用形状稳定）。
+    ///
+    /// BUG-20261103-347：树接口一律走 `repo_relative_path` 归一——影子
+    /// tree 条目是 repo 相对形态，声明/查询串常态是工具入参逐字（绝对路
+    /// 径），原样喂 `tree.get_path` 被 git2 拒（"should be relative, not
+    /// a windows prefix"）。工作区外（hybrid）拿不到 repo 相对形态 → 落
+    /// 回 `files[].content` 内容快照。
     pub async fn session_file_diff(
         &self,
         _session_key: &str,
@@ -949,18 +955,27 @@ impl AgentLoop {
         let cp = self
             .attached_checkpoint()
             .ok_or_else(|| "checkpoint 未挂载，无法对比会话文件变更".to_string())?;
-        let base = cp.base_for_path(path).ok_or_else(|| {
+        let rel = cp.repo_relative_path(path);
+        let base = cp.base_for_path(path).or_else(|| {
+            rel.as_deref()
+                .and_then(|r| if r == path { None } else { cp.base_for_path(r) })
+        });
+        let base = base.ok_or_else(|| {
             "该文件无 checkpoint 基线（未在本会话声明变更，或基线已被回退清除）".to_string()
         })?;
 
-        // 基线内容：git 形态从影子 tree 读 blob；JSON 形态用快照 content。
-        let base_content = match &base.tree {
-            Some(tree) => cp.read_file_from_tree(tree, path)?.unwrap_or_default(),
-            None => base.content.clone().unwrap_or_default(),
+        // 基线内容：git 形态从影子 tree 读 blob（repo 相对路径）；JSON
+        // 形态 / 工作区外 hybrid 用快照 content。
+        let base_content = match (&base.tree, rel.as_deref()) {
+            (Some(tree), Some(rel_path)) => {
+                cp.read_file_from_tree(tree, rel_path)?.unwrap_or_default()
+            }
+            (Some(_), None) => base.content.clone().unwrap_or_default(),
+            (None, _) => base.content.clone().unwrap_or_default(),
         };
 
         // 现盘内容：缺文件 = 空 head（diff 呈全删）+ head_on_disk=false。
-        let abs = cp.root().join(path);
+        let abs = cp.root().join(rel.as_deref().unwrap_or(path));
         let (head_content, head_on_disk) = match tokio::fs::read(&abs).await {
             Ok(bytes) => (String::from_utf8_lossy(&bytes).into_owned(), true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),

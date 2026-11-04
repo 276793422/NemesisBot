@@ -1,15 +1,16 @@
 {
-  "bench_wall_secs": 116,
-  "gateway_version": "C:\\AI\\NemesisBot_Rust_2\\target/release/nemesisbot.exe",
+  "bench_build_unix": 1793763408,
+  "bench_wall_secs": 115,
+  "gateway_version": "C:\\AI\\NemesisBot_Rust\\target/release/nemesisbot.exe",
   "host": "LAPTOP-FQSHLE55",
   "scenarios": [
     {
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 116,
-        "p50": 62,
-        "p95": 116
+        "max": 77,
+        "p50": 51,
+        "p95": 77
       },
       "model": "testai-1.1",
       "name": "basic_chat",
@@ -21,9 +22,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 165,
-        "p50": 156,
-        "p95": 165
+        "max": 140,
+        "p50": 135,
+        "p95": 140
       },
       "model": "testai-9.3",
       "name": "context_integrity",
@@ -35,9 +36,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 179,
-        "p50": 179,
-        "p95": 179
+        "max": 161,
+        "p50": 161,
+        "p95": 161
       },
       "model": "testai-sum-1.0",
       "name": "identifier_survival",
@@ -49,9 +50,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6147,
-        "p50": 6147,
-        "p95": 6147
+        "max": 6150,
+        "p50": 6150,
+        "p95": 6150
       },
       "model": "testai-2.1",
       "name": "tool_parallel_batch",
@@ -63,9 +64,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 119,
-        "p50": 100,
-        "p95": 119
+        "max": 92,
+        "p50": 92,
+        "p95": 92
       },
       "model": "testai-5.0",
       "name": "security_boundary_block",
@@ -77,9 +78,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 143,
-        "p50": 143,
-        "p95": 143
+        "max": 97,
+        "p50": 97,
+        "p95": 97
       },
       "model": "testai-1.1",
       "name": "concurrent_sessions",
@@ -91,9 +92,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 68,
-        "p50": 68,
-        "p95": 68
+        "max": 62,
+        "p50": 62,
+        "p95": 62
       },
       "model": "testai-vision-1.0",
       "name": "vision_roundtrip",
@@ -105,9 +106,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 117,
-        "p50": 117,
-        "p95": 117
+        "max": 101,
+        "p50": 101,
+        "p95": 101
       },
       "model": "testai-codemode-1.0",
       "name": "codemode_orchestration",
@@ -119,9 +120,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 107,
-        "p50": 107,
-        "p95": 107
+        "max": 120,
+        "p50": 120,
+        "p95": 120
       },
       "model": "testai-docslift-1.0",
       "name": "docs_lift",
@@ -133,9 +134,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6272,
-        "p50": 6233,
-        "p95": 6249
+        "max": 6666,
+        "p50": 6174,
+        "p95": 6200
       },
       "model": "testai-2.1",
       "name": "disconnect_resume",
@@ -147,9 +148,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 1290,
-        "p50": 1290,
-        "p95": 1290
+        "max": 1330,
+        "p50": 1330,
+        "p95": 1330
       },
       "model": "testai-break-1.0",
       "name": "stream_break",
@@ -161,9 +162,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 2916,
-        "p50": 2916,
-        "p95": 2916
+        "max": 2906,
+        "p50": 2906,
+        "p95": 2906
       },
       "model": "testai-9.3",
       "name": "gateway_restart",
@@ -189,9 +190,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 296,
-        "p50": 296,
-        "p95": 296
+        "max": 294,
+        "p50": 294,
+        "p95": 294
       },
       "model": "testai-chain-step-1.0",
       "name": "codemode_chain",
@@ -201,7 +202,11 @@
     }
   ],
   "schema": "agent-bench/v1",
-  "started_at": "2026-11-01T17:00:48.395112900+08:00",
+  "started_at": "2026-11-04T11:46:18.086766600+08:00",
+  "tool_defs": {
+    "bytes": 70354,
+    "tools": 62
+  },
   "totals": {
     "pass_rate": 1.0,
     "passed": 43,

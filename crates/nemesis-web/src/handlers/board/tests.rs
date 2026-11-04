@@ -12,7 +12,7 @@ use nemesis_types::cluster::NodeRole;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-fn make_ctx_with_board(dir: &std::path::Path) -> RequestContext {
+pub(super) fn make_ctx_with_board(dir: &std::path::Path) -> RequestContext {
     make_ctx_with_role(dir, NodeRole::Coordinator)
 }
 
@@ -82,7 +82,7 @@ fn make_ctx_with_service(
     }
 }
 
-fn unique_dir(name: &str) -> std::path::PathBuf {
+pub(super) fn unique_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "nemesis-web-boardtest-{}-{name}",
         std::process::id()
@@ -91,7 +91,7 @@ fn unique_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-async fn dispatch(
+pub(super) async fn dispatch(
     ctx: &RequestContext,
     cmd: &str,
     data: serde_json::Value,
@@ -2388,6 +2388,103 @@ async fn sync_parent_status_all_done_cancel_gap_and_terminal_noop() {
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
+async fn sync_parent_status_all_done_blocked_by_finish_gate() {
+    // AOR 批二b ⑥：全 done 子树但子单存在未裁决 unknown → FINISH 谓词
+    // 阻塞垫升/收口 + 缺口评论（C-F4 去重）；admin 评论裁决后重跑 sync
+    // 放行垫升进 in_review。
+    let dir = unique_dir("parent-sync-finish-gate");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+
+    let p = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "闸父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let c1 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "闸子甲".into(),
+            parent_issue_id: Some(p.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let c2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "闸子乙".into(),
+            parent_issue_id: Some(p.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(c1.id, IssueStatus::Done, &actor)
+        .unwrap();
+    store
+        .transition_issue(c2.id, IssueStatus::Done, &actor)
+        .unwrap();
+    // 子甲落盘未裁决 unknown（persist_unknowns 同款形态）。
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: c1.id,
+            author: nemesis_board::Actor::system("board-review"),
+            content: "❓ 评审存疑事项（unknown 清单，自动收口检查会核对裁决状态）：\nunknown: 副作用落点不明".into(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+
+    super::sync_parent_status(&store, p.id, &actor).unwrap();
+    assert_eq!(
+        store.get_issue(p.id).unwrap().status,
+        IssueStatus::Backlog,
+        "FINISH 闸阻塞，父单不得垫升"
+    );
+    let comments = store.list_comments(p.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("FINISH 收口闸未满足")
+                && c.content.contains("④ 存在未裁决 unknown 清单")
+                && c.content.contains("副作用落点不明")),
+        "缺口评论必须列出未裁决清单: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+
+    // 重跑 sync：同内容缺口评论去重，不刷屏、仍阻塞。
+    super::sync_parent_status(&store, p.id, &actor).unwrap();
+    assert_eq!(store.get_issue(p.id).unwrap().status, IssueStatus::Backlog);
+    let comments = store.list_comments(p.id).unwrap();
+    assert_eq!(
+        comments
+            .iter()
+            .filter(|c| c.content.contains("FINISH 收口闸未满足"))
+            .count(),
+        1,
+        "同内容缺口评论必须去重"
+    );
+
+    // admin 评论裁决 → 放行：垫升 in_progress 后进 in_review。
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: c1.id,
+            author: Actor::admin("boss"),
+            content: "已核实，副作用在沙盒内，裁决通过".into(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Comment,
+        })
+        .unwrap();
+    super::sync_parent_status(&store, p.id, &actor).unwrap();
+    assert_eq!(
+        store.get_issue(p.id).unwrap().status,
+        IssueStatus::InReview,
+        "裁决后谓词放行，父单照常垫升收口"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
 async fn on_issue_settled_syncs_parent_and_attempts_redispatch() {
     let dir = unique_dir("settled");
     let ctx = make_ctx_with_board(&dir);
@@ -2702,6 +2799,132 @@ async fn test_board_config_set_conflict_auto_resolve_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// AOR 批三 5.1：autonomy 自治模式总开关（"assisted"|"autonomous"）；
+// 矛盾态两方向硬拒（autonomous 前置要求 unlimited=true / unlimited 关闭
+// 前置要求 autonomy 非 autonomous），被拒写入不得落盘。
+#[tokio::test]
+async fn test_board_config_set_autonomy_contradiction_gates() {
+    let dir = unique_dir("config-autonomy");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 先落一次无害成功写入，保证盘上 config.json 存在（后续「盘不动」
+    // 断言才有底物可读）。
+    dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "unlimited_mode", "value": false }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    // 初始 get：缺省 assisted。
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["autonomy"], "assisted");
+
+    // 未开 unlimited 时切 autonomous = 矛盾态硬拒，盘不动。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "autonomy", "value": "autonomous" }),
+    )
+    .await
+    .expect_err("矛盾态必须硬拒");
+    assert!(err.contains("unlimited_mode"), "got: {err}");
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    // 无害写入已把整个 board 段（含 autonomy 缺省值）落盘——被拒的写入
+    // 不得改变它：盘上仍是 "assisted"。
+    assert_eq!(
+        raw["board"]["autonomy"], "assisted",
+        "被拒的写入不得落盘: {raw}"
+    );
+
+    // 开 unlimited → autonomous 放行 + 回读 + 盘上真实落盘。
+    dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "unlimited_mode", "value": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "autonomy", "value": "autonomous" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["autonomy"], "autonomous");
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(raw["board"]["autonomy"], "autonomous");
+
+    // autonomous 在场时关 unlimited = 反方向矛盾态硬拒。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "unlimited_mode", "value": false }),
+    )
+    .await
+    .expect_err("反方向矛盾态必须硬拒");
+    assert!(err.contains("assisted"), "got: {err}");
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(raw["board"]["unlimited_mode"], true, "被拒的关闭不得落盘");
+
+    // 切回 assisted 后关 unlimited 放行。
+    dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "autonomy", "value": "assisted" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "unlimited_mode", "value": false }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["unlimited_mode"], false);
+    assert_eq!(out["autonomy"], "assisted");
+
+    // 非法档位 loud 拒绝（新键无旧形态要兼容，数字/布尔也拒）。
+    for bad in [
+        serde_json::json!("yolo"),
+        serde_json::json!(1),
+        serde_json::json!(true),
+    ] {
+        let err = dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": "autonomy", "value": bad }),
+        )
+        .await
+        .expect_err("非法档位必须拒绝");
+        assert!(err.contains("autonomy"), "got: {err}");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // 连续 UNSURE 停车阈值（2026-10-15 用户：设置页缺旋钮）：白名单 + 回读 +
 // 盘上落盘 roundtrip；0=不限合法。
 #[tokio::test]
@@ -2930,6 +3153,7 @@ fn p3_ap(store: &BoardStore, name: &str, auto_plan: bool) -> nemesis_board::Auto
             enabled: true,
             auto_plan,
             acceptance_criteria: None,
+            session_key: None,
         })
         .expect("create autopilot")
 }
@@ -2969,6 +3193,7 @@ async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
         enabled: true,
         auto_plan: false,
         acceptance_criteria: Some("报告含时间与磁盘空间两项".to_string()),
+        session_key: None,
     };
     let ap = store.create_autopilot(&n).unwrap();
     let out = fire_autopilot(&store, None, &ap, &actor, None).unwrap();
@@ -6293,6 +6518,7 @@ fn agt_project_progress_stage_matrix_and_priority() {
         store
             .try_claim_dispatch("agt-task-exec", dispatched.id, "node-x", &actor)
             .unwrap()
+            .is_some()
     );
 
     let full = super::project_progress(&store, proj.id).unwrap();
@@ -6944,6 +7170,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
     // job 名约定 = board-ap:{autopilot_id}（不是规则名）
@@ -6973,6 +7200,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
     super::sync_autopilot_jobs(&cron, &store).unwrap();
@@ -7065,6 +7293,7 @@ async fn agt_autopilot_validate_and_issues_listing() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
     let r = dispatch(
@@ -8880,6 +9109,7 @@ async fn w5_autopilot_target_assignee_and_fire_dispatch_fail() {
             enabled: true,
             auto_plan: false,
             acceptance_criteria: None,
+            session_key: None,
         })
         .unwrap();
 
@@ -12641,6 +12871,7 @@ fn autopilot_orphan_sweep_spares_user_collision_names_and_sweeps_real_orphans() 
         enabled: true,
         auto_plan: false,
         acceptance_criteria: None,
+        session_key: None,
     };
     let ap_live = store.create_autopilot(&mk_ap("存活规则")).unwrap();
     let ap_orphan = store.create_autopilot(&mk_ap("将删除规则")).unwrap();

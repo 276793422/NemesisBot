@@ -8,6 +8,17 @@
 //! release 无害。
 
 fn main() {
+    // BUG-20261104-369：bench 本体构建戳（unix 秒）——记分卡 / 基线 /
+    // 对比门三方同源锚定断言语义版本。陈旧二进制跑对照门会产生假回退
+    // （2026-11-04 实录：L29 断言换版后旧 bench 把合法拼接形态判为泄漏，
+    // stream_break 100%→50% 假红）。每次重编译时间戳前进，对比门据此
+    // 提示「断言语义可能已漂移」。
+    let build_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=BENCH_BUILD_UNIX={build_unix}");
+
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         let stack_arg = match std::env::var("CARGO_CFG_TARGET_ENV")
             .unwrap_or_default()

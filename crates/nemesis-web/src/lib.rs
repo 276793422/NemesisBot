@@ -16,6 +16,7 @@
 
 pub mod api_handlers;
 pub mod api_usage;
+pub mod chat_dedup;
 pub mod chat_event_log;
 pub mod conv_router;
 pub mod cors;
@@ -28,7 +29,13 @@ pub mod llm_bridge;
 // S5（2026-10-09）：入站 OpenAI 兼容端点（POST /v1/chat/completions）。
 pub mod openai_compat;
 pub mod pricing_sync;
+// LLM 代理请求用量记账（裸转发 lane + /api/chat/stream 的落账出口；
+// docs/PLAN/2026-11-03_代理请求用量记账.md）。
 pub mod protocol;
+// LLM 代理调用方 key 鉴权面（per-caller key 匹配 + mtime 缓存热生效；
+// docs/PLAN/2026-11-03_LLM代理调用方key管理.md）。
+pub(crate) mod proxy_keys;
+pub(crate) mod proxy_usage;
 #[cfg(feature = "terminal")]
 pub mod pty;
 #[cfg(feature = "vm-display")]
@@ -81,11 +88,24 @@ pub use ws_router::WsRouter;
 // never `mod`-declared, so they did not compile or run.
 #[cfg(all(test, feature = "workflow"))]
 mod api_usage_extra_tests;
+// proxy_usage 单测（AppState 构造依赖 workflow 的 ChatSecretStore，闸同
+// api_usage_extra_tests）。
 #[cfg(all(test, feature = "forge"))]
 mod llm_bridge_extra_tests;
+#[cfg(all(test, feature = "workflow"))]
+mod proxy_usage_extra_tests;
+// proxy_keys 单测（AppState 构造依赖 workflow 的 ChatSecretStore，闸同
+// proxy_usage_extra_tests）。
+#[cfg(all(test, feature = "workflow"))]
+mod proxy_keys_extra_tests;
 // 入站过滤链 history 过滤器（BUG 2026-09-23 项目会话历史加载修复）。
 #[cfg(test)]
 mod history_filter_tests;
+
+// L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键——LRU 容量 / LRU
+// touch / sidecar 持久化往返 / 损坏 sidecar 降级 / 纯图 seq=0 形态。
+#[cfg(test)]
+mod chat_dedup_tests;
 
 // Home 单例测试竞态锁（test_home.rs 头注）：重定向 home 的测试与经单例
 // 读写 chat_log 的测试全 crate 串行化。

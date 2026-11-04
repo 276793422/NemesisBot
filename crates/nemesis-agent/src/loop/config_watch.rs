@@ -1,6 +1,12 @@
-//! 配置热载与访问器：set_config_path/config_mtime/check_config_reload、refresh_active_tier、current_* 访问器族、tier/mode/set_mode_with_event、set_provider_and_model、SmallModelSlot/小模型槽、E7 标题生成、诊断回灌（C3）。
+//! 配置热载与访问器：set_config_path/config_generation 世代读（L18）/
+//! check_config_reload、refresh_active_tier、current_* 访问器族、tier/mode/set_mode_with_event、set_provider_and_model、SmallModelSlot/小模型槽、E7 标题生成、诊断回灌（C3）。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! L18（2026-11-03）：current_* 家族从「每读者独立直读盘」收敛为「持代引用」
+//! ——读者取 `config_generation()` 的 Arc 快照（零 stat、零发布、代内恒一致），
+//! 发布点唯一三处（`set_config_path` 绑定强制 / round start
+//! `check_config_reload` 内容闸 / 模型切换 `refresh_active_tier` 对账）。
+//! 机制与刻意偏差见 `loop/config_gen.rs` 模块文档。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
@@ -284,10 +290,9 @@ impl AgentLoop {
         self.refresh_active_tier();
     }
 
-    /// J5 (devtool-upgrade 阶段 6)：`agents.doom_loop_approval` fresh-read
-    /// （F8 `current_hidden_tools` 同款模式——config.json 是唯一真相源，每次
-    /// escalation 现读，运行时改键下一轮生效，无需重启）。无 config_path /
-    /// 解析失败 = `false`（安全底座方向）。
+    /// J5 (devtool-upgrade 阶段 6)：`agents.doom_loop_approval` 世代快照读
+    /// （F8 模式的 L18 世代化形态——config.json 唯一真相源，改键下轮生效，
+    /// 无需重启）。无 config_path / 无代 = `false`（安全底座方向）。
     ///
     /// ⚠ 2026-10-24 循环干预阶梯：`check_escalation` 改走无 config 闸的
     /// 终级卡（全会话默认行为），本读取器**不再被生产消费**——键保留解析
@@ -295,101 +300,71 @@ impl AgentLoop {
     /// 调用（禁止删除，见其注释块）。若未来复用 J5 卡，本读取器即闸。
     #[allow(dead_code)]
     pub(crate) fn current_doom_loop_approval(&self) -> bool {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return false,
+        let Some(v) = self.config_generation() else {
+            return false;
         };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| {
-                v.get("agents")
-                    .and_then(|a| a.get("doom_loop_approval"))
-                    .and_then(|b| b.as_bool())
-            })
+        v.get("agents")
+            .and_then(|a| a.get("doom_loop_approval"))
+            .and_then(|b| b.as_bool())
             .unwrap_or(false)
     }
 
     /// B2（profession-capability-evolution 2026-10-14）：职能工具围栏总开关
-    /// `agents.profession_tool_fence` fresh-read（F8 `current_hidden_tools`
-    /// 同款模式——config.json 唯一真相源，dashboard/CLI 改键下一轮生效）。
+    /// `agents.profession_tool_fence` 世代快照读（F8 模式的 L18 世代化形态
+    /// ——config.json 唯一真相源，dashboard/CLI 改键下轮生效）。
     /// 缺省 **true**（围栏开）——关闭 = B 端任务装配不写 `AgentConfig.tools`
     /// 白名单（供给/派发双闸的权威判据为空 = 不围），已围着的实例也照常
-    /// 放行（闸只看非空白名单）。无 config_path / 解析失败 = 默认开。
+    /// 放行（闸只看非空白名单）。无 config_path / 无代 = 默认开。
     /// pub：cluster_agent（nemesisbot）任务装配消费，跨 crate。
     pub fn current_profession_tool_fence(&self) -> bool {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return true,
+        let Some(v) = self.config_generation() else {
+            return true;
         };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| {
-                v.get("agents")
-                    .and_then(|a| a.get("profession_tool_fence"))
-                    .and_then(|b| b.as_bool())
-            })
+        v.get("agents")
+            .and_then(|a| a.get("profession_tool_fence"))
+            .and_then(|b| b.as_bool())
             .unwrap_or(true)
     }
 
-    /// J6：超限图片自动降采样开关（F8 模式 fresh-read config.json；默认**开**，
+    /// J6：超限图片自动降采样开关（L18 世代快照读；默认**开**，
     /// 极性与 doom_loop_approval 相反——读不到/键缺失按开处理，保持降采样
-    /// 能力可用；读取失败不阻塞轮次）。
+    /// 能力可用；不阻塞轮次）。
     pub(crate) fn current_image_downscale(&self) -> bool {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return true,
+        let Some(v) = self.config_generation() else {
+            return true;
         };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| {
-                v.get("agents")
-                    .and_then(|a| a.get("image_downscale"))
-                    .and_then(|b| b.as_bool())
-            })
+        v.get("agents")
+            .and_then(|a| a.get("image_downscale"))
+            .and_then(|b| b.as_bool())
             .unwrap_or(true)
     }
 
-    /// 429 重试环（裁决④）：`agents.defaults.rate_limit_retries` fresh-read
-    /// （F8 模式——config.json 唯一真相源，改键下一轮生效）。无 config_path /
-    /// 解析失败 = 默认 10（default_rate_limit_retries 同源口径）。
+    /// 429 重试环（裁决④）：`agents.defaults.rate_limit_retries` 世代快照读
+    /// （L18 世代化——config.json 唯一真相源，改键下轮生效）。无 config_path /
+    /// 无代 = 默认 10（default_rate_limit_retries 同源口径）。
     pub(crate) fn current_rate_limit_retries(&self) -> i64 {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return 10,
+        let Some(v) = self.config_generation() else {
+            return 10;
         };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| {
-                v.get("agents")
-                    .and_then(|a| a.get("defaults"))
-                    .and_then(|d| d.get("rate_limit_retries"))
-                    .and_then(|n| n.as_i64())
-            })
+        v.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get("rate_limit_retries"))
+            .and_then(|n| n.as_i64())
             .unwrap_or(10)
     }
 
-    /// BUG 2026-09-21 ②：`agents.defaults.<key>` fresh-read（F8 模式，同
-    /// [`Self::current_rate_limit_retries`] 口径）。解析失败或缺键 = 默认值。
+    /// BUG 2026-09-21 ②：`agents.defaults.<key>` 世代快照读（L18 世代化，
+    /// 同 [`Self::current_rate_limit_retries`] 口径）。解析失败或缺键 = 默认值。
     /// P8 起 pub(crate)：loop/token_budget.rs 的 session_token_budget
-    /// fresh-read 复用同一真相源。
+    /// 世代读复用同一真相源。
     pub(crate) fn agents_defaults_u64(&self, key: &str, default: u64) -> u64 {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return default,
+        let Some(v) = self.config_generation() else {
+            return default;
         };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| {
-                v.get("agents")
-                    .and_then(|a| a.get("defaults"))
-                    .and_then(|d| d.get(key))
-                    .and_then(|n| n.as_u64())
-            })
+        v.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get(key))
+            .and_then(|n| n.as_u64())
             .unwrap_or(default)
     }
 
@@ -509,24 +484,19 @@ impl AgentLoop {
         }
     }
 
-    /// B4（2026-10-19 connector 总开关）：`connectors.enabled` fresh-read。
+    /// B4（2026-10-19 connector 总开关）：`connectors.enabled` 世代快照读。
     /// 缺省 **true**——`ConnectorsConfig` 的 serde default 与字段文档语义
     /// （「总闸（false = connector_find/connector_invoke 两工具不上供给面）」
     /// 的反面）对齐：无 config_path / 缺键 / 坏 JSON / 读失败一律按「开」，
     /// 默认态「装了即生效」不因读失败翻转。
     pub(crate) fn current_connectors_enabled(&self) -> bool {
-        match self.config_path.read().clone() {
-            Some(p) => nemesis_utils::fsutil::read_config_string(&p)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| {
-                    v.get("connectors")
-                        .and_then(|c| c.get("enabled"))
-                        .and_then(|e| e.as_bool())
-                })
-                .unwrap_or(true),
-            None => true,
-        }
+        self.config_generation()
+            .and_then(|v| {
+                v.get("connectors")
+                    .and_then(|c| c.get("enabled"))
+                    .and_then(|e| e.as_bool())
+            })
+            .unwrap_or(true)
     }
 
     /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单（见字段
@@ -643,12 +613,17 @@ impl AgentLoop {
     ];
 
     /// Phase 4a: set the config.json path. After this, the tier is re-resolved
-    /// live from config.json on every model switch and whenever the file's mtime
-    /// changes (dashboard model add, CLI `model set-tier`). config.json is the
+    /// live from config.json on every model switch and whenever the file
+    /// content changes (dashboard model add, CLI `model set-tier`). config.json is the
     /// single source of truth — there is no stale per-model snapshot to keep in
     /// sync. Called by `agent_factory` at gateway startup.
+    ///
+    /// L18：绑定即**强制发布**世代（重绑同语义）——装配期预热世代缓存，首轮
+    /// 读者即有代可持（既有测试在绑定后立即读 reader，依赖此处发布）。发布
+    /// 失败（文件缺失/坏 JSON）诚实留痕、无代可发，读者回落各自缺省。
     pub fn set_config_path(&self, path: std::path::PathBuf) {
         *self.config_path.write() = Some(path);
+        self.republish_config_generation(true);
     }
 
     /// prompt-pack pro（2026-09-27）：注入提示词体系。启动装配型（system
@@ -686,21 +661,14 @@ impl AgentLoop {
     pub(crate) const DIAGNOSTICS_WRITE_TOOLS: &'static [&'static str] =
         &["write_file", "edit_file", "append_file", "multiedit"];
 
-    /// C3：读 `agents.defaults.diagnostics_loop`（config.json 每次新鲜读，
-    /// 同 [`Self::current_tool_doc_folding`] 模式——dashboard/CLI 可在网关
-    /// 运行中翻转开关）。缺段 / standalone → 全默认（P2 能力扩展 WS3 起
-    /// 默认 `enabled=true`；standalone 无 manager 注入时反馈链路自幂等
-    /// 跳过，不受默认翻转影响）。
+    /// C3：读 `agents.defaults.diagnostics_loop`（L18 世代快照读，同
+    /// `current_tool_doc_folding` 的世代化模式——dashboard/CLI 可在网
+    /// 关运行中翻转开关，下轮生效）。缺段 / standalone → 全默认（P2 能力
+    /// 扩展 WS3 起默认 `enabled=true`；standalone 无 manager 注入时反馈链路
+    /// 自幂等跳过，不受默认翻转影响）。
     #[cfg(feature = "lsp")]
     pub(crate) fn current_diagnostics_loop(&self) -> nemesis_config::DiagnosticsLoopConfig {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return Default::default(),
-        };
-        let v = nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        let Some(v) = v else {
+        let Some(v) = self.config_generation() else {
             return Default::default();
         };
         v.get("agents")
@@ -933,14 +901,18 @@ impl AgentLoop {
         if self.tier_override.read().is_some() {
             return;
         }
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return, // standalone mode — keep the startup tier
-        };
         let active = self.active_model.read().clone();
-        let tier = nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        // standalone（无 config_path）→ 保持启动 tier（旧语义；名字启发式
+        // 回退只属于「绑定了 config 但代缺席」的失败路径）。
+        if self.config_path.read().is_none() {
+            return;
+        }
+        // L18：切换点先对账发布（盘上 config 可能已变——dashboard/CLI 改键），
+        // 内容闸未变 = 现行代仍是盘上真相；再从现行代解析。无代（绑定后
+        // 发布失败）→ 名字启发式，与旧读盘失败的回退同语义。
+        self.republish_config_generation(false);
+        let tier = self
+            .config_generation()
             .map(|v| nemesis_types::capability::resolve_active_tier(&v, &active))
             .unwrap_or_else(|| {
                 nemesis_types::capability::detect_tier(&nemesis_types::capability::TierHint {
@@ -960,21 +932,17 @@ impl AgentLoop {
 
     /// Resolve the active model's display id (`provider/name`, e.g.
     /// `deepseek/deepseek-v4-flash`) for the per-message "供应商·模型名"
-    /// badge. Reads config.json fresh each call (called once per assistant
-    /// turn, negligible cost) — no cached field, so it can never go stale when
-    /// the model switches. Falls back to the bare `active_model` when config
-    /// is unavailable (standalone mode) or the entry isn't found.
+    /// badge. Reads from the current config generation (L18; called once per
+    /// assistant turn, negligible cost) — the generation is republished on
+    /// model switch, so it can never go stale when the model switches. Falls
+    /// back to the bare `active_model` when no generation is available
+    /// (standalone mode) or the entry isn't found.
     pub(crate) fn current_display_model(&self) -> String {
         let active = self.active_model.read().clone();
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return active,
+        let Some(v) = self.config_generation() else {
+            return active;
         };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .map(|v| nemesis_types::capability::resolve_display_model(&v, &active))
-            .unwrap_or(active)
+        nemesis_types::capability::resolve_display_model(&v, &active)
     }
 
     /// H4 (U16 half): the active model's reasoning-effort tier from
@@ -991,11 +959,8 @@ impl AgentLoop {
             Some(m) => m.to_string(),
             None => self.active_model.read().clone(),
         };
-        let path = self.config_path.read().clone()?;
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| nemesis_types::capability::resolve_reasoning_effort(&v, &active))
+        let v = self.config_generation()?;
+        nemesis_types::capability::resolve_reasoning_effort(&v, &active)
     }
 
     /// Resolve the active model's per-model output token cap (`max_output_tokens`)
@@ -1015,10 +980,7 @@ impl AgentLoop {
             Some(m) => m.to_string(),
             None => self.active_model.read().clone(),
         };
-        let path = self.config_path.read().clone()?;
-        let cfg: serde_json::Value = nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())?;
+        let cfg = self.config_generation()?;
         // 回退链（2026-10-23 P0）：条目 max_output_tokens > agents.defaults.
         // max_tokens > 调用方 unwrap_or(DEFAULT_MAX_TOKENS)。旧实现跳过中间
         // 级——config 里 agents.defaults.max_tokens 在主轮路径是死键。
@@ -1040,38 +1002,39 @@ impl AgentLoop {
     }
 
     /// M6-1（2026-10-10 机制加固）：`agents.defaults.max_tool_iterations`
-    /// 的每轮新鲜读（同 [`Self::current_max_tokens`] 模式）——dashboard /
-    /// CLI 改值不再需要重启或等 mtime 翻转（organ 1 每轮消费）。None =
-    /// config 不可用（standalone）或键缺席——调用方回落启动值
+    /// 的每轮世代快照读（L18 世代化，同 [`Self::current_max_tokens`] 模式）
+    /// ——dashboard / CLI 改值不再需要重启或等 mtime 翻转（organ 1 每轮消费）。
+    /// None = 无代（standalone / 绑定后未发布）或键缺席——调用方回落启动值
     /// `config.max_turns`。负值照透传（消费侧 <=0 = 不限）。
     pub(crate) fn current_max_tool_iterations(&self) -> Option<i64> {
-        let path = self.config_path.read().clone()?;
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| nemesis_types::capability::resolve_max_tool_iterations(&v))
+        let v = self.config_generation()?;
+        nemesis_types::capability::resolve_max_tool_iterations(&v)
     }
 
     /// §6.2（2026-10-12 无人值守）：`agents.defaults.max_output_ceiling`
-    /// 翻倍阶梯封顶的每轮新鲜读（同 [`Self::current_max_tool_iterations`]
-    /// 模式）。config 不可用（standalone）或键缺席/非法 → 默认 262144
-    /// （resolver 单一真相源 [`nemesis_types::capability::resolve_max_output_ceiling`]）。
+    /// 翻倍阶梯封顶的每轮世代快照读（L18 世代化，同
+    /// [`Self::current_max_tool_iterations`] 模式）。无代（standalone）或键
+    /// 缺席/非法 → 默认 262144（resolver 单一真相源
+    /// [`nemesis_types::capability::resolve_max_output_ceiling`]）。
     pub(crate) fn current_max_output_ceiling(&self) -> u64 {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT,
-        };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        self.config_generation()
             .map(|v| nemesis_types::capability::resolve_max_output_ceiling(&v))
             .unwrap_or(nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT)
     }
 
+    /// L29（2026-11-02 改进项三期）：`agents.stream_concat_retry` 开关的
+    /// 每轮世代快照读（L18 世代化，同 [`Self::current_max_output_ceiling`]
+    /// 模式）——流中断 transient 重试是否拼接续写（partial 作 assistant
+    /// 前缀 + 续写提示）。**默认开**（拍板：拼接省 token）；显式 `false` =
+    /// 回退「重试从头」。键缺席 / 类型错 / 无代（standalone 测试态）→ 默认开。
+    pub(crate) fn current_stream_concat_retry(&self) -> bool {
+        stream_concat_retry_from_value(self.config_generation().as_deref())
+    }
+
     /// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe` 的
-    /// 每次新鲜读（同 [`Self::current_max_output_ceiling`] 模式——config.json
-    /// 是唯一真相源）。standalone（无 config_path）/ 读盘失败 → 解析器
-    /// 默认值（开 + 240s）。在预算暂停路径消费（`loop/pre_pause_probe`）。
+    /// 每次世代快照读（L18 世代化，同 [`Self::current_max_output_ceiling`]
+    /// 模式——config.json 唯一真相源）。standalone（无 config_path）/ 无代
+    /// → 解析器默认值（开 + 240s）。在预算暂停路径消费（`loop/pre_pause_probe`）。
     pub(crate) fn current_pre_pause_probe(
         &self,
     ) -> nemesis_types::capability::PrePauseProbeSettings {
@@ -1079,13 +1042,7 @@ impl AgentLoop {
             enabled: true,
             timeout_secs: nemesis_types::capability::PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS,
         };
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return dflt,
-        };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        self.config_generation()
             .map(|v| nemesis_types::capability::resolve_pre_pause_probe(&v))
             .unwrap_or(dflt)
     }
@@ -1110,16 +1067,12 @@ impl AgentLoop {
     /// ——调用方用 `instance.context_window()`（= [`FALLBACK_CONTEXT_WINDOW`]）。
     pub(crate) fn current_context_window_with_source(&self) -> (Option<usize>, &'static str) {
         let active = self.active_model.read().clone();
-        let cfg = self.config_path.read().clone().and_then(|path| {
-            nemesis_utils::fsutil::read_config_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        });
+        let cfg = self.config_generation();
         let pricing = self.pricing_store.read().clone();
-        resolve_context_window_tiered(cfg.as_ref(), &active, pricing.as_deref())
+        resolve_context_window_tiered(cfg.as_deref(), &active, pricing.as_deref())
     }
 
-    /// 2026-10-20 压缩点一等公民化：有效压缩点 fresh-read（同
+    /// 2026-10-20 压缩点一等公民化：有效压缩点世代快照读（L18 世代化，同
     /// [`Self::current_context_window_with_source`] 模式——config.json 唯一
     /// 真相源，`model set-compact-context` / Dashboard 改键下一轮压缩检查
     /// 即生效）。组合与钳制单一真相源在 [`resolve_compact_trigger`]；
@@ -1128,53 +1081,36 @@ impl AgentLoop {
     /// 逐位保持）；来源标签相应记 `"instance"`。
     pub(crate) fn current_compact_trigger(&self, fallback_window: usize) -> super::CompactTrigger {
         let active = self.active_model.read().clone();
-        let cfg = self.config_path.read().clone().and_then(|path| {
-            nemesis_utils::fsutil::read_config_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        });
+        let cfg = self.config_generation();
         let pricing = self.pricing_store.read().clone();
         resolve_compact_trigger(
-            cfg.as_ref(),
+            cfg.as_deref(),
             &active,
             pricing.as_deref(),
             (fallback_window, "instance"),
         )
     }
 
-    /// T10（多模态 goal）：active 模型的 vision 能力（读 config.json 新鲜
-    /// 值，同 [`current_max_tokens`] 模式——config.json 是唯一真相源，模型
-    /// 中途切换 / 磁盘改动都自然生效）。standalone / 条目缺失 → 默认放行。
+    /// T10（多模态 goal）：active 模型的 vision 能力（L18 世代快照读，同
+    /// [`current_max_tokens`] 世代化模式——config.json 是唯一真相源，模型
+    /// 中途切换 / 盘上改动经发布点自然生效）。standalone / 条目缺失 → 默认放行。
     pub(crate) fn current_vision(&self) -> nemesis_types::capability::VisionResolution {
         let active = self.active_model.read().clone();
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return nemesis_types::capability::vision_default_allow(),
-        };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        self.config_generation()
             .map(|v| nemesis_types::capability::resolve_active_vision(&v, &active))
             .unwrap_or_else(nemesis_types::capability::vision_default_allow)
     }
 
-    /// T4 (U1): per-model summarizer prefix-reuse switch from config.json
-    /// (`summarizer_prefix_reuse`, default true — the main model keeps the
-    /// G1 prefix-reuse summary shape). `false` → the summary request falls
-    /// back to the pre-G1 shape (single bare user message with
-    /// `role: content` text concatenation), for cheap summarizer models that
-    /// break the assumed warm KV prefix. Reads config fresh each call (same
-    /// pattern as [`current_max_tokens`]); standalone (no config_path) →
-    /// default true.
+    /// T4 (U1): per-model summarizer prefix-reuse switch (summarizer_prefix_reuse,
+    /// default true — the main model keeps the G1 prefix-reuse summary shape).
+    /// `false` → the summary request falls back to the pre-G1 shape (single bare
+    /// user message with `role: content` text concatenation), for cheap
+    /// summarizer models that break the assumed warm KV prefix. Reads from the
+    /// current config generation (L18); no generation (standalone, no
+    /// config_path) → default true.
     pub(crate) fn current_summarizer_prefix_reuse(&self) -> bool {
         let active = self.active_model.read().clone();
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return true,
-        };
-        nemesis_utils::fsutil::read_config_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        self.config_generation()
             .and_then(|v| nemesis_types::capability::resolve_summarizer_prefix_reuse(&v, &active))
             .unwrap_or(true)
     }
@@ -1211,35 +1147,34 @@ impl AgentLoop {
         }
     }
 
-    /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
+    /// Phase 4a: detect config.json on-disk content changes and re-resolve
     /// the active model's tier if it changed. Runs once per LLM round, next to
     /// `check_mcp_reload`. Picks up dashboard model additions and CLI
     /// `model set-tier` while the gateway is running.
+    ///
+    /// L18：内容闸内建于 [`Self::republish_config_generation`]（基准 = 现行
+    /// 代锚定的盘上原始字节，内容比对不赌钟——BUG-20261103 Windows 粗时钟
+    /// 下 mtime 等值判定同 tick 写入不可分辨）；闸未过 = 现行代仍是盘上
+    /// 真相，整段跳过。**本方法即
+    /// 「执行开始钉代」的执行点**——round start 发布新代后，round 内全部
+    /// 读者持同一 Arc（读者绝不发布），嵌套不跨代。
     pub(crate) fn check_config_reload(&self) {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return,
-        };
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        {
-            let mut last = self.config_mtime.write();
-            if mtime == *last {
-                return; // unchanged since last check
-            }
-            *last = mtime;
+        if !self.republish_config_generation(false) {
+            return;
         }
-        debug!("[AgentLoop] config.json mtime changed; re-resolving capability tier");
+        debug!(
+            generation = self.config_generation_seq(),
+            "[AgentLoop] config.json changed; new generation published; re-resolving capability tier"
+        );
         self.refresh_active_tier();
         // §6.2：用户显式改 config = 重置翻倍阶梯学习（下次撞顶重新起步，
         // 不让陈旧学习覆盖用户刚改的 max_output_tokens）。
         self.clear_escalated_floors();
-        // T2 codemode 热生效（2026-10-25）：mtime 变化时顺带比对开关与注册
-        // 状态。config 新鲜解析，`agents.codemode` 缺键落 serde 默认
-        // （enabled=true）——与 Config 结构体的缺键语义同源。
+        // T2 codemode 热生效（2026-10-25）：新代发布时顺带比对开关与注册
+        // 状态（L18 起从现行代消费，不再二次直读盘）。`agents.codemode` 缺
+        // 键落 serde 默认（enabled=true）——与 Config 结构体的缺键语义同源。
         #[cfg(all(feature = "codemode", not(target_os = "android")))]
-        if let Ok(s) = nemesis_utils::fsutil::read_config_string(&path)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
-        {
+        if let Some(v) = self.config_generation() {
             let cm = v
                 .pointer("/agents/codemode")
                 .and_then(|x| {
@@ -1249,4 +1184,15 @@ impl AgentLoop {
             self.sync_codemode_registration(&cm);
         }
     }
+}
+
+/// L29 开关解析纯函数（单一真相源，[`AgentLoop::current_stream_concat_retry`]
+/// 消费）：config 根值里读 `agents.stream_concat_retry`。**默认开**（拍板：
+/// 拼接省 token）；显式 `false` = 回退「重试从头」。键缺席 / 类型错 /
+/// config 不可用（None）→ 默认开。`true` 显式与缺省同语义（不区分）。
+pub(crate) fn stream_concat_retry_from_value(config: Option<&serde_json::Value>) -> bool {
+    config
+        .and_then(|v| v.pointer("/agents/stream_concat_retry"))
+        .and_then(|x| x.as_bool())
+        != Some(false)
 }

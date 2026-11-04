@@ -252,3 +252,62 @@ fn host_fingerprint_is_never_empty() {
     assert_eq!(h.trim(), h, "指纹不得带首尾空白: {h:?}");
     assert!(!h.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// L10-量测（改进项三期 2026-11-02）：tool defs 快照进记分卡 + 对比 note
+// ---------------------------------------------------------------------------
+
+// tool_defs 缺省 None → JSON 序列化为 null（老基线无该字段，对比侧静默跳过）。
+#[test]
+fn tool_defs_defaults_to_null_in_json() {
+    let card = Scorecard::new("test".to_string());
+    let v = card.to_json();
+    assert!(v["tool_defs"].is_null(), "未量测时 tool_defs 必须为 null");
+}
+
+// 量测块进 JSON 与 Markdown；基线带 tool_defs 且字节变化 → note（不判门——
+// 字节变化是 L10-建设 的预期产物，方向由该项自身验收承载）。
+#[test]
+fn tool_defs_snapshot_recorded_and_compared_as_note() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut card = card_with("basic_chat", 1, 100, "hostA");
+    card.tool_defs = Some(json!({ "tools": 40, "bytes": 48000 }));
+
+    let v = card.to_json();
+    assert_eq!(v["tool_defs"]["tools"], json!(40));
+    assert_eq!(v["tool_defs"]["bytes"], json!(48000));
+    let md = card.to_markdown();
+    assert!(md.contains("48000"), "markdown 必须带 tool defs 字节行");
+
+    // 基线同字节 → 无 tool defs 提示；异字节 → note 且不判倒退。
+    let base = json!({
+        "schema": "agent-bench/v1",
+        "host": "hostA",
+        "scenarios": [scenario_entry("basic_chat", 1.0, 100)],
+        "tool_defs": { "tools": 40, "bytes": 48000 },
+    });
+    let path = dir.path().join("b.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&base).unwrap()).unwrap();
+    let same = compare_baseline(&card, &path, 0.30).unwrap();
+    assert!(
+        !same.iter().any(|f| f.contains("tool defs")),
+        "同字节不得出提示，实际 {same:?}"
+    );
+    assert!(!has_regression(&same));
+
+    let base2 = json!({
+        "schema": "agent-bench/v1",
+        "host": "hostA",
+        "scenarios": [scenario_entry("basic_chat", 1.0, 100)],
+        "tool_defs": { "tools": 40, "bytes": 52000 },
+    });
+    let path2 = dir.path().join("b2.json");
+    std::fs::write(&path2, serde_json::to_string_pretty(&base2).unwrap()).unwrap();
+    let diff = compare_baseline(&card, &path2, 0.30).unwrap();
+    assert!(
+        diff.iter()
+            .any(|f| f.starts_with("[note]") && f.contains("tool defs")),
+        "字节变化必须出 note，实际 {diff:?}"
+    );
+    assert!(!has_regression(&diff), "tool defs 字节变化不判门");
+}

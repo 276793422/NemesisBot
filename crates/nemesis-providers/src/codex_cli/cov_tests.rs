@@ -64,7 +64,7 @@ fn build_prompt_with_empty_and_odd_role_messages() {
 fn parse_blank_and_malformed_lines_are_skipped() {
     let provider = provider_with("codex");
     let out = "\n   \n{not json}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n";
-    let resp = provider.parse_jsonl_events(out).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &[]).unwrap();
     assert_eq!(resp.content, "ok");
 }
 
@@ -77,7 +77,7 @@ fn parse_unknown_event_and_turn_failed_are_tolerated() {
         "{\"type\":\"turn.failed\",\"error\":{\"message\":\"failed hard\"}}\n",
         "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"still fine\"}}\n",
     );
-    let resp = provider.parse_jsonl_events(out).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &[]).unwrap();
     assert_eq!(resp.content, "still fine");
 }
 
@@ -86,7 +86,7 @@ fn parse_unknown_event_and_turn_failed_are_tolerated() {
 fn parse_error_event_with_no_content_returns_unknown_err() {
     let provider = provider_with("codex");
     let err = provider
-        .parse_jsonl_events("{\"type\":\"error\",\"message\":\"boom\"}\n")
+        .parse_jsonl_events("{\"type\":\"error\",\"message\":\"boom\"}\n", "", &[])
         .unwrap_err();
     match err {
         FailoverError::Unknown { message, .. } => {
@@ -102,7 +102,7 @@ fn parse_agent_message_without_tools_finishes_stop() {
     let provider = provider_with("codex");
     let out =
         "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hi\"}}\n";
-    let resp = provider.parse_jsonl_events(out).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &[]).unwrap();
     assert_eq!(resp.finish_reason, "stop");
     assert!(resp.tool_calls.is_empty());
 }
@@ -199,18 +199,47 @@ fn build_tools_prompt_renders_function_tools() {
 }
 
 /// agent_message 文本内嵌 tool_calls JSON → 提取为工具调用（224/229 的
-/// tool_calls 两臂）+ 正文剥离。
+/// tool_calls 两臂）+ 正文剥离。名字须命中白名单（BUG-20261103-338）。
 #[test]
 fn parse_agent_message_with_embedded_tool_calls() {
     let provider = provider_with("codex");
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: crate::types::ToolFunctionDefinition {
+            name: "exec".to_string(),
+            description: "跑命令".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    }];
     let out = concat!(
         "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":",
         "\" 前缀 {\\\"tool_calls\\\":[{\\\"id\\\":\\\"c1\\\",\\\"type\\\":\\\"function\\\",\\\"function\\\":{\\\"name\\\":\\\"exec\\\",\\\"arguments\\\":\\\"{}\\\"}}]}\"}}
 "
     );
-    let resp = provider.parse_jsonl_events(out).unwrap();
+    let resp = provider.parse_jsonl_events(out, "", &tools).unwrap();
     assert_eq!(resp.finish_reason, "tool_calls");
     assert_eq!(resp.tool_calls.len(), 1, "{:?}", resp.tool_calls);
     assert_eq!(resp.tool_calls[0].function.as_ref().unwrap().name, "exec");
     assert!(!resp.content.contains("tool_calls"), "{}", resp.content);
+}
+
+// ============================================================
+// BUG-20261103-338：文档性 `{"tool_calls"` JSON 不得劫持成幻影工具调用
+// （BUG-20261025-16 同款白名单不变量，codex-cli lane 侧回归锁）。
+// ============================================================
+
+/// 非白名单名字的文档性 JSON → 不劫持：finish 维持 stop、正文原文保留。
+#[test]
+fn parse_documentation_json_not_hijacked() {
+    let provider = provider_with("codex");
+    let docs = "信封示例：{\"tool_calls\":[{\"id\":\"demo\",\"type\":\"function\",\"function\":{\"name\":\"not_a_real_tool\",\"arguments\":\"{}\"}}]}";
+    let out = serde_json::json!({
+        "type": "item.completed",
+        "item": {"type": "agent_message", "text": docs}
+    })
+    .to_string();
+    let resp = provider.parse_jsonl_events(&out, "", &[]).unwrap();
+    assert!(resp.tool_calls.is_empty(), "{:?}", resp.tool_calls);
+    assert_eq!(resp.finish_reason, "stop");
+    assert!(resp.content.contains("not_a_real_tool"), "{}", resp.content);
 }

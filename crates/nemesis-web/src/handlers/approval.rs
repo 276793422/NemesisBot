@@ -19,6 +19,7 @@ impl ModuleHandler for ApprovalHandler {
     fn commands(&self) -> &'static [&'static str] {
         &[
             "respond",
+            "respond_batch",
             "pending",
             #[cfg(feature = "cluster")]
             "remote_list",
@@ -113,6 +114,36 @@ impl ModuleHandler for ApprovalHandler {
                     "approved": result,
                     "delivered": true,
                 })))
+            }
+            // 并行批审批聚合（BUG-A 第三层，2026-11-05）：一次裁决同一批的
+            // 全部未决卡（前端「全部允许/全部拒绝」）。批号来自审批事件的
+            // batch_id 字段（并行批工具调用才有）；单卡走 respond。
+            "respond_batch" => {
+                let responder = resolve_responder()?;
+                let data = data.ok_or("missing data")?;
+                let batch_id = data
+                    .get("batch_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or("missing batch_id")?;
+                let approved = data
+                    .get("approved")
+                    .and_then(|v| v.as_bool())
+                    .ok_or("missing approved (expected bool)")?;
+                let always = data
+                    .get("always")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let note = data.get("note").and_then(|v| v.as_str()).map(String::from);
+                let result = responder.respond_batch(batch_id, approved, always, note)?;
+                tracing::info!(
+                    "[Web/WSAPI] approval.respond_batch batch={} approved={} always={} -> {}",
+                    batch_id,
+                    approved,
+                    always,
+                    result
+                );
+                Ok(Some(result))
             }
             "pending" => {
                 let responder = resolve_responder()?;
