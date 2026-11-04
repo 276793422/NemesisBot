@@ -292,15 +292,21 @@ impl Channel for WebSocketChannel {
                                             .body(Some("Not Found".to_string()))
                                             .unwrap());
                                     }
-                                    // Token validation
+                                    // Token validation（BUG-20261104-368：裸 `==` 短路
+                                    // 比较换恒时比较——BUG-20261104-355 同族横扫缺口，
+                                    // 355 只覆盖了 nemesis-web 三处 WS 升级面。语义等价
+                                    // 论证：此臂 auth_token 非空（else 分支），verify_token
+                                    // 对非空 expected 严格 ≡ `==`；空 token 走无闸分支）。
                                     let query = req.uri().query().unwrap_or("");
                                     let mut valid = false;
                                     for pair in query.split('&') {
                                         if let Some((key, value)) = pair.split_once('=')
-                                            && key == "token" && value == token {
-                                                valid = true;
-                                                break;
-                                            }
+                                            && key == "token"
+                                            && nemesis_utils::verify::verify_token(value, &token)
+                                        {
+                                            valid = true;
+                                            break;
+                                        }
                                     }
                                     if valid {
                                         Ok(response)

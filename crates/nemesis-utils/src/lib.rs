@@ -34,6 +34,9 @@ pub mod workpool;
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
+// BUG-20261104-368：恒时 token 比较单一真相源（原 nemesis-web api_handlers
+// 私有件；web re-export 保路径，nemesis-channels websocket 升级闸跨 crate 消费）。
+pub mod verify;
 pub mod wait_ready;
 pub mod zip_util;
 
@@ -61,4 +64,5 @@ pub use string_utils::{
     deref_str, format_datetime_compact, format_timestamp, is_blank, json_get_bool, json_get_f64,
     json_get_i64, json_get_str, parse_json, pretty_json, random_id, random_short_id, truncate,
 };
+pub use verify::verify_token;
 pub use zip_util::{create_zip, extract_zip, is_path_within_dir, is_unsafe_rel_path};

@@ -3777,6 +3777,7 @@ dependencies = [
  "k256",
  "nemesis-path",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "rand 0.8.6",
  "reqwest",
