@@ -1092,25 +1092,58 @@ pub const DEFAULT_SESSION_TITLE: &str = "新对话";
 /// E7: 自动标题写入。只填充「无标题 / 仅默认占位符」的会话；手动改名或
 /// 建会话时显式命名的（`title_manual=true`）与已有真实标题的一律不动。
 /// 返回是否实际写入。
+///
+/// BUG-20261104-385：资格判定在 [`META_LOCK`] 下 check-then-write 原子。
+/// 旧形态检查在锁外（`auto_title_eligible` 读 → 锁内 upsert 盲写）——
+/// 检查与写盘之间用户 rename（`write_session_meta_manual`，锁内置
+/// `title_manual=true`）插入时，自动标题照样落盘覆盖手动名，击穿 E7
+/// 「手动改名永不覆盖」契约。与 [`write_session_branch_summary`] 的
+/// detach 封印位同构（检查必须在 upsert 闭包/锁内，锁外预检只配当
+/// 优化）。判定逻辑与 [`auto_title_eligible`] 共用 [`auto_title_writable`]
+/// 单一真相源——两消费点不得漂移。
 pub fn write_session_meta_auto_title(session_key: &str, title: &str) -> bool {
-    if !auto_title_eligible(session_key) {
+    let _guard = META_LOCK.lock();
+    let path = meta_path(session_key);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    // corrupt/unreadable 既有档 → 空基线起写（与 upsert_meta_result 同姿态；
+    // read_meta_full 对损坏已 warn 留痕）。
+    let mut meta = read_meta_full(session_key).unwrap_or_default();
+    if !auto_title_writable(&meta) {
         return false;
     }
-    upsert_meta(session_key, |m| m.title = Some(title.to_string()));
+    meta.title = Some(title.to_string());
+    if let Err(e) = write_meta_file_atomic(&path, &meta) {
+        tracing::warn!(
+            "[chat_log] failed to write auto title {}: {e}",
+            path.display()
+        );
+        return false;
+    }
     true
 }
 
+/// E7/BUG-20261104-385：自动标题资格判定的单一真相源（纯函数，无 IO）。
+/// `auto_title_eligible`（读侧预检，锁外——只配当优化）与
+/// [`write_session_meta_auto_title`]（写点裁决，锁内）共用。
+fn auto_title_writable(meta: &SessionMeta) -> bool {
+    !meta.title_manual
+        && meta
+            .title
+            .as_deref()
+            .is_none_or(|t| t == DEFAULT_SESSION_TITLE)
+}
+
 /// E7: 自动标题资格判定——无 meta / 无标题 / 仅默认占位符，且未被手动
-/// 改名。生成端（loop 的标题任务）与写入端共用，双端一致。
+/// 改名。生成端（loop 的标题任务 spawn 预检）与写入端共用，双端一致。
+/// 锁外读：只承担「不值得 spawn 就别 spawn」的优化裁决；**写盘前的最终
+/// 裁决在 [`write_session_meta_auto_title`] 锁内重做**（本函数与写点之间
+/// 无原子性，BUG-20261104-385）。
 pub fn auto_title_eligible(session_key: &str) -> bool {
     match read_meta_full(session_key) {
         None => true,
-        Some(m) => {
-            !m.title_manual
-                && m.title
-                    .as_deref()
-                    .is_none_or(|t| t == DEFAULT_SESSION_TITLE)
-        }
+        Some(m) => auto_title_writable(&m),
     }
 }
 
@@ -2173,3 +2206,9 @@ mod work_tests;
 // 拒收 / 行内会话键烧入还原 / delete 级联 / session_file_changes 聚合。
 #[cfg(test)]
 mod l22_pending_tests;
+
+// BUG-20261104-385（R522 会话持久化域）：自动标题写入 check-then-write
+// 原子化——拒绝臂不落盘（meta 逐字节保持）+ 判定/写点同源矩阵 +
+// 成功路径既有字段保留。
+#[cfg(test)]
+mod b385_tests;
