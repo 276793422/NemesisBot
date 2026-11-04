@@ -306,6 +306,7 @@ fn estop_close_all_dead_waiter_broadcasts_from_cleanup_side() {
             key_name: "connector/test-conn/api_key".to_string(),
             created_at: std::time::Instant::now(),
             tx,
+            alive: Arc::new(AtomicBool::new(true)),
         },
     );
 
@@ -325,4 +326,121 @@ fn estop_close_all_on_empty_pending_is_zero() {
     let dir = tempfile::tempdir().unwrap();
     let (broker, _rx) = make_broker(&dir);
     assert_eq!(broker.close_all("estop engaged"), 0);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261104-377：respond 落库失败决策臂——等待方已亡 = 丢弃不重插
+// （estop 窗：close_all 已 drain / 等待方 future 已放弃时，盲目重插 =
+// 悬空卡，永无人收口、Resolved 广播永不发生）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn persist_failure_with_dead_waiter_discards_not_reinserts() {
+    with_passphrase(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let (broker, mut rx) = make_broker(&dir);
+        // 坏 vault 文件：persist 恒失败（确定性错误注入，同 alive 臂用例）。
+        std::fs::create_dir_all(vault_file(&dir).parent().unwrap()).unwrap();
+        std::fs::write(vault_file(&dir), b"{ not a vault }").unwrap();
+
+        // 手动入册一张 alive=false 的卡（等待方已终止形态：estop 冻结下
+        // loop task 被放弃 / 超时宽限放弃后 guard 已 Drop）。rx 保持存活，
+        // 隔离「send 失败」变量——本用例只锚定 alive 旗标决策臂。
+        let (tx, _rx_keep) = std::sync::mpsc::channel::<CredentialOutcome>();
+        broker.pending.lock().insert(
+            "cred-dead-decision".to_string(),
+            PendingEntry {
+                service: "connector/test-conn".to_string(),
+                key_name: "connector/test-conn/api_key".to_string(),
+                created_at: std::time::Instant::now(),
+                tx,
+                alive: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        let err = broker.respond("cred-dead-decision", SECRET).unwrap_err();
+        assert!(err.contains("落库失败"), "got: {err}");
+        assert!(err.contains("已终止"), "决策臂 dead 文案: {err}");
+        // 修复前：请求被重插回 pending = 悬空卡。修复后：丢弃，pending 空。
+        assert!(
+            broker.pending_cards().is_empty(),
+            "等待方已亡时失败臂不得重插（悬空卡）"
+        );
+        // 无 Resolved 广播（丢弃臂只诚实报错；estop drain 形态下清理侧
+        // 已广播，本用例 rx 保持空闲即无双重广播）。
+        assert!(rx.try_recv().is_err());
+    });
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261104-377 grace 窗回归锁：等待方超时放弃**之后**落地的 respond
+// 失败重插必须被决策臂丢弃。真实 grace 鬼影交错 = raced-check 落在
+// respond 的 remove→重插缝隙（微秒窗，黑盒不可确定性复现）——此处白盒
+// 确定性构造同一终态：真实等待方超时退出（guard 翻旗）→ 手动把持有
+// 条目重插回 pending（= 重插落在放弃之后的鬼影注入点）→ 真实 respond
+// 二次触发决策臂。修复前（无条件重插）= 卡永留 pending，本测试红。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn grace_reinsert_ghost_is_reaped_when_waiter_gives_up() {
+    with_passphrase(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let (broker, _rx) = make_broker(&dir);
+        // 坏 vault：respond 恒落库失败（确定性错误注入）。
+        std::fs::create_dir_all(vault_file(&dir).parent().unwrap()).unwrap();
+        std::fs::write(vault_file(&dir), b"{ not a vault }").unwrap();
+
+        // 真实等待方，3s 超时（留足下方两步的调度余量）。
+        let waiter = broker.clone();
+        let h = std::thread::spawn(move || {
+            let _ = waiter.request_credential(&request("cred-grace", 3));
+        });
+        // ① 卡可见 → 真实 respond #1：persist 失败 → alive 臂重插保留
+        // （可修正重试语义不变，修复前后一致）。
+        for _ in 0..300 {
+            if broker
+                .pending_cards()
+                .iter()
+                .any(|c| c["request_id"] == "cred-grace")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let err1 = broker.respond("cred-grace", SECRET).unwrap_err();
+        assert!(err1.contains("落库失败"), "got: {err1}");
+        assert!(
+            broker
+                .pending_cards()
+                .iter()
+                .any(|c| c["request_id"] == "cred-grace"),
+            "alive 臂：等待方在场时失败重插保留（可修正重试语义不变）"
+        );
+
+        // ② 模拟鬼影交错：把重插卡从表中取出持有（= respond 的
+        // remove→重插缝隙中段，raced-check 即将观察到 None）。
+        let (_id, held) = broker
+            .pending
+            .lock()
+            .remove_entry("cred-grace")
+            .expect("重插卡在场");
+
+        // ③ 等待方超时（raced=true → 宽限 2s 无裁决 → 放弃）→ guard
+        // Drop 翻 alive=false（持有的条目与 guard 共享同一 Arc 旗标）。
+        h.join().unwrap();
+
+        // ④ 鬼影注入：重插落在等待方放弃**之后**（修复前代码此处之后
+        // 永无人摘卡——waiter 已返回、raced-check 已跑完）。
+        broker.pending.lock().insert("cred-grace".to_string(), held);
+
+        // ⑤ 真实 respond #2：persist 失败 → 决策臂读旗标 = dead →
+        // 丢弃（修复后 pending 清空；修复前无条件重插 = 悬空卡，红）。
+        let err2 = broker.respond("cred-grace", SECRET).unwrap_err();
+        assert!(err2.contains("落库失败"), "got: {err2}");
+        assert!(err2.contains("已终止"), "决策臂 dead 文案: {err2}");
+        assert!(
+            broker.pending_cards().is_empty(),
+            "等待方放弃后落地的重插必须被丢弃（BUG-377 grace 窗悬空卡）"
+        );
+    });
 }

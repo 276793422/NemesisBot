@@ -18,8 +18,10 @@
 //!   不可假设，同 WebApprovalManager）；非 tokio（纯 sync 测试/线程）直接
 //!   `recv_timeout`。调用方（async 侧）须用 `spawn_blocking` 包住
 //!   `request_credential`（`LateInstallApprover` 同款）。
-//! - respond 落库失败 → 请求放回 pending（等待者还在等，用户可修正重试，
-//!   剩余窗口由等待侧的 recv_timeout 决定）。
+//! - respond 落库失败 → 等待方在场 = 请求放回 pending（用户可修正重试，
+//!   剩余窗口由等待侧的 recv_timeout 决定）；等待方已亡 = 丢弃并诚实
+//!   报错（BUG-20261104-377：盲目重插会在 estop 冻结 / 超时宽限放弃后
+//!   制造前端悬空卡——重插的卡永无人收口、Resolved 广播永不发生）。
 //!
 //! vault 落盘面镜像 `nemesis-web::handlers::vault`（open/unlock/create 三
 //! 胶水同语义）：现开现解锁（无长驻句柄）；argon2id 模式口令取
@@ -35,6 +37,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nemesis_security::vault::{VaultMode, VaultStore};
@@ -48,13 +51,46 @@ struct PendingEntry {
     key_name: String,
     created_at: Instant,
     tx: std::sync::mpsc::Sender<CredentialOutcome>,
+    /// BUG-20261104-377：等待方存活旗标——respond 落库失败决定「放回」
+    /// 还是「丢弃」的依据。等待方退出时经 [`WaiterGuard`] 翻 false（含
+    /// estop 冻结下 loop task 被放弃、future 被 abort 的形态）。
+    alive: Arc<AtomicBool>,
+}
+
+/// pending 表的共享句柄——[`WaiterGuard`]（Drop 摘卡）要持有自己的克隆
+/// 才能在等待方任何退出路径（正常返回/超时/future 被 abort）上自愈摘卡。
+type PendingMap = parking_lot::Mutex<HashMap<String, PendingEntry>>;
+
+/// 等待方守卫（RAII）：`request_credential` 入册后持有，任何退出路径
+/// Drop。Drop 做 BUG-20261104-377 的自愈摘卡——respond 落库失败可能在
+/// 等待方已死（estop 冻结下 future 被 abort / 超时宽限已放弃）后把卡
+/// 重插回 pending，Drop 持 pending 锁摘掉它并翻存活旗标（此后 respond
+/// 失败臂锁内读旗标=dead，不再重插）。**必须是 Drop guard 而非函数尾部
+/// 代码**：estop 冻结形态下 loop task 被 abort，future 展开时只有 Drop
+/// 保证运行，尾部代码不执行。
+struct WaiterGuard {
+    pending: Arc<PendingMap>,
+    request_id: String,
+    alive: Arc<AtomicBool>,
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        // 摘卡 + 翻旗在同一临界区，与 respond 失败臂的「锁内读旗标决策」
+        // 互斥——两操作由同一把锁序列化，无「摘卡后 respond 仍看到
+        // alive=true 又重插」的微秒残窗。remove 幂等（正常/超时路径卡已
+        // 出册，返回 None 无害）。
+        let mut map = self.pending.lock();
+        map.remove(&self.request_id);
+        self.alive.store(false, Ordering::Release);
+    }
 }
 
 /// Web 凭据索要卡 broker（gateway 形态常驻；headless 不装配）。
 pub struct WebCredentialBroker {
     workspace: PathBuf,
     event_tx: Option<tokio::sync::broadcast::Sender<AgentEvent>>,
-    pending: parking_lot::Mutex<HashMap<String, PendingEntry>>,
+    pending: Arc<PendingMap>,
 }
 
 impl WebCredentialBroker {
@@ -68,7 +104,7 @@ impl WebCredentialBroker {
         Self {
             workspace,
             event_tx,
-            pending: parking_lot::Mutex::new(HashMap::new()),
+            pending: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -82,6 +118,16 @@ impl CredentialBroker for WebCredentialBroker {
         // std mpsc（非 tokio）：全同步语义，recv_timeout 是本协议的等待原语
         // （超时出册记账 + 竞速宽限都建立在它上面）。
         let (tx, rx) = std::sync::mpsc::channel();
+        // BUG-20261104-377：等待方存活旗标 + RAII 摘卡守卫。入册后立即建
+        // guard——本函数任何退出路径（正常收到裁决 / 超时 / estop 冻结下
+        // future 被 abort）都触发 Drop：摘掉本卡（清掉 respond 失败臂可能
+        // 重插的悬空卡）并翻存活旗标。
+        let alive = Arc::new(AtomicBool::new(true));
+        let guard = WaiterGuard {
+            pending: Arc::clone(&self.pending),
+            request_id: request.request_id.clone(),
+            alive: Arc::clone(&alive),
+        };
         {
             let mut map = self.pending.lock();
             // 先入册（后广播）——见模块头时序纪律。
@@ -92,6 +138,7 @@ impl CredentialBroker for WebCredentialBroker {
                     key_name: request.key_name.clone(),
                     created_at: Instant::now(),
                     tx,
+                    alive: Arc::clone(&alive),
                 },
             );
         }
@@ -116,16 +163,24 @@ impl CredentialBroker for WebCredentialBroker {
             Ok(outcome) => outcome,
             Err(_) => {
                 // 超时：先出册记账；remove 返回 None = respond 抢先 → 宽限
-                // 收在途裁决（不广播假 timeout）。
+                // 收在途裁决（不广播假 timeout）。宽限内无裁决 = 放弃；
+                // respond 失败臂此间重插的卡由 guard Drop 统一摘除（统一
+                // 出口，不再逐臂处理）。
                 let raced = { self.pending.lock().remove(&request.request_id).is_none() };
-                if raced && let Ok(outcome) = rx.recv_timeout(Duration::from_secs(2)) {
-                    self.broadcast_resolved(&request.request_id, &outcome);
-                    return Ok(outcome);
+                if raced {
+                    match rx.recv_timeout(Duration::from_secs(2)) {
+                        Ok(outcome) => outcome,
+                        Err(_) => CredentialOutcome::Denied,
+                    }
+                } else {
+                    CredentialOutcome::Denied
                 }
-                CredentialOutcome::Denied
             }
         };
         self.broadcast_resolved(&request.request_id, &outcome);
+        // guard 在此 Drop：摘卡（幂等）+ 翻旗——之后 respond 失败臂读旗标
+        // = dead，走丢弃臂不再重插。
+        drop(guard);
         Ok(outcome)
     }
 }
@@ -226,8 +281,26 @@ impl CredentialResponder for WebCredentialBroker {
                 }))
             }
             Err(e) => {
-                self.pending.lock().insert(request_id.to_string(), entry);
-                Err(format!("凭据落库失败（请求保留，可修正后重试）: {e}"))
+                // BUG-20261104-377：放回前在锁内验等待方存活——与
+                // WaiterGuard 的 Drop（摘卡+翻旗）同一把锁序列化，无「摘卡
+                // 后仍见 alive=true 又重插」残窗。等待方已亡（estop 冻结
+                // loop task 被放弃 / 超时宽限放弃）时重插 = 悬空卡：
+                // close_all 若已 drain 则永无人收口、Resolved 广播永不
+                // 发生，前端永久挂卡。丢弃并诚实报错。两文案都含
+                // 「落库失败」（前端/测试锚定的错误族不变）。
+                let waiter_alive = {
+                    let mut map = self.pending.lock();
+                    let alive_now = entry.alive.load(Ordering::Acquire);
+                    if alive_now {
+                        map.insert(request_id.to_string(), entry);
+                    }
+                    alive_now
+                };
+                if waiter_alive {
+                    Err(format!("凭据落库失败（请求保留，可修正后重试）: {e}"))
+                } else {
+                    Err(format!("凭据落库失败（等待方已终止，请求已关闭）: {e}"))
+                }
             }
         }
     }
