@@ -122,6 +122,17 @@ pub(crate) fn residual_dir_older_than(
     }
 }
 
+/// 进程级入队互斥（BUG-20261104-365）：enqueue 的 check→remove→copy→write
+/// 序列必须原子——四路触发源（终态钩子 `finish_task_exec` / master 兜底
+/// pull 的 RPC handler / 启动清扫 / 周期残留清扫的独立线程）可对同一
+/// task_id 并发入队，无锁时 B 侧 `remove_dir_all` 会删掉 A 侧复制到一半
+/// 的载荷，最坏留下「entry.json 在场 + payload 半套」——「entry.json 在场
+/// = 载荷完整」不变量被破坏，半套载荷推送 master content_hash 校验永不
+/// 过 → 卡死信且手动重放救不了（payload 不会自愈）。与推送循环的单任务
+/// 串行哲学一致；enqueue 是同步 fn，std Mutex 不跨 await，tokio 上下文
+/// 与 std::thread 上下文都安全。
+static OUTBOX_ENQUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ---------------------------------------------------------------------------
 // 传输抽象（可注入：单测用 fake，生产用 RpcClient）
 // ---------------------------------------------------------------------------
@@ -400,6 +411,10 @@ impl TransferOutbox {
                 cs.display()
             ));
         }
+        // BUG-20261104-365：入队全程互斥（见 OUTBOX_ENQUEUE_LOCK）。
+        let _enqueue = OUTBOX_ENQUEUE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = self.entry_dir(task_id);
         if dir.join("entry.json").exists() {
             return Ok(()); // 幂等

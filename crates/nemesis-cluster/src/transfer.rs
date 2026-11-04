@@ -835,9 +835,15 @@ impl TransferSink {
             "total_bytes": begin.total_bytes,
             "landed_at": chrono::Local::now().to_rfc3339(),
         });
-        std::fs::write(
-            landed.join("landed.json"),
-            serde_json::to_string_pretty(&receipt).unwrap_or_default(),
+        // BUG-20261104-365 横向同族：landed.json 是基线解包的 kind 探针，
+        // 半截文件 = unpack_baseline 误判「空树基线」开跑（真实基线被丢）。
+        // 原子写对齐全仓持久化纪律。
+        nemesis_utils::file::write_file_atomic(
+            &landed.join("landed.json").to_string_lossy(),
+            serde_json::to_string_pretty(&receipt)
+                .unwrap_or_default()
+                .as_bytes(),
+            0o644,
         )
         .map_err(|e| format!("写 landed.json 失败: {e}"))?;
         // 4. 去重索引更新 + 持久化。

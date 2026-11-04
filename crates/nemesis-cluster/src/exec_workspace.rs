@@ -176,8 +176,15 @@ impl ExecReceiveHook {
             files,
         };
         let json = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
-        std::fs::write(exec_dir.join(BASELINE_SIDECAR_NAME), json)
-            .map_err(|e| format!("写基线 sidecar 失败: {e}"))?;
+        // BUG-20261104-365 横向同族：sidecar 是终结侧 diff 的对照清单，
+        // 半截文件 = finish_task_exec 每次解析失败、任务档案永久卡死
+        // （现场保留 WARN 无自愈）。原子写对齐全仓持久化纪律。
+        nemesis_utils::file::write_file_atomic(
+            &exec_dir.join(BASELINE_SIDECAR_NAME).to_string_lossy(),
+            json.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("写基线 sidecar 失败: {e}"))?;
         Ok((exec_dir, count))
     }
 }
