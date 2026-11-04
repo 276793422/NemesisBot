@@ -191,8 +191,26 @@ pub struct McpTool {
     pub annotations: Option<McpToolAnnotations>,
 }
 
-/// A single content item returned from a tool call.
+/// MCP 规范 EmbeddedResource——tools/call 返回的 resource content 的嵌套对象
+/// （BUG-20261104-380：此前 ToolContent 缺 resource 字段，真实 server 的资源
+/// content 反序列化后被静默丢弃，adapter 恒产空占位）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddedResource {
+    /// URI identifying the embedded resource.
+    pub uri: String,
+    /// Optional MIME type of the resource.
+    #[serde(default, rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    /// Text payload（文本资源内容——可透传 LLM 文本通道的真内容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Base64 payload（二进制资源——不透传，只给元信息注记）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+}
+
+/// A single content item returned from a tool call.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolContent {
     /// MIME type of the content (e.g. "text/plain").
     #[serde(rename = "type")]
@@ -200,6 +218,18 @@ pub struct ToolContent {
     /// Text payload (used when `content_type` is text-based).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Image/audio content 的 base64 载荷（MCP 规范 `data` 字段；
+    /// BUG-20261104-380：此前缺字段，真实 server 的图像 content 数据被
+    /// serde 静默丢弃）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// MIME type（MCP 规范 `mimeType` 字段，image/audio content 携带）。
+    #[serde(default, rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    /// EmbeddedResource content（MCP 规范 `resource` 字段，见
+    /// [`EmbeddedResource`]）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<EmbeddedResource>,
 }
 
 impl ToolContent {
@@ -208,6 +238,7 @@ impl ToolContent {
         Self {
             content_type: "text".to_string(),
             text: Some(text.into()),
+            ..Default::default()
         }
     }
 }

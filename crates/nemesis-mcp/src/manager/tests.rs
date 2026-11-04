@@ -636,7 +636,9 @@ for line in sys.stdin:
             sys.stdout.flush()
             continue
         if args.get("img"):
-            result = {"content": [{"type": "image", "text": "b64x"}], "isError": False}
+            # BUG-20261104-380：规范形态（base64 在 data 字段 + mimeType）——
+            # 此前 fixture 用违例形态（text 塞载荷）迁就实现缺陷，恒产空占位。
+            result = {"content": [{"type": "image", "data": "b64x", "mimeType": "image/png"}], "isError": False}
         elif args.get("slow"):
             import time
             time.sleep(10)
@@ -692,10 +694,15 @@ async fn test_w4c_discover_tools_success_and_execute_matrix() {
     assert!(!r.is_error);
     assert_eq!(r.content, "called");
 
-    // image 内容分支
+    // image 内容分支（规范形态 data+mimeType → 诚实注记，BUG-20261104-380）
     let r = tools[0].execute(serde_json::json!({"img": true})).await;
     assert!(!r.is_error);
-    assert!(r.content.contains("[Image: b64x]"));
+    assert!(
+        r.content
+            .contains("[Image: image/png, 4 bytes base64 (data not passed through)]"),
+        "actual: {}",
+        r.content
+    );
 
     // 服务器侧 isError → "returned error"
     let r = tools[0].execute(serde_json::json!({"fail": true})).await;

@@ -203,14 +203,9 @@ impl Tool for McpAdapter {
             .iter()
             .map(|c| match c.content_type.as_str() {
                 "text" => c.text.clone().unwrap_or_default(),
-                "image" => {
-                    let data = c.text.as_deref().unwrap_or("");
-                    format!("[Image: {data}]")
-                }
-                "resource" => {
-                    let data = c.text.as_deref().unwrap_or("");
-                    format!("[Resource: {data}]")
-                }
+                "image" => image_or_audio_note(c, "Image"),
+                "audio" => image_or_audio_note(c, "Audio"),
+                "resource" => resource_content_text(c),
                 _ => c.text.clone().unwrap_or_default(),
             })
             .collect();
@@ -393,8 +388,9 @@ impl Tool for ArcClientAdapter {
             .iter()
             .map(|c| match c.content_type.as_str() {
                 "text" => c.text.clone().unwrap_or_default(),
-                "image" => format!("[Image: {}]", c.text.as_deref().unwrap_or("")),
-                "resource" => format!("[Resource: {}]", c.text.as_deref().unwrap_or("")),
+                "image" => image_or_audio_note(c, "Image"),
+                "audio" => image_or_audio_note(c, "Audio"),
+                "resource" => resource_content_text(c),
                 _ => c.text.clone().unwrap_or_default(),
             })
             .collect();
@@ -406,6 +402,56 @@ impl Tool for ArcClientAdapter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// BUG-20261104-380：image/audio content 按规范消费 `data`（base64）+
+/// `mimeType` 字段——此前 ToolContent 缺这两个字段、臂从规范不存在的 `text`
+/// 取数，真实 server（按 MCP 规范把 base64 放 `data`）的图像 content 反序列
+/// 化后恒产空占位 `[Image: ]`。base64 不透传 LLM 文本通道（token 爆炸且非
+/// vision 链路），给诚实元信息注记；无 `data` 时回落 `text`（兼容违例
+/// server 与既有 fixture 形态），双无 → `(no data)`。
+fn image_or_audio_note(c: &crate::types::ToolContent, kind: &str) -> String {
+    match (&c.data, &c.mime_type) {
+        (Some(d), Some(m)) => format!(
+            "[{kind}: {m}, {} bytes base64 (data not passed through)]",
+            d.len()
+        ),
+        (Some(d), None) => format!(
+            "[{kind}: unknown type, {} bytes base64 (data not passed through)]",
+            d.len()
+        ),
+        (None, _) => match &c.text {
+            Some(t) => format!("[{kind}: {t}]"),
+            None => format!("[{kind}: (no data)]"),
+        },
+    }
+}
+
+/// BUG-20261104-380：resource content 按规范消费嵌套 `resource` 对象——
+/// 文本资源（`text`）真内容透传给 LLM（资源嵌入的本意），二进制资源（`blob`）
+/// 给诚实元信息注记不透传；此前 ToolContent 缺 `resource` 字段，真实 server
+/// 的 resource content 反序列化后恒产空占位 `[Resource: ]`。无嵌套对象时
+/// 回落 `text`（兼容违例 server 与既有 fixture 形态）。
+fn resource_content_text(c: &crate::types::ToolContent) -> String {
+    match &c.resource {
+        Some(r) => {
+            let head = format!("[Resource {}]", r.uri);
+            if let Some(t) = &r.text {
+                format!("{head}\n{t}")
+            } else if let Some(b) = &r.blob {
+                format!(
+                    "{head} binary ({} bytes base64, data not passed through)",
+                    b.len()
+                )
+            } else {
+                head
+            }
+        }
+        None => match &c.text {
+            Some(t) => format!("[Resource: {t}]"),
+            None => "[Resource: (no data)]".to_string(),
+        },
+    }
+}
 
 /// Sanitize a string for use as a tool identifier component.
 ///
