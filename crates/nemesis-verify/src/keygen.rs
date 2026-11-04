@@ -263,9 +263,12 @@ impl KeyHierarchy {
     }
 
     pub fn save(&self, path: &str) -> Result<()> {
-        let json = serde_json::to_vec_pretty(&self.to_json())?;
-        std::fs::write(path, json)?;
-        Ok(())
+        // BUG-20261104-378：全量包含全部三级私钥，敏感度高于三个分包形态——
+        // 必须与 bundle 三类型化 saver 同源走 save_private_json（unix 0600）。
+        // 裸 fs::write 落 umask 默认权限（Linux 常态 0644 = 同机其他用户可读）；
+        // 生产消费方 revoke-server --init-keys / exe-sign-tool keygen /
+        // verify-loader gen-keys 全经此位点落盘。
+        crate::bundle::save_private_json(&self.to_json(), path)
     }
 
     pub fn load(path: &str) -> Result<Self> {

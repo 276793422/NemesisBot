@@ -638,3 +638,42 @@ fn agt_nv_get_signature_arg_errors_and_publisher_passthrough() {
     // 前 128 字节逐字节等于原 ASCII 前缀
     assert_eq!(&detail2.publisher[..], &long_pub.as_bytes()[..128]);
 }
+
+/// BUG-20261104-378 伴随修复回归锁：truncate_utf8 必须在字符边界截断——
+/// 多字节字符骑在 max_bytes 边界上时回退而非切碎（按字节硬切产非法 UTF-8
+/// 尾巴，FFI 消费方按 UTF-8 解码即炸）。ASCII 超长形态与旧 min(len,max) 硬切
+/// 逐字节一致（L510-561 既有断言继续锚定该等价性）。
+#[test]
+fn truncate_utf8_never_splits_multibyte_char() {
+    // 多字节字符骑在边界：64B 边界前是 21 个 3 字节汉字（63B）+ 1 字节落入
+    // 下一个 3 字符首字节——必须回退到 63，不产半个字符。
+    let s = "汉".repeat(30); // 90B 全 3 字节字符
+    let (cut, len) = truncate_utf8(&s, 64);
+    assert_eq!(len, 63, "64B 边界回退到 63（21×3B）");
+    assert_eq!(cut.len(), 63);
+    assert!(
+        std::str::from_utf8(cut.as_bytes()).is_ok(),
+        "截断产物必须仍是合法 UTF-8"
+    );
+    assert_eq!(cut, "汉".repeat(21));
+
+    // 短于上限：原样返回。
+    let (whole, wlen) = truncate_utf8("abc", 64);
+    assert_eq!((whole, wlen), ("abc", 3));
+
+    // 恰好等于上限：不截。
+    let exact = "x".repeat(64);
+    assert_eq!(truncate_utf8(&exact, 64), (exact.as_str(), 64));
+
+    // ASCII 超长：与硬切逐字节一致（既有 FFI 截断断言的纯函数镜像）。
+    let ascii = "a".repeat(100);
+    let (acut, alen) = truncate_utf8(&ascii, 64);
+    assert_eq!(alen, 64);
+    assert_eq!(acut, &ascii[..64]);
+
+    // 2 字节字符形态（é = 2B）：63B 边界 → 回退 62。
+    let e = "é".repeat(40); // 80B 全 2 字节
+    let (ecut, elen) = truncate_utf8(&e, 63);
+    assert_eq!(elen, 62);
+    assert!(std::str::from_utf8(ecut.as_bytes()).is_ok());
+}

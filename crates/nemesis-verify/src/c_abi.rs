@@ -60,6 +60,21 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// UTF-8 边界安全截断到 ≤max_bytes（返回切片 + 字节长）。多字节字符骑在
+/// max_bytes 边界上时回退到字符边界——按字节硬切会产非法 UTF-8 尾巴，
+/// FFI 消费方按 UTF-8 解码即炸。ASCII（绝大多数 CN/publisher）行为与
+/// min(len, max) 硬切完全一致。
+fn truncate_utf8(s: &str, max_bytes: usize) -> (&str, usize) {
+    if s.len() <= max_bytes {
+        return (s, s.len());
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&s[..end], end)
+}
+
 fn run_verify(bytes: &[u8]) -> NvOutcome {
     let anchors = crate::builtin_root_anchors();
     let outcome = verify::verify_bytes(bytes, &anchors, now_secs());
@@ -323,14 +338,12 @@ pub unsafe extern "C" fn nv_get_signature(
     let cert_count = detail.certs.len().min(4) as u32;
     for (i, c) in detail.certs.iter().take(4).enumerate() {
         let mut subject_meta = [0u8; 64];
-        let mlen = c
+        let (meta, mlen) = c
             .subject_meta
             .as_deref()
-            .map(|s| s.len().min(64))
-            .unwrap_or(0);
-        if let Some(s) = c.subject_meta.as_deref() {
-            subject_meta[..mlen].copy_from_slice(&s.as_bytes()[..mlen]);
-        }
+            .map(|s| truncate_utf8(s, 64))
+            .unwrap_or(("", 0));
+        subject_meta[..mlen].copy_from_slice(meta.as_bytes());
         let mut issuer_key_fp = [0u8; 32];
         if let Some(fp) = c.issuer_key_fp {
             issuer_key_fp = fp;
@@ -345,13 +358,13 @@ pub unsafe extern "C" fn nv_get_signature(
         };
     }
     let mut publisher = [0u8; 128];
-    let publisher_len = if let Some(p) = &detail.publisher {
-        let pl = p.len().min(128);
-        publisher[..pl].copy_from_slice(&p.as_bytes()[..pl]);
-        pl as u32
-    } else {
-        0
-    };
+    let (pub_text, publisher_len) = detail
+        .publisher
+        .as_deref()
+        .map(|p| truncate_utf8(p, 128))
+        .unwrap_or(("", 0usize));
+    publisher[..publisher_len].copy_from_slice(pub_text.as_bytes());
+    let publisher_len = publisher_len as u32;
     unsafe {
         *out = NvSigDetail {
             index: detail.info.index as u32,
