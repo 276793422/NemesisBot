@@ -251,6 +251,59 @@ fn test_all_network_recon_commands() {
     assert!(guard.check("wireshark").is_err());
 }
 
+// BUG-20261104-373：netcat_bind 旧正则 `-\b[l]\b` 要求 l 独立成词，
+// listen flag 组合形态（l 后跟其他 flag 字母无词边界）恒打不中——
+// `nc -lvp 4444` 等 bind shell 标准形态全部漏网。修复 = `-[a-z]*l`
+// （与 chmod_recursive 的 flag 组合覆盖同模式）。
+#[test]
+fn test_bug373_netcat_bind_combined_flags() {
+    let guard = Guard::new(true);
+    // 组合 flag 形态（修复前全部漏网）
+    assert!(guard.check("nc -lvp 4444").is_err());
+    assert!(guard.check("nc -lnp 4444").is_err());
+    assert!(guard.check("nc -vl 4444").is_err());
+    assert!(guard.check("nc -lns 4444").is_err());
+    assert!(guard.check("nc -lk 4444").is_err());
+    // 归一化形态（剥引号/合并空白）同样命中
+    assert!(guard.check(r#"nc "-lvp" 4444"#).is_err());
+    // 分写形态（修复前已拦）不回归
+    assert!(guard.check("nc -l -p 4444").is_err());
+    assert!(guard.check("nc -l 4444").is_err());
+    // 无 listen flag 的 nc 调用不误拦
+    assert!(guard.check("nc -v evil.com 80").is_ok());
+    assert!(guard.check("nc remote.host 80").is_ok());
+    assert!(guard.check("echo hi").is_ok());
+}
+
+// BUG-20261104-373 横向：blocklist 全表 flag 变体/紧凑值/等价写法同族缺口。
+#[test]
+fn test_bug373_horizontal_flag_variants() {
+    let guard = Guard::new(true);
+    // del/rd/erase flag 后置形态（cmd.exe 合法；rm_rf/robocopy_mir 同文件
+    // 内早已支持任意位置，三兄弟条目漏）
+    assert!(guard.check("del file.txt /f").is_err());
+    assert!(guard.check("del C:\\data /s /q").is_err());
+    assert!(guard.check("del /f /s /q dir").is_err()); // 前置不回归
+    assert!(guard.check("rd mydir /s").is_err());
+    assert!(guard.check("rd /s /q mydir").is_err()); // 前置不回归
+    assert!(guard.check("erase tmp.log /f").is_err());
+    // del 无破坏 flag 不误拦
+    assert!(guard.check("del file.txt").is_ok());
+    // truncate 紧凑值 `-s0` 与 `-s 0` 同义
+    assert!(guard.check("truncate -s0 big.log").is_err());
+    assert!(guard.check("truncate -s 0 big.log").is_err()); // 原形态不回归
+    assert!(guard.check("truncate -s 1M big.log").is_ok()); // 非零尺寸放行
+    // kill 等价信号写法
+    assert!(guard.check("kill -s 9 1234").is_err());
+    assert!(guard.check("kill -s9 1234").is_err());
+    assert!(guard.check("kill -s sigkill 1234").is_err());
+    assert!(guard.check("kill -9 1234").is_err()); // 原形态不回归
+    assert!(guard.check("kill 1234").is_ok()); // 默认 TERM 放行
+    assert!(guard.check("kill -15 1234").is_ok()); // TERM 放行
+    // 无效信号组合不受新 alternation 误拦
+    assert!(guard.check("kill -s 99 1234").is_ok());
+}
+
 #[test]
 fn test_all_remote_execution_commands() {
     let guard = Guard::new(true);
