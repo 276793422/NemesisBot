@@ -966,7 +966,8 @@ impl SkillInstaller {
             return Err(e);
         }
 
-        // P15：SKILL.md 安全检查（缺 SKILL.md = 跳过检查、不记录——历史契约）。
+        // P15：SKILL.md 安全检查（缺 SKILL.md = 跳过检查、不记录——历史契约；
+        // 存在但读不出 = fail loud，见下方 map_err）。
         // M5：lint 面扩展到 staging 整目录可执行面（同 plan_github_install）。
         let mut security_result = SecurityCheckResult {
             lint_result: crate::lint::LintResult {
@@ -980,9 +981,14 @@ impl SkillInstaller {
             block_reason: String::new(),
         };
         let skill_md_path = staging.join("SKILL.md");
-        if skill_md_path.exists()
-            && let Ok(content) = std::fs::read_to_string(&skill_md_path)
-        {
+        if skill_md_path.exists() {
+            // SKILL.md 存在但读不出（非 UTF-8 等）= fail loud（与
+            // plan_github_install 同场景同口径）——不允许读失败静默短路成
+            // 默认满分放行安装（安全检查逃逸口）。
+            let content = std::fs::read_to_string(&skill_md_path).map_err(|e| {
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                NemesisError::Io(e)
+            })?;
             let check_result = check_skill_security_dir(&staging, &content, slug, "");
             security_result = check_result.clone();
             {

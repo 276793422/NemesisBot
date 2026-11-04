@@ -1583,6 +1583,180 @@ fn test_increment_version_non_numeric() {
     assert_eq!(increment_version("1.abc"), "1.abc.1");
 }
 
+// ==================== BUG-20261104-371 回归锁 ====================
+//
+// script 类 artifact 三形态路径失配：create 落 scripts/{category}/{name}，
+// resolve_artifact_path（Script 臂）此前恒返回扁平形态 scripts/{name}——
+// update 把新内容写到 scripts/ 直下的错位新文件、原 category 文件永不
+// 更新（registry.content 内存态正确形成「自愈」假象）；evaluate 读不到
+// 错位文件静默 fallback registry.content 掩盖漂移。修复 = Script 臂两级
+// 探测（扁平在场优先 → scripts/*/ 一层扫描 → 都无回落扁平）。
+
+#[test]
+fn test_bug371_resolve_script_prefers_categorized_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge_dir = dir.path().join("forge");
+    let categorized = forge_dir.join("scripts").join("deploy").join("my-script");
+    std::fs::create_dir_all(categorized.parent().unwrap()).unwrap();
+    std::fs::write(&categorized, "v1").unwrap();
+    // 扁平形态不在场：必须命中 create 落的 category 形态
+    let artifact = nemesis_types::forge::Artifact {
+        id: "script-cat".into(),
+        name: "my-script".into(),
+        kind: ArtifactKind::Script,
+        version: "1.0".into(),
+        status: nemesis_types::forge::ArtifactStatus::Draft,
+        content: String::new(),
+        tool_signature: vec![],
+        created_at: String::new(),
+        updated_at: String::new(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    assert_eq!(resolve_artifact_path(&forge_dir, &artifact), categorized);
+}
+
+#[test]
+fn test_bug371_resolve_script_flat_layout_wins_when_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge_dir = dir.path().join("forge");
+    let flat = forge_dir.join("scripts").join("my-script");
+    std::fs::create_dir_all(flat.parent().unwrap()).unwrap();
+    std::fs::write(&flat, "flat").unwrap();
+    let categorized = forge_dir.join("scripts").join("utils").join("my-script");
+    std::fs::create_dir_all(categorized.parent().unwrap()).unwrap();
+    std::fs::write(&categorized, "categorized").unwrap();
+    let artifact = nemesis_types::forge::Artifact {
+        id: "script-both".into(),
+        name: "my-script".into(),
+        kind: ArtifactKind::Script,
+        version: "1.0".into(),
+        status: nemesis_types::forge::ArtifactStatus::Draft,
+        content: String::new(),
+        tool_signature: vec![],
+        created_at: String::new(),
+        updated_at: String::new(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    // 两形态并存：扁平优先（历史扁平数据兼容，语义 = 最接近旧行为）
+    assert_eq!(resolve_artifact_path(&forge_dir, &artifact), flat);
+}
+
+#[test]
+fn test_bug371_resolve_script_multi_category_hit_is_deterministic() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge_dir = dir.path().join("forge");
+    // 两个 category 目录都有同名文件（registry 无 category 字段时的歧义
+    // 场景）：按路径字典序取首个——read_dir 结果显式排序，跨平台确定性
+    let in_beta = forge_dir.join("scripts").join("beta").join("dup-script");
+    std::fs::create_dir_all(in_beta.parent().unwrap()).unwrap();
+    std::fs::write(&in_beta, "beta").unwrap();
+    let in_alpha = forge_dir.join("scripts").join("alpha").join("dup-script");
+    std::fs::create_dir_all(in_alpha.parent().unwrap()).unwrap();
+    std::fs::write(&in_alpha, "alpha").unwrap();
+    let artifact = nemesis_types::forge::Artifact {
+        id: "script-dup".into(),
+        name: "dup-script".into(),
+        kind: ArtifactKind::Script,
+        version: "1.0".into(),
+        status: nemesis_types::forge::ArtifactStatus::Draft,
+        content: String::new(),
+        tool_signature: vec![],
+        created_at: String::new(),
+        updated_at: String::new(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    assert_eq!(
+        resolve_artifact_path(&forge_dir, &artifact),
+        in_alpha,
+        "多 category 命中必须字典序取首（alpha < beta）"
+    );
+}
+
+#[tokio::test]
+async fn test_bug371_update_reaches_categorized_script_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+
+    let create_result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "script",
+                "name": "deploy-helper",
+                "content": "#!/bin/bash\necho v1\nexit 0",
+                "test_cases": [{"input": "test"}],
+                "category": "deploy"
+            }),
+        )
+        .await;
+    assert!(
+        create_result.success,
+        "create failed: {}",
+        create_result.content
+    );
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
+    let id = id_line.split("ID:").nth(1).unwrap().trim();
+
+    let update_result = executor
+        .execute(
+            "forge_update",
+            &serde_json::json!({
+                "id": id,
+                "content": "#!/bin/bash\necho v2\nexit 0",
+                "change_description": "bump to v2"
+            }),
+        )
+        .await;
+    assert!(
+        update_result.success,
+        "update failed: {}",
+        update_result.content
+    );
+
+    // 原 category 文件被真正更新（失配修复前：恒为 v1 旧内容）
+    let categorized = dir
+        .path()
+        .join("forge")
+        .join("scripts")
+        .join("deploy")
+        .join("deploy-helper");
+    let on_disk = std::fs::read_to_string(&categorized).unwrap();
+    assert!(
+        on_disk.contains("v2"),
+        "category 文件必须被 update 实际更新，实际内容：{on_disk}"
+    );
+    // scripts/ 直下不再产生错位新文件
+    let misplaced = dir
+        .path()
+        .join("forge")
+        .join("scripts")
+        .join("deploy-helper");
+    assert!(
+        !misplaced.exists(),
+        "update 不得再在 scripts/ 直下产生错位副本"
+    );
+}
+
 #[test]
 fn test_increment_version_single_segment() {
     assert_eq!(increment_version("5"), "5.1");

@@ -1512,7 +1512,7 @@ fn resolve_artifact_path(
     };
     match artifact.kind {
         ArtifactKind::Skill => forge_dir.join("skills").join(name).join("SKILL.md"),
-        ArtifactKind::Script => forge_dir.join("scripts").join(name),
+        ArtifactKind::Script => resolve_script_path(forge_dir, &name),
         ArtifactKind::Mcp => {
             // Try both Python and Go entry points
             let mcp_dir = forge_dir.join("mcp").join(name);
@@ -1525,6 +1525,37 @@ fn resolve_artifact_path(
             }
         }
     }
+}
+
+/// Script 类 artifact 的落盘路径解析（BUG-20261104-371）。
+///
+/// create 落 `scripts/{category}/{name}`（category 段未进 Artifact 结构，
+/// 无法精确还原），本函数此前恒返回扁平形态 `scripts/{name}`——update 把
+/// 新内容写到 scripts/ 直下的错位新文件、原 category 文件永不更新，
+/// registry.content 却更新正确（内存态「自愈」假象）；evaluate 读不到
+/// 错位文件静默 fallback registry.content，漂移被掩盖。现在两级探测：
+/// 扁平形态在场优先（历史扁平数据兼容），否则扫 `scripts/*/` 一层找
+/// create 形态的同名文件（多命中按路径字典序取首个，read_dir 结果显式
+/// 排序保证跨平台确定性），都无 → 扁平形态 fallback（update 的新建语义
+/// 与磁盘空场景既有测试钉住的行为一致）。update/回滚走对路径后，
+/// version 快照链（save_snapshot 以本路径为底读旧内容）随之恢复健康。
+fn resolve_script_path(forge_dir: &std::path::Path, name: &str) -> PathBuf {
+    let flat = forge_dir.join("scripts").join(name);
+    if flat.is_file() {
+        return flat;
+    }
+    let Ok(entries) = std::fs::read_dir(forge_dir.join("scripts")) else {
+        return flat;
+    };
+    let mut candidates: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|d| d.join(name))
+        .filter(|p| p.is_file())
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next().unwrap_or(flat)
 }
 
 /// Find the latest reflection report in the workspace.
