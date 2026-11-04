@@ -1279,10 +1279,11 @@ mod r9_process_boundary {
         test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
     }
 
-    /// S2-1：NEMESISBOT_ROLE=eval-agent 在 Cli::parse 之前短路进
-    /// eval_worker；缺 NEMESISBOT_EVAL_WORKSPACE env → context Err →
-    /// tokio main 返回 Err → 运行时打 "Error: ..." 并以退码 1 结束。
-    /// 若短路被回归移除，`status` 子命令会正常跑完 rc=0 → 断言响亮失败。
+    /// S2-1（BUG-20261104-388 语义）：NEMESISBOT_ROLE=eval-agent **且无
+    /// CLI args** 时在 Cli::parse 之前短路进 eval_worker；缺
+    /// NEMESISBOT_EVAL_WORKSPACE env → context Err → tokio main 返回
+    /// Err → 运行时打 "Error: ..." 并以退码 1 结束。若短路被回归移除，
+    /// 无 args 进程落到 clap（help/报错，rc≠1）→ 断言响亮失败。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "eval")]
     #[test]
@@ -1291,19 +1292,49 @@ mod r9_process_boundary {
         let bin = r9_bin();
         let o = spawn_env_direct(
             &bin,
-            &["status"],
+            &[],
             &[("NEMESISBOT_ROLE", "eval-agent")],
-            &["NEMESISBOT_HOME"],
+            &["NEMESISBOT_HOME", "NEMESISBOT_EVAL_WORKSPACE"],
             120,
         );
         assert_eq!(
             o.code, 1,
-            "eval-agent 缺 workspace env 必须 rc=1:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            "eval-agent（无 args）缺 workspace env 必须 rc=1:\n--- stdout ---\n{}\n--- stderr ---\n{}",
             o.stdout, o.stderr
         );
         assert!(
             o.stderr.contains("NEMESISBOT_EVAL_WORKSPACE"),
             "stderr 必须点名缺失的 env:\n{}",
+            o.stderr
+        );
+    }
+
+    /// BUG-20261104-388 回归锁（eval 侧，镜像 executor 侧同款）：eval
+    /// env + CLI args = CLI 嵌套形态（盒内工具再 spawn `nemesisbot <sub>`
+    /// 继承污染 env），不得劫持进角色 worker——`--help` 必须正常走 clap
+    /// 输出（rc=0 + stdout 非空）。修复前形态：只认 env → 劫持进
+    /// eval_worker → 缺 workspace env rc=1，help 从未输出。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(feature = "eval")]
+    #[test]
+    fn r9_eval_agent_role_env_with_cli_args_not_hijacked() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let bin = r9_bin();
+        let o = spawn_env_direct(
+            &bin,
+            &["--help"],
+            &[("NEMESISBOT_ROLE", "eval-agent")],
+            &["NEMESISBOT_HOME", "NEMESISBOT_EVAL_WORKSPACE"],
+            120,
+        );
+        assert_eq!(
+            o.code, 0,
+            "带子命令 + eval-agent env 必须走正常 CLI（不短路）:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(
+            !o.stdout.trim().is_empty(),
+            "clap help 必须真实输出（修复前形态：劫持进 eval_worker 缺 env rc=1，stdout 空）\n--- stderr ---\n{}",
             o.stderr
         );
     }
