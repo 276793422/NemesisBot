@@ -262,6 +262,24 @@ fn dump_log_tail(path: &Path, max_lines: usize) {
     }
 }
 
+/// Recursively copy a directory tree, returning the file count（std-only，
+/// 供失败轮证据归集用；src 不存在或为空返回 0）。
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    let mut copied = 0u64;
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copied += copy_dir_all(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
 /// Print log lines containing `needle`（T41 发现层诊断：只看 [Discovery] 行，
 /// tail-30 会被健康探针 RPC 流刷掉）。同时输出总行数对比。
 fn dump_log_grep(path: &Path, needle: &str, max_lines: usize) {
@@ -16510,6 +16528,24 @@ async fn main() {
         let cluster_cfg_dst = log_output_dir.join(format!("{}-config.cluster.json", name));
         if cluster_cfg_src.exists() {
             std::fs::copy(&cluster_cfg_src, &cluster_cfg_dst).ok();
+        }
+    }
+    // TestAIServer 请求转储抢救（2026-11-04 mrg-a T-MRG-2 排查教训）：桩
+    // handlers.go:97 对每个 /v1/chat/completions 无条件落**全量原始 body**
+    // 到 `<stub-cwd>/log/<model>/<ts>.log`（cwd=项目根），消息级证据一直
+    // 都在——只是既不在失败工件上传清单里，也从未被归集。拷进
+    // cluster-uat-logs/stub-requests/ 后，失败工件即自带「桩当时看到了
+    // 什么 messages / 末条 role 是什么」的第一现场，T-MRG 类桩契约分歧
+    // 不再需要二次盲跑。
+    let stub_log_src = root.join("log");
+    if stub_log_src.is_dir() {
+        let stub_dst = log_output_dir.join("stub-requests");
+        match copy_dir_all(&stub_log_src, &stub_dst) {
+            Ok(n) => println!(
+                "  Saved TestAIServer request dumps: {n} file(s) -> {}",
+                stub_dst.display()
+            ),
+            Err(e) => println!("  Failed to save TestAIServer request dumps: {e}"),
         }
     }
     println!(

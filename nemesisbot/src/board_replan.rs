@@ -472,6 +472,19 @@ fn autonomous_execute(
     trigger_source: &str,
     cfg: &nemesis_config::BoardReplanConfig,
 ) -> Result<(), String> {
+    // EST-03 同款长跑复查（2026-11-05 R528）：起草入口查过一次 estop，但
+    // 起草到执行之间隔着分钟级评审 LLM——发起时未生效不代表结束时仍未
+    // 生效。急停生效中不做任何自治动作（本模块不变量；config 侧
+    // BoardAutonomy 文档同钉「estop 与外部熔断权不受此字段影响」）：建议
+    // 评论已先行落盘（人工可见，形态等同 assisted 提案），此处放弃执行
+    // 留给人工处置，不另发停车评论（急停期间操作员要的是安静）。
+    if deps.estop.is_engaged() {
+        info!(
+            "[BoardReplan] {} 计划 v{version} 起草期间 estop 生效，放弃自治执行（建议已落盘待人工处置，{trigger_source}）",
+            root.number
+        );
+        return Ok(());
+    }
     let store = &deps.store;
     let violations = evaluate_policy_gates(root, children, output, cfg);
     if !violations.is_empty() {

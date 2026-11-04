@@ -999,9 +999,14 @@ mod sup_real_child {
         assert!(out.contains("warmup"));
         let pid = sup.slot_pid("agent-a").await.expect("pid");
 
-        // 慢工具（ping -n 4 ≈ 3s）撞 1s 调用超时 → ToolFailed；超时≠死亡，
-        // child 此刻还活着（这正是带毒的根源）。
-        match exec_cmd(&sup, &exec_root, "ping -n 4 127.0.0.1 > nul").await {
+        // 慢工具（ping -n 12 ≈ 11s）撞 1s 调用超时 → ToolFailed；超时≠死亡，
+        // child 此刻还活着（这正是带毒的根源）。载荷取理论极限：本测试是
+        // current_thread runtime，timer 推进依赖测试线程被 OS 调度——全量
+        // 并发满载下若线程饥饿 >（载荷-预算）秒，超时判定会晚于 ping 完成
+        // → Ok 假红（2026-11-05 R528 全量实录）。载荷 11s vs 预算 1s =
+        // 翻转需饥饿 >10s，全量并发下不可达（ping -n 4≈3s 的旧值在满载
+        // 机上余量不足）。
+        match exec_cmd(&sup, &exec_root, "ping -n 12 127.0.0.1 > nul").await {
             Err(m) => assert!(
                 m.contains("timed out"),
                 "超时错误信息应可辨识（executor transport timed out）: {m}"

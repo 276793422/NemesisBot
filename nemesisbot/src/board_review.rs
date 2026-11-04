@@ -4774,6 +4774,15 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     }
     match output.verdict {
         nemesis_board::ReviewVerdict::Pass => {
+            // EST-03（2026-09-16 横扫加固；2026-11-05 R528 补父单收口 PASS
+            // 臂）：收口评审 LLM 是长跑——发起时 estop 未生效不代表结束时
+            // 仍未生效。落 done + on_issue_settled 级联（祖先链 sync/依赖
+            // 补派/项目收口触发）前补检查点：挂起即停车入队（release 复评
+            // 恢复），不越过急停继续自动收口。FAIL/UNSURE 臂同窗已由
+            // try_parent_remediation 的 estop 窗口闸 + 转人工停车覆盖。
+            if estop_fuse_engaged(deps, parent_id, ParkedKind::Parent) {
+                return Ok(false);
+            }
             // AOR 批二b（⑥ FINISH 谓词·收口面终检）：评审耗时数分钟，子树
             // 状态可能变化——落盘前以新鲜子树重验完整五条件，宁阻塞不盲收
             // 口。阻塞 → 缺口评论（C-F4 去重）+ 不落 PASS 评论不记

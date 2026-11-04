@@ -355,7 +355,10 @@ impl OAuthProviderConfig {
             return Ok(Some(code.clone()));
         }
         let error_msg = params.get("error").cloned().unwrap_or_default();
-        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n<html><body><h2>No authorization code received</h2></body></html>").await;
+        // BUG-20261105-007：头块必须 \r\n\r\n 终结（同函数另两臂 348/353
+        // 均正确，唯独此臂漏一个 \r\n——body 并进头块，浏览器等不到头块
+        // 结束，连接关闭后渲染不出提示页，只见空响应错误）。
+        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h2>No authorization code received</h2></body></html>").await;
         let _ = stream.flush().await;
         // 合法 state 下的 error 回调（如 access_denied）= 用户显式决定，
         // 终止整个流程让用户拿到反馈。

@@ -797,7 +797,7 @@ fn w6_transition_notify_failure() {
     );
 }
 
-/// reopen_issue 的 system 评论写失败 → 回滚（664）。
+/// reopen_issue 的 system 评论写失败 → 整体回滚（BUG-20261105-002 回归锁）。
 #[test]
 fn w6_reopen_comment_failure() {
     let store = temp_store("w6-ro-a");
@@ -811,12 +811,56 @@ fn w6_reopen_comment_failure() {
          WHEN NEW.ctype = 'system'
          BEGIN SELECT RAISE(ABORT, 'cov-boom-reopen'); END;",
     );
-    // reopen 内部先走 transition_issue（其评论是 status_change，不触发射
-    // 击），错误必须来自 reopen 自己的 system 审计评论插入（664）。
+    // status_change 评论（ctype≠system）不触发射击，错误必须来自 reopen
+    // 自己的 system 审计评论插入。
     let err = store.reopen_issue(i.id, &admin()).unwrap_err();
     assert!(
         err.contains("cov-boom-reopen"),
         "错误必须来自 reopen 内部的评论插入：{err}"
+    );
+    // 原子性（BUG-20261105-002 根修前：转移独立 commit 先行、只有第二段
+    // 回滚 → 状态已是 backlog 而审计评论缺失；根修后单事务，任一步失败
+    // 整体回滚 → 状态必须还在 cancelled）。
+    assert_eq!(
+        store.get_issue(i.id).unwrap().status,
+        IssueStatus::Cancelled,
+        "reopen 任一附加动作失败必须整体回滚，不留半截转移"
+    );
+}
+
+/// hidden 取消单 reopen 的 system 评论写失败 → 单事务整体回滚，状态留在
+/// cancelled 且 hidden 保持置位（BUG-20261105-002 的僵尸形态精确回归锁：
+/// 根修前第二段事务失败会留下 hidden=1 的 backlog 单——列表恒排除、
+/// reopen 前置只认 cancelled，无任何 API 可恢复的永久僵尸）。
+#[test]
+fn w6_reopen_hidden_issue_comment_failure_full_rollback() {
+    let store = temp_store("w6-ro-c");
+    let i = store.create_issue(new_issue("隐藏单重开失败")).unwrap();
+    store
+        .transition_issue(i.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+    let hidden = store.bulk_archive_cancelled(&[i.id], &admin()).unwrap();
+    assert!(hidden[0].hidden);
+    w6_exec(
+        &store,
+        "CREATE TRIGGER t_rc2 BEFORE INSERT ON comment
+         WHEN NEW.ctype = 'system'
+         BEGIN SELECT RAISE(ABORT, 'cov-boom-hidden-reopen'); END;",
+    );
+    let err = store.reopen_issue(i.id, &admin()).unwrap_err();
+    assert!(
+        err.contains("cov-boom-hidden-reopen"),
+        "错误必须来自 reopen 内部的评论插入：{err}"
+    );
+    let after = store.get_issue(i.id).unwrap();
+    assert_eq!(
+        after.status,
+        IssueStatus::Cancelled,
+        "第二段失败不得留下 backlog 状态（单事务整体回滚）"
+    );
+    assert!(
+        after.hidden,
+        "第二段失败不得半途解除 hidden（hidden 只能随成功转移同事务解除）"
     );
 }
 

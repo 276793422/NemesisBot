@@ -6962,6 +6962,79 @@ async fn parent_llm_pass_auto_closes_and_settles() {
     );
 }
 
+/// LLM 返回前顺手拉起 estop——模拟「评审 LLM 长跑期间挂急停」（发起时
+/// 未生效、结束时已挂起）。供 post-LLM 检查点（EST-03）回归锁直驱。
+struct EstopMidLlm {
+    reply: String,
+    estop: Arc<nemesis_agent::estop::EstopState>,
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for EstopMidLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        self.estop.trigger();
+        Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: self.reply.clone(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn parent_llm_pass_estop_mid_review_parks_not_closes() {
+    // EST-03 父单收口 PASS 臂回归锁（R528）：收口评审 LLM 长跑期间挂急停
+    // ——发起时未生效（入口①过）、结束时已挂起，PASS 臂落 done +
+    // on_issue_settled 级联前必须复查停车，不越过急停继续自动收口。
+    use nemesis_board::IssueStatus;
+    let (deps, _ws) = review_deps("parent-llm-estop-mid");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(&deps.store, "父单收口急停", "", "（父单验收输入=子单汇总）");
+    attach_loop(
+        &deps,
+        Arc::new(EstopMidLlm {
+            reply: review_json("PASS", ""),
+            estop: deps.estop.clone(),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("父单收口闭环");
+    assert!(!reviewed, "estop 中途挂起必须停车返回未评审");
+    assert_eq!(
+        deps.store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InReview,
+        "急停中途挂起不得落 done"
+    );
+    let parked = deps.estop_parked.lock().unwrap().clone();
+    assert!(
+        parked.contains(&(ParkedKind::Parent, parent.id)),
+        "PASS 臂检查点必须按 (Parent, id) 停车入队: {parked:?}"
+    );
+    assert!(
+        !deps
+            .store
+            .list_comments(parent.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("父单收口验收通过")),
+        "急停中途挂起不得落自动收口评论"
+    );
+}
+
 #[tokio::test]
 async fn parent_llm_fail_escalates_with_gap_comment() {
     use nemesis_board::IssueStatus;

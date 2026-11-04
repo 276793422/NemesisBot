@@ -1751,14 +1751,6 @@ fn test_cron_job_message_construction() {
 
 #[cfg(feature = "forge")]
 #[test]
-fn test_forge_trace_collector_creation() {
-    let collector = nemesis_forge::trace::TraceCollector::new();
-    let events = collector.events();
-    assert!(events.is_empty());
-}
-
-#[cfg(feature = "forge")]
-#[test]
 fn test_forge_trace_store_creation() {
     let dir = tempfile::tempdir().unwrap();
     let _store = nemesis_forge::trace_store::TraceStore::new(dir.path());
@@ -2565,17 +2557,6 @@ fn test_forge_bridge_tool_calls_present_returns_ok() {
         Ok(content.to_string())
     };
     assert!(result.is_ok());
-}
-
-// -------------------------------------------------------------------------
-// Forge TraceCollector operations
-// -------------------------------------------------------------------------
-
-#[cfg(feature = "forge")]
-#[test]
-fn test_forge_trace_collector_events_empty() {
-    let collector = nemesis_forge::trace::TraceCollector::new();
-    assert!(collector.events().is_empty());
 }
 
 // -------------------------------------------------------------------------

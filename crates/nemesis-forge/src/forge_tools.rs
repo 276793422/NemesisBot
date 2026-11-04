@@ -1118,9 +1118,17 @@ impl ForgeToolExecutor {
         // --- Stage 3: Quality Assessment ---
         let stage3 = quality_assessment(&file_content, &artifact.kind);
 
-        // Determine new status based on all three stages
+        // Determine new status based on all three stages. Quality gate reads
+        // `config.forge.json` `validation.min_quality_score` (BUG-20261104-391) —
+        // the pipeline path (create auto_validate / learning_engine) already
+        // consumed the same key; the hardcoded 60 here made the config key
+        // half-effective depending on which path evaluated the artifact.
         use nemesis_types::forge::ArtifactStatus;
-        let new_status = if stage1.passed && stage2.passed && stage3.score >= 60 {
+        let min_score = self.forge.config().validation.min_quality_score;
+        // Local quality_assessment scores in i32; clamp before comparing to
+        // the u32 config threshold (same key consumed by pipeline::determine_status).
+        let quality_ok = stage3.score.max(0) as u32 >= min_score;
+        let new_status = if stage1.passed && stage2.passed && quality_ok {
             ArtifactStatus::Active
         } else if stage1.passed && stage2.passed {
             ArtifactStatus::Observing

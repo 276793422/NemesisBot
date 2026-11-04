@@ -1849,7 +1849,7 @@ impl AgentLoop {
                     };
                     let args = serde_json::from_str(&tool_call.arguments)
                         .unwrap_or(serde_json::Value::Null);
-                    let _ = forge.collector().record_with_args(exp, &args).await;
+                    forge.collector().record_with_args(exp, &args).await;
                     // Audit P0-F1（2026-10-22）：TraceStore 原先零生产调用——
                     // monitor 的实效对比链在这里断头。经 Forge::record_trace_event
                     // JSONL 直写（写失败只 warn，观测数据不反噬工具链）。

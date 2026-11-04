@@ -151,7 +151,15 @@ fn json_value_to_call(v: &serde_json::Value) -> Option<(String, String)> {
             .and_then(|f| f.get("name"))
             .and_then(|n| n.as_str())
     })?;
-    let arguments = match v.get("arguments") {
+    // arguments 与 name 同构双源：顶层优先，缺失时回落 function.arguments
+    // （BUG-20261105-006）。OpenAI wire 教科书形态是
+    // {"type":"function","function":{"name":..,"arguments":".."}}——name 有
+    // function 回落而 arguments 没有，嵌套形态会恢复出 name 但参数静默丢成
+    // "{}"（白名单过了、finish 强改、正文剥离——误修复）。
+    let arguments_src = v
+        .get("arguments")
+        .or_else(|| v.get("function").and_then(|f| f.get("arguments")));
+    let arguments = match arguments_src {
         Some(serde_json::Value::String(s)) => s.clone(),
         Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
         None => "{}".to_string(),

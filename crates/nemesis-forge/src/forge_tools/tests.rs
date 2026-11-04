@@ -2645,6 +2645,101 @@ async fn test_s8_evaluate_observing_status() {
     );
 }
 
+/// BUG-20261104-391 回归锁：forge_evaluate 的质量闸必须消费
+/// config.forge.json `validation.min_quality_score`（此前硬编码 60，该键只在
+/// pipeline 路径生效）。同一份内容（forge_tools 侧评分 67：完整度 25 + 错误
+/// 处理 17 + 文档 20 + 代码质量 5）差分两分支——默认阈值 60 → Active；阈值
+/// 提到 99 → Observing。钉死键被真实消费。
+#[tokio::test]
+async fn test_evaluate_quality_gate_reads_config_threshold() {
+    // 评分构件刻意规避 "try"/"catch"/"except"/"None"/"nil" 等子串误触；
+    // len>500 + 行数>15 + "## " + "- " + 注释行>=3 + "Usage" + "```" +
+    // "handle" + "error" + "return"+"error" + "return " 各档在注释里可复核。
+    let content = r#"# Deploy Skill
+
+## Overview
+
+This skill deploys the build artifact with error handling and rollback support.
+It is intended for production release automation and can be invoked by the
+agent whenever a deployment task is requested by the user or by a workflow.
+Deployments are idempotent and safe to re-run after a failed attempt.
+
+## Usage
+
+Run the deploy steps below:
+
+- Validate the artifact before shipping (fail fast; return error on mismatch).
+- Upload the package and handle network timeouts gracefully.
+- Return early on any error so callers can re-attempt safely.
+
+Example command:
+
+```
+deploy --target production --verify
+```
+"#;
+
+    // Case A: 默认阈值 60 → 67 分内容晋升 Active。
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "deploy-skill",
+                "description": "production deploy skill",
+                "content": content
+            }),
+        )
+        .await;
+    assert!(created.success);
+    let evaluated = executor
+        .execute(
+            "forge_evaluate",
+            &serde_json::json!({"id": "skill-deploy-skill"}),
+        )
+        .await;
+    assert!(evaluated.success);
+    assert!(
+        evaluated.content.contains("**New status: Active**"),
+        "default threshold should promote the score-67 content; content: {}",
+        evaluated.content
+    );
+
+    // Case B: 阈值 99 → 同一份内容只能 Observing（键被消费的直接证据）。
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.validation.min_quality_score = 99;
+    let forge2 = Arc::new(Forge::new(config, dir2.path().to_path_buf()));
+    let executor2 = ForgeToolExecutor::new(forge2);
+    let created2 = executor2
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "deploy-skill",
+                "description": "production deploy skill",
+                "content": content
+            }),
+        )
+        .await;
+    assert!(created2.success);
+    let evaluated2 = executor2
+        .execute(
+            "forge_evaluate",
+            &serde_json::json!({"id": "skill-deploy-skill"}),
+        )
+        .await;
+    assert!(evaluated2.success);
+    assert!(
+        evaluated2.content.contains("**New status: Observing**"),
+        "raised threshold must keep the same content out of Active; content: {}",
+        evaluated2.content
+    );
+}
+
 /// forge_evaluate: stage 1 fails (no headings) → Draft.
 #[tokio::test]
 async fn test_s8_evaluate_draft_static_fail() {
