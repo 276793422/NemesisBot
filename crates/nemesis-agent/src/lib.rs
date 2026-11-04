@@ -51,6 +51,12 @@ pub mod delegate_registry;
 pub mod discipline;
 pub mod estop;
 pub mod event_ledger;
+/// 修6（BUG-C 执行体面，2026-11-04）：同步 exec 族子进程树守卫 +
+/// 会话级注册表——Windows Job Object / Unix 进程组，estop/超时/drop
+/// 收整棵后代树；会话级 sweep（`kill_session_trees`）供 estop 联动。
+/// 只收同步 exec 族（exec / run_script / run_checks 注入内核），
+/// B4 background_start 不碰。
+pub mod exec_tree;
 pub mod executor_pipe;
 pub mod executor_transport;
 pub mod formatter;

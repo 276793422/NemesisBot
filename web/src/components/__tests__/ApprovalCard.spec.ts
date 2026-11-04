@@ -517,4 +517,146 @@ describe('ApprovalCard', () => {
     }
     w.unmount()
   })
+
+  // ---- 并行批审批聚合（BUG-A 第三层，2026-11-05）----
+  // 同批 N 卡前端聚成一张批卡（全部批准/全部拒绝/全部总是允许，一次裁决
+  // 整批走 WSAPI approval.respond_batch）；无批号卡保持原单卡渲染。分组
+  // 是纯派生——任一成员被摘除后组自动收缩，全空组消亡。
+
+  it('批聚合: 同批两卡聚成一张批卡（N 项清单 + 全部批准/全部拒绝），单卡并存', async () => {
+    const w = await mounted()
+    fireApproval(makePayload('bt-1', { batch_id: 'batch-r', target: 'target-one' }))
+    fireApproval(
+      makePayload('bt-2', { batch_id: 'batch-r', target: 'target-two', reason: 'rule: deploy' }),
+    )
+    fireApproval(makePayload('solo-beside', { target: 'echo stay' }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 三张 pending → 两张卡（一张批卡 + 一张无批号单卡）。
+    const cards = w.findAll('.approval-card')
+    expect(cards).toHaveLength(2)
+    const batch = w.find('.approval-card.batch')
+    expect(batch.exists()).toBe(true)
+    expect(batch.text()).toContain('并行批 · 2 项')
+    expect(batch.text()).toContain('target-one')
+    expect(batch.text()).toContain('target-two')
+    expect(batch.text()).toContain('rule: deploy')
+    expect(
+      w.findAll('button').find(b => b.text() === '全部批准'),
+    ).toBeTruthy()
+    expect(
+      w.findAll('button').find(b => b.text() === '全部拒绝'),
+    ).toBeTruthy()
+    w.unmount()
+  })
+
+  it('批聚合: 全部批准 → WSAPI approval.respond_batch → 整组摘卡（单卡保留）', async () => {
+    wsapiRequest.mockResolvedValue({ responded: 2, skipped: 0 })
+    const w = await mounted()
+    fireApproval(makePayload('ba-1', { batch_id: 'batch-a', target: 'target-one' }))
+    fireApproval(makePayload('ba-2', { batch_id: 'batch-a', target: 'target-two' }))
+    fireApproval(makePayload('solo-stay', { target: 'echo stay' }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const approveAll = w.findAll('button').find(b => b.text() === '全部批准')!
+    await approveAll.trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'respond_batch', {
+      batch_id: 'batch-a',
+      approved: true,
+      always: false,
+    })
+    // 整组摘卡：批内两卡消失，无批号单卡不受影响。
+    expect(w.find('.approval-card.batch').exists()).toBe(false)
+    expect(w.text()).toContain('echo stay')
+    expect(w.text()).not.toContain('target-one')
+    w.unmount()
+  })
+
+  it('批聚合: 批内全部可记规则 → 全部总是允许可见（always 透传）；任一不可记则隐藏', async () => {
+    const w = await mounted()
+    fireApproval(makePayload('bw-1', { batch_id: 'batch-w', pattern: 'cargo publish *' }))
+    fireApproval(
+      makePayload('bw-2', { batch_id: 'batch-w', target: 'kubectl apply', pattern: 'kubectl apply *' }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 回显 = 批内 pattern 去重清单；按钮在 → 点击透传 always=true。
+    const batch = w.find('.approval-card.batch')
+    expect(batch.find('.approval-always-scope').text()).toContain('cargo publish *')
+    expect(batch.find('.approval-always-scope').text()).toContain('kubectl apply *')
+    const alwaysAll = w.findAll('button').find(b => b.text() === '全部总是允许')!
+    await alwaysAll.trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'respond_batch', {
+      batch_id: 'batch-w',
+      approved: true,
+      always: true,
+    })
+
+    // 新批：一项无 pattern（不可记规则）→ 按钮与「记住」行都不渲染。
+    fireApproval(makePayload('bw-3', { batch_id: 'batch-np', target: 'target-x' }))
+    await vi.advanceTimersByTimeAsync(0)
+    const batchNp = w.find('.approval-card.batch')
+    expect(batchNp.exists()).toBe(true)
+    expect(
+      w.findAll('button').find(b => b.text() === '全部总是允许'),
+    ).toBeUndefined()
+    expect(batchNp.find('.approval-always-scope').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('批聚合: 风险徽标取批内最高 + 倒计时取最早到期 + 整批拒绝带备注', async () => {
+    const w = await mounted()
+    // now ref 与 fake 时钟对齐（ticker 先跳一拍）。
+    vi.advanceTimersByTime(1000)
+    fireApproval(makePayload('bm-1', { batch_id: 'batch-m', risk_level: 'HIGH' }))
+    fireApproval(
+      makePayload('bm-2', {
+        batch_id: 'batch-m',
+        target: 'rm -rf /',
+        risk_level: 'CRITICAL',
+        timeout_secs: 10,
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    const batch = w.find('.approval-card.batch')
+    // 风险徽标 = 批内最高（CRITICAL 压过 HIGH）：critical 边框 + 严重徽标。
+    expect(batch.classes()).toContain('critical')
+    expect(batch.text()).toContain('严重')
+    // 倒计时 = 批内最早到期（10s 项先自动拒绝）。
+    expect(batch.find('.approval-countdown').text()).toContain('10s')
+
+    await batch.find('.approval-note-input').setValue('整批先停')
+    const denyAll = w.findAll('button').find(b => b.text() === '全部拒绝')!
+    await denyAll.trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'respond_batch', {
+      batch_id: 'batch-m',
+      approved: false,
+      always: false,
+      note: '整批先停',
+    })
+    w.unmount()
+  })
+
+  it('批聚合: approval-resolved 摘除一名成员 → 批组收缩为 1 项仍批卡', async () => {
+    const w = await mounted()
+    fireApproval(makePayload('bs-1', { batch_id: 'batch-s', target: 'target-one' }))
+    fireApproval(makePayload('bs-2', { batch_id: 'batch-s', target: 'target-two' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(w.find('.approval-card.batch').text()).toContain('并行批 · 2 项')
+
+    // 另一窗口裁决了 bs-1 → 广播到达 → 组收缩（剩 1 项仍是批卡，同批只剩
+    // 一项语义一致，不降级成单卡）。
+    sseHandlers.get('approval-resolved')!({ request_id: 'bs-1', decision: 'approved' })
+    await vi.advanceTimersByTimeAsync(0)
+    const batch = w.find('.approval-card.batch')
+    expect(batch.exists()).toBe(true)
+    expect(batch.text()).toContain('并行批 · 1 项')
+    expect(batch.text()).toContain('target-two')
+    expect(batch.text()).not.toContain('target-one')
+    w.unmount()
+  })
 })

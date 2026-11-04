@@ -503,7 +503,9 @@ fn rewrite_paths_tolerates_non_string_path_slot() {
 }
 
 // ---------------------------------------------------------------------------
-// 压测①a（2026-09-30）：dispatch 层 detached 工具闸（detached_tool_refusal）
+// 压测①a（2026-09-30）：dispatch 层 detached 工具闸（修2 2026-11-04 起经
+// [`environment_constraint_refusal`] 统一注册点裁决；本组实例 fence 恒空
+// = 纯 detached 臂，语义与原 detached_tool_refusal 逐字节一致）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -511,7 +513,7 @@ fn detached_gate_no_tools_refuses_everything() {
     let inst = AgentInstance::new(cov_config());
     inst.set_detached_no_tools(true);
     for tool in ["list_dir", "exec", "git"] {
-        let r = super::tool_dispatch::detached_tool_refusal(&inst, tool);
+        let r = super::tool_dispatch::environment_constraint_refusal(&inst, tool);
         assert!(r.is_some(), "no_tools 必须拒绝 {tool}");
         assert!(
             r.unwrap().starts_with("Error: tool '"),
@@ -525,12 +527,12 @@ fn detached_gate_allowlist_refuses_outside_only() {
     let inst = AgentInstance::new(cov_config());
     inst.set_detached_allowed_tools(Some(vec!["read_file".to_string()]));
     // 白名单外拒绝（NB-54 实证的 exec 越白名单形态）。
-    let r = super::tool_dispatch::detached_tool_refusal(&inst, "exec");
+    let r = super::tool_dispatch::environment_constraint_refusal(&inst, "exec");
     assert!(r.is_some(), "白名单外必须拒绝");
     assert!(r.unwrap().contains("allowed tool set"));
     // 白名单内放行。
     assert!(
-        super::tool_dispatch::detached_tool_refusal(&inst, "read_file").is_none(),
+        super::tool_dispatch::environment_constraint_refusal(&inst, "read_file").is_none(),
         "白名单内不得拒"
     );
 }
@@ -539,10 +541,10 @@ fn detached_gate_allowlist_refuses_outside_only() {
 fn detached_gate_inert_for_plain_instances() {
     // 主链路实例两旗标恒空 = 恒 None（零行为变化）。
     let plain = AgentInstance::new(cov_config());
-    assert!(super::tool_dispatch::detached_tool_refusal(&plain, "exec").is_none());
-    assert!(super::tool_dispatch::detached_tool_refusal(&plain, "write_file").is_none());
+    assert!(super::tool_dispatch::environment_constraint_refusal(&plain, "exec").is_none());
+    assert!(super::tool_dispatch::environment_constraint_refusal(&plain, "write_file").is_none());
     // 空白名单 = 不设限（与 effective_tool_defs 的 Some(空) 语义一致）。
     let empty = AgentInstance::new(cov_config());
     empty.set_detached_allowed_tools(Some(vec![]));
-    assert!(super::tool_dispatch::detached_tool_refusal(&empty, "exec").is_none());
+    assert!(super::tool_dispatch::environment_constraint_refusal(&empty, "exec").is_none());
 }

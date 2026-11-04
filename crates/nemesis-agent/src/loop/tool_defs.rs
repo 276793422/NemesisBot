@@ -101,14 +101,15 @@ impl AgentLoop {
         context: &RequestContext,
         depth: usize,
         // 压测①a（2026-09-30）：detached 工具闸随行（串行路径同款裁决，见
-        // [`super::tool_dispatch::detached_tool_refusal`]）——并行安全批
-        // （list_dir 等只读工具）同样不得绕过 no_tools / allowed_tools。
+        // [`super::tool_dispatch::environment_constraint_refusal_for`]）——
+        // 并行安全批（list_dir 等只读工具）同样不得绕过 no_tools / allowed_tools。
         no_tools: bool,
         allowed_tools: Option<Vec<String>>,
         // B2（profession-capability-evolution 2026-10-14）：职能工具围栏随
-        // 行（串行路径同款裁决 [`super::tool_dispatch::profession_fence_refusal`]）
-        // ——只读工具同样不得绕过围栏。逐 future clone，调用方从 instance
-        // config 取值（None/空 = 未围，恒 `None` 放行）。
+        // 行（串行路径同款裁决，同一注册点 [`super::tool_dispatch::
+        // environment_constraint_refusal_for`]）——只读工具同样不得绕过围栏。
+        // 逐 future clone，调用方从 instance config 取值（None/空 = 未围，
+        // 恒 `None` 放行）。
         fence_profession: Option<String>,
         fence_tools: Vec<String>,
     ) -> Vec<PrecomputedTool> {
@@ -189,66 +190,52 @@ impl AgentLoop {
                 .collect();
         }
         let permits = pool.permits();
+        // 并行批审批聚合（BUG-A 第三层，2026-11-05）：本批共享一个批号，
+        // 批内任一 ask 卡经 metadata 随行批号 → 前端聚成一张卡
+        // （N 项 + 全部允许/全部拒绝，一次裁决全批）。批号每批新生成，
+        // 串行路径不生成、字节不变。
+        let batch_id = format!("batch-{}", uuid::Uuid::new_v4());
+        // 修④（BUG-C 2026-11-04）：逐 future 完成旗标 + 批起点墙钟（中断面
+        // ToolFinished 的 duration 取批起点——池排队导致的起点偏差可接受，
+        // 中断行本就是近似时刻）。
+        let batch_started = std::time::Instant::now();
+        let completed_flags: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>> = (0..tool_calls
+            .len())
+            .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .collect();
         let futs = tool_calls
             .iter()
             .zip(reservations)
-            .map(|(tc, reservation)| {
+            .enumerate()
+            .map(|(i, (tc, reservation))| {
+                let completed = completed_flags[i].clone();
                 let permits = permits.clone();
                 let tc = tc.clone();
                 let allowed_tools = allowed_tools.clone();
                 let fence_profession = fence_profession.clone();
                 let fence_tools = fence_tools.clone();
+                let batch_id = batch_id.clone();
                 async move {
                     // L19：账本预留 + 准入许可由执行体自持到执行结束
                     //（借用形态；Drop 释放先于结果被消费方读取）。
                     let _reservation = reservation;
                     let _permit = permits.acquire_owned().await.ok();
                     let start = std::time::Instant::now();
-                // detached 闸先行（与串行路径同位：校验/执行前的现场裁决）。
-                if no_tools {
+                // 修2（2026-11-04）：环境约束预拒统一注册点（detached +
+                // fence 两约束一处声明，与串行路径
+                // [`super::tool_dispatch::environment_constraint_refusal`]
+                // 同源——文案不外散 inline，新增约束只改注册点一处）。
+                if let Some(refusal) = super::tool_dispatch::environment_constraint_refusal_for(
+                    no_tools,
+                    allowed_tools.as_deref(),
+                    fence_profession.as_deref(),
+                    &fence_tools,
+                    &tc.name,
+                ) {
                     warn!(
-                        "[AgentLoop] Detached no_tools gate refused tool '{}' (parallel batch)",
-                        tc.name
-                    );
-                    return PrecomputedTool {
-                        result: format!(
-                            "Error: tool '{}' is refused — this run was started with tools disabled. Produce your final answer as plain text now. Do NOT call tools again.",
-                            tc.name
-                        ),
-                        validation_failed: false,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                    };
-                }
-                if let Some(allowed) = &allowed_tools
-                    && !allowed.is_empty()
-                    && !allowed.iter().any(|a| a == &tc.name)
-                {
-                    warn!(
-                        "[AgentLoop] Detached allowed_tools gate refused tool '{}' (parallel batch)",
-                        tc.name
-                    );
-                    return PrecomputedTool {
-                        result: format!(
-                            "Error: tool '{}' is outside the allowed tool set for this run (allowed: {}). Use only the allowed tools, or answer in plain text. Do NOT retry this tool.",
-                            tc.name,
-                            allowed.join(", ")
-                        ),
-                        validation_failed: false,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                    };
-                }
-                // B2：职能围栏闸（与串行路径同位；文案单一真相源
-                // [`super::tool_dispatch::profession_fence_refusal_for`]）。
-                if !fence_tools.is_empty()
-                    && let Some(refusal) = super::tool_dispatch::profession_fence_refusal_for(
-                        fence_profession.as_deref(),
-                        &fence_tools,
-                        &tc.name,
-                    )
-                {
-                    warn!(
-                        "[AgentLoop] Profession tool fence refused tool '{}' (parallel batch)",
-                        tc.name
+                        "[AgentLoop] Environment constraint refused tool '{}' (parallel batch): {}",
+                        tc.name,
+                        refusal.trim_start_matches("Error: ")
                     );
                     return PrecomputedTool {
                         result: refusal,
@@ -258,7 +245,8 @@ impl AgentLoop {
                 }
                 let (result, validation_failed) = match self.check_tool_args(&tc).await {
                     crate::args_validator::Outcome::Valid => (
-                        self.handle_tool_call_at_depth(&tc, context, depth).await,
+                        self.handle_tool_call_at_depth_batched(&tc, context, depth, Some(&batch_id))
+                            .await,
                         false,
                     ),
                     crate::args_validator::Outcome::Fixed(fixed_args) => {
@@ -269,7 +257,8 @@ impl AgentLoop {
                         let mut fixed = tc.clone();
                         fixed.arguments = fixed_args;
                         (
-                            self.handle_tool_call_at_depth(&fixed, context, depth).await,
+                            self.handle_tool_call_at_depth_batched(&fixed, context, depth, Some(&batch_id))
+                                .await,
                             false,
                         )
                     }
@@ -290,6 +279,12 @@ impl AgentLoop {
                         )
                     }
                 };
+                // 修④（BUG-C 2026-11-04）：完成旗标在此置位——与 hook 链内
+                // ToolFinished 发射同点（handle_tool_call_at_depth 返回即事件
+                // 已发），其后到旗标置位之间无 await（同一 poll 内同步完成）
+                // → drop 窗口不存在：旗标 false ⇒ ToolFinished 未发，estop
+                // 中断臂据此补发，不重不漏。
+                completed.store(true, std::sync::atomic::Ordering::SeqCst);
                 PrecomputedTool {
                     result,
                     validation_failed,
@@ -297,7 +292,59 @@ impl AgentLoop {
                 }
             }
         });
-        futures::future::join_all(futs).await
+        // 修④（BUG-C 2026-11-04）：biased estop-first select 包住 join_all
+        // ——急停在批内窗口到达即中断（旧语义：批跑完、下一轮边界才停，
+        // 等待最坏 = 整批墙钟）。中断 = drop join（在飞 future 全部取消；
+        // exec 族子进程树由 Job Object RAII + gateway estop sweep 收杀，见
+        // exec_tree 模块注释；web_fetch/MCP 网络 fut drop = 断连天然安全
+        // ——drop 安全性审计全文见 tool_dispatch 臂 C 同款注释）。
+        let mut estop_rx = self.security.subscribe();
+        let joined = futures::future::join_all(futs);
+        tokio::pin!(joined);
+        tokio::select! {
+            biased;
+            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                warn!(
+                    "[AgentLoop] E-stop interrupted parallel tool batch ({} calls).",
+                    tool_calls.len()
+                );
+                // 逐项收口：!completed 补发中断面 ToolFinished（id 用与
+                // dispatch 侧同一 call_id_for 派生——raw id 非空时精确命中
+                // ToolStarted id，卡片不悬空；空 id = 时间戳兜底两侧必不
+                // 一致 → 悬空，罕见，诚实边界记入修复报告）；completed 者
+                // 事件已发，只补占位行（biased 下 join 同时就绪而 estop 先
+                // 出线的窄竞态，真实结果被丢弃）。
+                let rows: Vec<PrecomputedTool> = tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tc)| {
+                        let done = completed_flags[i].load(std::sync::atomic::Ordering::SeqCst);
+                        if !done {
+                            let call_id = crate::turn_wal::call_id_for(&tc.id, &tc.name);
+                            self.emit_tool_interrupted(
+                                &context.session_key,
+                                &context.chat_id,
+                                &call_id,
+                                &tc.name,
+                                batch_started,
+                                "⛔ interrupted by e-stop (estop engaged mid-batch)",
+                            );
+                        }
+                        PrecomputedTool {
+                            result: if done {
+                                "⛔ 已急停 (E-STOP)：该工具已完成，但结果被急停中断的批次收集丢弃，未进入上下文。不要重试。".to_string()
+                            } else {
+                                "⛔ ESTOP: 已急停 — 工具调用已被打断 (e-stop engaged mid-batch). 不要重试；告知用户当前处于急停状态，等待释放。".to_string()
+                            },
+                            validation_failed: false,
+                            duration_ms: batch_started.elapsed().as_millis() as u64,
+                        }
+                    })
+                    .collect();
+                rows
+            }
+            results = joined => results,
+        }
     }
 
     /// prompt-pack pro（M3）：工具描述分档取值单点。Pro 体系查
@@ -466,29 +513,24 @@ impl AgentLoop {
         if instance.detached_no_tools() {
             return Vec::new();
         }
-        let mut defs = self.build_tool_defs();
-        if let Some(allowed) = instance.detached_allowed_tools()
-            && !allowed.is_empty()
-        {
-            defs.retain(|d| allowed.contains(&d.function.name));
-        }
-        // B2（profession-capability-evolution 2026-10-14）：职能工具围栏
-        // 供给闸——任务装配写入的实例级白名单（[`AgentConfig::tools`] 非空
-        // = 围栏生效）与注册表供给取交集；`question` 豁免（围栏内任务向人
-        // 求助的唯一通道，模型必须看得见才能问）。派发闸
-        // （[`super::tool_dispatch::profession_fence_refusal`]）双端对齐。
-        // loop 级 config `tools` 恒空 → 主 loop / 普通对话 / 项目 loop 零
-        // 行为变化。
-        let fence = &instance.config().tools;
-        if !fence.is_empty() {
-            defs.retain(|d| {
-                fence.contains(&d.function.name)
-                    || super::tool_dispatch::fence_exempt_tool(&d.function.name)
-            });
-        }
+        let defs = self.build_tool_defs();
+        // 修2（2026-11-04）：环境约束供给面过滤统一注册点（detached 白名单
+        // + 职能围栏一处声明，与派发预拒
+        // [`super::tool_dispatch::environment_constraint_refusal`] 同源双端
+        // 对齐——供给闸只管 defs 可见性，上游端点注入的调用由派发闸现场
+        // 裁决）。`question` 豁免照旧在过滤函数内生效（围栏内任务向人求助
+        // 的唯一通道）。loop 级 config `tools` 恒空 → 主 loop / 普通对话 /
+        // 项目 loop 零行为变化。
+        let filtered = super::tool_dispatch::filter_defs_by_environment_constraints(
+            defs,
+            instance.detached_no_tools(),
+            instance.detached_allowed_tools().as_deref(),
+            &instance.config().tools,
+        );
         // 空白名单 = 不设限（与 run_detached 的 `!allowed.is_empty()` 守卫
-        // 同语义——否则 Some(空) 会把供给收窄到零工具，两端语义劈叉）。
-        self.apply_tool_doc_folding(defs, instance)
+        // 同语义——否则 Some(空) 会把供给收窄到零工具，两端语义劈叉）；
+        // 该守卫已内建于过滤函数的 `!allowed.is_empty()` 臂。
+        self.apply_tool_doc_folding(filtered, instance)
     }
 
     /// Y1 (Phase4-a): read `agents.tool_doc_folding` from the current config

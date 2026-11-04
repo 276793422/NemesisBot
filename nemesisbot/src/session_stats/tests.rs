@@ -55,6 +55,7 @@ fn approval_requested(key: &str, request_id: &str) -> AgentEvent {
         reject_note: None,
         preview: None,
         preview_format: None,
+        batch_id: None,
     }
 }
 

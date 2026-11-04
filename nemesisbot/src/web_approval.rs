@@ -46,6 +46,9 @@ struct PendingEntry {
     preview: Option<String>,
     /// 渲染提示："diff" | "text"（`approval_preview::build_preview` 出槽）。
     preview_format: Option<String>,
+    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：本卡所属并行批的批号
+    /// （`batch-{uuid}`）。空串 = 串行路径单卡（不进聚合，前端按单卡渲染）。
+    batch_id: String,
     created_at: std::time::Instant,
     tx: mpsc::Sender<nemesis_security::auditor::ApprovalVerdict>,
 }
@@ -192,6 +195,8 @@ impl WebApprovalManager {
                 reject_note: Some(entry.reject_note.clone()),
                 preview: entry.preview.clone(),
                 preview_format: entry.preview_format.clone(),
+                // 并行批聚合（BUG-A 第三层）：非空批号才下发（None = 单卡）。
+                batch_id: (!entry.batch_id.is_empty()).then(|| entry.batch_id.clone()),
             };
             let _ = tx.send(event);
         }
@@ -233,6 +238,10 @@ impl WebApprovalManager {
         if let Some(f) = entry.preview_format.as_deref() {
             v["preview_format"] = serde_json::Value::String(f.to_string());
         }
+        // 并行批聚合（BUG-A 第三层）：非空批号才下发（旧前端无感）。
+        if !entry.batch_id.is_empty() {
+            v["batch_id"] = serde_json::Value::String(entry.batch_id.clone());
+        }
         v
     }
 
@@ -246,6 +255,7 @@ impl WebApprovalManager {
         pattern: &str,
         chat_id: &str,
         session_key: &str,
+        batch_id: &str,
     ) -> nemesis_types::approval_journal::ApprovalJournalEntry {
         nemesis_types::approval_journal::ApprovalJournalEntry {
             id: request_id.to_string(),
@@ -259,6 +269,7 @@ impl WebApprovalManager {
                 "pattern": pattern,
                 "chat_id": chat_id,
                 "session_key": session_key,
+                "batch_id": batch_id,
             }),
             status: nemesis_types::approval_journal::status::PENDING.to_string(),
             created_at: chrono::Local::now().to_rfc3339(),
@@ -470,6 +481,8 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             "",
             "",
             &serde_json::Value::Null,
+            // 串行路径（无 ctx）：无批上下文，单卡。
+            "",
         )
     }
 
@@ -499,6 +512,9 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             &ctx.chat_id,
             &ctx.session_key,
             &ctx.tool_args,
+            // 并行批审批聚合（BUG-A 第三层，2026-11-05）：pipeline 从
+            // invocation metadata 提取的批号原样透传——非空 = 前端按批聚卡。
+            &ctx.batch_id,
         )
     }
 }
@@ -506,7 +522,7 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
 impl WebApprovalManager {
     /// `request_approval_sync` / `_ctx` 的公共主体（路由参数化）：
     /// chat_id / session_key 为空 = 无来源上下文（旧形态，行为与续执行
-    /// 落地前一致）。
+    /// 落地前一致）；batch_id 为空 = 串行路径单卡（不进前端聚合）。
     fn request_routed(
         &self,
         request_id: &str,
@@ -518,6 +534,7 @@ impl WebApprovalManager {
         chat_id: &str,
         session_key: &str,
         tool_args: &serde_json::Value,
+        batch_id: &str,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
         let (tx, rx) = mpsc::channel::<nemesis_security::auditor::ApprovalVerdict>();
         let (why, impact, reject_note) =
@@ -545,6 +562,7 @@ impl WebApprovalManager {
             reject_note,
             preview,
             preview_format,
+            batch_id: batch_id.to_string(),
             created_at: std::time::Instant::now(),
             tx,
         };
@@ -565,6 +583,7 @@ impl WebApprovalManager {
                 &pattern,
                 chat_id,
                 session_key,
+                batch_id,
             );
             self.journal_record_pending(&journal_entry);
         }
@@ -818,7 +837,15 @@ impl ApprovalResponder for WebApprovalManager {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
-                out.push(serde_json::json!({
+                // 并行批聚合（BUG-A 第三层）：stale 卡同样按批下发（payload
+                // 缺键的历史形态 = 无批上下文，落 None 单卡）。
+                let payload_batch_id = e
+                    .payload
+                    .get("batch_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let mut stale_card = serde_json::json!({
                     "request_id": e.id,
                     "operation": e.operation,
                     "target": e.target,
@@ -833,7 +860,11 @@ impl ApprovalResponder for WebApprovalManager {
                     "reject_note": "重启前的审批请求：原操作已随进程终止，裁决仅记账留痕。",
                     "age_secs": serde_json::Value::Null,
                     "stale": true,
-                }));
+                });
+                if let Some(b) = payload_batch_id {
+                    stale_card["batch_id"] = serde_json::Value::String(b);
+                }
+                out.push(stale_card);
             }
         }
         out
@@ -849,6 +880,126 @@ impl ApprovalResponder for WebApprovalManager {
         self.resolve_orphans_matching(reason, |e| {
             !e.session_key.is_empty() && e.session_key == session_key
         })
+    }
+
+    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：一次裁决同一并行批内的
+    /// 全部未决卡（前端「全部允许/全部拒绝」按钮）。语义：
+    /// - **先摘后裁**（drain，同 resolve_orphans_matching）：同一把锁下摘出
+    ///   全部同批卡；respond 先摘走的卡不在集合内（同锁互斥，竞速败方落空）。
+    /// - 逐卡 R3 同款：台账条件更新先到先得——Ok(false) = respond/超时抢先
+    ///   裁决过 → 不送不广播，计入 skipped（不假广播）。
+    /// - always 规则：批量「全部总是允许」逐卡落规则；层级门不过（CRITICAL
+    ///   仅 process_exec 豁免 + 安装类）= warn 忽略；写失败 = warn 收集不
+    ///   fail（批量语义下单卡规则失败不阻断整批裁决，与单卡 respond 的
+    ///   Err 返回刻意分叉——整批裁决已送达的事实优先）。
+    /// - 返回 `{"responded": n, "skipped": m, "always_failed": [target…]}`。
+    fn respond_batch(
+        &self,
+        batch_id: &str,
+        approved: bool,
+        always: bool,
+        note: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        if batch_id.is_empty() {
+            return Err("empty batch id".to_string());
+        }
+        let members: Vec<(String, PendingEntry)> = {
+            let mut map = self
+                .pending
+                .lock()
+                .map_err(|e| format!("pending map poisoned: {}", e))?;
+            let ids: Vec<String> = map
+                .iter()
+                .filter(|(_, e)| e.batch_id == batch_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| map.remove(&id).map(|e| (id, e)))
+                .collect()
+        };
+        if members.is_empty() {
+            return Err(format!("no pending approvals in batch: {batch_id}"));
+        }
+        // F6 同口径：拒绝备注只在 denied 时携带（空串/纯空白视同无备注）。
+        let note = note.filter(|n| !n.trim().is_empty());
+        let decision = if approved {
+            nemesis_types::approval_journal::ApprovalDecision::Approved
+        } else {
+            nemesis_types::approval_journal::ApprovalDecision::Denied
+        };
+        let mut responded = 0usize;
+        let mut skipped = 0usize;
+        let mut always_failed: Vec<String> = Vec::new();
+        for (id, entry) in members {
+            // R3：先台账条件更新（幂等先到先得），后送裁决。Err = 台账写失败
+            // → 裁决照常送达（审批可用性不绑 tasks.db，审计缺失 loud 留痕）。
+            let decided = match self
+                .journal()
+                .map(|j| j.record_decision(&id, decision, note.as_deref(), "web-user"))
+            {
+                None => true,
+                Some(Ok(won)) => won,
+                Some(Err(e)) => {
+                    tracing::error!(
+                        "[WebApproval] batch respond journal record failed for {id}: {e} \
+                         (verdict still delivered — availability not bound to tasks.db)"
+                    );
+                    true
+                }
+            };
+            if !decided {
+                // respond/超时抢先完成裁决——跳过 send 与广播（先到者已广播
+                // 摘卡，本侧不假广播）。
+                skipped += 1;
+                continue;
+            }
+            // 逐卡构造同值 verdict（ApprovalVerdict 非 Copy）。
+            let card_verdict = if approved {
+                nemesis_security::auditor::ApprovalVerdict::approved()
+            } else {
+                nemesis_security::auditor::ApprovalVerdict {
+                    approved: false,
+                    note: note.clone(),
+                }
+            };
+            if entry.tx.send(card_verdict).is_err() {
+                // 等待方已退出：台账已持裁决，审计面可恢复——如实 warn。
+                tracing::warn!(
+                    "[WebApproval] batch respond for {id}: decision recorded but waiter channel \
+                     is gone; audit holds the decision"
+                );
+            }
+            self.broadcast_resolved(&id, if approved { "approved" } else { "denied" });
+            responded += 1;
+            if approved && always {
+                match self.save_always_rule(&entry.operation, &entry.target, &entry.risk_level) {
+                    Ok(Some(pattern)) => tracing::info!(
+                        "[WebApproval] always-allow rule saved (batch): {} {}",
+                        entry.operation,
+                        pattern
+                    ),
+                    Ok(None) => tracing::warn!(
+                        "[WebApproval] always-allow ignored (batch) for {} (risk {}): CRITICAL ops \
+                         and code installs stay manual",
+                        entry.operation,
+                        entry.risk_level
+                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            "[WebApproval] always-allow rule save failed (batch) for {} {}: {e}",
+                            entry.operation,
+                            entry.target
+                        );
+                        always_failed.push(entry.target);
+                    }
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "responded": responded,
+            "skipped": skipped,
+            "always_failed": always_failed,
+        }))
     }
 }
 

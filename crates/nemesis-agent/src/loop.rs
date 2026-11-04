@@ -1137,6 +1137,42 @@ impl AgentLoop {
         self.work_recorder.clone()
     }
 
+    /// 修⑥（BUG-C 2026-11-04）：急停中断面的 ToolFinished 补发。被 estop
+    /// select 臂 drop 的执行链（含 ToolEventHook）发不出终态——按 hook 同一
+    /// 发射点（Work 累加器 + broadcast）补发 interrupted 记录：同 call_id
+    /// （hook 侧 ToolStarted 已带）、真实墙钟（dispatch 入口起算，含审批
+    /// 等待）、ok=false。work 累加器找不到对应 started 轮 = 忽略（estop 在
+    /// 首次 poll 前翻真的微秒窗口，无卡片可悬空）。
+    fn emit_tool_interrupted(
+        &self,
+        session_key: &str,
+        chat_id: &str,
+        call_id: &str,
+        tool: &str,
+        started: std::time::Instant,
+        preview: &str,
+    ) {
+        let duration_ms = started.elapsed().as_millis() as u64;
+        let preview = crate::tool_event_hook::truncate_chars(
+            preview,
+            crate::tool_event_hook::RESULT_PREVIEW_CAP,
+        );
+        self.work_recorder
+            .tool_finished(session_key, call_id, false, duration_ms, &preview);
+        if let Some(tx) = self.agent_event_tx.read().as_ref() {
+            // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
+            let _ = tx.send(nemesis_types::agent::AgentEvent::ToolFinished {
+                session_key: session_key.to_string(),
+                chat_id: chat_id.to_string(),
+                call_id: call_id.to_string(),
+                tool: tool.to_string(),
+                duration_ms,
+                ok: false,
+                result_preview: preview,
+            });
+        }
+    }
+
     /// 执行中 turn 的时间线快照（WSAPI `chat.work_current`，2026-10-30）：
     /// 只读、不扰动累加。会话不匹配 / 无进行中 turn / 尚无任何中间轮 =
     /// `None`（前端回落环回放）。落盘形态（finish）见 turn.rs 最终回复行。

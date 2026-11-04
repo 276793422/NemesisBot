@@ -349,6 +349,70 @@ impl ChannelApprovalManager {
              回复 /approve {id} 批准，/deny {id} 拒绝（{timeout} 秒内有效，超时自动拒绝）。"
         )
     }
+
+    /// estop 联动入口（Batch 2 ③ 残余面收口，2026-11-04）：系统急停时关闭
+    /// 全部在飞 IM 审批卡——web 侧卡片已有 L07 watcher（runtime.rs
+    /// `resolve_orphans`），本方法是 channel 侧的对称面。语义对齐 web
+    /// `resolve_orphans_matching`：先摘后清（drain 语义，与回执 watcher 互斥）
+    /// → 台账记 Orphaned（Ok(false) = 回执抢先裁决，跳过 send 不假通知）→
+    /// 拒绝裁决送等待方（ask 立即醒来拿「系统已终止」而非等满超时）→ 回源
+    /// 对话补发摘牌通知（IM 用户知道卡为何失效）。返回实际关闭数。
+    pub fn cancel_pending_all(&self, reason: &str) -> usize {
+        let orphans: Vec<(String, ChannelPendingEntry)> = {
+            let mut map = match self.pending.lock() {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::error!(
+                        "[ChannelApproval] cancel_pending_all: pending map poisoned: {e}"
+                    );
+                    return 0;
+                }
+            };
+            map.drain().collect()
+        };
+        let mut closed = 0usize;
+        for (id, entry) in orphans {
+            let decided = self.journal().map(|j| {
+                j.record_decision(
+                    &entry.request_id,
+                    nemesis_types::approval_journal::ApprovalDecision::Orphaned,
+                    Some(reason),
+                    "system-orphan-cleanup",
+                )
+            });
+            match decided {
+                Some(Ok(false)) => {
+                    // 回执/超时抢先完成裁决：等待方已被放行，跳过 send 与
+                    // 摘牌通知（不假广播）。
+                    tracing::info!(
+                        "[ChannelApproval] estop cleanup for {}: already decided elsewhere; skipping",
+                        id
+                    );
+                    continue;
+                }
+                Some(Err(e)) => {
+                    // 审计缺失 loud 留痕，不阻断清理（审批可用性不绑 tasks.db）。
+                    tracing::error!(
+                        "[ChannelApproval] estop cleanup journal record failed for {}: {e}",
+                        entry.request_id
+                    );
+                }
+                _ => {}
+            }
+            let _ = entry.tx.send(nemesis_security::auditor::ApprovalVerdict {
+                approved: false,
+                note: Some(format!("审批卡已被系统清理（{reason}），操作未执行")),
+            });
+            self.bus.publish_outbound(OutboundMessage::new(
+                &entry.channel,
+                &entry.chat_id,
+                &format!("⛔ 审批 {id} 已因系统急停关闭，操作未执行。"),
+            ));
+            tracing::warn!("[ChannelApproval] estop card closed: {id} reason={reason}");
+            closed += 1;
+        }
+        closed
+    }
 }
 
 impl ApprovalManager for ChannelApprovalManager {

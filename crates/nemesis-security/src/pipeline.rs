@@ -874,6 +874,13 @@ impl SecurityPlugin {
             // L07：原始 args 透传——审批卡 diff 预览的数据源（preview 在
             // 挂起点生成，args 只在这里可见）。
             tool_args: invocation.args.clone(),
+            // 并行批审批聚合（BUG-A 第三层）：批号随行（loop 在构造
+            // invocation 时对并行批工具调用填入）；缺键 = 串行路径单卡。
+            batch_id: invocation
+                .metadata
+                .get("approval_batch_id")
+                .cloned()
+                .unwrap_or_default(),
         };
         let (allowed, err, approval_id) = self
             .auditor

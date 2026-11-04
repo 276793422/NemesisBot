@@ -3648,6 +3648,7 @@ dependencies = [
  "hmac",
  "html2text",
  "image",
+ "libc",
  "mockall",
  "nemesis-config",
  "nemesis-connectors",
@@ -3689,6 +3690,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

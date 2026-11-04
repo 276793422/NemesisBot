@@ -444,6 +444,9 @@ pub(crate) async fn run_runtime(
                     );
                 }
             }
+            // Batch 2 ③（BUG-C 2026-11-04）：IM 审批卡 estop 挂点句柄——
+            // channel_mgr 即将 move 进组合管理器，先留克隆给下方 L07 watcher。
+            let channel_mgr_estop = channel_mgr.clone();
             let composite = crate::channel_approval::CompositeApprovalManager::new(
                 web_mgr.clone(),
                 channel_mgr,
@@ -722,15 +725,56 @@ pub(crate) async fn run_runtime(
                             "[Gateway] estop already engaged at approval wiring: closed {n} orphan card(s)"
                         );
                     }
+                    // Batch 2 ③（BUG-C 2026-11-04）：IM 通道卡对称面——同一
+                    // 触发点收掉 channel 侧全部在飞卡（语义注释见该方法）。
+                    let nc = channel_mgr_estop
+                        .cancel_pending_all("estop already engaged at wiring time");
+                    if nc > 0 {
+                        info!(
+                            "[Gateway] estop already engaged at approval wiring: closed {nc} channel card(s)"
+                        );
+                    }
                 }
                 tokio::spawn(async move {
                     let mut rx = estop.subscribe();
                     while rx.changed().await.is_ok() {
                         if *rx.borrow_and_update() {
                             let n = mgr_for_estop.resolve_orphans("estop engaged");
+                            let nc = channel_mgr_estop.cancel_pending_all("estop engaged");
+                            if n + nc > 0 {
+                                info!(
+                                    "[Gateway] estop engaged: closed {n} web + {nc} channel pending approval card(s)"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+            // Batch 2 ③ 执行面 sweep（BUG-C 2026-11-04）：急停触发时收杀全部
+            // 会话在飞的 exec 子进程树（Windows Job Object / Unix 进程组）。
+            // select 中断（tool_dispatch estop 臂）只能丢弃执行链 Future——
+            // 子进程收杀由注册表 sweep 完成（PLAN 第二层 ②③ 分工：执行链
+            // 中断在 dispatch，进程收杀在此）。接线无条件（exec_tree/estop
+            // 均无 feature 门槛）；初始已接急停同样扫一遍（接线时序兜底）；
+            // 释放不动作（树已收，后续调用走 dispatch 入口 estop 检查拒绝）。
+            {
+                let estop_for_exec = Arc::clone(&shared_resources.estop);
+                if estop_for_exec.is_engaged() {
+                    let n = nemesis_agent::exec_tree::kill_all_trees();
+                    if n > 0 {
+                        info!(
+                            "[Gateway] estop already engaged at exec wiring: killed {n} in-flight process tree(s)"
+                        );
+                    }
+                }
+                tokio::spawn(async move {
+                    let mut rx = estop_for_exec.subscribe();
+                    while rx.changed().await.is_ok() {
+                        if *rx.borrow_and_update() {
+                            let n = nemesis_agent::exec_tree::kill_all_trees();
                             if n > 0 {
                                 info!(
-                                    "[Gateway] estop engaged: closed {n} pending approval card(s)"
+                                    "[Gateway] estop engaged: killed {n} in-flight process tree(s)"
                                 );
                             }
                         }

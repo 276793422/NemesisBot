@@ -622,6 +622,7 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
             "cargo publish *",
             "",
             "",
+            "",
         );
         mgr.journal_record_pending(&entry);
         // drop = 进程死亡。
@@ -1036,6 +1037,7 @@ fn restart_with_stale_card(
             "cargo publish *",
             session_key,
             session_key,
+            "",
         );
         mgr.journal_record_pending(&entry);
     }
@@ -1148,6 +1150,7 @@ fn ctx_request_routes_session_key_into_entry_and_journal() {
                 sender_id: "user-1".to_string(),
                 session_key: "agent:main:session:sess-9".to_string(),
                 tool_args: serde_json::Value::Null,
+                batch_id: String::new(),
             };
             let r = mgr.request_approval_sync_ctx(
                 "req-ctx",
@@ -1426,4 +1429,158 @@ async fn preview_absent_when_tool_args_null_or_unmatched() {
     assert!(card.get("preview_format").is_none());
     assert!(mgr.respond("req-nopv", true, false, None).unwrap());
     let _ = rx.recv_timeout(Duration::from_secs(2));
+}
+
+// -------------------------------------------------------------------------
+// 并行批审批聚合（BUG-A 第三层，2026-11-05）：同批 N 卡一次裁决。
+// -------------------------------------------------------------------------
+
+/// 发起**带批号**的审批请求（并行批路径的真实形态：pipeline 从 invocation
+/// metadata 提取批号进 ApprovalContext，管理器按批聚卡）。
+fn request_async_batched(
+    mgr: std::sync::Arc<WebApprovalManager>,
+    request_id: &str,
+    batch_id: &str,
+) -> mpsc::Receiver<Result<ApprovalVerdict, String>> {
+    let (tx, rx) = mpsc::channel();
+    let id = request_id.to_string();
+    let batch = batch_id.to_string();
+    std::thread::spawn(move || {
+        let ctx = nemesis_security::auditor::ApprovalContext {
+            batch_id: batch,
+            ..Default::default()
+        };
+        let r = mgr.request_approval_sync_ctx(
+            &id,
+            "process_exec",
+            "cargo publish",
+            "HIGH",
+            "rule: exec-publish",
+            300,
+            &ctx,
+        );
+        let _ = tx.send(r);
+    });
+    rx
+}
+
+#[tokio::test]
+async fn batch_requested_event_carries_batch_id_solo_does_not() {
+    let (mgr, mut events) = mgr_with_events();
+    let mgr = std::sync::Arc::new(mgr);
+    let _r1 = request_async_batched(mgr.clone(), "req-b1", "batch-x");
+    let _r2 = request_async_batched(mgr.clone(), "req-b2", "batch-x");
+    let _r3 = request_async(mgr.clone(), "req-solo", 300);
+    wait_pending(&mgr, 3);
+
+    // 批内两张卡的事件带 batch_id；串行卡不带（skip_serializing_if）。
+    // spawn 到达顺序不定（tokio 并发请求）——三条全收后按 request_id 认领。
+    let all_events = [
+        recv_scoped(&mut events).await,
+        recv_scoped(&mut events).await,
+        recv_scoped(&mut events).await,
+    ];
+    for id in ["req-b1", "req-b2"] {
+        let p = all_events
+            .iter()
+            .find(|p| p["data"]["request_id"] == id)
+            .unwrap_or_else(|| panic!("missing approval-requested event for {id}"));
+        assert_eq!(p["data"]["batch_id"], "batch-x", "payload: {p}");
+    }
+    let p3 = all_events
+        .iter()
+        .find(|p| p["data"]["request_id"] == "req-solo")
+        .expect("missing approval-requested event for req-solo");
+    assert_eq!(p3["data"]["request_id"], "req-solo");
+    assert!(
+        p3["data"].get("batch_id").is_none(),
+        "solo card must not carry batch_id: {p3}"
+    );
+
+    // pending 列表同口径：批卡带 batch_id，solo 不带。
+    let cards = mgr.pending();
+    assert_eq!(cards.len(), 3);
+    for c in cards
+        .iter()
+        .filter(|c| c["request_id"].as_str().unwrap().starts_with("req-b"))
+    {
+        assert_eq!(c["batch_id"], "batch-x");
+    }
+    let solo = cards
+        .iter()
+        .find(|c| c["request_id"] == "req-solo")
+        .unwrap();
+    assert!(solo.get("batch_id").is_none());
+
+    // 清场：批拒绝 + solo 单卡批准，两个等待方都醒来。
+    let out = mgr
+        .respond_batch("batch-x", false, false, Some("整批拒绝".to_string()))
+        .unwrap();
+    assert_eq!(out["responded"], 2);
+    assert_eq!(out["skipped"], 0);
+    assert!(mgr.respond("req-solo", true, false, None).unwrap());
+    assert!(mgr.pending().is_empty());
+}
+
+#[tokio::test]
+async fn respond_batch_denies_all_members_with_shared_note() {
+    let (mgr, _events) = mgr_with_events();
+    let mgr = std::sync::Arc::new(mgr);
+    let r1 = request_async_batched(mgr.clone(), "req-d1", "batch-deny");
+    let r2 = request_async_batched(mgr.clone(), "req-d2", "batch-deny");
+    wait_pending(&mgr, 2);
+
+    let out = mgr
+        .respond_batch("batch-deny", false, false, Some("整批拒绝".to_string()))
+        .unwrap();
+    assert_eq!(out["responded"], 2);
+    assert_eq!(out["skipped"], 0);
+
+    // 两个等待方都收到拒绝 + 共享备注（verdict.note 面对齐单卡拒绝）。
+    for rx in [&r1, &r2] {
+        let v = rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("verdict delivered");
+        assert!(!v.approved);
+        assert_eq!(v.note.as_deref(), Some("整批拒绝"));
+    }
+    assert!(mgr.pending().is_empty());
+
+    // 空批号 / 未知批号 = 诚实报错（不静默成功）。
+    assert!(mgr.respond_batch("", false, false, None).is_err());
+    assert!(
+        mgr.respond_batch("batch-unknown", false, false, None)
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn respond_batch_race_single_respond_first_wins() {
+    let (mgr, _events) = mgr_with_events();
+    let mgr = std::sync::Arc::new(mgr);
+    let r1 = request_async_batched(mgr.clone(), "req-m1", "batch-race");
+    let r2 = request_async_batched(mgr.clone(), "req-m2", "batch-race");
+    wait_pending(&mgr, 2);
+
+    // 单卡 respond 先摘走 req-m1（先到先得）；批裁决 drain 只见剩余成员——
+    // 先摘走的卡不在集合内（同锁互斥，竞速败方落空），skipped 只计「drain 到
+    // 但台账输掉竞速（如超时抢先）」的卡，此处恒 0。先赢语义由 v1 只收到
+    // 单卡裁决 + 批未重发 req-m1 共同证明。
+    assert!(mgr.respond("req-m1", true, false, None).unwrap());
+    let out = mgr.respond_batch("batch-race", true, false, None).unwrap();
+    assert_eq!(out["responded"], 1, "剩余成员 req-m2 按批裁决放行");
+    assert_eq!(out["skipped"], 0, "respond 先摘走的卡不进批集合");
+
+    let v1 = r1
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .expect("verdict delivered");
+    assert!(v1.approved, "单卡 respond 的裁决不受批裁决影响");
+    let v2 = r2
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .expect("verdict delivered");
+    assert!(v2.approved, "批内剩余成员按批裁决放行");
+    assert!(mgr.pending().is_empty());
 }

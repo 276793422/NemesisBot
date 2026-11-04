@@ -42,6 +42,11 @@ export interface ApprovalRequest {
   /** preview 的格式：`diff` = unified diff（按行首字符染色）；
    * `text` = 等宽纯文本。 */
   preview_format?: 'diff' | 'text'
+  /** 并行批审批聚合（BUG-A 第三层，2026-11-05）：本卡所属并行批的批号
+   * （`batch-{uuid}`）。在场 = 同批号的全部卡在前端聚成一张卡（N 项 +
+   * 全部允许/全部拒绝，一次裁决）；缺省 = 串行路径单卡（按单卡渲染）。
+   * 后端只在并行批路径下发（skip_serializing_if），旧载荷零影响。 */
+  batch_id?: string
   /** 本地到期时刻（ms epoch）= 接收时刻 + (timeout_secs - age_secs) * 1000 */
   expiresAt: number
 }
@@ -98,6 +103,8 @@ function upsertFromPayload(data: any) {
       data.preview_format === 'diff' || data.preview_format === 'text'
         ? data.preview_format
         : undefined,
+    // 并行批审批聚合：批号透传（后端并行批路径才下发——skip_serializing_if）。
+    batch_id: typeof data.batch_id === 'string' && data.batch_id ? data.batch_id : undefined,
     expiresAt: Date.now() + Math.max(0, timeout - age) * 1000,
   }
   if (existing === -1) {
@@ -112,6 +119,17 @@ function upsertFromPayload(data: any) {
 function removeLocal(requestId: string) {
   const idx = pendingApprovals.findIndex(a => a.request_id === requestId)
   if (idx !== -1) pendingApprovals.splice(idx, 1)
+}
+
+/** 并行批审批聚合：按批号摘除本地全部同批卡（respond_batch 成功后调用；
+ * 裁决漏斗在服务端已逐卡广播 approval-resolved，这里按批整组同步摘除，
+ * 不等 N 个 resolved 事件逐个到达）。 */
+function removeLocalByBatch(batchId: string) {
+  for (let i = pendingApprovals.length - 1; i >= 0; i--) {
+    if (pendingApprovals[i].batch_id === batchId) {
+      pendingApprovals.splice(i, 1)
+    }
+  }
 }
 
 /** 本地倒计时到期：只摘卡片，服务端超时自动拒绝（理由走聊天流）。 */
@@ -248,6 +266,32 @@ export function useApprovals() {
     }
   }
 
+  /** 并行批审批聚合（BUG-A 第三层，2026-11-05）：一次裁决同批全部未决卡
+   * （WSAPI `approval.respond_batch` → 后端漏斗逐卡落审计 + resolved 广播；
+   * `always` 仅批内全部卡均可记规则才落，失败 warn 不 fail——批裁决已送达
+   * 优先，`always_failed` 目标在结果体）。成功后本地按批号整组摘卡。 */
+  async function respondBatch(batchId: string, approved: boolean, always = false, note?: string) {
+    const { request } = useWSAPI()
+    try {
+      const res = await request('approval', 'respond_batch', {
+        batch_id: batchId,
+        approved,
+        always,
+        ...(note ? { note } : {}),
+      })
+      removeLocalByBatch(batchId)
+      const responded = typeof res?.responded === 'number' ? res.responded : 0
+      toast.success(approved ? `已批准整批（${responded} 项）` : `已拒绝整批（${responded} 项）`)
+    } catch (err: any) {
+      const msg = String(err ?? '')
+      if (msg.includes('no pending approvals in batch') || msg.includes('not wired')) {
+        // 整批已被超时/其他窗口裁决，或实例未装配 — 卡片同步摘除。
+        removeLocalByBatch(batchId)
+      }
+      toast.error(`整批审批提交失败: ${msg}`)
+    }
+  }
+
   /** M5：远程批复（WSAPI `approval.remote_respond` → RPC 下发 worker）。
    * 无「总是允许」（后端 always 钉死 false）；`note` = 拒绝备注（随裁决
    * 送达 worker 回灌模型，与本地卡 F6 同语义）。裁决送达失败 = 卡保留可
@@ -272,7 +316,15 @@ export function useApprovals() {
     }
   }
 
-  return { pendingApprovals, pendingRemoteApprovals, now, initApprovals, respondTo, respondRemoteTo }
+  return {
+    pendingApprovals,
+    pendingRemoteApprovals,
+    now,
+    initApprovals,
+    respondTo,
+    respondBatch,
+    respondRemoteTo,
+  }
 }
 
 /** 测试辅助：重置模块级单例状态（生产代码勿用）。 */

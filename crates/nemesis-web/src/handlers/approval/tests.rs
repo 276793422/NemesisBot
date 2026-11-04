@@ -106,9 +106,11 @@ fn bare_loop() -> nemesis_agent::r#loop::AgentLoop {
     )
 }
 
-/// 记录型 FakeResponder：respond 记录裁决并回显，pending 返回固定条目。
+/// 记录型 FakeResponder：respond 记录裁决并回显，pending 返回固定条目；
+/// respond_batch（并行批聚合面）单独记录批裁决。
 struct FakeResponder {
     calls: parking_lot::Mutex<Vec<(String, bool, bool, Option<String>)>>,
+    batch_calls: parking_lot::Mutex<Vec<(String, bool, bool, Option<String>)>>,
 }
 
 impl ApprovalResponder for FakeResponder {
@@ -123,6 +125,21 @@ impl ApprovalResponder for FakeResponder {
             .lock()
             .push((request_id.to_string(), approved, always, note));
         Ok(approved)
+    }
+    fn respond_batch(
+        &self,
+        batch_id: &str,
+        approved: bool,
+        always: bool,
+        note: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        self.batch_calls
+            .lock()
+            .push((batch_id.to_string(), approved, always, note));
+        Ok(serde_json::json!({
+            "responded": 2,
+            "skipped": 0,
+        }))
     }
     fn pending(&self) -> Vec<serde_json::Value> {
         vec![serde_json::json!({
@@ -175,6 +192,7 @@ fn wired_ctx(dir: &tempfile::TempDir) -> (RequestContext, Arc<FakeResponder>) {
     let al = bare_loop();
     let fake = Arc::new(FakeResponder {
         calls: parking_lot::Mutex::new(Vec::new()),
+        batch_calls: parking_lot::Mutex::new(Vec::new()),
     });
     al.set_approval_responder(fake.clone());
     (make_ctx(dir, Some(Arc::new(al))), fake)
@@ -343,6 +361,86 @@ async fn pending_lists_responder_entries() {
     assert_eq!(out["pending"][0]["request_id"], "fake-1");
     assert_eq!(out["pending"][0]["risk_level"], "HIGH");
     assert_eq!(fake.calls.lock().len(), 0, "pending must not consume calls");
+}
+
+// ---------------------------------------------------------------------------
+// 并行批审批聚合（BUG-A 第三层，2026-11-05）：respond_batch 表面契约。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn respond_batch_delivers_to_responder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, fake) = wired_ctx(&dir);
+    let out = ApprovalHandler
+        .handle_cmd(
+            "respond_batch",
+            Some(serde_json::json!({
+                "batch_id": "batch-abc",
+                "approved": false,
+                "note": "整批拒绝",
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // 结果体 = responder 返回值原样透传（responded/skipped 计数）。
+    assert_eq!(out["responded"], 2);
+    assert_eq!(out["skipped"], 0);
+    assert_eq!(
+        *fake.batch_calls.lock(),
+        vec![(
+            "batch-abc".to_string(),
+            false,
+            false,
+            Some("整批拒绝".to_string())
+        )]
+    );
+    assert_eq!(
+        fake.calls.lock().len(),
+        0,
+        "批裁决不得误触单卡 respond 通道"
+    );
+}
+
+#[tokio::test]
+async fn respond_batch_rejects_missing_batch_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _fake) = wired_ctx(&dir);
+    let err = ApprovalHandler
+        .handle_cmd(
+            "respond_batch",
+            Some(serde_json::json!({ "approved": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing batch_id"), "err: {err}");
+    // 空串批号同口径拒绝（单卡走 respond，不进聚合）。
+    let err = ApprovalHandler
+        .handle_cmd(
+            "respond_batch",
+            Some(serde_json::json!({ "batch_id": "", "approved": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing batch_id"), "err: {err}");
+}
+
+#[tokio::test]
+async fn respond_batch_without_agent_loop_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, None);
+    let err = ApprovalHandler
+        .handle_cmd(
+            "respond_batch",
+            Some(serde_json::json!({ "batch_id": "b", "approved": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent loop not running"), "err: {err}");
 }
 
 // ---------------------------------------------------------------------------
