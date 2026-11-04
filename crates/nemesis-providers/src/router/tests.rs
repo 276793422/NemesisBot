@@ -1093,6 +1093,40 @@ async fn test_w4c_router_chat_passes_candidate_model_to_provider() {
     assert_eq!(prov.seen_models.lock()[0], "bare-model");
 }
 
+#[tokio::test]
+async fn test_w4c_router_chat_fallback_matches_bare_candidate_on_prefixed_request() {
+    // BUG-20261104-367：fallback 循环曾用 `c.model == resolved` 精确相等，
+    // 与同函数 selection 的 model_matches 判据不一致——前缀请求 + 裸名候选
+    // 时主级可被选中，retriable 失败后 fallback 却匹配不到任何候选 → 跨
+    // provider 故障转移静默失效（返回 primary 原始错误）。回归钉：前缀
+    // 请求 + 裸名 alt 候选，fallback 必须触发。
+    let router = Router::new(RouterConfig::default());
+    let primary = ScriptedProvider::new(
+        "p1",
+        "m1",
+        vec![Err(FailoverError::Timeout {
+            provider: "p1".into(),
+            model: "m1".into(),
+        })],
+    );
+    let alt = ScriptedProvider::new("p2", "m1", vec![Ok(ok_response("from-alt", 10))]);
+    router.register_provider("p1", primary);
+    router.register_provider("p2", alt);
+    router.add_candidate(plain_candidate("p1", "m1", 5));
+    router.add_candidate(plain_candidate("p2", "m1", 1));
+
+    let resp = router
+        .chat(
+            &one_user_message(),
+            &[],
+            "deepseek/m1",
+            &ChatOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "from-alt");
+}
+
 #[test]
 fn test_w4c_select_with_policy_empty_match_returns_first() {
     let router = Router::new(RouterConfig::default());
