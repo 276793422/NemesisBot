@@ -410,7 +410,10 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                     if !m.config_schema.is_empty() {
                         println!("config-schema:");
                         for (k, v) in &m.config_schema {
-                            println!("  {k}  # {v}");
+                            match v.default_value() {
+                                Some(d) => println!("  {k}  # {}（缺省 {d}）", v.desc()),
+                                None => println!("  {k}  # {}", v.desc()),
+                            }
                         }
                     }
                 }

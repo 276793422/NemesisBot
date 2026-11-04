@@ -41,7 +41,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use nemesis_agent::context::RequestContext;
 use nemesis_plugins_wasm::error::PluginError;
-use nemesis_plugins_wasm::host_impl::{HostToolInvoker, LlmInvoker, SecretResolver};
+use nemesis_plugins_wasm::host_impl::{
+    ConfigWriter, HostToolInvoker, LlmInvoker, SecretResolver, SecretWriter,
+};
 use nemesis_plugins_wasm::install::{InstallApprover, InstallReview};
 use nemesis_plugins_wasm::limits::{PluginLimits, PolicyPoint};
 use nemesis_plugins_wasm::registry::{PluginManager, ToolMetaSnapshot};
@@ -753,6 +755,60 @@ impl SecretResolver for VaultPluginSecrets {
     }
 }
 
+/// 插件凭据写回面（2026-11-03 自持写通道批）：secret-set 落 vault 裸别名
+/// `plugin/<slug>/<name>`（与 [`VaultPluginSecrets`] 解析同源——写读同一
+/// 命名空间，guest 侧 `vault:` 前缀只是组件视角）。Upsert 语义
+///（VaultStore::set 保留 created_at）；文件缺失 = 按平台默认模式自动建库
+///（DPAPI 免口令开箱即用；argon2id 只认 env 口令，缺失仍诚实 Err——
+/// headless 不能 prompt，demo 实录见 2026-11-03 自持批）；锁定 = 诚实 Err
+///（带补救指引）。
+pub struct VaultPluginSecretWriter {
+    vault_path: std::path::PathBuf,
+}
+
+impl VaultPluginSecretWriter {
+    /// vault 路径取 workspace 唯一拼接点（与读取侧同源）。
+    pub fn for_home(home: &std::path::Path) -> Self {
+        let ws = common::workspace_path(home);
+        Self {
+            vault_path: nemesis_path::resolve_vault_path_in_workspace(&ws),
+        }
+    }
+}
+
+impl SecretWriter for VaultPluginSecretWriter {
+    fn write(&self, alias: &str, value: &str) -> Result<(), String> {
+        let mut store = crate::vault_runtime::open_or_create_unlocked_at(&self.vault_path)
+            .map_err(|e| format!("secret-set 失败（{alias}）：{e}"))?;
+        store
+            .set(alias, value, "plugin", "wasm plugin secret-set")
+            .map_err(|e| format!("secret-set 失败（{alias}）：vault 写入: {e}"))?;
+        store
+            .save()
+            .map_err(|e| format!("secret-set 失败（{alias}）：vault 保存: {e}"))?;
+        Ok(())
+    }
+}
+
+/// 插件实例配置写回面：薄壳，写盘委托注册表 `set_config_key` 单一闸
+///（x-secret 拒 / 声明白名单 / config_io 串行全在其内）——writer 不背
+/// 第二份裁决语义。Weak 持有（PluginManager 在 AppState，writer 挂同一
+/// Arc 内不回收；upgrade 失败 = 装配序异常，诚实报错）。
+pub struct PluginManagerConfigWriter {
+    manager: std::sync::Weak<PluginManager>,
+}
+
+impl ConfigWriter for PluginManagerConfigWriter {
+    fn set_config(&self, slug: &str, key: &str, value: &str) -> Result<(), String> {
+        let m = self
+            .manager
+            .upgrade()
+            .ok_or_else(|| "config-set 失败：插件注册表已不可达（装配序异常）".to_string())?;
+        m.set_config_key(slug, key, value)
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// 插件敏感宿主调用审计（独立 AuditLogger 实例同审计目录追加；None =
 /// 静默跳过——审计文件开关关闭时诚实不记）。SecurityPlugin 的审计器
 /// 不可共享（audit_logger() 恒 None），gateway 侧独立实例同目录 append。
@@ -1104,6 +1160,14 @@ pub fn build_plugin_stack(
     if let Some(audit) = build_plugin_audit_logger(home) {
         manager.set_audit(audit);
     }
+    // 自持写通道写回面（2026-11-03 批）：装配期注入一次（loop 无关——
+    // 与 set_llm/set_invoker 的每 loop 重建重注入不同）。未注入 =
+    // secret-set / config-set 恒 unavailable（Panel 帧授予期即 None，
+    // 调用期诚实报错不假成功）。
+    manager.set_secret_writer(Arc::new(VaultPluginSecretWriter::for_home(home)));
+    manager.set_config_writer(Arc::new(PluginManagerConfigWriter {
+        manager: Arc::downgrade(&manager),
+    }));
     // 病毒扫描链复用 SecurityPlugin 的同一实例（第 7 层同源——装了什么
     // 引擎就扫什么）；无 security 真身 = None（第④步诚实跳过并注记）。
     let scanner = security_plugin.map(|p| p.scan_chain());

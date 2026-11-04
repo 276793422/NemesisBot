@@ -22,6 +22,15 @@
 //   引用组件，幂等/重试责任在插件，安装期审一次运行期不弹卡）。单 json-string
 //   进出单入口 run-step（observer/loop-policy/panel 单入口同纪律）。
 //   CONTRACT_API_VERSION 维持 1（minor 兼容新增，旧组件字节零影响）。
+// - 2026-11-03 自持写通道批：host 增 `secret-set` / `config-set`（实例凭据
+//   与配置的自持写回：面板命令通道=用户意志入口，仅 Panel 帧授予；声明
+//   namespace 即权限——未声明名/键照 get 语义拒）。旧组件字节按名 import、
+//   宿主 linker 恒注册——存量组件零影响；CONTRACT_API_VERSION 维持 1。
+// - 2026-11-03 组合 world 批：新增 `plugin-panel-flow-step` world（panel +
+//   flow-step 双导出：同一组件既出面板命令通道又出 flow 步骤执行体）。
+//   既有 world 一字不动（minor 兼容新增）；帧纪律不放松——flow-step 帧
+//   构造期即无 secret-set / config-set 面（写通道仍只 panel 帧授予），
+//   两个接口各自的单入口纪律、manifest kind=panel 的声明面要求均不变。
 package nemesis:plugin@0.1.0;
 
 /// 共享类型别名。
@@ -120,6 +129,23 @@ interface host {
     /// 未配置时诚实回落主模型——与策略帧同一条实现）。
     /// fail-closed：estop → unavailable。预算计入每帧宿主调用预算。
     llm-complete: func(prompt: string, max-tokens: u32) -> result<string, host-error>;
+
+    /// 实例凭据写回（2026-11-03 自持写通道批新增；secret-get 的对偶）。
+    /// 帧纪律：仅 Panel 帧（面板命令通道 = 用户意志入口）授予，tool /
+    /// observer / policy / flow-step 帧调用恒 unavailable。权限 = manifest
+    /// `permissions.x-secret` 声明 namespace（声明即权限，无独立开关）：
+    /// 未声明名 → policy-denied（与 get 同语义）；已声明名写入 vault
+    /// `plugin/<slug>/<name>` 别名（upsert；空值合法）。vault 文件缺席 /
+    /// 锁定 → unavailable（诚实错误带创建指引，v1 不自动建库）。审计只记
+    /// 别名不记值。
+    secret-set: func(name: string, value: string) -> result<_, host-error>;
+
+    /// 实例配置写回（config-get 的对偶；同批新增）。帧纪律同 secret-set：
+    /// 仅 Panel 帧授予。权限 = manifest `config-schema` 声明键集：未声明
+    /// 键 → not-found（与 get 未声明键同语义）；x-secret 声明键 →
+    /// policy-denied（配置面与凭据面分离不破）。写经宿主实例配置真相源
+    /// （`config.plugin.wasm.json`，热生效），审计记键名不记值。
+    config-set: func(key: string, value: string) -> result<_, host-error>;
 }
 
 /// 工具型插件出口（world plugin-tool）。
@@ -348,5 +374,16 @@ world plugin-panel {
 /// flow 步骤插件世界。
 world plugin-flow-step {
     import host;
+    export flow-step;
+}
+
+/// 组合世界：面板 + flow 步骤双导出（2026-11-03 组合 world 批）。同一组件
+/// 既是 Dashboard 定制面板的命令通道（ui），又是 flow 引擎的步骤执行体
+/// （flow-step）——典型形态「面板管配置/凭据，步骤做取数/回写」。两个
+/// 接口各自独立，帧纪律互不渗透：ui 调用走 Panel 帧（有 secret-set /
+/// config-set 写面），flow-step 调用走 FlowStep 帧（构造期即无写面）。
+world plugin-panel-flow-step {
+    import host;
+    export ui;
     export flow-step;
 }

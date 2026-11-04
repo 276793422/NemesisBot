@@ -16,8 +16,8 @@ use std::time::Duration;
 use crate::bindings::{self, ToolMetadata};
 use crate::error::PluginError;
 use crate::host_impl::{
-    CallCaps, FrameBudget, HostToolInvoker, InstanceConfig, LlmInvoker, PluginLogBuffer,
-    SecretResolver,
+    CallCaps, ConfigWriter, FrameBudget, HostToolInvoker, InstanceConfig, LlmInvoker,
+    PluginLogBuffer, SecretResolver, SecretWriter,
 };
 use crate::limits::{InstanceGate, PluginLimits, PolicyPoint};
 use crate::loader::HostDll;
@@ -41,6 +41,11 @@ pub(crate) struct CallFrame {
     /// `[permissions] x-llm` × 总闸 `panel_llm_enabled`；None = 未装配恒
     /// unavailable）。授予裁决集中在 registry::build_frame。
     pub(crate) llm: Option<Arc<dyn LlmInvoker>>,
+    /// 凭据写回面（仅 Panel 帧授予；None = 未授予恒 unavailable，
+    /// 2026-11-03 自持写通道批）。授予裁决集中在 registry::build_frame。
+    pub(crate) secret_write: Option<Arc<dyn SecretWriter>>,
+    /// 实例配置写回面（仅 Panel 帧授予；同上）。
+    pub(crate) config_write: Option<Arc<dyn ConfigWriter>>,
     pub(crate) data_dir: std::path::PathBuf,
     pub(crate) audit: Option<crate::host_impl::SharedAuditLogger>,
     pub(crate) session_key: String,
@@ -86,6 +91,8 @@ impl CallSession {
             egress: frame.egress.clone(),
             invoker: frame.invoker.clone(),
             llm: frame.llm.clone(),
+            secret_write: frame.secret_write.clone(),
+            config_write: frame.config_write.clone(),
             tokio_handle: tokio::runtime::Handle::try_current().ok(),
             audit: frame.audit.clone(),
             session_key: frame.session_key.clone(),
@@ -204,6 +211,8 @@ impl PluginRuntime {
         frame.observer_frame = false;
         frame.kind = PluginKind::Tool;
         frame.invoker = None;
+        frame.secret_write = None;
+        frame.config_write = None;
         let timeout_ms = frame.limits.timeout_ms;
         self.run_call(comp, frame, timeout_ms, move |session| {
             let out = session.call("get-metadata", "{}", timeout_ms)?;
@@ -261,6 +270,8 @@ impl PluginRuntime {
         frame.observer_frame = true;
         frame.kind = PluginKind::Observer;
         frame.invoker = None;
+        frame.secret_write = None;
+        frame.config_write = None;
         let timeout_ms = frame.limits.timeout_ms;
         self.run_call(comp, frame, timeout_ms, move |session| {
             let out = session.call("observe", &event_json, timeout_ms)?;
@@ -281,6 +292,8 @@ impl PluginRuntime {
         frame.kind = PluginKind::Policy;
         frame.invoker = None;
         frame.llm = None;
+        frame.secret_write = None;
+        frame.config_write = None;
         // 探针与 validation 同口径紧超时（纯自报元数据，不该耗时长）。
         let timeout_ms = frame.limits.policy_call_timeout_ms(PolicyPoint::Validation);
         self.run_call(comp, frame, timeout_ms, move |session| {
@@ -361,6 +374,8 @@ impl PluginRuntime {
         frame.kind = PluginKind::FlowStep;
         frame.invoker = None;
         frame.llm = None;
+        frame.secret_write = None;
+        frame.config_write = None;
         // 探针与 validation 同口径紧超时（纯自报元数据，不该耗时长）。
         let timeout_ms = frame.limits.policy_call_timeout_ms(PolicyPoint::Validation);
         self.run_call(comp, frame, timeout_ms, move |session| {
@@ -374,8 +389,11 @@ impl PluginRuntime {
 
     /// 投递一次 flow 步骤执行（flow-step.run-step；JSON 进出，墙钟同通用上限）。
     ///
-    /// 帧纪律：非观察者帧；llm 恒 None（build_frame 对 FlowStep 不授予——
-    /// v1 边界：flow-step 帧不开 llm-complete，要 LLM 的编排用 agent_fixloop）；
+    /// 帧纪律：非观察者帧；llm / secret-write / config-write **构造期即
+    /// None**（组合 world 批收紧：kind=panel 的组合插件经 build_frame 按
+    /// manifest 拿到写面授予——flow-step 帧必须显式剥离，否则组合插件的
+    /// 步骤帧会带写通道，绕过「写通道只 panel 帧授予」纪律。v1 边界：
+    /// flow-step 帧不开 llm-complete，要 LLM 的编排用 agent_fixloop）；
     /// session key 从入参投影抽取（flow 实例键，审计 user 字段，策略点同源）。
     /// 幂等/重试防重责任在 guest（拍板 1）：宿主每 tick 重投 run-step，
     /// 入参带 attempts 计数；运行期无审批卡（拍板 2），闸门全在安装期漏斗。
@@ -387,6 +405,9 @@ impl PluginRuntime {
     ) -> Result<String, PluginError> {
         frame.observer_frame = false;
         frame.kind = PluginKind::FlowStep;
+        frame.llm = None;
+        frame.secret_write = None;
+        frame.config_write = None;
         frame.session_key = extract_session_key(&input_json);
         let timeout_ms = frame.limits.timeout_ms;
         let name = "run-step";

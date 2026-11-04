@@ -1,0 +1,315 @@
+# jira-gitlab-flow 域插件清单（两件套：plugin.toml + guest）。
+#
+# `wasm-sha256` 由 guest 构建后填入真实哈希（见 README）；根键必须位于任何
+# table 段之前——TOML 语义。流程编排全在宿主 flow 引擎（guest 无驻留）；
+# 本清单是声明面。
+#
+# 0.1.2（2026-11-04）：fixloop 步声明执行面 target = "self"（本节点一等
+# 执行面，单机形态不需要第二个节点；无回退——删声明才落匹配器阶梯）。
+# 0.1.1（2026-11-04）：guest HTTP 2xx 空 body 容忍（Jira transitions POST 恒
+# 204、RFC 7230 禁 body——无条件 JSON 解析误报 EOF，报告步假失败的根修）。
+# 0.1.0（2026-11-04 jira-gitlab-flow 批）：Jira（Server/DC，PAT Bearer）取
+# BUG → GitLab（自托管，REST v4，PRIVATE-TOKEN）仓副本 → 修复 → 发布 MR
+# → Jira 回帖转状态，全链自持声明（域知识全在模板 + guest，connector.toml
+# 退役形态）。七步剧本：fetch（guest 直连 Jira search）→ sync（宿主
+# repo_sync 原语：项目目录 clone-or-pull，凭据同 publish vault 别名）→
+# land（落项目）→ fixloop（人工闸唯一一道）→ regress → publish（自动，
+# 缺口对账三态）→ report（回帖 + 幂等转状态三步）。两个 base_url 不进
+# 剧本缺省（防假缺省 URL）：模板即装即载，未配置时模板 WARN 不注册
+# （诚实不发车），面板「实例设置」保存后热生效。
+wasm-sha256 = "e5ac10c56cc4eef7b0b7cc83b6f388d59112f833d3ac7bc40042e7bd372fb9bc"
+api-version = 1
+slug = "jira-gitlab-flow"
+kind = "panel"
+name = "Jira+GitLab 修复流水线"
+version = "0.1.2"
+description = "Jira 取 BUG → GitLab 仓副本修复 → MR 发布 → 回帖转状态全链流水线（自持形态：面板 + flow 剧本 + guest 双直连 Jira/GitLab REST；PAT 走 vault）"
+
+# 出网面：只准打两个 base_url 指向的实例（整条目 token，配置热渲染；任一
+# 未配置 = 模板不注册，能力整体不发车）；凭据面：双 PAT（vault
+# plugin/jira-gitlab-flow/pat = GitLab——名字被宿主 publish 推送凭据推导
+# 钉死，repo_sync cred_secret 同源；jira_pat = Jira Bearer——面板表单写入）。
+# allow-private：自托管 Jira/GitLab 本就常驻企业内网（10.x/192.168.x），
+# 私网放行是产品语义不是测试后门——allowlist 仍钉 base_url 精确值，
+# DNS 钉地址（rebinding 防御）照常。
+[permissions]
+egress = ["{{config.jira_base_url}}", "{{config.gitlab_base_url}}"]
+allow-private = true
+x-secret = ["pat", "jira_pat"]
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+# 实例配置（插件页「配置」钮或面板「实例设置」表单可改；剧本 {{config.<键>}}
+# 装载期单遍渲染——模板 args 只引用有缺省的键，即装即载；两个 base_url 无
+# 缺省（未设置 = 诚实不发车，不猜 URL）；PAT 走 x-secret，不进这里——凭据
+# 面分离。JQL 不做 config 键：单遍渲染不支持跨键引用，project_key 内联在
+# JQL 模板里（换靶改 project_key 即换 JQL）。
+[config-schema]
+jira_base_url = { desc = "Jira REST 基址（如 https://jira.example.com；未设置时模板不注册）" }
+jira_project_key = { desc = "Jira 项目键（PROJ-123 的 PROJ 段）", default = "PROJ" }
+jira_transition_name = { desc = "report 步目标状态（Jira transition name 或目标态名，不分大小写）", default = "Done" }
+gitlab_base_url = { desc = "GitLab 基址（如 https://gitlab.example.com；未设置时模板不注册）" }
+gitlab_owner = { desc = "GitLab 仓库属主（group/namespace；兼任 git 推送凭据用户名——GitLab HTTPS+PAT 任意非空用户名均可）", default = "group" }
+gitlab_repo = { desc = "GitLab 仓库名", default = "project" }
+gitlab_target_branch = { desc = "MR 目标分支", default = "main" }
+board_project = { desc = "看板项目名（须已注册且带 directory——repo_sync 目录真相源）", default = "jira-gitlab" }
+
+# 页面骨架：宿主预置组件按声明渲染（词汇 form/table/timeline/detail/actions）。
+# 数据绑定 flow://<template>/<view> = 宿主 flow 引擎代答；cmd://<name> = guest。
+[[ui.page]]
+route = "jira-gitlab-flow"
+title = "Jira+GitLab 修复流水线"
+icon = "ticket"
+
+[[ui.page.views]]
+kind = "table"
+bind = "flow://jira-gitlab-pipeline/list"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "title"
+label = "标题"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+[[ui.page.views]]
+kind = "timeline"
+bind = "flow://jira-gitlab-pipeline/timeline"
+
+[[ui.page.views]]
+kind = "detail"
+bind = "flow://jira-gitlab-pipeline/detail"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "current_step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+[[ui.page.views.columns]]
+key = "parked"
+label = "停车"
+
+# 人工闸确认表单：instance 留空 = 最近更新的实例（fixloop 停 awaiting-gate）。
+[[ui.page.views]]
+kind = "form"
+bind = "flow://jira-gitlab-pipeline/confirm"
+
+[[ui.page.views.fields]]
+key = "instance"
+label = "实例（留空 = 最近更新）"
+placeholder = "如 12"
+
+# 停车实例恢复表单。
+[[ui.page.views]]
+kind = "form"
+bind = "flow://jira-gitlab-pipeline/resume"
+
+[[ui.page.views.fields]]
+key = "instance"
+label = "实例（留空 = 最近更新）"
+placeholder = "如 12"
+
+# guest 动作：单条详情投影（Jira issue key 字符串，PROJ-123 形态）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://jira_get"
+
+[[ui.page.views.fields]]
+key = "key"
+label = "Issue 键"
+placeholder = "如 PROJ-123"
+
+# 实例设置（自持写通道）：字段全可留空 = 保持原值；双 PAT 只写不读（保存后
+# 无法回显）。单条配置微调也可走插件页「配置」钮（同一实例配置面）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://save_settings"
+
+[[ui.page.views.fields]]
+key = "jira_base_url"
+label = "Jira 基址"
+placeholder = "如 https://jira.example.com"
+
+[[ui.page.views.fields]]
+key = "jira_project_key"
+label = "Jira 项目键"
+placeholder = "PROJ"
+
+[[ui.page.views.fields]]
+key = "jira_transition_name"
+label = "完成态 transition 名"
+placeholder = "Done"
+
+[[ui.page.views.fields]]
+key = "gitlab_base_url"
+label = "GitLab 基址"
+placeholder = "如 https://gitlab.example.com"
+
+[[ui.page.views.fields]]
+key = "gitlab_owner"
+label = "仓库属主（group/namespace）"
+placeholder = "如 mygroup"
+
+[[ui.page.views.fields]]
+key = "gitlab_repo"
+label = "仓库名"
+placeholder = "如 myrepo"
+
+[[ui.page.views.fields]]
+key = "gitlab_target_branch"
+label = "MR 目标分支"
+placeholder = "main"
+
+[[ui.page.views.fields]]
+key = "board_project"
+label = "看板项目名（须已注册且带目录）"
+placeholder = "jira-gitlab"
+
+[[ui.page.views.fields]]
+key = "jira_pat"
+label = "Jira 访问令牌（PAT）"
+field-type = "secret"
+placeholder = "留空 = 保持已存令牌"
+
+[[ui.page.views.fields]]
+key = "pat"
+label = "GitLab 访问令牌（PAT）"
+field-type = "secret"
+placeholder = "留空 = 保持已存令牌"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "同步 Jira issue"
+command = "flow://jira-gitlab-pipeline/fetch"
+
+[[ui.page.views.buttons]]
+label = "确认推进（最近实例）"
+command = "flow://jira-gitlab-pipeline/confirm"
+
+[[ui.page.views.buttons]]
+label = "恢复停车实例"
+command = "flow://jira-gitlab-pipeline/resume"
+
+# 剧本：取 → 同步仓副本 → 落项目 → 修复循环（人工闸唯一一道）→ 验收 →
+# 发布 MR（自动不停，缺口对账三态）→ Jira 回帖转状态。域知识声明面：
+# origin 三件套（建单坐标）+ on-transition（状态回写）+ publish 协议 +
+# repo_sync（仓副本同步），全部模板声明 + guest 自报步骤；宿主只提供通用
+# 原语与 token 插值。
+[[flow.template]]
+id = "jira-gitlab-pipeline"
+interval-secs = 600
+origin-type = "jira"
+# 字面 `jira` 前缀（plugin fetch 模板禁 {{connector}}/{{arg.*}}）——渲染
+# 产物 `jira/<project_key>/<key>` 三段形态；parse-origin-id 按 '/' 分段
+# （0 起：0=jira、1=project_key、2=issue key）。
+origin-id = "jira/{{config.jira_project_key}}/{{key}}"
+# 回写坐标落库载体：project_key 取实例配置（{{config.*}} 装载期渲染），
+# issue_key 取条目键（{{key}} = key_field 指定的字段值，即 Jira issue key
+# 字符串）；board 单 origin_meta 由此透传落库。origin-meta 值域 = 身份
+# token 表 {key, config.*}。
+origin-meta = { project_key = "{{config.jira_project_key}}", issue_key = "{{key}}" }
+
+# board 状态转移 → Jira issue 回帖（guest 自报 comment op）。origin_meta
+# 优先；v1 旧单 origin_meta 缺席时 parse-origin-id 现场分解 origin_id
+# （`jira/<project_key>/<key>` 形态）。
+[flow.template.on-transition]
+op = "plugin:jira-gitlab-flow:comment"
+args = { key = "{{origin_meta.issue_key}}", body = "{{transition.text}}" }
+parse-origin-id = { issue_key = "segment '/' 2" }
+
+# 取数 = guest 自报 fetch op（http-send 直连 Jira search）。jql 内联
+# project_key（单遍渲染不支持跨键引用，换靶改配置不改清单）；key/title/
+# body 三字段是宿主物化坐标（`$.` JSON path，Jira search 包裹对象：key
+# 顶层、正文藏 fields 下——body_field 落实时提取 [CHECK] 行为验收锚）。
+[[flow.template.steps]]
+id = "fetch"
+kind = "plugin:jira-gitlab-flow:fetch"
+args = { jql = "project = {{config.jira_project_key}} AND status not in (Done, Closed) ORDER BY created DESC", max_results = "50", key_field = "$.key", title_field = "$.fields.summary", body_field = "$.fields.description" }
+
+# 仓副本同步（宿主 repo_sync 原语）：项目目录 = 注册表 directory 唯一真相
+# 源（不自动注册——先建项目再发车）；URL 装载期渲染；凭据别名与 publish
+# 推送同源（vault plugin/jira-gitlab-flow/pat，GitLab HTTPS+PAT 任意非空
+# 用户名，cred_user 缺省 oauth2）。clone/pull 失败 = 没法修复，停车。
+[[flow.template.steps]]
+id = "sync"
+kind = "repo_sync"
+on-fail = "park_human"
+args = { project = "{{config.board_project}}", url = "{{config.gitlab_base_url}}/{{config.gitlab_owner}}/{{config.gitlab_repo}}.git", cred_secret = "plugin/jira-gitlab-flow/pat" }
+
+# 落项目（任务副本项目绑定；fixloop 经项目 loop 在该目录内执行）。
+[[flow.template.steps]]
+id = "land"
+kind = "board_land"
+args = { project = "{{config.board_project}}" }
+
+[[flow.template.steps]]
+id = "fixloop"
+kind = "agent_fixloop"
+gate = "manual"
+on-fail = "park_human"
+# 执行面显式声明（一等选择，无回退）：target = "self" = 本节点执行——
+# 单机形态，不需要第二个节点；本机回环执行面照常走完整派发/基线/评审
+# 链。删掉此行 = 既有匹配器/兜底阶梯（多节点形态按职能选人）。
+args = { target = "self" }
+
+[[flow.template.steps]]
+id = "regress"
+kind = "check_regress"
+
+# 发布步（声明化）：推交付分支 nemesis/task-<task_id> + 建 MR + 缺口对账
+# （Found/Absent/Inconclusive 三态）。双 op 均 plugin 引用，凭据别名 =
+# plugin/jira-gitlab-flow/pat 按 create_op 路由推导（git 推送仍在宿主
+# git_repo 侧）；owner/repo 来自 {{config.*}}（装载期渲染成字面量，owner
+# 兼任 git 推送凭据用户名）；create_args/reconcile_args 是 JSON 对象串
+# （值过 token 渲染：branch/commit/base_sha/task_id 运行期，title/
+# board_issue 等取数期；reconcile 翻页由宿主注入 limit/page 数字基参，
+# guest 双形态透传远端）。人工闸不设（publish 自动不停——与 fixloop 闸
+# 分工：修复内容人审，发布动作自动）。对账匹配 `$.source_branch`（GitLab
+# MR JSON 顶层字段）；抽取 `$.iid`/`$.web_url`（宿主 parse_publish_result
+# 直读）。
+# on-fail=continue：发布失败=缺口记账（不停车），report 照常出报告——
+# dossier/timeline 携带缺口，Jira 评论区仍拿到报告路径可查证；fixloop 的
+# park_human 语义保持不变（无交付=没法继续，必须停车）。
+[[flow.template.steps]]
+id = "publish"
+kind = "publish"
+on-fail = "continue"
+args = { owner = "{{config.gitlab_owner}}", repo = "{{config.gitlab_repo}}", create_op = "plugin:jira-gitlab-flow:create_mr", create_args = '{"owner": "{{config.gitlab_owner}}", "repo": "{{config.gitlab_repo}}", "source_branch": "{{branch}}", "target_branch": "{{config.gitlab_target_branch}}", "title": "[{{board_issue}}] {{title}}", "description": "看板单 {{board_issue}}；交付分支 `{{branch}}`（commit {{commit}}，基线 {{base_sha}}）。\n\n来源 issue {{ext_key}}；由 jira-gitlab-flow 流水线自动发布。"}', result_ref = "$.iid", result_url = "$.web_url", reconcile_op = "plugin:jira-gitlab-flow:mr_list", reconcile_args = '{"owner": "{{config.gitlab_owner}}", "repo": "{{config.gitlab_repo}}", "state": "all"}', reconcile_match = "$.source_branch == {{branch}}" }
+
+# 报告回帖 + 幂等转状态（guest 自报 report op：同文去重回帖 → transition
+# name/to.name 不分大小写匹配转 jira_transition_name 目标状态；转失败=
+# failed 注明「回帖已发出」——下一步 on-fail=continue 缺口记账不停车）。
+# args_json 含 report_path token 渲染。
+[[flow.template.steps]]
+id = "report"
+kind = "report"
+args = { connector = "plugin:jira-gitlab-flow:report", args_json = '{"key": "{{ext_key}}", "body": "NemesisBot 流水线完成「{{title}}」（看板单 {{board_issue}}）\n\n报告：{{report_path}}"}' }

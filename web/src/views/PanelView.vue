@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePanels, type PanelSlotState, type PanelViewDecl } from '../composables/usePanels'
+import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import PanelTable from '../components/panel/PanelTable.vue'
 import PanelForm from '../components/panel/PanelForm.vue'
@@ -17,6 +18,7 @@ import PanelChart from '../components/panel/PanelChart.vue'
 // 引擎在 plugins.ui.invoke 侧代答（P3），前端不做任何拆解。
 const route = useRoute()
 const { panels, fetchPanels, pageByRoute, invokePanel } = usePanels()
+const { request } = useWSAPI()
 const toast = useToast()
 
 const routeSeg = computed(() => String(route.params.route ?? ''))
@@ -115,6 +117,83 @@ function onFormSubmit(idx: number, values: Record<string, unknown>) {
   void runCommand(invokeCommandOf(v.bind), values, '提交')
 }
 
+// ---- 插件配置卡（config-schema 参数化）：面板页内联编辑 {{config.*}} 键。 ----
+// schema 明细来自 wasm.config.get（旧网关无 schema 字段 → 回落 schema_keys）；
+// 值留空 = 回落声明缺省；凭据（x-*）不经此通道，卡内指路 connectors/vault 页。
+interface WasmConfigEntry {
+  key: string
+  desc: string
+  default: string | null
+}
+interface WasmConfigData {
+  slug: string
+  enabled: boolean
+  entries: Record<string, string>
+  schema_keys?: string[]
+  schema?: WasmConfigEntry[]
+  secret_keys?: string[]
+}
+
+const configOpen = ref(false)
+const configLoading = ref(false)
+const configData = ref<WasmConfigData | null>(null)
+
+const configRows = computed<WasmConfigEntry[]>(() => {
+  const d = configData.value
+  if (!d) return []
+  if (d.schema?.length) return d.schema
+  return (d.schema_keys ?? []).map((k) => ({ key: k, desc: '', default: null }))
+})
+
+async function toggleConfig() {
+  configOpen.value = !configOpen.value
+  if (configOpen.value) await loadConfig()
+}
+
+async function loadConfig() {
+  const slug = entry.value?.plugin.slug
+  if (!slug) return
+  configLoading.value = true
+  try {
+    configData.value = await request('plugins', 'wasm.config.get', { slug })
+  } catch (e: any) {
+    toast.error(`配置读取失败：${String(e?.message ?? e)}`)
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function configSave(key: string, value: string) {
+  const slug = entry.value?.plugin.slug
+  if (!slug) return
+  const trimmed = value.trim()
+  try {
+    if (!trimmed) {
+      // 空值 = 清除该键覆盖，回落声明缺省。
+      await request('plugins', 'wasm.config.set', { slug, key, remove: true })
+      toast.success(`${key}：已清除（回落声明缺省）`)
+    } else {
+      await request('plugins', 'wasm.config.set', { slug, key, value: trimmed })
+      toast.success(`${key}：已保存（热生效）`)
+    }
+    await loadConfig()
+  } catch (e: any) {
+    toast.error(`${key}：${String(e?.message ?? e)}`)
+  }
+}
+
+async function configRemove(key: string) {
+  const slug = entry.value?.plugin.slug
+  if (!slug) return
+  try {
+    await request('plugins', 'wasm.config.set', { slug, key, remove: true })
+    toast.success(`${key}：已清除（回落声明缺省）`)
+    await loadConfig()
+  } catch (e: any) {
+    toast.error(`${key}：${String(e?.message ?? e)}`)
+  }
+}
+
 onMounted(async () => {
   if (!entry.value) await fetchPanels()
   await loadAll()
@@ -148,9 +227,45 @@ watch(routeSeg, () => {
             {{ entry.plugin.name }}
             <template v-if="!entry.plugin.payload && needsGuest">（载荷缺失——插件页检查安装状态）</template>
           </span>
+          <button class="btn btn-sm" data-test="panel-config-toggle" @click="toggleConfig">
+            {{ configOpen ? '收起配置' : '⚙ 配置' }}
+          </button>
         </div>
       </header>
       <div class="page-body">
+        <!-- 配置卡：面板声明 config-schema 的键在此内联编辑（热生效）；
+             凭据不在此通道——指路 connectors / vault 页。 -->
+        <section v-if="configOpen" class="panel-config-card" data-test="panel-config-card">
+          <div class="panel-config-title">
+            插件配置
+            <span class="panel-config-hint">值留空 = 回落声明缺省；改动热生效（下轮装载取新值）</span>
+          </div>
+          <div v-if="configLoading" class="panel-config-empty">读取中…</div>
+          <template v-else-if="configData">
+            <div v-if="configData.secret_keys?.length" class="panel-config-secret">
+              凭据键（{{ configData.secret_keys.join(', ') }}）经 vault 注入：
+              <router-link to="/vault">保险库</router-link> 页管理原文；
+              connector 地址/令牌在 <router-link to="/connectors">连接器</router-link> 页配置。
+            </div>
+            <div v-if="!configRows.length" class="panel-config-empty">该插件未声明配置键。</div>
+            <div v-for="s in configRows" :key="s.key" class="panel-config-row">
+              <span class="panel-config-key" :title="s.desc">{{ s.key }}</span>
+              <span v-if="s.desc" class="panel-config-desc">{{ s.desc }}</span>
+              <input
+                class="form-input panel-config-input"
+                :value="configData.entries[s.key] ?? ''"
+                :placeholder="s.default ? '缺省 ' + s.default : '未设置'"
+                @change="configSave(s.key, ($event.target as HTMLInputElement).value)"
+              />
+              <button v-if="configData.entries[s.key]" class="btn btn-sm" title="清除后回落声明缺省" @click="configRemove(s.key)">清除</button>
+            </div>
+            <div v-if="configRows.length" class="panel-config-secret">
+              连接器凭据（如 Gitea PAT，vault 别名 <code>connector/&lt;id&gt;/&lt;槽位&gt;</code>）在
+              <router-link to="/vault">保险库</router-link> 页录入；
+              连接器地址/启用状态在 <router-link to="/connectors">连接器</router-link> 页查看。
+            </div>
+          </template>
+        </section>
         <template v-for="(v, i) in entry.page.views" :key="i">
           <PanelTable
             v-if="v.kind === 'table'"
@@ -213,6 +328,66 @@ watch(routeSeg, () => {
 .panel-sub {
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+.panel-config-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.panel-config-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+.panel-config-hint {
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: var(--space-2);
+}
+.panel-config-empty {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  padding: var(--space-1) 0;
+}
+.panel-config-secret {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+.panel-config-secret a {
+  color: var(--primary);
+}
+.panel-config-secret code {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: var(--text-xs);
+}
+.panel-config-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+.panel-config-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  min-width: 120px;
+}
+.panel-config-desc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-config-input {
+  width: 220px;
 }
 .panel-missing {
   color: var(--text-muted);

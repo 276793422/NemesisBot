@@ -19,7 +19,8 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::error::PluginError;
 use crate::host_impl::{
-    InstanceConfig, LlmInvoker, PluginLogBuffer, SecretResolver, plugin_error_text,
+    ConfigWriter, InstanceConfig, LlmInvoker, PluginLogBuffer, SecretResolver, SecretWriter,
+    plugin_error_text,
 };
 use crate::limits::{PluginLimits, PolicyPoint};
 use crate::manifest::{PluginKind, PluginManifest};
@@ -116,8 +117,6 @@ pub struct RegisteredPlugin {
     pub step_meta: Option<StepMetaSnapshot>,
     /// 宿主日志环形缓冲。
     pub logs: Arc<PluginLogBuffer>,
-    /// 出站策略。
-    pub egress: Arc<crate::egress::EgressPolicy>,
     /// 收紧后的限制表（全局上限 ∧ manifest 覆盖）。
     pub limits: PluginLimits,
     /// 载荷目录（绝对）。
@@ -160,6 +159,12 @@ pub struct PluginManager {
     invoker: Mutex<Option<Arc<dyn crate::host_impl::HostToolInvoker>>>,
     /// 杂务 LLM 补全面（gateway 装配后注入；policy 帧消费）。
     llm: Mutex<Option<Arc<dyn LlmInvoker>>>,
+    /// 凭据写回面（gateway 装配后注入；仅 Panel 帧授予消费——2026-11-03
+    /// 自持写通道批；None 保持 = secret-set 恒 unavailable）。
+    secret_writer: Mutex<Option<Arc<dyn SecretWriter>>>,
+    /// 实例配置写回面（gateway 装配后注入；同上；None 保持 = config-set
+    /// 恒 unavailable）。
+    config_writer: Mutex<Option<Arc<dyn ConfigWriter>>>,
     /// 子系统总开关（config `plugins.enabled`；false = 全部拒绝执行/停投）。
     enabled: AtomicBool,
     /// 审计器（gateway 装配后注入；None = 敏感宿主调用静默跳过审计）。
@@ -336,6 +341,8 @@ impl PluginManager {
             secrets,
             invoker: Mutex::new(None),
             llm: Mutex::new(None),
+            secret_writer: Mutex::new(None),
+            config_writer: Mutex::new(None),
             enabled: AtomicBool::new(true),
             audit: Mutex::new(None),
             config_io: Mutex::new(()),
@@ -379,6 +386,8 @@ impl PluginManager {
             secrets,
             invoker: Mutex::new(None),
             llm: Mutex::new(None),
+            secret_writer: Mutex::new(None),
+            config_writer: Mutex::new(None),
             enabled: AtomicBool::new(true),
             audit: Mutex::new(None),
             config_io: Mutex::new(()),
@@ -421,6 +430,18 @@ impl PluginManager {
     /// 装配审计器（gateway 在安全插件装配后调用；敏感宿主调用落审计链）。
     pub fn set_audit(&self, audit: crate::host_impl::SharedAuditLogger) {
         *self.audit.lock() = Some(audit);
+    }
+
+    /// 装配凭据写回面（gateway 在 vault 就绪后调用；仅 Panel 帧授予消费
+    /// ——2026-11-03 自持写通道批。None 保持 = secret-set 恒 unavailable）。
+    pub fn set_secret_writer(&self, writer: Arc<dyn SecretWriter>) {
+        *self.secret_writer.lock() = Some(writer);
+    }
+
+    /// 装配实例配置写回面（gateway 装配后调用；同上。None 保持 = config-set
+    /// 恒 unavailable）。
+    pub fn set_config_writer(&self, writer: Arc<dyn ConfigWriter>) {
+        *self.config_writer.lock() = Some(writer);
     }
 
     /// 桥侧审计事件（宿主能力面之外、manager 关联的敏感路径——如工具
@@ -610,12 +631,14 @@ impl PluginManager {
                 }
             }
         }
-        // flow 步骤注册面（2026-11-03 guest step 批）：必须携 step 元数据
-        // 快照（扩展点本体 = run-step 出口，安装期 get-step-metadata 对账
-        // 产物）；kind 词表非空 + 形态校验（运行期路由按此对账，越权 kind
-        // 诚实拒绝）。
+        // flow 步骤注册面（2026-11-03 guest step 批；2026-11-03 组合 world
+        // 批放宽到 kind=panel）：必须携 step 元数据快照（扩展点本体 =
+        // run-step 出口，安装期 get-step-metadata 对账产物）；kind 词表非空
+        // + 形态校验（运行期路由按此对账，越权 kind 诚实拒绝）。组合
+        // world（panel 双导出 flow-step）的组件同报 step 元数据——manifest
+        // 仍是 kind=panel（声明面 ui/flow 段要求），注册面按快照认。
         if let Some(sm) = step_meta.as_ref() {
-            if *manifest.kind != PluginKind::FlowStep {
+            if !matches!(*manifest.kind, PluginKind::FlowStep | PluginKind::Panel) {
                 return Err(PluginError::Manifest(
                     "step metadata provided for non-flow-step plugin".into(),
                 ));
@@ -647,10 +670,6 @@ impl PluginManager {
                 .map_err(|e| PluginError::Io(format!("create data dir: {e}")))?;
             d.canonicalize().unwrap_or(d)
         };
-        let egress = Arc::new(crate::egress::EgressPolicy::from_permissions(
-            manifest.permissions.egress.clone(),
-            manifest.permissions.allow_private,
-        ));
         let logs = Arc::new(PluginLogBuffer::new(
             limits.log_ring_capacity,
             limits.log_line_max_bytes,
@@ -670,7 +689,6 @@ impl PluginManager {
             policy_meta,
             step_meta,
             logs,
-            egress,
             limits,
             dir: self.plugin_dir(&slug),
             data_dir,
@@ -725,6 +743,28 @@ impl PluginManager {
 
     fn build_frame(&self, reg: &RegisteredPlugin, observer_frame: bool) -> CallFrame {
         let config = self.instance_config(reg);
+        // egress 每帧现渲染（2026-11-03 自持写通道批）：manifest 字面条目 +
+        // `{{config.<key>}}` 整条目 token（实例配置 = schema 缺省值 ∪ 操作员
+        // 覆盖；解析失败条目丢弃——allowlist 空 = 能力整体关闭）。config.set
+        // 写盘后下一帧即生效（fresh-store-per-call 无驻留）。
+        let mut cfg_table = reg.manifest.config_schema_defaults();
+        for (k, v) in &config.entries {
+            cfg_table.insert(k.clone(), v.clone());
+        }
+        let egress = Arc::new({
+            let mut policy = crate::egress::EgressPolicy::from_permissions(
+                crate::egress::render_egress_tokens(&reg.manifest.permissions.egress, &cfg_table),
+                reg.manifest.permissions.allow_private,
+            );
+            // 实例配置 `proxy` 键（SC 套件批）：出站代理 URL（http/socks5h）
+            // ——空/缺席 = None = 直连现行为；schema 可不声明该键（操作员
+            // config.set 显式写即生效）。
+            policy.proxy = cfg_table
+                .get("proxy")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            policy
+        });
         CallFrame {
             observer_frame,
             slug: reg.manifest.slug.clone(),
@@ -735,7 +775,7 @@ impl PluginManager {
             config: Arc::new(config),
             secrets: self.secrets.clone(),
             workspace_root: self.workspace_root.clone(),
-            egress: reg.egress.clone(),
+            egress,
             invoker: self.invoker.lock().clone(),
             // LLM 面授予（供给面单一裁决点；调用时闸在 cb_llm_complete 再收
             // 一道纵深）：policy 帧按 kind 硬规则授（2026-10-24 R70 帧纪律）；
@@ -753,6 +793,18 @@ impl PluginManager {
                 {
                     self.llm.lock().clone()
                 }
+                _ => None,
+            },
+            // 自持写通道授予（供给面单一裁决点；调用时闸在 cb_secret_set /
+            // cb_config_set 再收一道纵深）：仅 Panel 帧（面板命令通道 = 用户
+            // 意志入口）授予；tool/observer/policy/flow-step 帧构造期即 None
+            //（2026-11-03 自持写通道批）。writer 未装配 = None 恒 unavailable。
+            secret_write: match *reg.manifest.kind {
+                PluginKind::Panel => self.secret_writer.lock().clone(),
+                _ => None,
+            },
+            config_write: match *reg.manifest.kind {
+                PluginKind::Panel => self.config_writer.lock().clone(),
                 _ => None,
             },
             data_dir: reg.data_dir.clone(),
@@ -921,7 +973,10 @@ impl PluginManager {
                 "flow step plugin not loaded: {slug}"
             )));
         };
-        if *reg.manifest.kind != PluginKind::FlowStep {
+        // kind 闸（2026-11-03 组合 world 批放宽）：flow-step world 或组合
+        // world（kind=panel 双导出 flow-step）均可投递——组合插件的步骤面
+        // 在注册表以 step_meta 快照认（无快照的纯面板由下一道 op 对账拒）。
+        if !matches!(*reg.manifest.kind, PluginKind::FlowStep | PluginKind::Panel) {
             return Err(PluginError::NotAvailable(format!(
                 "plugin '{slug}' is not a flow-step plugin (kind={})",
                 reg.manifest.kind.as_str()

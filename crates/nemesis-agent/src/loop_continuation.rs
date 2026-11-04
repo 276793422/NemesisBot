@@ -1605,6 +1605,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         // 项 C：中途回执不解除通知义务（义务针对任务结果本身）。
                         task_id: None,
                         sync_via: None,
+                        // 中途工具回执 = 非回合产物（receipt=true），与
+                        // 「不挂归属」同语义——按会话键等终局的消费方跳过。
+                        receipt: true,
                     },
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
@@ -1705,6 +1708,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 // 记账到 deliveries（notify_state 三段：pending→accepted→confirmed）。
                 task_id: Some(task_id.to_string()),
                 sync_via: None,
+                // 续行最终回复 = 回合产物（receipt 缺省 false）。
+                receipt: false,
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {

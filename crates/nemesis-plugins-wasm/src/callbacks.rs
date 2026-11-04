@@ -1,4 +1,5 @@
-//! 宿主回调 shim（9 个 `extern "C"` 函数 → [`CallCaps`] 策略核心）。
+//! 宿主回调 shim（11 个 `extern "C"` 函数 → [`CallCaps`] 策略核心；批 3
+//! 增补 llm-complete、2026-11-03 自持写通道批增补 secret-set/config-set）。
 //!
 //! 策略语义从原 bindgen Host 实现原样搬移（帧预算/observe 帧收窄/审计/脱敏），
 //! 唯一形态变化：两 world 的 bindgen 类型差异由「统一 observer-frame 规则」
@@ -33,6 +34,8 @@ pub(crate) fn callbacks_table() -> HostCallbacks {
         tool_invoke: cb_tool_invoke,
         struct_size: std::mem::size_of::<HostCallbacks>(),
         llm_complete: Some(cb_llm_complete),
+        secret_set: Some(cb_secret_set),
+        config_set: Some(cb_config_set),
     }
 }
 
@@ -109,7 +112,8 @@ fn guard(out_detail: *mut *mut c_char, f: impl FnOnce() -> (c_int, Option<String
 }
 
 // ---------------------------------------------------------------------------
-// 9 个 shim（批 3 增补 llm-complete，2026-10-22 批 4 宿主面接线）
+// 11 个 shim（批 3 增补 llm-complete；2026-11-03 自持写通道批增补
+// secret-set / config-set）
 // ---------------------------------------------------------------------------
 
 /// # Safety
@@ -567,6 +571,138 @@ pub(crate) unsafe extern "C" fn cb_llm_complete(
                 if !out_content.is_null() {
                     *out_content = string_to_cstr(&text);
                 }
+                (host_err::OK, None)
+            }
+            Err(e) => (
+                host_err::UNAVAILABLE,
+                Some(crate::host_impl::truncate_err(&e, 300)),
+            ),
+        }
+    })
+}
+
+/// `secret-set(name, value) -> result<_, host-error>`（2026-11-03 自持写
+/// 通道批；secret-get 的对偶写面）。闸序镜像 cb_llm_complete 防线双闸
+/// 风格：帧预算 → observer 帧 → 非 Panel kind → 未接线（Option None）→
+/// 声明 namespace 闸（未声明名 = policy-denied + 审计 denied，与 get 同
+/// 语义）→ vault 写入（Err = unavailable 诚实错误，带补救指引由 writer
+/// 实现给出）。审计 allowed 只记别名不记值——值一旦落审计链/日志即泄密
+/// 面（与 get 的别名纪律同源）。
+#[doc(hidden)]
+pub(crate) unsafe extern "C" fn cb_secret_set(
+    env: *mut c_void,
+    name: *const c_char,
+    value: *const c_char,
+    out_detail: *mut *mut c_char,
+) -> c_int {
+    guard(out_detail, || unsafe {
+        let caps = caps_of(env);
+        let name = cstr_to_string(name);
+        let value = cstr_to_string(value);
+        if let Err(e) = caps.frame.consume() {
+            return (host_err::BUDGET_EXCEEDED, Some(e));
+        }
+        if caps.observer_frame || !matches!(caps.kind, PluginKind::Panel) {
+            return (
+                host_err::UNAVAILABLE,
+                Some("secret-set is only available in panel frames".to_string()),
+            );
+        }
+        let Some(writer) = caps.secret_write.clone() else {
+            return (
+                host_err::UNAVAILABLE,
+                Some("host secret writer not wired (plugin host standalone)".to_string()),
+            );
+        };
+        if !caps.config.x_secret_keys.contains(&name) {
+            caps.audit_event(
+                "plugin_secret_set",
+                "denied",
+                &format!("plugin/{}/{}", caps.slug, name),
+                "MEDIUM",
+                "secret name not declared in manifest x-secret",
+            );
+            return (
+                host_err::POLICY_DENIED,
+                Some(format!(
+                    "secret name not declared in manifest x-secret: {name}"
+                )),
+            );
+        }
+        let alias = format!("plugin/{}/{}", caps.slug, name);
+        match writer.write(&alias, &value) {
+            Ok(()) => {
+                // 审计只记别名不记值。
+                caps.audit_event(
+                    "plugin_secret_set",
+                    "allowed",
+                    &format!("vault:{alias}"),
+                    "MEDIUM",
+                    "secret stored for wasm plugin (alias only)",
+                );
+                (host_err::OK, None)
+            }
+            Err(e) => (
+                host_err::UNAVAILABLE,
+                Some(crate::host_impl::truncate_err(&e, 300)),
+            ),
+        }
+    })
+}
+
+/// `config-set(key, value) -> result<_, host-error>`（同批；config-get 的
+/// 对偶写面）。闸序同 cb_secret_set；namespace 闸镜像 get 的两段语义：
+/// x-secret 声明键 → policy-denied（配置面与凭据面分离——写凭据走
+/// secret-set，读面同样拒）；未声明键 → not-found（与 get「未声明键」同
+/// 语义）。写经 ConfigWriter 委派 `PluginManager::set_config_key`（三闸 +
+/// 原子落盘单一真相源），审计 LOW 记键名不记值。
+#[doc(hidden)]
+pub(crate) unsafe extern "C" fn cb_config_set(
+    env: *mut c_void,
+    key: *const c_char,
+    value: *const c_char,
+    out_detail: *mut *mut c_char,
+) -> c_int {
+    guard(out_detail, || unsafe {
+        let caps = caps_of(env);
+        let key = cstr_to_string(key);
+        let value = cstr_to_string(value);
+        if let Err(e) = caps.frame.consume() {
+            return (host_err::BUDGET_EXCEEDED, Some(e));
+        }
+        if caps.observer_frame || !matches!(caps.kind, PluginKind::Panel) {
+            return (
+                host_err::UNAVAILABLE,
+                Some("config-set is only available in panel frames".to_string()),
+            );
+        }
+        let Some(writer) = caps.config_write.clone() else {
+            return (
+                host_err::UNAVAILABLE,
+                Some("host config writer not wired (plugin host standalone)".to_string()),
+            );
+        };
+        if caps.config.x_secret_keys.contains(&key) {
+            return (
+                host_err::POLICY_DENIED,
+                Some("x-secret key is not writable via config-set; use secret-set".to_string()),
+            );
+        }
+        if !caps.config.declared_keys.contains(&key) {
+            return (
+                host_err::NOT_FOUND,
+                Some(format!("key not declared: {key}")),
+            );
+        }
+        match writer.set_config(&caps.slug, &key, &value) {
+            Ok(()) => {
+                caps.audit_event(
+                    "plugin_config_set",
+                    "allowed",
+                    &key,
+                    "LOW",
+                    "instance config updated via wasm plugin panel (key only)",
+                );
                 (host_err::OK, None)
             }
             Err(e) => (

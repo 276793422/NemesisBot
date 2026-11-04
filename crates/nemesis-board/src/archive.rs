@@ -191,6 +191,13 @@ pub struct ProjectManifest {
 
 /// `.gitignore` 内容（B6）：投影文件不进版本库；跟踪树 = 工作集 + artifacts/
 /// （依赖任务产物流转通道）。P2 落盘、P4 git 化时生效。
+///
+/// **自排除**（`.gitignore` 行）：ingest 合并前的 pre-merge 落定（commit_worktree
+/// 的 `add_all`）尊重 ignore 规则——不排除自身则 .gitignore 会被第一次 pre-merge
+/// 落定带进跟踪树，master 跟踪树 = 交付树 + .gitignore，publish 的内容等值臂
+/// （head_tree == 交付 tree）永不成立 → 基线漂移误拒。自排除后跟踪树恒为纯
+/// 工作集。注：ignore 规则对已跟踪文件无效（存量仓库需 `git rm --cached
+/// .gitignore` 一次性迁出）。
 pub const GITIGNORE_CONTENT: &str = concat!(
     "# nemesis-board 项目档案：投影文件可从 board.db 重建，不进版本库（goal B6）\n",
     "# git 跟踪树 = 工作集（代码 + artifacts/ 交付物）\n",
@@ -198,6 +205,7 @@ pub const GITIGNORE_CONTENT: &str = concat!(
     "/timeline.jsonl\n",
     "/docs/\n",
     "/records/\n",
+    ".gitignore\n",
 );
 
 /// 幂等初始化四件套（已存在的文件不覆盖——用户选已有目录时其现有文件

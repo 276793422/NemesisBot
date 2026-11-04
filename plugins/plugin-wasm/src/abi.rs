@@ -121,9 +121,10 @@ pub struct HostCallbacks {
     ) -> c_int,
     /// 布局哨兵：**位固定**——紧跟 8 函数之后，offset 不随后续增补槽漂移
     /// （宿主镜像在**此处**填 `std::mem::size_of::<宿主镜像>()` = 整表字节
-    /// 数；壳必须先读本字段判定布局，才谈得上读其余槽）。壳接受两种布局：
-    /// 本结构（含 llm-complete 增补槽）或 [`HostCallbacksLegacy`]（批 3 前
-    /// 8 函数布局，两种布局中本字段同位同读）；其余值诚实失败而非内存腐坏。
+    /// 数；壳必须先读本字段判定布局，才谈得上读其余槽）。壳接受三种布局：
+    /// 本结构（含 llm-complete + 自持写两增补槽）/ [`HostCallbacksLlmOnly`]
+    /// （仅 llm 增补槽）/ [`HostCallbacksLegacy`]（批 3 前 8 函数布局，三种
+    /// 布局中本字段同位同读）；其余值诚实失败而非内存腐坏。
     pub struct_size: usize,
     /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
     /// （2026-10-22 批 3 增补槽；**追加在哨兵之后**——哨兵位固定纪律：
@@ -131,6 +132,93 @@ pub struct HostCallbacks {
     /// 优化与裸 fn 指针逐位相同——None = 空 = 槽缺失。宿主按
     /// [`HostCallbacksLegacy`] 旧布局注册时本槽不在表内，壳按 None 处置：
     /// guest 调 llm-complete 恒返 host-error unavailable。
+    pub llm_complete: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            prompt: *const c_char,
+            max_tokens: u32,
+            out_content: *mut *mut c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
+    /// `secret-set(name, value) -> result<_, host-error>`（2026-11-03
+    /// 自持写通道增补槽；追加 pattern 同上）。
+    pub secret_set: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            name: *const c_char,
+            value: *const c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
+    /// `config-set(key, value) -> result<_, host-error>`（同上批增补槽）。
+    pub config_set: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            key: *const c_char,
+            value: *const c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
+}
+
+/// 批 3 后、自持写通道前的中间布局（free_str + 8 fn 指针 + struct_size +
+/// llm_complete；仅 llm 增补槽）。仅用于 `engine_init` 识别中间宿主传入的
+/// 尺寸并换算成新结构（secret-set / config-set = None），不参与其他路径。
+#[repr(C)]
+pub struct HostCallbacksLlmOnly {
+    /// 同 [`HostCallbacks::free_str`]。
+    pub free_str: unsafe extern "C" fn(s: *mut c_char),
+    /// 同 [`HostCallbacks::log`]。
+    pub log: unsafe extern "C" fn(env: *mut c_void, level: c_int, message: *const c_char),
+    /// 同 [`HostCallbacks::now_millis`]。
+    pub now_millis: unsafe extern "C" fn(env: *mut c_void, out_ms: *mut u64) -> c_int,
+    /// 同 [`HostCallbacks::config_get`]。
+    pub config_get: unsafe extern "C" fn(
+        env: *mut c_void,
+        key: *const c_char,
+        out_found: *mut c_int,
+        out_value: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::secret_get`]。
+    pub secret_get: unsafe extern "C" fn(
+        env: *mut c_void,
+        name: *const c_char,
+        out_value: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::workspace_read`]。
+    pub workspace_read: unsafe extern "C" fn(
+        env: *mut c_void,
+        rel_path: *const c_char,
+        out_b64: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::data_dir_path`]。
+    pub data_dir_path: unsafe extern "C" fn(
+        env: *mut c_void,
+        out_path: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::http_send`]。
+    pub http_send: unsafe extern "C" fn(
+        env: *mut c_void,
+        request_json: *const c_char,
+        out_response_json: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::tool_invoke`]。
+    pub tool_invoke: unsafe extern "C" fn(
+        env: *mut c_void,
+        tool: *const c_char,
+        args_json: *const c_char,
+        out_content: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::struct_size`]（中间布局尺寸）。
+    pub struct_size: usize,
+    /// 同 [`HostCallbacks::llm_complete`]。
     pub llm_complete: Option<
         unsafe extern "C" fn(
             env: *mut c_void,
@@ -229,34 +317,37 @@ pub(crate) fn callbacks() -> Option<&'static HostCallbacks> {
     CALLBACKS.get()
 }
 
-/// 初始化引擎单例 + 注册回调表（幂等；首个成功者定缓存配置与回调表）。
+/// 按 `struct_size` 哨兵识别宿主回调表布局，归一为 [`HostCallbacks`] 全量
+/// 形态（增补槽在旧布局中不存在 = None）。纯函数——只读 `cb` 指向的内存
+/// 并整表换算，不触任何单例（[`crate::abi_tests`] 直测三臂矩阵）。
 ///
-/// 回调表布局按 `struct_size` 哨兵识别：新布局（含 llm-complete 槽）或
-/// [`HostCallbacksLegacy`]（批 3 前布局，llm-complete = None）均可；其余
-/// 尺寸诚实失败。
-///
-/// # Safety
-///
-/// `cache_root` 可为空（无缓存）；`cb` 必须指向有效的 [`HostCallbacks`]
-/// 或 [`HostCallbacksLegacy`] 布局内存（按其 `struct_size` 判定），指向的
-/// 内存在进程存活期有效。
-pub(crate) unsafe fn engine_init_impl(
-    cache_root: *const c_char,
-    cb: *const HostCallbacks,
-) -> Result<(), String> {
-    if cb.is_null() {
-        return Err("callbacks pointer is null".into());
-    }
-    let cb = &*cb;
+/// 只接受三种已知尺寸：本结构（含 llm-complete + 自持写两增补槽）/
+/// [`HostCallbacksLlmOnly`] / [`HostCallbacksLegacy`]；其余值诚实失败
+/// 而非按错误布局整读越界（内存腐坏防线）。
+pub(crate) fn recognize_callback_layout(cb: &HostCallbacks) -> Result<HostCallbacks, String> {
     let shell_size = std::mem::size_of::<HostCallbacks>();
-    // 布局哨兵（位固定，两种布局同位可安全首读）：只接受已知尺寸，杜绝
-    // 按错误布局整读越界（llm-complete 槽在 legacy 布局中不存在，必须整
-    // 表换算而非直接整读）。
-    let stored = if cb.struct_size == shell_size {
-        unsafe { std::ptr::read(cb) }
+    if cb.struct_size == shell_size {
+        Ok(unsafe { std::ptr::read(cb) })
+    } else if cb.struct_size == std::mem::size_of::<HostCallbacksLlmOnly>() {
+        let mid: HostCallbacksLlmOnly = unsafe { std::ptr::read(std::ptr::from_ref(cb).cast()) };
+        Ok(HostCallbacks {
+            free_str: mid.free_str,
+            log: mid.log,
+            now_millis: mid.now_millis,
+            config_get: mid.config_get,
+            secret_get: mid.secret_get,
+            workspace_read: mid.workspace_read,
+            data_dir_path: mid.data_dir_path,
+            http_send: mid.http_send,
+            tool_invoke: mid.tool_invoke,
+            struct_size: mid.struct_size,
+            llm_complete: mid.llm_complete,
+            secret_set: None,
+            config_set: None,
+        })
     } else if cb.struct_size == std::mem::size_of::<HostCallbacksLegacy>() {
         let old: HostCallbacksLegacy = unsafe { std::ptr::read(std::ptr::from_ref(cb).cast()) };
-        HostCallbacks {
+        Ok(HostCallbacks {
             free_str: old.free_str,
             log: old.log,
             now_millis: old.now_millis,
@@ -268,15 +359,41 @@ pub(crate) unsafe fn engine_init_impl(
             tool_invoke: old.tool_invoke,
             struct_size: old.struct_size,
             llm_complete: None,
-        }
+            secret_set: None,
+            config_set: None,
+        })
     } else {
-        return Err(format!(
-            "callbacks struct size mismatch: host {} != shell {} or legacy {}",
+        Err(format!(
+            "callbacks struct size mismatch: host {} != shell {} or llm-only {} or legacy {}",
             cb.struct_size,
             shell_size,
+            std::mem::size_of::<HostCallbacksLlmOnly>(),
             std::mem::size_of::<HostCallbacksLegacy>()
-        ));
-    };
+        ))
+    }
+}
+
+/// 初始化引擎单例 + 注册回调表（幂等；首个成功者定缓存配置与回调表）。
+///
+/// 回调表布局按 `struct_size` 哨兵识别（[`recognize_callback_layout`]）：
+/// 新布局（含 llm-complete + 自持写两增补槽）/ [`HostCallbacksLlmOnly`]
+/// （仅 llm 槽）/ [`HostCallbacksLegacy`]（批 3 前布局，增补槽全 None）
+/// 均可；其余尺寸诚实失败。
+///
+/// # Safety
+///
+/// `cache_root` 可为空（无缓存）；`cb` 必须指向有效的 [`HostCallbacks`] /
+/// [`HostCallbacksLlmOnly`] / [`HostCallbacksLegacy`] 布局内存（按其
+/// `struct_size` 判定），指向的内存在进程存活期有效。
+pub(crate) unsafe fn engine_init_impl(
+    cache_root: *const c_char,
+    cb: *const HostCallbacks,
+) -> Result<(), String> {
+    if cb.is_null() {
+        return Err("callbacks pointer is null".into());
+    }
+    let cb = &*cb;
+    let stored = recognize_callback_layout(cb)?;
     let _ = CALLBACKS.set(stored);
 
     if ENGINE.get().is_some() {

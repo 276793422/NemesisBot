@@ -1,0 +1,159 @@
+# issue-import 轻量工单导入模板（自持缩版：plugin.toml + guest 两件套）。
+#
+# `wasm-sha256` 由 guest 构建后填入真实哈希（见 README）；
+# 根键必须位于任何 table 段之前——TOML 语义。
+#
+# 与 bugfix-flow 全管线解耦：只做「外部工单 → 看板单」导入轮询（origin 去重）
+# + 状态回写，无修复循环/发布/报告步骤、无人工闸（land 缺省 auto 直接落单）。
+# 换靶 = 面板「实例设置」表单或插件页「配置」钮改 base_url/owner/repo/state
+#（{{config.*}} 装载期渲染，缺省 = 声明值），不用改本清单。
+#
+# 0.1.x（纯声明式）：零 wasm 载荷，fetch/on-transition 走宿主 connector 原语
+# 复用 workspace 共享 gitea connector（演进详情在 git 历史）。
+# 0.2.0（2026-11-04 插件自持批）：guest 缩版上线（组合 world
+# plugin-panel-flow-step）——fetch/comment 两 op 自报（http-send + secret-get
+# 直连 Gitea REST，PAT 头 `token ` 形态），connector 复用退役；实例配置与
+# 凭据自持写通道 = 面板「实例设置」表单（save_settings 命令：config-set ×4 +
+# secret-set pat）；PAT vault 别名 connector/gitea/pat → plugin/issue-import/
+# pat。base_url 不进剧本声明（无缺省 = 防假缺省 URL，含 /api/v1 前缀）：
+# 模板即装即载，未配置时各路诚实报错。origin-id 改字面 `gitea` 前缀（plugin
+# fetch 模板禁 {{connector}}/{{arg.*}}——渲染产物 `gitea/<owner>/<repo>#<n>`
+# 与 0.1.x 逐字节同形，parse-origin-id 不变）。
+wasm-sha256 = "19642f965db0d4bfe255fc760e1df41c6e8d989ae5489d137d3e5aa283462f09"
+api-version = 1
+slug = "issue-import"
+kind = "panel"
+name = "Issue 导入流水线"
+version = "0.2.0"
+description = "轻量工单导入：外部 issue 轮询 → 看板单（origin 去重）+ 状态回帖（自持缩版：guest 两 op 直连 Gitea REST，PAT 走 vault）"
+
+# 出网面：只准打 base_url 指向的实例（整条目 token，配置热渲染；未配置 =
+# 能力整体关闭）；凭据面：PAT（vault plugin/issue-import/pat，面板表单写入）。
+# allow-private：自托管 Gitea 本就常驻企业内网（10.x/192.168.x/127.x），
+# 私网放行是产品语义不是测试后门——allowlist 仍钉 base_url 精确值，
+# DNS 钉地址（rebinding 防御）照常。
+[permissions]
+egress = ["{{config.base_url}}"]
+allow-private = true
+x-secret = ["pat"]
+
+# 实例配置（插件页「配置」钮或面板「实例设置」表单可改；剧本 {{config.<键>}}
+# 装载期渲染，缺省 = 声明值）。base_url 无缺省（未设置 = 诚实报错，不猜
+# URL）；PAT 走 x-secret，不进这里——凭据面分离。
+[config-schema]
+base_url = { desc = "Gitea API 根（含 /api/v1 前缀，如 http://127.0.0.1:3000/api/v1；未设置时各路诚实报错）" }
+owner = { desc = "Gitea 仓库属主", default = "p0admin" }
+repo = { desc = "Gitea 仓库名", default = "durfmt" }
+state = { desc = "取数 issue 状态过滤（open/closed/all）", default = "open" }
+
+# 页面骨架：实例列表 + 时间线 + 手动同步按钮 + 实例设置表单（导入全自动，
+# 无人工闸——land 缺省 auto 直接落单，无 confirm/resume 表单）。
+[[ui.page]]
+route = "import"
+title = "Issue 导入流水线"
+icon = "inbox"
+
+[[ui.page.views]]
+kind = "table"
+bind = "flow://issue-import/list"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "title"
+label = "标题"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+[[ui.page.views]]
+kind = "timeline"
+bind = "flow://issue-import/timeline"
+
+# 实例设置（自持写通道）：字段全可留空 = 保持原值；PAT 只写不读（保存后
+# 无法回显）。单条配置微调也可走插件页「配置」钮（同一实例配置面）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://save_settings"
+
+[[ui.page.views.fields]]
+key = "base_url"
+label = "Gitea API 根（含 /api/v1）"
+placeholder = "如 http://127.0.0.1:3000/api/v1"
+
+[[ui.page.views.fields]]
+key = "owner"
+label = "仓库属主"
+placeholder = "如 p0admin"
+
+[[ui.page.views.fields]]
+key = "repo"
+label = "仓库名"
+placeholder = "如 durfmt"
+
+[[ui.page.views.fields]]
+key = "state"
+label = "取数状态（open/closed/all）"
+placeholder = "open"
+
+[[ui.page.views.fields]]
+key = "pat"
+label = "访问令牌（PAT）"
+field-type = "secret"
+placeholder = "留空 = 保持已存令牌"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "同步外部 issue"
+command = "flow://issue-import/fetch"
+
+# 剧本：取 → 落（两步 = 轻量形态全集）。origin 三件套建单坐标 + on-transition
+# 状态回写全声明化（两路均 guest 自报步骤），宿主只提供通用原语与 token 插值。
+[[flow.template]]
+id = "issue-import"
+interval-secs = 600
+origin-type = "gitea"
+# 字面 `gitea` 前缀（plugin fetch 模板禁 {{connector}}/{{arg.*}}）——渲染
+# 产物 `gitea/<owner>/<repo>#<n>` 与 0.1.x 逐字节同形。
+origin-id = "gitea/{{config.owner}}/{{config.repo}}#{{key}}"
+# 回写坐标落库载体：owner/repo 取实例配置（{{config.*}} 装载期渲染——缺省
+# 或插件页配置值），number 取条目键（{{key}} = key_field 字段值）；board 单
+# origin_meta 由此透传落库。origin-meta 值域 = 身份 token 表 {key, config.*}。
+origin-meta = { owner = "{{config.owner}}", repo = "{{config.repo}}", number = "{{key}}" }
+
+# board 状态转移 → Gitea issue 回帖（guest 自报 comment op）。args 值过
+# token 插值（严格渲染）：origin_meta.<key> 优先；v1 旧单 origin_meta 缺席
+# 时用 parse-origin-id 现场 origin_id 分解（`gitea/<owner>/<repo>#12` 形态）。
+[flow.template.on-transition]
+op = "plugin:issue-import:comment"
+args = { owner = "{{origin_meta.owner}}", repo = "{{origin_meta.repo}}", index = "{{origin_meta.number}}", body = "{{transition.text}}" }
+parse-origin-id = { owner = "segment '/' 1", repo = "before '#' | segment '/' 2", number = "after '#'" }
+
+# 取数 = guest 自报 fetch op（http-send 直连 Gitea issues 列表）。owner/repo/
+# state 装载期渲染（换靶改配置不改清单）；key/title/body 三字段是宿主物化
+# 坐标（裸字段名——Gitea issue 对象 number/title/body 顶层；body_field 落实
+# 例正文，land 时提取 [CHECK] 行为验收锚；缺席 = 通用兜底 AC）。
+[[flow.template.steps]]
+id = "fetch"
+kind = "plugin:issue-import:fetch"
+args = { owner = "{{config.owner}}", repo = "{{config.repo}}", state = "{{config.state}}", limit = "50", key_field = "number", title_field = "title", body_field = "body" }
+
+# 落主工作区（不带 project——轻量模板不做任务副本/发布链；要项目归属加
+# args = { project = "<board 项目名>" } 即可）。
+[[flow.template.steps]]
+id = "land"
+kind = "board_land"

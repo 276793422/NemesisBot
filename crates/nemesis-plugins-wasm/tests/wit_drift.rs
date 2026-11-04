@@ -26,6 +26,12 @@ const EXAMPLE_WIT_COPIES: &[&str] = &[
     "plugins/wasm/policy-sample/wit/plugin.wit",
     "plugins/wasm/panel-echo/wit/plugin.wit",
     "plugins/wasm/stepdemo/wit/plugin.wit",
+    "plugins/wasm/panel-step-demo/wit/plugin.wit",
+    "plugins/wasm/bugfix-flow/guest/wit/plugin.wit",
+    "plugins/wasm/jira-fix/guest/wit/plugin.wit",
+    "plugins/wasm/issue-import/guest/wit/plugin.wit",
+    "plugins/wasm/jira-gitlab-flow/guest/wit/plugin.wit",
+    "plugins/wasm/sc-bugfix/guest/wit/plugin.wit",
 ];
 
 fn read(p: &Path) -> String {

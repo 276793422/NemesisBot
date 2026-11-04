@@ -248,11 +248,13 @@ fn ensure_scaffold_first_run_creates_all_and_idempotent() {
     // project.json 未重建（保留首次内容）。
     assert_eq!(read_manifest(&root).unwrap().project_id, 7);
 
-    // .gitignore 内容含四个投影排除项（B6）。
+    // .gitignore 内容含四个投影排除项 + 自排除（B6；自排除 = publish
+    // 内容等值臂的前提——pre-merge 落定不得把它带进跟踪树）。
     assert!(GITIGNORE_CONTENT.contains("/project.json"));
     assert!(GITIGNORE_CONTENT.contains("/timeline.jsonl"));
     assert!(GITIGNORE_CONTENT.contains("/docs/"));
     assert!(GITIGNORE_CONTENT.contains("/records/"));
+    assert!(GITIGNORE_CONTENT.contains(".gitignore"));
 
     let _ = std::fs::remove_dir_all(&root);
 }

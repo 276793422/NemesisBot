@@ -222,6 +222,7 @@ async fn install_approver_unbound_is_fail_closed() {
         wasm_sha256: "ab".repeat(32),
         ui_pages: 0,
         flow_templates: 0,
+        connectors: vec![],
         limits_ignored: vec![],
         source_dir: "C:\\tmp".into(),
     };

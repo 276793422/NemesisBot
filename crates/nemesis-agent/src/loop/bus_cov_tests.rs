@@ -166,7 +166,7 @@ async fn finish_message_skips_publish_when_already_sent() {
     assert!(al.has_sent_in_round(key));
 
     let msg = inbound("hello", "web", "covuser", key);
-    al.finish_message(&msg, "should be skipped".to_string(), None, true)
+    al.finish_message(&msg, "should be skipped".to_string(), None, true, false)
         .await;
     assert!(
         orx.try_recv().is_err(),
@@ -174,7 +174,7 @@ async fn finish_message_skips_publish_when_already_sent() {
     );
 
     // 标记已按会话清除：下一次发布照常。
-    al.finish_message(&msg, "goes through".to_string(), None, true)
+    al.finish_message(&msg, "goes through".to_string(), None, true, false)
         .await;
     let got = orx.recv().await.unwrap();
     assert_eq!(got.content, "goes through");

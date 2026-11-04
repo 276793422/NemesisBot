@@ -774,6 +774,8 @@ impl AgentLoop {
                     source_node: None,
                     task_id: None,
                     sync_via: None,
+                    // 压缩前置通知 = 系统进度回执，非回合产物。
+                    receipt: true,
                 },
             };
             let _ = tx.send(outbound).await;

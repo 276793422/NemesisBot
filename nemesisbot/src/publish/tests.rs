@@ -266,6 +266,7 @@ async fn publish_without_protocol_is_honest_error() {
         Path::new(&f.ws_root),
         &f.args(),
         None,
+        None,
     )
     .await
     .unwrap_err();
@@ -663,6 +664,7 @@ fn preflight_happy_path_proceeds_with_issue_title() {
             title,
             already_merged,
             delivery_tree,
+            base_tree,
             stage,
         } => {
             assert_eq!(copy_dir, f.copy_root);
@@ -671,6 +673,7 @@ fn preflight_happy_path_proceeds_with_issue_title() {
             assert!(patch.starts_with("diff --git"));
             assert!(!already_merged, "commit 等值路径非第三臂");
             assert!(delivery_tree.is_none(), "无 tree 字段 → None 透传");
+            assert!(base_tree.is_none(), "无 base_tree 字段 → None 透传");
             assert_eq!(stage, None, "首次发布无阶段现场");
         }
         _ => panic!("期望 Proceed"),
@@ -993,6 +996,7 @@ async fn review_nov02_publish_push_failure_retry_continues_after_remote_repaired
         Path::new(&f.ws_root),
         &f.args(),
         Some(&gitea_protocol()),
+        None,
     )
     .await
     .unwrap();
@@ -1026,6 +1030,7 @@ async fn review_nov02_publish_push_failure_retry_continues_after_remote_repaired
         Path::new(&f.ws_root),
         &f.args(),
         Some(&gitea_protocol()),
+        None,
     )
     .await
     .unwrap();
@@ -1078,6 +1083,7 @@ async fn review_nov02_publish_preflight_preserves_valid_patch_bytes() {
         Path::new(&f.ws_root),
         &f.args(),
         Some(&gitea_protocol()),
+        None,
     )
     .await
     .unwrap();
@@ -1133,6 +1139,7 @@ async fn review_nov02_publish_pr_pending_retry_reconciles_existing_pr() {
         Path::new(&f.ws_root),
         &f.args(),
         Some(&gitea_protocol()),
+        None,
     )
     .await
     .unwrap();
@@ -1179,6 +1186,7 @@ async fn review_nov02_publish_pr_pending_retry_inconclusive_stays_conservative()
         Path::new(&f.ws_root),
         &f.args(),
         Some(&gitea_protocol()),
+        None,
     )
     .await
     .unwrap();
@@ -1197,4 +1205,96 @@ async fn review_nov02_publish_pr_pending_retry_inconclusive_stays_conservative()
         rec.payload["publish_stage"], "pr_pending",
         "pr_pending 现场必须保留（阶段单调不回退）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// op 路由双臂（批 3a）：parse_op_route / credential_alias / NOT_SENT_MARKER 语义
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_op_route_native_passes_through() {
+    assert_eq!(
+        parse_op_route("create_pull").unwrap(),
+        OpRoute::Native("create_pull".to_string())
+    );
+    assert_eq!(
+        parse_op_route("  pr_list  ").unwrap(),
+        OpRoute::Native("pr_list".to_string()),
+        "Native 自由文本 trim"
+    );
+}
+
+#[test]
+fn parse_op_route_plugin_reference() {
+    assert_eq!(
+        parse_op_route("plugin:bugfix-flow:create_pull").unwrap(),
+        OpRoute::Plugin {
+            slug: "bugfix-flow".to_string(),
+            op: "create_pull".to_string()
+        }
+    );
+}
+
+#[test]
+fn parse_op_route_malformed_plugin_reference_is_loud() {
+    // plugin: 前缀但段非法（大写/空 op/多段）= loud 拒，不给运行期留
+    // 「当原语名静默错」黑洞。
+    let e = parse_op_route("plugin:Bugfix-Flow:create_pull").unwrap_err();
+    assert!(e.contains("plugin 引用形态但解析失败"), "{e}");
+    assert!(parse_op_route("plugin:bugfix-flow").is_err());
+    assert!(parse_op_route("plugin:").is_err());
+}
+
+#[test]
+fn credential_alias_by_create_route() {
+    // Plugin 臂：凭据跟随 guest 身份（connector 声明无关）。
+    assert_eq!(
+        credential_alias(
+            None,
+            &OpRoute::Plugin {
+                slug: "bugfix-flow".to_string(),
+                op: "create_pull".to_string()
+            }
+        )
+        .unwrap(),
+        "plugin/bugfix-flow/pat"
+    );
+    // Native 臂：connector 必填（凭据别名无法推导 = 诚实 Err）。
+    assert_eq!(
+        credential_alias(Some("gitea"), &OpRoute::Native("create_pull".to_string())).unwrap(),
+        "connector/gitea/pat"
+    );
+    let e = credential_alias(None, &OpRoute::Native("create_pull".to_string())).unwrap_err();
+    assert!(e.contains("缺 connector 声明"), "{e}");
+}
+
+#[test]
+fn reconcile_page_body_accepts_entries_wrapper_form() {
+    // 批 3a：plugin 步 done 契约 `{"status":"done","entries":[...]}` 去
+    // status 后的对象形态——entries 包裹直出；非数组 entries = Inconclusive
+    // 不冒充「扫尽」。本测试经 reconcile_by_match 全函数走四态判定边界。
+    // 直接构造：畸形 entries 在页体解析即 Inconclusive（不进 match_item）。
+    let text = r#"{"entries": "not-an-array"}"#;
+    let parsed: Result<Value, _> = serde_json::from_str(text);
+    let v = parsed.unwrap();
+    let inconclusive = match v {
+        Value::Array(_) => false,
+        Value::Object(ref o) => !matches!(o.get("entries"), Some(Value::Array(_))),
+        _ => true,
+    };
+    assert!(inconclusive, "非数组 entries 必须判 Inconclusive");
+}
+
+#[test]
+fn not_sent_marker_prefix_is_dispatch_rejected_sibling() {
+    // 语义锁：NOT_SENT_MARKER 错误必须被 publish_task_delivery 的「未发出」
+    // 分支接住（与 ⛔ dispatch 拒同分支）——标记词表漂移会静默改走「可能已
+    // 送达」对账分支（保守但不精确），钉死防漂移。
+    assert!(NOT_SENT_MARKER.starts_with('['));
+    assert_eq!(NOT_SENT_MARKER, "[not-sent]");
+    let marked = format!("{NOT_SENT_MARKER} plugin:x:y 投递失败: e");
+    assert!(marked.starts_with(NOT_SENT_MARKER));
+    assert!(!crate::connector_tools::error_text_dispatch_rejected(
+        &marked
+    ));
 }

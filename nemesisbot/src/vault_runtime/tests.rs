@@ -212,3 +212,53 @@ fn argon2_wrong_passphrase_reports_unlock_failure() {
         restore_passphrase_env();
     });
 }
+
+// ===========================================================================
+// 自持写通道建库（2026-11-03 jira-fix demo 实证缺口）：面板表单 secret-set
+// 在全新 workspace 上曾被「文件不存在」拒死——自持故事要求开箱可写。
+// ===========================================================================
+
+/// 缺文件 + 默认模式可自动建（DPAPI 免口令；argon2 平台走 env 口令）→
+/// 写入别名即落盘，读取面同源可解。
+#[test]
+fn open_or_create_creates_missing_vault_and_writes_alias() {
+    with_runtime_lock(|| {
+        restore_passphrase_env(); // argon2 平台给 seed 口令；DPAPI 平台清空（不需要）
+        let tmp = tempfile::tempdir().unwrap();
+        let vp = nemesis_path::resolve_vault_path_in_workspace(&crate::common::workspace_path(
+            tmp.path(),
+        ));
+        assert!(!vp.exists());
+        let mut store = open_or_create_unlocked_at(&vp).unwrap();
+        store.set("plugin/demo/pat", "pv", "test", "").unwrap();
+        store.save().unwrap();
+        assert!(vp.exists());
+        install(tmp.path());
+        assert_eq!(
+            nemesis_config::resolve_vault_reference("vault:plugin/demo/pat")
+                .unwrap()
+                .unwrap(),
+            "pv"
+        );
+        restore_passphrase_env();
+    });
+}
+
+/// argon2id + env 口令缺失：缺文件建库诚实拒绝（headless 不 prompt），带
+/// CLI 一次性补救指引。open_or_create 的模式取 default_mode()，DPAPI 默认
+/// 平台无法触发 argon2 臂——该臂由 argon2 默认平台（Linux nightly）覆盖。
+#[cfg(not(windows))]
+#[test]
+fn open_or_create_argon2_without_passphrase_fails_loud() {
+    with_runtime_lock(|| {
+        unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
+        let tmp = tempfile::tempdir().unwrap();
+        let vp = nemesis_path::resolve_vault_path_in_workspace(&crate::common::workspace_path(
+            tmp.path(),
+        ));
+        let err = open_or_create_unlocked_at(&vp).unwrap_err();
+        assert!(err.contains("NEMESISBOT_VAULT_PASSPHRASE"), "got: {err}");
+        assert!(err.contains("vault set"), "got: {err}");
+        restore_passphrase_env();
+    });
+}

@@ -36,7 +36,8 @@ pub struct EgressResponse {
     pub body: Vec<u8>,
 }
 
-/// 出站策略（从 manifest permissions 物化）。
+/// 出站策略（从 manifest permissions 物化；proxy 由实例配置 `proxy` 键
+/// 注入——registry build_frame 每帧现读）。
 #[derive(Debug, Clone, Default)]
 pub struct EgressPolicy {
     /// 能力总开关（allowlist 非空才开）。
@@ -45,6 +46,11 @@ pub struct EgressPolicy {
     pub allowlist: Vec<String>,
     /// 允许私网/回环目标（默认 false；测试场景对 127.0.0.1 显式开）。
     pub allow_private: bool,
+    /// 出站代理 URL（`http://`/`socks5h://`；None = 直连现行为）。配置
+    /// 在场 = DNS 解析/私网闸/钉地址整体移交代理侧（socks5h 语义——企业
+    /// 内网域名本机不可解析正是代理存在的理由；allowlist 仍钉真实目标
+    /// base_url，代理隧道内的可达性是操作员配置代理时的信任决策）。
+    pub proxy: Option<String>,
 }
 
 impl EgressPolicy {
@@ -56,7 +62,69 @@ impl EgressPolicy {
             enabled,
             allowlist: allowlist.into_iter().map(|s| s.to_lowercase()).collect(),
             allow_private,
+            proxy: None,
         }
+    }
+}
+
+/// egress allowlist 中的 `{{config.<key>}}` 整条目 token 渲染（2026-11-03
+/// 自持写通道批）：实例配置（schema 缺省值 ∪ 操作员覆盖）解析出真实
+/// host/host:port，配置缺席 = 该条目丢弃（deny-by-default 不破——allowlist
+/// 空 = 能力整体关闭）。字面条目原样保留；`{{` 混入非整条目 token 形态的
+/// 字符串在此兜底丢弃（manifest validate 已 loud 拒，这里是防御性静默）。
+///
+/// 解析出的值允许完整 URL 形态（自持故事操作员贴的自然是
+/// `http://host:port`——demo 实证：scheme 前缀混进 host 段会让
+/// [`allowlisted`] 永不匹配）：提取 host[:port] 进 allowlist——显式端口
+/// → `host:port` 条目，scheme 默认端口（URL 无显式端口）→ 裸 host 条目
+/// （裸 host 条目全端口匹配是既有条目语法；钉端口语义由操作员在 URL
+/// 里带显式端口表达）。畸形 URL / 无 host / IPv6 带显式端口（host 含
+/// `:`，[`allowlisted`] 的端口臂与精确臂都接不住——条目语法无法表达，
+/// 丢弃从严）= 条目丢弃。
+#[must_use]
+pub fn render_egress_tokens(
+    allowlist: &[String],
+    config: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    allowlist
+        .iter()
+        .filter_map(|entry| {
+            if !entry.contains("{{") {
+                return Some(entry.clone());
+            }
+            let inner = entry
+                .strip_prefix("{{")
+                .and_then(|r| r.strip_suffix("}}"))
+                .map(str::trim)?;
+            let key = inner.strip_prefix("config.")?;
+            let value = config.get(key)?;
+            if value.trim().is_empty() {
+                return None; // 空值 = 未配置语义，同缺席丢弃。
+            }
+            if value.contains("://") {
+                normalize_url_egress_entry(value)
+            } else {
+                Some(value.trim().to_string())
+            }
+        })
+        .collect()
+}
+
+/// URL 形态配置值 → host[:port] allowlist 条目（与请求侧同源形态：
+/// [`proxy_request_inner`] 用 `host_str` 去括号 + `port_or_known_default`
+/// ——裸 host 条目经 [`allowlisted`] 精确臂全端口命中，`host:port` 条目
+/// 钉显式端口）。解析失败 / 无 host / IPv6 带显式端口 = None = 条目丢弃
+/// （deny-by-default）。
+fn normalize_url_egress_entry(value: &str) -> Option<String> {
+    let url = url::Url::parse(value.trim()).ok()?;
+    let host = url.host_str()?.trim_matches(['[', ']']).to_string();
+    if host.is_empty() {
+        return None;
+    }
+    match url.port() {
+        Some(_) if host.contains(':') => None, // IPv6 带端口：见 render 注。
+        Some(p) => Some(format!("{host}:{p}")),
+        None => Some(host),
     }
 }
 
@@ -129,7 +197,7 @@ fn allowlisted(policy: &EgressPolicy, host: &str, port: u16) -> bool {
 }
 
 /// 执行一次代理请求（异步；宿主侧经 tokio Handle block_on 调用）。
-pub(crate) async fn proxy_request(
+pub async fn proxy_request(
     policy: &EgressPolicy,
     limits: &PluginLimits,
     req: EgressRequest,
@@ -162,40 +230,59 @@ async fn proxy_request_inner(
         return Err(format!("host not in egress allowlist: {host}:{port}"));
     }
 
-    // DNS 解析 + 私网闸 + 钉地址（rebinding 防御）。
-    let addr_host = format!("{host}:{port}");
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&addr_host)
-        .await
-        .map_err(|e| format!("dns resolution failed for {host}: {e}"))?
-        .collect();
-    if addrs.is_empty() {
-        return Err(format!("dns resolution returned no addresses for {host}"));
-    }
-    let mut pinned: Option<std::net::SocketAddr> = None;
-    for a in &addrs {
-        if !policy.allow_private && is_private_ip(a.ip()) {
-            return Err(format!(
-                "target resolves to private address (allow_private=false): {}",
-                a.ip()
-            ));
+    // DNS 解析 + 私网闸 + 钉地址（rebinding 防御）——**代理缺席路径专属**：
+    // proxy 配置在场时本机 DNS/私网判定整体跳过（见 client 构造处分支）。
+    let client = match &policy.proxy {
+        Some(proxy_url) => {
+            // 代理臂：socks5h/http 代理代答 DNS；allowlist 已钉真实目标
+            // （上面精确匹配通过才到这）。诚实边界：代理隧道内目标是否私网
+            // 不再经本机闸——操作员配置代理 = 声明「内网目标经此可达」的
+            // 信任决策（企业内网域名本机不可解析正是代理存在的理由）。
+            let proxy =
+                reqwest::Proxy::all(proxy_url).map_err(|e| format!("proxy url invalid: {e}"))?;
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_millis(limits.egress_timeout_ms))
+                .proxy(proxy)
+                .build()
+                .map_err(|e| format!("client build: {e}"))?
         }
-        if pinned.is_none() {
-            pinned = Some(*a);
+        None => {
+            let addr_host = format!("{host}:{port}");
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&addr_host)
+                .await
+                .map_err(|e| format!("dns resolution failed for {host}: {e}"))?
+                .collect();
+            if addrs.is_empty() {
+                return Err(format!("dns resolution returned no addresses for {host}"));
+            }
+            let mut pinned: Option<std::net::SocketAddr> = None;
+            for a in &addrs {
+                if !policy.allow_private && is_private_ip(a.ip()) {
+                    return Err(format!(
+                        "target resolves to private address (allow_private=false): {}",
+                        a.ip()
+                    ));
+                }
+                if pinned.is_none() {
+                    pinned = Some(*a);
+                }
+            }
+            let pinned = pinned.expect("addrs non-empty");
+
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_millis(limits.egress_timeout_ms))
+                // DNS 钉地址：连接目标固定为解析结果，请求期 rebinding 不成立；
+                // TLS SNI 仍用真实域名（resolve 只改连接目标），证书校验照常。
+                .resolve(&host, pinned)
+                .build()
+                .map_err(|e| format!("client build: {e}"))?
         }
-    }
-    let pinned = pinned.expect("addrs non-empty");
+    };
 
     let method = reqwest::Method::from_bytes(req.method.to_uppercase().as_bytes())
         .map_err(|e| format!("bad method: {e}"))?;
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_millis(limits.egress_timeout_ms))
-        // DNS 钉地址：连接目标固定为解析结果，请求期 rebinding 不成立；
-        // TLS SNI 仍用真实域名（resolve 只改连接目标），证书校验照常。
-        .resolve(&host, pinned)
-        .build()
-        .map_err(|e| format!("client build: {e}"))?;
 
     let mut out = client.request(method, &req.url);
     for (k, v) in &req.headers {

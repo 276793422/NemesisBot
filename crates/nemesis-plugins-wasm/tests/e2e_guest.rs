@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nemesis_plugins_wasm::host_impl::{LlmInvoker, SecretResolver};
+use nemesis_plugins_wasm::host_impl::{ConfigWriter, LlmInvoker, SecretResolver, SecretWriter};
 use nemesis_plugins_wasm::install::{
     AutoApprove, InstallApprover, InstallReview, PluginInstaller, WASM_MAX_BYTES,
 };
@@ -1157,5 +1157,395 @@ async fn flow_step_install_roundtrip_and_run() {
         matches!(err, PluginError::NotAvailable(ref m) if m.contains("not loaded")),
         "err: {err:?}"
     );
+    let _ = ws;
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 组合 world 批：panel-step-demo 夹具（kind=panel 双导出
+// flow-step，world=plugin-panel-flow-step）全链 install → enable →
+// 面板写通道正向控制（secret-set/config-set 真落 writer）→ flow-step 帧
+// 写通道活体证明（同一份 guest 代码的写调用被帧纪律拦下）→ 纯面板
+// 负面（无 step 快照 = 步骤投递拒）→ 审计链。
+// ---------------------------------------------------------------------------
+
+const PANEL_STEP_TOML: &str = r#"api-version = 1
+slug = "panel-step-demo"
+kind = "panel"
+name = "PanelStepDemo"
+version = "0.1.0"
+description = "e2e fixture combined panel+flow-step"
+
+[permissions]
+x-secret = ["probe_token"]
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+[config-schema]
+probe_mode = "演示配置键"
+"#;
+
+/// 记账型 SecretWriter：物理证明 FlowStep 帧的写调用永远到不了 writer——
+/// 面板帧正向控制恰好 1 次，步骤探针后计数不变 = grant 级剥离实锤
+/// （若拦在 cb 层但 grant 未剥，探针会多出 1 条记账即红）。
+#[derive(Default)]
+struct RecordingSecretWriter {
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl SecretWriter for RecordingSecretWriter {
+    fn write(&self, alias: &str, value: &str) -> Result<(), String> {
+        self.calls
+            .lock()
+            .expect("stub lock")
+            .push((alias.to_string(), value.to_string()));
+        Ok(())
+    }
+}
+
+/// 生产同源形态（plugin_bridge.rs::PluginManagerConfigWriter 的 Weak 委派）：
+/// e2e 的 config-set 走真 `set_config_key`（声明校验 + 落盘），面板
+/// get_config 读回 = 真 roundtrip 而非 stub 回声。
+struct ManagerConfigWriter(std::sync::Weak<PluginManager>);
+
+impl ConfigWriter for ManagerConfigWriter {
+    fn set_config(&self, slug: &str, key: &str, value: &str) -> Result<(), String> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| "config-set 失败：插件注册表已不可达".to_string())?
+            .set_config_key(slug, key, value)
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn combined_panel_step_roundtrip() {
+    let Some(wasm) = fixture_wasm("panel-step-demo", "panel_step_demo_plugin") else {
+        eprintln!("{}", skip_reason("panel-step-demo"));
+        return;
+    };
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let audit_dir = tempfile::tempdir().expect("audit tmp");
+    let logger = nemesis_security::audit_log::AuditLogger::new(
+        nemesis_security::audit_log::AuditLogConfig {
+            audit_log_dir: audit_dir.path().to_path_buf(),
+            enabled: true,
+        },
+    )
+    .expect("audit logger");
+    mgr.set_audit(Arc::new(std::sync::Mutex::new(logger)));
+
+    // 写通道接线（生产同源：secret = 记账 stub / config = Weak 委派 manager）。
+    let rec = Arc::new(RecordingSecretWriter::default());
+    mgr.set_secret_writer(rec.clone());
+    mgr.set_config_writer(Arc::new(ManagerConfigWriter(Arc::downgrade(&mgr))));
+
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), PANEL_STEP_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let outcome = installer.install(&src, true).await.expect("install");
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    let reg = installer
+        .set_enabled("panel-step-demo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+
+    // 组合面安装期对账：manifest 仍是 kind=panel（声明面要求），步骤面
+    // 以安装期自报快照进注册表。
+    assert_eq!(reg.manifest.kind.as_str(), "panel");
+    let kinds = reg
+        .step_meta
+        .as_ref()
+        .expect("combined step meta snapshot")
+        .kinds
+        .clone();
+    assert_eq!(kinds, vec!["probe_write_denial"], "kinds: {kinds:?}");
+
+    // ① Panel 帧基线往返。
+    let reply = mgr
+        .invoke_ui("panel-step-demo", r#"{"command":"ping"}"#.into())
+        .await
+        .expect("ping");
+    assert!(reply.contains("\"pong\":true"), "reply: {reply}");
+
+    // ② 写通道正向控制（Panel 帧 = 用户意志入口）：secret 落 writer
+    //    （vault 裸别名 plugin/<slug>/<name>），config 走真 set_config_key
+    //    并被 get_config 读回（同源 roundtrip）。
+    let reply = mgr
+        .invoke_ui(
+            "panel-step-demo",
+            r#"{"command":"set_secret","args":{"value":"tok-1"}}"#.into(),
+        )
+        .await
+        .expect("set_secret");
+    assert!(reply.contains("\"ok\":true"), "reply: {reply}");
+    {
+        let calls = rec.calls.lock().expect("stub lock");
+        assert_eq!(calls.len(), 1, "secret writer calls: {calls:?}");
+        assert_eq!(calls[0].0, "plugin/panel-step-demo/probe_token");
+        assert_eq!(calls[0].1, "tok-1");
+    }
+    let reply = mgr
+        .invoke_ui(
+            "panel-step-demo",
+            r#"{"command":"set_config","args":{"value":"demo"}}"#.into(),
+        )
+        .await
+        .expect("set_config");
+    assert!(reply.contains("\"ok\":true"), "reply: {reply}");
+    let reply = mgr
+        .invoke_ui("panel-step-demo", r#"{"command":"get_config"}"#.into())
+        .await
+        .expect("get_config");
+    assert!(reply.contains("\"value\":\"demo\""), "reply: {reply}");
+
+    // ③ FlowStep 帧写通道活体证明：同一份 guest 代码的 secret-set /
+    //    config-set 走 FlowStep 帧（构造期即无写面）→ 逐路
+    //    denied_unavailable；writer 物理未触达（计数不变）。
+    let out = mgr
+        .run_flow_step(
+            "panel-step-demo",
+            "probe_write_denial",
+            r#"{"op":"probe_write_denial","session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("probe step");
+    assert!(out.contains("\"status\":\"done\""), "out: {out}");
+    assert_eq!(
+        out.matches("denied_unavailable").count(),
+        2,
+        "两路写都必须被帧纪律拦下: {out}"
+    );
+    assert_eq!(
+        rec.calls.lock().expect("stub lock").len(),
+        1,
+        "flow-step 帧的写调用不得触达 writer（grant 级剥离实锤）"
+    );
+
+    // 审计链：面板命令、面板写（secret+config）、步骤投递全部落账。
+    let body = audit_body(audit_dir.path());
+    assert!(body.contains("plugin_ui_invoke"), "audit body: {body}");
+    assert!(body.contains("plugin_secret_set"), "audit body: {body}");
+    assert!(body.contains("plugin_config_set"), "audit body: {body}");
+    assert!(body.contains("plugin_flow_step"), "audit body: {body}");
+    let _ = ws;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pure_panel_without_step_meta_rejects_flow_step() {
+    // 纯面板（panel-echo，无双导出）：run_flow_step 的 kind 闸放行
+    // （Panel ∈ 放宽集），op 对账闸必须拒（无 step 快照）——组合 world
+    // 的步骤面只认安装期自报，不认「碰巧是 panel kind」。
+    let Some(wasm) = fixture_wasm("panel-echo", "panel_echo_plugin") else {
+        eprintln!("{}", skip_reason("panel-echo"));
+        return;
+    };
+    let (_ws, mgr) = fresh_manager().await.expect("manager");
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), PANEL_ECHO_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("panel-echo", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+    let err = mgr
+        .run_flow_step("panel-echo", "echo", r#"{"op":"echo"}"#.into())
+        .await
+        .expect_err("pure panel must not be dispatchable as flow step");
+    assert!(
+        matches!(err, PluginError::MetadataMismatch(ref m) if m.contains("not in plugin 'panel-echo' reported step kinds")),
+        "err: {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-04 sc-bugfix shipped 真载荷 e2e（域插件实机形态，非夹具）：
+// install → enable → 六 op 词表快照 → 面板写通道（save_settings 真 config
+// 落盘 + secret 落 writer + 枚举先验拒绝）→ 无配置步骤诚实失败（不猜 URL）
+// → 词表外 op 安装期对账拒绝。全程零真实网络（config 缺席先于 http-send
+// 失败；egress deny-by-default 兜底）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_sc_bugfix_roundtrip() {
+    let wasm_src =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/sc-bugfix/plugin.wasm");
+    let toml_src =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/sc-bugfix/plugin.toml");
+    if !wasm_src.exists() {
+        eprintln!("SKIP: shipped sc-bugfix plugin.wasm 缺席（先构建 guest）");
+        return;
+    }
+    let raw = std::fs::read_to_string(&toml_src).expect("read shipped plugin.toml");
+
+    let (ws, mgr) = fresh_manager().await.expect("manager");
+    let audit_dir = tempfile::tempdir().expect("audit tmp");
+    let logger = nemesis_security::audit_log::AuditLogger::new(
+        nemesis_security::audit_log::AuditLogConfig {
+            audit_log_dir: audit_dir.path().to_path_buf(),
+            enabled: true,
+        },
+    )
+    .expect("audit logger");
+    mgr.set_audit(Arc::new(std::sync::Mutex::new(logger)));
+    let rec = Arc::new(RecordingSecretWriter::default());
+    mgr.set_secret_writer(rec.clone());
+    mgr.set_config_writer(Arc::new(ManagerConfigWriter(Arc::downgrade(&mgr))));
+
+    // shipped 原文自带 wasm-sha256 根键——不走 stage_plugin（其会再前置一行
+    // 哈希 = 重复根键 TOML parse error），手工 staging（零改写过漏斗）。
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("stage dir");
+    std::fs::write(src.join("plugin.toml"), &raw).expect("write plugin.toml");
+    std::fs::copy(&wasm_src, src.join("plugin.wasm"))
+        .expect("stage shipped plugin.wasm（两件套必须同在）");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer.install(&src, true).await.expect("install");
+    let reg = installer
+        .set_enabled("sc-bugfix", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+
+    // 安装期对账快照：六 op 词表自报（fetch/comment/report/create_mr/
+    // mr_list/change_list）。
+    let mut kinds = reg
+        .step_meta
+        .as_ref()
+        .expect("combined step meta snapshot")
+        .kinds
+        .clone();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        vec![
+            "change_list",
+            "comment",
+            "create_mr",
+            "fetch",
+            "mr_list",
+            "report"
+        ],
+        "kinds: {kinds:?}"
+    );
+
+    // ① 枚举先验：code_host 值域外 = 整批拒绝（不落半截配置）。
+    let reply = mgr
+        .invoke_ui(
+            "sc-bugfix",
+            r#"{"command":"save_settings","args":{"code_host":"gitea","jira_base_url":"https://jira.example.com"}}"#.into(),
+        )
+        .await
+        .expect("bad code_host");
+    assert!(reply.contains("code_host 值无法识别"), "reply: {reply}");
+    assert!(
+        rec.calls.lock().expect("stub lock").is_empty(),
+        "被拒批次不得触达 secret writer"
+    );
+
+    // ④a 零配置诚实失败：fetch 在 config_get 缺席处报「未设置」——检查序
+    //    base_url → 认证 → http_send，网络面零触达。
+    let out = mgr
+        .run_flow_step(
+            "sc-bugfix",
+            "fetch",
+            r#"{"op":"fetch","args":{"jql":"project = PROJ"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("fetch honest failure");
+    assert!(out.contains("\"status\":\"failed\""), "out: {out}");
+    assert!(
+        out.contains("jira_base_url 未设置"),
+        "诚实失败必须点名缺的配置键: {out}"
+    );
+
+    // ② 正向写通道：base_url 归一（尾斜杠剥除）+ secret 落 vault 别名。
+    let reply = mgr
+        .invoke_ui(
+            "sc-bugfix",
+            r#"{"command":"save_settings","args":{"jira_base_url":"https://jira.example.com/","gerrit_base_url":"https://gerrit.example.com","code_host":"gerrit","gerrit_username":"zhangsan","gerrit_http_pass":"hp-secret-1"}}"#.into(),
+        )
+        .await
+        .expect("save_settings");
+    assert!(reply.contains("\"ok\":true"), "reply: {reply}");
+    assert!(
+        mgr.get_config("sc-bugfix")
+            .config
+            .get("jira_base_url")
+            .and_then(|v| v.as_str())
+            == Some("https://jira.example.com"),
+        "尾斜杠必须归一剥除"
+    );
+    assert!(
+        mgr.get_config("sc-bugfix")
+            .config
+            .get("code_host")
+            .and_then(|v| v.as_str())
+            == Some("gerrit"),
+        "code_host 真落盘（面板 get_config 同源读回）"
+    );
+    {
+        let calls = rec.calls.lock().expect("stub lock");
+        assert_eq!(calls.len(), 1, "calls: {calls:?}");
+        assert_eq!(calls[0].0, "plugin/sc-bugfix/gerrit_http_pass");
+        assert_eq!(calls[0].1, "hp-secret-1");
+    }
+
+    // ③ 全空保存 = 探活语义：诚实无写入应答（writer 计数不变）。
+    let reply = mgr
+        .invoke_ui(
+            "sc-bugfix",
+            r#"{"command":"save_settings","args":{}}"#.into(),
+        )
+        .await
+        .expect("empty save");
+    assert!(reply.contains("未填写任何字段，未改动"), "reply: {reply}");
+    assert_eq!(rec.calls.lock().expect("stub lock").len(), 1);
+
+    // ④b 凭据缺席诚实失败：配置已存（④a 之后 save 了 jira_base_url）但
+    //    jira_pat secret 未写——secret 面在 http_send 之前诚实点名（真实
+    //    用户场景：填了基址忘了令牌），网络面零触达。
+    let out = mgr
+        .run_flow_step(
+            "sc-bugfix",
+            "fetch",
+            r#"{"op":"fetch","args":{"jql":"project = PROJ"},"session_key":"flow:t/i"}"#.into(),
+        )
+        .await
+        .expect("fetch credential-missing failure");
+    assert!(out.contains("\"status\":\"failed\""), "out: {out}");
+    assert!(
+        out.contains("jira_pat"),
+        "凭据缺席必须点名 secret 别名: {out}"
+    );
+
+    // ⑤ 词表外 op = 安装期对账拒绝（宿主闸，不进 guest）。
+    let err = mgr
+        .run_flow_step(
+            "sc-bugfix",
+            "not_in_kinds",
+            r#"{"op":"not_in_kinds"}"#.into(),
+        )
+        .await
+        .expect_err("unauthorized op");
+    assert!(
+        matches!(err, PluginError::MetadataMismatch(ref m) if m.contains("not in plugin 'sc-bugfix'")),
+        "err: {err:?}"
+    );
+
+    // 审计链：面板命令、面板写（secret+config）、步骤投递全部落账。
+    let body = audit_body(audit_dir.path());
+    assert!(body.contains("plugin_ui_invoke"), "audit body: {body}");
+    assert!(body.contains("plugin_secret_set"), "audit body: {body}");
+    assert!(body.contains("plugin_config_set"), "audit body: {body}");
+    assert!(body.contains("plugin_flow_step"), "audit body: {body}");
     let _ = ws;
 }

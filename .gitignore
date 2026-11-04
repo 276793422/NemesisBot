@@ -39,6 +39,7 @@ scripts/customize/.config
 # 曾用整目录忽略 /test-tools/TestAIServer，导致系列新增 models/v_models.go
 # 被静默吞掉（未入库），而已入库的 main.go 引用其构造器 → 干净 checkout 编译断裂。
 /test-tools/TestAIServer/testaiserver.exe
+/test-tools/TestAIServer/testaiserver-medfetch.exe
 /test-tools/TestAIServer/*.log
 /test-tools/TestAIServer/log/
 # ONNX 测试 fixture 缓存（plugin-onnx-test setup 脚本下载 ~90MB 模型到此处，
@@ -103,3 +104,6 @@ test-tools/product-validation/evaluators/
 
 # coding-bench 运行产物 + 母夹具物化缓存（仓库内只存规格 fixtures/mothers.json，不存字节）
 .coding-bench/
+
+# pipeline-eval 运行产物（D4 评测驱动报告；程序在 test-tools/pipeline-eval/，产物不入库）
+.pipeline-eval/

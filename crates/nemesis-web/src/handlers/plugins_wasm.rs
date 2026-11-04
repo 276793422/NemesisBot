@@ -625,6 +625,16 @@ pub fn cmd_config_get(slug: &str) -> Result<serde_json::Value, String> {
         "loaded": mgr.get(slug).is_some(),
         "entries": entries,
         "schema_keys": manifest.config_schema_keys(),
+        "schema": manifest.config_schema_detail()
+            .into_iter()
+            .map(|(key, desc, default)| {
+                serde_json::json!({
+                    "key": key,
+                    "desc": desc,
+                    "default": default,
+                })
+            })
+            .collect::<Vec<_>>(),
         "secret_keys": secret_keys,
     }))
 }

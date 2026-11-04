@@ -1,0 +1,206 @@
+# jira-fix 域插件清单（两件套：plugin.toml + guest；connector.toml 已退役）。
+#
+# `wasm-sha256` 由 guest 构建后填入真实哈希（见 README）；根键必须位于任何
+# table 段之前——TOML 语义。流程编排全在宿主 flow 引擎（guest 无驻留）；
+# 本清单是声明面。
+#
+# 0.2.0（2026-11-03 插件自持批）：三路外部调用全改 guest 自报步骤
+# （plugin:jira-fix:fetch|comment）——同一组件双导出（组合 world
+# plugin-panel-flow-step）。取数/回帖 = http-send + secret-get 直连 Jira
+# REST v2；实例配置与凭据自持写通道 = 面板「实例设置」表单（save_settings
+# 命令：config-set ×3 + secret-set pat）。connector.toml 退役（连接知识进
+# guest）；0.1 的两个诚实边界（Cloud Basic / 嵌套 body transitions）在能力
+# 面解除（guest 全权构造请求；当前实现以 PAT Bearer 为准）。
+# base_url 不进剧本声明（无缺省 = 防假缺省 URL）：模板即装即载，未配置时
+# 各路诚实报错；保存后 egress `{{config.base_url}}` 与 guest config-get
+# 同帧热生效。
+# （0.1.1 实例配置化 / 0.1.2 origin-id 参数化演进记录保留在 git 历史。）
+api-version = 1
+slug = "jira-fix"
+kind = "panel"
+name = "Jira 修复流水线"
+version = "0.2.0"
+wasm-sha256 = "7230b4a657f13173c71edb31ac073c97d5849793832098504bd25fdf2c5fdf51"
+description = "Jira issue 修复流水线（自持形态：面板 + flow 剧本 + guest 直连 Jira REST；导入/回帖走自报步骤，PAT 走 vault）"
+
+# 出网面：只准打 base_url 指向的实例（整条目 token，配置热渲染；未配置 =
+# 能力整体关闭）；凭据面：PAT（vault plugin/jira-fix/pat，面板表单写入）。
+# allow-private：自托管 Jira Server/DC 本就常驻企业内网（10.x/192.168.x），
+# 私网放行是产品语义不是测试后门——allowlist 仍钉 base_url 精确值，
+# DNS 钉地址（rebinding 防御）照常。
+[permissions]
+egress = ["{{config.base_url}}"]
+allow-private = true
+x-secret = ["pat"]
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+# 实例配置（插件页「配置」钮或面板「实例设置」表单可改；剧本 {{config.<键>}}
+# 装载期渲染）。base_url 无缺省（未设置 = 诚实报错，不猜 URL）；PAT 走
+# x-secret，不进这里——凭据面分离。
+[config-schema]
+base_url = { desc = "Jira REST 基址（如 https://jira.example.com；未设置时各路诚实报错）" }
+project_key = { desc = "Jira 项目键（PROJ-123 的 PROJ 段）", default = "PROJ" }
+max_results = { desc = "单轮取数条数上限", default = "20" }
+
+# 页面骨架：宿主预置组件按声明渲染（词汇 form/table/timeline/detail/actions）。
+[[ui.page]]
+route = "jira-fix"
+title = "Jira 修复流水线"
+icon = "ticket"
+
+[[ui.page.views]]
+kind = "table"
+bind = "flow://jira-pipeline/list"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "title"
+label = "标题"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+[[ui.page.views]]
+kind = "timeline"
+bind = "flow://jira-pipeline/timeline"
+
+[[ui.page.views]]
+kind = "detail"
+bind = "flow://jira-pipeline/detail"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "current_step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+# guest 动作：单条详情投影（Jira issue key 字符串，PROJ-123 形态）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://jira_get"
+
+[[ui.page.views.fields]]
+key = "key"
+label = "Issue 键"
+placeholder = "如 PROJ-123"
+
+# 实例设置（自持写通道）：四字段全可留空 = 保持原值；PAT 只写不读（保存后
+# 无法回显）。单条配置微调也可走插件页「配置」钮（同一实例配置面）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://save_settings"
+
+[[ui.page.views.fields]]
+key = "base_url"
+label = "Jira 基址"
+placeholder = "如 https://jira.example.com"
+
+[[ui.page.views.fields]]
+key = "project_key"
+label = "项目键"
+placeholder = "PROJ"
+
+[[ui.page.views.fields]]
+key = "max_results"
+label = "取数条数上限"
+placeholder = "20"
+
+[[ui.page.views.fields]]
+key = "pat"
+label = "访问令牌（PAT）"
+field-type = "secret"
+placeholder = "留空 = 保持已存令牌"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "同步 Jira issue"
+command = "flow://jira-pipeline/fetch"
+
+[[ui.page.views.buttons]]
+label = "确认推进（最近实例）"
+command = "flow://jira-pipeline/confirm"
+
+[[ui.page.views.buttons]]
+label = "恢复停车实例"
+command = "flow://jira-pipeline/resume"
+
+# 剧本：取 → 落 → 修复循环（人工闸）→ 验收 → 报告。无 publish 步（Jira
+# 不托管 git）；report 回帖 Jira。人工闸：fixloop 面板确认按钮。
+[[flow.template]]
+id = "jira-pipeline"
+interval-secs = 600
+origin-type = "jira"
+# 字面 `jira` 前缀（plugin fetch 模板禁 {{connector}}；project_key 装载期
+# 渲染，issue key 物化期注入）。
+origin-id = "jira/{{config.project_key}}#{{key}}"
+# 回写坐标落库载体：project_key 取实例配置（{{config.*}} 装载期渲染），
+# issue_key 取条目键（{{key}} = key_field 指定的字段值，即 Jira issue key
+# 字符串）。
+origin-meta = { project_key = "{{config.project_key}}", issue_key = "{{key}}" }
+
+# board 状态转移 → Jira issue 回帖（guest 自报 comment op）。origin_meta
+# 优先；v1 旧单 origin_meta 缺席时 parse-origin-id 现场分解 origin_id
+# （`jira/PROJ#PROJ-123` 形态）。
+[flow.template.on-transition]
+op = "plugin:jira-fix:comment"
+args = { key = "{{origin_meta.issue_key}}", body = "{{transition.text}}" }
+parse-origin-id = { issue_key = "after '#'" }
+
+# 取数 = guest 自报 fetch op（http-send 直连 Jira search）。jql/max_results
+# 装载期渲染（换靶改配置不改清单）；key/title/body 三字段是宿主物化坐标
+# （`$.` JSON path，Jira search 包裹对象：key 顶层、正文藏 fields 下——
+# body_field 落实时提取 [CHECK] 行为验收锚，wiki 标记文本约定照旧）。
+[[flow.template.steps]]
+id = "fetch"
+kind = "plugin:jira-fix:fetch"
+args = { jql = "project = {{config.project_key}} AND status not in (Done, Closed) ORDER BY created DESC", max_results = "{{config.max_results}}", key_field = "$.key", title_field = "$.fields.summary", body_field = "$.fields.description" }
+
+# 落主工作区（不带 project——Jira 不绑定仓库副本；要仓库联动给 land 加
+# args = { project = "<board 项目名>" } 并把 PR 发布交给 gitea connector）。
+[[flow.template.steps]]
+id = "land"
+kind = "board_land"
+
+[[flow.template.steps]]
+id = "fixloop"
+kind = "agent_fixloop"
+gate = "manual"
+on-fail = "park_human"
+
+[[flow.template.steps]]
+id = "regress"
+kind = "check_regress"
+
+# 报告回帖（guest 自报 comment op；args_json 含 report_path token 渲染）。
+[[flow.template.steps]]
+id = "report"
+kind = "report"
+args = { connector = "plugin:jira-fix:comment", args_json = '{"key": "{{ext_key}}", "body": "NemesisBot 流水线完成「{{title}}」（看板单 {{board_issue}}）\n\n报告：{{report_path}}"}' }

@@ -30,11 +30,7 @@ fn seeded_repo(name: &str) -> PathBuf {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
     std::fs::write(root.join("project.json"), b"{\"projection\":true}").unwrap();
-    std::fs::write(
-        root.join(".gitignore"),
-        "/project.json\n/timeline.jsonl\n/docs/\n/records/\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".gitignore"), crate::archive::GITIGNORE_CONTENT).unwrap();
     let fresh = ensure_repo(&root).unwrap();
     assert!(fresh, "seeded_repo 首次 ensure 必须新建");
     root
@@ -84,7 +80,15 @@ fn ensure_repo_is_idempotent_and_respects_gitignore() {
         tree.get_path(Path::new("project.json")).is_err(),
         "投影文件必须被 .gitignore 排除（B6）"
     );
-    assert!(tree.get_path(Path::new(".gitignore")).is_ok());
+    // .gitignore 自排除（publish 内容等值臂的前提）：未跟踪 + 命中自身
+    // 规则 → 首 commit 不得把它带进跟踪树（否则 add_all 每次 pre-merge
+    // 落定都会把它入树，master 树 = 交付树 + .gitignore → 漂移误拒）。
+    assert!(
+        tree.get_path(Path::new(".gitignore")).is_err(),
+        ".gitignore 必须自排除，不入跟踪树"
+    );
+    // 工作集无新增（.gitignore 在盘不入库）→ 后续 commit 仍 no-op。
+    assert!(commit_worktree(&root, "gitignore only").unwrap().is_none());
 }
 
 #[test]
@@ -134,7 +138,7 @@ fn export_head_tree_writes_tracked_files_only() {
 
     let dest = temp_dir("export-dest");
     let (count, bytes) = export_head_tree(&root, &dest).unwrap();
-    assert_eq!(count, 2, "HEAD 树 = src/main.rs + .gitignore");
+    assert_eq!(count, 1, "HEAD 树 = src/main.rs（.gitignore 自排除不入树）");
     assert!(bytes > 0);
     assert_eq!(read(&dest, "src/main.rs"), "fn main() {}\n");
     assert!(!dest.join("project.json").exists(), "投影件不入基线");
@@ -688,7 +692,7 @@ fn clone_repo_local_path_lands_head_and_content() {
     let want_head = head_commit_hex(&origin).unwrap().unwrap();
     let dest = temp_dir("clone-dest");
     // 本地路径克隆（file 传输恒可用，不依赖 TLS）。
-    let got = clone_repo(origin.to_str().unwrap(), &dest, None).unwrap();
+    let got = clone_repo(origin.to_str().unwrap(), &dest, None, None).unwrap();
     assert_eq!(got, want_head, "克隆 HEAD 必须等于源 HEAD（钉 base SHA）");
     assert!(dest.join("src/main.rs").exists(), "工作集内容必须落地");
     // autocrlf 钉死（字节精确契约）。
@@ -701,13 +705,13 @@ fn clone_repo_local_path_lands_head_and_content() {
 fn clone_repo_idempotent_reuse_keeps_existing_head() {
     let origin = seeded_repo("clone-reuse-origin");
     let dest = temp_dir("clone-reuse-dest");
-    let first = clone_repo(origin.to_str().unwrap(), &dest, None).unwrap();
+    let first = clone_repo(origin.to_str().unwrap(), &dest, None, None).unwrap();
     // 副本里继续产出一笔 commit（模拟 worker 合并历史）。
     std::fs::write(dest.join("src/extra.rs"), "pub fn extra() {}\n").unwrap();
     let merged = commit_worktree(&dest, "local change").unwrap();
     assert!(merged.is_some());
     // 幂等重入：不 fetch 不重置，返回**副本当前** HEAD（不是远端旧 HEAD）。
-    let again = clone_repo(origin.to_str().unwrap(), &dest, None).unwrap();
+    let again = clone_repo(origin.to_str().unwrap(), &dest, None, None).unwrap();
     assert_ne!(again, first, "重入必须返回副本自身 HEAD");
     assert!(dest.join("src/extra.rs").exists(), "历史不得被外部重写");
 }
@@ -724,7 +728,7 @@ fn push_branch_fast_forward_and_local_branch_creation() {
         builder.clone(origin.to_str().unwrap(), &bare).unwrap();
     }
     let dest = temp_dir("push-dest");
-    clone_repo(origin.to_str().unwrap(), &dest, None).unwrap();
+    clone_repo(origin.to_str().unwrap(), &dest, None, None).unwrap();
     {
         let repo = Repository::open(&dest).unwrap();
         repo.remote("bare", bare.to_str().unwrap()).unwrap();
@@ -739,6 +743,7 @@ fn push_branch_fast_forward_and_local_branch_creation() {
         "nemesis/task-1",
         "bare",
         "refs/heads/nemesis/task-1",
+        None,
         None,
     )
     .unwrap();
@@ -770,7 +775,7 @@ fn push_branch_missing_local_branch_is_honest_error() {
         builder.clone(origin.to_str().unwrap(), &bare).unwrap();
     }
     let dest = temp_dir("push-missing-dest");
-    clone_repo(origin.to_str().unwrap(), &dest, None).unwrap();
+    clone_repo(origin.to_str().unwrap(), &dest, None, None).unwrap();
     {
         let repo = Repository::open(&dest).unwrap();
         repo.remote("bare", bare.to_str().unwrap()).unwrap();
@@ -780,6 +785,7 @@ fn push_branch_missing_local_branch_is_honest_error() {
         "nemesis/ghost",
         "bare",
         "refs/heads/nemesis/ghost",
+        None,
         None,
     )
     .unwrap_err();
@@ -1064,7 +1070,7 @@ fn apply_patch_new_branch_then_push_full_chain() {
         builder.clone(origin.to_str().unwrap(), &bare).unwrap();
     }
     let copy = temp_dir("apply-chain-copy");
-    clone_repo(origin.to_str().unwrap(), &copy, None).unwrap();
+    clone_repo(origin.to_str().unwrap(), &copy, None, None).unwrap();
     {
         // clone_repo 已带 origin（指向源仓）——只改 URL 指向 bare 推送靶。
         let repo = Repository::open(&copy).unwrap();
@@ -1082,6 +1088,7 @@ fn apply_patch_new_branch_then_push_full_chain() {
         "nemesis/task-7",
         "origin",
         "refs/heads/nemesis/task-7",
+        None,
         None,
     )
     .unwrap();
@@ -1132,7 +1139,7 @@ fn reset_worktree_to_head(root: &Path) {
 fn clone_worktree_matches_blob_bytes_no_smudge() {
     let origin = seeded_repo("clone-nosmudge-origin");
     let copy = temp_dir("clone-nosmudge-copy");
-    let head = clone_repo(origin.to_str().unwrap(), &copy, None).unwrap();
+    let head = clone_repo(origin.to_str().unwrap(), &copy, None, None).unwrap();
     {
         let repo = Repository::open(&copy).unwrap();
         let commit = repo
@@ -1154,4 +1161,689 @@ fn clone_worktree_matches_blob_bytes_no_smudge() {
     }
     let _ = std::fs::remove_dir_all(&origin);
     let _ = std::fs::remove_dir_all(&copy);
+}
+
+// ---------------------------------------------------------------------------
+// sync_repo_remote（2026-11-04 jira-gitlab-flow 批：确定性 clone-or-pull）
+// ---------------------------------------------------------------------------
+
+/// bare 推送靶（libgit2 本地传输不支持推非 bare，同 push_branch 测试纪律）。
+fn bare_origin(tag: &str) -> (PathBuf, PathBuf) {
+    let origin = seeded_repo(&format!("sync-{tag}-origin"));
+    let bare = temp_dir(&format!("sync-{tag}-bare"));
+    {
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.bare(true);
+        builder.clone(origin.to_str().unwrap(), &bare).unwrap();
+    }
+    (origin, bare)
+}
+
+/// bare 远端 HEAD 分支推一笔新 commit（工作克隆 + commit_worktree + push）。
+/// 返回新 commit hex。
+fn advance_bare(bare: &Path, tag: &str, rel: &str, content: &str) -> String {
+    let work = temp_dir(&format!("sync-advance-{tag}"));
+    clone_repo(bare.to_str().unwrap(), &work, None, None).unwrap();
+    write(&work, rel, content);
+    commit_worktree(&work, &format!("remote advance {tag}"))
+        .unwrap()
+        .expect("advance 必须产出 commit");
+    let repo = Repository::open(&work).unwrap();
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    push_branch(
+        &work,
+        &branch,
+        "origin",
+        &format!("refs/heads/{branch}"),
+        None,
+        None,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&work);
+    head_of_commit(bare, "HEAD")
+}
+
+/// 任意仓库/引用的 commit hex（断言辅助）。
+fn head_of_commit(root: &Path, refname: &str) -> String {
+    Repository::open(root)
+        .unwrap()
+        .find_reference(refname)
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id()
+        .to_string()
+}
+
+/// 本地建分支并推到 bare 靶（声明分支用例的远端侧准备）。
+fn push_named_branch(bare: &Path, name: &str, tag: &str) {
+    let work = temp_dir(&format!("sync-named-{tag}"));
+    clone_repo(bare.to_str().unwrap(), &work, None, None).unwrap();
+    {
+        let repo = Repository::open(&work).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch(name, &commit, false).unwrap();
+    }
+    push_branch(
+        &work,
+        name,
+        "origin",
+        &format!("refs/heads/{name}"),
+        None,
+        None,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
+fn sync_repo_fresh_clone_matches_origin_head() {
+    let (origin, bare) = bare_origin("fresh");
+    let dest = temp_dir("sync-fresh-dest");
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::Cloned);
+    assert_eq!(head_hex, head_of_commit(&bare, "HEAD"));
+    // 工作树字节契约：clone 产物与源文件一致 + autocrlf 已钉死。
+    assert_eq!(read(&dest, "src/main.rs"), read(&origin, "src/main.rs"));
+    let repo = Repository::open(&dest).unwrap();
+    assert_eq!(repo.config().unwrap().get_bool("core.autocrlf"), Ok(false));
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_fresh_clone_declared_branch_checks_out() {
+    let (origin, bare) = bare_origin("freshdev");
+    push_named_branch(&bare, "dev", "freshdev");
+    let dest = temp_dir("sync-freshdev-dest");
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, Some("dev"), None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::Checkout);
+    assert_eq!(head_hex, head_of_commit(&bare, "refs/heads/dev"));
+    let repo = Repository::open(&dest).unwrap();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "dev");
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+/// scaffold 形态目录（board.project.create ensure_scaffold 预置档案在场）。
+fn scaffold_dir(name: &str) -> PathBuf {
+    let dest = temp_dir(name);
+    std::fs::create_dir_all(dest.join("docs/review")).unwrap();
+    std::fs::create_dir_all(dest.join("artifacts")).unwrap();
+    std::fs::create_dir_all(dest.join("records")).unwrap();
+    std::fs::write(
+        dest.join("project.json"),
+        b"{\"id\":1,\"name\":\"demo\",\"directory\":null}",
+    )
+    .unwrap();
+    std::fs::write(dest.join("timeline.jsonl"), b"").unwrap();
+    std::fs::write(dest.join(".gitignore"), crate::archive::GITIGNORE_CONTENT).unwrap();
+    dest
+}
+
+#[test]
+fn sync_repo_clones_into_scaffolded_dir_preserving_files() {
+    let (origin, bare) = bare_origin("scaffold");
+    // 目标目录已有 scaffold 档案（非空）——libgit2 clone 直接 clone 会拒绝，
+    // 必须走就地物化臂。
+    let dest = scaffold_dir("sync-scaffold-dest");
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::Cloned);
+    assert_eq!(head_hex, head_of_commit(&bare, "HEAD"));
+    // scaffold 档案逐字节保留（init/checkout 不触碰未跟踪内容）。
+    assert_eq!(
+        std::fs::read(dest.join("project.json")).unwrap(),
+        b"{\"id\":1,\"name\":\"demo\",\"directory\":null}"
+    );
+    assert_eq!(std::fs::read(dest.join("timeline.jsonl")).unwrap(), b"");
+    assert!(dest.join("docs/review").is_dir());
+    assert!(dest.join("artifacts").is_dir());
+    assert!(dest.join("records").is_dir());
+    // 仓库内容 + 字节契约 + 洁净态（scaffold .gitignore 恰好豁免投影件，
+    // artifacts/ 空目录对 git 不可见）。
+    assert_eq!(read(&dest, "src/main.rs"), read(&origin, "src/main.rs"));
+    let repo = Repository::open(&dest).unwrap();
+    assert_eq!(repo.config().unwrap().get_bool("core.autocrlf"), Ok(false));
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_scaffolded_dir_declared_branch_checks_out() {
+    let (origin, bare) = bare_origin("scaffolddev");
+    push_named_branch(&bare, "dev", "scaffolddev");
+    let dest = scaffold_dir("sync-scaffolddev-dest");
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, Some("dev"), None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::Checkout);
+    assert_eq!(head_hex, head_of_commit(&bare, "refs/heads/dev"));
+    let repo = Repository::open(&dest).unwrap();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "dev");
+    // scaffold 档案在场 + 仓库字节契约。
+    assert!(dest.join("project.json").is_file());
+    assert_eq!(read(&dest, "src/main.rs"), read(&origin, "src/main.rs"));
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_existing_repo_declared_branch_missing_materializes() {
+    let (origin, bare) = bare_origin("matdev");
+    let dest = temp_dir("sync-matdev-dest");
+    sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    // 远端后补 dev 分支；本地仓库再次 sync 声明分支 → 从 fetch 物化。
+    push_named_branch(&bare, "dev", "matdev");
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, Some("dev"), None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::Checkout);
+    assert_eq!(head_hex, head_of_commit(&bare, "refs/heads/dev"));
+    let repo = Repository::open(&dest).unwrap();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "dev");
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_up_to_date_is_noop_same_head() {
+    let (origin, bare) = bare_origin("uptodate");
+    let dest = temp_dir("sync-uptodate-dest");
+    sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    let before = head(&dest);
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::UpToDate);
+    assert_eq!(head_hex, before);
+    assert_eq!(head(&dest), before, "UpToDate 不得移动 HEAD");
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_fast_forward_advances_local_branch() {
+    let (origin, bare) = bare_origin("ff");
+    let dest = temp_dir("sync-ff-dest");
+    let before = sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None)
+        .unwrap()
+        .1;
+    let remote_hex = advance_bare(&bare, "ff", "src/remote.txt", "remote change\n");
+    let (outcome, head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::FastForward);
+    assert_eq!(head_hex, remote_hex);
+    assert_eq!(read(&dest, "src/remote.txt"), "remote change\n");
+    // 快进 = 线性推进：新 commit 单父 == 推进前 HEAD。
+    {
+        let repo = Repository::open(&dest).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_count(), 1);
+        assert_eq!(commit.parent(0).unwrap().id().to_string(), before);
+    }
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_diverged_creates_two_parent_merge_commit() {
+    let (origin, bare) = bare_origin("merged");
+    let dest = temp_dir("sync-merged-dest");
+    let _before = sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None)
+        .unwrap()
+        .1;
+    let remote_hex = advance_bare(&bare, "merged", "src/remote.txt", "remote change\n");
+    // 本地独立 commit → 与远端分叉。
+    write(&dest, "src/local.txt", "local change\n");
+    let local_hex = commit_worktree(&dest, "local change")
+        .unwrap()
+        .expect("local commit 必须产出");
+    let (outcome, _head_hex) =
+        sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::Merged);
+    // 双亲 merge commit：parent[0] = 本地头、parent[1] = 远端头。
+    {
+        let repo = Repository::open(&dest).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(
+            commit.parent_count(),
+            2,
+            "分叉同步必须产出双亲 merge commit"
+        );
+        assert_eq!(commit.parent(0).unwrap().id().to_string(), local_hex);
+        assert_eq!(commit.parent(1).unwrap().id().to_string(), remote_hex);
+    }
+    // 工作区同时含两侧改动（合并树已检出）。
+    assert_eq!(read(&dest, "src/local.txt"), "local change\n");
+    assert_eq!(read(&dest, "src/remote.txt"), "remote change\n");
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_conflict_lists_paths_without_moving_branch() {
+    let (origin, bare) = bare_origin("conflict");
+    let dest = temp_dir("sync-conflict-dest");
+    sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    let _ = advance_bare(
+        &bare,
+        "conflict",
+        "src/main.rs",
+        "fn main() { remote_edit(); }\n",
+    );
+    // 本地同文件同区域改动 → 三方合并冲突。
+    write(&dest, "src/main.rs", "fn main() { local_edit(); }\n");
+    commit_worktree(&dest, "local same-line edit")
+        .unwrap()
+        .expect("local commit");
+    let before = head(&dest);
+    let err = sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap_err();
+    assert!(err.contains("冲突"), "{err}");
+    assert!(err.contains("src/main.rs"), "错误必须列冲突路径: {err}");
+    // 冲突 = 停车走人：分支头停在本地 commit 不动、工作区干净（合并结果零落地）。
+    assert_eq!(head(&dest), before);
+    assert!(workdir_is_clean(&dest).unwrap());
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_dirty_workdir_rejected_with_sample() {
+    let (origin, bare) = bare_origin("dirty");
+    let dest = temp_dir("sync-dirty-dest");
+    sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    let before = head(&dest);
+    advance_bare(&bare, "dirty", "src/remote.txt", "remote change\n");
+    // 未跟踪脏文件 → 拒绝同步且错误携带样本。
+    write(&dest, "src/wip.txt", "human work in progress\n");
+    let err = sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap_err();
+    assert!(err.contains("脏"), "{err}");
+    assert!(err.contains("src/wip.txt"), "错误必须列脏项样本: {err}");
+    assert_eq!(head(&dest), before);
+    let _ = std::fs::remove_dir_all(&origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn sync_repo_swaps_stale_origin_to_declared_url() {
+    // 步骤 url 是单一意图表达：既有 origin 指向别处（形态切换/迁移）必须
+    // 改写后 fetch——回归锁（2026-11-04 repo_sync 沿用旧 origin 缺陷）。
+    let (origin_a, bare_a) = bare_origin("swap-a");
+    let (_origin_b, bare_b) = bare_origin("swap-b"); // 同 seed，历史兼容
+    let dest = temp_dir("sync-swap-dest");
+    sync_repo_remote(bare_a.to_str().unwrap(), &dest, None, None, None).unwrap();
+    let origin_before = {
+        let repo = Repository::open(&dest).unwrap();
+        repo.find_remote("origin")
+            .unwrap()
+            .url()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        origin_before.trim_end_matches('/'),
+        bare_a.to_str().unwrap(),
+        "夹具前置：origin 初始指向 A"
+    );
+
+    // B 推新 commit；A 也推一个兄弟 commit（用于验证 fetch 没打回 A）。
+    let remote_b = advance_bare(&bare_b, "swap", "src/remote.txt", "from B\n");
+    advance_bare(&bare_a, "swap", "src/other.txt", "from A\n");
+
+    // 以 B 的 url（带尾斜杠形态，顺带验证 trim 对账不误写）再同步。
+    let url_b = format!("{}/", bare_b.to_str().unwrap());
+    let (outcome, head_hex) = sync_repo_remote(&url_b, &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::FastForward, "B 的 commit 应快进进来");
+    assert_eq!(head_hex, remote_b, "HEAD 必须落在 B 的 commit 上");
+    assert_ne!(
+        head(&dest),
+        head_of_commit(&bare_a, "HEAD"),
+        "A 的兄弟 commit 不得混入（fetch 必须打 B）"
+    );
+    let origin_after = {
+        let repo = Repository::open(&dest).unwrap();
+        repo.find_remote("origin")
+            .unwrap()
+            .url()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        origin_after.trim_end_matches('/'),
+        bare_b.to_str().unwrap(),
+        "origin 必须已改写为步骤 url"
+    );
+
+    // 再跑一轮：url 一致（trim 后）= UpToDate 不空转。
+    let (outcome2, head2) =
+        sync_repo_remote(bare_b.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome2, SyncOutcome::UpToDate);
+    assert_eq!(head2, remote_b);
+
+    let _ = std::fs::remove_dir_all(&origin_a);
+    let _ = std::fs::remove_dir_all(&bare_a);
+    let _ = std::fs::remove_dir_all(&bare_b);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+// ---------------------------------------------------------------------------
+// Gerrit 发布支撑原语（2026-11-04 SC 套件批）：Change-Id 派生 + 交付树反查
+// + 单提交 atop（fast / 三方合并 / 冲突 / no-diff / 检出守卫 / 缺目标分支）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn derive_change_id_is_deterministic_and_gerrit_shaped() {
+    let a = derive_change_id("task-860ab6fa").unwrap();
+    let b = derive_change_id("task-860ab6fa").unwrap();
+    assert_eq!(a, b, "同种子必须派生同一 Change-Id（重试幂等锚点）");
+    assert!(a.starts_with('I'), "Change-Id 形态 = I<40hex>: {a}");
+    assert_eq!(a.len(), 41, "I + 40 hex: {a}");
+    assert!(a[1..].bytes().all(|b| b.is_ascii_hexdigit()));
+    let c = derive_change_id("task-other").unwrap();
+    assert_ne!(a, c, "不同种子不得碰撞");
+}
+
+#[test]
+fn tree_of_commit_hex_reports_tree_and_honest_errors() {
+    let root = seeded_repo("tree-of");
+    let commit_hex = head(&root);
+    let repo = Repository::open(&root).unwrap();
+    let want = repo
+        .find_commit(git2::Oid::from_str(&commit_hex).unwrap())
+        .unwrap()
+        .tree_id()
+        .to_string();
+    assert_eq!(tree_of_commit_hex(&root, &commit_hex).unwrap(), want);
+
+    // 「外来」commit：另一仓库、内容必不同（树不同 → oid 必不同，时间戳
+    // 撞秒也不受影响）→ 在本仓库缺席 = Err（发布面诚实契约）。
+    let foreign_root = seeded_repo("tree-of-foreign");
+    write(&foreign_root, "src/foreign.rs", "pub fn foreign() {}\n");
+    commit_worktree(&foreign_root, "foreign advance").unwrap();
+    let foreign = head(&foreign_root);
+    assert_ne!(foreign, commit_hex);
+    assert!(tree_of_commit_hex(&root, &foreign).is_err());
+    assert!(
+        tree_of_commit_hex(&root, "deadbeef").is_err(),
+        "非法 hash 形态 = Err"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&foreign_root);
+}
+
+/// Gerrit 单提交臂夹具：bare 远端 + 已同步副本 + 交付分支（改 src/main.rs
+/// → patch → 还原 → apply_patch_new_branch，档案管线交付捕获同款形态）。
+/// 返回 (origin, bare, dest, target_branch, base_tree, delivery_tree, delivery_branch)。
+#[allow(clippy::type_complexity)]
+fn gerrit_fixture(
+    tag: &str,
+    delivery_content: &str,
+) -> (PathBuf, PathBuf, PathBuf, String, String, String, String) {
+    let (origin, bare) = bare_origin(tag);
+    let dest = temp_dir(&format!("gerrit-{tag}-dest"));
+    sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    let target_branch = {
+        let repo = Repository::open(&dest).unwrap();
+        repo.head().unwrap().shorthand().unwrap().to_string()
+    };
+    // 基线树 = 远端目标头树（payload base_tree 缺席时的 fallback 解析形态）。
+    let target_head = head_of_commit(&dest, &format!("refs/remotes/origin/{target_branch}"));
+    let base_tree = tree_of_commit_hex(&dest, &target_head).unwrap();
+    // 交付：改已跟踪文件 → patch → 还原工作区 → 交付分支落 commit。
+    write(&dest, "src/main.rs", delivery_content);
+    let patch = workdir_patch(&dest);
+    assert!(!patch.is_empty(), "夹具交付改动必须可产 patch");
+    reset_worktree_to_head(&dest);
+    let delivery_branch = format!("nemesis/task-{tag}");
+    apply_patch_new_branch(
+        &dest,
+        &delivery_branch,
+        &patch,
+        &format!("NemesisBot task {tag}: 交付"),
+    )
+    .unwrap();
+    let delivery_tree = tree_of_commit_hex(&dest, &{
+        let repo = Repository::open(&dest).unwrap();
+        repo.find_branch(&delivery_branch, git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string()
+    })
+    .unwrap();
+    (
+        origin,
+        bare,
+        dest,
+        target_branch,
+        base_tree,
+        delivery_tree,
+        delivery_branch,
+    )
+}
+
+#[test]
+fn single_commit_atop_fast_form_single_parent_atop_target() {
+    let (_origin, _bare, dest, target, base_tree, delivery_tree, branch) =
+        gerrit_fixture("fast", "fn main() {\n    delivered();\n}\n");
+    let target_head = head_of_commit(&dest, &format!("refs/remotes/origin/{target}"));
+
+    let new_hex = single_commit_atop(
+        &dest,
+        &branch,
+        &target,
+        &base_tree,
+        &delivery_tree,
+        "fast form commit",
+    )
+    .unwrap();
+
+    let repo = Repository::open(&dest).unwrap();
+    let new_commit = repo
+        .find_commit(git2::Oid::from_str(&new_hex).unwrap())
+        .unwrap();
+    assert_eq!(
+        new_commit.parent_count(),
+        1,
+        "单提交形态 = 单亲（merge change 消除）"
+    );
+    assert_eq!(
+        new_commit.parent(0).unwrap().id().to_string(),
+        target_head,
+        "唯一父 = origin/{target} 头"
+    );
+    assert_eq!(
+        new_commit.tree_id().to_string(),
+        delivery_tree,
+        "fast 形态零合并：树 = 交付树"
+    );
+    assert_eq!(new_commit.message().unwrap(), "fast form commit");
+    // 分支 ref 已 force 落在新 commit；工作树仍在目标分支（检出守卫对面）。
+    let branch_head = repo
+        .find_branch(&branch, git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
+    assert_eq!(branch_head.id().to_string(), new_hex);
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), target);
+
+    // 重试（同 Change-Id 场景）：新消息 → 分支 ref force 前移到新 commit，
+    // 父与树不变——refs/for 推送即新 patchset。
+    let retry_hex = single_commit_atop(
+        &dest,
+        &branch,
+        &target,
+        &base_tree,
+        &delivery_tree,
+        "retry with same Change-Id",
+    )
+    .unwrap();
+    assert_ne!(retry_hex, new_hex, "重铸 = 新 commit（新 patchset）");
+    let retry = repo
+        .find_commit(git2::Oid::from_str(&retry_hex).unwrap())
+        .unwrap();
+    assert_eq!(retry.parent(0).unwrap().id().to_string(), target_head);
+    assert_eq!(retry.tree_id().to_string(), delivery_tree);
+    assert_eq!(retry.message().unwrap(), "retry with same Change-Id");
+
+    let _ = std::fs::remove_dir_all(&_origin);
+    let _ = std::fs::remove_dir_all(&_bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn single_commit_atop_merges_when_target_moved() {
+    let (_origin, bare, dest, target, base_tree, delivery_tree, branch) =
+        gerrit_fixture("merge", "fn main() {\n    delivered();\n}\n");
+    // 远端目标分支前进（新文件——与交付改动不同区域 → 可干净合并）。
+    advance_bare(&bare, "merge", "src/remote.txt", "remote change\n");
+    // 副本快进同步（本地未动 → FastForward；同时刷 refs/remotes/origin/*）。
+    let (outcome, _) = sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    assert_eq!(outcome, SyncOutcome::FastForward);
+    let new_target_head = head_of_commit(&dest, &format!("refs/remotes/origin/{target}"));
+
+    let new_hex = single_commit_atop(
+        &dest,
+        &branch,
+        &target,
+        &base_tree,
+        &delivery_tree,
+        "merge form commit",
+    )
+    .unwrap();
+
+    let repo = Repository::open(&dest).unwrap();
+    let new_commit = repo
+        .find_commit(git2::Oid::from_str(&new_hex).unwrap())
+        .unwrap();
+    assert_eq!(new_commit.parent_count(), 1, "合并形态仍是单亲");
+    assert_eq!(
+        new_commit.parent(0).unwrap().id().to_string(),
+        new_target_head,
+        "父 = 前进后的 origin/{target} 头"
+    );
+    let merged_tree = new_commit.tree_id().to_string();
+    assert_ne!(merged_tree, delivery_tree, "目标已移动 → 合并树 ≠ 交付树");
+    // 合并树同时含两侧内容（交付改 main + 远端加 remote）。
+    let main_entry = new_commit
+        .tree()
+        .unwrap()
+        .get_path(Path::new("src/main.rs"))
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(repo.find_blob(main_entry.id()).unwrap().content()).unwrap(),
+        "fn main() {\n    delivered();\n}\n"
+    );
+    let remote_entry = new_commit
+        .tree()
+        .unwrap()
+        .get_path(Path::new("src/remote.txt"))
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(repo.find_blob(remote_entry.id()).unwrap().content()).unwrap(),
+        "remote change\n"
+    );
+
+    let _ = std::fs::remove_dir_all(&_origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn single_commit_atop_conflict_is_honest_error_without_commit() {
+    let (_origin, bare, dest, target, base_tree, _delivery_tree, branch) =
+        gerrit_fixture("conflict", "fn main() {\n    local_edit();\n}\n");
+    // 远端同文件同区域改动 → 三方合并冲突。
+    advance_bare(
+        &bare,
+        "conflict",
+        "src/main.rs",
+        "fn main() { remote_edit(); }\n",
+    );
+    sync_repo_remote(bare.to_str().unwrap(), &dest, None, None, None).unwrap();
+    let branch_before = head_of_commit(&dest, &format!("refs/heads/{branch}"));
+
+    let err = single_commit_atop(
+        &dest,
+        &branch,
+        &target,
+        &base_tree,
+        &tree_of_commit_hex(&dest, &branch_before).unwrap(),
+        "m",
+    )
+    .unwrap_err();
+    assert!(err.contains("冲突"), "{err}");
+    // 冲突 = 停车走人：交付分支 ref 不动、未产提交。
+    assert_eq!(
+        head_of_commit(&dest, &format!("refs/heads/{branch}")),
+        branch_before
+    );
+
+    let _ = std::fs::remove_dir_all(&_origin);
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn single_commit_atop_no_diff_and_guards_are_honest_errors() {
+    let (_origin, _bare, dest, target, base_tree, _delivery_tree, _branch) =
+        gerrit_fixture("guards", "fn main() {\n    delivered();\n}\n");
+
+    // ① 无可发布差异：交付树 == 目标头树（目标已含交付）。
+    let target_tree = tree_of_commit_hex(
+        &dest,
+        &head_of_commit(&dest, &format!("refs/remotes/origin/{target}")),
+    )
+    .unwrap();
+    let err = single_commit_atop(
+        &dest,
+        "nemesis/task-z",
+        &target,
+        &base_tree,
+        &target_tree,
+        "m",
+    )
+    .unwrap_err();
+    assert!(err.contains("无可发布"), "{err}");
+
+    // ② 检出守卫：目标分支正被工作树检出（HEAD = target）。
+    let err =
+        single_commit_atop(&dest, &target, &target, &base_tree, &target_tree, "m").unwrap_err();
+    assert!(err.contains("检出"), "{err}");
+
+    // ③ 目标分支缺席：origin 上没有该分支（未同步过）。
+    let err = single_commit_atop(
+        &dest,
+        "nemesis/task-x",
+        "ghost-branch",
+        &base_tree,
+        &target_tree,
+        "m",
+    )
+    .unwrap_err();
+    assert!(err.contains("没有分支"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&_origin);
+    let _ = std::fs::remove_dir_all(&_bare);
+    let _ = std::fs::remove_dir_all(&dest);
 }
