@@ -374,6 +374,55 @@ fn execute_blocked_writes_audit_comment_and_notification() {
 }
 
 #[test]
+fn execute_aborts_when_estop_engaged_mid_draft() {
+    // EST-03 长跑复查回归锁（R528）：起草入口的 estop 检查到
+    // autonomous_execute 之间隔着分钟级评审 LLM——发起时未生效不代表
+    // 结束时仍未生效，执行入口必须复查。急停中策略闸全过的合法建议
+    // 也不得产生任何自治动作（宁可停不可闯）。
+    let (deps, _dir) = replan_deps("exec-estop-mid-draft");
+    let creator = Actor::admin("user-1");
+    let root = mk_issue(&deps.store, "根单", None, &creator);
+    let child = mk_issue(&deps.store, "在途子单", Some(root.id), &creator);
+    let children = vec![child.clone()];
+    let out = ReplanOutput {
+        actions: vec![action(ReplanOp::Cancel, &child.number)],
+        ..Default::default()
+    };
+    let cfg = nemesis_config::BoardReplanConfig {
+        allow_cancel_active: true,
+        ..Default::default()
+    };
+    deps.estop.trigger(); // 模拟起草期间挂起：入口检查已过、执行未开始
+    autonomous_execute(&deps, &root, &children, &out, 1, "capability_fail", &cfg)
+        .expect("estop 放弃执行是诚实闭环不是错误");
+
+    // 无任何自治动作：子单不动、无补派、无差异评论。
+    assert_eq!(
+        deps.store.get_issue(child.id).unwrap().status,
+        IssueStatus::Backlog,
+        "急停生效中子单状态不得变化"
+    );
+    assert_eq!(
+        deps.store.list_children(root.id).unwrap().len(),
+        1,
+        "急停生效中不得补派新子单"
+    );
+    let comments = deps.store.list_comments(root.id).unwrap();
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("重规划执行差异")),
+        "未执行不得落执行差异评论"
+    );
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.starts_with(BLOCKED_COMMENT_PREFIX)),
+        "estop 放弃不是策略闸拒绝，不得落 🛑 停车评论"
+    );
+}
+
+#[test]
 fn execute_cancels_modifies_adds_and_writes_diff() {
     let (deps, _dir) = replan_deps("exec-happy");
     let creator = Actor::admin("user-1");
