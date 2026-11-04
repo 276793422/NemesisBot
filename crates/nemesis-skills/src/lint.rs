@@ -626,9 +626,21 @@ impl SkillLinter {
                 );
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&abs) else {
-                warn!("lint: skipping non-UTF-8 surface file {}", rel.display());
-                continue;
+            // 非 UTF-8 形态必须字节读 + lossy 兜底扫描，不允许内容扫描面被
+            // 编码形态逃逸（记账/签名面都是字节读，恶意载荷藏一个无效字节
+            // 即可整体绕过扫描）。真正读不进（IO 错误）才跳过。
+            let content = match std::fs::read_to_string(&abs) {
+                Ok(c) => c,
+                Err(_) => match std::fs::read(&abs) {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    Err(e) => {
+                        warn!(
+                            "lint: skipping unreadable surface file {}: {e}",
+                            rel.display()
+                        );
+                        continue;
+                    }
+                },
             };
             let file = rel.to_string_lossy().replace('\\', "/");
             for mut w in self.lint(&content).warnings {
