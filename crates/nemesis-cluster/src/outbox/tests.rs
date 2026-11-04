@@ -571,10 +571,10 @@ fn request_pull_queues_when_records_exist() {
 }
 
 /// BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线 sidecar
-/// + `.assembling-*` 标记在场）时 request_pull 不得把无变更集的执行记录
-/// 抢先入队——幂等闸会吞掉随后带变更集的正常入队，master 空集宽容把改
-/// 动静默合并为「无变更」。诚实答 assembling 观望；装配完成（标记清除、
-/// exec 清扫）后恢复 queued。
+/// 与 `.assembling-*` 标记都在场）时 request_pull 不得把无变更集的执行
+/// 记录抢先入队——幂等闸会吞掉随后带变更集的正常入队，master 空集宽容
+/// 把改动静默合并为「无变更」。诚实答 assembling 观望；装配完成（标记
+/// 清除、exec 清扫）后恢复 queued。
 #[test]
 fn request_pull_defers_while_assembling() {
     let ws = temp_ws("pull_assembling");
