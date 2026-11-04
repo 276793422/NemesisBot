@@ -11,6 +11,8 @@
 //! - 5891-6041 build_messages_with_memory_annotated（摘要 cache + memory 注入
 //!   合并 system-reminder）。
 //! - 6686-6775 emit_observer_events_around_llm（None / Some(manager)）。
+//! - emit_observer_events_records_request_messages_and_honest_failures
+//!   （2026-11-04 记录面三缺陷回归锁：请求事件带消息 + 失败如实标注）。
 //! - 5087-5117 precompute_parallel_batch（Valid/Fixed/Invalid 三臂）。
 //! - 1260-1262 check_mcp_reload 的 mcp_manager=None 早退。
 //! - 2810 maybe_update_summary 的超阈值推进（长历史 + mock 摘要）。
@@ -347,25 +349,140 @@ async fn build_messages_with_memory_annotation_merges_sections() {
 async fn emit_observer_events_wraps_llm_call_both_ways() {
     // None manager：直接透传调用结果。（工厂闭包形态：空输出重试机制引入后
     // emit 助手收 Fn 闭包而非 future；升档重试引入后闭包带 max_tokens 入参。）
-    let out =
-        emit_observer_events_around_llm(None, "s9label", "m", |_max| async { Ok(resp("raw ok")) })
-            .await;
+    let out = emit_observer_events_around_llm(None, "s9label", "m", &[], |_max| async {
+        Ok(resp("raw ok"))
+    })
+    .await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "raw ok"));
 
     // Some(manager)：发 ConversationStart/End + LlmRequest/Response 事件。
     let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
-    let out = emit_observer_events_around_llm(Some(&mgr), "s9label2", "m", |_max| async {
+    let out = emit_observer_events_around_llm(Some(&mgr), "s9label2", "m", &[], |_max| async {
         Ok(resp("observed ok"))
     })
     .await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "observed ok"));
 
     // Err 路径同样透传（重试一次后仍失败 → 原样上抛；非空输出形态不升档）。
-    let out = emit_observer_events_around_llm(Some(&mgr), "s9label3", "m", |_max| async {
+    let out = emit_observer_events_around_llm(Some(&mgr), "s9label3", "m", &[], |_max| async {
         Err::<LlmResponse, _>("llm exploded".to_string())
     })
     .await;
     assert!(matches!(out, Some(Err(e)) if e.contains("exploded")));
+}
+
+/// 记录面三缺陷回归锁（2026-11-04，docs/BUG 同名文档）：LlmRequest 事件
+/// 必须携带真实请求消息（此前硬编码 `vec![]`，aux_ 日志请求侧永远空壳，
+/// 查不到「摘了什么」）；失败时 LlmResponse 事件必须如实携带 Error 文本与
+/// finish_reason=error（此前硬编码 stop 伪装成功、Err 文本丢弃，失败现场
+/// 不可追）。
+struct EventCaptureObserver {
+    events: std::sync::Mutex<Vec<nemesis_observer::ConversationEvent>>,
+}
+
+#[async_trait]
+impl nemesis_observer::Observer for EventCaptureObserver {
+    fn name(&self) -> &str {
+        "event-capture"
+    }
+    async fn on_event(&self, event: nemesis_observer::ConversationEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+#[tokio::test]
+async fn emit_observer_events_records_request_messages_and_honest_failures() {
+    let messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content: "被压缩的历史 + 摘要指令".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    }];
+
+    let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
+    let capture = std::sync::Arc::new(EventCaptureObserver {
+        events: std::sync::Mutex::new(Vec::new()),
+    });
+    assert!(
+        mgr.try_register(capture.clone()),
+        "observer 注册必须成功（try_write 快路，此处无竞争）"
+    );
+
+    // Ok 路径透传（内容非空是 attempt() 归一的硬保证，此处直接成功）。
+    let out =
+        emit_observer_events_around_llm(Some(&mgr), "s9record-ok", "m", &messages, |_max| async {
+            Ok(resp("summary text"))
+        })
+        .await;
+    assert!(matches!(out, Some(Ok(r)) if r.content == "summary text"));
+
+    // 失败路径透传。
+    let out =
+        emit_observer_events_around_llm(Some(&mgr), "s9record-err", "m", &messages, |_max| async {
+            Err::<LlmResponse, _>("upstream boom".to_string())
+        })
+        .await;
+    assert!(matches!(out, Some(Err(e)) if e.contains("upstream boom")));
+
+    // Manager::emit 对每个 observer tokio::spawn 异步投递（fire-and-forget）
+    // ——让出调度若干轮等 spawned 任务排空再断言。
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+
+    let events = capture.events.lock().unwrap();
+    let requests: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == nemesis_observer::EventType::LlmRequest)
+        .collect();
+    assert_eq!(requests.len(), 2, "两次调用各一条 LlmRequest");
+    for e in &requests {
+        let nemesis_observer::EventData::LlmRequest(d) = &e.data else {
+            panic!("事件类型与 data 不匹配");
+        };
+        assert_eq!(d.messages_count, 1, "请求事件必须记录真实消息数");
+        assert_eq!(d.messages.len(), 1, "请求事件必须携带消息内容");
+        assert!(
+            d.messages[0]
+                .get("content")
+                .and_then(|v| v.as_str())
+                .is_some_and(|c| c.contains("被压缩的历史")),
+            "消息内容应可回查: {:?}",
+            d.messages[0]
+        );
+    }
+
+    let responses: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == nemesis_observer::EventType::LlmResponse)
+        .collect();
+    assert_eq!(responses.len(), 2, "两次调用各一条 LlmResponse");
+    let ok_resp = responses
+        .iter()
+        .find(|e| {
+            matches!(&e.data, nemesis_observer::EventData::LlmResponse(d) if d.finish_reason.as_deref() == Some("stop"))
+        })
+        .expect("Ok 调用 finish=stop");
+    let nemesis_observer::EventData::LlmResponse(ok_d) = &ok_resp.data else {
+        unreachable!()
+    };
+    assert_eq!(ok_d.content, "summary text");
+    let err_resp = responses
+        .iter()
+        .find(|e| {
+            matches!(&e.data, nemesis_observer::EventData::LlmResponse(d) if d.finish_reason.as_deref() == Some("error"))
+        })
+        .expect("失败调用必须如实标 finish=error（此前硬编码 stop）");
+    let nemesis_observer::EventData::LlmResponse(err_d) = &err_resp.data else {
+        unreachable!()
+    };
+    assert!(
+        err_d.content.starts_with("Error:") && err_d.content.contains("upstream boom"),
+        "失败响应必须携带 Err 文本: {}",
+        err_d.content
+    );
 }
 
 /// 升档重试（2026-11-03 空摘要根因兜底）回归锁：默认预算空输出两连
@@ -375,7 +492,7 @@ async fn emit_observer_events_wraps_llm_call_both_ways() {
 async fn emit_observer_events_escalates_budget_after_double_empty() {
     let budgets = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
     let seen = budgets.clone();
-    let out = emit_observer_events_around_llm(None, "s9escalate", "m", move |max_tokens| {
+    let out = emit_observer_events_around_llm(None, "s9escalate", "m", &[], move |max_tokens| {
         let seen = seen.clone();
         async move {
             seen.lock().unwrap().push(max_tokens);
@@ -1471,9 +1588,14 @@ async fn summarize_bare_concat_owned_error_arm() {
 async fn maybe_update_summary_compaction_stuck_marks_paused() {
     let (_guard, buf) = capture_logs_to_buf();
     let instance = AgentInstance::new(test_config());
+    // 2026-11-05 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
+    // ≤125 字符）——超限轮整段被闸门判「无事可做」，烧不到失败计数；stuck
+    // 闩的真失败形态 = 有效尺寸轮 + LLM 失败（ErrProvider）。同时总 tail
+    // 须超 keep_recent 预算（默认 20000）：600 轮 × 40 tok = 24000，边界
+    // 才会推进（new_c > c），触发侧记账块才可达。
     let mut hist = vec![turn("system", "sys prompt")];
-    let body = "y".repeat(1500);
-    for i in 0..300 {
+    let body = "y".repeat(100);
+    for i in 0..600 {
         hist.push(turn(if i % 2 == 0 { "user" } else { "assistant" }, &body));
     }
     instance.set_history(hist);

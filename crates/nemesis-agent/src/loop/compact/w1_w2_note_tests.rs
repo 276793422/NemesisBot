@@ -373,9 +373,12 @@ async fn stuck_pause_emits_one_shot_chat_note() {
     agent_loop.set_config_path(cfg_path.clone());
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // 阈值 75
+    // 2026-11-05 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
+    // ≤125 字符；125+前缀会超限整段被判「无事可做」烧不到计数）。stuck
+    // 场景走真失败形态 = 有效尺寸轮 + provider 恒回空正文。
     for i in 0..6 {
-        instance.add_user_message(&format!("user {i} {}", "x".repeat(125)));
-        instance.add_assistant_message(&format!("reply {i} {}", "x".repeat(125)), Vec::new(), None);
+        instance.add_user_message(&format!("user {i} {}", "x".repeat(95)));
+        instance.add_assistant_message(&format!("reply {i} {}", "x".repeat(95)), Vec::new(), None);
     }
 
     // 三轮：round1 记账 last；round2/round3 失效轴连续计数到
