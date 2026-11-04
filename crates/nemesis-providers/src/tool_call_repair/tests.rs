@@ -147,6 +147,10 @@ fn test_json_with_function_wrapper() {
     let calls = repair_tool_calls(content);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].function.as_ref().unwrap().name, "write_file");
+    // BUG-20261105-006：嵌套形态 arguments 必须恢复（曾静默丢成 "{}"）。
+    let args: serde_json::Value =
+        serde_json::from_str(&calls[0].function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["path"], "x");
 }
 
 #[test]
@@ -319,4 +323,68 @@ fn test_xml_invoke_phantom_name_filtered() {
     let tools = whitelist_defs(&["read_file"]);
     let calls = repair_tool_calls_in_whitelist(content, &tools);
     assert!(calls.is_empty());
+}
+
+// ---- BUG-20261105-006：嵌套 function.arguments 丢失 ----
+// 不变量：json_value_to_call 的 arguments 与 name 同构双源（顶层优先，
+// function.arguments 回落）——嵌套 OpenAI wire 形态恢复出的调用必须带
+// 完整参数，不得静默丢成 "{}"（那是对白名单内调用的主动误修复）。
+
+#[test]
+fn test_nested_function_string_arguments_recovered() {
+    // OpenAI wire 教科书形态：function.arguments 是 JSON 编码字符串。
+    let content =
+        r#"[{"type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"ls -la\"}"}}]"#;
+    let calls = repair_tool_calls(content);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.as_ref().unwrap().name, "exec");
+    let args: serde_json::Value =
+        serde_json::from_str(&calls[0].function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["cmd"], "ls -la");
+}
+
+#[test]
+fn test_nested_object_arguments_serialized() {
+    // 非严格 wire 形态：function.arguments 直接是对象 → 序列化保留。
+    let content = r#"{"function":{"name":"grep","arguments":{"pattern":"TODO"}}}"#;
+    let calls = repair_tool_calls(content);
+    assert_eq!(calls.len(), 1);
+    let args: serde_json::Value =
+        serde_json::from_str(&calls[0].function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["pattern"], "TODO");
+}
+
+#[test]
+fn test_top_level_arguments_win_over_function() {
+    // 双源同现：顶层优先（既有语义钉死，回落只补缺不抢位）。
+    let content = r#"[{"name":"exec","arguments":"{\"cmd\":\"top\"}","function":{"name":"exec","arguments":"{\"cmd\":\"nested\"}"}}]"#;
+    let calls = repair_tool_calls(content);
+    assert_eq!(calls.len(), 1);
+    let args: serde_json::Value =
+        serde_json::from_str(&calls[0].function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["cmd"], "top");
+}
+
+#[test]
+fn test_nested_missing_arguments_defaults_empty() {
+    // 嵌套形态且无 arguments（任何一层）→ 仍缺省 "{}"。
+    let content = r#"[{"function":{"name":"noop"}}]"#;
+    let calls = repair_tool_calls(content);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.as_ref().unwrap().arguments, "{}");
+}
+
+#[test]
+fn test_nested_whitelist_end_to_end() {
+    // 白名单路径端到端：CLI lane 工具提示词教的正是这种形态——模型照抄
+    // 成裸数组发射时，恢复出的调用必须带参数，而非白名单过的空参调用。
+    let content = r#"I'll run it:
+        [{"type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"git status\"}"}}]"#;
+    let tools = whitelist_defs(&["exec", "read_file"]);
+    let calls = repair_tool_calls_in_whitelist(content, &tools);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.as_ref().unwrap().name, "exec");
+    let args: serde_json::Value =
+        serde_json::from_str(&calls[0].function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["cmd"], "git status");
 }
