@@ -1691,6 +1691,47 @@ mod r10_main {
         );
     }
 
+    /// BUG-20261104-388 回归锁：executor env + CLI args = CLI 嵌套形态
+    /// （executor 子进程内工具再 spawn `nemesisbot <sub>` 继承污染 env），
+    /// 不得劫持进角色 worker——`--help` 必须正常走 clap 输出（rc=0 +
+    /// stdout 非空）。修复前：只认 env → 短路进 exec_worker → stdio EOF
+    /// 立退 → stdout 空（help 从未输出，子命令从未执行）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[test]
+    fn r10_executor_role_env_with_cli_args_not_hijacked() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let bin = r10_bin();
+        let ws = tempfile::TempDir::new().unwrap();
+        let o = r10_spawn_env(
+            &bin,
+            &["--help"],
+            &[
+                ("NEMESISBOT_ROLE", "executor"),
+                (
+                    "NEMESISBOT_EXECUTOR_WORKSPACE",
+                    ws.path().to_str().expect("utf8 tmp path"),
+                ),
+            ],
+            &[
+                "NEMESISBOT_HOME",
+                "NEMESISBOT_EXECUTOR_SANDBOX",
+                "NEMESISBOT_EXECUTOR_REEXEC",
+                "NEMESISBOT_EXECUTOR_PIPE",
+            ],
+            120,
+        );
+        assert_eq!(
+            o.code, 0,
+            "带子命令 + executor env 必须走正常 CLI（不短路）:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(
+            !o.stdout.trim().is_empty(),
+            "clap help 必须真实输出（修复前形态：stdout 空 = 被劫持进 executor 等协议输入）\n--- stderr ---\n{}",
+            o.stderr
+        );
+    }
+
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_gateway_flag_pushes_invalid_config_clean_err() {

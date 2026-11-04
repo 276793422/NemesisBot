@@ -21,6 +21,32 @@ fn agent_pipe_name_format_pinned_against_ini_openpipepath() {
     assert!(agent_pipe_name("w1", "x").starts_with(r"\\.\pipe\NemesisAgent_w1_"));
 }
 
+/// BUG-20261104-387：agent_id 段消毒形态钉——管道名必须落进 ini 侧
+/// `OpenPipePath` 白名单 glob（`\Device\NamedPipe\NemesisAgent_<sanitized>_*`）。
+/// 字面量组与 nemesis-sandbox `ini/tests.rs` 的 sanitize 测试同源互钉
+/// （两 crate 互不依赖，同组字面量是漂移防线）。修复前手工 id 含点/斜杠/
+/// 空格时管道名用原始字符、ini pattern 是消毒后形态 → glob 不匹配 →
+/// Sandboxie 拒绝盒内 connect → 常驻执行体 spawn 硬故障。
+#[test]
+fn agent_pipe_name_sanitized_matches_ini_openpipepath_shape() {
+    // 与 sandbox ini/tests.rs::agent_box_name_prefix_and_sanitization 同字面量：
+    assert_eq!(
+        agent_pipe_name("a/b\\c d", "1_0"),
+        r"\\.\pipe\NemesisAgent_a_b_c_d_1_0"
+    );
+    assert_eq!(agent_pipe_name("x:y", "u"), r"\\.\pipe\NemesisAgent_x_y_u");
+    // 点号（uuid simple hex 不含、手工 id 常见）此前直接逃出白名单 glob。
+    assert_eq!(
+        agent_pipe_name("agent.1", "u"),
+        r"\\.\pipe\NemesisAgent_agent_1_u"
+    );
+    // 合法字符（uuid simple hex 形态）逐字节不变——生产 id 形态零变化。
+    assert_eq!(
+        agent_pipe_name("deadbeef01", "7_2"),
+        r"\\.\pipe\NemesisAgent_deadbeef01_7_2"
+    );
+}
+
 #[test]
 fn unique_pipe_id_increments_and_contains_pid() {
     let a = unique_pipe_id();

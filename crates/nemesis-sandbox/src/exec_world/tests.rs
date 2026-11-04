@@ -145,6 +145,42 @@ fn sanitize_env_strips_executor_internals_and_applies_overrides() {
     assert_eq!(out.get("MY_FLAG").map(String::as_str), Some("1"));
 }
 
+/// BUG-20261104-388：运输层 env 表完整性——全部 12 个 spawn 侧注入的
+/// executor/eval 角色标记键必须在表内（漏键 = workflow 直 spawn 车道成为
+/// CLI 嵌套劫持的传播面）。表键逐字面量钉死：新增运输层 env 不入表这条
+/// 测试红出来兜底；`NEMESISBOT_HOME` 等用户配置语义键**必须不在**表内
+/// （剥掉会改变脚本里 CLI 的 home 解析行为，与用户 shell 分叉）。
+#[test]
+fn executor_internal_env_table_is_complete() {
+    use super::EXECUTOR_INTERNAL_ENV;
+    for key in [
+        "NEMESISBOT_ROLE",
+        "NEMESISBOT_EXECUTOR_WORKSPACE",
+        "NEMESISBOT_EXECUTOR_PIPE",
+        "NEMESISBOT_EXECUTOR_SANDBOX",
+        "NEMESISBOT_EXECUTOR_HOME",
+        "NEMESISBOT_EXECUTOR_RESTRICT",
+        "NEMESISBOT_EXECUTOR_REEXEC",
+        "NEMESISBOT_EXECUTOR_EXTRA_ROOTS",
+        "NEMESISBOT_EXECUTOR_AGENT_ID",
+        "NEMESISBOT_LEASE",
+        "NEMESISBOT_SANDBOX_BACKEND",
+        "NEMESISBOT_CONSOLE",
+    ] {
+        assert!(
+            EXECUTOR_INTERNAL_ENV.contains(&key),
+            "运输层 env {key} 缺席 EXECUTOR_INTERNAL_ENV——直 spawn 车道剥不掉它"
+        );
+    }
+    // 非运输层键不得误剥。
+    for keep in ["NEMESISBOT_HOME", "PATH", "NEMESISBOT_BARE_CHILD"] {
+        assert!(
+            !EXECUTOR_INTERNAL_ENV.contains(&keep),
+            "{keep} 是用户配置/网关自身语义，不属于运输层剥除面"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // guarded_direct_spawn（真子进程；平台无关的 echo/exit）
 // ---------------------------------------------------------------------------

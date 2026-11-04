@@ -82,6 +82,27 @@ fn agent_pipe_nt_pattern_literal_pin() {
     );
 }
 
+/// BUG-20261104-387 互钉面：pattern 的消毒形态与 nemesis-agent 侧
+/// `agent_pipe_name` 的消毒实现用同一字面量组钉死（那边测试在
+/// executor_pipe/tests.rs::agent_pipe_name_sanitized_matches_ini_openpipepath_
+/// shape）。任意一侧消毒规则漂移（一侧消毒一侧原始）即两侧字面量断言脱钩，
+/// 盒内 connect 被拒的形态在测试层暴露而不是生产 spawn 硬故障。
+#[test]
+fn agent_pipe_nt_pattern_sanitized_literal_pin() {
+    assert_eq!(
+        agent_pipe_nt_pattern("a/b\\c d"),
+        r"\Device\NamedPipe\NemesisAgent_a_b_c_d_*"
+    );
+    assert_eq!(
+        agent_pipe_nt_pattern("x:y"),
+        r"\Device\NamedPipe\NemesisAgent_x_y_*"
+    );
+    assert_eq!(
+        agent_pipe_nt_pattern("agent.1"),
+        r"\Device\NamedPipe\NemesisAgent_agent_1_*"
+    );
+}
+
 /// `agent_box_name`：前缀钉死 + 非法字符消毒（对手工 id 的防御；生产 id 是
 /// uuid simple hex，本就不含非法字符）。
 #[test]
