@@ -15,7 +15,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::types::CollectedExperience;
 
-/// An experience store that persists to JSONL with date-based organization.
+/// An experience store persisting to the flat `experiences.jsonl` file.
+/// `cleanup` additionally sweeps legacy per-month `YYYYMM/YYYYMMDD.jsonl`
+/// subdirectories left by the pre-F-D1 date-based layout.
 pub struct ExperienceStore {
     base_dir: PathBuf,
 }
@@ -23,7 +25,7 @@ pub struct ExperienceStore {
 impl ExperienceStore {
     /// Create a new experience store rooted at the given directory.
     ///
-    /// Files are organized as: `{base_dir}/YYYYMM/YYYYMMDD.jsonl`
+    /// Records live in the flat file `{base_dir}/experiences.jsonl`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: path.into(),

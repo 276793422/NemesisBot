@@ -26,6 +26,8 @@ fn sample_call(args: &str) -> HookToolCall {
         channel: "web".to_string(),
         chat_id: "web:s1".to_string(),
         session_key: "web:s1:main".to_string(),
+        dispatch_started: None,
+        call_id: None,
     }
 }
 

@@ -40,20 +40,33 @@ struct ConnectorReceiptCtx {
     args_digest: String,
 }
 
-/// 压测①a（2026-09-30 三设备）：dispatch 层 detached 工具闸。供给层
-/// （`effective_tool_defs`）只决定工具 defs 可见性——上游端点注入工具调用
-/// 时（NB-54 实证：请求 0 tools、响应却带 2 个 tool call），模型照样带出
-/// 供给面之外的调用并真实执行（exec 越白名单同证）。本闸在派发现场读
-/// instance 的 detached 旗标权威裁决：no_tools 拒绝一切工具调用；
-/// allowed_tools 拒白名单外。非 detached 实例两旗标恒空 = 恒 `None`
-/// （主链路零行为变化）。拒绝文案回灌当工具结果，模型可改答纯文本。
-pub(crate) fn detached_tool_refusal(instance: &AgentInstance, tool: &str) -> Option<String> {
-    if instance.detached_no_tools() {
+// 修2（2026-11-04 审批阻塞链）：环境约束注册点——每条「环境约束」一处声明，
+// 同时产出两条产品：
+//   ① 派发预拒 environment_constraint_refusal（值形态
+//      environment_constraint_refusal_for）——安全段之前、审批之前权威
+//      拒绝（环境性拒绝不弹审批卡、不进风险管线），串行/并行两路同调；
+//   ② 供给面过滤 filter_defs_by_environment_constraints——defs 可见性
+//      （effective_tool_defs 消费，模型看不见约束外工具）。
+//
+// 新约束唯一落点：在两个注册函数各加一臂（拒绝文案就地声明，禁止在调用方
+// inline 复制——并行路径曾因此与串行文案劈叉）。现有两条 = detached
+// （no_tools / allowed_tools 白名单，压测①a 2026-09-30）与 profession
+// fence（任务装配白名单，B2 2026-10-14）。BUG-E 的第三条历史约束
+// 「项目模式×background」已随 D7 解锁移除——2026-11-03 起项目 loop 后台
+// spawn 与主 spawn 同源，无需注册。
+
+/// detached 臂值形态（文案单一真相源；instance 包装与并行预检都消费它）。
+pub(crate) fn detached_tool_refusal_for(
+    no_tools: bool,
+    allowed_tools: Option<&[String]>,
+    tool: &str,
+) -> Option<String> {
+    if no_tools {
         return Some(format!(
             "Error: tool '{tool}' is refused — this run was started with tools disabled. Produce your final answer as plain text now. Do NOT call tools again."
         ));
     }
-    if let Some(allowed) = instance.detached_allowed_tools()
+    if let Some(allowed) = allowed_tools
         && !allowed.is_empty()
         && !allowed.iter().any(|a| a == tool)
     {
@@ -104,20 +117,63 @@ Do NOT retry this tool.",
     ))
 }
 
-/// B2：派发闸 instance 包装——读任务装配写入的围栏白名单
-/// （[`AgentConfig::tools`]，非空 = 围栏生效）与职能标注（文案用）。
-/// loop 级 config 的 `tools` 恒空 → 主 loop / 普通对话 / 项目 loop 恒
-/// `None`，零行为变化。
-pub(crate) fn profession_fence_refusal(instance: &AgentInstance, tool: &str) -> Option<String> {
-    let allowed = &instance.config().tools;
-    if allowed.is_empty() {
-        return None;
-    }
-    profession_fence_refusal_for(
+/// 修2 注册点·派发预拒（值形态）——并行预检消费（precompute 无 instance，
+/// 调用方已把 instance 的约束值预取成参数）。链序 = detached → fence；
+/// 空围栏 = fence 臂短路 `None`（与 fence 语义一致：非空才裁决）。
+pub(crate) fn environment_constraint_refusal_for(
+    no_tools: bool,
+    allowed_tools: Option<&[String]>,
+    fence_profession: Option<&str>,
+    fence_tools: &[String],
+    tool: &str,
+) -> Option<String> {
+    detached_tool_refusal_for(no_tools, allowed_tools, tool).or_else(|| {
+        if fence_tools.is_empty() {
+            return None;
+        }
+        profession_fence_refusal_for(fence_profession, fence_tools, tool)
+    })
+}
+
+/// 修2 注册点·派发预拒（instance 包装）——串行派发路径消费，读全部
+/// instance 环境约束（detached 旗标 + 围栏白名单/职能标注）一锤裁决。
+pub(crate) fn environment_constraint_refusal(
+    instance: &AgentInstance,
+    tool: &str,
+) -> Option<String> {
+    environment_constraint_refusal_for(
+        instance.detached_no_tools(),
+        instance.detached_allowed_tools().as_deref(),
         instance.config().tool_fence_profession.as_deref(),
-        allowed,
+        &instance.config().tools,
         tool,
     )
+}
+
+/// 修2 注册点·供给面过滤——`effective_tool_defs` 消费。约束外工具从 defs
+/// 滤除（比描述注记强：模型根本看不见）。与派发预拒同源声明（见模块顶部
+/// 注册点文档）：供给闸只管可见性，上游端点注入的调用由派发闸现场裁决。
+/// `fence_tools` 非空时豁免工具（[`FENCE_EXEMPT_TOOLS`]）保留可见。
+pub(crate) fn filter_defs_by_environment_constraints(
+    mut defs: Vec<crate::types::ToolDefinition>,
+    no_tools: bool,
+    allowed_tools: Option<&[String]>,
+    fence_tools: &[String],
+) -> Vec<crate::types::ToolDefinition> {
+    if no_tools {
+        return Vec::new();
+    }
+    if let Some(allowed) = allowed_tools
+        && !allowed.is_empty()
+    {
+        defs.retain(|d| allowed.contains(&d.function.name));
+    }
+    if !fence_tools.is_empty() {
+        defs.retain(|d| {
+            fence_tools.contains(&d.function.name) || fence_exempt_tool(&d.function.name)
+        });
+    }
+    defs
 }
 
 impl AgentLoop {
@@ -255,8 +311,26 @@ impl AgentLoop {
         context: &RequestContext,
         depth: usize,
     ) -> String {
+        self.handle_tool_call_at_depth_batched(tool_call, context, depth, None)
+            .await
+    }
+
+    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：带批号的调度变体。
+    /// `batch_id` = 并行批共享批号（`tool_defs` 批调度生成 `batch-{uuid}`），
+    /// 随 `ToolInvocation.metadata["approval_batch_id"]` 进安全管线 →
+    /// `ApprovalContext.batch_id` → 审批卡 entry，前端按批聚卡（一张卡
+    /// 列 N 项 + 全部允许/全部拒绝）。`None` = 无批上下文（串行路径），
+    /// 卡片照旧单张渲染。包装语义（checks 记账）与
+    /// [`Self::handle_tool_call_at_depth`] 完全一致；既有调用点零改动。
+    pub async fn handle_tool_call_at_depth_batched(
+        &self,
+        tool_call: &ToolCallInfo,
+        context: &RequestContext,
+        depth: usize,
+        batch_id: Option<&str>,
+    ) -> String {
         let result = self
-            .handle_tool_call_at_depth_impl(tool_call, context, depth)
+            .handle_tool_call_at_depth_impl(tool_call, context, depth, batch_id)
             .await;
         checks_capture::record_check(
             &self.checks_capture,
@@ -274,7 +348,14 @@ impl AgentLoop {
         tool_call: &ToolCallInfo,
         context: &RequestContext,
         depth: usize,
+        batch_id: Option<&str>,
     ) -> String {
+        // 修1（BUG-B 2026-11-04）：dispatch 入口打点。around-hook 链在安全段
+        // （审批/提问等待，可达数分钟）之后才构建，钩子自身计时会把等待漏在
+        // 时长外（UI 0ms vs 守卫重放 215s 的双源矛盾即此）。该时刻随
+        // HookToolCall 传入，ToolFinished duration 从这里起算；看门狗语义
+        // 不变（仍只包执行链，不杀人工审批）。
+        let dispatch_started = std::time::Instant::now();
         info!(
             "[AgentLoop] Executing tool: {} (id={})",
             tool_call.name, tool_call.id
@@ -354,7 +435,15 @@ impl AgentLoop {
             };
             // Box::pin：async fn 递归的尺寸不定点（内层名已保证 != mcp_call，
             // 实际递归深度恒 1，装箱只是给编译器的有限尺寸凭据）。
-            return Box::pin(self.handle_tool_call_at_depth(&inner_call, context, depth)).await;
+            // 批号随行（BUG-A 第三层）：mcp_call 解包后的内层调用属于同一
+            // 并行批，批审批聚合必须覆盖它——递归走 batched 变体同批号。
+            return Box::pin(self.handle_tool_call_at_depth_batched(
+                &inner_call,
+                context,
+                depth,
+                batch_id,
+            ))
+            .await;
         }
 
         // L10-建设（改进项三期 2026-11-02）：tools_schema_get dispatch 拦截
@@ -716,12 +805,49 @@ impl AgentLoop {
                             // 审批路径——原始 args 透传）。
                             tool_args: serde_json::from_str(&tool_call.arguments)
                                 .unwrap_or(serde_json::Value::Null),
+                            // 并行批审批聚合（BUG-A 第三层）：批撞限卡同批号
+                            // ——并行批内的超限升级也是批的一部分，聚合卡
+                            // 一次裁决全批（含它）。空串 = 串行路径单卡。
+                            batch_id: batch_id.unwrap_or_default().to_string(),
                         };
-                        match security.auditor().request_limit_approval(
-                            &tool_call.name,
-                            &over.denial_message(),
-                            Some(&approval_ctx),
-                        ) {
+                        // 修5（BUG-A 2026-11-04）同构面：limits 超限审批同是
+                        // 同步 ask（auditor 内阻塞等人工裁决/审批超时）——并行
+                        // 批撞限同样占死 tokio worker。spawn_blocking 出线程，
+                        // 与 execute_tracked / question 工具先例同形。
+                        let limit_auditor = security.auditor();
+                        let limit_tool = tool_call.name.clone();
+                        let limit_msg = over.denial_message();
+                        let limit_ctx = approval_ctx.clone();
+                        // 修②（BUG-C 2026-11-04）：急停中断臂——select 包住
+                        // spawn_blocking 等待，estop 翻真即放弃在飞裁决（返回
+                        // estop 文案而非合成 Err：后者会落进下方 NO APPROVAL
+                        // CHANNEL 分支打出误导文案）。丢弃 JoinHandle 不取消
+                        // 阻塞线程——审批卡已被 estop watcher 取消（gateway
+                        // 装配点 resolve_orphans / cancel_pending_all），asker
+                        // 线程随即解除阻塞，迟到的裁决被丢弃，无资源残留。
+                        let mut estop_rx = self.security.subscribe();
+                        let limit_verdict = tokio::select! {
+                            verdict = tokio::task::spawn_blocking(move || {
+                                limit_auditor.request_limit_approval(
+                                    &limit_tool,
+                                    &limit_msg,
+                                    Some(&limit_ctx),
+                                )
+                            }) => verdict
+                                .unwrap_or_else(|e| {
+                                    // JoinError = 运行时关闭中任务被弃——fail-closed，
+                                    // 与「无审批通道」同语义。
+                                    Err(format!("security check aborted: {e}"))
+                                }),
+                            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                                warn!(
+                                    "[AgentLoop] E-stop interrupted limits approval wait for {}.",
+                                    tool_call.name
+                                );
+                                return "⛔ ESTOP: 已急停 — 工具调用已被拒绝 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。".to_string();
+                            }
+                        };
+                        match limit_verdict {
                             Ok(av) if av.approved => {
                                 // 人工放行：这次调用计入配额，放行执行。
                                 limits::record(&limit_categories);
@@ -786,6 +912,13 @@ impl AgentLoop {
                             "approval_session_key".to_string(),
                             context.session_key.clone(),
                         );
+                        // 并行批审批聚合（BUG-A 第三层，2026-11-05）：批号
+                        // 随行——pipeline 从元数据提取进 ApprovalContext，
+                        // 审批卡按批聚卡（一张卡列 N 项 + 全部允许/全部拒绝）。
+                        // 仅并行批路径 Some 且非空时插入；串行路径字节不变。
+                        if let Some(b) = batch_id.filter(|s| !s.is_empty()) {
+                            m.insert("approval_batch_id".to_string(), b.to_string());
+                        }
                         // 行动代理 P0：connector 动态工具投影三键——管线层
                         // 读键裁决 op_type（override_op_type）/ 强审批
                         // （override_force_approval）；deny 分支读
@@ -815,7 +948,46 @@ impl AgentLoop {
                 // 行动代理 P0：execute_tracked 带回审批引用（仅 ABAC
                 // RequireApproval 经人工批准时 Some = 审批卡 request_id），
                 // 出块后注入工具 ctx——connector 工具写进凭条 approval_ref。
-                let (allowed, deny, tracked_ref) = security.execute_tracked(&invocation);
+                // 修5（BUG-A 2026-11-04）：ask 策略的审批等待在 auditor 内
+                // 同步阻塞（最长 300s），此前直接占死 tokio worker——并行批
+                // N 张审批卡 = N 个 worker 同时饿死（spawn 首卡 215s 期间 UI
+                // 全 0ms 的根源之一）。包 spawn_blocking 出 worker 线程（对齐
+                // question 工具先例）；也是第二层 estop select 臂的前置——
+                // 同步调用不 yield，select 无法打断。
+                let tracked_security = std::sync::Arc::clone(security);
+                let tracked_invocation = invocation.clone();
+                // 修②（BUG-C 2026-11-04）：急停中断臂——同上方 limits 审批
+                // select 形态。estop 翻真即放弃在飞管线（阻塞在人工审批卡
+                // 里的 asker 已被 estop watcher 取消放行，此处只是不再等它）。
+                // 直接返回 estop 文案：此处尚未进 around-hook 链（无
+                // ToolStarted 已发），无卡片需要补终态，与入口级 estop 拒绝
+                // 同形态。
+                let mut tracked_estop_rx = self.security.subscribe();
+                let (allowed, deny, tracked_ref) = tokio::select! {
+                    tracked = tokio::task::spawn_blocking(move || {
+                        tracked_security.execute_tracked(&tracked_invocation)
+                    }) => tracked
+                        .unwrap_or_else(|e| {
+                            // JoinError = 运行时关闭中任务被弃——fail-closed 拒绝。
+                            (
+                                false,
+                                Some(nemesis_security::types::DenyInfo {
+                                    layer: "runtime",
+                                    policy: "spawn_blocking".to_string(),
+                                    summary: format!("security check aborted: {e}"),
+                                    suggestion: None,
+                                }),
+                                None,
+                            )
+                        }),
+                    _ = Self::wait_estop_engaged(tracked_estop_rx.as_mut()) => {
+                        warn!(
+                            "[AgentLoop] E-stop interrupted security pipeline wait for {}.",
+                            tool_call.name
+                        );
+                        return "⛔ ESTOP: 已急停 — 工具调用已被拒绝 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。".to_string();
+                    }
+                };
                 approval_ref = tracked_ref;
                 if !allowed {
                     // F5: 结构化 deny 反馈——回灌带 layer/policy/suggestion
@@ -955,12 +1127,21 @@ impl AgentLoop {
         // Ordered, first Block wins. Fires on every dispatch attempt,
         // including unknown tool names (a hook may deny what the model
         // *tried* to call — mirrors the dialect's PreToolUse).
+        // 修②⑥（BUG-C 2026-11-04）：call_id 单一派生点——turn WAL（下方
+        // wal_call）与 hook 事件面（ToolEventHook 的 ToolStarted/Finished）
+        // 共用同一 id。急停中断执行链时（下方看门狗 select 的 estop 臂），
+        // dispatch 据此补发 interrupted ToolFinished，与已发出的 ToolStarted
+        // id 对齐（此前 hook 侧自生成 uuid，与 WAL id 永不相等——中断后
+        // UI 卡片只能悬空）。
+        let hook_call_id = crate::turn_wal::call_id_for(&tool_call.id, &tool_call.name);
         let hook_call = crate::hooks::HookToolCall {
             name: tool_call.name.clone(),
             arguments: tool_call.arguments.clone(),
             channel: context.channel.clone(),
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
+            dispatch_started: Some(dispatch_started),
+            call_id: Some(hook_call_id.clone()),
         };
         {
             let hooks = self.hooks.tool_hooks.read().snapshot();
@@ -986,7 +1167,8 @@ impl AgentLoop {
             channel: context.channel.clone(),
             chat_id: context.chat_id.clone(),
             user: context.user.clone(),
-            call_id: crate::turn_wal::call_id_for(&tool_call.id, &tool_call.name),
+            // 同一派生点（上方 hook_call_id 注释）：WAL 与事件面共 id。
+            call_id: hook_call_id.clone(),
             tool: tool_call.name.clone(),
         });
         if let (Some(w), Some(wc)) = (wal.as_deref(), wal_call.as_ref()) {
@@ -1071,6 +1253,10 @@ impl AgentLoop {
             let cred_guard = Arc::clone(&cred_guard);
             #[cfg(feature = "security")]
             let cred_gate = cred_gate.clone();
+            // 并行批审批聚合（BUG-A 第三层）：批号物化为 owned 才能进
+            // 'static Fn 闭包（Option<&str> 借用跨不过 Send+'static 边界）；
+            // 凭据闸发卡的 ApprovalContext 靠它同批聚合。
+            let batch_id = batch_id.map(str::to_string);
             std::sync::Arc::new(move |call: HookToolCall| {
                 // Fn 闭包：捕获的 Arc 每次调用克隆一份（不能 move 出 Fn）。
                 let ctx = ctx.clone();
@@ -1084,6 +1270,7 @@ impl AgentLoop {
                 let cred_guard = Arc::clone(&cred_guard);
                 #[cfg(feature = "security")]
                 let cred_gate = cred_gate.clone();
+                let batch_id = batch_id.clone();
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();
                     let tool_was_registered = tool_opt.is_some();
@@ -1253,6 +1440,10 @@ impl AgentLoop {
                                     session_key: ctx.session_key.clone(),
                                     tool_args: serde_json::from_str(&call.arguments)
                                         .unwrap_or(serde_json::Value::Null),
+                                    // 并行批审批聚合（BUG-A 第三层）：凭据发卡
+                                    // 同批号——并行批内的凭据确认卡同属一批，
+                                    // 聚合卡一次裁决全批。空串 = 串行路径单卡。
+                                    batch_id: batch_id.clone().unwrap_or_default(),
                                 };
                                 match auditor.request_credential_use_approval(
                                     &call.name,
@@ -1532,25 +1723,65 @@ impl AgentLoop {
         // （B4 后台注册表/停摆清扫兜底）；错误以 "Error:" 开头，与
         // `tool_result_indicates_error` / WAL ok 判定 / doom-loop 签名同刻度。
         let watchdog = self.current_executor_tool_timeout();
-        let result = match watchdog {
-            Some(limit) => match tokio::time::timeout(limit, chain(hook_call_owned)).await {
-                Ok(result) => result,
-                Err(_) => {
-                    error!(
-                        "[AgentLoop] Tool {} exceeded wall-clock watchdog ({}s) — aborted",
-                        tool_call.name,
-                        limit.as_secs()
-                    );
-                    format!(
-                        "Error: tool '{}' timed out after {}s (agents.executor_tool_timeout_secs wall-clock watchdog). \
-                         The call was aborted — do NOT retry it unchanged; report progress so far, \
-                         or split the work into smaller steps (e.g. background_start + polling).",
-                        tool_call.name,
-                        limit.as_secs()
-                    )
+        // 修②（BUG-C 2026-11-04）：急停中断臂——estop 翻真即 drop 在飞执行
+        // 链 future（工具体 + around hooks + format-on-save），不再等工具
+        // 自愿返回。drop 安全性边界（PLAN 第 ⑤ 项审计结论，逐类）：
+        // - exec 族：子进程树由 exec_tree 守卫 RAII Drop 收杀（Windows Job
+        //   Object / Unix 进程组一次内核调用收整棵树）+ gateway estop
+        //   watcher 的全局 sweep 兜底——安全；
+        // - web_fetch / MCP HTTP：drop = 在途请求断连，无副作用残留——天然
+        //   安全；
+        // - 写文件类阻塞 syscall 打不断：最坏 = 写完成但结果不记账——安全
+        //   方向（写本身是工具语义，不是半途副作用）；
+        // - MCP 常驻 server：只 drop 调用 future，不杀 server 进程；
+        // - B4 background_start：estop 不杀后台进程（设计如此，注册表自管）；
+        // - 集群在飞任务：保持自身续行/取消语义，estop 只管本节点。
+        // 中断面（修⑥）：被 drop 的 hook 链发不出 ToolFinished——此处按同
+        // 一发射点补发 interrupted 终态（同 call_id、真实墙钟、estop 预览），
+        // UI 卡片与 Work 时间线不悬空。WAL finished 由下方既有块正常落
+        // （⛔ 前缀 → ok=false），不会留 interrupted 假崩溃态。
+        let mut estop_rx = self.security.subscribe();
+        let estop_call_id = hook_call_id;
+        let chain_fut = chain(hook_call_owned);
+        let result = tokio::select! {
+            biased;
+            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                warn!(
+                    "[AgentLoop] E-stop interrupted in-flight tool {}.",
+                    tool_call.name
+                );
+                self.emit_tool_interrupted(
+                    &context.session_key,
+                    &context.chat_id,
+                    &estop_call_id,
+                    &tool_call.name,
+                    dispatch_started,
+                    "⛔ interrupted by e-stop (estop engaged mid-call)",
+                );
+                "⛔ ESTOP: 已急停 — 工具调用已被打断 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。".to_string()
+            }
+            result = async {
+                match watchdog {
+                    Some(limit) => match tokio::time::timeout(limit, chain_fut).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            error!(
+                                "[AgentLoop] Tool {} exceeded wall-clock watchdog ({}s) — aborted",
+                                tool_call.name,
+                                limit.as_secs()
+                            );
+                            format!(
+                                "Error: tool '{}' timed out after {}s (agents.executor_tool_timeout_secs wall-clock watchdog). \
+                                 The call was aborted — do NOT retry it unchanged; report progress so far, \
+                                 or split the work into smaller steps (e.g. background_start + polling).",
+                                tool_call.name,
+                                limit.as_secs()
+                            )
+                        }
+                    },
+                    None => chain_fut.await,
                 }
-            },
-            None => chain(hook_call_owned).await,
+            } => result,
         };
         // S2②（2026-10-09 高优差距批次一）：出侧复扫。8 层管线只看工具
         // 入参，输出侧此前零检查（eval 沙盒 worker 除外）——read_file 读
@@ -1618,7 +1849,7 @@ impl AgentLoop {
                     };
                     let args = serde_json::from_str(&tool_call.arguments)
                         .unwrap_or(serde_json::Value::Null);
-                    let _ = forge.collector().record_with_args(exp, &args).await;
+                    forge.collector().record_with_args(exp, &args).await;
                     // Audit P0-F1（2026-10-22）：TraceStore 原先零生产调用——
                     // monitor 的实效对比链在这里断头。经 Forge::record_trace_event
                     // JSONL 直写（写失败只 warn，观测数据不反噬工具链）。

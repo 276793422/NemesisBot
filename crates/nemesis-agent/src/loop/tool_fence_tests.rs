@@ -3,7 +3,10 @@
 // 覆盖面：
 // ① 派发拒绝文案单一真相源 `profession_fence_refusal_for`——白名单外拒绝
 //    （含 who 子句两形态）、白名单内放行、question 豁免；
-// ② instance 级闸 `profession_fence_refusal`——空表 = 未围（fail-open）；
+// ② instance 级闸（修2 2026-11-04 起统一注册点
+//    `environment_constraint_refusal`；本组实例 detached 旗标恒空 = 纯
+//    fence 臂，语义与原 profession_fence_refusal 逐字节一致）——
+//    空表 = 未围（fail-open）；
 // ③ 供给闸 `effective_tool_defs`——围栏与注册表取交集，question 豁免，
 //    未围实例全量直通；
 // ④ 并行安全批随行闸 `precompute_parallel_batch`——白名单外诚实拒绝、
@@ -126,7 +129,7 @@ fn fence_refusal_inside_tool_and_question_are_exempt() {
 fn fence_refusal_instance_empty_tools_not_fenced() {
     let instance = AgentInstance::new(fence_config(vec![]));
     assert_eq!(
-        super::tool_dispatch::profession_fence_refusal(&instance, "exec"),
+        super::tool_dispatch::environment_constraint_refusal(&instance, "exec"),
         None,
         "空表 = 没围，任何工具都不拦（loop 级 config.tools 恒空的生产主路径）"
     );
@@ -138,9 +141,9 @@ fn fence_refusal_instance_fenced_tool_refused() {
         vec!["read_file".to_string()],
         "product",
     ));
-    assert!(super::tool_dispatch::profession_fence_refusal(&instance, "exec").is_some());
+    assert!(super::tool_dispatch::environment_constraint_refusal(&instance, "exec").is_some());
     assert_eq!(
-        super::tool_dispatch::profession_fence_refusal(&instance, "read_file"),
+        super::tool_dispatch::environment_constraint_refusal(&instance, "read_file"),
         None
     );
 }

@@ -410,4 +410,88 @@ describe('useApprovals', () => {
     fireApproval(makePayload('l07-none'))
     expect(pendingApprovals.find(a => a.request_id === 'l07-none')!.preview).toBeUndefined()
   })
+
+  // ---- 并行批审批聚合（BUG-A 第三层，2026-11-05）----
+
+  it('批聚合: SSE payload 的 batch_id 入列；缺省 undefined（单卡兼容）', () => {
+    const { pendingApprovals, initApprovals } = useApprovals()
+    initApprovals()
+
+    fireApproval(makePayload('b-1', { batch_id: 'batch-x' }))
+    fireApproval(makePayload('b-2', { batch_id: 'batch-x' }))
+    fireApproval(makePayload('solo-1'))
+    expect(pendingApprovals.find(a => a.request_id === 'b-1')!.batch_id).toBe('batch-x')
+    expect(pendingApprovals.find(a => a.request_id === 'b-2')!.batch_id).toBe('batch-x')
+    expect(pendingApprovals.find(a => a.request_id === 'solo-1')!.batch_id).toBeUndefined()
+
+    // 空串批号（后端 skip 语义的防御镜像）= undefined。
+    fireApproval(makePayload('b-empty', { batch_id: '' }))
+    expect(pendingApprovals.find(a => a.request_id === 'b-empty')!.batch_id).toBeUndefined()
+  })
+
+  it('respondBatch 成功 → 同批整组摘卡 + 成功 toast（单卡/异批不受影响）', async () => {
+    wsapiRequest.mockResolvedValue({ responded: 2, skipped: 0 })
+    const { pendingApprovals, respondBatch, initApprovals } = useApprovals()
+    initApprovals()
+    fireApproval(makePayload('bx-1', { batch_id: 'batch-x' }))
+    fireApproval(makePayload('bx-2', { batch_id: 'batch-x' }))
+    fireApproval(makePayload('by-1', { batch_id: 'batch-y' }))
+    fireApproval(makePayload('solo-k'))
+    expect(pendingApprovals).toHaveLength(4)
+
+    await respondBatch('batch-x', true)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'respond_batch', {
+      batch_id: 'batch-x',
+      approved: true,
+      always: false,
+    })
+    expect(pendingApprovals.map(a => a.request_id)).toEqual(['by-1', 'solo-k'])
+    expect(toasts.some(t => t.type === 'success')).toBe(true)
+  })
+
+  it('respondBatch: always 透传；note 只在有值时进 payload', async () => {
+    wsapiRequest.mockResolvedValue({ responded: 1, skipped: 0 })
+    const { respondBatch, initApprovals } = useApprovals()
+    initApprovals()
+
+    await respondBatch('batch-d', false, false, '整批拒绝')
+    expect(wsapiRequest).toHaveBeenLastCalledWith('approval', 'respond_batch', {
+      batch_id: 'batch-d',
+      approved: false,
+      always: false,
+      note: '整批拒绝',
+    })
+    // 批准 + 总是允许：always 透传、未传 note = 缺键。
+    await respondBatch('batch-a', true, true)
+    expect(wsapiRequest).toHaveBeenLastCalledWith('approval', 'respond_batch', {
+      batch_id: 'batch-a',
+      approved: true,
+      always: true,
+    })
+  })
+
+  it('respondBatch 返回 no pending approvals in batch → 整组同步摘卡 + 错误 toast', async () => {
+    wsapiRequest.mockRejectedValue('no pending approvals in batch: batch-gone')
+    const { pendingApprovals, respondBatch, initApprovals } = useApprovals()
+    initApprovals()
+    fireApproval(makePayload('bg-1', { batch_id: 'batch-gone' }))
+    fireApproval(makePayload('bg-2', { batch_id: 'batch-gone' }))
+    expect(pendingApprovals).toHaveLength(2)
+
+    await respondBatch('batch-gone', false)
+    expect(pendingApprovals).toHaveLength(0)
+    expect(toasts.some(t => t.type === 'error')).toBe(true)
+  })
+
+  it('respondBatch 其他错误 → 卡保留（用户可重试）', async () => {
+    wsapiRequest.mockRejectedValue('timeout: approval.respond_batch')
+    const { pendingApprovals, respondBatch, initApprovals } = useApprovals()
+    initApprovals()
+    fireApproval(makePayload('bk-1', { batch_id: 'batch-keep' }))
+    expect(pendingApprovals).toHaveLength(1)
+
+    await respondBatch('batch-keep', true)
+    expect(pendingApprovals).toHaveLength(1)
+    expect(toasts.some(t => t.type === 'error')).toBe(true)
+  })
 })

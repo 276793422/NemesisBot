@@ -1932,7 +1932,15 @@ async fn bug60_state_mismatch_connection_does_not_kill_flow() {
     let (noise_resp, real_resp) = client.await.unwrap();
     assert!(noise_resp.contains("400 Bad Request"), "{noise_resp}");
     assert!(noise_resp.contains("State mismatch"), "{noise_resp}");
+    assert!(
+        noise_resp.contains("\r\n\r\n<html>"),
+        "header block must be properly terminated (BUG-20261105-007): {noise_resp}"
+    );
     assert!(real_resp.contains("200 OK"), "{real_resp}");
+    assert!(
+        real_resp.contains("\r\n\r\n<html>"),
+        "header block must be properly terminated (BUG-20261105-007): {real_resp}"
+    );
 }
 
 #[tokio::test]
@@ -2040,6 +2048,12 @@ async fn wait_for_callback_no_code_param_errors() {
     assert!(err.contains("access_denied"), "{err}");
     let resp = client.await.unwrap();
     assert!(resp.contains("400 Bad Request"), "{resp}");
+    // BUG-20261105-007：头块必须 \r\n\r\n 终结——缺终结时 body 并进头块，
+    // 浏览器等不到头块结束，提示页渲染不出。
+    assert!(
+        resp.contains("Content-Type: text/html\r\n\r\n<html>"),
+        "header block must be properly terminated: {resp}"
+    );
 }
 
 #[tokio::test]

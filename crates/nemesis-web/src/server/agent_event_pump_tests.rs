@@ -225,6 +225,7 @@ async fn approval_requested_sse_payload_flattened() {
         reject_note: Some("拒绝后本动作不执行、不产生任何效果".into()),
         preview: None,
         preview_format: None,
+        batch_id: None,
     })
     .unwrap();
 

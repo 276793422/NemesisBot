@@ -44,7 +44,7 @@ impl Tool for ExecTool {
         serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":"Timeout in seconds (default 30, max 600)"},"cwd":{"type":"string","description":"Working directory"}},"required":["command"]})
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
@@ -94,10 +94,14 @@ impl Tool for ExecTool {
             c.apply_to(&mut cmd);
         }
 
-        let mut child = cmd
-            .current_dir(cwd)
-            .spawn()
-            .map_err(|e| format!("Failed to execute command: {}", e))?;
+        // 修6（BUG-C）：spawn 即挂子进程树守卫（Windows Job Object / Unix
+        // 进程组）+ 会话注册——estop sweep 与守卫 Drop 都能收整棵树；正常
+        // 完成路径 mark_complete 后 Drop 无操作（零行为变化）。
+        let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
+            cmd.current_dir(cwd),
+            Some(context.session_key.as_str()),
+        )
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
 
         // B2：管道读取必须**独立任务并发**进行——
         // ① 不能只 `child.wait()`：子进程写满 ~64KB 管道缓冲会阻塞在 write
@@ -116,21 +120,32 @@ impl Tool for ExecTool {
             Ok(Ok(status)) => {
                 let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
                 if status.success() {
+                    guard.mark_complete();
                     Ok(if stdout.is_empty() {
                         "(no output)".to_string()
                     } else {
                         stdout
                     })
                 } else {
-                    Ok(format!(
+                    guard.mark_complete();
+                    let mut text = format!(
                         "Exit code: {}\nstdout: {}\nstderr: {}",
                         status.code().unwrap_or(-1),
                         stdout,
                         stderr
-                    ))
+                    );
+                    // estop sweep 中途收树：诚实标注（追加不换前缀——
+                    // `exec_output_passed` 失败判定依赖 "Exit code:" 开头）。
+                    if guard.reason() == Some(crate::exec_tree::TerminationReason::Estop) {
+                        text.push_str("\n（进程树已被 estop 终止）");
+                    }
+                    Ok(text)
                 }
             }
-            Ok(Err(e)) => Err(format!("Failed to execute command: {}", e)),
+            Ok(Err(e)) => {
+                guard.mark_complete();
+                Err(format!("Failed to execute command: {}", e))
+            }
             Err(_) => {
                 // B2：超时改 Ok 回灌（模型可自纠），先收尸再读残余输出。
                 // 管道任务持有所有权不受本次取消影响；kill + reap 后管道
@@ -140,7 +155,9 @@ impl Tool for ExecTool {
                 // 2026-10-15：收尸升级为树杀（背景见 `tree_kill` 注记）——
                 // start_kill 只杀 cmd.exe/sh 本体，cargo/rustc 等真实工作
                 // 进程整棵存活，超时后继续烧 CPU/占 target 锁。树杀后仍
-                // start_kill + wait 兜底直杀 shell 本体并收尸。
+                // start_kill + wait 兜底直杀 shell 本体并收尸。修6：守卫先
+                // 记超时原因（estop sweep 后到来的超时不得降级其标注）。
+                guard.terminate(crate::exec_tree::TerminationReason::Timeout);
                 if let Some(pid) = child.id() {
                     crate::background_registry::tree_kill(pid).await;
                 }
@@ -163,14 +180,21 @@ impl Tool for ExecTool {
                 if partial.is_empty() {
                     partial.push_str("(no output before timeout)");
                 }
-                Ok(format!(
+                let mut text = format!(
                     "Command timed out after {} seconds. Partial output:\n{}\nTip: the \
                      command may be waiting for interactive input — on Windows \
                      `date`/`time` are interactive (use `date /t`/`time /t` or \
                      PowerShell Get-Date). Raise the timeout for genuinely long \
                      commands or narrow the command. Command was: {}",
                     timeout_secs, partial, command
-                ))
+                );
+                // estop sweep 收树后的窄竞态窗口（wait 恰在超时后返回）：
+                // 诚实标注，同样追加不换前缀。
+                if guard.reason() == Some(crate::exec_tree::TerminationReason::Estop) {
+                    text.push_str("\n（进程树已被 estop 终止）");
+                }
+                guard.mark_complete();
+                Ok(text)
             }
         }
     }
@@ -694,7 +718,7 @@ impl Tool for RunChecksTool {
             "properties":{
                 "scope":{"type":"string","enum":["build","test","lint","all"],"description":"Which checks to run (default \"all\": build → test → lint, stops at first failing stage)"},
                 "filter":{"type":"string","description":"Optional single-test filter passed to the test command (e.g. cargo test <name>, pytest -k <name>)"},
-                "timeout":{"type":"integer","description":"Timeout in seconds (default 600, max 600)"}
+                "timeout":{"type":"integer","description":"Timeout in seconds, applied PER STAGE independently (default 600, max 600). With scope=all (build → test → lint run sequentially), total wall clock can reach ~3x this value; a timed-out stage is skipped and the next stage still runs."}
             }
         })
     }
@@ -738,15 +762,26 @@ impl Tool for RunChecksTool {
         let mut full = String::new();
         let mut summary = Vec::new();
         let mut failed_stage = false;
+        // 修6（BUG-C）：estop sweep 收杀的阶段——不计失败/超时，后续阶段
+        // 不再运行（sweep 是时点快照，break 后剩余阶段本可在 estop 下存活）。
+        let mut estop_killed_stage = false;
         for (label, command) in stages {
             let started = std::time::Instant::now();
-            let (exit_code, stdout, stderr, timed_out) =
-                run_one_stage(&command, Some(root), timeout_secs).await;
+            let (exit_code, stdout, stderr, timed_out, estop_killed) =
+                run_one_stage_in_session(&command, Some(root), timeout_secs, &context.session_key)
+                    .await;
             let elapsed = started.elapsed().as_secs_f32();
             let combined =
                 format!("$ {command}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n");
             full.push_str(&combined);
             let stats = parse_test_stats(&combined);
+            if estop_killed {
+                summary.push(format!(
+                    "⛔ {label}: 被 estop 终止（{elapsed:.1}s elapsed，本阶段不计失败/超时）"
+                ));
+                estop_killed_stage = true;
+                break;
+            }
             if timed_out {
                 summary.push(format!(
                     "⏱ {label}: TIMED OUT after {timeout_secs}s ({elapsed:.1}s elapsed)"
@@ -806,7 +841,9 @@ impl Tool for RunChecksTool {
             summary.join("\n")
         );
         if focus.is_empty() {
-            if failed_stage {
+            if estop_killed_stage {
+                reply.push_str("存在被 estop 终止的阶段，后续阶段未运行——结果不代表检查通过。\n");
+            } else if failed_stage {
                 reply.push_str("（exit 非零但未匹配到失败签名行——细节见完整输出）\n");
             } else {
                 reply.push_str("全部通过，无失败签名行。\n");
@@ -836,11 +873,40 @@ impl Tool for RunChecksTool {
 /// kill 后读残余——此处超时走独立返回值，不混进输出文本）。
 /// K3：改为 `pub(crate)` + `cwd: Option`——`` !`cmd` `` 注入（loop.rs
 /// rewrite_custom_command）共用同一执行内核；cwd None = 不设（继承进程）。
+/// 修6（BUG-C）：spawn 挂 `ExecTreeGuard`（超时/estop sweep/drop 均可收
+/// 树）；本签名保持无会话注册（`` !`cmd` `` 注入与 pre-pause 探针无会话
+/// 语义），run_checks 走 `run_one_stage_in_session`。
 pub(crate) async fn run_one_stage(
     command: &str,
     cwd: Option<&Path>,
     timeout_secs: u64,
 ) -> (Option<i32>, String, String, bool) {
+    let (code, stdout, stderr, timed_out, _estop_killed) =
+        run_one_stage_guarded(command, cwd, timeout_secs, None).await;
+    (code, stdout, stderr, timed_out)
+}
+
+/// 修6（BUG-C）：带会话注册的形态（run_checks 消费）——末位 bool = 本阶段
+/// 是否被 estop sweep 收杀（「被 estop 终止」诚实标注的判定源，不记失败/
+/// 超时）。会话键为空串时不注册（守卫的超时/drop 兜底照常生效）。
+pub(crate) async fn run_one_stage_in_session(
+    command: &str,
+    cwd: Option<&Path>,
+    timeout_secs: u64,
+    session_key: &str,
+) -> (Option<i32>, String, String, bool, bool) {
+    run_one_stage_guarded(command, cwd, timeout_secs, Some(session_key)).await
+}
+
+/// 修6：共享执行内核——spawn 挂 `ExecTreeGuard`（超时臂显式 terminate +
+/// drop RAII 兜底 + estop sweep 可达）；其余形态与原 run_one_stage 逐字节
+/// 等价（make_piped_shell_command + dacl capture + 并发排水 + 树杀收尸）。
+async fn run_one_stage_guarded(
+    command: &str,
+    cwd: Option<&Path>,
+    timeout_secs: u64,
+    session_key: Option<&str>,
+) -> (Option<i32>, String, String, bool, bool) {
     let mut cmd = make_piped_shell_command(command);
     if let Some(d) = cwd {
         cmd.current_dir(d);
@@ -854,42 +920,67 @@ pub(crate) async fn run_one_stage(
                 String::new(),
                 format!("output capture setup failed: {e}"),
                 false,
+                false,
             );
         }
     };
     if let Some(c) = capture.as_mut() {
         c.apply_to(&mut cmd);
     }
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            return (None, String::new(), format!("failed to spawn: {e}"), false);
-        }
-    };
+    let (guard, mut child) =
+        match crate::exec_tree::ExecTreeGuard::attach_and_register(&mut cmd, session_key) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return (
+                    None,
+                    String::new(),
+                    format!("failed to spawn: {e}"),
+                    false,
+                    false,
+                );
+            }
+        };
     let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
     let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
     let waited =
         tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await;
     match waited {
         Ok(Ok(status)) => {
+            // estop sweep 中途收树也走本臂（wait 正常返回非成功状态）——
+            // 先读原因再 mark_complete。
+            let estop_killed = guard.reason() == Some(crate::exec_tree::TerminationReason::Estop);
+            guard.mark_complete();
             let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
-            (status.code(), stdout, stderr, false)
+            (status.code(), stdout, stderr, false, estop_killed)
         }
-        Ok(Err(e)) => (None, String::new(), format!("wait failed: {e}"), false),
+        Ok(Err(e)) => {
+            guard.mark_complete();
+            (
+                None,
+                String::new(),
+                format!("wait failed: {e}"),
+                false,
+                false,
+            )
+        }
         Err(_) => {
             // 超时：先收尸再读残余输出（B2 同款——管道任务持所有权不受
             // 取消影响，kill 后 EOF 收尾；文件形态读回被杀前已写内容）。
             // 2026-10-15：收尸升级为树杀（背景见 `tree_kill` 注记）——
             // 本工具声明 timeout 参数，cargo 树不真死 = 参数没落地（产品
             // 验证实验 #1：声明 600s，超时后 cargo 又跑了 25 分钟）。树杀
-            // 后仍 start_kill + wait 兜底直杀 shell 本体并收尸。
+            // 后仍 start_kill + wait 兜底直杀 shell 本体并收尸。修6：守卫
+            // 先记超时原因（estop sweep 后到来的超时不得降级其标注）。
+            guard.terminate(crate::exec_tree::TerminationReason::Timeout);
             if let Some(pid) = child.id() {
                 crate::background_registry::tree_kill(pid).await;
             }
             let _ = child.start_kill();
             let _ = child.wait().await;
+            let estop_killed = guard.reason() == Some(crate::exec_tree::TerminationReason::Estop);
+            guard.mark_complete();
             let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
-            (None, stdout, stderr, true)
+            (None, stdout, stderr, true, estop_killed)
         }
     }
 }
@@ -964,7 +1055,7 @@ impl Tool for RunScriptTool {
         })
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
@@ -1053,15 +1144,19 @@ impl Tool for RunScriptTool {
             // 2026-10-15：spawn 前置到 timeout 之外——超时收尸要有 pid 才能
             // 树杀（spawn 藏在 timed future 里 = 取消时句柄一并丢弃，只剩
             // kill_on_drop 直杀解释器本体，脚本派生的工作进程全部存活）。
-            let mut child = cmd
-                .current_dir(cwd)
-                .spawn()
-                .map_err(|e| format!("Failed to execute script: {}", e))?;
+            // 修6（BUG-C）：spawn 即挂守卫 + 会话注册（estop sweep/drop 可
+            // 收树）；结构化 JSON 契约不变。
+            let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
+                cmd.current_dir(cwd),
+                Some(context.session_key.as_str()),
+            )
+            .map_err(|e| format!("Failed to execute script: {}", e))?;
             let waited =
                 tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait())
                     .await;
             return match waited {
                 Ok(Ok(status)) => {
+                    guard.mark_complete();
                     let (stdout, stderr) = capture.take().expect("capture present").read_back();
                     Ok(serde_json::json!({
                         "stdout": stdout,
@@ -1070,14 +1165,21 @@ impl Tool for RunScriptTool {
                     })
                     .to_string())
                 }
-                Ok(Err(e)) => Err(format!("Failed to execute script: {}", e)),
+                Ok(Err(e)) => {
+                    guard.mark_complete();
+                    Err(format!("Failed to execute script: {}", e))
+                }
                 Err(_) => {
+                    // 修6：守卫先记超时原因（estop sweep 后到来的超时不得
+                    // 降级其标注）。
+                    guard.terminate(crate::exec_tree::TerminationReason::Timeout);
                     if let Some(pid) = child.id() {
                         crate::background_registry::tree_kill(pid).await;
                     }
                     let _ = child.start_kill();
                     let _ = child.wait().await;
                     let _ = capture.take().expect("capture present").read_back();
+                    guard.mark_complete();
                     Err(format!(
                         "Script timed out after {} seconds (interpreter: {}). It may be \
                      waiting for input (e.g. an interactive prompt).",
@@ -1091,12 +1193,14 @@ impl Tool for RunScriptTool {
         // 款 B2 形态）。output() 的隐式 future 取消时只剩 kill_on_drop 直杀
         // 解释器本体；结构化出 pid 后超时走树杀。命令形态字节不变
         // （interpreter [flag] script 直 spawn 契约保持），只换捕获管道。
-        let mut child = cmd
-            .current_dir(cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to execute script: {}", e))?;
+        // 修6（BUG-C）：spawn 即挂守卫 + 会话注册（estop sweep/drop 可收树）。
+        let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
+            cmd.current_dir(cwd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()),
+            Some(context.session_key.as_str()),
+        )
+        .map_err(|e| format!("Failed to execute script: {}", e))?;
         let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
         let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
         let waited =
@@ -1104,6 +1208,7 @@ impl Tool for RunScriptTool {
 
         match waited {
             Ok(Ok(status)) => {
+                guard.mark_complete();
                 let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
                 let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
                 let exit_code = status.code().unwrap_or(-1);
@@ -1117,8 +1222,14 @@ impl Tool for RunScriptTool {
                 })
                 .to_string())
             }
-            Ok(Err(e)) => Err(format!("Failed to execute script: {}", e)),
+            Ok(Err(e)) => {
+                guard.mark_complete();
+                Err(format!("Failed to execute script: {}", e))
+            }
             Err(_) => {
+                // 修6：守卫先记超时原因（estop sweep 后到来的超时不得降级
+                // 其标注）。
+                guard.terminate(crate::exec_tree::TerminationReason::Timeout);
                 if let Some(pid) = child.id() {
                     crate::background_registry::tree_kill(pid).await;
                 }
@@ -1126,6 +1237,7 @@ impl Tool for RunScriptTool {
                 let _ = child.wait().await;
                 let _ = join_pipe_task(out_task).await;
                 let _ = join_pipe_task(err_task).await;
+                guard.mark_complete();
                 Err(format!(
                     "Script timed out after {} seconds (interpreter: {}). It may be \
                      waiting for input (e.g. an interactive prompt).",

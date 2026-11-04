@@ -32,7 +32,9 @@ pub const ARGS_PREVIEW_CAP: usize = 200;
 pub const RESULT_PREVIEW_CAP: usize = 1024;
 
 /// 按字符数截断（byte 切片会在多字节字符边界 panic——见项目 str-slice 教训）。
-fn truncate_chars(s: &str, cap: usize) -> String {
+/// pub(crate)：estop 中断面（loop.rs `emit_tool_interrupted`）的补发预览走
+/// 同一截断，两处预览口径不漂移。
+pub(crate) fn truncate_chars(s: &str, cap: usize) -> String {
     if s.chars().count() <= cap {
         return s.to_string();
     }
@@ -76,7 +78,15 @@ impl ToolHook for ToolEventHook {
                 + Sync,
         >,
     ) -> String {
-        let call_id = uuid::Uuid::new_v4().to_string();
+        // 修②⑥（BUG-C 2026-11-04）：call_id 改为消费 dispatch 传入的稳定
+        // id（与 turn WAL `call_id_for` 同一派生点）——急停中断时 dispatch
+        // 能按同 id 补发 interrupted ToolFinished（此前这里自生成 uuid，与
+        // WAL id / 中断补发永不相等，UI 卡片只能悬空）。`None`（测试/非
+        // dispatch 调用方）回退自生成 uuid，行为不变。
+        let call_id = call
+            .call_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let session_key = call.session_key.clone();
         let chat_id = call.chat_id.clone();
         let tool = call.name.clone();
@@ -96,9 +106,14 @@ impl ToolHook for ToolEventHook {
             args_preview: truncate_chars(&call.arguments, ARGS_PREVIEW_CAP),
         });
 
-        let start = Instant::now();
+        // 修1（BUG-B 2026-11-04）：优先用 dispatch 入口时刻计时（含安全段
+        // 审批等待），与守卫重放池的 Local.md 时长同源；`None`（测试/非
+        // dispatch 调用方）回退自身计时。`next(call)` 消费 call，先取出
+        // Copy 的 Instant 再 await。
+        let fallback_start = Instant::now();
+        let dispatch_started = call.dispatch_started.unwrap_or(fallback_start);
         let result = next(call).await;
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = dispatch_started.elapsed().as_millis() as u64;
 
         // R4（2026-10-20）：成败判定换 [`classify_result`] 单一真相源——
         // 按工具类选精确判别器（exec = Exit code: 前缀判据，非零退出不再

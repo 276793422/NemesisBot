@@ -166,6 +166,11 @@ pub struct ApprovalContext {
     /// args（pipeline 从 `ToolInvocation.args` 透传）。`Value::Null`
     /// （Default）= 无 args（旧调用方 / limits 直发路径），预览不产。
     pub tool_args: serde_json::Value,
+    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：批号（`batch-{uuid}`）。
+    /// pipeline 从 `ToolInvocation.metadata["approval_batch_id"]` 提取；
+    /// 空 = 无批上下文（串行路径 / limits 直发旧形态），管理器单卡渲染
+    /// 不进聚合。经 `request_approval_sync_ctx` 原样透传到卡 entry。
+    pub batch_id: String,
 }
 
 pub trait ApprovalManager: Send + Sync {

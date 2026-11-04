@@ -120,6 +120,8 @@ fn edit_call(args: &str) -> HookToolCall {
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
         session_key: "session1".to_string(),
+        dispatch_started: None,
+        call_id: None,
     }
 }
 
@@ -1056,6 +1058,8 @@ async fn post_tool_use_failure_hook_runs_script() {
         channel: "web".into(),
         chat_id: "c1".into(),
         session_key: "agent:main:session:s9".into(),
+        dispatch_started: None,
+        call_id: None,
     };
     // 走 ToolHook::post_tool_use_failure（生产 Err 分支的入口）。
     use crate::hooks::ToolHook as _;
@@ -1636,6 +1640,7 @@ async fn observing_approval_manager_notifies_then_delegates() {
                 sender_id: "u".to_string(),
                 session_key: String::new(),
                 tool_args: serde_json::Value::Null,
+                batch_id: String::new(),
             },
         )
         .expect("delegated");

@@ -84,6 +84,21 @@ pub struct HookToolCall {
     /// Session key of the conversation driving this dispatch (K2: hooks dialect
     /// scripts key per-session state off payload `session_id`).
     pub session_key: String,
+    /// Wall-clock instant when this dispatch entered `handle_tool_call` —
+    /// *before* the security section (whose approval/question asks can block
+    /// for minutes). Around hooks time the whole dispatch from this point
+    /// instead of from their own start, so UI durations include approval
+    /// waits (BUG-B 2026-11-04: hook chain is built after the security
+    /// section, a self-timer reported 0ms while the call sat 215s on an
+    /// approval card). `None` = non-dispatch origin (tests) — consumers
+    /// fall back to their own timer.
+    pub dispatch_started: Option<std::time::Instant>,
+    /// 修②⑥（BUG-C 2026-11-04）：本次 dispatch 的稳定调用 id——与 turn WAL
+    /// `call_id_for` 同一派生（`raw_id` 非空用原值，否则时间戳兜底），事件
+    /// 面与 WAL 面共用同一 id。急停中断执行链时，dispatch 可据此补发
+    /// interrupted ToolFinished（对齐 ToolStarted 的 id，UI 卡片不悬空）。
+    /// `None` = 非 dispatch 来源（测试/直接构造）——消费方回退自生成 uuid。
+    pub call_id: Option<String>,
 }
 
 /// Pre-tool decision.

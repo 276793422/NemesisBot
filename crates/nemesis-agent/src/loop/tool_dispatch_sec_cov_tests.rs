@@ -242,6 +242,10 @@ enum ApproveBehavior {
     Approve,
     Reject,
     Fail,
+    /// 修1（BUG-B 2026-11-04 交叉态回归锁）：批准前先阻塞指定毫秒——
+    /// 模拟人工裁决延迟（真实 WebApprovalManager 最长 300s，这里用短
+    /// sleep 保持测试时长可控）。同步阻塞对齐真实 asker 的同步语义。
+    SlowApproveMs(u64),
 }
 
 /// 审批管理器假件（is_running=true，裁决按构造而定）。
@@ -279,6 +283,12 @@ impl nemesis_security::auditor::ApprovalManager for FakeApprovalManager {
                 note: Some("covw6 note".to_string()),
             }),
             ApproveBehavior::Fail => Err("covw6: no approval channel".to_string()),
+            // 慢审批：同步阻塞 ms 毫秒后批准（对齐真实 asker 的同步语义，
+            // dispatch_started 在审批等待之前取得 → duration 必含等待段）。
+            ApproveBehavior::SlowApproveMs(ms) => {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                Ok(nemesis_security::auditor::ApprovalVerdict::approved())
+            }
         }
     }
 }
@@ -354,6 +364,71 @@ async fn guardian_flagged_user_approved_executes() {
         .handle_tool_call(&critical_call(), &sec_ctx())
         .await;
     assert_eq!(out, "executed_ok", "用户批准后必须放行执行（不拦）: {out}");
+}
+
+/// 修1（BUG-B 2026-11-04 交叉态回归锁）：审批等待必须计入 ToolFinished
+/// duration——dispatch 入口先取 `dispatch_started`，guardian 升级到人工审批
+/// 阻塞 N ms 后才执行工具体；ToolEventHook 发出的 ToolFinished.duration_ms
+/// 由 dispatch_started 起算，因此必须 ≥ 审批等待时长（此前 UI 显示 0ms 的
+/// 根因即打点缺失）。慢审批假件同步 sleep 对齐真实 asker 语义；Instant 单调
+/// 时钟，duration ≥ sleep 由构造保证，不 flaky。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_wait_included_in_tool_finished_duration() {
+    let _logs = capture_logs();
+    const APPROVAL_WAIT_MS: u64 = 200;
+    let mut agent_loop = sec_loop();
+    guardian_setup(
+        &mut agent_loop,
+        JudgeBehavior::Flag,
+        Some(FakeApprovalManager(ApproveBehavior::SlowApproveMs(
+            APPROVAL_WAIT_MS,
+        ))),
+        "",
+    );
+    agent_loop.register_tool("shell".to_string(), Box::new(OkTool("executed_ok")));
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    agent_loop.add_tool_hook(Arc::new(crate::tool_event_hook::ToolEventHook::new(
+        tx.clone(),
+        crate::work_timeline::WorkRecorder::default(),
+    )));
+
+    let out = agent_loop
+        .handle_tool_call(&critical_call(), &sec_ctx())
+        .await;
+    assert_eq!(out, "executed_ok", "慢审批 + 批准必须放行执行: {out}");
+
+    // 首事件 = ToolStarted（hook 在执行链前发），次事件才是 ToolFinished。
+    let _started = rx.recv().await.expect("ToolStarted 事件缺失");
+    let finished = rx.recv().await.expect("ToolFinished 事件缺失");
+    match finished {
+        nemesis_types::agent::AgentEvent::ToolFinished {
+            tool,
+            ok,
+            duration_ms,
+            result_preview,
+            ..
+        } => {
+            assert_eq!(tool, "shell");
+            assert!(
+                ok,
+                "executed_ok 结果必须判 ok=true（classify_result 默认臂）"
+            );
+            assert!(
+                result_preview.contains("executed_ok"),
+                "预览必须带工具结果，实际: {result_preview}"
+            );
+            assert!(
+                duration_ms >= APPROVAL_WAIT_MS,
+                "duration_ms={duration_ms} 必须包含审批等待 ≥{APPROVAL_WAIT_MS}ms（BUG-B 回归）"
+            );
+            assert!(
+                duration_ms < 30_000,
+                "duration_ms={duration_ms} 异常巨大——打点错位到别处"
+            );
+        }
+        other => panic!("次事件应为 ToolFinished，实际: {other:?}"),
+    }
 }
 
 /// judge flag → 审批**拒绝**（带备注）→ 结构化拒绝（升级拒绝臂）。

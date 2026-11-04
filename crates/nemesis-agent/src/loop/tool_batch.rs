@@ -758,6 +758,22 @@ impl AgentLoop {
         // The serial path (precomputed.is_none()) keeps the per-item checks
         // byte-identical.
         let skip_cancel_estop = precomputed.is_some();
+        // 修④（BUG-C 2026-11-04）：批后急停检查点——并行批窗口内到达的急停
+        // （precompute 内 biased select 已中断在飞收集并补发中断面
+        // ToolFinished，见 tool_defs.rs 同款注释）在此收口：拒绝整批回灌、
+        // 终局本轮（旧语义 = 批照跑完且回灌照常、下一轮边界才停）。per-item
+        // estop 臂同款单发 Done + terminal_reason 纪律（turn_end 不谎报 done）。
+        if precomputed.is_some() && self.security.is_engaged() {
+            info!(
+                "[AgentLoop] E-stop engaged during/after parallel batch ({} calls) — stopping turn.",
+                tool_calls.len()
+            );
+            st.terminal_reason = Some("estop");
+            return TurnFlow::Stop(AgentEvent::Done(
+                "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
+                    .to_string(),
+            ));
+        }
         for (batch_idx, tc) in tool_calls.iter().enumerate() {
             // Check cancellation before each tool execution.
             if !skip_cancel_estop && cancel_token.is_cancelled() {
@@ -836,21 +852,22 @@ impl AgentLoop {
                 }
                 (p.result.clone(), p.duration_ms)
             } else {
-                let r = match super::tool_dispatch::detached_tool_refusal(instance, &tc.name)
-                    .or_else(|| {
-                        // B2 职能工具围栏派发闸——任务装配白名单外的调用在
-                        // 派发现场权威拒绝（与 detached 闸同位同形：供给层
-                        // 只管 defs 可见性）。文案单一真相源
-                        // [`profession_fence_refusal_for`]。
-                        super::tool_dispatch::profession_fence_refusal(instance, &tc.name)
-                    }) {
+                // 修2（2026-11-04）：环境约束预拒统一注册点——detached +
+                // 职能围栏两约束一处声明，串行/并行同源（并行预检消费
+                // 值形态 [`super::tool_dispatch::
+                // environment_constraint_refusal_for`]）。环境性拒绝在
+                // 安全段之前权威拒绝：不弹审批卡、不进风险管线（BUG-A
+                // 2026-11-04 阻塞链的派发侧护栏之一）。
+                let r = match super::tool_dispatch::environment_constraint_refusal(
+                    instance, &tc.name,
+                ) {
                     // 压测①a（2026-09-30）：detached 工具闸——no_tools/白名单外
                     // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
                     // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游
                     // observer/turn_guard/spill 守卫照常按序跑。
                     Some(refusal) => {
                         warn!(
-                            "[AgentLoop] Detached tool gate refused '{}': {}",
+                            "[AgentLoop] Environment constraint refused '{}': {}",
                             tc.name,
                             refusal.trim_start_matches("Error: ")
                         );

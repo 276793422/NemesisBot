@@ -24,6 +24,8 @@ fn call() -> HookToolCall {
         channel: "web".to_string(),
         chat_id: "cov".to_string(),
         session_key: "agent:main:session:covhooks".to_string(),
+        dispatch_started: None,
+        call_id: None,
     }
 }
 

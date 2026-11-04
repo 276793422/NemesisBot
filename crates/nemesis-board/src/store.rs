@@ -700,10 +700,30 @@ impl BoardStore {
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("issue {id} not found"))?;
+        let now = Self::now();
+        Self::transition_issue_in_tx(&tx, &old, id, to, actor, now)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
+        let issue = self.get_issue(id)?;
+        Ok(issue)
+    }
 
+    /// 状态机转移的事务内核（[`Self::transition_issue`] 与 `reopen_issue`
+    /// 共用）：校验 + UPDATE + status_change 评论 + NB-CODE-012 审计 +
+    /// activity + 指派对象通知，全部在调用方事务内执行、**不 commit**——
+    /// 提交时机归调用方，让「状态转移 + 附加动作」可以放进同一事务原子
+    /// 生效（BUG-20261105-002 根修：此前 reopen 的转移先独立 commit，后续
+    /// hidden 解除失败会留下 hidden=1 的 backlog 单且无任何 API 可恢复）。
+    fn transition_issue_in_tx(
+        tx: &Connection,
+        old: &Issue,
+        id: i64,
+        to: IssueStatus,
+        actor: &Actor,
+        now: i64,
+    ) -> Result<(), String> {
         crate::state_machine::validate_transition(old.status, to)?;
 
-        let now = Self::now();
         tx.execute(
             "UPDATE issue SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![to.as_str(), now, id],
@@ -711,7 +731,7 @@ impl BoardStore {
         .map_err(|e| e.to_string())?;
 
         let note = format!("{} → {}", old.status, to);
-        insert_comment(&tx, id, actor, &note, None, CommentType::StatusChange, now)?;
+        insert_comment(tx, id, actor, &note, None, CommentType::StatusChange, now)?;
 
         // NB-CODE-012：人工操作者跳过评审直达 done（Backlog/Todo/InProgress →
         // Done）追加系统审计评论留痕——绕过验收链的收货必须可回查。agent 自动
@@ -721,7 +741,7 @@ impl BoardStore {
             && old.status != IssueStatus::InReview
             && actor.kind != "agent"
             && let Err(e) = insert_comment(
-                &tx,
+                tx,
                 id,
                 &Actor::system("audit"),
                 &format!(
@@ -737,7 +757,7 @@ impl BoardStore {
         }
 
         insert_activity(
-            &tx,
+            tx,
             id,
             actor,
             "status_changed",
@@ -753,7 +773,7 @@ impl BoardStore {
             let assignee_actor = Actor::new(at.as_str(), aid);
             if assignee_actor != *actor {
                 insert_notification(
-                    &tx,
+                    tx,
                     &NewNotification {
                         recipient: assignee_actor,
                         kind: notification_kind::STATUS_CHANGED.to_string(),
@@ -765,18 +785,9 @@ impl BoardStore {
                 )?;
             }
         }
-        tx.commit().map_err(|e| e.to_string())?;
-        drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
-        let issue = self.get_issue(id)?;
-        Ok(issue)
+        Ok(())
     }
 
-    /// reopen（发现④ 2026-09-15）：`cancelled → backlog`，取消单回到待办，
-    /// 中断恢复从此有产品路径（此前只能 SQL 手术）。非 cancelled 来源
-    /// **loud 拒绝**（done 的重开是另一语义，本轮不做）；已 hidden 的取消单
-    /// reopen 时解除 hidden（hidden 只属于取消单清理语义，单子已复活就
-    /// 必须重新可见）；追加系统审计评论（谁/何时/从何状态）。WSAPI
-    /// `issue.reopen` 与 CLI `issue reopen` 共用本单一后端。
     /// 派发送达失败回退（F2，2026-09-30）：任务从未开始（RPC 送达失败），
     /// 把派发推进出的 in_progress 回退到派发前状态，并把派发回填的指派
     /// 恢复为派发前的值——字段与事实重新对齐（⛔ 派发失败评论已由调用方
@@ -845,8 +856,31 @@ impl BoardStore {
         Ok(true)
     }
 
+    /// reopen（发现④ 2026-09-15）：`cancelled → backlog`，取消单回到待办，
+    /// 中断恢复从此有产品路径（此前只能 SQL 手术）。非 cancelled 来源
+    /// **loud 拒绝**（done 的重开是另一语义，本轮不做）；已 hidden 的取消单
+    /// reopen 时解除 hidden（hidden 只属于取消单清理语义，单子已复活就
+    /// 必须重新可见）；追加系统审计评论（谁/何时/从何状态）。WSAPI
+    /// `issue.reopen` 与 CLI `issue reopen` 共用本单一后端。
+    ///
+    /// **单事务原子**（BUG-20261105-002 根修）：状态转移、hidden 解除、
+    /// reopen 审计评论同事务提交——此前转移先独立 commit、附加动作在第二个
+    /// 事务里，后者失败会留下 hidden=1 的 backlog 单（列表恒排除 hidden、
+    /// reopen 前置只认 cancelled），无任何 API 可恢复的永久僵尸。父单/上游
+    /// 存活校验同样收进事务内 fresh 读，消除校验与转移之间的竞态窗口。
     pub fn reopen_issue(&self, id: i64, actor: &Actor) -> Result<Issue, String> {
-        let old = self.get_issue(id)?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        // 本单 fresh 读（事务内——旧形态读在事务外，与转移之间有 TOCTOU）。
+        let old: Issue = tx
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![id],
+                row_to_issue,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("issue {id} not found"))?;
         if old.status != IssueStatus::Cancelled {
             return Err(format!(
                 "{} 当前状态为 {}，只有已取消（cancelled）单可 reopen",
@@ -857,7 +891,15 @@ impl BoardStore {
         // 还死着，复活出来的子单会被派发父单存活闸拦成永久 backlog 僵尸。
         // 正确顺序：先 reopen 父单，再逐单复活子单。
         if let Some(pid) = old.parent_issue_id {
-            let parent = self.get_issue(pid)?;
+            let parent: Issue = tx
+                .query_row(
+                    "SELECT * FROM issue WHERE id = ?1",
+                    params![pid],
+                    row_to_issue,
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("issue {pid} not found"))?;
             if parent.status == IssueStatus::Cancelled {
                 return Err(format!(
                     "父单 {} 已取消：子单不可单独 reopen，请先 reopen 父单",
@@ -869,25 +911,38 @@ impl BoardStore {
         // cancelled 的单不可单独复活——依赖闸（dispatch_subissue_auto_with_config）
         // 只认上游 done，复活出来的单永远等不到发车，是隐藏更深的 backlog
         // 僵尸。正确顺序：先恢复全部上游，再 reopen 本单。
-        for up_id in self.dependencies_of(id)? {
-            let up = self.get_issue(up_id)?;
-            if up.status == IssueStatus::Cancelled {
-                return Err(format!(
-                    "上游依赖 {} 已取消：本单不可单独 reopen，请先恢复上游",
-                    up.number
-                ));
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT depends_on FROM issue_dependency WHERE issue_id = ?1 ORDER BY depends_on",
+                )
+                .map_err(|e| e.to_string())?;
+            let ups = stmt
+                .query_map(params![id], |r| r.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            for up_id in ups {
+                let up: Issue = tx
+                    .query_row(
+                        "SELECT * FROM issue WHERE id = ?1",
+                        params![up_id],
+                        row_to_issue,
+                    )
+                    .map_err(|e| e.to_string())?;
+                if up.status == IssueStatus::Cancelled {
+                    return Err(format!(
+                        "上游依赖 {} 已取消：本单不可单独 reopen，请先恢复上游",
+                        up.number
+                    ));
+                }
             }
         }
-        // 状态机唯一终态出口 cancelled→backlog；transition_issue 自带
-        // status_change 评论 + activity + 指派对象通知。
-        let issue = self.transition_issue(id, IssueStatus::Backlog, actor)?;
-
-        // 附加动作：解除 hidden（若有）+ 系统审计评论。失败不回滚 reopen
-        // 本体（与 on_issue_settled 联动同语义：附加动作 warn 不阻断），
-        // 但这里直接传播错误——同一事务里两件事，失败即显形。
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        // 状态机唯一终态出口 cancelled→backlog（transition_issue_in_tx 自带
+        // status_change 评论 + activity + 指派对象通知），随后 hidden 解除 +
+        // reopen 审计评论——三件事同一事务，任一步失败整体回滚不留半截状态。
         let now = Self::now();
+        Self::transition_issue_in_tx(&tx, &old, id, IssueStatus::Backlog, actor, now)?;
         tx.execute(
             "UPDATE issue SET hidden = 0, updated_at = ?2 WHERE id = ?1 AND hidden = 1",
             params![id, now],
@@ -899,7 +954,7 @@ impl BoardStore {
             &Actor::system("board"),
             &format!(
                 "♻ {}「{}」由 {}/{} reopen：cancelled → backlog（时间见本条评论时间戳）",
-                issue.number, issue.title, actor.kind, actor.id,
+                old.number, old.title, actor.kind, actor.id,
             ),
             None,
             CommentType::System,
