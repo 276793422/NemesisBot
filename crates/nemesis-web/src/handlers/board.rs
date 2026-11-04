@@ -1033,20 +1033,25 @@ pub fn dispatch_issue_core(
     };
 
     // 2. 登记派发绑定（peer_chat_callback 的写回路由键）+ 审计活动。
-    //    原子占用闸（R5-BUG-2 根修）：claim 失败 = 并发路径（依赖闸补派
-    //    × 停车场 sweep 等）已占用该 issue → 本次 submit 的 task 诚实
+    //    原子占用闸（R5-BUG-2 根修）：claim 返回 None = 并发路径（依赖闸
+    //    补派 × 停车场 sweep 等）已占用该 issue → 本次 submit 的 task 诚实
     //    取消，不写行、不留幽灵 dispatched（幽灵行会永久占满 worker
-    //    inflight，后续派发全部静默 deferred）。
-    if !store.try_claim_dispatch(&task_id, issue.id, &target, actor)? {
-        cluster.fail_task(&task_id, "并发派发竞态：该 issue 已有进行中的派发");
-        // G3：并发竞态取消收账。
-        nemesis_taskstore::ledger::settle_run(
-            &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
-            "cancelled",
-            Some("并发派发竞态：该 issue 已有进行中的派发"),
-        );
-        return Err("该 issue 已有进行中的派发（并发派发竞态，本次派发已取消）".to_string());
-    }
+    //    inflight，后续派发全部静默 deferred）。Some(generation) = 占用
+    //    成功，代际号（AOR 批二a ④）随下行 payload 带给 worker、写回时
+    //    原样回声（写回闸据此拒绝旧代迟到回调覆盖新一代派发）。
+    let dispatch_generation = match store.try_claim_dispatch(&task_id, issue.id, &target, actor)? {
+        Some(generation) => generation,
+        None => {
+            cluster.fail_task(&task_id, "并发派发竞态：该 issue 已有进行中的派发");
+            // G3：并发竞态取消收账。
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+                "cancelled",
+                Some("并发派发竞态：该 issue 已有进行中的派发"),
+            );
+            return Err("该 issue 已有进行中的派发（并发派发竞态，本次派发已取消）".to_string());
+        }
+    };
 
     // C 里程碑 2（看板项目档案 goal P2）：派发落定 → records/NB-xx/
     // dispatch.md + timeline（P4 起第 5 参填基线 commit——执行档案 merge
@@ -1130,6 +1135,9 @@ pub fn dispatch_issue_core(
     if let Some(commit) = &baseline_commit {
         payload["_baseline_commit"] = serde_json::json!(commit);
     }
+    // AOR 批二a ④：派发代际号下行（worker 写回原样回声；旧 B 端不认识
+    // 该键 = 回声缺席 = 写回闸放行，向后兼容）。
+    payload["dispatch_generation"] = serde_json::json!(dispatch_generation);
     if let Some(p) = issue
         .required_profession
         .as_deref()
@@ -4844,6 +4852,27 @@ fn sync_one_parent(
         return Ok(next);
     }
 
+    // AOR 批二b（⑥ FINISH 谓词）：全 done 垫升前过收口谓词（只 gate
+    // all_done 分支——any_cancelled 分支维持原样：缺口评论+进评审等人工，
+    // 语义不变）。谓词在正常路径恒真；全 done 却不满足 = 活跃派发在途或
+    // 未裁决 unknown（批一c ③ 落盘的 `unknown:` 清单）——阻塞垫升/收口 +
+    // 缺口评论显式列出（C-F4 去重），防「评审还没裁决完单子就被钩子拉走」。
+    if all_done && !terminal {
+        let unsatisfied = nemesis_board::finish::evaluate_parent_finish(store, &subtree);
+        if !unsatisfied.is_empty() {
+            tracing::warn!(
+                "[Board] 父单 {parent_id} FINISH 收口闸未满足（{} 条），垫升/收口阻塞",
+                unsatisfied.len()
+            );
+            if let Err(e) =
+                nemesis_board::finish::write_finish_gap_comment(store, parent_id, &unsatisfied)
+            {
+                tracing::warn!("[Board] 父单 {parent_id} FINISH 缺口评论写入失败：{e}");
+            }
+            return Ok(next);
+        }
+    }
+
     // backlog/todo 不能直接进 in_review，先垫 in_progress（blocked 同理：
     // blocked→in_progress 合法而 blocked→in_review 非法——B5 停车联动的
     // 受阻父单全子落定走这里必须先垫）。终态父单跳过一切推列。
@@ -4967,7 +4996,11 @@ pub fn on_issue_settled(
 /// 影响 A 侧终态（worker 回报被写回幂等早退兜住），评论留痕；RPC client
 /// 不可用时 warn 放弃（best-effort，不阻断取消本体）。
 #[cfg(feature = "cluster")]
-fn spawn_task_cancel(
+/// pub：replan 执行臂（nemesisbot `board_replan.rs`）跨 crate 共用（同
+/// `dispatch_issue_core`/`confirm_plan`/`cascade_cancel_dependents` 先例）
+/// ——取消建议动作命中在途派发时必须走同一下行取消出口，不得另搓第二套
+/// （AOR 批三 5.3）。
+pub fn spawn_task_cancel(
     store: &Arc<BoardStore>,
     cluster: &Arc<nemesis_cluster::cluster::Cluster>,
     issue_id: i64,
@@ -5026,8 +5059,13 @@ fn spawn_task_cancel(
 /// 评论。传导断路：某节点取消失败（竞态输给 worker 完成）则其下游不再
 /// 连带取消（与旧「失败不入队」语义等价）。返回被连带取消的编号列表
 /// （C3：cancel 响应体披露，不再无声）。
+///
+/// pub：replan 执行臂（nemesisbot `board_replan.rs`）跨 crate 共用（同
+/// `dispatch_issue_core`/`confirm_plan` 先例）——取消建议动作必须走同一
+/// 级联取消机制（传导断路/在途派发取消/父单同步/留痕全对齐），不得另搓
+/// 第二套（AOR 批三 5.3）。
 #[cfg(feature = "cluster")]
-fn cascade_cancel_dependents(
+pub fn cascade_cancel_dependents(
     store: &Arc<BoardStore>,
     cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
     root_id: i64,
@@ -7593,7 +7631,33 @@ fn board_config_set(
             "auto_review" => board.auto_review = need_bool(value)?,
             "auto_accept" => board.auto_accept = need_bool(value)?,
             "auto_close_parent" => board.auto_close_parent = need_bool(value)?,
-            "unlimited_mode" => board.unlimited_mode = need_bool(value)?,
+            "unlimited_mode" => {
+                let v = need_bool(value)?;
+                // AOR 批三 5.1 矛盾态硬拒（关闭方向）：autonomy=autonomous
+                // 前置要求 unlimited_mode=true——先切回 assisted 才允许关。
+                if !v && board.autonomy == nemesis_config::BoardAutonomy::Autonomous {
+                    return Err(
+                        "unlimited_mode=false 与 autonomy=autonomous 矛盾（autonomous 前置要求 unlimited_mode=true）：先把 autonomy 切回 assisted，再关 unlimited_mode".to_string(),
+                    );
+                }
+                board.unlimited_mode = v;
+            }
+            // AOR 批三 5.1 自治模式总开关（"assisted"|"autonomous"；默认
+            // assisted=现状零回归）。矛盾态硬拒（开启方向）：autonomous
+            // 前置要求 unlimited_mode=true——先开 unlimited 再切 autonomous
+            // （加载期矛盾态走诚实降级，见 nemesis-config
+            // post_process_for_compatibility；写入口径从严硬拒）。
+            "autonomy" => {
+                let next: nemesis_config::BoardAutonomy = serde_json::from_value(value.clone())
+                    .map_err(|e| format!("autonomy 需要 \"assisted\"|\"autonomous\": {e}"))?;
+                if next == nemesis_config::BoardAutonomy::Autonomous && !board.unlimited_mode {
+                    return Err(
+                        "autonomy=autonomous 前置要求 unlimited_mode=true（防「监察环自动重派开着、评审 FAIL 却转人工」的矛盾态）：先开 unlimited_mode，或保持 assisted"
+                            .to_string(),
+                    );
+                }
+                board.autonomy = next;
+            }
             // P5/F1 冲突漏斗全局开关（false=human 档：冻结转人工）。
             "conflict_auto_resolve" => board.conflict_auto_resolve = need_bool(value)?,
             // P34 重派决策量化（灰度默认关；true = D3 换节点重派叠加
@@ -7864,7 +7928,7 @@ fn board_config_set(
             _ => {
                 return Err(format!(
                     "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
-                 auto_close_parent / unlimited_mode / conflict_auto_resolve / dispatch_fallback / \
+                 auto_close_parent / unlimited_mode / autonomy / conflict_auto_resolve / dispatch_fallback / \
                  dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
                  plan.auto_confirm / plan.model / review.max_turns / \

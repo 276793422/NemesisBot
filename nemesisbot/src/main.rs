@@ -66,6 +66,10 @@ mod board_evidence_tool;
 /// execute_plan_chain 四入口单一真相源）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_issue_tool;
+/// AOR 批三 5.3：重规划器编排（四类触发点挂接 + LLM 起草 + assisted
+/// 审批/autonomous 策略闸执行；建议≠授权；纯逻辑层在 nemesis_board::replan）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_replan;
 /// Swarm M4：验收 agent 编排（in_review 批作业三态处置；触发挂
 /// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
 #[cfg(all(feature = "board", feature = "cluster"))]

@@ -395,3 +395,165 @@ fn prompt_warns_when_criteria_missing() {
     let present = build_review_user_prompt("NB-3", "t", "d", Some("明示标准"), "report", &[]);
     assert!(!present.contains("验收标准未提供"), "标准在场不注入注记");
 }
+
+// ---------- AOR 批一c §③：逐条三态（criteria/unknowns）解析矩阵 ----------
+
+#[test]
+fn parse_criteria_and_unknowns_full_format() {
+    // 新格式全字段：criteria 带 [anchor] 锚点条目 + unknowns 清单。
+    let raw = r#"{
+        "verdict": "FAIL",
+        "reasons": ["两条不达标"],
+        "gap": "登录分支缺失；退出码锚点未过",
+        "criteria": [
+            {"criterion": "实现登录与登出", "verdict": "PASS", "evidence": "交付清单含 auth.rs"},
+            {"criterion": "branch 名以 feature/ 开头", "verdict": "FAIL", "evidence": "交付物清单无任何 branch 条目"},
+            {"criterion": "[anchor] re:退出码[^0-9\\n]{0,10}0", "verdict": "FAIL", "evidence": "系统实核：运行输出退出码 1"}
+        ],
+        "unknowns": ["超时重试策略是否需要计入验收未在标准中写明"]
+    }"#;
+    let out = parse_review(raw).unwrap();
+    assert_eq!(out.criteria.len(), 3);
+    assert_eq!(out.criteria[0].verdict, ReviewVerdict::Pass);
+    assert_eq!(out.criteria[1].verdict, ReviewVerdict::Fail);
+    // [anchor] 前缀原样保留（批二b 谓词按此识别系统锚点条目）。
+    assert!(
+        out.criteria[2].criterion.starts_with("[anchor]"),
+        "{}",
+        out.criteria[2].criterion
+    );
+    assert_eq!(out.unknowns.len(), 1);
+    assert!(out.unknowns[0].contains("超时重试"));
+}
+
+#[test]
+fn parse_criteria_absent_is_old_format_back_compat() {
+    // 旧格式缺 criteria/unknowns 字段 → 宽容降级空值，不判解析失败
+    // （与 need_evidence 的 B2b 兼容闸同构；存量模型输出零迁移）。
+    let out = parse_review(r#"{"verdict":"UNSURE","reasons":["标准模糊"]}"#).unwrap();
+    assert!(out.criteria.is_empty());
+    assert!(out.unknowns.is_empty());
+    // 显式 null 也宽容（serde Option 语义对 Vec 不适用，null 会失败——
+    // 这里钉的是「字段整个缺席」这一旧格式形态）。
+    let out2 = parse_review(r#"{"verdict":"PASS","reasons":[],"gap":""}"#).unwrap();
+    assert!(out2.criteria.is_empty() && out2.unknowns.is_empty());
+}
+
+#[test]
+fn parse_criteria_empty_arrays_legal() {
+    // 空数组 = 旧格式等价（宽容降级），不是解析错误。
+    let out =
+        parse_review(r#"{"verdict":"PASS","reasons":[],"gap":"","criteria":[],"unknowns":[]}"#)
+            .unwrap();
+    assert_eq!(out.verdict, ReviewVerdict::Pass);
+    assert!(out.criteria.is_empty() && out.unknowns.is_empty());
+}
+
+#[test]
+fn parse_rejects_pass_with_fail_criteria() {
+    // 逐条一致性：整体 PASS + 存在 FAIL 条 = 自相矛盾 → 回灌重试。
+    // （宽容解析只降级字段缺失，不放过语义冲突。）
+    let raw = r#"{"verdict":"PASS","reasons":[],"gap":"",
+        "criteria":[{"criterion":"a","verdict":"FAIL","evidence":"没做"}]}"#;
+    let err = parse_review(raw).unwrap_err();
+    assert!(err.message.contains("自相矛盾"), "{err}");
+    assert!(err.message.contains("UNSURE"), "回灌文案必须指明两条出路");
+    // 回灌提示词携带该错误与原文。
+    let p = build_retry_prompt(raw, &err);
+    assert!(p.contains("自相矛盾") && p.contains("criteria"));
+}
+
+#[test]
+fn parse_allows_unsure_criteria_with_pass_overall() {
+    // UNSURE 条 + PASS 整体不拒（评审端纪律自行降级；下游照实呈现
+    // 少数意见——parse 互斥只管 FAIL 条这一硬矛盾）。
+    let raw = r#"{"verdict":"PASS","reasons":[],"gap":"",
+        "criteria":[{"criterion":"性能指标","verdict":"UNSURE","evidence":"无实测数据"}]}"#;
+    let out = parse_review(raw).unwrap();
+    assert_eq!(out.verdict, ReviewVerdict::Pass);
+    assert_eq!(out.criteria[0].verdict, ReviewVerdict::Unsure);
+}
+
+// ---------- render_gap_with_criteria（重派反馈/差距评论渲染） ----------
+
+/// 构造带条目的 ReviewOutput（render 测试专用夹具）。
+fn out_with_criteria(gap: &str, criteria: Vec<CriterionVerdict>) -> ReviewOutput {
+    ReviewOutput {
+        verdict: ReviewVerdict::Fail,
+        reasons: vec![],
+        gap: gap.to_string(),
+        experience: None,
+        need_evidence: None,
+        evidence_request: None,
+        criteria,
+        unknowns: vec![],
+    }
+}
+
+#[test]
+fn render_gap_lists_only_non_pass_criteria_with_evidence() {
+    let out = out_with_criteria(
+        "自由文本差距（有条目时被条目清单取代）",
+        vec![
+            CriterionVerdict {
+                criterion: "实现登录".into(),
+                verdict: ReviewVerdict::Pass,
+                evidence: "auth.rs 在场".into(),
+            },
+            CriterionVerdict {
+                criterion: "branch 名以 feature/ 开头".into(),
+                verdict: ReviewVerdict::Fail,
+                evidence: "交付清单无 branch 条目".into(),
+            },
+            CriterionVerdict {
+                criterion: "[anchor] re:退出码…0".into(),
+                verdict: ReviewVerdict::Unsure,
+                evidence: String::new(),
+            },
+        ],
+    );
+    let rendered = render_gap_with_criteria(&out);
+    assert!(rendered.starts_with("逐条差距："), "{rendered}");
+    // PASS 条不列（worker 只需要看没过的）。
+    assert!(!rendered.contains("实现登录"));
+    assert!(!rendered.contains("auth.rs"));
+    // FAIL/UNSURE 条带 verdict 标记 + criterion + 证据。
+    assert!(
+        rendered.contains("- [FAIL] branch 名以 feature/ 开头"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("证据：交付清单无 branch 条目"));
+    assert!(rendered.contains("- [UNSURE] [anchor] re:退出码…0"));
+    assert!(rendered.contains("证据：（未给出）"), "空证据诚实占位");
+    // 自由文本 gap 不再混入。
+    assert!(!rendered.contains("自由文本差距"));
+}
+
+#[test]
+fn render_gap_falls_back_to_gap_without_criteria() {
+    // 旧格式（无条目）→ 回落 gap 原文（系统判定路径行为不变）。
+    let out = out_with_criteria("  缺 branch 名  ", vec![]);
+    assert_eq!(render_gap_with_criteria(&out), "缺 branch 名");
+}
+
+#[test]
+fn render_gap_falls_back_when_all_criteria_pass() {
+    // 全 PASS 条 → 没有可列的非 PASS 条 → 回落 gap。
+    let out = out_with_criteria(
+        "gap 原文",
+        vec![CriterionVerdict {
+            criterion: "c".into(),
+            verdict: ReviewVerdict::Pass,
+            evidence: "e".into(),
+        }],
+    );
+    assert_eq!(render_gap_with_criteria(&out), "gap 原文");
+}
+
+#[test]
+fn render_gap_can_return_empty_for_unsure_without_gap() {
+    // UNSURE + 无条目 + 空 gap → 空串（调用方自行兜底，board_review
+    // 侧 UNSURE 臂有固定兜底文案）。
+    let out = out_with_criteria("   ", vec![]);
+    assert_eq!(render_gap_with_criteria(&out), "");
+}

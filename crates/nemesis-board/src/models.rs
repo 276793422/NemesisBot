@@ -153,6 +153,10 @@ pub struct DispatchRecord {
     pub state: String,
     pub dispatched_at: i64,
     pub completed_at: Option<i64>,
+    /// 派发代际号（AOR 批二a ④）：首派 0、第 N 次重派 N-1（落库时按该
+    /// issue 已有派发行数计算）。随派发下行到 worker、写回原样回声——
+    /// 写回闸据此拒绝旧代迟到回调覆盖新一代派发状态。
+    pub generation: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +435,9 @@ pub mod notification_kind {
     /// 对象 ∪ 订阅者，由 sweep 调用方显式 [`crate::BoardStore::notify`]，
     /// 不走 store 内部钩子）。
     pub const DISPATCH_FAILED: &str = "dispatch_failed";
+    /// 重规划建议被策略闸拒绝（AOR 批三 5.3：autonomous 模式下建议动作
+    /// 超约束被拒 → 冻结 + 审计评论 + 本通知显形——宁可停不可闯）。
+    pub const REPLAN_BLOCKED: &str = "replan_blocked";
 }
 
 /// 站内通知（表 `notification`；收件人是多态 Actor）。

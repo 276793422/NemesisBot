@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 22;
+const SCHEMA_VERSION: i32 = 23;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -413,7 +413,16 @@ const SCHEMA_V22: &str = r#"
 ALTER TABLE autopilot ADD COLUMN session_key TEXT NOT NULL DEFAULT '';
 "#;
 
-/// L20 门面迁移链（v1-v22 数组化；语义与原散装 if 链等价：每步原子
+/// v23（AOR 批二a ④ 派发代际号，2026-11-04）：issue_dispatch 加 `generation`
+/// 列（INTEGER，首派 0、第 N 次重派 N-1——插入时按该 issue 已有派发行数
+/// COUNT 计算，重派列值随派发下行、worker 写回原样回声）。写回闸用途：
+/// 旧代派发的迟到回调与新一代派发冲突时诚实拒绝（防终态覆盖污染），是批三
+/// 监察重估超时重派的前置闸。DEFAULT 0 让存量行天然视为首派（旧行为兼容）。
+const SCHEMA_V23: &str = r#"
+ALTER TABLE issue_dispatch ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// L20 门面迁移链（v1-v23 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
 const fn mig(
     version: i32,
@@ -521,6 +530,11 @@ static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
         22,
         SCHEMA_V22,
         "Database migrated to v22 (L23 parent-session binding: autopilot.session_key)",
+    ),
+    mig(
+        23,
+        SCHEMA_V23,
+        "Database migrated to v23 (AOR batch-2a: issue_dispatch.generation 代际号)",
     ),
 ];
 

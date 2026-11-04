@@ -60,6 +60,20 @@ pub struct ExperienceNote {
     pub content: String,
 }
 
+/// 逐条三态判定（AOR 批一c §③）：单条验收标准的独立结论。
+///
+/// `criterion` 是语义条目的标准原文短引用；锚点条目以 `[anchor]` 开头
+/// （系统在锚点短路 FAIL 路径自动生成，LLM 在评审时按提示词纪律为失败
+/// 锚点补条目——判定以系统实核结果为准）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriterionVerdict {
+    pub criterion: String,
+    pub verdict: ReviewVerdict,
+    /// 判定证据（引交付材料/检查结果/系统实核结果）。
+    #[serde(default)]
+    pub evidence: String,
+}
+
 /// 验收输出（§6.1 schema；serde 宽容：缺字段用默认值——小模型漏
 /// reasons/gap 时按空处理，verdict 缺失才判解析失败）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,6 +95,14 @@ pub struct ReviewOutput {
     /// 取证请求正文（need_evidence=true 时应为一条可执行的取证指令）。
     #[serde(default)]
     pub evidence_request: Option<String>,
+    /// 逐条三态判定（AOR 批一c §③）。缺字段/空数组 = 旧输出格式（宽容
+    /// 降级为整单语义——旧 prompt 兼容，不判解析失败）。
+    #[serde(default)]
+    pub criteria: Vec<CriterionVerdict>,
+    /// 评审无法客观判定的事项清单（UNKNOWN）。落盘为 issue 系统评论的
+    /// `unknown: <事项>` 结构化标记行（批二b ⑥ FINISH 谓词消费）。
+    #[serde(default)]
+    pub unknowns: Vec<String>,
 }
 
 /// 从验收输出提取自检取证请求文本（B2b 挂起点）。
@@ -103,6 +125,36 @@ pub fn selfcheck_request_text(output: &ReviewOutput) -> Option<String> {
     } else {
         req.to_string()
     })
+}
+
+/// 渲染重派反馈/差距评论正文（AOR 批一c §③ 第 5 点）：output 带非 PASS
+/// 条目时输出条目清单（逐条 verdict + criterion + 证据），替代自由文本
+/// gap——worker 重派时知道具体哪条没过、缺什么证据；无条目（旧格式/空
+/// 数组/全部 PASS）回落 gap 原文（系统判定路径的 gap 本就是结构化明细，
+/// 行为不变）。返回值可能为空串（gap 原文本就为空），调用方自行兜底。
+pub fn render_gap_with_criteria(output: &ReviewOutput) -> String {
+    let unmet: Vec<&CriterionVerdict> = output
+        .criteria
+        .iter()
+        .filter(|c| c.verdict != ReviewVerdict::Pass)
+        .collect();
+    if unmet.is_empty() {
+        return output.gap.trim().to_string();
+    }
+    let mut s = String::from("逐条差距：\n");
+    for c in unmet {
+        s.push_str(&format!(
+            "- [{}] {}\n  证据：{}\n",
+            c.verdict.as_str(),
+            c.criterion.trim(),
+            if c.evidence.trim().is_empty() {
+                "（未给出）"
+            } else {
+                c.evidence.trim()
+            }
+        ));
+    }
+    s
 }
 
 /// 解析失败的原因（`message` 直接回灌给 LLM，必须人读且指明怎么改）。
@@ -140,11 +192,25 @@ pub fn parse_review(raw: &str) -> Result<ReviewOutput, ReviewParseError> {
                     .to_string(),
         });
     }
+    // AOR 批一c §③ 逐条一致性：有 FAIL 条目而整体 PASS = 自相矛盾 →
+    // 回灌重试（宽容解析只降级字段缺失，不放过语义冲突）。UNSURE 条 +
+    // PASS 整体不拒（评审端纪律会自行降级；下游条目清单照实呈现少数意见）。
+    if out.verdict == ReviewVerdict::Pass
+        && out
+            .criteria
+            .iter()
+            .any(|c| c.verdict == ReviewVerdict::Fail)
+    {
+        return Err(ReviewParseError {
+            message: "verdict 为 PASS 但 criteria 中存在 FAIL 条目，自相矛盾。整体 PASS 要求所有条目判定为 PASS：确有个别条目未达标的，把该条判 FAIL 并把整体 verdict 改为 FAIL；个别存疑的判 UNSURE 并把整体 verdict 降为 UNSURE。".to_string(),
+        });
+    }
     Ok(out)
 }
 
 /// 从 LLM 原始输出中提取 JSON 对象文本：剥 ``` 围栏、丢弃围栏外文字。
-fn extract_json_object(raw: &str) -> Option<String> {
+/// pub(crate)：replan 解析共用（同一单一真相源，AOR 批三 5.3）。
+pub(crate) fn extract_json_object(raw: &str) -> Option<String> {
     let start = raw.find('{')?;
     let end = raw.rfind('}')?;
     if end < start {
@@ -189,11 +255,13 @@ pub fn strip_directive_lines(acceptance_criteria: &str) -> String {
 }
 
 /// 按 rune 边界安全截断到 `max` 字节，超限加省略号注记。
+/// 按字节截断（UTF-8 字符边界安全）。
 ///
-/// pub(crate)：planner 回灌提示词共用（planner.rs:363 曾裸字节切片
-/// `&s[..4000]`，中文第 4000 字节落在多字节字符中间直接 panic——tokio
-/// 任务无声死亡、规划链断、看板零留痕，2026-10-11 真机实证）。
-pub(crate) fn truncate_bytes(text: &str, max: usize) -> String {
+/// pub：重规划证据材料共用（nemesisbot `board_replan.rs` 提示词组装，
+/// AOR 批三 5.3）；pub(crate)：planner 回灌提示词共用（planner.rs:363 曾
+/// 裸字节切片 `&s[..4000]`，中文第 4000 字节落在多字节字符中间直接
+/// panic——tokio 任务无声死亡、规划链断、看板零留痕，2026-10-11 真机实证）。
+pub fn truncate_bytes(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }

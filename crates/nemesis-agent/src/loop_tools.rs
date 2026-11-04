@@ -4243,6 +4243,11 @@ pub struct ClusterRpcTool {
     /// Returns online peer nodes with their capabilities for dynamic tool description.
     /// Each tuple: (node_id, node_name, capabilities).
     peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
+    /// 负载感知路由（最小版）：`target="auto"` 的解析器——网关注入的
+    /// `Cluster::pick_auto_route_target` 包装（在线节点按健康/负载评分取
+    /// 最优，排除本节点）。None = 未装配（execute 对 "auto" 诚实报错，
+    /// 不发送）。返回 None = 无可用候选（同样诚实报错）。
+    auto_target_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 impl ClusterRpcTool {
@@ -4255,6 +4260,7 @@ impl ClusterRpcTool {
             enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             rpc_call_fn: None,
             peers_fn: None,
+            auto_target_fn: None,
         }
     }
 
@@ -4305,6 +4311,13 @@ impl ClusterRpcTool {
         f: Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>,
     ) {
         self.peers_fn = Some(f);
+    }
+
+    /// 负载感知路由（最小版）：注入 `target="auto"` 的解析器（网关侧
+    /// `Cluster::pick_auto_route_target` 的包装——在线节点按健康/负载评分
+    /// 取最优，排除本节点）。未注入时 execute 对 "auto" 诚实报错。
+    pub fn set_auto_target_fn(&mut self, f: Arc<dyn Fn() -> Option<String> + Send + Sync>) {
+        self.auto_target_fn = Some(f);
     }
 }
 
@@ -4363,6 +4376,12 @@ impl Tool for ClusterRpcTool {
             format!("Target bot ID{}", self_id_note)
         };
 
+        // 负载感知路由（最小版）：auto 入口恒宣告（未装配时 execute 诚实
+        // 报错——比 schema 静默不提更利于模型理解失败原因）。
+        let target_desc = format!(
+            "{target_desc}\nYou may also pass \"auto\": the gateway picks the best online node for you (health/load aware)."
+        );
+
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -4400,6 +4419,26 @@ impl Tool for ClusterRpcTool {
             .or_else(|| val.get("peer_id"))
             .and_then(|v| v.as_str())
             .ok_or("Missing 'target_node' field")?;
+
+        // 负载感知路由（最小版）：target="auto" 由注入的选择器解析成具体
+        // 节点（网关侧按健康/负载评分选在线节点，排除本节点）。解析器缺席
+        // 或无可用候选都诚实报错不发送——「auto」绝不静默退化为任意节点。
+        let auto_resolved;
+        let target_node = if target_node.eq_ignore_ascii_case("auto") {
+            let f = self.auto_target_fn.as_ref().ok_or_else(|| {
+                "target=\"auto\" 自动路由未装配（本实例未接入负载感知选择器）。\
+                 请改用具体节点 ID，不要重试 auto。"
+                    .to_string()
+            })?;
+            auto_resolved = f().ok_or_else(|| {
+                "target=\"auto\" 自动路由无可用节点（当前无在线候选）。\
+                 请稍后重试或改用具体节点 ID。"
+                    .to_string()
+            })?;
+            auto_resolved.as_str()
+        } else {
+            target_node
+        };
 
         // Guard: reject self-invocation. The LLM should never target the local
         // node via cluster_rpc — doing so creates a nested child task that loops

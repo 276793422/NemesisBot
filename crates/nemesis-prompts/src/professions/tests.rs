@@ -433,6 +433,32 @@ fn reasoning_closure_discipline_present_on_both_sides() {
     }
 }
 
+/// AOR ① worker 纪律吸收（2026-11-04 批一a）：STATE-FIRST / 资源边界 /
+/// 换策略 ANTI-LOOP / 六词汇报 / 失败类别 / 汇报是证据候选——稳定前缀
+/// 新增纪律段的防误删关键词快照（本文件惯例：非字节快照）。
+#[test]
+fn worker_contract_carries_aor_discipline_sections() {
+    for kw in [
+        "执行纪律",
+        "STATE-FIRST",
+        "资源边界",
+        "[TOUCH] 声明",
+        "换策略纪律",
+        "禁止第三次原样重试",
+        "六词汇报",
+        "PROPOSAL 不是授权",
+        "失败类别",
+        "环境缺失",
+        "资源冲突",
+        "汇报是证据候选",
+    ] {
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺 AOR 纪律关键词 {kw}"
+        );
+    }
+}
+
 #[test]
 fn catalog_name_and_tier_metadata_align_with_plan() {
     let name_of = |slug: &str| find_builtin(slug).unwrap().name;

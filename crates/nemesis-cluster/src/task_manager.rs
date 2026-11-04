@@ -279,6 +279,9 @@ impl PoisonedTaskStore {
 
 type OnCompleteCallback = Box<dyn Fn(&Task) + Send + Sync>;
 
+/// 负载感知路由记账回调签名（A 端任务结局：task_id + ok）。
+type RouteRecordCallback = dyn Fn(&str, bool) + Send + Sync;
+
 // ---------------------------------------------------------------------------
 // TaskManager
 // ---------------------------------------------------------------------------
@@ -303,6 +306,14 @@ pub struct TaskManager {
     /// （`Cluster.task_manager`），旧 `&mut self` 签名让 start/stop 无法经
     /// Arc 调用——清理循环因此在生产从未接线，终态任务在 tasks.db 无限累积。
     stop_tx: parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<()>>>,
+    /// 负载感知路由记账回调（A 端，Cluster 构造期安装）。回调漏斗
+    /// （complete_task/fail_task）之外的五处旁路 settle 点——恢复轮询
+    /// sweep 三分支（安全网超时判死 / done 回灌 / not_found 判死）、默认
+    /// peer_chat_callback handler 兜底臂、G4 清理 tick 的 H4 安全网判死
+    /// （`cleanup_completed`）——经 [`Self::fire_route_record`] 补记账，
+    /// 慢/坏节点的失败样本才进得了路由统计。未安装 = fire no-op
+    /// （独立 TaskManager 的单测路径）。
+    route_record_fn: Mutex<Option<Arc<RouteRecordCallback>>>,
 }
 
 /// G4: pending 任务安全网默认值（24 小时）。
@@ -339,6 +350,7 @@ impl TaskManager {
             on_complete: Mutex::new(None),
             pending_timeout: Arc::new(parking_lot::RwLock::new(default_pending_timeout())),
             stop_tx: parking_lot::Mutex::new(None),
+            route_record_fn: Mutex::new(None),
         }
     }
 
@@ -378,6 +390,7 @@ impl TaskManager {
         let cleanup_interval = self.cleanup_interval;
         let on_complete = self.on_complete.lock().clone();
         let pending_timeout = self.pending_timeout.clone();
+        let route_record = self.route_record_fn.lock().clone();
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
@@ -387,7 +400,7 @@ impl TaskManager {
                         return;
                     }
                     _ = interval.tick() => {
-                        cleanup_completed(&store, &on_complete, &pending_timeout);
+                        cleanup_completed(&store, &on_complete, &pending_timeout, &route_record);
                     }
                 }
             }
@@ -418,6 +431,23 @@ impl TaskManager {
     /// Set or replace the completion callback.
     pub fn set_callback(&self, callback: Box<dyn Fn(&Task) + Send + Sync>) {
         *self.on_complete.lock() = Some(Arc::from(callback));
+    }
+
+    /// 安装负载感知路由记账回调（幂等覆盖；见 [`Self::route_record_fn`]）。
+    pub fn set_route_record_fn(&self, f: Arc<RouteRecordCallback>) {
+        *self.route_record_fn.lock() = Some(f);
+    }
+
+    /// 触发负载感知路由记账（未安装 = no-op）。旁路 settle 点调用——
+    /// 记账语义（去重/过滤/时长样本）由 Cluster 侧闭包定义。
+    pub fn fire_route_record(&self, task_id: &str, ok: bool) {
+        // Clone the hook OUT of the lock（对齐 confirm_delivery BUG #19 同款
+        // 纪律）：钩子闭包体内会经 get_task 锁 store，不持 route_record_fn
+        // 守卫跨调用——防未来钩子实现重入本锁自锁死（parking_lot 非重入）。
+        let f = self.route_record_fn.lock().clone();
+        if let Some(f) = f.as_ref() {
+            f(task_id, ok);
+        }
     }
 
     /// Set the completion callback that receives a task ID string.
@@ -701,6 +731,7 @@ fn cleanup_completed(
     store: &Arc<dyn TaskStore>,
     on_complete: &Option<Arc<OnCompleteCallback>>,
     pending_timeout: &parking_lot::RwLock<chrono::Duration>,
+    route_record: &Option<Arc<RouteRecordCallback>>,
 ) {
     // Clean up completed, failed, and cancelled tasks older than 2 hours
     let finished_statuses = [
@@ -773,6 +804,15 @@ fn cleanup_completed(
                                 (chrono::Local::now() - created_utc).num_seconds()
                             ),
                         );
+
+                        // 负载感知路由：H4 判死也是任务终态 settle，经路由
+                        // 钩子补记账失败样本。Running 卡死任务没有其他回收
+                        // 路径（恢复 sweep 只扫 Pending）；Pending 分支与
+                        // 恢复 sweep 竞速（本 tick 30s vs sweep 120s，本臂
+                        // 先到为主），先到先记，共用同一去重集不双计。
+                        if let Some(f) = route_record.as_ref() {
+                            f(&task.id, false);
+                        }
 
                         // Fire callback if set
                         if let Some(cb) = on_complete

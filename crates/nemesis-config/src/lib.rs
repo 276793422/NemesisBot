@@ -663,6 +663,67 @@ impl<'de> Deserialize<'de> for DispatchFallbackMode {
     }
 }
 
+/// 自治模式总开关（AOR 批三 5.1；默认 `Assisted` = 现状零回归）。
+/// 与 `unlimited_mode` 正交并存：unlimited 管**评审处置环**自动化
+/// （FAIL 预算 ∞ 与 UNSURE 继续重派），autonomy 管**监察环**自动化
+/// （超时/离线自动重派与触发式重估）。
+///
+/// 矛盾态（autonomous 且 unlimited=false）在两处拦截：config 加载期
+/// （`post_process_for_compatibility`）诚实降级为 assisted 并 WARN
+/// （安全方向回退，不炸网关——沙盒未就绪回退 Layer 1 同款先例）；
+/// 面板保存（`board.config.set`）硬拒。estop 与外部熔断权不受此字段
+/// 影响（不变量）；unlimited 的预算 ∞ 语义**不联动**到 sweep 监察环
+/// （监察环预算是独立硬防线）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoardAutonomy {
+    /// 辅助模式（默认）：一切建议转人工（现状行为，零回归）。
+    #[default]
+    Assisted,
+    /// 自治模式：监察环策略自动裁决 + 事后审计评论留痕。
+    Autonomous,
+}
+
+impl Serialize for BoardAutonomy {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let s = match self {
+            Self::Assisted => "assisted",
+            Self::Autonomous => "autonomous",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for BoardAutonomy {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = BoardAutonomy;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("\"assisted\" | \"autonomous\"")
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                match v.trim().to_ascii_lowercase().as_str() {
+                    "assisted" => Ok(BoardAutonomy::Assisted),
+                    "autonomous" => Ok(BoardAutonomy::Autonomous),
+                    other => Err(E::invalid_value(
+                        serde::de::Unexpected::Str(other),
+                        &"assisted | autonomous",
+                    )),
+                }
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
 /// 看板系统旗标（`config.json` 的 `board` 段；`#[serde(default)]` 每字段全可省）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -705,6 +766,10 @@ pub struct BoardFlagConfig {
     /// estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且差距无
     /// 变化时 WARN 告警（只告警不停）。
     pub unlimited_mode: bool,
+    /// 自治模式总开关（AOR 批三 5.1；默认 `Assisted` = 现状零回归）。见
+    /// [`BoardAutonomy`] 类型文档：与 unlimited_mode 正交并存，矛盾态在
+    /// 加载期降级 / 面板保存硬拒两处拦截。
+    pub autonomy: BoardAutonomy,
     /// 停车场兜底派发档位（集群完备性加固 2026-09-11 引入；2026-09-29 三档化，
     /// 默认 `Role` = 角色缺失是常态：职能/tier 门槛随职能放开，但角色纪律
     /// 保留，不停车）。`Off` = 无人匹配即停车等节点；`Full` = 全松弛（角色
@@ -743,6 +808,8 @@ pub struct BoardFlagConfig {
     pub fingerprint_weighting: bool,
     /// LLM 端点不可用期封存（U-B 断网封存；`board.unavailable` 段）。
     pub unavailable: BoardUnavailableConfig,
+    /// 重规划器配置（AOR 批三 5.3；`board.replan` 段）。
+    pub replan: BoardReplanConfig,
 }
 
 impl Default for BoardFlagConfig {
@@ -760,6 +827,7 @@ impl Default for BoardFlagConfig {
             max_redispatch: 2,
             auto_close_parent: false,
             unlimited_mode: false,
+            autonomy: BoardAutonomy::Assisted,
             dispatch_fallback: DispatchFallbackMode::default(),
             dispatch_fallback_target: None,
             worker_max_inflight: 1,
@@ -769,6 +837,43 @@ impl Default for BoardFlagConfig {
             conflict_auto_resolve: false,
             fingerprint_weighting: false,
             unavailable: BoardUnavailableConfig::default(),
+            replan: BoardReplanConfig::default(),
+        }
+    }
+}
+
+/// 重规划器配置（AOR 批三 5.3；`config.json` 的 `board.replan` 段）。
+/// 重规划 = 事件驱动的**建议**产出（proposal ≠ authorization）：四个触发
+/// 点（重派无意义失败停车 / 父评审 FAIL / 冻结类停车 / FINISH 谓词被
+/// unknown 阻塞超时）命中时收集证据 → LLM 起草结构化建议 → 落看板系统
+/// 评论。assisted 模式建议只落评论 @创建者审批；autonomous 模式过策略闸
+/// （下方硬约束）后才自动执行，任一闸不通过 = 冻结 + 审计评论 + 站内
+/// 通知——宁可停不可闯。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardReplanConfig {
+    /// 重规划建议总开关：false = 触发点命中时静默（不起草不评论）。
+    pub enabled: bool,
+    /// 自治执行策略闸：单次重规划新增子单数上限（超出 = 拒绝执行，
+    /// 冻结转人工）。
+    pub max_new_subissues: u32,
+    /// 自治执行策略闸：是否允许取消「已 done 之外」的子单（默认 false =
+    /// 任何针对非终态子单的 cancel 建议都不自动执行，冻结转人工）。
+    pub allow_cancel_active: bool,
+    /// 触发点④ 超时秒数：子树全终态但 FINISH 谓词被未裁决 unknown 阻塞
+    /// 超过该时长 → 起草重规划建议。0 = 关（默认关）。纯事件驱动在全员
+    /// 终态后无事件可挂（终态单不再产生 settle 事件），靠派发 sweep
+    /// ticker 周期体检兜底。
+    pub unknown_block_timeout_secs: u64,
+}
+
+impl Default for BoardReplanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_new_subissues: 6,
+            allow_cancel_active: false,
+            unknown_block_timeout_secs: 0,
         }
     }
 }
@@ -5317,6 +5422,21 @@ impl Config {
 
         // WebSocket channel: populate SyncToWeb from SyncTo
         self.channels.websocket.sync_to_web = !self.channels.websocket.sync_to.is_empty();
+
+        // AOR 批三 5.1：autonomy=autonomous 前置要求 unlimited_mode=true——
+        // 防「监察环自动重派开着、评审 FAIL 却转人工」的矛盾态。加载期矛盾
+        // 诚实降级为 assisted + WARN（安全方向回退，网关不被一个旗标卡死——
+        // 沙盒未就绪回退 Layer 1 同款先例）；面板保存路径硬拒（nemesis-web
+        // board_config_set 两个方向都拦）。
+        if let Some(board) = self.board.as_mut()
+            && board.autonomy == BoardAutonomy::Autonomous
+            && !board.unlimited_mode
+        {
+            warn!(
+                "[Config] board.autonomy=autonomous 但 unlimited_mode=false（矛盾态）：降级为 assisted 生效（请在面板开启 unlimited_mode 后再切 autonomous）"
+            );
+            board.autonomy = BoardAutonomy::Assisted;
+        }
     }
 
     /// Adjust hardcoded default paths to respect NEMESISBOT_HOME.
@@ -5904,6 +6024,10 @@ mod ws2_compact_config_tests;
 // 兼容测试。
 #[cfg(test)]
 mod dispatch_fallback_mode_tests;
+
+// 自治模式总开关（AOR 批三 5.1）：serde 缺省 / 矛盾态加载期降级测试。
+#[cfg(test)]
+mod autonomy_tests;
 
 // P5（桌面级 VM）：executor.vm 段配置面（serde 缺省铁律 / roundtrip /
 // validate loud 拒绝）测试。

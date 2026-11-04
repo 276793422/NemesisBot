@@ -1098,6 +1098,7 @@ async fn test_send_callback_or_persist_no_source() {
         None,
         None,
         None,
+        None,
     )
     .await;
 }
@@ -1521,6 +1522,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(ok, "callback should succeed against the live server");
@@ -1554,6 +1556,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(ok2);
@@ -1579,6 +1582,7 @@ async fn test_w3b_send_callback_retries_exhausted_when_peer_unreachable() {
         "success",
         "r",
         "",
+        None,
         None,
         None,
         None,
@@ -1615,6 +1619,7 @@ async fn test_w3b_send_callback_or_persist_deletes_after_successful_callback() {
         "success",
         "answer",
         "",
+        None,
         None,
         None,
         None,
@@ -1772,6 +1777,7 @@ async fn test_s4_send_callback_or_persist_delete_failure_logs() {
         None,
         None,
         None,
+        None,
     )
     .await;
 
@@ -1818,6 +1824,7 @@ async fn test_s4_send_callback_or_persist_set_result_failure_logs() {
         None,
         None,
         None,
+        None,
     )
     .await;
 
@@ -1845,6 +1852,7 @@ async fn test_s4_send_callback_retry_warn_field_line() {
         "success",
         "r",
         "",
+        None,
         None,
         None,
         None,
@@ -1889,6 +1897,7 @@ async fn test_p2a_fail_class_field_wire_contract() {
         None,
         Some("validation_budget"),
         None,
+        None,
     )
     .await;
     assert!(ok);
@@ -1902,6 +1911,7 @@ async fn test_p2a_fail_class_field_wire_contract() {
         "success",
         "done",
         "",
+        None,
         None,
         None,
         None,
@@ -1972,6 +1982,7 @@ async fn test_p4_delivery_field_wire_contract() {
             "patch_path": "logs/deliveries/p4-cb-1.patch",
             "patch_truncated": false
         })),
+        None,
     )
     .await;
     assert!(ok);
@@ -1985,6 +1996,7 @@ async fn test_p4_delivery_field_wire_contract() {
         "success",
         "done",
         "",
+        None,
         None,
         None,
         None,
@@ -2111,6 +2123,7 @@ async fn test_send_callback_dials_through_offline_registry() {
         "success",
         "echo-back",
         "",
+        None,
         None,
         None,
         None,

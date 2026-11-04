@@ -423,6 +423,9 @@ impl PeerChatHandler {
                 // L13-b：验签通过的执行面守卫投影随任务走（cluster_agent
                 // set 进 AgentLoop guard 槽）；None = 无 mandate。
                 mandate: mandate_enforcement,
+                // AOR 批二a ④：派发代际号（可选键，旧 A 端不带 → None）。
+                // 随任务存进 task_list，回调时原样回声给 A 端写回闸。
+                dispatch_generation: payload.get("dispatch_generation").and_then(|v| v.as_i64()),
             };
             task_list.create_task(cluster_task);
             // 压测②（2026-09-30 三设备）：取证任务（board 评审链的
@@ -620,6 +623,7 @@ async fn process_async(
                 None,
                 Some("exec_failed"),
                 None,
+                None,
             )
             .await;
             return;
@@ -658,6 +662,7 @@ async fn process_async(
                 None,
                 Some("exec_failed"),
                 None,
+                None,
             )
             .await;
             return;
@@ -685,6 +690,7 @@ async fn process_async(
                 None,
                 Some("exec_failed"),
                 None,
+                None,
             )
             .await;
             return;
@@ -704,6 +710,7 @@ async fn process_async(
                 None,
                 Some("llm_timeout"),
                 None,
+                None,
             )
             .await;
             return;
@@ -721,6 +728,7 @@ async fn process_async(
         "success",
         &response,
         "",
+        None,
         None,
         None,
         None,
@@ -750,6 +758,7 @@ pub async fn send_callback_or_persist(
     usage: Option<serde_json::Value>,
     fail_class: Option<&str>,
     delivery: Option<serde_json::Value>,
+    dispatch_generation: Option<i64>,
 ) {
     let callback_ok = if !source_node_id.is_empty() {
         send_callback(
@@ -763,6 +772,7 @@ pub async fn send_callback_or_persist(
             usage,
             fail_class,
             delivery,
+            dispatch_generation,
         )
         .await
     } else {
@@ -807,6 +817,9 @@ pub async fn send_callback_or_persist(
 /// `delivery`（P4 交付门）：worker 侧交付分支证据（ref/commit/tree/patch
 /// 元数据 JSON，serde 兼容——旧 master 忽略未知字段；无交付 = None，
 /// 字段不落）。
+/// `dispatch_generation`（AOR 批二a ④）：派发代际号原样回声（None = 键
+/// 不落——wire 兼容与 usage 同款；A 端写回闸对回声缺席 = 放行，旧 B 端
+/// / legacy 路径 / CD3 恢复路径均走该兼容臂）。
 pub async fn send_callback(
     rpc_client: Option<&RpcClient>,
     source_node_id: &str,
@@ -818,6 +831,7 @@ pub async fn send_callback(
     usage: Option<serde_json::Value>,
     fail_class: Option<&str>,
     delivery: Option<serde_json::Value>,
+    dispatch_generation: Option<i64>,
 ) -> bool {
     let client = match rpc_client {
         Some(c) => c,
@@ -840,6 +854,9 @@ pub async fn send_callback(
     }
     if let Some(d) = delivery {
         payload["delivery"] = d;
+    }
+    if let Some(g) = dispatch_generation {
+        payload["dispatch_generation"] = serde_json::json!(g);
     }
 
     for attempt in 0..MAX_CALLBACK_RETRIES {

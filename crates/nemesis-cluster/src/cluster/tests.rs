@@ -6928,6 +6928,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         required_profession: None,
         async_usage_stash: None,
         mandate: None,
+        dispatch_generation: None,
     });
     tl.save_async_state(
         "parent-1",
@@ -7000,6 +7001,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         required_profession: None,
         async_usage_stash: None,
         mandate: None,
+        dispatch_generation: None,
     });
     tl.save_async_state(
         "parent-2",
@@ -11152,5 +11154,442 @@ fn l13a_revoked_iroh_veto_skips_mandate_pin() {
         reloaded.data().mandate_keys.is_empty(),
         "veto 短路 → mandate 公钥不钉存: {:?}",
         reloaded.data()
+    );
+}
+
+// ===== 负载感知路由（最小版）：结局记账 + auto 选点 =====
+
+/// 构造测试 peer（ExtendedNodeInfo 全字段；status 可指定 Online/Offline）。
+fn route_peer(id: &str, status: NodeStatus) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: id.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.10:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec!["llm".into()],
+        tags: Vec::new(),
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    }
+}
+
+#[test]
+fn test_route_stats_recorded_on_complete_and_fail() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("worker-a", NodeStatus::Online));
+
+    let t1 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+    let t2 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi2" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true })));
+    assert!(cluster.fail_task(&t2, "boom"));
+
+    let snap = cluster.route_stats_snapshot();
+    let s = snap
+        .get("worker-a")
+        .expect("peer-attributed outcome must be recorded");
+    assert_eq!(s.completed, 1, "一次成功入账");
+    assert_eq!(s.failed, 1, "一次失败入账");
+    assert_eq!(
+        s.response_samples, 2,
+        "Completed/Failed 都写 completed_at → 两条都采样耗时"
+    );
+    assert!((s.success_rate() - 0.5).abs() < 1e-9);
+    assert_eq!(s.avg_response_ms(), s.total_response_ms / 2);
+}
+
+#[test]
+fn test_route_stats_dedupes_idempotent_replays() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("worker-a", NodeStatus::Online));
+
+    let t1 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+    let t2 = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi2" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true })));
+    // 幂等重放（送达重试/B 端重发）：settle_task 幂等成功仍返回 true，
+    // 记账侧必须去重——每任务只计首次 settle，不得双计。
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true, "replay": 1 })));
+    assert!(cluster.complete_task(&t1, serde_json::json!({ "ok": true, "replay": 2 })));
+
+    assert!(cluster.fail_task(&t2, "boom"));
+    assert!(cluster.fail_task(&t2, "boom-replay"));
+
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-a").expect("peer entry present");
+    assert_eq!(s.completed, 1, "重复 complete 幂等重放不得双计");
+    assert_eq!(s.failed, 1, "重复 fail 幂等重放不得双计");
+    assert_eq!(
+        s.response_samples, 2,
+        "耗时样本同样只计首次（每任务一条样本）"
+    );
+    assert!((s.success_rate() - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn test_route_stats_skips_unattributed_and_self() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // 无 peer 归因（submit_task 不带 peer）→ 不入账
+    let t = cluster.submit_task("peer_chat", serde_json::json!({}), "web", "c1");
+    assert!(cluster.complete_task(&t, serde_json::json!({})));
+    // 归因到本节点 → 不入账（路由只关心「派给谁」，本节点不在候选集）
+    let t2 = cluster.submit_task("peer_chat", serde_json::json!({}), "web", "c1");
+    assert!(cluster.assign_task(&t2, "local-node-001"));
+    assert!(cluster.complete_task(&t2, serde_json::json!({})));
+
+    assert!(
+        cluster.route_stats_snapshot().is_empty(),
+        "无归因/自归因任务不进路由统计"
+    );
+}
+
+/// 负载感知路由：恢复轮询 sweep 的旁路 settle 也补记账（二轮回头检查修复）。
+/// done 回灌分支记成功 + 耗时样本；终态任务离开 pending 列表——重跑 sweep
+/// 不双计（去重集兜底，与回调漏斗共用同一记账核心）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_recovery_sweep_done() {
+    let cluster = Cluster::new(make_config());
+    let t = cluster
+        .submit_peer_chat(
+            "worker-a",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, payload| {
+        let id = payload
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let resp = serde_json::json!({
+            "status": "done",
+            "task_id": id,
+            "result_status": "success",
+            "response": "ok",
+            "error": "",
+        });
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
+
+    assert_eq!(
+        cluster.task_manager.get_task(&t).unwrap().status,
+        TaskStatus::Completed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-a").expect("sweep done 分支补记账");
+    assert_eq!(s.completed, 1);
+    assert_eq!(s.failed, 0);
+    assert_eq!(s.response_samples, 1, "completed_at 已落 → 耗时样本照采");
+
+    // 终态任务不再出现在 pending 列表——重跑 sweep 不得双计。
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
+    assert_eq!(
+        cluster
+            .route_stats_snapshot()
+            .get("worker-a")
+            .unwrap()
+            .completed,
+        1,
+        "重跑 sweep 不得双计"
+    );
+}
+
+/// 负载感知路由：安全网超时判死分支补记账失败样本（慢/坏节点信号——
+/// 恰是路由最需要看到的观测，漏记会乐观偏向慢节点）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_recovery_sweep_timeout() {
+    let cluster = Cluster::new(make_config());
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    cluster
+        .task_manager
+        .submit(Task {
+            id: "sweep-timeout-route".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "worker-slow".to_string(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: "rpc".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_time,
+            completed_at: None,
+        })
+        .unwrap();
+
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
+
+    assert_eq!(
+        cluster
+            .task_manager
+            .get_task("sweep-timeout-route")
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-slow").expect("超时判死补记账失败样本");
+    assert_eq!(s.completed, 0);
+    assert_eq!(s.failed, 1);
+}
+
+/// 负载感知路由：恢复轮询 sweep not_found 判死分支补记账（三轮回头检查
+/// 补测——worker 丢任务（典型：重启）= 该节点失败样本）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_recovery_sweep_not_found() {
+    let cluster = Cluster::new(make_config());
+    let t = cluster
+        .submit_peer_chat(
+            "worker-amnesia",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, payload| {
+        let id = payload
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let resp = serde_json::json!({ "status": "not_found", "task_id": id });
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+
+    poll_stale_pending_tasks(
+        &cluster.task_manager,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
+
+    assert_eq!(
+        cluster.task_manager.get_task(&t).unwrap().status,
+        TaskStatus::Failed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap
+        .get("worker-amnesia")
+        .expect("not_found 判死补记账失败样本");
+    assert_eq!(s.completed, 0);
+    assert_eq!(s.failed, 1);
+}
+
+/// 负载感知路由：默认 peer_chat_callback handler 兜底臂补记账（gateway
+/// 覆盖注册失败 `let _ =` 静默时由默认 handler 服务——三轮回头检查补测）。
+#[tokio::test]
+async fn test_route_stats_recorded_by_default_callback_handler() {
+    let cluster = Cluster::new(make_config());
+    let t = cluster
+        .submit_peer_chat(
+            "worker-d",
+            "peer_chat",
+            serde_json::json!({ "task_id": "", "content": "hi" }),
+            "web",
+            "c1",
+        )
+        .expect("submit ok");
+
+    let handler = cluster.build_callback_handler();
+    let resp = handler(serde_json::json!({
+        "task_id": t,
+        "status": "success",
+        "response": "ok",
+        "error": "",
+    }))
+    .expect("handler accepted");
+    assert_eq!(resp["status"], "accepted");
+
+    assert_eq!(
+        cluster.task_manager.get_task(&t).unwrap().status,
+        TaskStatus::Completed
+    );
+    let snap = cluster.route_stats_snapshot();
+    let s = snap.get("worker-d").expect("默认 handler 兜底臂补记账");
+    assert_eq!(s.completed, 1);
+    assert_eq!(s.failed, 0);
+    assert_eq!(s.response_samples, 1);
+
+    // 幂等重放（送达重试再投递）：settle 幂等 + 去重集兜底，不双计。
+    handler(serde_json::json!({
+        "task_id": t,
+        "status": "success",
+        "response": "ok",
+        "error": "",
+    }))
+    .expect("replay accepted");
+    assert_eq!(
+        cluster
+            .route_stats_snapshot()
+            .get("worker-d")
+            .unwrap()
+            .completed,
+        1,
+        "重放不得双计"
+    );
+}
+
+#[test]
+fn test_pick_auto_route_all_offline_none() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    assert_eq!(cluster.pick_auto_route_target(), None, "无候选 → None");
+
+    cluster.register_node(route_peer("worker-off", NodeStatus::Offline));
+    assert_eq!(cluster.pick_auto_route_target(), None, "离线节点不入候选");
+}
+
+#[test]
+fn test_pick_auto_route_prefers_success_over_failure() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("worker-good", NodeStatus::Online));
+    cluster.register_node(route_peer("worker-bad", NodeStatus::Online));
+
+    for _ in 0..2 {
+        let g = cluster
+            .submit_peer_chat(
+                "worker-good",
+                "peer_chat",
+                serde_json::json!({}),
+                "web",
+                "c",
+            )
+            .expect("submit");
+        assert!(cluster.complete_task(&g, serde_json::json!({})));
+        let b = cluster
+            .submit_peer_chat("worker-bad", "peer_chat", serde_json::json!({}), "web", "c")
+            .expect("submit");
+        assert!(cluster.fail_task(&b, "x"));
+    }
+    assert_eq!(
+        cluster.pick_auto_route_target().as_deref(),
+        Some("worker-good"),
+        "成功率先行：good(1.0) 赢 bad(0.0)"
+    );
+}
+
+#[test]
+fn test_pick_auto_route_penalizes_pending_backlog() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("idle", NodeStatus::Online));
+    cluster.register_node(route_peer("busy", NodeStatus::Online));
+
+    // busy 挂 3 个 Pending（submit_peer_chat 建任务即 Pending，不 settle）
+    for _ in 0..3 {
+        cluster
+            .submit_peer_chat("busy", "peer_chat", serde_json::json!({}), "web", "c")
+            .expect("submit");
+    }
+    assert_eq!(
+        cluster.pick_auto_route_target().as_deref(),
+        Some("idle"),
+        "同胜率（都零样本乐观 1.0）下待办少者优先"
+    );
+}
+
+#[test]
+fn test_pick_auto_route_exploratory_neutral() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(route_peer("veteran", NodeStatus::Online));
+    let t = cluster
+        .submit_peer_chat("veteran", "peer_chat", serde_json::json!({}), "web", "c")
+        .expect("submit");
+    assert!(cluster.complete_task(&t, serde_json::json!({})));
+    cluster.register_node(route_peer("fresh", NodeStatus::Online));
+
+    assert_eq!(
+        cluster.pick_auto_route_target().as_deref(),
+        Some("fresh"),
+        "零样本节点乐观中性（success 1.0 / avg 0）= 探索优先：同胜率下 avg=0 \
+         赢 veteran 的实测 avg>0，新节点不饿死"
     );
 }

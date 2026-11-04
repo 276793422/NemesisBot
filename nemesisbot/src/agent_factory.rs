@@ -139,6 +139,9 @@ pub struct SharedResources {
     /// Returns online peers for dynamic cluster_rpc tool description.
     /// Each tuple: (node_id, node_name, capabilities).
     pub cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
+    /// 负载感知路由（最小版）：cluster_rpc `target="auto"` 的在线节点选择器
+    /// （成功率先行 → 待办压力 → 平均响应）。None = auto 未装配（工具侧诚实报错）。
+    pub cluster_auto_target_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// Shared enabled flag for ClusterRpcTool.
     /// Set by factory when tool is registered, toggled by ClusterServiceAdapter
     /// to enable/disable the tool without removing it from the prompt.
@@ -259,6 +262,7 @@ impl Default for SharedResources {
             cluster_rpc_call_fn: None,
             cluster_rpc_config: None,
             cluster_peers_fn: None,
+            cluster_auto_target_fn: None,
             cluster_rpc_enabled: parking_lot::RwLock::new(None),
             mcp_config_path: PathBuf::default(),
             mcp_enabled: false,
@@ -1206,6 +1210,9 @@ pub fn build_agent_loop(
         cluster_rpc_tool.set_rpc_call_fn(call_fn.clone());
         if let Some(ref peers_fn) = shared.cluster_peers_fn {
             cluster_rpc_tool.set_peers_fn(peers_fn.clone());
+        }
+        if let Some(ref auto_fn) = shared.cluster_auto_target_fn {
+            cluster_rpc_tool.set_auto_target_fn(auto_fn.clone());
         }
         cluster_rpc_tool.set_enabled(true);
         // Store the enabled flag for dynamic cluster start/stop.
@@ -3122,6 +3129,9 @@ pub fn build_cluster_agent_loop(
         cluster_rpc_tool.set_rpc_call_fn(call_fn.clone());
         if let Some(ref peers_fn) = shared.cluster_peers_fn {
             cluster_rpc_tool.set_peers_fn(peers_fn.clone());
+        }
+        if let Some(ref auto_fn) = shared.cluster_auto_target_fn {
+            cluster_rpc_tool.set_auto_target_fn(auto_fn.clone());
         }
         cluster_rpc_tool.set_enabled(true);
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));

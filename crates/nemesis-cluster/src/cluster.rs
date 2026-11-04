@@ -226,6 +226,56 @@ pub struct Cluster {
     /// error 为 Some 表示 result_status=error。
     on_recovered_delivery:
         Arc<Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>>,
+
+    /// 负载感知路由（最小版）：A 端观测的逐 peer 任务结局统计（内存态，
+    /// 重启归零——announce wire 不携带、state.toml 不落盘，对端自报负载
+    /// 是远期项）。主漏斗 = [`Cluster::complete_task`] / [`Cluster::fail_task`]
+    /// （覆盖 gateway peer_chat_callback handler 两臂）；旁路 settle 点
+    /// （恢复轮询 sweep 三分支 + 默认回调 handler 兜底臂 + G4 清理 tick
+    /// 的 H4 安全网判死）经 TaskManager 的路由钩子补记账，全部入口共用
+    /// 同一去重集与记账核心（[`record_route_outcome_core`]）；消费方
+    /// [`Cluster::pick_auto_route_target`]。
+    /// Arc 包裹：构造期路由钩子闭包捕获（'static spawn / handler 闭包）。
+    route_stats: Arc<Mutex<std::collections::HashMap<String, RoutePeerStats>>>,
+
+    /// 负载感知路由：已记账任务去重集（settle 幂等重放防御）。`settle_task`
+    /// 对「已是同一终态」的重复 settle 返回 true（幂等 no-op）——重复回调
+    /// （送达重试/B 端重发/恢复轮询重放）会让 Cluster 层再次看到 ok=true，
+    /// 无去重则同一任务双计、成功率失真。每任务只计首次 settle。
+    /// Arc 包裹：同 route_stats，构造期路由钩子闭包捕获。
+    route_recorded: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+/// 单个对端节点的路由统计（负载感知路由最小版数据面）。胜负与耗时均由
+/// A 端本地观测——成功率是「任务在这台节点上办成没有」，不是节点自报。
+#[derive(Debug, Clone, Default)]
+pub struct RoutePeerStats {
+    pub completed: u64,
+    pub failed: u64,
+    /// 耗时样本数（created_at→completed_at 解析成功才计入——宁缺毋假）。
+    pub response_samples: u64,
+    pub total_response_ms: u64,
+}
+
+impl RoutePeerStats {
+    /// 成功率（任务数计）；**零样本 = 1.0 乐观中性**——新节点不被饿死，
+    /// 首个样本落定后回归真实排序。
+    pub fn success_rate(&self) -> f64 {
+        let total = self.completed + self.failed;
+        if total == 0 {
+            1.0
+        } else {
+            self.completed as f64 / total as f64
+        }
+    }
+
+    /// 平均耗时 ms；零样本 = 0（中性，参与平局裁决时新节点优先——
+    /// 探索性分流，拿到样本即回归真实排序）。
+    pub fn avg_response_ms(&self) -> u64 {
+        self.total_response_ms
+            .checked_div(self.response_samples)
+            .unwrap_or(0)
+    }
 }
 
 /// 名册循环装配参数缓存（QUIC 插件化 M2，拍板 7：循环本体在 plugin_roaming
@@ -261,7 +311,7 @@ impl Cluster {
         // 批次四：显示名解析链（config 显式 → hostname → `Bot {id8}` 兜底）。
         let (node_name_init, name_locked) = resolve_node_name_from_env(&config.node_name, &node_id);
 
-        Self {
+        let cluster = Self {
             node_id: node_id.clone(),
             node_name: parking_lot::RwLock::new(node_name_init),
             node_name_locked: std::sync::atomic::AtomicBool::new(name_locked),
@@ -307,12 +357,16 @@ impl Cluster {
             stop_tx,
             bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
+            route_stats: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            route_recorded: Arc::new(Mutex::new(std::collections::HashSet::new())),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
             on_node_discovered: Arc::new(Mutex::new(None)),
             on_recovered_delivery: Arc::new(Mutex::new(None)),
-        }
+        };
+        cluster.install_route_record_hook();
+        cluster
     }
 
     /// Create a cluster with a task manager callback.
@@ -467,7 +521,7 @@ impl Cluster {
             }
         };
 
-        Self {
+        let cluster = Self {
             node_id: node_id.clone(),
             node_name: parking_lot::RwLock::new(node_name_default),
             node_name_locked: std::sync::atomic::AtomicBool::new(name_locked),
@@ -520,12 +574,16 @@ impl Cluster {
             stop_tx,
             bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
+            route_stats: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            route_recorded: Arc::new(Mutex::new(std::collections::HashSet::new())),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
             on_node_discovered: Arc::new(Mutex::new(None)),
             on_recovered_delivery: Arc::new(Mutex::new(None)),
-        }
+        };
+        cluster.install_route_record_hook();
+        cluster
     }
 
     // -- Lifecycle ------------------------------------------------------------
@@ -2896,6 +2954,7 @@ impl Cluster {
         let ok = self.task_manager.complete_task(task_id, result);
         if ok {
             logger::log_task("completed", task_id, "");
+            self.record_route_outcome(task_id, true);
         }
         ok
     }
@@ -2906,8 +2965,76 @@ impl Cluster {
         if ok {
             tracing::warn!(task_id = task_id, error = error, "[Cluster] Task failed",);
             logger::log_task("failed", task_id, error);
+            self.record_route_outcome(task_id, false);
         }
         ok
+    }
+
+    /// 负载感知路由：记账一次 A 端观测的任务结局（complete/fail 单一漏斗，
+    /// 覆盖评审/看板回调臂与 chat 回调臂——两个臂都经本方法收口）。委托
+    /// [`record_route_outcome_core`]（记账语义单一真相源，与旁路 settle 点
+    /// 经 TaskManager 路由钩子的补记账同核）。
+    fn record_route_outcome(&self, task_id: &str, ok: bool) {
+        record_route_outcome_core(
+            &self.route_stats,
+            &self.route_recorded,
+            &self.node_id,
+            &self.task_manager,
+            task_id,
+            ok,
+        );
+    }
+
+    /// 构造期安装 TaskManager 路由钩子：恢复轮询 sweep 三分支、默认回调
+    /// handler 兜底臂与 G4 清理 tick 的 H4 安全网判死（都是拿不到
+    /// `&Cluster` 的旁路 settle 点）经 `task_manager.fire_route_record(...)`
+    /// 补记账。闭包捕获 Arc 化的 route_stats/route_recorded——与回调漏斗
+    /// 共用同一状态与去重集，双路径绝不双计。幂等覆盖（重复构造/重启安全）。
+    fn install_route_record_hook(&self) {
+        let stats = Arc::clone(&self.route_stats);
+        let recorded = Arc::clone(&self.route_recorded);
+        let node_id = self.node_id.clone();
+        let task_manager = Arc::clone(&self.task_manager);
+        self.task_manager
+            .set_route_record_fn(Arc::new(move |task_id, ok| {
+                record_route_outcome_core(&stats, &recorded, &node_id, &task_manager, task_id, ok);
+            }));
+    }
+
+    /// 负载感知路由（最小版）：从在线节点（不含本节点）按健康/负载选一个
+    /// 最优 target。评分链（min 逐维裁决，确定性平局）：
+    /// ① success_rate 降（零样本 = 1.0 乐观中性，新节点不被饿死）→
+    /// ② 在途任务数升（Pending 即在途——`list_pending_tasks` 按 peer 聚合）
+    /// → ③ 平均耗时升（零样本 = 0 中性，探索性优先，拿样本即回归真实
+    /// 排序）→ ④ node_id 字典序。无在线节点 → None（调用方诚实报错，
+    /// 不回落任意节点）。
+    pub fn pick_auto_route_target(&self) -> Option<String> {
+        let mut pending: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for t in self.task_manager.list_pending_tasks() {
+            if !t.peer_id.is_empty() {
+                *pending.entry(t.peer_id.clone()).or_insert(0) += 1;
+            }
+        }
+        let stats = self.route_stats.lock();
+        self.registry
+            .list_online_excluding(&self.node_id)
+            .into_iter()
+            .min_by_key(|p| {
+                let s = stats.get(&p.base.id).cloned().unwrap_or_default();
+                (
+                    std::cmp::Reverse((s.success_rate() * 1_000_000_000.0) as u64),
+                    pending.get(&p.base.id).copied().unwrap_or(0),
+                    s.avg_response_ms(),
+                    p.base.id.clone(),
+                )
+            })
+            .map(|p| p.base.id)
+    }
+
+    /// 负载感知路由：路由统计只读快照（诊断/Dashboard 用；键 = peer id；
+    /// 内存态重启归零）。返回 owned clone，调用方不持锁。
+    pub fn route_stats_snapshot(&self) -> std::collections::HashMap<String, RoutePeerStats> {
+        self.route_stats.lock().clone()
     }
 
     /// List all tasks.
@@ -4427,6 +4554,10 @@ impl Cluster {
 
             // Fall through to main agent's TaskManager (A-side continuation).
             task_manager.complete_callback(task_id, status, response, error);
+            // 负载感知路由：默认 handler 兜底臂（gateway 覆盖注册失败时
+            // 服务）同样记账——经路由钩子与回调漏斗共用同一去重集，判据
+            // 对齐 Route 3（status=="error" 记失败）。
+            task_manager.fire_route_record(task_id, status != "error");
 
             Ok(serde_json::json!({
                 "status": "accepted",
@@ -4738,6 +4869,66 @@ fn probe_drift_gate() -> &'static crate::discovery::AnnounceWarnGate {
     GATE.get_or_init(crate::discovery::AnnounceWarnGate::new)
 }
 
+/// 负载感知路由记账核心（自由函数，语义单一真相源）：task_id → 目标节点
+/// 成功/失败 +1，响应时长样本（created_at→completed_at 实测，RFC3339 解析
+/// 失败只计胜负不计时——宁缺毋假）随可解析时累加。幂等重放去重：每任务
+/// 只计首次 settle——重复回调（送达重试/B 端重发/恢复轮询重放）经
+/// settle_task 幂等成功（返回 true）再次进入记账，不去重则同一任务双计、
+/// 节点成功率失真。空 peer_id / 本节点自身任务不入账（路由只关心「派给
+/// 谁」）。入口三处共用：① 回调漏斗 [`Cluster::record_route_outcome`]；
+/// ② 构造期路由钩子（恢复轮询 sweep 三分支 + 默认回调 handler 兜底臂 +
+/// G4 清理 tick 的 H4 安全网判死，经 `TaskManager::fire_route_record`
+/// 触达）；③ 两臂全部捕获同一 stats/去重集。
+/// 路由去重集容量上限（内存护栏）。条目只在「settle 后短时间内可能收到
+/// 重放」的窗口内有意义（送达重试/G5 恢复轮询都在分钟级），而任务本体
+/// 2h 后即被 G4 清理——集内旧条目是纯死重量。超限整体清空重新计数：
+/// 丢的只是远超任何重放窗口的旧任务去重位，最坏情形（窗口外恰好来重放）
+/// 是单个样本双计，自限且可忽略。10 万条 ≈ 15MB 上界，远超看板自动化
+/// 现实任务量级。
+const ROUTE_RECORDED_CAP: usize = 100_000;
+
+fn record_route_outcome_core(
+    stats: &Mutex<std::collections::HashMap<String, RoutePeerStats>>,
+    recorded: &Mutex<std::collections::HashSet<String>>,
+    node_id: &str,
+    task_manager: &Arc<TaskManager>,
+    task_id: &str,
+    ok: bool,
+) {
+    {
+        let mut recorded = recorded.lock();
+        if recorded.len() >= ROUTE_RECORDED_CAP {
+            recorded.clear();
+        }
+        if !recorded.insert(task_id.to_string()) {
+            return;
+        }
+    }
+    let Some(task) = task_manager.get_task(task_id) else {
+        return;
+    };
+    if task.peer_id.is_empty() || task.peer_id == node_id {
+        return;
+    }
+    let duration_ms = task.completed_at.as_deref().and_then(|done| {
+        let done = chrono::DateTime::parse_from_rfc3339(done).ok()?;
+        let created = chrono::DateTime::parse_from_rfc3339(&task.created_at).ok()?;
+        let ms = (done - created).num_milliseconds();
+        u64::try_from(ms).ok()
+    });
+    let mut stats = stats.lock();
+    let s = stats.entry(task.peer_id.clone()).or_default();
+    if ok {
+        s.completed += 1;
+    } else {
+        s.failed += 1;
+    }
+    if let Some(ms) = duration_ms {
+        s.response_samples += 1;
+        s.total_response_ms += ms;
+    }
+}
+
 /// Poll stale pending tasks: query the B-node for any task that has been
 /// pending for longer than 2 minutes. If the B-node reports it done, complete
 /// the task locally; if not found, fail it; if older than the safety net,
@@ -4815,6 +5006,9 @@ async fn poll_stale_pending_tasks(
                 "[Cluster] Timing out stale task after safety-net timeout",
             );
             task_manager.complete_callback(&task.id, "error", "", &timeout_error);
+            // 负载感知路由：安全网判死也是任务终态 settle，经路由钩子补记账
+            // 失败样本（慢/坏节点信号）；与回调漏斗共用同一去重集，不双计。
+            task_manager.fire_route_record(&task.id, false);
             // CD2（2026-09-17）：安全网超时同样要发 bus 唤醒 agent（error
             // 形态，形状对齐下方 not_found 分支）。此前只 complete_callback
             // 不 publish——任务状态标 Failed 了，但等回复的 agent 永远不知
@@ -4906,6 +5100,9 @@ async fn poll_stale_pending_tasks(
                     "[Cluster] Stale task recovered from peer",
                 );
                 task_manager.complete_callback(&task.id, &result_status, &response, &error);
+                // 负载感知路由：恢复回灌 settle 补记账（判据对齐 gateway
+                // Route 3：status=="error" 记失败，其余记成功）。
+                task_manager.fire_route_record(&task.id, result_status != "error");
                 // G5: 唤醒 A 端主 agent（形状对齐 gateway Route 2）。
                 // 句柄现读（T19 根修）：RPC 查询跨越 set_message_bus 注入
                 // 窗口时，tick 开头的旧快照是 None——必须在 publish 前重读。
@@ -4957,6 +5154,9 @@ async fn poll_stale_pending_tasks(
                     "[Cluster] Stale task not found on remote peer",
                 );
                 task_manager.complete_callback(&task.id, "error", "", "remote task not found");
+                // 负载感知路由：worker 丢任务（典型：重启）= 该节点失败样本，
+                // 经路由钩子补记账。
+                task_manager.fire_route_record(&task.id, false);
                 // N3c（2026-10-12）：not_found = worker 明确说「没这任务」
                 //（典型：worker 重启丢内存任务表）——确定性判死信号，board
                 // 派发必须立即走交付回调（write_back FAILED + ⛔ 评论 +

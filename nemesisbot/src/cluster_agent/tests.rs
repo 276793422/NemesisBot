@@ -179,6 +179,7 @@ fn make_build_context_task(task_id: &str) -> ClusterTask {
         required_profession: None,
         async_usage_stash: None,
         mandate: None,
+        dispatch_generation: None,
     }
 }
 
@@ -556,6 +557,7 @@ mod loop_e2e {
             required_profession: None,
             async_usage_stash: None,
             mandate: None,
+            dispatch_generation: None,
         }
     }
 
@@ -1249,6 +1251,7 @@ mod wave_b {
             required_profession: None,
             async_usage_stash: None,
             mandate: None,
+            dispatch_generation: None,
         }
     }
 
@@ -2066,6 +2069,112 @@ fn test_classify_token_budget() {
     );
 }
 
+/// ② AOR 批一b：worker 六词失败纪律自报桥（`失败类别：` 前缀）→ fail_class
+/// 词→类映射（与 board_review redispatch_policy 处置语义对齐）。
+#[test]
+fn test_classify_worker_failure_category_bridge() {
+    // 六词全矩阵：自报行后可跟一句话事实（starts_with 语义）。
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "失败类别：环境缺失 cargo 不可用，系统无 cargo 且无网络装配条件"
+        ),
+        Some("environmental")
+    );
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "失败类别：资源冲突 与并行任务争用同一测试目录，重跑仍互踩"
+        ),
+        Some("resource_conflict")
+    );
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "失败类别：参数问题 任务描述要求产出 JSON 但未给 schema"
+        ),
+        Some("escalation")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "失败类别：超时 30 分钟墙钟内构建未完成"),
+        Some("llm_timeout")
+    );
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "失败类别：权限不足 目标目录需要管理员权限写入"
+        ),
+        Some("mandate_violation")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "失败类别：其他 现象无法归入前五类"),
+        Some("exec_failed")
+    );
+    // response 通道同样生效（error 为空时 text=response）。
+    assert_eq!(
+        super::classify_terminal_failure("error", "失败类别：环境缺失 无网络", ""),
+        Some("environmental")
+    );
+    // 桥优先于系统侧稳定前缀：worker 明确说了类别时不被覆盖。
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "失败类别：环境缺失（Error: HTTP 401）"),
+        Some("environmental")
+    );
+}
+
+/// ② AOR 批一b：exec 兜底细分——窄环境特征命中 → environmental；不命中
+/// 仍落 exec_failed。
+#[test]
+fn test_classify_exec_fallback_environmental_features() {
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "cargo: command not found"),
+        Some("environmental")
+    );
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "'python' is not recognized as an internal or external command"
+        ),
+        Some("environmental")
+    );
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "fatal: open .git/index.lock: Permission denied"
+        ),
+        Some("environmental")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "打开文件被拒绝访问"),
+        Some("environmental")
+    );
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "Error: dial tcp 127.0.0.1:5432: connect: connection refused"
+        ),
+        Some("llm_failure"),
+        "Error: 前缀走 LLM 分类链（llm_failure），不做 exec 环境细分"
+    );
+    // 前有其它文本时兜底分支才生效（starts_with 链语义不变）。
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "步骤2失败：Permission denied 写配置文件"),
+        Some("environmental")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "步骤2失败：断言 file.rs 与预期不符"),
+        Some("exec_failed"),
+        "任务级缺文件/断言失败 ≠ 环境缺失（not found 类宽特征不收）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // P8（集群无人值守硬化 A2）：D3 重派入口拒接判定（session_budget_rejection）
 // ---------------------------------------------------------------------------
@@ -2194,6 +2303,7 @@ mod wave_d {
             required_profession: None,
             async_usage_stash: None,
             mandate: None,
+            dispatch_generation: None,
         }
     }
 
@@ -3010,6 +3120,7 @@ fn prof_task(slug: Option<&str>) -> ClusterTask {
         required_profession: slug.map(str::to_string),
         async_usage_stash: None,
         mandate: None,
+        dispatch_generation: None,
     }
 }
 

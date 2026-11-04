@@ -22,6 +22,7 @@ pub mod db;
 pub mod dossier;
 pub mod fail_streak;
 pub mod fingerprint;
+pub mod finish;
 pub mod git_repo;
 pub mod handoff;
 pub mod matcher;
@@ -30,6 +31,7 @@ pub mod node_perf;
 pub mod planner;
 pub mod project_state;
 pub mod quota;
+pub mod replan;
 pub mod report;
 pub mod review;
 pub mod service;
@@ -99,9 +101,9 @@ pub use planner::{
 };
 pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, TASK_CARD_HEADER, parse_delivery_report};
 pub use review::{
-    ExperienceNote, REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError, ReviewVerdict,
-    build_review_user_prompt, build_review_user_prompt_with_limits, parse_review,
-    selfcheck_request_text, strip_directive_lines,
+    CriterionVerdict, ExperienceNote, REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError,
+    ReviewVerdict, build_review_user_prompt, build_review_user_prompt_with_limits, parse_review,
+    render_gap_with_criteria, selfcheck_request_text, strip_directive_lines,
 };
 pub use service::BoardService;
 pub use state_machine::{can_transition, validate_transition};

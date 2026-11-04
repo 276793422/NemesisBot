@@ -117,6 +117,13 @@ pub struct ClusterTask {
     /// serde default 兼容旧任务记录/async state 回读。
     #[serde(default)]
     pub mandate: Option<nemesis_types::cluster::MandateEnforcement>,
+    /// AOR 批二a ④：派发代际号——A 端 claim 时按该 issue 已有派发行数
+    /// 计算（首派 0、第 N 次重派 N-1），随下行 payload 到 B 端存进任务，
+    /// 回调时原样回声（`dispatch_generation` 键）。A 端写回闸据此拒绝旧代
+    /// 迟到回调覆盖新一代派发状态。None = 上行 payload 无此键（旧 A 端
+    /// 兼容），回声缺席 = A 端写回闸放行。
+    #[serde(default)]
+    pub dispatch_generation: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------

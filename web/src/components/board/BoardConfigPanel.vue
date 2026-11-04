@@ -17,6 +17,8 @@ interface BoardFlags {
   auto_accept: boolean
   auto_close_parent: boolean
   unlimited_mode: boolean
+  /** 自治模式总开关（AOR 批三 5.1）：assisted=辅助（默认）/ autonomous=自治 */
+  autonomy: 'assisted' | 'autonomous'
   conflict_auto_resolve: boolean
   /** 项目收口自动导出任务档案（logs/dossiers/ 自包含目录） */
   dossier_auto_on_complete: boolean
@@ -62,6 +64,8 @@ async function load() {
       auto_accept: !!r?.auto_accept,
       auto_close_parent: !!r?.auto_close_parent,
       unlimited_mode: !!r?.unlimited_mode,
+      // 自治模式总开关（AOR 批三 5.1）：非 autonomous 一律归一 assisted。
+      autonomy: r?.autonomy === 'autonomous' ? 'autonomous' : 'assisted',
       conflict_auto_resolve: !!r?.conflict_auto_resolve,
       dossier_auto_on_complete: r?.dossier?.auto_on_complete !== false,
       dispatch_fallback: normalizeFallbackMode(r?.dispatch_fallback),
@@ -154,7 +158,7 @@ const toggles = computed(() =>
         {
           key: 'unlimited_mode',
           label: '无限模式',
-          desc: '验收 FAIL 无限重派（不看重派上限）、UNSURE 继续重派不转人工。预算护栏失效，急停开关随时可止血',
+          desc: '验收 FAIL 无限重派（不看重派上限）、UNSURE 继续重派不转人工。预算护栏失效，急停开关随时可止血。上方「自治模式」开启时不可关闭（自治前置要求无限模式）',
           value: flags.value.unlimited_mode,
         },
         {
@@ -187,7 +191,27 @@ async function setFlag(key: string, value: boolean | number | string | null | Re
 }
 
 function onToggle(key: string, ev: Event) {
-  void setFlag(key, (ev.target as HTMLInputElement).checked)
+  const checked = (ev.target as HTMLInputElement).checked
+  // 矛盾态前端拦截：autonomous 前置要求 unlimited_mode=true（后端
+  // board.config.set 两个方向都硬拒，这里提前拦截给出友好提示）。
+  if (key === 'unlimited_mode' && !checked && flags.value?.autonomy === 'autonomous') {
+    toast.warn('自治模式依赖无限模式：先把自治模式切回「辅助」，再关无限模式')
+    void load()
+    return
+  }
+  void setFlag(key, checked)
+}
+
+/** 自治模式切换（AOR 批三 5.1）：开启前置要求 unlimited_mode=true。 */
+function onAutonomy(ev: Event) {
+  const v = (ev.target as HTMLSelectElement).value
+  if (v !== 'assisted' && v !== 'autonomous') return
+  if (v === 'autonomous' && !flags.value?.unlimited_mode) {
+    toast.warn('自治模式前置要求无限模式：先在下方开启「无限模式」，再切自治')
+    void load()
+    return
+  }
+  void setFlag('autonomy', v)
 }
 
 function onNumber(key: string, ev: Event) {
@@ -297,6 +321,23 @@ onMounted(load)
           PASS 自动收货未开启——验收通过的单子仍会停下等人工收货。
         </template>
         异常时可用侧栏急停按钮或 CLI estop 随时冻结全部 agent 活动。
+      </div>
+
+      <!-- 自治模式总开关（AOR 批三 5.1）：监察环自动化（超时/离线自动重派 +
+           触发式计划重估），与下方「无限模式」（评审处置环自动化）正交；
+           开启前置要求无限模式（矛盾态后端两方向都硬拒） -->
+      <h3 class="section-title">自治模式</h3>
+      <div class="param-list">
+        <div class="param-row">
+          <div class="flag-text">
+            <div class="flag-label">自治模式</div>
+            <div class="flag-desc">辅助（默认）：监察环异常一律停车转人工，全程有人兜底。自治：派发超时/执行节点离线自动换节点重派、失败自动触发计划重估（重估建议落看板评论留痕），全程事后审计可回查——开启前置要求下方「无限模式」（防止监察环自动重派开着、评审失败却转人工的矛盾态）；重派轮数上限仍是硬防线（不随任何开关放开），急停开关不受影响</div>
+          </div>
+          <select class="form-input param-input" :value="flags.autonomy" @change="onAutonomy($event)">
+            <option value="assisted">辅助（默认，转人工）</option>
+            <option value="autonomous">自治（自动重派 + 触发式重估）</option>
+          </select>
+        </div>
       </div>
 
       <!-- 自动化开关 -->

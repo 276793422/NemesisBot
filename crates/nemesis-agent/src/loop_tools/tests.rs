@@ -5406,3 +5406,119 @@ fn grep_recursive_skips_symlink_dir_cycles() {
     // 新实现：链接环不重复命中，a.txt 恰好一次。
     assert_eq!(out.len(), 1, "链接环不得重复命中: {out:?}");
 }
+
+// ===== 负载感知路由（最小版）：cluster_rpc target="auto" 解析面 =====
+
+#[tokio::test]
+async fn test_cluster_rpc_auto_resolves_via_selector() {
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |node: &str, _action: &str, _payload: serde_json::Value| {
+            let node = node.to_string();
+            Box::pin(async move { Ok(serde_json::json!({ "content": format!("ACK:{node}") })) })
+        },
+    ));
+    // 选择器回「node-9」：execute 用 auto 也必须路由到该节点（选点在网关侧，
+    // 工具只消费其结果）。
+    tool.set_auto_target_fn(Arc::new(|| Some("node-9".to_string())));
+
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool
+        .execute(r#"{"target_node": "auto", "message": "hello"}"#, &ctx)
+        .await
+        .expect("auto 解析成功");
+    assert!(
+        result.contains("ACK:node-9"),
+        "auto 命中选择器节点: {result}"
+    );
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_auto_target_case_insensitive() {
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async { Ok(serde_json::json!({ "content": "ACK" })) })
+        },
+    ));
+    tool.set_auto_target_fn(Arc::new(|| Some("node-7".to_string())));
+
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    for spelling in ["AUTO", "Auto", "aUtO"] {
+        let args = format!(r#"{{"target_node": "{spelling}", "message": "hi"}}"#);
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok(), "auto 大小写不敏感（{spelling}）应解析成功");
+    }
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_auto_without_selector_honest_error() {
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    // 不装 auto_target_fn（headless run/acp 等无 cluster 形态）
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async { Ok(serde_json::json!({ "content": "ACK" })) })
+        },
+    ));
+
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let err = tool
+        .execute(r#"{"target_node": "auto", "message": "hi"}"#, &ctx)
+        .await
+        .expect_err("选择器缺席必须诚实报错");
+    assert!(err.contains("自动路由未装配"), "错误要指明未装配: {err}");
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_auto_no_candidates_honest_error() {
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async { Ok(serde_json::json!({ "content": "ACK" })) })
+        },
+    ));
+    // 选择器在场但无在线候选 → None
+    tool.set_auto_target_fn(Arc::new(|| None));
+
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let err = tool
+        .execute(r#"{"target_node": "auto", "message": "hi"}"#, &ctx)
+        .await
+        .expect_err("无可用候选必须诚实报错，不静默退化");
+    assert!(err.contains("无可用节点"), "错误要指明无候选: {err}");
+}
+
+#[test]
+fn test_cluster_rpc_auto_schema_hint_present() {
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let tool = ClusterRpcTool::new(config);
+    let schema = tool.parameters().to_string();
+    assert!(
+        schema.contains("You may also pass") && schema.contains("health/load aware"),
+        "参数 schema 要带 auto 用法提示（模型才知道可以传 auto）: {schema}"
+    );
+}

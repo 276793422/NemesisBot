@@ -4701,6 +4701,7 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
         "success",
         "改完了，产物在 foo.rs",
         "",
+        None,
     );
     assert!(
         board_writeback.is_board_task,
@@ -4727,6 +4728,107 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// AOR 批二a ④：代际写回闸——旧代迟到回调（echo 与当前行代际不一致）
+/// 拒绝覆盖：不落终态、不收账、不评论 worker 结果、不触发评审，仅系统
+/// 评论留痕。回声缺席（None，旧 B 端兼容）放行——由上方 success 测试
+/// （第 7 参 None 直达正常路径）覆盖。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_stale_generation_callback_rejected() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-stalegen-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 第 0 代 task-a 派发后失败终结 → 重派第 1 代 task-b（generation=1）。
+    let store = dispatched_store(&dir, "task-a");
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    store
+        .finish_dispatch("task-a", nemesis_board::models::dispatch_state::FAILED)
+        .unwrap();
+    store
+        .insert_dispatch(
+            "task-b",
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::admin("t"),
+        )
+        .unwrap();
+
+    // 第 0 代回调迟到（echo=0 ≠ 当前行 generation=1）→ 拒绝。
+    let outcome = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-b",
+        "success",
+        "迟到代际的交付内容",
+        "",
+        Some(0),
+    );
+    assert!(outcome.is_board_task, "board 派发身份识别不受代际闸影响");
+    assert!(!outcome.settled, "旧代迟到回调不得终结派发（释放波不触发）");
+    assert!(outcome.issue_for_review.is_none(), "拒绝路径不触发评审");
+    // issue 状态不推进（仍 in_progress，等第 1 代回调）。
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InProgress);
+    // 派发行不落终态（保持 dispatched 初态，第 1 代回调才能正常收尾）。
+    let rec = store.get_dispatch("task-b").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::DISPATCHED);
+    // worker 结果评论不落，系统「写回被拒」留痕在场。
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        !comments.iter().any(|c| c.author.kind == "agent"),
+        "拒绝路径不落 worker 结果评论"
+    );
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.ctype == nemesis_board::CommentType::System
+                && c.content.contains("写回被拒")
+                && c.content.contains("第 0 代")),
+        "系统留痕必须注明被拒代际: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 代际回声一致（echo == 当前行 generation）→ 正常写回路径全走。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_current_generation_echo_accepted() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-curgen-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-g");
+
+    let outcome = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-g",
+        "success",
+        "第 0 代正常交付",
+        "",
+        Some(0),
+    );
+    assert!(outcome.is_board_task && outcome.settled);
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
+    let rec = store.get_dispatch("task-g").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::DONE);
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.author.kind == "agent" && c.content.contains("第 0 代正常交付")),
+        "代际一致时 worker 结果评论照常落"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(all(feature = "board", feature = "cluster"))]
 #[test]
 fn test_writeback_error_moves_to_in_review_for_decision_chain() {
@@ -4745,6 +4847,7 @@ fn test_writeback_error_moves_to_in_review_for_decision_chain() {
         "error",
         "编译失败：…",
         "",
+        None,
     );
     assert!(board_writeback.is_board_task);
 
@@ -4791,6 +4894,7 @@ fn test_writeback_duplicate_callback_is_idempotent() {
         "success",
         "第一份",
         "",
+        None,
     );
     assert!(first.is_board_task && first.settled, "首次回调必须 settled");
     // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移，
@@ -4802,6 +4906,7 @@ fn test_writeback_duplicate_callback_is_idempotent() {
         "success",
         "第一份",
         "",
+        None,
     );
     assert!(dup.is_board_task);
     assert!(!dup.settled, "重复回调幂等早退不得再触发释放波");
@@ -4829,15 +4934,23 @@ fn test_writeback_non_board_and_unavailable_store() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-x");
-    let non_board =
-        write_back_board_dispatch(&Some(store.clone()), &dir, "other-task", "success", "…", "");
+    let non_board = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "other-task",
+        "success",
+        "…",
+        "",
+        None,
+    );
     assert!(!non_board.is_board_task);
     assert!(!non_board.settled, "非 board 任务不得触发释放波");
-    let empty_task = write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…", "");
+    let empty_task =
+        write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…", "", None);
     assert!(!empty_task.is_board_task);
     assert!(!empty_task.settled);
     // store 未注入 → 恒 false。
-    let no_store = write_back_board_dispatch(&None, &dir, "task-x", "success", "…", "");
+    let no_store = write_back_board_dispatch(&None, &dir, "task-x", "success", "…", "", None);
     assert!(!no_store.is_board_task);
     assert!(!no_store.settled);
     let _ = std::fs::remove_dir_all(&dir);
@@ -4878,6 +4991,7 @@ fn test_writeback_structured_report_becomes_delivery_comment() {
         "success",
         response,
         "",
+        None,
     );
     assert!(board_writeback.is_board_task);
 
@@ -4930,6 +5044,7 @@ fn test_writeback_oversized_report_overflows_to_asset() {
         "success",
         &response,
         "",
+        None,
     );
     assert!(board_writeback.is_board_task);
 
@@ -5219,6 +5334,7 @@ fn test_writeback_error_carries_fail_class_marker() {
         "error",
         "工具参数校验连续失败 2 次，已停止重试。最近工具：'exec'。",
         "validation_budget",
+        None,
     );
     assert!(board_writeback.is_board_task);
 
@@ -5257,6 +5373,7 @@ fn test_writeback_error_without_fail_class_omits_marker() {
         "error",
         "编译失败：…",
         "",
+        None,
     );
     assert!(board_writeback.is_board_task);
 
@@ -6348,6 +6465,7 @@ async fn ci2_task_cancel_covers_error_queued_terminal_not_found() {
         required_profession: None,
         async_usage_stash: None,
         mandate: None,
+        dispatch_generation: None,
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
@@ -6579,6 +6697,7 @@ async fn ci2_peer_chat_callback_routes_all_branches() {
         required_profession: None,
         async_usage_stash: None,
         mandate: None,
+        dispatch_generation: None,
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
@@ -7851,6 +7970,7 @@ mod w5bdisp {
             "done",
             "plain done text",
             "",
+            None,
         );
         assert!(out.is_board_task && out.settled);
         assert!(out.issue_for_review.is_none(), "档案管线不立即转 in_review");
@@ -7885,6 +8005,7 @@ mod w5bdisp {
             "done",
             "完成啦",
             "",
+            None,
         );
         assert_eq!(
             out.issue_for_review,
@@ -7909,6 +8030,7 @@ mod w5bdisp {
             "done",
             W5_REPORT,
             "",
+            None,
         );
         assert!(out.settled);
         let comments = store.list_comments(issue.id).unwrap();
@@ -7951,6 +8073,7 @@ mod w5bdisp {
             "done",
             &oversize("one"),
             "",
+            None,
         );
         let comments = store.list_comments(issue.id).unwrap();
         assert!(
@@ -7976,6 +8099,7 @@ mod w5bdisp {
             "done",
             &oversize("two"),
             "",
+            None,
         );
         let comments2 = store.list_comments(issue2.id).unwrap();
         assert!(
@@ -8001,6 +8125,7 @@ mod w5bdisp {
             "done",
             &oversize("three"),
             "",
+            None,
         );
         let comments3 = store.list_comments(issue3.id).unwrap();
         assert!(
@@ -8028,6 +8153,7 @@ mod w5bdisp {
             "error",
             "模型不会用工具",
             "model_capability",
+            None,
         );
         assert!(out.settled && out.issue_for_review.is_none());
         let comments = store.list_comments(issue.id).unwrap();

@@ -523,15 +523,22 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
         .expect("锚点短路 FAIL 必须闭环不报错");
     assert!(reviewed, "短路 FAIL 应完成评审闭环（非跳过）");
 
-    // 明细评论落库：差距段 + 失败锚点原文可读。
+    // 明细评论落库：逐条差距条目可读（批一c：锚点短路输出恒带 criteria，
+    // 差距评论为条目渲染形态——失败锚点原文在条目行，实核明细在证据行）。
     let comments = deps.store.list_comments(issue.id).unwrap();
     let fail = comments
         .iter()
-        .find(|c| c.content.contains("客观锚点检查失败"))
-        .expect("必须有锚点失败评论（短路产物）");
+        .find(|c| c.content.contains("逐条差距"))
+        .expect("必须有锚点失败差距评论（短路产物）");
     assert!(
-        fail.content.contains("验收完成标志XYZ"),
-        "明细须含失败锚点目标: {}",
+        fail.content
+            .contains("[FAIL] [anchor] [CHECK] re:验收完成标志XYZ"),
+        "差距须含失败锚点条目: {}",
+        fail.content
+    );
+    assert!(
+        fail.content.contains("证据：交付文本未命中"),
+        "条目须带系统实核证据: {}",
         fail.content
     );
     // 短路 = 未触 LLM（loop 为空也没炸）且 FAIL 照常走重派臂发车。
@@ -567,10 +574,8 @@ async fn anchor_pass_falls_through_to_semantic_gate() {
     );
     let comments = deps.store.list_comments(issue.id).unwrap();
     assert!(
-        !comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
-        "锚点全过不得落失败评论"
+        !comments.iter().any(|c| c.content.contains("逐条差距")),
+        "锚点全过不得落失败差距评论"
     );
     // PASS 摘要评论（T2-1：验收评论含锚点摘要，确定性审计痕迹）。
     let pass = comments
@@ -627,10 +632,15 @@ async fn task_card_echo_is_not_delivery_evidence_for_anchors() {
 
     let comments = deps.store.list_comments(issue.id).unwrap();
     assert!(
-        comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
-        "回显不得满足锚点：必须落失败评论"
+        comments.iter().any(|c| c.content.contains("逐条差距")),
+        "回显不得满足锚点：必须落失败差距评论"
+    );
+    assert!(
+        comments.iter().any(|c| c
+            .content
+            .contains("[FAIL] [anchor] [CHECK] re:回显探针NEEDLE9")),
+        "失败评论须带锚点条目: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
     );
     assert!(
         !comments
@@ -671,14 +681,194 @@ async fn parent_anchor_fail_blocks_auto_close_without_llm() {
     let comments = deps.store.list_comments(parent.id).unwrap();
     let fail = comments
         .iter()
-        .find(|c| c.content.contains("客观锚点检查失败"))
-        .expect("父单必须有锚点失败评论");
+        .find(|c| c.content.contains("逐条差距"))
+        .expect("父单必须有锚点失败差距评论");
+    assert!(
+        fail.content
+            .contains("[FAIL] [anchor] [CHECK] file:reports/summary.md exists"),
+        "父单差距须含失败锚点条目: {}",
+        fail.content
+    );
     assert!(fail.content.contains("reports/summary.md"));
     // 父单不派发、无重派承接单位：FAIL = 转人工保持 in_review。
     assert_eq!(
         deps.store.get_issue(parent.id).unwrap().status,
         IssueStatus::InReview,
         "父单锚点 FAIL 转人工（不派发不重派）"
+    );
+}
+
+#[tokio::test]
+async fn parent_finish_gate_blocks_on_pending_unknown_then_admin_adjudication_proceeds() {
+    // AOR 批二b ⑥：review_parent_issue 入口的 FINISH 谓词——子单存在未
+    // 裁决 unknown → 阻塞收口 + 缺口评论（谓词在锚点/M8/LLM 之前）；admin
+    // 评论回应即裁决 → 谓词放行走既有链（本测用锚点 FAIL 短路保无 LLM）。
+    use nemesis_board::{Actor, CommentType, IssueStatus, NewComment, NewIssue};
+
+    let (deps, _ws) = review_deps("finish-gate-unknown");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board":{"auto_close_parent":true,"review":{"parent_remediation_max":0}}}"#,
+    )
+    .unwrap();
+    let creator = Actor::agent("node-a");
+    let parent = deps
+        .store
+        .create_issue(NewIssue {
+            title: "收口闸父单".to_string(),
+            acceptance_criteria: Some("[CHECK] file:reports/summary.md exists".to_string()),
+            creator: creator.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let child = deps
+        .store
+        .create_issue(NewIssue {
+            title: "收口闸子单".to_string(),
+            creator: creator.clone(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InProgress, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InReview, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(child.id, IssueStatus::InProgress, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(child.id, IssueStatus::Done, &creator)
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: child.id,
+            author: Actor::system("board-review"),
+            content: "❓ 评审存疑事项（unknown 清单，自动收口检查会核对裁决状态）：\nunknown: 副作用落点不明".to_string(),
+            parent_id: None,
+            ctype: CommentType::System,
+        })
+        .unwrap();
+
+    // 未裁决 unknown → FINISH 闸阻塞（谓词在 LLM 之前，确定性路径）。
+    let reviewed = review_parent_issue(&deps, parent.id).await.unwrap();
+    assert!(!reviewed, "未裁决 unknown 必须被 FINISH 闸阻塞");
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    let gap = comments
+        .iter()
+        .find(|c| c.content.contains("FINISH 收口闸未满足"))
+        .expect("必须有缺口评论");
+    assert!(
+        gap.content.contains("④ 存在未裁决 unknown 清单") && gap.content.contains("副作用落点不明"),
+        "缺口评论必须列出未裁决清单: {}",
+        gap.content
+    );
+    assert_eq!(
+        deps.store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InReview,
+        "闸只阻塞不改状态"
+    );
+
+    // admin 评论回应 = 裁决 → 谓词放行，锚点 FAIL 短路闭环（无 LLM）。
+    deps.store
+        .add_comment(NewComment {
+            issue_id: child.id,
+            author: Actor::admin("boss"),
+            content: "已核实：副作用在沙盒内，裁决通过".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    let reviewed = review_parent_issue(&deps, parent.id).await.unwrap();
+    assert!(reviewed, "裁决后评审链应闭环（锚点短路路径）");
+    // 谓词已放行 → 不再补写缺口评论（此前那条保留）。
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    assert_eq!(
+        comments
+            .iter()
+            .filter(|c| c.content.contains("FINISH 收口闸未满足"))
+            .count(),
+        1,
+        "裁决后不得新增缺口评论"
+    );
+}
+
+#[tokio::test]
+async fn parent_finish_gate_blocks_on_cancelled_child_with_gap_comment() {
+    // 原 cancelled 范围缺口检查并入谓词（⑤ 条件）后语义不变：cancelled
+    // 子单 → 不自动收口，且缺口评论显式列出（旧行为只打日志无评论）。
+    use nemesis_board::{Actor, IssueStatus, NewIssue};
+
+    let (deps, _ws) = review_deps("finish-gate-cancelled");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board":{"auto_close_parent":true}}"#,
+    )
+    .unwrap();
+    let creator = Actor::agent("node-a");
+    let parent = deps
+        .store
+        .create_issue(NewIssue {
+            title: "缺口父单".to_string(),
+            creator: creator.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let done_child = deps
+        .store
+        .create_issue(NewIssue {
+            title: "正常子单".to_string(),
+            creator: creator.clone(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let gone_child = deps
+        .store
+        .create_issue(NewIssue {
+            title: "取消子单".to_string(),
+            creator: creator.clone(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InProgress, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InReview, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(done_child.id, IssueStatus::InProgress, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(done_child.id, IssueStatus::Done, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(gone_child.id, IssueStatus::InProgress, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(gone_child.id, IssueStatus::Cancelled, &creator)
+        .unwrap();
+
+    let reviewed = review_parent_issue(&deps, parent.id).await.unwrap();
+    assert!(!reviewed, "cancelled 子单=范围缺口必须转人工");
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    let gap = comments
+        .iter()
+        .find(|c| c.content.contains("FINISH 收口闸未满足"))
+        .expect("cancelled 缺口必须有缺口评论");
+    assert!(
+        gap.content.contains("⑤ 子树存在 cancelled 缺口"),
+        "缺口评论须标注 ⑤ 条件: {}",
+        gap.content
+    );
+    assert!(
+        gap.content.contains(&gone_child.number),
+        "缺口评论须列出取消子单编号: {}",
+        gap.content
     );
 }
 
@@ -717,9 +907,7 @@ async fn malicious_anchor_falls_back_with_warning_comment() {
         warn.content
     );
     assert!(
-        !comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
+        !comments.iter().any(|c| c.content.contains("逐条差距")),
         "不安全锚点不得短路 FAIL（回落语义，非执行者责任）"
     );
     assert_eq!(
@@ -758,9 +946,7 @@ async fn parent_malicious_anchor_warns_without_fail() {
         .expect("父单必须有锚点告警评论");
     assert!(warn.content.contains("C:\\Windows"));
     assert!(
-        !comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
+        !comments.iter().any(|c| c.content.contains("逐条差距")),
         "父单不安全锚点不得短路 FAIL"
     );
     assert_eq!(
@@ -797,10 +983,8 @@ async fn parent_anchor_pass_falls_through_to_semantic_gate() {
     );
     let comments = deps.store.list_comments(parent.id).unwrap();
     assert!(
-        !comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
-        "父单锚点全过不得落失败评论"
+        !comments.iter().any(|c| c.content.contains("逐条差距")),
+        "父单锚点全过不得落失败差距评论"
     );
     assert!(
         comments
@@ -1650,6 +1834,8 @@ fn f3_output(verdict: nemesis_board::ReviewVerdict, gap: &str) -> nemesis_board:
         experience: None,
         need_evidence: None,
         evidence_request: None,
+        criteria: Vec::new(),
+        unknowns: Vec::new(),
     }
 }
 
@@ -1804,6 +1990,8 @@ fn pv(verdict: ReviewVerdict) -> nemesis_board::ReviewOutput {
         experience: None,
         need_evidence: None,
         evidence_request: None,
+        criteria: Vec::new(),
+        unknowns: Vec::new(),
     }
 }
 
@@ -1924,6 +2112,187 @@ fn aggregate_single_checker_passthrough() {
     );
     assert_eq!(out.reasons[1], "唯一理由");
     assert_eq!(out.gap, "");
+}
+
+// ===== AOR 批一c §③：聚合逐条三态（criteria 取首个非空 / unknowns 合并）=====
+
+fn pvc(
+    verdict: ReviewVerdict,
+    criteria: Vec<nemesis_board::CriterionVerdict>,
+) -> nemesis_board::ReviewOutput {
+    let mut o = pv(verdict);
+    o.criteria = criteria;
+    o
+}
+
+fn crit(
+    criterion: &str,
+    verdict: ReviewVerdict,
+    evidence: &str,
+) -> nemesis_board::CriterionVerdict {
+    nemesis_board::CriterionVerdict {
+        criterion: criterion.into(),
+        verdict,
+        evidence: evidence.into(),
+    }
+}
+
+#[test]
+fn aggregate_criteria_takes_first_non_empty() {
+    // 条目文本难逐字对齐 → 不做按条多数决，取首个非空的一份（最完整
+    // 的检查员视图）；此前检查员条目为空不阻塞。
+    let a = pvc(
+        ReviewVerdict::Fail,
+        vec![crit("条目 A1", ReviewVerdict::Fail, "证据 A1")],
+    );
+    let b = pvc(
+        ReviewVerdict::Fail,
+        vec![crit("条目 B1", ReviewVerdict::Fail, "证据 B1")],
+    );
+    let out = aggregate_verdicts(3, vec![pv(ReviewVerdict::Fail), a, b]);
+    assert_eq!(out.criteria.len(), 1, "取首个非空，不合并两份");
+    assert_eq!(out.criteria[0].criterion, "条目 A1");
+    assert_eq!(out.criteria[0].evidence, "证据 A1");
+    // 全部为空条目 → 聚合为空（旧格式降级语义）。
+    let out2 = aggregate_verdicts(2, vec![pv(ReviewVerdict::Fail), pv(ReviewVerdict::Fail)]);
+    assert!(out2.criteria.is_empty());
+}
+
+#[test]
+fn aggregate_unknowns_merge_dedup_preserve_order() {
+    // unknowns 保守合并全部检查员的盲区：按序去重 + trim + 跳过空白项。
+    let mut a = pv(ReviewVerdict::Unsure);
+    a.unknowns = vec!["性能口径未写明".into(), "  ".into()];
+    let mut b = pv(ReviewVerdict::Unsure);
+    b.unknowns = vec!["性能口径未写明 ".into(), "环境依赖是否计入".into()];
+    let mut c = pv(ReviewVerdict::Unsure);
+    c.unknowns = vec!["环境依赖是否计入".into(), "超时策略归属".into()];
+    let out = aggregate_verdicts(3, vec![a, b, c]);
+    assert_eq!(
+        out.unknowns,
+        vec![
+            "性能口径未写明".to_string(),
+            "环境依赖是否计入".to_string(),
+            "超时策略归属".to_string(),
+        ],
+        "按序去重合并，trim 后比对"
+    );
+}
+
+#[test]
+fn aggregate_pass_majority_with_fail_criteria_passes_through() {
+    // 少数意见透传：2 PASS + 1 FAIL(带 FAIL 条) → 多数裁决 PASS，
+    // FAIL 路的条目照实进聚合（渲染层照列少数意见），不在聚合层强制改判
+    // （parse_review 的互斥校验只管单路 LLM 输出，聚合是系统合成）。
+    let fail_route = pvc(
+        ReviewVerdict::Fail,
+        vec![crit("branch 名", ReviewVerdict::Fail, "清单无 branch")],
+    );
+    let out = aggregate_verdicts(
+        3,
+        vec![pv(ReviewVerdict::Pass), fail_route, pv(ReviewVerdict::Pass)],
+    );
+    assert_eq!(out.verdict, ReviewVerdict::Pass, "多数票裁决不受条目改写");
+    assert_eq!(out.criteria.len(), 1);
+    assert_eq!(out.criteria[0].verdict, ReviewVerdict::Fail);
+    // 渲染层照实列出该条（含 [anchor] 等前缀原样保留）。
+    let rendered = nemesis_board::render_gap_with_criteria(&out);
+    assert!(rendered.contains("[FAIL] branch 名"), "{rendered}");
+}
+
+// ===== AOR 批一c §③：unknowns 落盘（persist_unknowns 直测 store 流）=====
+
+#[test]
+fn persist_unknowns_writes_system_comment_with_markers() {
+    let (deps, _ws) = review_deps("persist-unknowns");
+    let (_pid, parent) = f3_fixture(&deps, "存疑落盘");
+    persist_unknowns(
+        &deps.store,
+        parent.id,
+        &[
+            "超时重试口径未写明".to_string(),
+            "  ".to_string(), // 空白项跳过（防御：聚合层已滤，这里兜底）
+        ],
+    );
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    let c = comments
+        .iter()
+        .find(|c| c.content.contains("评审存疑事项"))
+        .expect("unknown 清单必须落系统评论");
+    assert_eq!(c.ctype, nemesis_board::CommentType::System);
+    assert_eq!(c.author.kind, "system");
+    assert_eq!(c.author.id, "board-review");
+    assert!(
+        c.content.contains("\nunknown: 超时重试口径未写明"),
+        "{}",
+        c.content
+    );
+    assert!(
+        !c.content.contains("unknown:  \n") && !c.content.ends_with("unknown: "),
+        "空白项不得落标记行: {:?}",
+        c.content
+    );
+}
+
+#[test]
+fn persist_unknowns_dedup_against_existing_marks() {
+    let (deps, _ws) = review_deps("persist-unknowns-dedup");
+    let (_pid, parent) = f3_fixture(&deps, "存疑去重");
+    let unknowns = vec!["性能口径未写明".to_string()];
+    persist_unknowns(&deps.store, parent.id, &unknowns);
+    // 同一轮重放（复评幂等）：全部已落 → 不再出新评论。
+    persist_unknowns(&deps.store, parent.id, &unknowns);
+    let marked = deps
+        .store
+        .list_comments(parent.id)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.content.contains("unknown: 性能口径未写明"))
+        .count();
+    assert_eq!(marked, 1, "重复 unknown 不重复落");
+    // 增量盲区：旧项已落 + 新项未落 → 只落新项。
+    persist_unknowns(
+        &deps.store,
+        parent.id,
+        &[
+            "性能口径未写明".to_string(),
+            "环境依赖是否计入验收".to_string(),
+        ],
+    );
+    let incremental = deps
+        .store
+        .list_comments(parent.id)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.content.contains("评审存疑事项"))
+        .count();
+    assert_eq!(incremental, 2, "增量轮落一条只含新项的聚合评论");
+    let second = deps
+        .store
+        .list_comments(parent.id)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.content.contains("环境依赖是否计入验收"))
+        .expect("增量评论在场");
+    assert!(
+        !second.content.contains("性能口径未写明"),
+        "增量评论只含新项: {:?}",
+        second.content
+    );
+}
+
+#[test]
+fn persist_unknowns_noop_when_empty_or_all_deduped() {
+    let (deps, _ws) = review_deps("persist-unknowns-noop");
+    let (_pid, parent) = f3_fixture(&deps, "存疑空转");
+    let before = deps.store.list_comments(parent.id).unwrap().len();
+    persist_unknowns(&deps.store, parent.id, &[]);
+    persist_unknowns(&deps.store, parent.id, &["   ".to_string()]);
+    assert_eq!(
+        deps.store.list_comments(parent.id).unwrap().len(),
+        before,
+        "空/全空白 unknowns 不落评论"
+    );
 }
 
 /// 并行面板保序（goal B3 测试项）：Semaphore 限并发 + join_all 汇集后，
@@ -2558,6 +2927,8 @@ fn reasons_skipped_when_gap_carries_details() {
         experience: None,
         need_evidence: None,
         evidence_request: None,
+        criteria: Vec::new(),
+        unknowns: Vec::new(),
     };
     let mut c1 = String::from("head");
     super::append_reasons_unless_gapped(&mut c1, &mk("客观锚点检查失败（明细在场）"));
@@ -2633,13 +3004,26 @@ fn p2a_latest_fail_class_none_without_marker() {
 }
 
 #[test]
-fn p2a_capability_classes_and_hints_contract() {
-    // 闸门只认三类能力类失败（L13-b 加 mandate_violation：换节点重派=重新
-    // 授权语义）；每类都有对应的人工处置建议。
-    assert_eq!(
-        CAPABILITY_FAIL_CLASSES,
-        ["validation_budget", "escalation", "mandate_violation"]
-    );
+fn p2a_fail_class_policy_and_hints_contract() {
+    // ② 批一b：分类→重派策略映射矩阵（全值钉死——分类存在时映射表优先于
+    // 纯预算逻辑）；每类都有对应的人工处置建议。
+    let matrix: [(&str, FailClassPolicy); 12] = [
+        ("validation_budget", FailClassPolicy::CapabilitySwitch),
+        ("llm_timeout", FailClassPolicy::TransientRetry),
+        ("llm_failure", FailClassPolicy::TransientRetry),
+        ("llm_rate_limit", FailClassPolicy::TransientRetry),
+        ("empty_result", FailClassPolicy::TransientRetry),
+        ("escalation", FailClassPolicy::CapabilitySwitch),
+        ("token_budget", FailClassPolicy::Freeze),
+        ("mandate_violation", FailClassPolicy::CapabilitySwitch),
+        ("exec_failed", FailClassPolicy::CapabilitySwitch),
+        ("environmental", FailClassPolicy::SwitchNode),
+        ("resource_conflict", FailClassPolicy::SwitchNode),
+        ("unknown_side_effect", FailClassPolicy::Freeze),
+    ];
+    for (fc, want) in matrix {
+        assert_eq!(redispatch_policy(fc), want, "fail_class {fc} 映射漂移");
+    }
     let hint_budget = capability_fail_hint("validation_budget");
     assert!(
         hint_budget.contains("probe") && hint_budget.contains("set-tier"),
@@ -2650,8 +3034,40 @@ fn p2a_capability_classes_and_hints_contract() {
         hint_esc.contains("改写任务") || hint_esc.contains("换一种思路"),
         "escalation 建议应含改写/换思路指引: {hint_esc}"
     );
+    // ② 新闸类别的 hint 必有具体指引（映射新增闸类别 = hint 必有对应条目）。
+    let hint_env = capability_fail_hint("environmental");
+    assert!(
+        hint_env.contains("换节点"),
+        "environmental 建议应含换节点: {hint_env}"
+    );
+    let hint_res = capability_fail_hint("resource_conflict");
+    assert!(
+        hint_res.contains("错峰") && hint_res.contains("换节点"),
+        "resource_conflict 建议应含错峰/换节点: {hint_res}"
+    );
+    let hint_mandate = capability_fail_hint("mandate_violation");
+    assert!(
+        hint_mandate.contains("mandate") || hint_mandate.contains("授权"),
+        "mandate_violation 建议应含授权面指引: {hint_mandate}"
+    );
+    let hint_unknown = capability_fail_hint("unknown_side_effect");
+    assert!(
+        hint_unknown.contains("副作用") || hint_unknown.contains("影响"),
+        "unknown_side_effect 建议应含副作用/影响面指引: {hint_unknown}"
+    );
     // 未知类走兜底（非空即可读）。
     assert!(!capability_fail_hint("exec_failed").is_empty());
+    assert!(!capability_fail_hint("some_unknown_class").is_empty());
+}
+
+#[test]
+fn p2a_latest_fail_class_recognizes_aor_batch1b_classes() {
+    // ② 批一b：三类新值进 KNOWN 白名单（防伪造面同步收口——识别即进
+    // redispatch_policy 映射，冻结类直接停车）。
+    for fc in ["environmental", "resource_conflict", "unknown_side_effect"] {
+        let c = vec![p2a_comment(&worker_fail_comment("现象描述", fc))];
+        assert_eq!(latest_fail_class(&c), Some(fc), "新类值 {fc} 必须被认出");
+    }
 }
 
 /// 单节点历史 + 能力类失败（validation_budget）：非无限模式不盲重派，
@@ -2799,6 +3215,82 @@ async fn p2a_capability_fail_unlimited_mode_warns_but_continues() {
         2,
         "unlimited_mode 契约：告警继续（estop 是保险丝）"
     );
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+/// ② 批一b：冻结类失败（unknown_side_effect）——即使 unlimited_mode 也
+/// 停车不重派（unlimited 放大的是重派次数，不是副作用知情权；与能力类
+/// unlimited WARN-继续形成判别面）。
+#[tokio::test]
+async fn p2a_freeze_class_blocks_even_in_unlimited_mode() {
+    use nemesis_board::{CommentType, IssueStatus, NewComment};
+
+    let (deps, _ws) = review_deps("p2a-freeze-unlimited");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board": {"unlimited_mode": true}}"#,
+    )
+    .unwrap();
+    let issue = issue_in_review(
+        &deps.store,
+        "冻结类失败保护",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
+        "## 结论\n交付完成",
+    );
+    deps.store
+        .insert_dispatch(
+            "task-p2a-3",
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch("task-p2a-3", nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: worker_fail_comment(
+                "副作用不明：任务可能改写了共享配置，影响范围未评估。",
+                "unknown_side_effect",
+            ),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("冻结闸必须闭环不报错");
+    assert!(reviewed);
+
+    // 冻结评论在场 + 不发车（unlimited 也不豁免）+ 状态保持 in_review。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    let guard = comments
+        .iter()
+        .find(|c| c.content.contains("失败冻结保护"))
+        .expect("必须有冻结保护评论");
+    assert!(guard.content.contains("unknown_side_effect"));
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        1,
+        "冻结类失败：unlimited_mode 也不自动重派"
+    );
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview
+    );
+    // 审计留痕：reason=fail_class_freeze。
+    let audit = deps.store.list_activity(issue.id).unwrap();
+    let decide = audit
+        .iter()
+        .find(|a| a.action == "auto_decide")
+        .expect("必须有 auto_decide 审计");
+    let details = decide.details.as_deref().unwrap_or("");
+    assert!(details.contains("escalate_human"), "{details}");
+    assert!(details.contains("fail_class_freeze"), "{details}");
     let _ = std::fs::remove_dir_all(&deps.home);
 }
 
@@ -6388,9 +6880,7 @@ async fn degraded_delivery_cursor_survives_review_meta_comments() {
         comments.iter().map(|c| &c.content).collect::<Vec<_>>()
     );
     assert!(
-        !comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
+        !comments.iter().any(|c| c.content.contains("逐条差距")),
         "验收流程评论不得冒充 worker 汇报抢游标: {:?}",
         comments.iter().map(|c| &c.content).collect::<Vec<_>>()
     );
@@ -8503,9 +8993,7 @@ async fn subissue_file_anchor_passes_via_project_dir_fallback() {
         "锚点 PASS 评论应落库（fallback 命中）"
     );
     assert!(
-        !comments
-            .iter()
-            .any(|c| c.content.contains("客观锚点检查失败")),
+        !comments.iter().any(|c| c.content.contains("逐条差距")),
         "不得出现锚点失败短路"
     );
     let _ = std::fs::remove_dir_all(&proj_dir);
@@ -8566,6 +9054,7 @@ fn delivery_guard_blocks_system_terminal_text() {
         "ok",
         "(E-STOP) emergency stop triggered mid-task",
         "",
+        None,
     );
     assert!(out.is_board_task);
     assert!(out.settled);
@@ -8604,6 +9093,7 @@ fn delivery_guard_blocks_empty_response() {
         "ok",
         "   ",
         "",
+        None,
     );
     assert!(out.settled);
     let disp = store.get_dispatch(&task_id).unwrap().unwrap();
@@ -8624,6 +9114,7 @@ fn error_status_bypasses_guard_uses_plain_failure_path() {
         "error",
         "(E-STOP) estop text on the error path",
         "worker_aborted",
+        None,
     );
     assert!(out.settled);
     let disp = store.get_dispatch(&task_id).unwrap().unwrap();
@@ -8660,6 +9151,7 @@ fn normal_delivery_skips_guard() {
         "ok",
         "任务已完成：修改了 config.rs 并通过全部测试。证据：测试输出 4 passed。",
         "",
+        None,
     );
     assert!(out.settled);
     assert_eq!(out.issue_for_review, Some(issue_id));
