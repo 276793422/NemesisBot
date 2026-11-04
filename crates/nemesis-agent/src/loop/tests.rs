@@ -3858,6 +3858,45 @@ fn test_route_message_honors_agents_entity_session_key() {
     );
 }
 
+/// BUG 2026-11-05 红证（本地派发会话键污染主会话）：本地执行器以
+/// `board_dispatch:{task_id}` 键发布派发消息，该键族此前不进
+/// `is_preset_session_key` 白名单——route_message 走 resolver 覆盖分支把
+/// 键替换成路由缺省 `agent:main:main`：派发轮污染主会话（连续派发还互相
+/// 串染上下文）、会话隔离失效。honor 检查补 `board_dispatch:` 家族。
+/// 负对照臂：空键（无预置身份）仍走 resolver 缺省覆盖，防过修。
+#[test]
+fn test_route_message_honors_board_dispatch_session_key() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![])),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let msg = |session_key: &str| nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "board".to_string(),
+        chat_id: "task-1".to_string(),
+        content: "fix the bug".to_string(),
+        media: vec![],
+        session_key: session_key.to_string(),
+        correlation_id: String::new(),
+        metadata: Default::default(),
+        voice_playback: None,
+    };
+    let (agent_id, session_key) = agent_loop.route_message(&msg("board_dispatch:task-1"));
+    assert_eq!(agent_id, "main");
+    assert_eq!(
+        session_key, "board_dispatch:task-1",
+        "board_dispatch: 前缀的本地派发会话键必须原样 honor（按任务隔离会话），不得被路由键替换"
+    );
+    // 负对照：空键仍走 resolver 缺省覆盖。
+    let (_agent_id, session_key) = agent_loop.route_message(&msg(""));
+    assert_eq!(session_key, "agent:main:main");
+}
+
 #[test]
 fn test_set_cluster_and_get() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
