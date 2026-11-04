@@ -369,9 +369,10 @@ impl LspTool {
 /// （部分成功语义，与 rename 跨文件自然对齐：拒一处不连坐其余文件）。
 /// 全部被拒时 written 为空，由调用方定失败语义。
 ///
-/// 返回（实际落盘路径, 拒绝清单[(路径, 原因)]）；写盘中途失败时已落盘者
-/// 如实上报（调用方把失败传给模型，由它决定补救——闸已全过，失败只可能
-/// 是 IO 层）。
+/// 返回（实际落盘路径, 拒绝清单[(路径, 原因)]）；写盘中途失败 = Err 且错误
+/// 消息**自带已落盘清单**（BUG-20261104-381：此前 `?` 直接返回丢现场——
+/// 模型只看到第 N 个文件的 IO 失败，不知道前 N-1 个已改，半改名状态不可
+/// 见无法补救；闸已全过，失败只可能是 IO 层）。
 #[cfg(feature = "security")]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
@@ -451,10 +452,24 @@ async fn gate_and_write(
         }
     }
     let mut written = Vec::with_capacity(in_scope.len());
+    let mut write_errors: Vec<String> = Vec::new();
     for (f, resolved) in &in_scope {
-        std::fs::write(resolved, &f.new_text)
-            .map_err(|e| format!("write {} failed: {e}", resolved.display()))?;
-        written.push(resolved.to_string_lossy().into_owned());
+        match std::fs::write(resolved, &f.new_text) {
+            Ok(()) => written.push(resolved.to_string_lossy().into_owned()),
+            Err(e) => write_errors.push(format!("write {} failed: {e}", resolved.display())),
+        }
+    }
+    if !write_errors.is_empty() {
+        // BUG-20261104-381：写盘中途失败必须带**已落盘清单**——半改名状态
+        // 对调用方可见才能正确补救。此前 `?` 直接返回 Err，注释承诺的
+        // 「已落盘者如实上报」做不到：模型只看到第 N 个文件的 IO 失败，
+        // 不知道前 N-1 个已经改了（会盲目重试整个 rename）。
+        return Err(format!(
+            "rename write phase failed; {} file(s) already written: [{}]; errors: {}",
+            written.len(),
+            written.join(", "),
+            write_errors.join("; ")
+        ));
     }
     Ok((written, rejected))
 }
@@ -482,10 +497,21 @@ async fn gate_and_write(
         }
     }
     let mut written = Vec::with_capacity(in_scope.len());
+    let mut write_errors: Vec<String> = Vec::new();
     for (f, resolved) in &in_scope {
-        std::fs::write(resolved, &f.new_text)
-            .map_err(|e| format!("write {} failed: {e}", resolved.display()))?;
-        written.push(resolved.to_string_lossy().into_owned());
+        match std::fs::write(resolved, &f.new_text) {
+            Ok(()) => written.push(resolved.to_string_lossy().into_owned()),
+            Err(e) => write_errors.push(format!("write {} failed: {e}", resolved.display())),
+        }
+    }
+    if !write_errors.is_empty() {
+        // BUG-20261104-381：同 security 形态——失败必须带已落盘清单。
+        return Err(format!(
+            "rename write phase failed; {} file(s) already written: [{}]; errors: {}",
+            written.len(),
+            written.join(", "),
+            write_errors.join("; ")
+        ));
     }
     Ok((written, rejected))
 }
