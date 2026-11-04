@@ -152,3 +152,34 @@ fn test_extract_json_from_protobuf() {
     assert!(result.is_some());
     assert!(result.unwrap().contains("evt_1"));
 }
+
+// BUG-20261104-384 回归锁：循环尾退避等待必须真的睡满时长，且可被取消
+// 打断。旧形态 `select! { sleep => {}, async {} => {} }` 空 async 臂立即
+// Ready，sleep 被完全短路（断连后零间隔重连锤击远端 API）。
+
+#[tokio::test]
+async fn b384_backoff_wait_sleeps_full_duration_without_cancel() {
+    let (_tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let start = std::time::Instant::now();
+    let slept = FeishuChannel::backoff_wait(std::time::Duration::from_millis(50), &mut rx).await;
+    assert!(slept, "无取消时必须返回 true（睡满）");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(45),
+        "退避等待被短路，实际只等了 {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn b384_backoff_wait_returns_false_on_cancel() {
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let start = std::time::Instant::now();
+    drop(tx); // sender 侧 drop → oneshot 立即完成（取消语义含 drop）
+    let slept = FeishuChannel::backoff_wait(std::time::Duration::from_secs(3600), &mut rx).await;
+    assert!(!slept, "取消触发时必须返回 false（打断退避）");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "取消未能打断退避等待，实际耗时 {:?}",
+        start.elapsed()
+    );
+}
