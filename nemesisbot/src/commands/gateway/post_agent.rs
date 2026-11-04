@@ -1499,7 +1499,15 @@ pub(crate) async fn init_post_agent(
                                     "event_type".to_string(),
                                     serde_json::json!(ev.event_type),
                                 );
-                                for (k, v) in &ev.data {
+                                // BUG-20261104-383：TRIGGER_CHAIN_KEY 是引擎
+                                // 内部环闸载体（随 TriggerSource::Event.data
+                                // 透传回发布点追加），不属于 workflow 的业务
+                                // input——装进 input 前剥掉；下面的 trigger
+                                // data 保持原样（链靠它逐代传递）。
+                                let mut carrier = ev.data.clone();
+                                carrier
+                                    .remove(nemesis_workflow::event_dispatcher::TRIGGER_CHAIN_KEY);
+                                for (k, v) in &carrier {
                                     input.insert(k.clone(), v.clone());
                                 }
                                 // Unified `input` field: prefer `ev.data.input`
@@ -1507,7 +1515,7 @@ pub(crate) async fn init_post_agent(
                                 // otherwise JSON-serialise the whole data object.
                                 if !input.contains_key("input") {
                                     let serialized = serde_json::Value::Object(
-                                        ev.data.clone().into_iter().collect(),
+                                        carrier.clone().into_iter().collect(),
                                     )
                                     .to_string();
                                     input

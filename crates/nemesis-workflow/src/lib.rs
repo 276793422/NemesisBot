@@ -32,7 +32,7 @@ pub use drafts::{AppliedDraft, DraftDetail, DraftStore, DraftSummary, drafts_dir
 pub use driver_status::{
     TriggerDriverStatus, all_driver_statuses, all_known_trigger_types, driver_status_for,
 };
-pub use event_dispatcher::{EventDispatcher, TriggerEvent};
+pub use event_dispatcher::{EventDispatcher, TRIGGER_CHAIN_KEY, TriggerEvent};
 pub use events::{WorkflowEvent, WorkflowEventManager, WorkflowObserver};
 pub use triggers::{CronTimezone, TriggerConfig, TriggerManager};
 pub use types::MAX_RECURSION_DEPTH;
