@@ -186,6 +186,14 @@ fn parse_extra_roots_env(v: Option<std::ffi::OsString>) -> Vec<std::path::PathBu
         .unwrap_or_default()
 }
 
+/// BUG 修复 2026-11-04：子进程围栏 restrict 开关解析（缺省 true；显式
+/// `"0"` = false——镜像主进程 `WorkspaceBoundary.restrict`，其余值视同
+/// true：省 env 不含语义，跟 `NEMESISBOT_LEASE` 同族）。纯函数便于测试，
+/// 不直接摸进程 env。
+fn restrict_from_env(v: Option<&std::ffi::OsStr>) -> bool {
+    v != Some(std::ffi::OsStr::new("0"))
+}
+
 /// 工具循环（原 run() 主体）：注册共享工具集 + 选传输层。
 async fn run_loop(workspace: &str) -> Result<()> {
     // Same registry the gateway builds — zero drift between local and remote
@@ -197,15 +205,22 @@ async fn run_loop(workspace: &str) -> Result<()> {
     // 子进程围栏与主进程同根（第二根 = 项目 agent home），开关两侧行为
     // 不分裂。未设 = 单根旧行为（主 loop/工作流引擎字节不变）。
     let extra_roots = parse_extra_roots_env(std::env::var_os("NEMESISBOT_EXECUTOR_EXTRA_ROOTS"));
+    // BUG 修复 2026-11-04：围栏 restrict 镜像主进程边界开关（gateway 装配
+    // 侧经 `NEMESISBOT_EXECUTOR_RESTRICT=0` 透传 false；env 未设/非 "0" =
+    // true 旧行为——老网关 spawn 的子进程字节不变）。此前 restrict 恒 true
+    // 写死，用户 `restrict_to_workspace=false` 在 executor 分离形态下被
+    // 子进程围栏二次收紧（gateway 侧放行、这里仍拒写的分叉）。
+    let restrict = restrict_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_RESTRICT").as_deref());
     let cfg = SharedToolConfig {
         workspace: Some(workspace.to_string()),
-        // A5（2026-09-04）：子进程侧同样设界——executor 工作区即边界根
-        // （restrict 恒 true：能被剥离执行的操作本就该只碰工作区），与
-        // gateway 侧纵深防御一致（8 层管线已在 dispatch 前跑过）。
+        // A5（2026-09-04）：子进程侧同样设界——executor 工作区即边界根。
+        // restrict 缺省 true（能被剥离执行的操作本就该只碰工作区），与
+        // gateway 侧纵深防御一致（8 层管线已在 dispatch 前跑过）；显式
+        // false = 主进程边界就是关的，子进程镜像同相（不更严也不更松）。
         workspace_boundary: Some(std::sync::Arc::new(
             nemesis_agent::loop_tools::WorkspaceBoundary {
                 root: std::path::PathBuf::from(workspace),
-                restrict: true,
+                restrict,
                 extra_roots,
                 // editor 开关闸 v1 不接（子进程无开关通路）：None = 围栏按
                 // 自身根/第二根判定，界外一律拒。executor 分离形态下本子进程

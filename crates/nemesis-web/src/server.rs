@@ -2368,6 +2368,55 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
+                // 委派回执落会话（2026-11-04 委派 UX）：WS push `subagent_reply`
+                // 定向父会话房间（broadcast 必达——低频完成信号非洪泛源），
+                // 前端 ChatPanel 据此 resyncFromLog 刷新落盘行。不走默认
+                // tool_event 路径（语义不同）；不入 chat_event_log 环（回复
+                // 正文已持久化在 chat_log——resync 全量重拉即恢复，断线窗口
+                // 靠下一次任意 resync 兜底，重放只会让前端重复刷新）；不发
+                // SSE（LogsView 不消费）。
+                if let nemesis_types::agent::AgentEvent::SubagentReplyLanded {
+                    session_key,
+                    chat_id,
+                    subagent_id,
+                    status,
+                    summary,
+                    ..
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "subagent_id": subagent_id,
+                        "status": status,
+                        "summary": summary,
+                    });
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    if let Some(session_id) = chat_id.strip_prefix("web:") {
+                        let frame = crate::protocol::ProtocolMessage::new(
+                            "push",
+                            "chat",
+                            "subagent_reply",
+                            Some(payload),
+                        );
+                        match frame.to_json() {
+                            Ok(bytes) => {
+                                if let Err(e) = session_manager.broadcast(session_id, &bytes).await
+                                {
+                                    tracing::debug!(
+                                        session_id = %session_id,
+                                        error = %e,
+                                        "[AgentEventPump] subagent_reply broadcast failed (session gone?)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "[AgentEventPump] subagent_reply frame marshal failed; dropped");
+                            }
+                        }
+                    }
+                    continue;
+                }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是
                 // 连接级（`web:{连接id}`，session.rs create_session_with_method
                 // 派生），与前端会话 id（sessionStore.currentId，create/list

@@ -800,3 +800,35 @@ fn env_pairs_omits_extra_roots_when_empty() {
         "空第二根不得写 env"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG 修复 2026-11-04：子进程围栏 restrict 镜像 env 透传（缺省不设 env =
+// 子进程 true 旧行为；显式 false 才写 `NEMESISBOT_EXECUTOR_RESTRICT=0`）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn env_pairs_omits_restrict_env_when_default_true() {
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false));
+    let pairs = ch.env_pairs();
+    assert!(
+        !pairs
+            .iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_RESTRICT"),
+        "缺省（true）不得写 env——老网关 spawn 的子进程字节不变"
+    );
+}
+
+#[test]
+fn env_pairs_writes_zero_when_restrict_child_false() {
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false))
+        .with_restrict_child(false);
+    let pairs = ch.env_pairs();
+    assert_eq!(
+        pairs
+            .iter()
+            .find(|(k, _)| k == "NEMESISBOT_EXECUTOR_RESTRICT")
+            .map(|(_, v)| v.as_str()),
+        Some("0"),
+        "restrict=false 必须写 RESTRICT=0（子进程围栏同相放开）"
+    );
+}

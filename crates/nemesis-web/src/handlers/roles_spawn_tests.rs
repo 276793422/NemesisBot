@@ -96,7 +96,9 @@ fn make_ctx(
     });
     RequestContext {
         session_id: "s".to_string(),
-        chat_id: "c".to_string(),
+        // 房间形态（与生产 create_session_with_method 的 chat_id 同构：
+        // `web:{连接id}`——spawn 的 parent_chat_id 直接透传此值）。
+        chat_id: "web:conn-1".to_string(),
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
@@ -382,8 +384,14 @@ async fn spawn_happy_path_invokes_slot_fn_with_client_identity() {
     assert_eq!(task, "跑一遍单元测试");
     assert_eq!(model, "", "model 空 = detached 沿用主模型");
     assert_eq!(channel, "web");
-    assert_eq!(chat_id, "", "detached 不经通道路由");
-    assert_eq!(tools_profile, "");
+    // 父会话标识随行（BUG 修复 2026-11-04 + 路由修正同日）：chat_id 用发起
+    // 连接级房间 id（`web:{连接id}`，即 ctx.chat_id 原样透传——SessionManager
+    // send_queue 的键；事件泵剥前缀查房间表投递，deliverables/tool_event
+    // 同款语义。会话级 id 查不到房间 = 帧静默丢弃）。回复本身仍走 spawn
+    // 同步返回值不经通道路由。
+    assert_eq!(chat_id, "web:conn-1");
+    // 空缺省归一化 readonly 后传 loop（不再透传空串炸 detached_tools_for_profile）。
+    assert_eq!(tools_profile, "readonly");
     assert_eq!(*depth, 1, "深度 = 直接子代理");
     assert!(!background, "客户端委派前台等待最终回复");
     assert_eq!(role, "qa");

@@ -630,6 +630,21 @@ function handleWSMessage(data: any) {
     }
     return
   }
+  // 委派回执落会话（2026-11-04 委派 UX fire-and-forget）：子代理回复（或
+  // 失败注记）落盘后 pump 定向父会话房间广播 `subagent_reply`——当前面板
+  // 正在看该会话就以日志为真相源 resync（回复行自动出现）；非当前会话不
+  // 动（切回时 loadHistory 从磁盘加载，弹窗侧 toast 已全局通知完成）。
+  if (data.type === 'push' && data.cmd === 'subagent_reply') {
+    const p = data.data ?? {}
+    if (typeof p.session_id === 'string' && p.session_id.length > 0) {
+      if (effectiveSid.value && p.session_id !== effectiveSid.value) return
+    } else {
+      const expected = effectiveSid.value ? `web:${effectiveSid.value}` : null
+      if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
+    }
+    resyncFromLog()
+    return
+  }
   if (data.module !== undefined) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
@@ -1201,6 +1216,16 @@ const rewinding = ref(false)
 const showShare = ref(false)
 /** 角色目录与客户端委派（2026-09-28）：委派弹窗开关（工具栏按钮）。 */
 const showDelegate = ref(false)
+
+/** 委派已发出（2026-11-04 委派 UX fire-and-forget）：弹窗发出即关，`done`
+ *  在发送时触发（此时服务端尚未落盘）。延迟重同步让委派请求行（服务端
+ *  client_spawn 收到即写 user 行）出现在会话里；子代理回复完成后由
+ *  `subagent_reply` push 再次 resync（回复行自动追加），本函数不等回复。 */
+function onDelegateDone(): void {
+  window.setTimeout(() => {
+    resyncFromLog()
+  }, 600)
+}
 
 /** rewind/redo 后全量重同步：无条件以 chat_log 为真相源 replace 重建视图，
  *  并用响应 oldest_index 重建行号（与 watchdog 分支的区别：不依赖 streaming
@@ -3290,6 +3315,7 @@ onUnmounted(() => {
     <DelegateDialog
       v-if="showDelegate && effectiveSid"
       :session-id="effectiveSid"
+      @done="onDelegateDone"
       @close="showDelegate = false"
     />
   </div>

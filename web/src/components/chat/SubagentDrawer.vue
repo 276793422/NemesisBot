@@ -82,7 +82,9 @@ function openDetail(id: string) {
 
 function handleWSMessage(frame: any) {
   // 子代理 push 帧（outer data.subagent_id）到达 = 新活动，即时刷新列表。
-  if (frame?.type === 'push' && frame?.cmd === 'tool_event' && frame?.data?.subagent_id) load()
+  if (frame?.type === 'push' && frame?.data?.subagent_id) {
+    if (frame?.cmd === 'tool_event' || frame?.cmd === 'subagent_reply') load()
+  }
 }
 
 watch(

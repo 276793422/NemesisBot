@@ -241,6 +241,27 @@ pub enum AgentEvent {
         /// 完整会话键（web 层判别命名空间用）。
         session_key: String,
     },
+    /// 客户端委派回执落会话事件（2026-11-04 委派 UX）。`client_spawn` 在
+    /// 委派回复（或失败注记）持久化进父会话 chat_log **之后**发布；web
+    /// pump 转 WS push `subagent_reply` 定向父会话房间，前端据此
+    /// resyncFromLog 把落盘行刷进视图——委派弹窗 fire-and-forget 化的
+    /// 完成信号（弹窗发出即关，回复以 chat_log 为权威源，本事件只带摘要
+    /// 不重复载荷）。session_key 为父会话键；chat_id 为发起连接级房间
+    /// id（投递路由锚）。
+    SubagentReplyLanded {
+        /// 父会话完整键。
+        session_key: String,
+        /// 发起连接级房间 id（`web:{连接id}`，SessionManager send_queue
+        /// 的键——事件泵剥前缀查房间表投递；会话级 id 查不到房间 = 帧静默
+        /// 丢弃）。
+        chat_id: String,
+        /// 子代理注册表条目 id（`subagent:{uuid}`，抽屉深链用）。
+        subagent_id: String,
+        /// 终态：`done` / `failed`。
+        status: String,
+        /// 回复/失败摘录（≤500 字符，toast 展示用；全文在 chat_log）。
+        summary: String,
+    },
     /// P30（WS14）Canvas widget 打开事件。agent 终答里检出**全部合法**的
     /// ```canvas fenced 块后逐块发布（同一回复多块时 `index` 递增）；web
     /// pump 转 SSE `canvas.open`（内层 data 展平 + session_id 注入），
@@ -381,6 +402,8 @@ impl AgentEvent {
             | AgentEvent::CredentialResolved { .. }
             // 会话物化事件带裸 id 但无 chat 目标（全局广播语义）。
             | AgentEvent::SessionCreated { .. } => "",
+            // 委派回执绑定父会话（pump 专用臂定向推房间，不经默认路径）。
+            AgentEvent::SubagentReplyLanded { chat_id, .. } => chat_id,
         }
     }
 
@@ -401,7 +424,9 @@ impl AgentEvent {
             | AgentEvent::SessionCreated { session_key, .. }
             | AgentEvent::CanvasOpen { session_key, .. }
             | AgentEvent::ProviderStream { session_key, .. }
-            | AgentEvent::DeliverablesRegistered { session_key, .. } => Some(session_key),
+            | AgentEvent::DeliverablesRegistered { session_key, .. }
+            // 委派回执绑父会话。
+            | AgentEvent::SubagentReplyLanded { session_key, .. } => Some(session_key),
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
             // 凭据卡是进程级全局卡，无会话上下文。
             AgentEvent::CredentialRequested { .. } | AgentEvent::CredentialResolved { .. } => None,
@@ -421,6 +446,7 @@ impl AgentEvent {
             AgentEvent::QuestionAsked { .. } => "QuestionAsked",
             AgentEvent::QuestionResolved { .. } => "QuestionResolved",
             AgentEvent::SessionCreated { .. } => "SessionCreated",
+            AgentEvent::SubagentReplyLanded { .. } => "SubagentReplyLanded",
             AgentEvent::CanvasOpen { .. } => "CanvasOpen",
             AgentEvent::ProviderStream { .. } => "ProviderStream",
             AgentEvent::DeliverablesRegistered { .. } => "DeliverablesRegistered",

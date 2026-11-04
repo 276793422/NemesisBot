@@ -221,6 +221,12 @@ pub fn build_executor_channel_with_extra_roots(
     let lease_child_now: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || lease_handle.read().agents.lease_enabled);
 
+    // BUG 修复 2026-11-04：子进程围栏 restrict 镜像——装配期一次读（与
+    // 主 loop 边界同点同源：agent_factory 的 WorkspaceBoundary.restrict
+    // 也是装配期读 cfg，重启才变，两侧不会漂移；不像 sandbox/strict 走
+    // live 探针——那两个是运行期可翻的开关，restrict 不是）。
+    let restrict_child = config_handle.read().agents.defaults.restrict_to_workspace;
+
     // P24（2026-09-26）：Windows 盒缺位时的用户态 ACL 降级选型——**显式
     // `executor.backend = "acl"`** 且 AclBackend 本机可用才可顶（子进程
     // engage 同判据 opt-in 自装）。auto/未知值/不可用 → false 维持现状裸
@@ -503,7 +509,8 @@ pub fn build_executor_channel_with_extra_roots(
                 .with_home(home.to_path_buf())
                 .with_extra_roots(extra_roots.clone())
                 .with_strict_gate(strict_gate)
-                .with_lease_child((lease_child_now)());
+                .with_lease_child((lease_child_now)())
+                .with_restrict_child(restrict_child);
             // D3：DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
             #[cfg(all(feature = "sandbox", windows))]
             let channel = match dacl_hook {
@@ -551,6 +558,7 @@ pub fn build_executor_channel_with_extra_roots(
         .with_extra_roots(extra_roots)
         .with_strict_gate(strict_gate)
         .with_lease_child((lease_child_now)())
+        .with_restrict_child(restrict_child)
         // P24：Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
         // 判定面不存在 → 现状不变）。
         .with_userland_fallback({

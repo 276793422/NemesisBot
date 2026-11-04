@@ -172,9 +172,15 @@ fn begin_overwrites_duplicate_id_without_duplicating_order() {
 // 把好账本顶成坏账本（重启 load 失败 = 整册清空）。修复后走
 // write_file_atomic（pid+序数+nanos 唯一 tmp + create_new：并发写者结构
 // 上不可能互相踩踏，rename last-wins 必为某一次完整快照）。
-// 本测试钉住不变量：并发风暴结束后盘上文件**必然**是合法 JSON 快照且
-// 内容完整（旧实现下该测试偶发红——竞态窗口本质概率性，回归锁守的是
-// 结构前提而非确定性复现）。
+// 本测试钉住不变量：
+// 1. 并发风暴结束后盘上文件**必然**是合法 JSON 快照（旧实现下此臂偶发
+//    红——竞态窗口本质概率性，回归锁守的是结构前提而非确定性复现）。
+//    注意只断言「合法」不断言「最新」：persist 是锁内快照 + 锁外写，
+//    风暴中早期快照的 rename 可能晚于一切后到（last-wins 保的是原子性
+//    不是新鲜度——设计契约如此，条目丢失由下一次 persist 全量重写自愈）。
+// 2. 风暴静默后补一次 persist（无并发写者 = 最后一次 rename 确定），此时
+//    断言内容完整——全量序列化路径的完整性检查，确定性不再 flake。
+// 3. 无残留 tmp 垃圾（write_file_atomic 失败自清理 + rename 带走）。
 // ===========================================================================
 #[test]
 fn persist_concurrent_writers_always_leave_valid_snapshot() {
@@ -216,11 +222,32 @@ fn persist_concurrent_writers_always_leave_valid_snapshot() {
     }
 
     // 不变量 1：盘上文件必须是合法 JSON（旧实现交错写坏账本时此臂红）。
+    // 只验合法性不验条目数——last-wins 保证原子性不保证新鲜度（见 mod 注）。
     let bytes = std::fs::read(&path).unwrap();
-    let tasks: Vec<SubagentTask> = serde_json::from_slice(&bytes)
+    serde_json::from_slice::<Vec<SubagentTask>>(&bytes)
         .unwrap_or_else(|e| panic!("persist 产物必须是完整合法快照: {e}"));
-    // 不变量 2：内容完整——8×30 个 id 全部在册（快照是全量重写非追加）。
-    assert_eq!(tasks.len(), 8 * 30, "全量快照必须含全部条目");
+
+    // 不变量 2：风暴静默后补一次 begin（触发 persist；此时无并发写者，
+    // 最后一次 rename 确定 = 全量快照）——内容完整，8×30 个 id 全部在册。
+    // write_file_atomic 契约明文「目标被外部占用（AV 扫描）时 rename 失败
+    // 属预期，由调用方决定重试」（file.rs 头注）——重试归属测试侧：begin
+    // 是同 id 幂等 upsert（覆盖 + 重 persist），有界重试不影响断言语义。
+    let mut tasks: Vec<SubagentTask> = Vec::new();
+    for attempt in 0..5 {
+        reg.begin(begin_req("subagent:quiesce"));
+        let bytes = std::fs::read(&path).unwrap();
+        tasks = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("静默后快照非法（第 {} 次尝试）: {e}", attempt + 1));
+        if tasks.len() == 8 * 30 + 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(
+        tasks.len(),
+        8 * 30 + 1,
+        "静默后全量快照必须含全部条目（重试 5 次后仍缺 = 真回归）"
+    );
     // 不变量 3：无残留 tmp 垃圾（write_file_atomic 失败自清理 + rename 带走）。
     let leftovers: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()

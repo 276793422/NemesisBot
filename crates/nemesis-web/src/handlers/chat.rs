@@ -205,19 +205,37 @@ impl ModuleHandler for ChatHandler {
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .unwrap_or("");
-            // 值域校验与 SpawnTool schema 同款（空 = readonly 缺省）。
-            if !tools_profile.is_empty() && tools_profile != "readonly" && tools_profile != "full" {
-                return Err(format!(
-                    "invalid tools_profile: {tools_profile:?} (expected \"readonly\" | \"full\")"
-                ));
-            }
+            // 值域校验与 SpawnTool schema 同款；空 = readonly 缺省（BUG 修复
+            // 2026-11-04：此前空串透传 client_spawn → detached_tools_for_profile
+            // 直接 Err「Unknown tools profile ''」——注释声称缺省但没落地，
+            // 现归一化后传 loop，响应回带归一化值）。
+            let tools_profile = match tools_profile {
+                "" => "readonly",
+                p @ ("readonly" | "full") => p,
+                other => {
+                    return Err(format!(
+                        "invalid tools_profile: {other:?} (expected \"readonly\" | \"full\")"
+                    ));
+                }
+            };
             agent_loop.check_client_role(role)?;
-            let result = agent_loop.client_spawn(task, role, tools_profile).await?;
+            // 子代理可见性（BUG 修复 2026-11-04 + 路由修正同日）：父会话标识
+            // 随行——chat_id 用发起连接级房间 id（`web:{连接id}`，即
+            // SessionManager send_queue 的键；deliverables/tool_event 投递
+            // 同款。会话级 `web:{sid}` 进不了房间表——pump 按 chat_id 剥前缀
+            // 查 send_queues，会话 sid 查不到 = 帧静默丢弃）。会话键另传
+            // `session_key`（注册表台账归属 + SubagentDrawer 过滤 + 前端
+            // payload.session_id 注入）。委派请求/回复由 client_spawn 持久化
+            // 进本会话（user+assistant 双行，会话首建发 SessionCreated）。
+            let parent_chat_id = ctx.chat_id.clone();
+            let result = agent_loop
+                .client_spawn(task, role, tools_profile, &parent_chat_id, &session_key)
+                .await?;
             return Ok(Some(serde_json::json!({
                 "session_id": session_id,
                 "session_key": session_key,
                 "role": role,
-                "tools_profile": if tools_profile.is_empty() { "readonly" } else { tools_profile },
+                "tools_profile": tools_profile,
                 "result": result,
             })));
         }
