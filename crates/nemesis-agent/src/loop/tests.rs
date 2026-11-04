@@ -2877,9 +2877,10 @@ async fn test_force_compression_short_history() {
     // (MockLlmProvider returns "No more responses" when exhausted, which is
     // non-empty, so use explicit empty responses to exercise the None path.)
     // 2026-09-28 重试版护栏：空输出按失败归一进重试内层 → 两个空响应分别
-    // 承载首次尝试与重试；两次全空 → 诚实 None（mock 耗尽回落的
+    // 承载首次尝试与重试；两次全空触发 4× 预算升档重试（2026-11-03）→
+    // 第三个空响应承载升档尝试；三次全空 → 诚实 None（mock 耗尽回落的
     // "No more responses" 非空，绝不能让它被当摘要收编）。
-    let provider = MockLlmProvider::new(vec![llm_text(""), llm_text("")]);
+    let provider = MockLlmProvider::new(vec![llm_text(""), llm_text(""), llm_text("")]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     let instance = AgentInstance::new(test_config());
@@ -3055,18 +3056,23 @@ async fn test_summarize_empty_output_retries_then_succeeds() {
     assert_eq!(provider.call_count(), 2, "exactly attempt + one retry");
 }
 
-/// 两次全空 → 诚实 None（摘要不产出、历史保持不折叠），恰好两次调用；
+/// 两次全空 → 4× 预算升档重试（2026-11-03）→ 仍空 → 诚实 None（摘要不产出、
+/// 历史保持不折叠），恰好三次调用（默认预算 attempt+retry + 升档一次）；
 /// mock 耗尽回落串绝不进摘要。
 #[tokio::test]
 async fn test_summarize_both_empty_outputs_return_none() {
-    let provider = OutcomeMockProvider::new(vec![Ok(llm_text("")), Ok(llm_text(""))]);
+    let provider = OutcomeMockProvider::new(vec![
+        Ok(llm_text("")),
+        Ok(llm_text("")),
+        Ok(llm_text("")), // escalation attempt (4× budget) — still empty
+    ]);
     let history = g1_history(3);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
     let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_none(), "both attempts empty → honest None");
-    assert_eq!(provider.call_count(), 2);
+    assert_eq!(provider.call_count(), 3);
 }
 
 /// prefix_reuse=false (bare-concat shape): failure → None as well.

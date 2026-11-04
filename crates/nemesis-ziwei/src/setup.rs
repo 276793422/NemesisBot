@@ -319,7 +319,7 @@ impl SetupManager {
             // attach 会话（指纹校验在 attach 链内；失败则回滚 draft）
             let manager = crate::session::global().ok_or_else(|| {
                 let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-                "紫微会话管理器未装配（gateway 未启用或非 Windows 平台）".to_string()
+                crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string()
             })?;
             let session = match manager.attach(&profile, pid).await {
                 Ok(s) => s,
@@ -367,8 +367,8 @@ impl SetupManager {
         #[cfg(windows)]
         {
             let info = self.require_live_info(workspace)?;
-            let manager =
-                crate::session::global().ok_or("紫微会话管理器未装配（gateway 未启用）")?;
+            let manager = crate::session::global()
+                .ok_or(crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
             let session = manager
                 .get(&info.profile_id)
                 .ok_or("会话未就绪（select_target 的 attach 已失效？重新 select_target）")?;
@@ -1605,8 +1605,8 @@ impl SetupManager {
         {
             let info = self.require_live_info(workspace)?;
             let wait = wait_secs.unwrap_or(2).min(60);
-            let manager =
-                crate::session::global().ok_or("紫微会话管理器未装配（gateway 未启用）")?;
+            let manager = crate::session::global()
+                .ok_or(crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
             let session = manager
                 .get(&info.profile_id)
                 .ok_or("会话未就绪（重新 select_target）")?;

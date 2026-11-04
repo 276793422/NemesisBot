@@ -847,3 +847,47 @@ fn llm_response_skips_tool_calls_without_name() {
         "nameless call must be filtered entirely: {md}"
     );
 }
+
+/// 压缩杂务目录隔离（2026-11-03 BUG-3）回归锁：sender_id="summarizer"
+/// 的 observer 事件落 aux_ 前缀会话目录（此前照常落 `{timestamp}_{rand}`
+/// 对话目录——空消息空回复看着像「bot 在跟谁说话」）；普通用户对话照旧
+/// 默认命名不受影响。
+#[test]
+fn summarizer_events_land_in_aux_prefixed_dir() {
+    let tmp = TempDir::new().unwrap();
+    let observer = RequestLoggerObserver::new(test_config(), tmp.path());
+
+    let mut ev = make_start_event("aux-trace", "");
+    if let EventData::ConversationStart(ref mut d) = ev.data {
+        d.sender_id = "summarizer".to_string();
+    }
+    observer.on_event(&ev);
+
+    let log_dir = tmp.path().join("logs").join("llm");
+    let entries: Vec<String> = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(entries.len(), 1, "恰一个会话目录: {entries:?}");
+    assert!(
+        entries[0].starts_with("aux_"),
+        "summarizer 会话目录应带 aux_ 前缀: {entries:?}"
+    );
+
+    // 对照：普通用户对话照旧默认命名（不带前缀）。
+    let tmp2 = TempDir::new().unwrap();
+    let observer2 = RequestLoggerObserver::new(test_config(), tmp2.path());
+    observer2.on_event(&make_start_event("user-trace", "hello"));
+    let log_dir2 = tmp2.path().join("logs").join("llm");
+    let entries2: Vec<String> = std::fs::read_dir(&log_dir2)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(entries2.len(), 1, "恰一个会话目录: {entries2:?}");
+    assert!(
+        !entries2[0].starts_with("aux_"),
+        "普通对话不受影响: {entries2:?}"
+    );
+}

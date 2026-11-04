@@ -346,26 +346,66 @@ async fn build_messages_with_memory_annotation_merges_sections() {
 #[tokio::test]
 async fn emit_observer_events_wraps_llm_call_both_ways() {
     // None manager：直接透传调用结果。（工厂闭包形态：空输出重试机制引入后
-    // emit 助手收 Fn 闭包而非 future。）
+    // emit 助手收 Fn 闭包而非 future；升档重试引入后闭包带 max_tokens 入参。）
     let out =
-        emit_observer_events_around_llm(None, "s9label", "m", || async { Ok(resp("raw ok")) })
+        emit_observer_events_around_llm(None, "s9label", "m", |_max| async { Ok(resp("raw ok")) })
             .await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "raw ok"));
 
     // Some(manager)：发 ConversationStart/End + LlmRequest/Response 事件。
     let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
-    let out = emit_observer_events_around_llm(Some(&mgr), "s9label2", "m", || async {
+    let out = emit_observer_events_around_llm(Some(&mgr), "s9label2", "m", |_max| async {
         Ok(resp("observed ok"))
     })
     .await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "observed ok"));
 
-    // Err 路径同样透传（重试一次后仍失败 → 原样上抛）。
-    let out = emit_observer_events_around_llm(Some(&mgr), "s9label3", "m", || async {
+    // Err 路径同样透传（重试一次后仍失败 → 原样上抛；非空输出形态不升档）。
+    let out = emit_observer_events_around_llm(Some(&mgr), "s9label3", "m", |_max| async {
         Err::<LlmResponse, _>("llm exploded".to_string())
     })
     .await;
     assert!(matches!(out, Some(Err(e)) if e.contains("exploded")));
+}
+
+/// 升档重试（2026-11-03 空摘要根因兜底）回归锁：默认预算空输出两连
+/// （with_one_retry 同预算重试一次）后按 4× 预算升档再试一次；工厂闭包
+/// 收到的 max_tokens 序列钉死 [8192, 8192, 32768]；升档成功即产出摘要。
+#[tokio::test]
+async fn emit_observer_events_escalates_budget_after_double_empty() {
+    let budgets = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+    let seen = budgets.clone();
+    let out = emit_observer_events_around_llm(None, "s9escalate", "m", move |max_tokens| {
+        let seen = seen.clone();
+        async move {
+            seen.lock().unwrap().push(max_tokens);
+            if max_tokens <= AUX_SUMMARY_MAX_TOKENS {
+                // 默认预算两连：thinking 烧穿形态（正文空）。
+                Ok(LlmResponse {
+                    content: String::new(),
+                    reasoning_content: Some("thinking...".to_string()),
+                    ..resp("")
+                })
+            } else {
+                Ok(resp("escalated summary"))
+            }
+        }
+    })
+    .await;
+    assert!(
+        matches!(&out, Some(Ok(r)) if r.content == "escalated summary"),
+        "升档后应成功: {:?}",
+        out
+    );
+    assert_eq!(
+        *budgets.lock().unwrap(),
+        vec![
+            AUX_SUMMARY_MAX_TOKENS,
+            AUX_SUMMARY_MAX_TOKENS,
+            AUX_SUMMARY_MAX_TOKENS * 4
+        ],
+        "预算序列应为 8192→8192→32768"
+    );
 }
 
 #[tokio::test]

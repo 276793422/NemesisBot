@@ -414,7 +414,10 @@ pub struct ChatOptions {
     /// H4 (U16 half): reasoning-effort tier ("low"|"medium"|"high"; None =
     /// send nothing). Providers translate as their wire format requires
     /// (OpenAI-compatible: `reasoning_effort`; Anthropic: `thinking`
-    /// budget_tokens via a fixed tier→budget map).
+    /// budget_tokens via a fixed tier→budget map). 杂务调用另有 "off"
+    /// （关思考省输出预算，见 bypass_llm::aux_chat_options）——各 lane
+    /// 自行翻译（anthropic=thinking disabled；codex=minimal/low；
+    /// openai_compat 不发，非法枚举防 400）。
     pub reasoning_effort: Option<String>,
 }
 

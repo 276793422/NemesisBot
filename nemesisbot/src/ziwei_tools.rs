@@ -82,7 +82,7 @@ pub struct ZiweiDynamicTool {
 impl ZiweiDynamicTool {
     fn manager() -> Result<Arc<SessionManager>, String> {
         nemesis_ziwei::session::global()
-            .ok_or_else(|| "紫微会话管理器未装配（gateway 未启用或非 Windows 平台）".to_string())
+            .ok_or_else(|| nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string())
     }
 
     /// call_fn 执行体（T4.1）：统一实现下沉 runtime（与 WSAPI invoke 同源），

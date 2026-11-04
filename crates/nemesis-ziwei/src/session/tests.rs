@@ -56,3 +56,15 @@ fn test_profile() -> Profile {
         )
         .unwrap()
 }
+
+/// 统一文案契约（2026-11-03 BUG-1）：「未装配」错误必须同时说清原因
+/// （gateway 启动时 config 为 false / 非 gateway 非 Windows）与出路
+/// （改配置需重启 gateway 进程——OnceLock 槽进程级装配，agent 重建不
+/// 重新装配），杜绝此前三种括号注解漂移。
+#[test]
+fn not_assembled_msg_carries_cause_and_restart_guidance() {
+    let m = crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG;
+    assert!(m.contains("紫微会话管理器未装配"), "{m}");
+    assert!(m.contains("ziwei.enabled"), "{m}");
+    assert!(m.contains("重启 gateway 进程"), "{m}");
+}

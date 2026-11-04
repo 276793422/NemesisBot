@@ -283,7 +283,7 @@ impl ModuleHandler for ZiweiHandler {
                     .and_then(|v| v.as_u64())
                     .ok_or("缺 pid")? as u32;
                 let manager = nemesis_ziwei::session::global()
-                    .ok_or("紫微会话管理器未装配（gateway 未启用或非 Windows 平台）")?;
+                    .ok_or(nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
                 let store = ProfileStore::new(&Self::workspace(ctx)?);
                 let profile = store.load(&id).map_err(|e| e.to_string())?;
                 // attach + 按需 poll 调度一站式（sink/capture 在 manager 上，
@@ -306,7 +306,7 @@ impl ModuleHandler for ZiweiHandler {
                     .ok_or("缺 profile_id")?
                     .to_string();
                 let manager = nemesis_ziwei::session::global()
-                    .ok_or("紫微会话管理器未装配（gateway 未启用或非 Windows 平台）")?;
+                    .ok_or(nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
                 let msg = manager.detach(&id).await?;
                 Ok(Some(serde_json::json!({ "detached": id, "message": msg })))
             }
@@ -326,7 +326,7 @@ impl ModuleHandler for ZiweiHandler {
                     .ok_or("缺 tool")?
                     .to_string();
                 let manager = nemesis_ziwei::session::global()
-                    .ok_or("紫微会话管理器未装配（gateway 未启用或非 Windows 平台）")?;
+                    .ok_or(nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
                 let store = ProfileStore::new(&Self::workspace(ctx)?);
                 let profile = store.load(&id).map_err(|e| e.to_string())?;
                 let tool = profile
@@ -411,7 +411,7 @@ impl ModuleHandler for ZiweiHandler {
                 #[cfg(windows)]
                 {
                     let manager = nemesis_ziwei::session::global()
-                        .ok_or("紫微会话管理器未装配（gateway 未启用）")?;
+                        .ok_or(nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
                     Ok(Some(manager.resolve_functions(&id).await?))
                 }
                 #[cfg(not(windows))]
