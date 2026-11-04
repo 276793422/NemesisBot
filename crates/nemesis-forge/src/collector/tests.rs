@@ -5,6 +5,8 @@
 // SessionPositions、summarize_value/truncate_str、compute_pattern_hash
 // 2026-10-22 随生产代码整体移除（审计 P2-a），对应测试同步删除。
 
+use std::collections::HashSet;
+
 use super::*;
 
 fn make_experience(tool: &str, input: &str, success: bool) -> Experience {
@@ -39,9 +41,9 @@ async fn test_record_always_stores() {
     // record() synthesizes args {input_summary: ...}; dedup_hash uses key
     // names only, so all three share one hash — but all are stored (Go-style
     // always-store behavior; the aggregate layer was removed 2026-10-22).
-    assert!(collector.record(exp1.clone()).await);
-    assert!(collector.record(exp2).await);
-    assert!(collector.record(exp3).await);
+    collector.record(exp1.clone()).await;
+    collector.record(exp2).await;
+    collector.record(exp3).await;
 
     assert_eq!(collector.len(), 3);
     assert_eq!(
@@ -62,8 +64,8 @@ async fn test_record_with_args_different_patterns() {
     let args1 = serde_json::json!({"path": "/tmp/a.txt"});
     let args2 = serde_json::json!({"path": "/tmp/b.txt", "mode": "read"});
 
-    assert!(collector.record_with_args(exp1, &args1).await);
-    assert!(collector.record_with_args(exp2, &args2).await);
+    collector.record_with_args(exp1, &args1).await;
+    collector.record_with_args(exp2, &args2).await;
 
     assert_eq!(collector.len(), 2);
     assert_eq!(
@@ -84,8 +86,8 @@ async fn test_record_with_args_same_keys_different_values() {
     let args1 = serde_json::json!({"path": "/tmp/a.txt"});
     let args2 = serde_json::json!({"path": "/tmp/b.txt"});
 
-    assert!(collector.record_with_args(exp1, &args1).await);
-    assert!(collector.record_with_args(exp2, &args2).await);
+    collector.record_with_args(exp1, &args1).await;
+    collector.record_with_args(exp2, &args2).await;
 
     assert_eq!(collector.len(), 2);
     assert_eq!(
@@ -219,10 +221,11 @@ fn test_sanitize_args_no_fields() {
 // --- Additional collector tests ---
 
 #[tokio::test]
-async fn test_record_returns_true() {
+async fn test_record_stores_one() {
     let collector = Collector::new(CollectorConfig::default());
     let exp = make_experience("tool", "input", true);
-    assert!(collector.record(exp).await);
+    collector.record(exp).await;
+    assert_eq!(collector.len(), 1);
 }
 
 #[tokio::test]
@@ -230,7 +233,7 @@ async fn test_record_many_experiences() {
     let collector = Collector::new(CollectorConfig::default());
     for i in 0..100 {
         let exp = make_experience("tool", &format!("input-{}", i), true);
-        assert!(collector.record(exp).await);
+        collector.record(exp).await;
     }
     assert_eq!(collector.len(), 100);
 }
@@ -294,7 +297,7 @@ async fn test_record_with_args_stores_experience() {
     let collector = Collector::new(CollectorConfig::default());
     let exp = make_experience("tool", "input", true);
     let args = serde_json::json!({"key": "value"});
-    assert!(collector.record_with_args(exp, &args).await);
+    collector.record_with_args(exp, &args).await;
     assert_eq!(collector.len(), 1);
 }
 
@@ -470,9 +473,8 @@ async fn test_s8_record_persistence_failure_still_succeeds_in_memory() {
     config.persistence_path = blocker.join("x.jsonl").to_string_lossy().to_string();
     let collector = Collector::new(config);
 
-    let inserted = collector
+    collector
         .record(make_experience("tool_a", "input", true))
         .await;
-    assert!(inserted);
     assert_eq!(collector.experiences().len(), 1);
 }

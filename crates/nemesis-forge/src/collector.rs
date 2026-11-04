@@ -1,9 +1,11 @@
 //! Collector - asynchronously collects tool call experiences.
 //!
-//! Deduplicates by (tool_name + args hash) and stores up to `max_size` entries
-//! in memory. Optionally persists to JSONL.
+//! Stores up to `max_size` entries in memory (Go-style always-store: every
+//! record is persisted and inserted; the aggregate/dedup layer was removed
+//! 2026-10-22 — the `dedup_hash` survives only as a JSONL field consumed by
+//! pattern analysis). Optionally persists to JSONL.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
@@ -17,7 +19,6 @@ use crate::types::{CollectedExperience, CollectorConfig, Experience};
 pub struct Collector {
     config: CollectorConfig,
     experiences: Mutex<VecDeque<CollectedExperience>>,
-    seen_hashes: Mutex<HashSet<String>>,
     persistence_path: Option<PathBuf>,
 }
 
@@ -41,16 +42,18 @@ impl Collector {
         Self {
             config,
             experiences: Mutex::new(VecDeque::new()),
-            seen_hashes: Mutex::new(HashSet::new()),
             persistence_path,
         }
     }
 
-    /// Compute a deduplication hash from tool_name and sorted argument key names.
+    /// Compute a pattern hash from tool_name and sorted argument key names.
     ///
     /// Matches Go's `ComputePatternHash` which hashes `toolName + ":" + sorted(arg_keys)`.
     /// Only the key names are used, not their values, so that the same tool
     /// called with different parameter values produces the same pattern hash.
+    /// The hash is stored on each `CollectedExperience` as a JSONL field for
+    /// downstream pattern analysis — it is NOT used to deduplicate records
+    /// (always-store semantic).
     pub fn dedup_hash(tool_name: &str, args: &serde_json::Value) -> String {
         // Extract arg key names from the JSON object
         let mut keys: Vec<String> = match args.as_object() {
@@ -67,15 +70,12 @@ impl Collector {
         format!("sha256:{}", hash_hex)
     }
 
-    /// Record a new experience. Returns `true` if it was actually inserted
-    /// (i.e. not exceeding capacity). The `args` parameter is the original
-    /// tool call arguments (JSON object), hashed (key names only) for
-    /// deduplication.
-    pub async fn record_with_args(&self, experience: Experience, args: &serde_json::Value) -> bool {
+    /// Record a new experience (always stored). The `args` parameter is the
+    /// original tool call arguments (JSON object), hashed (key names only)
+    /// into the `dedup_hash` JSONL field.
+    pub async fn record_with_args(&self, experience: Experience, args: &serde_json::Value) {
         let hash = Self::dedup_hash(&experience.tool_name, args);
-
         self.persist_and_store(experience, hash).await;
-        true
     }
 
     /// Persist to JSONL + insert into the in-memory store.
@@ -86,41 +86,35 @@ impl Collector {
     async fn persist_and_store(&self, experience: Experience, hash: String) {
         let ce = CollectedExperience {
             experience,
-            dedup_hash: hash.clone(),
+            dedup_hash: hash,
         };
 
         // Persist to JSONL (before adding to memory so a crash between the two
-        // does not lose data; re-loading will deduplicate anyway).
+        // does not lose data).
         if let Some(ref path) = self.persistence_path
             && let Err(e) = Self::append_jsonl(path, &ce).await
         {
             tracing::warn!(path = %path.display(), error = %e, "[Collector] Failed to persist experience");
         }
 
-        // Add to in-memory store
-        {
-            let mut exps = self.experiences.lock();
-            if exps.len() >= self.config.max_size {
-                tracing::debug!("[Collector] At max capacity, evicting oldest");
-                if let Some(removed) = exps.front() {
-                    self.seen_hashes.lock().remove(&removed.dedup_hash);
-                }
-                exps.pop_front();
-            }
-            exps.push_back(ce);
+        // Add to in-memory store (bounded: evict oldest at capacity).
+        let mut exps = self.experiences.lock();
+        if exps.len() >= self.config.max_size {
+            tracing::debug!("[Collector] At max capacity, evicting oldest");
+            exps.pop_front();
         }
-        self.seen_hashes.lock().insert(hash);
+        exps.push_back(ce);
     }
 
     /// Record a new experience using input_summary for backward compatibility.
     ///
     /// Prefer `record_with_args` which matches Go's `ComputePatternHash`.
-    pub async fn record(&self, experience: Experience) -> bool {
+    pub async fn record(&self, experience: Experience) {
         // Fallback: synthesize a JSON object from input_summary so dedup_hash
         // still produces a deterministic result. When args are not available,
         // we use the input_summary as a single key.
         let args = serde_json::json!({ "input_summary": experience.input_summary });
-        self.record_with_args(experience, &args).await
+        self.record_with_args(experience, &args).await;
     }
 
     /// Return a snapshot of all collected experiences.
@@ -142,16 +136,13 @@ impl Collector {
     pub async fn load_from_file<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         let content = tokio::fs::read_to_string(path).await?;
         let mut exps = self.experiences.lock();
-        let mut seen = self.seen_hashes.lock();
         exps.clear();
-        seen.clear();
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
             if let Ok(ce) = serde_json::from_str::<CollectedExperience>(line) {
-                seen.insert(ce.dedup_hash.clone());
                 exps.push_back(ce);
             }
         }
@@ -177,7 +168,6 @@ impl Collector {
     /// Clear all collected experiences.
     pub fn clear(&self) {
         self.experiences.lock().clear();
-        self.seen_hashes.lock().clear();
     }
 
     /// Sanitize arguments by redacting sensitive fields.
