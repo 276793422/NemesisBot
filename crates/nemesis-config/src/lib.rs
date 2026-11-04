@@ -231,6 +231,53 @@ pub struct Config {
     /// [`CheckpointConfig`]。
     #[serde(default)]
     pub checkpoint: Option<CheckpointConfig>,
+    /// WASM 插件宿主开关段（`plugins.wasm.enabled`，缺省 true）。typed
+    /// 字段化保证 save_config 往返不丢键（P32 cache_warmer 同款预防，
+    /// BUG-20261105-008）：本键由 `crate::plugin_wasm::runtime_enabled`
+    /// 经原始 JSON pointer 消费、全仓无写入点（手编 config.json 是唯一
+    /// 设置途径）——不建模则任何 typed 保存（dashboard config/models/
+    /// skills/profile 事务、save_live、ConfigStore::update 等）静默抹掉
+    /// 用户显式禁用，子系统静默重启用。
+    #[serde(default)]
+    pub plugins: Option<PluginsHostConfig>,
+}
+
+/// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；BUG-20261105-008
+/// typed 字段化——先前该段不被顶层 [`Config`] 建模，typed 保存静默丢弃
+/// 整段。plugin_wasm.rs 模块注释早已点名该机制（panel_llm 因此落 side
+/// file），主闸 `plugins.wasm.enabled` 却仍留在裸读面）。段内未建模键经
+/// flatten extra 原样回吐（ModelConfig.extra 同款保真）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginsHostConfig {
+    /// WASM 插件子系统运行期总闸（缺省 true = 未表态放行；显式 false =
+    /// 禁用。消费方 `crate::plugin_wasm::runtime_enabled` 原始 pointer
+    /// 现读，本字段只保证保存面不丢键）。
+    #[serde(default = "default_plugins_wasm_enabled")]
+    pub wasm: PluginsWasmHostConfig,
+    /// 段内未建模键保真（round-trip 原样回吐，不收敛丢键）。
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `plugins.wasm` 子段（仅运行期消费的 `enabled` 键）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PluginsWasmHostConfig {
+    /// 缺省 true（未表态 = 开；显式 false = 禁用——typed 保存必须保留）。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for PluginsWasmHostConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `plugins.wasm` 缺键默认（enabled=true，与 runtime_enabled 的
+/// `unwrap_or(true)` 同源口径）。
+fn default_plugins_wasm_enabled() -> PluginsWasmHostConfig {
+    PluginsWasmHostConfig { enabled: true }
 }
 
 /// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；M6 2026-10-27
@@ -1951,6 +1998,30 @@ pub struct AgentsConfig {
     /// future，已 spawn 的子进程可能成为孤儿（B4 后台注册表/停摆清扫兜底）。
     #[serde(default = "default_executor_tool_timeout_secs")]
     pub executor_tool_timeout_secs: u64,
+    /// L29 流断拼接开关（`agents.stream_concat_retry`）。默认开（拼接省
+    /// token）；显式 false = stream 断流回退「重试从头」。消费方
+    /// `config_watch::stream_concat_retry_from_value` 原始 JSON fresh-read
+    /// （nemesis-agent）——typed 字段化保证 save_config 往返不丢键
+    /// （P32 cache_warmer 同款预防，BUG-20261105-008：不建模则显式
+    /// 「重试从头」被任何 typed 保存静默抹掉回翻拼接）。
+    #[serde(default = "default_true")]
+    pub stream_concat_retry: bool,
+    /// B 端职能工具围栏总闸（`agents.profession_tool_fence`）。默认开；
+    /// 显式 false = 任务装配不写 `AgentConfig.tools` 白名单（供给/派发
+    /// 双闸的权威判据为空 = 不围）。消费方
+    /// `config_watch::current_profession_tool_fence` 世代快照原始读
+    /// （nemesisbot::cluster_agent）——typed 字段化同款预防
+    /// （BUG-20261105-008）。
+    #[serde(default = "default_true")]
+    pub profession_tool_fence: bool,
+    /// L10 工具参数面惰性供给（`agents.lazy_tool_schema`）。**缺省随
+    /// tier**（mini 强制惰性 / big·auto 恒全量 / normal 缺省惰性）——必须
+    /// `Option<bool>` 而非定值 bool：typed 字段化若写死默认会把「未表态」
+    /// 钉成显式值，破坏 tier 切换语义。None（缺席/null）= 交给消费方
+    /// `current_lazy_tool_schema` 裁决矩阵；Some(false)（normal 档全量）/
+    /// Some(true) 显式表态照常保留（BUG-20261105-008）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lazy_tool_schema: Option<bool>,
 }
 
 /// `agents.executor_tool_timeout_secs` 缺键默认（30 分钟）。
@@ -5235,6 +5306,9 @@ pub fn default_config() -> Config {
             delegate: DelegateToolConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
+            stream_concat_retry: true,
+            profession_tool_fence: true,
+            lazy_tool_schema: None,
             executor_tool_timeout_secs: default_executor_tool_timeout_secs(),
             defaults: AgentDefaults {
                 workspace: ws,
@@ -5358,6 +5432,7 @@ pub fn default_config() -> Config {
         health: None,
         logs: None,
         checkpoint: None,
+        plugins: None,
     }
 }
 
