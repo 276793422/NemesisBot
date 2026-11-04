@@ -187,3 +187,45 @@ fn assert_no_tmp_residue(dir: &std::path::Path) {
         .collect();
     assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
 }
+
+// ==================== BUG-20261104-370 回归锁 ====================
+//
+// load_enabled 的读路径迁移 rename 曾零锁——迁移窗口内与 set_enabled 并发，
+// rename 覆盖刚落盘的开关文件（用户切换静默回退）。修复 = 读路径全程罩
+// config_write_lock（BUG-20261103-333 在 plugin_wasm::load_switches 修过的
+// 同族位点，native 模块漏改）。本钉证明 load_enabled 已进 config 写锁家族：
+// 持锁期间调用必须阻塞（若锁被改成 no-op 或读路径退出锁家族，此钉红）。
+
+#[test]
+fn bug370_load_enabled_is_serialized_by_config_write_lock() {
+    let dir = temp_config_dir("bug370_lock");
+    // 旧文件在场：读路径会真实执行迁移 rename（锁外时可与并发写交错）
+    std::fs::write(
+        dir.join("plugins_native.json"),
+        r#"{"plugins":{"plugin_ui":{"enabled":false}}}"#,
+    )
+    .unwrap();
+
+    let guard = crate::config_write_lock();
+    let dir_for_thread = dir.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || {
+        let enabled = load_enabled(&dir_for_thread, NativePluginId::PluginUi);
+        tx.send(enabled).expect("receiver dropped");
+    });
+    // 给一点时间窗口确认没有误放行（锁外形态此刻已完成迁移并返回）。
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(1))
+            .is_err(),
+        "load_enabled 在 config_write_lock 持有期间就完成了——读路径退出了锁家族（BUG-370 回归）"
+    );
+    drop(guard);
+    let enabled = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("锁释放后 load_enabled 应完成");
+    assert!(!enabled, "迁移内容必须生效（plugin_ui 旧值 false）");
+    assert!(!dir.join("plugins_native.json").exists(), "旧文件应已迁移");
+    h.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
