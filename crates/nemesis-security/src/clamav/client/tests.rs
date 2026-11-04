@@ -810,3 +810,34 @@ async fn send_command_read_error_breaks_out_of_loop() {
     assert!(r.is_err());
     let _ = srv.await;
 }
+
+/// BUG-20261104-375：读侧总闸。clamd 半死形态（TCP 已 accept 但不回包）
+/// 下 send_command 的 read_line 循环必须被 self.timeout 截断——修复前无界
+/// 挂死，Layer 7 block_in_place 内一并挂死、工具调用永不返回。外层 5s
+/// 守闸把「缺修复」形态转成测试红而非套件挂死。
+#[tokio::test]
+async fn test_bug375_send_command_read_is_bounded_when_daemon_silent() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    // 接受连接后既不读也不写——复现「accept 后卡死」形态
+    tokio::spawn(async move {
+        let (_held, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+    let client = Client::with_timeout(&addr, std::time::Duration::from_millis(300));
+    let start = std::time::Instant::now();
+    let guarded = tokio::time::timeout(std::time::Duration::from_secs(5), client.ping()).await;
+    assert!(
+        guarded.is_ok(),
+        "ping 必须有界返回（外层 5s 守闸被触发=读侧仍无界挂死）"
+    );
+    assert!(
+        guarded.unwrap().is_err(),
+        "静默 clamd 的 ping 必须报读超时错误"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(4),
+        "读超时必须生效（实际耗时 {:?}）",
+        start.elapsed()
+    );
+}

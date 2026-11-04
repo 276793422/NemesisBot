@@ -194,14 +194,29 @@ impl Client {
             .await
             .map_err(|e| format!("send command: {}", e))?;
 
+        // BUG-20261104-375：读侧总闸。此前只有 connect 包了 timeout，
+        // read_line 循环无界——clamd 半死（TCP 已 accept 但不回包：DB 重载
+        // 持锁 / 守护进程卡死）时 PING/SCAN/CONTSCAN 永久挂死，Layer 7 的
+        // block_in_place + rt.block_on 一并挂死，工具调用永不返回（agent
+        // loop 卡死在该调用上）。与 BUG-20261101-278 同族（那次修引擎下载
+        // read_timeout，扫描链路这条漏网），与 scan_stream 的整体 timeout
+        // 同语义：整个读循环共享一个截止点，写侧不计入窗口。
+        let deadline = tokio::time::Instant::now() + self.timeout;
         let mut reader = BufReader::new(read_half);
         let mut lines = Vec::new();
 
         loop {
             let mut line = String::new();
-            match reader.read_line(&mut line).await {
-                Ok(0) => break,
-                Ok(_) => {
+            let read = tokio::time::timeout_at(deadline, reader.read_line(&mut line)).await;
+            match read {
+                Err(_) => {
+                    return Err(format!(
+                        "read response from clamd at {} timed out",
+                        self.address
+                    ));
+                }
+                Ok(Ok(0)) => break,
+                Ok(Ok(_)) => {
                     let trimmed = line.trim().to_string();
                     if !trimmed.is_empty() {
                         lines.push(trimmed);
@@ -210,7 +225,7 @@ impl Client {
                         break;
                     }
                 }
-                Err(_) => break,
+                Ok(Err(_)) => break,
             }
         }
 
