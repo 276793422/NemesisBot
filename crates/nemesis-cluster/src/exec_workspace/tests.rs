@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use super::{
-    BASELINE_SIDECAR_NAME, BaselineSidecar, exec_dir_for, exec_root_in_workspace, finish_task_exec,
-    sweep_exec_residual, write_sidecar,
+    BASELINE_SIDECAR_NAME, BaselineSidecar, assembling_marker_path, exec_dir_for,
+    exec_root_in_workspace, finish_task_exec, sweep_exec_residual, write_sidecar,
 };
 use crate::changeset::{CHANGESET_DIR_NAME, read_changeset};
 use crate::outbox::{TransferOutbox, TransferTransport};
@@ -330,6 +330,42 @@ fn finish_enqueue_failure_preserves_scene() {
     let ob = ws.outbox();
     assert!(finish_task_exec(&ws.root, &ob, task, "node-a").is_err());
     assert!(exec.exists(), "入队失败必须保留工作副本现场");
+}
+
+/// BUG-20261104-361（T-MRG-1 吞变更集）：装配标记生命周期——Err 出口
+/// （现场保留）不留残标（残标会让 master D5 兜底永久观望，下轮兜底须
+/// 能按旧语义重推）；Ok 出口 exec 连同标记一起清扫；标记在 exec 树外，
+/// 绝不进 diff（零差异不得因标记变非零差异）。
+#[test]
+fn finish_assembling_marker_cleared_on_all_exits() {
+    // Err 路径：无执行记录 → enqueue 失败，现场保留但标记必须清。
+    let ws = Ws::new("finish-marker");
+    let task = "t-fm-1";
+    let exec = exec_dir_for(&ws.root, task);
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::write(exec.join("x.h"), b"x\n").unwrap();
+    write_sidecar(
+        &exec,
+        &BaselineSidecar {
+            baseline_commit: "b".into(),
+            files: vec![],
+        },
+    )
+    .unwrap();
+    let marker = assembling_marker_path(&exec_root_in_workspace(&ws.root), task);
+    let ob = ws.outbox();
+    assert!(finish_task_exec(&ws.root, &ob, task, "node-a").is_err());
+    assert!(exec.exists(), "入队失败必须保留工作副本现场");
+    assert!(
+        !marker.exists(),
+        "Err 出口必须清装配标记（残标 = master 兜底永久观望）"
+    );
+
+    // Ok 路径：补上执行记录后重跑 → 入队成功，exec 连同标记一起清扫。
+    ws.seed_logs(task);
+    assert!(finish_task_exec(&ws.root, &ob, task, "node-a").unwrap());
+    assert!(!exec.exists(), "终结后工作副本必须清扫");
+    assert!(!marker.exists());
 }
 
 /// 残留清扫：带 sidecar 的 exec 目录重新入队并清理。

@@ -314,6 +314,9 @@ pub struct TransferOutbox {
     outbox_root: PathBuf,
     /// `<workspace>/logs/cluster_logs`（入队源；nemesis-path 唯一拼接点）。
     logs_root: PathBuf,
+    /// `<workspace>/cluster/exec`（档案管线工作副本根；D5 兜底拉取的装配
+    /// 观望探针用，BUG-20261104-361）。
+    exec_root: PathBuf,
     self_node_id: String,
     transport: Arc<dyn TransferTransport>,
     /// D4 护栏现读 provider（gateway 从 config 现读注入，热生效；0=不限）。
@@ -339,6 +342,7 @@ impl TransferOutbox {
         Self {
             outbox_root,
             logs_root: nemesis_path::resolve_cluster_logs_dir_in_workspace(workspace),
+            exec_root: crate::exec_workspace::exec_root_in_workspace(workspace),
             self_node_id,
             transport,
             max_bytes,
@@ -452,6 +456,22 @@ impl TransferOutbox {
         // （该腿不依赖 seen）——语义闭环。
         if let Some(state) = self.parked_state(task_id) {
             return state;
+        }
+        // BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线
+        // sidecar + `.assembling-*` 标记在场，见
+        // `exec_workspace::finish_task_exec`）时不得兜底重推——此刻入队
+        // 只会送出无变更集的执行记录，发件箱幂等闸随后吞掉带变更集的正
+        // 常入队，master 空集宽容把 worker 的实际改动静默合并为「无变
+        // 更」。诚实答 assembling 让 master 观望，等正常完成腿交付完整
+        // 载荷（执行记录 + 变更集同载荷原子落地）。
+        let sanitized = crate::transfer::sanitize_transfer_id(task_id);
+        let exec_dir = self.exec_root.join(&sanitized);
+        if exec_dir
+            .join(crate::exec_workspace::BASELINE_SIDECAR_NAME)
+            .exists()
+            && crate::exec_workspace::assembling_marker_path(&self.exec_root, task_id).exists()
+        {
+            return "assembling";
         }
         let Ok(devices) = std::fs::read_dir(&self.logs_root) else {
             return "no_archive";
