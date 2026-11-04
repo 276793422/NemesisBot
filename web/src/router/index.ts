@@ -9,7 +9,10 @@ const routes: RouteRecordRaw[] = [
   // Management
   { path: '/logs', name: 'logs', component: () => import('../views/LogsView.vue') },
   { path: '/models', name: 'models', component: () => import('../views/ModelsView.vue') },
-  { path: '/local-models', name: 'local-models', component: () => import('../views/LocalModelsView.vue') },
+  // 本地模型页（voice feature / VITE_FEATURE_VOICE 门控）：消费 voice.status/
+  // install_runtime，IoT 预设 voice=false 时模块整包退出。页面内 unavailable
+  // 空态保留作纵深防御（非 Windows 等运行期场景仍需诚实提示）。
+  ...(import.meta.env.VITE_FEATURE_VOICE !== 'false' ? [{ path: '/local-models', name: 'local-models', component: () => import('../views/LocalModelsView.vue') }] : []),
   // Feature-gated views: dropped from the bundle when the matching cargo
   // feature is off (Vite tree-shakes the dead `import()` when
   // `import.meta.env.VITE_FEATURE_X === 'false'`). `!== 'false'` = default
@@ -28,9 +31,14 @@ const routes: RouteRecordRaw[] = [
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
   // 行动连接器（2026-10-14 AI 原生行动代理）：只读面——连接器注册表 +
   // 行动回执（行动账本）+ 纸面券商模拟账本（WSAPI connectors 模块）。
-  { path: '/connectors', name: 'connectors', component: () => import('../views/ConnectorsView.vue') },
+  // connectors feature 门控：IoT/单机预设关掉后 WSAPI connectors.* 模块
+  // 整包退出（features.toml「IoT/单机建议关」），页面必须同步裁剪
+  //（R497：此前两预设关掉后页面仍注册，打开=对着已消失后端报 unknown command）。
+  ...(import.meta.env.VITE_FEATURE_CONNECTORS !== 'false' ? [{ path: '/connectors', name: 'connectors', component: () => import('../views/ConnectorsView.vue') }] : []),
   // P2-1 (2026-08-24 UI entry gap): 「代码开发」页（LSP/CLI 委派配置）。
-  { path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') },
+  // lsp feature 门控：CodingView 的 WSAPI 消费面（coding.config/lsp_status/
+  // lsp_install）全部挂在 coding 模块，IoT 预设 lsp=false 时整模块退出。
+  ...(import.meta.env.VITE_FEATURE_LSP !== 'false' ? [{ path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_WORKFLOW !== 'false' ? [{ path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') }] : []),
   // Note: `/workflow/chat/<index>` is served as a standalone HTML page
   // (workflow-chat.html, see vite.config.ts + serve_embedded_static),

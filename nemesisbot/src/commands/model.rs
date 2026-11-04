@@ -266,14 +266,12 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
-            // Validate model identifier format: must be vendor/model
-            if !model.contains('/') {
-                anyhow::bail!(
-                    "Invalid model identifier '{}'. Expected format: vendor/model\n\
-                     Example: openai/gpt-4o, anthropic/claude-sonnet-4",
-                    model
-                );
-            }
+            // Validate model identifier format: must be vendor/model，段级拒
+            // `.`/`..`/`\`/控制字符（BUG-20261104-361：旧 `contains('/')` 闸
+            // 放行 `../../etc/passwd`——vendor 段 `..` 是穿越形态）。单一真相
+            // 源 helper 与 WSAPI models.add 同源。
+            nemesis_utils::sanitize::validate_model_identifier(&model)
+                .map_err(anyhow::Error::msg)?;
 
             // Parse vendor and model name
             let parts: Vec<&str> = model.splitn(2, '/').collect();

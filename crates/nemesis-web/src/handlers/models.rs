@@ -544,6 +544,13 @@ impl ModelsHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let model_name = crate::handlers::get_str(data, "name")?;
         let model = crate::handlers::get_str(data, "model")?;
+        // 模型 identifier 形态校验（BUG-20261104-361）：此前 WSAPI add 零校验，
+        // `../../etc/passwd` 等穿越形态可落盘。宽松档（裸名合法——dashboard
+        // 既有契约，见 add_persists_protocol_and_normalizes_alias 回归钉）+
+        // 段级穿越/反斜杠/控制字符拒绝，与 CLI `model add` 严格档共享同一
+        // 段级检查内核（单一真相源）。model_name 显示名是自由文本语义不在
+        // 此校验（出口有 sanitize_csv/sanitize_path_segment）。
+        nemesis_utils::sanitize::validate_model_entry_name(&model)?;
         let api_key = crate::handlers::get_str(data, "key")?;
         let api_base = crate::handlers::get_opt_str(data, "base_url").unwrap_or_default();
         let proxy = crate::handlers::get_opt_str(data, "proxy").unwrap_or_default();

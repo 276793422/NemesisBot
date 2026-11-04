@@ -75,6 +75,81 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     format!("{head}__{:016x}", fnv1a64(out.as_bytes()))
 }
 
+/// Validate a model identifier at every write entry point that creates a
+/// `model_list` entry (CLI `model add`, WSAPI `models.add` — the only two
+/// creators; `copy` reuses an existing legal string and `update_field`'s
+/// whitelist does not include `model`).
+///
+/// 两侧入口契约**刻意不同**：CLI 历来要求 `vendor/model` 两段式（严格档）；
+/// WSAPI/dashboard 既有契约接受裸名（无前缀，如 `glm-5.3-flash`——
+/// `resolve_model_config` BUG-b 2026-10-13 先例证明无前缀条目是生产支持
+/// 形态，`add_persists_protocol_and_normalizes_alias` 回归钉在案）。共享的
+/// 段级检查（[`validate_model_id_segments`]）两档都跑。
+///
+/// 段级规则（与既有的 untrusted-identifier 家族纪律对齐）：
+/// - 每段不得为空、`.` 或 `..`（路径穿越形态；R493 实机实测 CLI
+///   `model add --model ../../etc/passwd` 曾被 `contains('/')` 弱校验放行
+///   落盘、WSAPI 则完全裸奔——出口有 `sanitize_path_segment` 白名单兜底，
+///   但入口分层拒绝穿越形态与家族先例一致，如 skills installer 拒 `..`）；
+/// - 每段不得含 `\` 或 ASCII 控制字符（`\` 是 Windows 路径分隔符，控制
+///   字符进日志/请求体都是噪声）；
+/// - 严格档要求含 `/`（嵌套 `/` 合法——业界 `vendor/org/model:variant`
+///   形态，只切首段当 vendor）。
+///
+/// 只校验**新写入**的 identifier；读路径不校验（存量条目零迁移）。显示名
+/// （`model_name` 别名）是自由文本语义，另有 `sanitize_csv` /
+/// `sanitize_path_segment` 出口兜底，不在此校验（不发明新约束）。
+pub fn validate_model_identifier(raw: &str) -> Result<(), String> {
+    if raw.is_empty() {
+        return Err("model identifier must not be empty".to_string());
+    }
+    if !raw.contains('/') {
+        return Err(format!(
+            "Invalid model identifier '{raw}'. Expected format: vendor/model\n\
+             Example: openai/gpt-4o, anthropic/claude-sonnet-4"
+        ));
+    }
+    validate_model_id_segments(raw)
+}
+
+/// Model-entry name 宽松档：裸名（无 vendor 前缀）合法——WSAPI
+/// `models.add` 既有契约（dashboard 直填裸模型名；见
+/// [`validate_model_identifier`] doc）。段级穿越/反斜杠/控制字符检查
+/// 与严格档同源。
+pub fn validate_model_entry_name(raw: &str) -> Result<(), String> {
+    if raw.is_empty() {
+        return Err("model identifier must not be empty".to_string());
+    }
+    validate_model_id_segments(raw)
+}
+
+/// 段级检查内核：`/` 切段后逐段拒空段、`.`/`..`、`\`、ASCII 控制字符。
+fn validate_model_id_segments(raw: &str) -> Result<(), String> {
+    for seg in raw.split('/') {
+        if seg.is_empty() {
+            return Err(format!(
+                "Invalid model identifier '{raw}': empty path segment"
+            ));
+        }
+        if seg == "." || seg == ".." {
+            return Err(format!(
+                "Invalid model identifier '{raw}': '.'/'..' segments are not allowed"
+            ));
+        }
+        if seg.contains('\\') {
+            return Err(format!(
+                "Invalid model identifier '{raw}': backslash is not allowed"
+            ));
+        }
+        if seg.chars().any(|c| c.is_ascii_control()) {
+            return Err(format!(
+                "Invalid model identifier '{raw}': control characters are not allowed"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Escape one untrusted field for CSV output (RFC 4180)。
 ///
 /// 含 `"` / `,` / `\n` / `\r` 的字段用引号包裹并把内部引号翻倍；普通字段

@@ -39,9 +39,18 @@ const ITEM_FEATURE: Record<string, string> = {
   forge: 'FORGE',
   cluster: 'CLUSTER',
   security: 'SECURITY',
+  // 行动连接器（connectors feature）：IoT/单机预设关 → connectors.* 模块退出。
+  connectors: 'CONNECTORS',
+  // 代码开发页（lsp feature）：CodingView 消费的 coding.lsp_* 全属 coding 模块。
+  coding: 'LSP',
+  // 本地模型页（voice feature）：消费 voice.status/install_runtime（同 VoiceTab）。
+  'local-models': 'VOICE',
   // L7c：凭据 Vault 页与 SecurityView 同一 feature 闸（后端 handler 挂 security）。
   vault: 'SECURITY',
-  scanner: 'SECURITY',
+  // 扫描器挂独立 scanner feature（2026-09-28 从 security 拆出）。此前挂 SECURITY
+  // 是拆分前残留——单独关 scanner 留 security 时侧栏显示但路由 404（R497 契约
+  // 测试抓出的第 5 处同族漂移）。
+  scanner: 'SCANNER',
   sandbox: 'SANDBOX',
   vm: 'VM',
   board: 'BOARD',

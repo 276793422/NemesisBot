@@ -203,7 +203,7 @@ async function loadWasm() {
   // 面板 LLM 总闸状态（独立 try/catch：旧网关无此命令时隐藏开关块，
   // 不影响插件列表本身）。
   try {
-    const d = await request('plugins', 'panel_llm.get')
+    const d = await request('plugins', 'wasm.panel_llm.get')
     panelLlm.value = {
       enabled: d?.enabled === true,
       plugins: Array.isArray(d?.plugins) ? d.plugins : [],
@@ -218,7 +218,7 @@ async function togglePanelLlm() {
   if (!panelLlm.value) return
   const target = !panelLlm.value.enabled
   try {
-    const data = await request('plugins', 'panel_llm.set', { enabled: target })
+    const data = await request('plugins', 'wasm.panel_llm.set', { enabled: target })
     panelLlm.value.enabled = data?.enabled ?? target
     toast.success(
       target

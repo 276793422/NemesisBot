@@ -214,6 +214,11 @@ mod m5_session_usage_tests;
 #[cfg(test)]
 mod models_health_tests;
 
+// BUG-20261104-361 回归钉: models.add 模型 identifier 形态校验（穿越段/
+// 反斜杠/空段 loud 拒，且先于 config 触达）。
+#[cfg(test)]
+mod models_add_validation_tests;
+
 // L1 (2026-09-06, devtool-upgrade 阶段 6): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + docs/INFO/wsapi-commands.md 文档生成 +
 // 安全子集 dispatch 冒烟。

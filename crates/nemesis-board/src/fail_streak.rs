@@ -13,8 +13,9 @@
 //! UNSURE=无证据可判，处置路径本就不同）。存量账本走既有「签名翻转清零」
 //! 机制天然兼容（旧格式签名遇新格式 = 翻转清零重计），零迁移。
 //!
-//! 持久化：`<workspace>/board/fail_streaks.json`（gateway 重启不丢账）。
-//! 文件缺失/损坏 = 诚实从空账本起（WARN 留痕），不为记账阻塞决策链。
+//! 持久化：`<workspace>/board/fail_streaks.json`（gateway 重启不丢账；
+//! 原子写落盘——半截文件 = 熔断计数静默丢失）。
+//! 文件缺失/损坏 = 诚实从空账本起（损坏 WARN 留痕），不为记账阻塞决策链。
 //!
 //! 本模块住在 nemesis-board（§6.4D）：评审链（nemesisbot board_review）与
 //! WSAPI 手动重派清账（nemesis-web issue_dispatch）两个消费方共用同一
@@ -112,15 +113,28 @@ impl FailStreakLedger {
         .reload()
     }
 
-    /// 以磁盘最新内容重载 inner（锁内调用；磁盘缺失/损坏回落当前快照）。
+    /// 以磁盘最新内容重载 inner（锁内调用；磁盘缺失回落当前快照）。
+    /// 文件缺失 = 正常首跑静默；解析失败/读取失败 = WARN 留痕后回落
+    /// （模块头承诺的诚实留痕——半截文件的后果是熔断计数静默丢失、
+    /// 保险丝失效零痕迹，BUG-20261104-364）。
     fn reload(self) -> Self {
-        let inner = std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|s| {
-                let parsed: LedgerFile = serde_json::from_str(&s).ok()?;
-                Some(parsed)
-            })
-            .unwrap_or(self.inner);
+        let inner = match std::fs::read_to_string(&self.path) {
+            Ok(s) => match serde_json::from_str::<LedgerFile>(&s) {
+                Ok(parsed) => Some(parsed),
+                Err(e) => {
+                    tracing::warn!(
+                        "[BoardReview] fail_streaks.json 损坏（解析失败），从空账本起——熔断计数丢失：{e}"
+                    );
+                    None
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::warn!("[BoardReview] fail_streaks.json 读取失败，从空账本起：{e}");
+                None
+            }
+        }
+        .unwrap_or(self.inner);
         Self {
             path: self.path,
             inner,
@@ -164,18 +178,19 @@ impl FailStreakLedger {
         }
     }
 
-    /// 落盘；失败只 WARN 不炸决策链（记账是护栏不是主路径）。
+    /// 落盘（原子写：唯一临时名 create_new + sync + rename——半截
+    /// fail_streaks.json = 熔断计数静默丢失，对齐全仓 JSON 状态持久化
+    /// 纪律；write_file_atomic 自带建目录）。失败只 WARN 不炸决策链
+    /// （记账是护栏不是主路径）。
     fn save(&self) {
-        if let Some(dir) = self.path.parent()
-            && let Err(e) = std::fs::create_dir_all(dir)
-        {
-            tracing::warn!("[BoardReview] fail_streaks 目录创建失败（账本未持久化）：{e}");
-            return;
-        }
         match serde_json::to_string_pretty(&self.inner) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&self.path, json) {
-                    tracing::warn!("[BoardReview] fail_streaks.json 写盘失败：{e}");
+                if let Err(e) = nemesis_utils::file::write_file_atomic(
+                    &self.path.to_string_lossy(),
+                    json.as_bytes(),
+                    0o644,
+                ) {
+                    tracing::warn!("[BoardReview] fail_streaks.json 写盘失败（账本未持久化）：{e}");
                 }
             }
             Err(e) => tracing::warn!("[BoardReview] fail_streaks.json 序列化失败：{e}"),
