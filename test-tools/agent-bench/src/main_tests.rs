@@ -2,6 +2,7 @@
 //! 背景（2026-11-02 实录）：TestAIServer 二进制过期曾让 3 场景以纯超时假回退，
 //! 探针 + 本组测试闭环该缺陷面。
 
+use crate::report::{Scorecard, compare_baseline};
 use crate::{REQUIRED_AI_MODELS, STREAM_FORCED_MODELS, missing_models, write_bench_config};
 use serde_json::Value;
 use test_harness::TestWorkspace;
@@ -93,4 +94,85 @@ fn stream_forced_entries_carry_stream_yes() {
             "模型 {name} 的 stream 键与 STREAM_FORCED_MODELS 不一致"
         );
     }
+}
+
+/// BUG-20261104-369 回归锁：基线与本轮 bench 构建戳不一致 → [note] 可见
+/// 且不判门（2026-11-04 实录：陈旧 bench 二进制对合法 L29 拼接形态报
+/// stream_break 假回退——戳可见性让这类漂移在下结论前暴露）。
+#[test]
+fn bench_build_mismatch_emits_note_without_regression() {
+    let ws = fresh_ws();
+    let path = ws.home().join("baseline.json");
+    let base = serde_json::json!({
+        "schema": "agent-bench/v1",
+        "scenarios": [],
+        "bench_build_unix": 1000u64,
+    });
+    std::fs::write(&path, serde_json::to_string(&base).expect("serialize")).expect("write");
+
+    let mut card = Scorecard::new("gw".into());
+    card.bench_build_unix = 2000;
+    let findings = compare_baseline(&card, &path, 0.30).expect("compare");
+    assert_eq!(findings[0], "[ok] 无回退", "构建戳差异不判门");
+    assert!(
+        findings.iter().any(|f| f.contains("bench 构建戳不一致")),
+        "构建戳差异必须给 note: {findings:?}"
+    );
+}
+
+/// BUG-20261104-369 静默臂：构建戳一致 → 无 note；老基线缺字段 → 静默
+/// 跳过（对齐 tool_defs 老格式宽容语义，不产生噪音）。
+#[test]
+fn bench_build_match_or_absent_stays_silent() {
+    let ws = fresh_ws();
+    let path = ws.home().join("baseline.json");
+
+    // 臂 1：一致。
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "schema": "agent-bench/v1",
+            "scenarios": [],
+            "bench_build_unix": 42u64,
+        })
+        .to_string(),
+    )
+    .expect("write");
+    let mut card = Scorecard::new("gw".into());
+    card.bench_build_unix = 42;
+    let findings = compare_baseline(&card, &path, 0.30).expect("compare");
+    assert!(
+        !findings.iter().any(|f| f.contains("bench 构建戳")),
+        "一致时不应有 note: {findings:?}"
+    );
+
+    // 臂 2：老基线缺 bench_build_unix 字段。
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "schema": "agent-bench/v1",
+            "scenarios": [],
+        })
+        .to_string(),
+    )
+    .expect("write");
+    let findings = compare_baseline(&card, &path, 0.30).expect("compare");
+    assert!(
+        !findings.iter().any(|f| f.contains("bench 构建戳")),
+        "缺字段时静默跳过: {findings:?}"
+    );
+}
+
+/// BUG-20261104-369 注入链锁：build.rs 的 rustc-env 必须真实可达
+/// option_env!——注入断 = 恒 0（未知）→ 构建戳对比静默失效，特性死
+/// 到达（单元测试手动赋值字段覆盖不了这一段）。release 优化会把
+/// ASCII 字面量 const-fold 成立即数，二进制 grep 验证法不可靠，此
+/// API 级断言是注入链的钉。
+#[test]
+fn bench_build_unix_injected_from_build_rs() {
+    let card = Scorecard::new("gw".into());
+    assert!(
+        card.bench_build_unix > 0,
+        "build.rs 构建戳未注入（恒 0=未知，构建戳对比已静默失效）"
+    );
 }
