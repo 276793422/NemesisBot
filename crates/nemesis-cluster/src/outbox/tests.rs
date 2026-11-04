@@ -570,6 +570,45 @@ fn request_pull_queues_when_records_exist() {
     assert_eq!(ob.request_pull(""), "no_archive");
 }
 
+/// BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线 sidecar
+/// + `.assembling-*` 标记在场）时 request_pull 不得把无变更集的执行记录
+/// 抢先入队——幂等闸会吞掉随后带变更集的正常入队，master 空集宽容把改
+/// 动静默合并为「无变更」。诚实答 assembling 观望；装配完成（标记清除、
+/// exec 清扫）后恢复 queued。
+#[test]
+fn request_pull_defers_while_assembling() {
+    let ws = temp_ws("pull_assembling");
+    make_task_records(&ws, "node-m", "task-a", "rescue-me");
+    // 档案管线装配中：exec 目录 + 基线 sidecar + 装配标记（exec 树外）。
+    let exec = crate::exec_workspace::exec_dir_for(&ws, "task-a");
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::write(
+        exec.join(crate::exec_workspace::BASELINE_SIDECAR_NAME),
+        b"{}",
+    )
+    .unwrap();
+    let marker = crate::exec_workspace::assembling_marker_path(
+        &crate::exec_workspace::exec_root_in_workspace(&ws),
+        "task-a",
+    );
+    std::fs::write(&marker, b"").unwrap();
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    assert_eq!(ob.request_pull("task-a"), "assembling");
+    assert!(
+        !outbox_dir(&ws).join("task-a").join("entry.json").exists(),
+        "装配中不得抢先入队"
+    );
+    // 装配完成（标记清除、exec 清扫）→ 恢复 queued 正常入队。
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::remove_dir_all(&exec).unwrap();
+    assert_eq!(ob.request_pull("task-a"), "queued");
+    assert!(outbox_dir(&ws).join("task-a").join("entry.json").exists());
+}
+
 // ---------------------------------------------------------------------------
 // P4/E2：通用推送 push_transfer_dir（基线推送与 outbox 共用真相源）
 // ---------------------------------------------------------------------------
