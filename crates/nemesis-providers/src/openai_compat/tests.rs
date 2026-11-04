@@ -83,6 +83,62 @@ fn test_parse_response_simple() {
     assert!(resp.tool_calls.is_empty());
 }
 
+/// BUG-20261104-389 回归锁：畸形上游 cached > prompt_tokens 不得落负
+/// prompt_tokens（委托单一真相源 extract_usage 的 clamp 守卫）。修复前
+/// 本 lane 自带裸减法归一：10 - 30 = -20 记进账本。同形态正常值
+/// （cached ≤ prompt）逐字节不变——委托不改变合法输入的归一结果。
+#[test]
+fn test_parse_response_cached_exceeding_prompt_clamped_non_negative() {
+    let data = serde_json::json!({
+        "choices": [{
+            "message": { "content": "hi", "role": "assistant" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": { "cached_tokens": 30 }
+        }
+    });
+    let resp = parse_response(&data);
+    let usage = resp.usage.expect("usage present");
+    assert!(
+        usage.prompt_tokens >= 0,
+        "负 prompt_tokens = 记账污染（BUG-20261104-389 修复前形态），got {}",
+        usage.prompt_tokens
+    );
+    assert_eq!(usage.prompt_tokens, 0, "超限 cached 剥出后 prompt 归 0");
+    // 真相源 clamp 同时作用于 cached 值本身（cached ≤ prompt_raw 不变量）：
+    // 上报 30 > prompt 10 → 钳到 10。
+    assert_eq!(usage.cached_tokens, Some(10));
+    assert_eq!(usage.cache_read_tokens, Some(10));
+}
+
+/// 委托后 DeepSeek 形态（prompt_cache_hit_tokens）归一与真相源一致：
+/// prompt = raw - hit（非缓存纯输入），hit 单列 cache_read。
+#[test]
+fn test_parse_response_deepseek_cache_fields_normalized_via_truth_source() {
+    let data = serde_json::json!({
+        "choices": [{
+            "message": { "content": "hi", "role": "assistant" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_cache_hit_tokens": 40
+        }
+    });
+    let resp = parse_response(&data);
+    let usage = resp.usage.expect("usage present");
+    assert_eq!(usage.prompt_tokens, 60, "prompt 归一为非缓存纯输入");
+    assert_eq!(usage.cached_tokens, Some(40));
+    assert_eq!(usage.cache_read_tokens, Some(40));
+    assert_eq!(usage.total_tokens, 105);
+}
+
 #[test]
 fn test_parse_response_with_tool_calls() {
     let data = serde_json::json!({

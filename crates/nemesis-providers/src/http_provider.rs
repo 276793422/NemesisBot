@@ -14,7 +14,13 @@ use std::collections::HashMap;
 /// 缓存读单列 `cache_read_tokens`。OpenAI/DeepSeek 族 wire 的 prompt/input
 /// 均含缓存（子集语义），此处统一剥出；miss 段就是普通输入——OpenAI 族
 /// 没有缓存写概念，恒不落 `cache_creation_tokens`（Anthropic 族除外）。
-fn extract_usage(u: &serde_json::Value) -> UsageInfo {
+///
+/// BUG-20261104-389：这是 OpenAI chat/completions 形态 usage 归一的**单一
+/// 真相源**——openai_compat lane 的 `parse_response` 委托本函数（此前它自带
+/// 第三份裸减法归一，缺 `.clamp(0, prompt_raw.max(0))` 守卫，畸形上游
+/// cached > prompt_raw 时落负 prompt_tokens 记账；同族两处
+/// （本函数 DeepSeek/OpenAI 臂 + codex lane Responses 形态）均有守卫）。
+pub(crate) fn extract_usage(u: &serde_json::Value) -> UsageInfo {
     let prompt_raw = u["prompt_tokens"].as_i64().unwrap_or(0);
 
     // DeepSeek: prompt_cache_hit_tokens + prompt_cache_miss_tokens
