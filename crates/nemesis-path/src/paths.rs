@@ -655,6 +655,20 @@ pub fn resolve_sessions_dir_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("sessions")
 }
 
+/// `<workspace>/sessions/todo_{sanitize(session_key)}.json` —— 会话 todo
+/// 清单文件（2026-11-05 单一真相源）。写（todowrite 工具）/ 读（todo_get
+/// handler、todo 收尾提醒 hook）/ 回收站寻址（chat_trash 四件套）全部
+/// 走本函数——此前三处消费点各自复制 `sanitize + resolve + format` 推导，
+/// 会话删除/清空链路又都不感知 todo 文件，删会话留孤儿（2026-11-05
+/// bin 实例实证）。消毒用 `sanitize_path_segment`（对运行时键族映射
+/// 一致，含 `..`/超长兜底；SAN-05/F-U4-4 同源）。
+pub fn session_todo_file_in_workspace(workspace: &Path, session_key: &str) -> PathBuf {
+    resolve_sessions_dir_in_workspace(workspace).join(format!(
+        "todo_{}.json",
+        nemesis_utils::sanitize::sanitize_path_segment(session_key)
+    ))
+}
+
 /// `<workspace>/state` —— 运行时状态目录（gateway.json、workspace_state）。
 pub fn resolve_state_dir_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("state")

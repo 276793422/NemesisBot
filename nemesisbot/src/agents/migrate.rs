@@ -716,7 +716,10 @@ fn migrate_agent_local_finalize(
 ///   → **冻结**：保持 migrating + loud WARN 转人工（自动回滚 active 会造
 ///   同 uuid 双活且 ACTIVE 让 sweep 永久失明——旧形态缺陷）。人工裁决：
 ///   B 已激活 → 落墓碑；B 未收到 → 删日志（下轮 sweep 各自收敛）。
-/// - 两者皆无 = commit 未发出（崩溃在 push/日志前）→ 回滚 active 照常服务。
+/// - 两者皆无 = commit 未发出（崩溃在 push/日志前）→ 回滚 active 照常
+///   服务 + 清 staging 残留（成功/墓碑分支同款；此前回滚分支漏清，
+///   崩溃在打包后/推送前的孤儿 `cluster/migrate_out/<agent_id>` 无人
+///   认领——横扫四轮补漏，2026-11-06）。
 pub fn sweep_migrating(
     store: &SqliteAgentsStore,
     workspace: &Path,
@@ -751,6 +754,11 @@ pub fn sweep_migrating(
             tracing::info!(
                 "[Agents] sweep: agent {agent_id} 残留 migrating（commit 未达），已回滚 active"
             );
+            // staging 残留一并清扫（尽力而为——失败只留磁盘占用，不影响
+            // 语义；人工裁决路径 A/B 下轮收敛时也会走到对应分支清 staging）。
+            let _ = nemesis_utils::fsutil::remove_dir_all_retry(migrate_staging_root(
+                workspace, &agent_id,
+            ));
             report.reactivated.push(agent_id);
         }
     }

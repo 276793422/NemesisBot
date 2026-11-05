@@ -283,20 +283,19 @@ impl ModuleHandler for ChatHandler {
 
 /// H1（2026-09-05）：读会话 todo 清单（`chat.todo_get` 支撑）。
 ///
-/// 路径与 `TodoWriteTool` 的写路径严格同构：session_key 构造（E6 顶部）
-/// → `':' → '_'` 净化 → `sessions/todo_{safe}.json`。文件缺失 = 空清单
-/// （会话没有 todo 是常态，不是错误）；损坏 JSON = 空清单 + warn
-/// （渲染型接口不把坏文件炸给前端，但日志留痕）。
+/// 路径走 nemesis-path 单一真相源 `session_todo_file_in_workspace`
+/// （2026-11-05：与 TodoWriteTool 写路径、todo 收尾 hook、回收站寻址
+/// 同源）。文件缺失 = 空清单（会话没有 todo 是常态，不是错误）；损坏
+/// JSON = 空清单 + warn（渲染型接口不把坏文件炸给前端，但日志留痕）。
 pub(crate) fn read_session_todos(
     workspace: &str,
     session_id: &str,
 ) -> Vec<nemesis_types::agent::TodoItem> {
     let s = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
-    // SAN-05：白名单消毒单一真相源（对 `agent:main:session:*` 键族映射不变）。
-    let safe_key =
-        nemesis_utils::sanitize::sanitize_path_segment(&format!("agent:main:session:{s}"));
-    let dir = nemesis_path::resolve_sessions_dir_in_workspace(std::path::Path::new(workspace));
-    let path = dir.join(format!("todo_{safe_key}.json"));
+    let path = nemesis_path::session_todo_file_in_workspace(
+        std::path::Path::new(workspace),
+        &format!("agent:main:session:{s}"),
+    );
     match std::fs::read_to_string(&path) {
         Ok(body) => match serde_json::from_str(&body) {
             Ok(todos) => todos,

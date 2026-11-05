@@ -829,6 +829,135 @@ fn test_sweep_stale_staging_missing_root_is_zero() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// ---------------------------------------------------------------------------
+// sweep_stale_landed（横扫四轮，2026-11-06）：已落地未消费任务目录按龄清扫
+// ---------------------------------------------------------------------------
+
+// max_age=0：过期落地目录整删 + dedup 条目同步摘除并持久化；隐藏抽屉
+// （.done）、去重索引文件、非目录条目不碰。
+#[test]
+fn test_sweep_stale_landed_zero_age_clears_dirs_and_dedup() {
+    let root = temp_root("landed-sweep");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    // 真实落地两个任务（begin→chunk→end 全流程，dedup 条目同源生成）。
+    let src_a = root.join("src-a");
+    make_source(&src_a, &[("r.md", b"archive a")]);
+    let begin_a = prepare_begin(&src_a, "tr-la", "task-la", 1000);
+    push_all(&sink, &begin_a, &src_a, &[]);
+    let src_b = root.join("src-b");
+    make_source(&src_b, &[("r.md", b"archive b")]);
+    let begin_b = prepare_begin(&src_b, "tr-lb", "task-lb", 1000);
+    push_all(&sink, &begin_b, &src_b, &[]);
+    let inbox = sink.inbox_root();
+    assert!(inbox.join("task-la").is_dir());
+    assert!(
+        sink.dedup_entry("task-la").is_some(),
+        "前置：dedup 条目在场"
+    );
+    assert!(inbox.join(".done").is_dir(), "前置：end 已建 .done 抽屉");
+    assert!(inbox.join(".dedup.json").is_file(), "前置：索引已持久化");
+    // 手工残留形态：非目录条目。
+    std::fs::write(inbox.join("stray-file.tmp"), b"not a dir").unwrap();
+
+    let removed = sink.sweep_stale_landed(std::time::Duration::ZERO);
+    assert_eq!(removed, 2, "两个未消费落地目录都被清除");
+    assert!(!inbox.join("task-la").exists());
+    assert!(!inbox.join("task-lb").exists());
+    assert!(sink.dedup_entry("task-la").is_none(), "dedup 条目同步摘除");
+    assert!(sink.dedup_entry("task-lb").is_none());
+    assert!(inbox.join("stray-file.tmp").exists(), "非目录条目不碰");
+    assert!(inbox.join(".done").is_dir(), "隐藏抽屉不碰");
+    assert!(inbox.join(".dedup.json").is_file(), "去重索引文件不碰");
+    // 摘除已持久化：新 sink 重载索引后条目仍缺席。
+    let sink2 = TransferSink::new(&root.join("ws"), 0);
+    assert!(
+        sink2.dedup_entry("task-la").is_none(),
+        "摘除写入 .dedup.json"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// max_age 超大：新鲜落地目录一律保留（正常驻留不受影响）。
+#[test]
+fn test_sweep_stale_landed_large_age_keeps_everything() {
+    let root = temp_root("landed-keep");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let src = root.join("src");
+    make_source(&src, &[("r.md", b"archive")]);
+    let begin = prepare_begin(&src, "tr-lk", "task-lk", 1000);
+    push_all(&sink, &begin, &src, &[]);
+
+    let removed = sink.sweep_stale_landed(std::time::Duration::from_secs(100 * 24 * 3600));
+    assert_eq!(removed, 0, "新鲜落地目录不被清扫");
+    assert!(sink.inbox_root().join("task-lk").is_dir());
+    assert!(sink.dedup_entry("task-lk").is_some(), "条目原样保留");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// sweep_stale_done_receipts（横扫六轮，2026-11-06）：幂等重放回执按龄清扫
+// ---------------------------------------------------------------------------
+
+// max_age=0：过期回执清除；抽屉内非 .json 条目与抽屉外条目不碰。
+#[test]
+fn test_sweep_stale_done_receipts_zero_age_clears_receipts() {
+    let root = temp_root("done-sweep");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    // 真实 end 两次 → .done 抽屉两份真实回执。
+    for (tr, task) in [("tr-da", "task-da"), ("tr-db", "task-db")] {
+        let src = root.join(format!("src-{tr}"));
+        make_source(&src, &[("r.md", b"archive")]);
+        let begin = prepare_begin(&src, tr, task, 1000);
+        push_all(&sink, &begin, &src, &[]);
+    }
+    let done = sink.inbox_root().join(".done");
+    assert!(done.join("tr-da.json").is_file(), "前置：回执 A 在场");
+    assert!(done.join("tr-db.json").is_file(), "前置：回执 B 在场");
+    // 手工残留形态：抽屉内非 .json 条目 + 抽屉外条目。
+    std::fs::write(done.join("stray.txt"), b"not a receipt").unwrap();
+    std::fs::write(sink.inbox_root().join("outside.json"), b"not in drawer").unwrap();
+
+    let removed = sink.sweep_stale_done_receipts(std::time::Duration::ZERO);
+    assert_eq!(removed, 2, "两份回执都被清除");
+    assert!(!done.join("tr-da.json").exists());
+    assert!(!done.join("tr-db.json").exists());
+    assert!(done.join("stray.txt").exists(), "抽屉内非 .json 条目不碰");
+    assert!(
+        sink.inbox_root().join("outside.json").exists(),
+        "抽屉外条目不碰"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// max_age 超大：新鲜回执一律保留（重放窗口内语义不受影响）。
+#[test]
+fn test_sweep_stale_done_receipts_large_age_keeps_everything() {
+    let root = temp_root("done-keep");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let src = root.join("src-dk");
+    make_source(&src, &[("r.md", b"archive")]);
+    let begin = prepare_begin(&src, "tr-dk", "task-dk", 1000);
+    push_all(&sink, &begin, &src, &[]);
+    let done = sink.inbox_root().join(".done");
+
+    let removed = sink.sweep_stale_done_receipts(std::time::Duration::from_secs(100 * 24 * 3600));
+    assert_eq!(removed, 0, "新鲜回执不被清扫");
+    assert!(done.join("tr-dk.json").is_file(), "回执原样保留");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// 抽屉不存在（零传输）：诚实 0。
+#[test]
+fn test_sweep_stale_done_receipts_missing_drawer_is_zero() {
+    let root = temp_root("done-missing");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    assert_eq!(sink.sweep_stale_done_receipts(std::time::Duration::ZERO), 0);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // LOW-7（2026-10-17 四轮审计）：chunk 按 staging 计划双闸——序号越界与
 // 单块超尺寸在写盘前诚实拒绝（此前远端可控 seq/len 可写任意多/任意大的
 // 块文件进 staging = 磁盘填充面）。

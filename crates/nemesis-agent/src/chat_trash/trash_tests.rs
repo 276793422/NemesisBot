@@ -203,10 +203,12 @@ impl TempTrash {
         let logs = root.join("session_logs");
         let boundary = root.join("boundary");
         let trash = root.join("trash");
+        let sessions = root.join("sessions"); // todo 文件挂这里（真相源同构）
         std::fs::create_dir_all(&logs).unwrap();
         std::fs::create_dir_all(&boundary).unwrap();
         std::fs::create_dir_all(&trash).unwrap();
-        let loc = TrashLocations::with_dirs(trash, logs, boundary);
+        std::fs::create_dir_all(&sessions).unwrap();
+        let loc = TrashLocations::with_dirs(trash, logs, boundary, sessions);
         Self { root, loc }
     }
 
@@ -255,6 +257,13 @@ fn put_boundary(t: &TempTrash, key: &str, kind: &str) {
         .open(&p)
         .unwrap();
     writeln!(f, "{}", serde_json::json!({"kind": kind})).unwrap();
+}
+
+/// 写 todo 文件（TodoWriteTool 落盘格式：TodoItem 数组）。
+fn put_todo(t: &TempTrash, key: &str, items: &[serde_json::Value]) {
+    let p = t.loc.todo_path(key);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, serde_json::to_string(&items).unwrap()).unwrap();
 }
 
 /// 回读恢复后的消息（与 put_msg 格式配对）。
@@ -624,4 +633,154 @@ fn entry_name_shows_deleted_at_prefix_and_sort_order() {
     assert_eq!(list[1]["entry"], serde_json::json!(e));
     trash_purge_in(&t.loc, &e).unwrap();
     trash_purge_in(&t.loc, &e2).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// 四件套（2026-11-05 BUG①）：todo 文件随会话进出回收站
+// ---------------------------------------------------------------------------
+
+/// BUG① 根修回归：软删把 todo 一并移入条目（live 不残留孤儿）。
+#[test]
+fn trash_moves_todo_into_entry() {
+    let t = TempTrash::new("todo-in");
+    let k = make_session(&t, "todo-in", "带清单", &["q"]);
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "任务A", "status": "completed"})],
+    );
+
+    let entry = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+    // live todo 已随移入消失（BUG① 的孤儿形态不再产生）。
+    assert!(!t.loc.todo_path(&k).exists(), "live todo 须移走");
+    // 条目内 todo 副本 + 清单标记。
+    assert!(t.entry_dir(&entry).join("todo.json").exists());
+    let raw = std::fs::read_to_string(t.entry_dir(&entry).join("trash.json")).unwrap();
+    let m: TrashManifest = serde_json::from_str(&raw).unwrap();
+    assert!(m.todo, "清单 todo 标记须为 true");
+    assert!(m.bytes > 0);
+}
+
+/// 无 todo 的会话软删 = 条目形态与旧版逐字节同构（todo:false、无副本）。
+#[test]
+fn trash_without_todo_keeps_legacy_entry_shape() {
+    let t = TempTrash::new("todo-absent");
+    let k = make_session(&t, "todo-absent", "无清单", &["q"]);
+    let entry = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+    assert!(!t.entry_dir(&entry).join("todo.json").exists());
+    let raw = std::fs::read_to_string(t.entry_dir(&entry).join("trash.json")).unwrap();
+    let m: TrashManifest = serde_json::from_str(&raw).unwrap();
+    assert!(!m.todo);
+}
+
+/// 恢复把 todo 移回原键（且先清目标键 live 孤儿防 rename 撞车卡死）。
+#[test]
+fn restore_brings_todo_back_to_key() {
+    let t = TempTrash::new("todo-restore");
+    let k = make_session(&t, "todo-restore", "恢复清单", &["q"]);
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "B", "status": "pending"})],
+    );
+    let entry = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+    // 模拟 BUG① 实例形态：条目外残留一份孤儿 live todo（旧版本产物）。
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "孤儿", "status": "pending"})],
+    );
+
+    let out = trash_restore_in(&t.loc, &entry, None).unwrap();
+    assert_eq!(out["restored"], serde_json::json!(k));
+    // 恢复后 todo 以条目内副本为准（孤儿被先清，不被覆盖失败卡死）。
+    let raw = std::fs::read_to_string(t.loc.todo_path(&k)).unwrap();
+    let todos: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+    assert_eq!(todos[0]["content"], serde_json::json!("B"));
+    assert!(!t.entry_dir(&entry).exists());
+}
+
+/// 改名恢复：todo 落新键（与 chat/meta 同键）。
+#[test]
+fn restore_renamed_lands_todo_on_new_key() {
+    let t = TempTrash::new("todo-rename");
+    let k = make_session(&t, "todo-rename", "改名清单", &["q"]);
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "C", "status": "pending"})],
+    );
+    let entry = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+
+    let out = trash_restore_in(&t.loc, &entry, Some("todo-new-sid")).unwrap();
+    let new_key = out["restored"].as_str().unwrap();
+    assert!(new_key.starts_with(WEB_SESSION_KEY_PREFIX));
+    let raw = std::fs::read_to_string(t.loc.todo_path(new_key)).unwrap();
+    let todos: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+    assert_eq!(todos[0]["content"], serde_json::json!("C"));
+    assert!(!t.loc.todo_path(&k).exists(), "旧键不得残留");
+}
+
+/// purge 顺带清 live 孤儿（旧形态条目：清单无 todo 字段 + 盘上有孤儿残留
+/// ——BUG① 实例的收口路径）；清单缺失（孤儿目录）不寻址清 todo。
+#[test]
+fn purge_clears_live_todo_orphan() {
+    let t = TempTrash::new("todo-purge");
+    let k = make_session(&t, "todo-purge", "孤儿收口", &["q"]);
+    let entry = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+    // 模拟旧形态：清单被改写为无 todo 字段（serde default = false），
+    // live 孤儿残留（2026-11-05 之前删除的产物）。
+    let manifest_path = t.entry_dir(&entry).join("trash.json");
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    m.as_object_mut().unwrap().remove("todo");
+    std::fs::write(&manifest_path, m.to_string()).unwrap();
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "孤儿", "status": "pending"})],
+    );
+
+    trash_purge_in(&t.loc, &entry).expect("purge 须成功");
+    assert!(!t.loc.todo_path(&k).exists(), "live 孤儿须随 purge 清掉");
+    assert!(!t.entry_dir(&entry).exists());
+
+    // 孤儿目录（清单缺失）：purge 正常删目录，且不按不可信反推键清 todo。
+    let k2 = make_session(&t, "todo-purge2", "孤儿目录", &["q"]);
+    put_todo(
+        &t,
+        &k2,
+        &[serde_json::json!({"content": "留守", "status": "pending"})],
+    );
+    let entry2 = trash_chat_log_in(&t.loc, &k2, "single").unwrap().unwrap();
+    std::fs::remove_file(t.entry_dir(&entry2).join("trash.json")).unwrap();
+    put_todo(
+        &t,
+        &k2,
+        &[serde_json::json!({"content": "新会话", "status": "pending"})],
+    );
+    trash_purge_in(&t.loc, &entry2).unwrap();
+    assert!(!t.entry_dir(&entry2).exists());
+    assert!(
+        t.loc.todo_path(&k2).exists(),
+        "孤儿目录 purge 不得按反推键清 live todo"
+    );
+}
+
+/// purge_all 走 trash_purge_in 单点（live todo 清扫语义一致）。
+#[test]
+fn purge_all_clears_live_todo_orphans_too() {
+    let t = TempTrash::new("todo-pa");
+    let k = make_session(&t, "todo-pa", "批量收口", &["q"]);
+    let entry = trash_chat_log_in(&t.loc, &k, "batch").unwrap().unwrap();
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "孤儿", "status": "pending"})],
+    );
+
+    let n = trash_purge_all_in(&t.loc).unwrap();
+    assert_eq!(n, 1);
+    assert!(!t.loc.todo_path(&k).exists(), "批量清空须同样清 live 孤儿");
+    assert!(!t.entry_dir(&entry).exists());
 }

@@ -1267,11 +1267,16 @@ pub(crate) async fn run_runtime(
     nemesis_web::handlers::upload::spawn_uploads_sweeper();
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
-    // M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫（session_logs /
-    // boundary / request_logs / terminal / event_ledger；config `logs` 段逐族
-    // 天数，0=族关，全 0 不装配；启动扫一次 + 每 6h 一拍，与 uploads 同拍）。
-    // 删除走 fsutil 韧性包装 + 每族每拍限量；event_ledger 末行非 append 保留
-    //（truncate 旁证）；session_logs meta sidecar 配对同删。改 config 重启生效。
+    // M7/M8（2026-10-27 整改批次三）：logs 十六族统一 TTL 清扫（session_logs /
+    // boundary / request_logs / terminal / event_ledger / trash + 2026-11-06
+    // 三轮横扫补 gateway / cluster_logs / eval / capture / dreaming /
+    // calibration / deliveries / heartbeat / ziwei / exec_checkpoints；
+    // config `logs` 段逐族天数，0=族关，全 0 不装配；
+    // 启动扫一次 + 每 6h 一拍，与 uploads 同拍）。删除走 fsutil 韧性包装 +
+    // 每族每拍限量；event_ledger 末行非 append 保留（truncate 旁证）；
+    // session_logs meta sidecar 配对同删；cluster_logs/capture 双层锚在子目录层
+    // （cluster_logs 根级 legacy cluster_{date}.log 按族 TTL 删）。
+    // 改 config 重启生效。
     let logs_ttl = crate::logs_sweeper::LogsTtl::from_config(cfg.logs.as_ref());
     crate::logs_sweeper::spawn_logs_sweeper(logs_ttl);
 

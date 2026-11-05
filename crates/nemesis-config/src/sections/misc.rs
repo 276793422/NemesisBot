@@ -271,8 +271,10 @@ impl Default for TerminalConfig {
     }
 }
 
-/// 日志五族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
-/// 2026-10-27 整改批次三）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
+/// 日志十六族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
+/// 2026-10-27 整改批次三；2026-11-06 三轮横扫补 gateway/cluster_logs/eval、
+/// capture/dreaming/calibration/deliveries 与 heartbeat/ziwei/
+/// exec_checkpoints 十族）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
 /// 全默认。清扫器（nemesisbot logs_sweeper）启动扫一次 + 每 6h 一拍，
 /// 每族每拍限量 200 件防 IO 尖峰。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -296,6 +298,42 @@ pub struct LogsTtlConfig {
     /// 会话回收站（`logs/trash/sessions/`，整目录清扫，目录 mtime ≈ 删除
     /// 时刻）。默认 **90**（拍板①：30 天太短）。
     pub trash: u64,
+    /// 网关每日滚动日志（`logs/gateway/{prefix}.YYYY-MM-DD`；
+    /// tracing-appender 只建不删）。默认 14。
+    pub gateway: u64,
+    /// 集群请求日志（`logs/cluster_logs/{device}/{ts_ms}_{task}/`，
+    /// **双层**：TTL 锚在任务目录层——设备目录 mtime 随新任务入站刷新，
+    /// 按设备龄删永远杀不掉活跃设备的旧任务；任务清空后的设备空壳一并
+    /// 摘除）。默认 14。
+    pub cluster_logs: u64,
+    /// eval 沙盒安全评估报告目录（`logs/eval/{ts}_{slug}/`，7 件套 +
+    /// assessment.json 整目录删）。默认 30。
+    pub eval: u64,
+    /// 失败诊断捕获（`logs/capture/{session}/{ts}_{signal}/`，**双层**：
+    /// TTL 锚在信号目录层，同 cluster_logs 语义；session 目录 mtime 随新
+    /// 捕获刷新）。默认 30。
+    pub capture: u64,
+    /// dreaming sweep 报告（`logs/dreaming/sweep_{ts}.json` 平铺文件，
+    /// cron 驱动 opt-in）。默认 30。
+    pub dreaming: u64,
+    /// 安全校准报告目录（`logs/calibration/{ts}/`，report.json+report.md
+    /// 整目录删）。默认 30。
+    pub calibration: u64,
+    /// worker 交付 patch 留底（`logs/deliveries/{task_id}.patch` 平铺
+    /// 文件；只写不读——wire JSON 已上行，A 端 deliveries 表自包含）。
+    /// 默认 30。
+    pub deliveries: u64,
+    /// 心跳日志（`logs/heartbeat.log` 平铺单文件，逐写开合
+    /// `create(true)+append(true)`，删后写方自重建）。默认 30。
+    pub heartbeat: u64,
+    /// ziwei 诊断产物（三根混合：`logs/ziwei/notify.jsonl` 单文件 +
+    /// `reports/ziwei-verify/{profile}/`、`reports/ziwei-recover/{profile}/`
+    /// 两棵 profile 报告目录树；`reports/{dest}` 用户点名输出不在射程）。
+    /// 默认 30。
+    pub ziwei: u64,
+    /// 执行体检查点崩溃孤儿（`logs/exec_checkpoints/{task_id}.git`；
+    /// 正常路径全有 cleanup，仅崩溃窗口残留，短闸快清）。默认 1。
+    pub exec_checkpoints: u64,
 }
 
 impl Default for LogsTtlConfig {
@@ -307,6 +345,16 @@ impl Default for LogsTtlConfig {
             terminal: 7,
             event_ledger: 30,
             trash: 90,
+            gateway: 14,
+            cluster_logs: 14,
+            eval: 30,
+            capture: 30,
+            dreaming: 30,
+            calibration: 30,
+            deliveries: 30,
+            heartbeat: 30,
+            ziwei: 30,
+            exec_checkpoints: 1,
         }
     }
 }

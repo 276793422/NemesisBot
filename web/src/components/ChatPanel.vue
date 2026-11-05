@@ -651,6 +651,23 @@ function handleWSMessage(data: any) {
     resyncFromLog()
     return
   }
+  // BUG②（2026-11-05）死房间补拉 hint：目标连接房间消亡（页面刷新）导致
+  // 最终回复帧投递失败时，后端向全部活房间扇出 chat_dirty（只带 session_id
+  // + reason，帧本身已在后端环形缓冲——record 先于 broadcast 不变量）。
+  // 当前面板正在看该会话 → 节流（trailing ~800ms）触发 chat.sync 增量补拉；
+  // 异会话/无锚忽略（hint 是定向会话信号，无 legacy chat_id 回退面）。
+  if (data.type === 'push' && data.cmd === 'chat_dirty') {
+    const p = data.data ?? {}
+    if (p.session_id && p.session_id === effectiveSid.value) {
+      if (!chatDirtySyncTimer) {
+        chatDirtySyncTimer = setTimeout(() => {
+          chatDirtySyncTimer = null
+          void syncMissedChat()
+        }, 800)
+      }
+    }
+    return
+  }
   if (data.module !== undefined) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
@@ -852,6 +869,8 @@ function handleWSMessage(data: any) {
 // gap=true（缺口滑出窗口/网关重启 seq 重置）→ reset + 全量重载兜底。
 // 只对默认 chat 模块生效（workflow_chat 引擎自管，帧不在补拉通道里）。
 let lastChatSeq = 0
+// chat_dirty hint 的补拉节流窗（trailing）：窗内重复 hint 不叠加多次 sync。
+let chatDirtySyncTimer: ReturnType<typeof setTimeout> | null = null
 
 // SB（2026-09-17）兜底：receive 帧的会话不在列表 → force 刷新（同 sid 3s
 // 节流，防风暴）。这是 session.created SSE 事件丢失时的第二道闸。
@@ -2774,6 +2793,12 @@ onUnmounted(() => {
   // BUG 2026-09-21 ③：卸载清自动重试定时器（残留会在下个实例外开火）。
   clearHistoryRetryTimer()
   clearPartialExpiry()
+  // chat_dirty 补拉节流 timer 同理清（残留 timer 在卸载后开火会跑旧实例
+  // 的 syncMissedChat 闭包——W4 审计同款纪律）。
+  if (chatDirtySyncTimer !== null) {
+    clearTimeout(chatDirtySyncTimer)
+    chatDirtySyncTimer = null
+  }
   if (activityDebounce !== null) {
     clearTimeout(activityDebounce)
     activityDebounce = null

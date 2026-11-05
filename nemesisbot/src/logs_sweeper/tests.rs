@@ -109,6 +109,16 @@ fn flat_family_sweep_deletes_expired_keeps_fresh() {
             terminal: 7,
             event_ledger: 30,
             trash: 90,
+            gateway: 14,
+            cluster_logs: 14,
+            eval: 30,
+            capture: 30,
+            dreaming: 30,
+            calibration: 30,
+            deliveries: 30,
+            heartbeat: 30,
+            ziwei: 30,
+            exec_checkpoints: 1,
         },
         old_now(),
     );
@@ -222,6 +232,328 @@ fn request_logs_sweeps_session_dirs_whole() {
     assert_eq!(names(&rl), Vec::<String>::new(), "内容口径：目录族清空");
 }
 
+// —— cluster_logs：双层目录（{device}/{ts_ms}_{task}/，2026-11-06 补族） ——
+
+#[test]
+fn cluster_logs_two_level_sweeps_task_dirs_and_empty_devices() {
+    let ws = tempfile::tempdir().unwrap();
+    let cl = ws.path().join("logs").join("cluster_logs");
+    let dev_a = cl.join("node-a");
+    let dev_b = cl.join("node-b");
+    let ta = dev_a.join("1729000000_100");
+    let tb = dev_b.join("1729000001_101");
+    std::fs::create_dir_all(&ta).unwrap();
+    std::fs::create_dir_all(&tb).unwrap();
+    std::fs::write(ta.join("00.request.md"), "req").unwrap();
+    std::fs::write(tb.join("00.request.md"), "req").unwrap();
+    // 意外平铺文件：保守不删。
+    std::fs::write(dev_a.join("stray.txt"), "keep").unwrap();
+
+    // 时钟拨 20 天：两任务目录(14d)全删；node-b 清空成空壳被摘除；
+    // node-a 因 stray.txt 非空保留（意外平铺文件保守不动）。
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(20 * 86400),
+    );
+    let cl_stats = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(cl_stats.deleted, 2, "两任务目录整删: {stats:?}");
+    assert!(cl_stats.bytes_freed > 0, "释放字节按任务目录内容累计");
+    assert_eq!(names(&dev_a), vec!["stray.txt"], "意外平铺文件保守保留");
+    assert_eq!(
+        names(&cl),
+        vec!["node-a"],
+        "node-b 空壳摘除；node-a 留（非空）"
+    );
+
+    // 二拍：清掉 stray 后 node-a 也成空壳被摘（零删除零 failed——空壳
+    // 只是名字壳，摘除失败也不计 failed）。
+    std::fs::remove_file(dev_a.join("stray.txt")).unwrap();
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let cl_stats = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(cl_stats.deleted, 0);
+    assert_eq!(cl_stats.failed, 0, "空壳摘除失败不产生 failed 计数");
+    assert_eq!(
+        names(&cl),
+        Vec::<String>::new(),
+        "空壳设备目录摘除（内容口径）"
+    );
+}
+
+// —— gateway / eval：2026-11-06 横扫补族 ——
+
+#[test]
+fn gateway_and_eval_families_sweep() {
+    let ws = tempfile::tempdir().unwrap();
+    let gw = ws.path().join("logs").join("gateway");
+    std::fs::create_dir_all(&gw).unwrap();
+    // 真实命名形态：tracing-appender {prefix}.YYYY-MM-DD（无 .log 后缀，
+    // common.rs 滚动前缀 = 文件 stem）。
+    std::fs::write(gw.join("nemesisbot.2026-01-01"), "{}").unwrap();
+    let ev = ws.path().join("logs").join("eval");
+    let report = ev.join("1729000000_demo-skill");
+    std::fs::create_dir_all(&report).unwrap();
+    std::fs::write(report.join("assessment.json"), "{}").unwrap();
+
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let gateway = stats.iter().find(|(f, _)| f.name() == "gateway").unwrap().1;
+    let eval = stats.iter().find(|(f, _)| f.name() == "eval").unwrap().1;
+    assert_eq!(
+        gateway.deleted, 1,
+        "滚动日志文件删（40d >= 14d）: {stats:?}"
+    );
+    assert_eq!(eval.deleted, 1, "评估报告目录整删（40d >= 30d）: {stats:?}");
+    assert_eq!(names(&gw), Vec::<String>::new());
+    assert_eq!(names(&ev), Vec::<String>::new());
+}
+
+// —— capture：双层目录（{session}/{ts}_{signal}/，2026-11-06 二轮补族） ——
+
+#[test]
+fn capture_two_level_sweeps_signal_dirs_and_empty_sessions() {
+    let ws = tempfile::tempdir().unwrap();
+    let cap = ws.path().join("logs").join("capture");
+    let sess_a = cap.join("agent_main_session_aaaa");
+    let sess_b = cap.join("agent_main_session_bbbb");
+    let sig_a = sess_a.join("1729000000_tool_end");
+    let sig_b = sess_b.join("1729000001_exec_fail");
+    std::fs::create_dir_all(&sig_a).unwrap();
+    std::fs::create_dir_all(&sig_b).unwrap();
+    std::fs::write(sig_a.join("frame.json"), "{}").unwrap();
+    std::fs::write(sig_b.join("frame.json"), "{}").unwrap();
+    // 意外平铺文件：保守不删。
+    std::fs::write(sess_a.join("stray.txt"), "keep").unwrap();
+
+    // 时钟拨 40 天：两信号目录(30d)全删；sess_b 清空成空壳被摘除；
+    // sess_a 因 stray.txt 非空保留（意外平铺文件保守不动）。
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let cap_stats = stats.iter().find(|(f, _)| f.name() == "capture").unwrap().1;
+    assert_eq!(cap_stats.deleted, 2, "两信号目录整删: {stats:?}");
+    assert_eq!(names(&sess_a), vec!["stray.txt"], "意外平铺文件保守保留");
+    assert_eq!(
+        names(&cap),
+        vec!["agent_main_session_aaaa"],
+        "sess_b 空壳摘除；sess_a 留（非空）"
+    );
+
+    // 二拍：清掉 stray 后 sess_a 也成空壳被摘（零删除零 failed——空壳
+    // 只是名字壳，摘除失败也不计 failed）。
+    std::fs::remove_file(sess_a.join("stray.txt")).unwrap();
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let cap_stats = stats.iter().find(|(f, _)| f.name() == "capture").unwrap().1;
+    assert_eq!(cap_stats.deleted, 0);
+    assert_eq!(cap_stats.failed, 0, "空壳摘除失败不产生 failed 计数");
+    assert_eq!(
+        names(&cap),
+        Vec::<String>::new(),
+        "空壳 session 目录摘除（内容口径）"
+    );
+}
+
+// —— dreaming / calibration / deliveries：2026-11-06 二轮补族 ——
+
+#[test]
+fn dreaming_calibration_deliveries_families_sweep() {
+    let ws = tempfile::tempdir().unwrap();
+    let dr = ws.path().join("logs").join("dreaming");
+    std::fs::create_dir_all(&dr).unwrap();
+    std::fs::write(dr.join("sweep_1729000000.json"), "{}").unwrap();
+    let cal = ws.path().join("logs").join("calibration");
+    let report = cal.join("1729000000");
+    std::fs::create_dir_all(&report).unwrap();
+    std::fs::write(report.join("report.json"), "{}").unwrap();
+    std::fs::write(report.join("report.md"), "# report").unwrap();
+    let dv = ws.path().join("logs").join("deliveries");
+    std::fs::create_dir_all(&dv).unwrap();
+    std::fs::write(dv.join("task-42.patch"), "diff").unwrap();
+
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let dreaming = stats
+        .iter()
+        .find(|(f, _)| f.name() == "dreaming")
+        .unwrap()
+        .1;
+    let calibration = stats
+        .iter()
+        .find(|(f, _)| f.name() == "calibration")
+        .unwrap()
+        .1;
+    let deliveries = stats
+        .iter()
+        .find(|(f, _)| f.name() == "deliveries")
+        .unwrap()
+        .1;
+    assert_eq!(
+        dreaming.deleted, 1,
+        "dreaming 平铺报告文件删（40d >= 30d）: {stats:?}"
+    );
+    assert_eq!(calibration.deleted, 1, "校准报告目录整删: {stats:?}");
+    assert!(calibration.bytes_freed > 0, "释放字节按目录内文件累计");
+    assert_eq!(deliveries.deleted, 1, "patch 留底文件删: {stats:?}");
+    assert_eq!(names(&dr), Vec::<String>::new());
+    assert_eq!(names(&cal), Vec::<String>::new());
+    assert_eq!(names(&dv), Vec::<String>::new());
+}
+
+// —— cluster_logs 根级 legacy 每日事件流：三轮补族 ——
+
+#[test]
+fn cluster_logs_legacy_daily_files_sweep_root_flat() {
+    let ws = tempfile::tempdir().unwrap();
+    let root = ws.path().join("logs").join("cluster_logs");
+    // legacy 每日事件流（cluster_log.rs 按日轮换形态）+ 未知平铺文件 +
+    // 双层正常条目同根共存。
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("cluster_2026-10-01.log"), "legacy events").unwrap();
+    std::fs::write(root.join("stray.bin"), "unknown form").unwrap();
+    let device = root.join("Device-A").join("1729000000_task-1");
+    std::fs::create_dir_all(&device).unwrap();
+    std::fs::write(device.join("00.request.md"), "req").unwrap();
+
+    // 拍 1（时钟拨老 40 天）：legacy 旧日文件删、未知平铺保守保留、
+    // 双层任务目录整删。
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let cluster = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(
+        cluster.deleted, 2,
+        "legacy 旧日文件 + 任务目录各计 1 件: {stats:?}"
+    );
+    assert_eq!(
+        names(&root),
+        vec!["stray.bin"],
+        "根级只留未知形态（保守不动）"
+    );
+
+    // 拍 2：重建当日 legacy 文件（mtime = 现下）+ 时钟拨 8 天（< 14d
+    // TTL）→ 保留零删（当日文件永不被误删——写方持久句柄按日轮换，
+    // 旧日文件句柄已 drop，删除安全）。
+    std::fs::write(root.join("cluster_2026-11-06.log"), "today").unwrap();
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(8 * 86400),
+    );
+    let cluster = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(cluster.deleted, 0, "当日 legacy 文件新鲜保留: {stats:?}");
+    assert_eq!(names(&root), vec!["cluster_2026-11-06.log", "stray.bin"]);
+}
+
+// —— heartbeat / ziwei / exec_checkpoints：三轮补族 ——
+
+#[test]
+fn heartbeat_ziwei_exec_checkpoints_families_sweep() {
+    let ws = tempfile::tempdir().unwrap();
+    let logs = ws.path().join("logs");
+    // heartbeat 单文件 + ziwei 三根（notify.jsonl + reports 两棵树）+
+    // exec_checkpoints 崩溃孤儿目录 + reports 用户点名输出（域外对照）。
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(logs.join("heartbeat.log"), "beat").unwrap();
+    std::fs::create_dir_all(logs.join("ziwei")).unwrap();
+    std::fs::write(logs.join("ziwei").join("notify.jsonl"), "{\"t\":1}").unwrap();
+    let verify = ws
+        .path()
+        .join("reports")
+        .join("ziwei-verify")
+        .join("prof-1");
+    std::fs::create_dir_all(&verify).unwrap();
+    std::fs::write(verify.join("verify_ab12cd34.json"), "{}").unwrap();
+    let recover = ws
+        .path()
+        .join("reports")
+        .join("ziwei-recover")
+        .join("prof-1");
+    std::fs::create_dir_all(&recover).unwrap();
+    std::fs::write(recover.join("recover_1729000000.md"), "# recover").unwrap();
+    std::fs::write(
+        ws.path().join("reports").join("custom_export.jsonl"),
+        "user-named deliverable",
+    )
+    .unwrap();
+    let ecp = logs.join("exec_checkpoints").join("NB-101.git");
+    std::fs::create_dir_all(ecp.join("objects")).unwrap();
+    std::fs::write(ecp.join("objects").join("pack-1"), "git bytes").unwrap();
+
+    // 拍 1（时钟拨老 40 天）：heartbeat 删 1、ziwei 删 3（jsonl + 两棵
+    // profile 树）、exec_checkpoints 删 1（40d >= 1d 短闸）；用户点名
+    // 输出 custom_export.jsonl 不在射程。
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let heartbeat = stats
+        .iter()
+        .find(|(f, _)| f.name() == "heartbeat")
+        .unwrap()
+        .1;
+    let ziwei = stats.iter().find(|(f, _)| f.name() == "ziwei").unwrap().1;
+    let exec_ck = stats
+        .iter()
+        .find(|(f, _)| f.name() == "exec_checkpoints")
+        .unwrap()
+        .1;
+    assert_eq!(heartbeat.deleted, 1, "heartbeat.log 单文件删: {stats:?}");
+    assert_eq!(
+        ziwei.deleted, 3,
+        "notify.jsonl + 两棵 profile 报告树各 1: {stats:?}"
+    );
+    assert_eq!(exec_ck.deleted, 1, "崩溃孤儿 .git 目录整删: {stats:?}");
+    assert_eq!(heartbeat.failed + ziwei.failed + exec_ck.failed, 0);
+    assert_eq!(
+        names(&ws.path().join("reports")),
+        vec!["custom_export.jsonl", "ziwei-recover", "ziwei-verify"],
+        "profile 树清空、根空壳保留（与目录族同构）；{{dest}} 用户点名输出在"
+    );
+    assert_eq!(
+        names(&verify),
+        Vec::<String>::new(),
+        "ziwei-verify 内容清空"
+    );
+    assert_eq!(
+        names(&recover),
+        Vec::<String>::new(),
+        "ziwei-recover 内容清空"
+    );
+    assert_eq!(names(&logs.join("exec_checkpoints")), Vec::<String>::new());
+
+    // 拍 2：重建 heartbeat.log + notify.jsonl（mtime = 现下）+ 时钟拨
+    // 8 天（< 30d）→ 单文件/混合根零删保留。exec_checkpoints TTL=1
+    // 短闸不重建（8d 时钟下新鲜夹具也超龄 = 短闸快清的设计语义，拍 1
+    // 已验删面）。
+    std::fs::write(logs.join("heartbeat.log"), "beat").unwrap();
+    std::fs::write(logs.join("ziwei").join("notify.jsonl"), "{\"t\":2}").unwrap();
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(8 * 86400),
+    );
+    let heartbeat = stats
+        .iter()
+        .find(|(f, _)| f.name() == "heartbeat")
+        .unwrap()
+        .1;
+    let ziwei = stats.iter().find(|(f, _)| f.name() == "ziwei").unwrap().1;
+    assert_eq!(heartbeat.deleted, 0, "新鲜 heartbeat.log 保留: {stats:?}");
+    assert_eq!(ziwei.deleted, 0, "新鲜 notify.jsonl 保留: {stats:?}");
+    assert!(
+        logs.join("heartbeat.log").is_file(),
+        "heartbeat.log 原样在（拍 2 从未删过，无幻影窗口）"
+    );
+    assert_eq!(names(&logs.join("ziwei")), vec!["notify.jsonl"]);
+}
+
 // —— event_ledger：超龄 且 末行 append ——
 
 #[test]
@@ -267,7 +599,7 @@ fn all_zero_ttl_sweeps_nothing() {
     let stats = sweep_workspace_logs(ws.path(), &LogsTtl::all_disabled_shape(), old_now());
     assert!(
         stats.iter().all(|(_, s)| s.deleted == 0 && s.failed == 0),
-        "六族全 0 = 零触碰: {stats:?}"
+        "十六族全 0 = 零触碰: {stats:?}"
     );
     assert_eq!(names(&sl), vec!["ancient.jsonl"], "夹具原样保留");
 }
@@ -316,6 +648,55 @@ fn trash_family_sweeps_entry_dirs_and_outlives_other_families() {
     assert_eq!(names(&tr), Vec::<String>::new(), "内容口径：回收站清空");
 }
 
+/// trash 族 TTL 删除必须走 trash_purge_in 单点：带清单条目删除时把
+/// sessions/ 下 live todo 孤儿一并清掉（修复前入站的旧形态条目无 todo
+/// 副本，孤儿只能靠 purge 收敛）；无清单条目 = 原键不可信寻址，孤儿
+/// 诚实保留（purge 同语义）。孤儿寻址用 nemesis-path 真相源落位。
+#[test]
+fn trash_sweep_purges_live_todo_orphan_with_entry() {
+    let ws = tempfile::tempdir().unwrap();
+    let tr = ws.path().join("logs").join("trash").join("sessions");
+    let sessions = nemesis_path::resolve_sessions_dir_in_workspace(ws.path());
+
+    // 条目 A：带清单（旧形态——无 todo 副本在条目内）+ sessions/ 下
+    // live 孤儿。清单指向的键是唯一寻址线索。
+    let entry_a = tr.join("1729000000_agent_main_session_legacy");
+    std::fs::create_dir_all(&entry_a).unwrap();
+    std::fs::write(entry_a.join("chat.jsonl"), "x").unwrap();
+    std::fs::write(
+        entry_a.join("trash.json"),
+        r#"{"original_session_key":"agent:main:session:legacy","deleted_at_ms":1729000000}"#,
+    )
+    .unwrap();
+    let orphan_a =
+        nemesis_path::session_todo_file_in_workspace(ws.path(), "agent:main:session:legacy");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(&orphan_a, "[]").unwrap();
+
+    // 条目 B：无清单（孤儿目录形态）。任何 live 孤儿都无法经它寻址。
+    let entry_b = tr.join("1729000001_agent_main_session_ghost");
+    std::fs::create_dir_all(&entry_b).unwrap();
+    std::fs::write(entry_b.join("chat.jsonl"), "x").unwrap();
+    let orphan_b =
+        nemesis_path::session_todo_file_in_workspace(ws.path(), "agent:main:session:ghost");
+    std::fs::write(&orphan_b, "[]").unwrap();
+
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(100 * 86400),
+    );
+    let trash = stats.iter().find(|(f, _)| f.name() == "trash").unwrap().1;
+    assert_eq!(trash.deleted, 2, "两条目都超 90d：全删: {stats:?}");
+    assert_eq!(names(&tr), Vec::<String>::new(), "回收站清空（内容口径）");
+    // A 的孤儿随条目收敛消失；B 无清单不可寻址，孤儿诚实保留。
+    assert!(!orphan_a.exists(), "带清单条目的 live todo 孤儿随删收敛");
+    assert!(
+        orphan_b.exists(),
+        "无清单条目不可寻址：孤儿保留（purge 同语义）"
+    );
+}
+
 // —— 限量：单族单拍不超过 200 件 ——
 
 #[test]
@@ -337,7 +718,7 @@ fn per_sweep_cap_bounds_deletions() {
 }
 
 impl LogsTtl {
-    /// 测试助记：六族全 0 形态。
+    /// 测试助记：十六族全 0 形态。
     fn all_disabled_shape() -> Self {
         Self {
             session_logs: 0,
@@ -346,6 +727,16 @@ impl LogsTtl {
             terminal: 0,
             event_ledger: 0,
             trash: 0,
+            gateway: 0,
+            cluster_logs: 0,
+            eval: 0,
+            capture: 0,
+            dreaming: 0,
+            calibration: 0,
+            deliveries: 0,
+            heartbeat: 0,
+            ziwei: 0,
+            exec_checkpoints: 0,
         }
     }
 }
