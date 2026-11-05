@@ -523,7 +523,8 @@ pub fn chat_log_exists(session_key: &str) -> bool {
 /// copy must be exactly the rows the user picked, not a re-derived
 /// projection. Returns the number of lines written.
 /// 测试钩子登记表（BUG-20261030-205 回归锁）：登记的 key 下次进入
-/// [`write_chat_log_rows`] 时模拟 open 失败（消费一次即摘除）。仅测试
+/// [`write_chat_log_rows_inner`]（即两个包装与
+/// [`create_chat_log_exclusive`]）时模拟 open 失败（消费一次即摘除）。仅测试
 /// 编译；key 定向而非全局开关——fork 测试并行跑，全局开关会串扰。
 #[cfg(test)]
 static TEST_FAIL_OPEN_KEYS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -599,9 +600,28 @@ pub fn history_rewrite_active(key: &str) -> bool {
         .contains(key)
 }
 
-pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
+/// 排他创建失败的分类（BUG-20261106-003）：AlreadyExists 与 IO 失败分开
+/// ——import 据此回「会话已存在」诚实拒绝，fork 走 0 行回退臂。
+#[derive(Debug)]
+pub enum ChatLogCreateError {
+    /// 目标已存在（check-then-create 竞态窗口的诚实败北——窗口内第二写方
+    /// 不再以追加模式把两份内容拼进同一会话）。
+    AlreadyExists,
+    /// IO 失败（磁盘满/权限/瞬时句柄占用）。
+    Io(String),
+}
+
+/// 「从批次创建会话 jsonl」原语（fork 复制 / import 重建）。
+///
+/// BUG-20261106-003：open 改排他 `create_new`——两个生产调用方（fork 的
+/// unique_key、import 的 exists 预检）语义上都是「目标必须不存在」，此前
+/// `create(true).append(true)` 使检查与落盘之间窗口内的并发第二写方把
+/// 第二份内容**追加**进同一会话（双份拼接静默）。排他创建把契约下沉到
+/// 原语层：窗口内败北方拿到 AlreadyExists（import 回诚实拒绝；fork 按 0
+/// 行走既有原子回退臂）。追加写走 [`write_chat_entry`]，与此原语分工。
+fn write_chat_log_rows_inner(new_key: &str, rows: &[Value]) -> Result<usize, ChatLogCreateError> {
     if rows.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let target = log_path(new_key);
     if let Some(parent) = target.parent() {
@@ -609,7 +629,8 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     }
     // 测试钩子（BUG-20261030-205 回归锁）：定向模拟 open 失败（消费一次
     // 即摘除）。key 定向而非全局开关——fork 测试并行跑，全局开关会串扰
-    // 其他用例的正常写入。
+    // 其他用例的正常写入。BUG-20261106-003 后失败形态 = Err(Io)（排他
+    // 语义下 open 失败与新键成功不可再混同于「Ok(0)」）。
     #[cfg(test)]
     {
         let mut armed = TEST_FAIL_OPEN_KEYS
@@ -621,7 +642,7 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
                 "[chat_log] (test hook) simulated fork copy open failure: {}",
                 target.display()
             );
-            return 0;
+            return Err(ChatLogCreateError::Io("simulated open failure".to_string()));
         }
     }
     let mut written = 0usize;
@@ -629,8 +650,15 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     // BUG-20261030-205：fork 复制的落盘失败不再无痕——open/write 失败与
     // write_chat_entry 同款 warn + M2 降级登记（健康面可见）；fork 侧据
     // 返回值诚实 Err 并原子回退（session_fork::fork_session_opts）。
-    let mut f = match OpenOptions::new().create(true).append(true).open(&target) {
+    let mut f = match OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(&target)
+    {
         Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(ChatLogCreateError::AlreadyExists);
+        }
         Err(e) => {
             tracing::warn!(
                 "[chat_log] fork copy open failed {}: {}",
@@ -641,7 +669,10 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
                 "chat_log",
                 format!("fork copy open failed: {} ({e})", target.display()),
             );
-            return 0;
+            return Err(ChatLogCreateError::Io(format!(
+                "fork copy open failed: {} ({e})",
+                target.display()
+            )));
         }
     };
     // R100（BUG-20261025-25）：整批先拼成一个缓冲再**单次** write_all
@@ -698,14 +729,44 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
                 .collect(),
         );
     }
-    written
+    Ok(written)
+}
+
+/// 宽容包装（测试面消费）：排他创建，任何失败归一为 0 行。生产调用方
+/// 已全部迁移 [`create_chat_log_exclusive`]（fork 按变体分臂回退、import
+/// 回诚实拒绝——见 BUG-20261106-003）；保留 usize 形态只为既有测试群体
+/// 的宽容边界断言（目录占位 → 0、注入失败 → 0）继续成立。
+#[cfg(test)]
+pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
+    match write_chat_log_rows_inner(new_key, rows) {
+        Ok(n) => n,
+        Err(ChatLogCreateError::AlreadyExists) => {
+            tracing::warn!(
+                "[chat_log] exclusive create hit existing target: {}",
+                log_path(new_key).display()
+            );
+            0
+        }
+        Err(ChatLogCreateError::Io(_)) => 0,
+    }
+}
+
+/// 排他创建 Result 变体（BUG-20261106-003，import 侧消费）：AlreadyExists
+/// 单独分型——「导入不覆盖既有会话」契约由文件系统原子性背书，不再依赖
+/// check-then-append 的竞态窗口。
+pub fn create_chat_log_exclusive(
+    new_key: &str,
+    rows: &[Value],
+) -> Result<usize, ChatLogCreateError> {
+    write_chat_log_rows_inner(new_key, rows)
 }
 
 /// E3（devtool-upgrade 阶段 5）：把会话 jsonl **原位截断**为 `kept` 里
 /// 的行（VERBATIM 逐字节保留）。消息级回退/重做（`AgentLoop::rewind_to_message`
 /// / `redo_rewind`）的落盘原语。
 ///
-/// 崩溃安全：先写 `.rewinding` 临时文件再 rename 覆盖原文件——中途崩溃
+/// 崩溃安全：`nemesis_utils::write_file_atomic` 单一出口（BUG-20261106-001
+/// 横向同族）——同目录唯一临时文件 + `sync_all` 先于 rename，断电/崩溃
 /// 要么原文件完好、要么截断后完好，不会出现半截文件。与 fork 的
 /// [`write_chat_log_rows`] 同一宽容边界：不走 `history_search::index_append`
 /// （原样重写不加新词），FTS 懒索引下次全量重建时自愈。
@@ -730,53 +791,35 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
         .iter()
         .filter_map(|v| serde_json::to_string(v).ok())
         .collect();
-    let tmp = path.with_extension("jsonl.rewinding");
+    // 崩溃安全（BUG-20261106-001 横向同族）：委托
+    // `nemesis_utils::write_file_atomic` 单一出口——create_new 临时文件 +
+    // flush + `sync_all` 先于 rename：断电/内核崩溃后目标要么原文件完好、
+    // 要么截断后完好，绝不半截（此前手搓 tmp+rename 无 sync_all，断电级
+    // 只保进程崩溃语义）。失败时 helper 清临时文件、原文件不动；本侧照
+    // BUG-20261030-205 纪律进降级登记表（健康面可见），rewind 侧按返回值
+    // 诚实 commit_failed。
+    let mut body = String::new();
     let mut written = 0usize;
-    {
-        let mut f = match OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-        {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!(
-                    "[chat_log] Failed to open tmp {} for truncate: {}",
-                    tmp.display(),
-                    e
-                );
-                // BUG-20261030-205：手术面写失败进降级登记表（健康面可见），
-                // 不再只有日志行。rewind 侧已按返回值诚实 commit_failed。
-                nemesis_utils::degraded::report(
-                    "chat_log",
-                    format!("truncate tmp open failed: {} ({e})", tmp.display()),
-                );
-                return 0;
-            }
+    for v in kept {
+        let Ok(line) = serde_json::to_string(v) else {
+            continue;
         };
-        for v in kept {
-            let Ok(line) = serde_json::to_string(v) else {
-                continue;
-            };
-            if writeln!(f, "{}", line).is_ok() {
-                written += 1;
-            }
-        }
+        body.push_str(&line);
+        body.push('\n');
+        written += 1;
     }
-    // Windows 上 std::fs::rename 走 MOVEFILE_REPLACE_EXISTING，可覆盖已存在
-    // 目标；失败时保留原文件（会话不损）并清掉 tmp。
-    if let Err(e) = fs::rename(&tmp, &path) {
+    if let Err(e) =
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
+    {
         tracing::warn!(
-            "[chat_log] truncate rename failed ({}): {} — 原文件保留",
+            "[chat_log] truncate rewrite failed ({}): {} — 原文件保留",
             path.display(),
             e
         );
         nemesis_utils::degraded::report(
             "chat_log",
-            format!("truncate rename failed: {} ({e})", path.display()),
+            format!("truncate rewrite failed: {} ({e})", path.display()),
         );
-        let _ = nemesis_utils::fsutil::remove_file_retry(&tmp);
         return 0;
     }
     // T6：rename 生效后才记账（截断真正发生）。原行按序与 kept 序列化串
@@ -835,7 +878,7 @@ fn ledger_truncate_diff(session_key: &str, raw_lines: &[String], kept_lines: &[S
 ///   the store produced garbage on real production sessions (store held a
 ///   truncated, tool-intermediate-polluted history while the user picked a
 ///   turn by the clean jsonl the UI renders). `fork_session` now reads the
-///   rows itself and writes them via `write_chat_log_rows`.
+///   rows itself and writes them via `create_chat_log_exclusive`.
 ///   Kept (not deleted) per the code-change discipline.
 #[allow(dead_code)]
 pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> usize {
@@ -912,7 +955,7 @@ pub fn is_user_turn_boundary(row: &Value) -> bool {
 /// the fork's chat_log FROM the store made the fork inherit every store
 /// defect (truncated history, tool-intermediate pollution, folded turns),
 /// producing garbage forks on real production sessions. `fork_session` now
-/// copies the jsonl rows verbatim (`write_chat_log_rows`) and derives the
+/// copies the jsonl rows verbatim (`create_chat_log_exclusive`) and derives the
 /// store FROM those rows (`session::projected_messages_from_rows`) — the
 /// store→jsonl direction is dead. Kept (not deleted) per the code-change
 /// discipline.
@@ -1242,22 +1285,16 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
 /// 后缀 → rename 替换（Windows `MoveFileEx(REPLACE_EXISTING)` 语义）。此前
 /// 六处 meta 写全部直写 `fs::write`：进程中途死 = 半截 JSON（读取侧按
 /// corrupt 起空 meta 静默吃掉），写失败 = 吞错。调用方决定 warn 还是上浮。
+///
+/// BUG-20261106-001：落盘委托 `nemesis_utils::write_file_atomic` 权威
+/// helper（REL-002「不在各模块重复自制 tmp+rename」）。此前手搓版缺
+/// flush/sync_all——断电/内核崩溃下 rename 元数据可先于数据块落盘，目标
+/// 呈零长度/半截 JSON；叠加读取侧 `unwrap_or_default()` 以空 meta 为基线，
+/// 下一次任意字段 upsert 把其余全部字段静默抹掉（snooze/血缘/放行记忆
+/// 蒸发）。share.rs 同族缺陷（BUG-20261101-278 族）已修，此处为横向扫漏点。
 fn write_meta_file_atomic(path: &std::path::Path, meta: &SessionMeta) -> Result<(), String> {
     let data = serde_json::to_string(meta).map_err(|e| format!("serialize: {e}"))?;
-    let tmp = path.with_extension(format!(
-        "json.tmp-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or_default()
-    ));
-    fs::write(&tmp, data).map_err(|e| format!("tmp write {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("replace {}: {e}", path.display())
-    })?;
-    Ok(())
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o644)
 }
 
 /// Shared read-modify-write for the sidecar meta (single fs read + write).
@@ -1644,7 +1681,10 @@ pub(crate) fn delete_session_pending(session_key: &str) {
 /// 去重路径清单，按首次出现序）。分支对比视图的文件清单真相源——前端
 /// 拿清单逐文件调 `sessions.file_diff` 展示 unified diff。
 pub fn session_file_changes(session_key: &str) -> Vec<String> {
-    let (rows, _, _, _) = read_chat_log(session_key, 100_000, None);
+    // BUG-20261106-002：全量读者契约是 `usize::MAX`（无驱逐滑窗）——此前传
+    // 100_000 会触发 whole_log 旗标但仍在 >limit 时从头驱逐，超 10 万行会话
+    // 最旧的 assistant 行 file_changes 被静默漏聚合（分支对比文件清单缺头部）。
+    let (rows, _, _, _) = read_chat_log(session_key, usize::MAX, None);
     let mut out: Vec<String> = Vec::new();
     for row in &rows {
         if row["role"].as_str() != Some("assistant") {

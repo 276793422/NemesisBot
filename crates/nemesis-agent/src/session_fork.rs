@@ -31,7 +31,7 @@
 //! Consequences of the fix, all by construction:
 //! - the new jsonl = the source jsonl's first-N-turn rows **verbatim**
 //!   (timestamps / model badges / cron markers preserved — see
-//!   `chat_log::write_chat_log_rows`);
+//!   `chat_log::create_chat_log_exclusive`, BUG-20261106-003 排他创建);
 //! - the new store = `session::projected_messages_from_rows` over the same
 //!   cut rows — byte-identical to what a later self-heal rebuild of the
 //!   fork's jsonl would produce, so the fork's model context can never
@@ -230,13 +230,31 @@ pub fn fork_session_opts(
     // self-heal layer against a not-yet-existing file (harmless either way,
     // but jsonl-first keeps the write order the same as the live append
     // path — durable truth before derived cache).
-    let chat_log_lines = chat_log::write_chat_log_rows(&new_key, &rows[..cut]);
     // BUG-20261030-205：jsonl 落盘失败不再静默成功。旧形态下 open/write
     // 失败返回 0 被无视，fork 照常建 store 落 meta 返回成功——产出「store
     // 有历史、jsonl 真相源缺席」的半残 fork（self-heal 一跑历史清零），
     // 正是本函数 jsonl-first 契约要防的反形态。现按返回值校验：失败 =
     // 原子回退（回收半残产物 + Err），此刻 store/meta/boundary 尚未落任何
     // 字节，回退是干净的；源会话全程只读未受影响。
+    // BUG-20261106-003：落盘走排他创建。AlreadyExists = unique_key 的
+    // check-then-use 窗口竞态败北——**该文件属于赢家，不是本 fork 的
+    // 产物**，此臂绝不 delete（回退删它 = 毁掉赢家会话）；仅 IO 失败 /
+    // 部分写入（产物归本 fork）才走 delete 回退。
+    let chat_log_lines = match chat_log::create_chat_log_exclusive(&new_key, &rows[..cut]) {
+        Ok(n) => n,
+        Err(chat_log::ChatLogCreateError::AlreadyExists) => {
+            return Err(format!(
+                "fork 落盘失败：新会话键 {new_key} 在创建窗口被并发占用（排他创建败北），fork 已中止——源会话与对方会话均未受影响，请换名重试"
+            ));
+        }
+        Err(chat_log::ChatLogCreateError::Io(e)) => {
+            chat_log::delete_chat_log(&new_key);
+            return Err(format!(
+                "fork 落盘失败：新会话 jsonl 写入 0/{} 行（{e}），fork 已完整回退（源会话未受影响）——请重试",
+                rows[..cut].len()
+            ));
+        }
+    };
     if chat_log_lines != rows[..cut].len() {
         chat_log::delete_chat_log(&new_key);
         return Err(format!(

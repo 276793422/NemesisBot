@@ -488,13 +488,16 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // BUG-20261102-302：export 全量读会话日志（100_000 ≥ whole_log
-                // 阈值 = 整文件解析），同步阻塞 IO 直跑 tokio worker，spawn_
-                // blocking 移出（read_chat_log_async 同款纪律）。
+                // BUG-20261102-302：export 全量读会话日志，同步阻塞 IO 直跑
+                // tokio worker，spawn_blocking 移出（read_chat_log_async 同款
+                // 纪律）。BUG-20261106-002：limit 用全量读者契约 `usize::MAX`
+                // ——此前传 100_000 触发 whole_log 旗标但滑窗仍在 >limit 时
+                // 从头驱逐，超 10 万行会话的最旧历史被静默截掉（count 照报
+                // 真实总数，迁移副本永久缺前缀且无任何告警）。
                 let (messages, total, _, _) = {
                     let key = session_key;
                     tokio::task::spawn_blocking(move || {
-                        nemesis_agent::chat_log::read_chat_log(&key, 100_000, None)
+                        nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None)
                     })
                     .await
                     .map_err(|e| format!("sessions.export task join failed: {e}"))?
@@ -557,13 +560,22 @@ impl ModuleHandler for SessionsHandler {
                     None => uuid::Uuid::new_v4().to_string(),
                 };
                 let session_key = format!("agent:main:session:{sid}");
+                // BUG-20261106-003：落盘走排他创建（create_new）——上面的
+                // exists 预检只是友好快速路径，真实「不覆盖」契约由文件系统
+                // 原子性背书（check-then-create 竞态窗口不再能覆盖既有会话）。
                 let written = {
                     let key = session_key.clone();
                     tokio::task::spawn_blocking(move || {
-                        nemesis_agent::chat_log::write_chat_log_rows(&key, &rows)
+                        nemesis_agent::chat_log::create_chat_log_exclusive(&key, &rows)
                     })
                     .await
                     .map_err(|e| format!("sessions.import task join failed: {e}"))?
+                    .map_err(|e| match e {
+                        nemesis_agent::chat_log::ChatLogCreateError::AlreadyExists => {
+                            format!("会话已存在: {sid}（导入不覆盖既有会话）")
+                        }
+                        nemesis_agent::chat_log::ChatLogCreateError::Io(m) => m,
+                    })?
                 };
                 if written != messages.len() {
                     return Err(format!(

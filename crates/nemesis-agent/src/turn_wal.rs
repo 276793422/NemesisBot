@@ -289,17 +289,24 @@ impl TurnWal {
         }
         let ttl_cutoff = now_ms().saturating_sub(self.ttl_secs * 1000);
 
-        // call_id → (最新一条非收尾记录, 是否 finished)。
-        let mut open_calls: std::collections::HashMap<String, WalRecord> =
+        // (session_key, call_id) → 最新一条非收尾记录。BUG-20261106-004：
+        // 分组键必须是二元组——call_id 是模型回传的 id，跨会话可碰撞
+        // （小模型自数计数器 per-conversation 重置；空 id 兜底是
+        // 时间戳+工具名，同毫秒同工具跨会话同形），单键分组会把 A 会话的
+        // finished 记到 B 会话头上，B 的断头调用被误吞、恢复候选静默丢失。
+        // session_key 写入侧恒非空（WalCall 带全上下文），二元组天然安全。
+        let mut open_calls: std::collections::HashMap<(String, String), WalRecord> =
             std::collections::HashMap::new();
-        let mut finished: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut finished: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         for rec in &records {
+            let key = (rec.session_key.clone(), rec.call_id.clone());
             match rec.state.as_str() {
                 STATE_FINISHED | STATE_INTERRUPTED => {
-                    finished.insert(rec.call_id.clone());
+                    finished.insert(key);
                 }
                 STATE_ADMITTED | STATE_STARTED => {
-                    open_calls.insert(rec.call_id.clone(), rec.clone());
+                    open_calls.insert(key, rec.clone());
                 }
                 _ => {}
             }
@@ -311,10 +318,10 @@ impl TurnWal {
         // HashMap 迭代序随机——按发生时间排序后消费（多断头调用时续轮候选
         // 顺序跨平台/跨运行确定；同会话串行下多候选必跨会话，排序保日志
         // 与续轮消息的可读可重复）。
-        let mut open_list: Vec<(String, WalRecord)> = open_calls.into_iter().collect();
+        let mut open_list: Vec<((String, String), WalRecord)> = open_calls.into_iter().collect();
         open_list.sort_by(|a, b| a.1.ts_ms.cmp(&b.1.ts_ms).then_with(|| a.0.cmp(&b.0)));
-        for (call_id, rec) in open_list {
-            if finished.contains(&call_id) {
+        for (key, rec) in open_list {
+            if finished.contains(&key) {
                 continue;
             }
             if rec.ts_ms < ttl_cutoff {
