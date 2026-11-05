@@ -3,9 +3,11 @@
 //! 存储真相源 = `<workspace>/logs/trash/sessions/{deleted_at_ms}_{safe_key}/`
 //! （路径真相源 [`nemesis_path::resolve_trash_sessions_dir_in_workspace`]），
 //! 每个子目录装原 chat_log 三件套的改名副本（`chat.jsonl` / `boundary.jsonl` /
-//! `meta.json`）+ `trash.json` 清单。设计要点：
+//! `meta.json`）+ todo 文件副本（`todo.json`，2026-11-05：删除链路此前不感知
+//! todo 文件，软删后 live 残留孤儿——BUG 根修四件套化）+ `trash.json` 清单。
+//! 设计要点：
 //!
-//! - **移入 = rename**：同卷 rename 是元数据操作，三件套字节原样；同键多次
+//! - **移入 = rename**：同卷 rename 是元数据操作，文件字节原样；同键多次
 //!   删除靠 `deleted_at_ms` 前缀并存，不互相覆盖。
 //! - **目录名即寻址**：前端/WSAPI 只见条目名（entry），恢复/清除按名操作，
 //!   不暴露原键给路径拼接（防注入：entry 名严格校验）。
@@ -66,22 +68,27 @@ pub struct TrashManifest {
     /// chat.jsonl 非空行数（≈ 消息条数）。
     #[serde(default)]
     pub message_count: u64,
-    /// 三件套字节合计。
+    /// 四件套字节合计。
     #[serde(default)]
     pub bytes: u64,
     /// 来源标记：`single`（单条删除）/ `batch`（批量删除）。
     #[serde(default)]
     pub source: String,
+    /// 条目是否包含 todo 文件（2026-11-05 四件套化新增；旧清单缺字段 =
+    /// false 兼容——旧条目无 todo 副本，恢复/清除按 absent 处理）。
+    #[serde(default)]
+    pub todo: bool,
 }
 
 // ---------------------------------------------------------------------------
 // 寻址注入面
 // ---------------------------------------------------------------------------
 
-/// 回收站寻址注入面：chat_log 三件套寻址 + 回收站根。
+/// 回收站寻址注入面：chat_log 三件套 + todo 文件寻址 + 回收站根。
 ///
 /// 生产走 [`TrashLocations::production`]（与 chat_log 同源寻址，路径真相源
-/// 不搬出 chat_log）；测试走 [`TrashLocations::with_dirs`] 注入 tempdir。
+/// 不搬出 chat_log；todo 走 [`nemesis_path::session_todo_file_in_workspace`]
+/// 单一真相源）；测试走 [`TrashLocations::with_dirs`] 注入 tempdir。
 #[derive(Clone)]
 pub struct TrashLocations {
     trash_root: PathBuf,
@@ -91,27 +98,35 @@ pub struct TrashLocations {
     meta_path: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>,
     #[allow(clippy::type_complexity)]
     boundary_path: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>,
+    #[allow(clippy::type_complexity)]
+    todo_path: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>,
 }
 
 impl TrashLocations {
     /// 生产寻址：chat_log 同源函数 + 进程单例回收站根（与 chat_log 同一
     /// 寻址惯例）。
     pub(crate) fn production() -> Self {
+        let workspace = default_path_manager().workspace();
         Self {
             trash_root: trash_root(),
             log_path: Arc::new(chat_log::log_path),
             meta_path: Arc::new(chat_log::meta_path),
             boundary_path: Arc::new(chat_log::boundary_path),
+            todo_path: Arc::new(move |k: &str| {
+                nemesis_path::session_todo_file_in_workspace(&workspace, k)
+            }),
         }
     }
 
-    /// 测试注入：回收站根 + session_logs 目录 + boundary 目录。文件名格式与
-    /// chat_log 同源（`{safe}.jsonl` / `{safe}.meta.json`，
+    /// 测试注入：回收站根 + session_logs 目录 + boundary 目录 + sessions 目录
+    /// （todo 文件挂后者）。文件名格式与 chat_log / nemesis-path 真相源同源
+    /// （`{safe}.jsonl` / `{safe}.meta.json` / `todo_{safe}.json`，
     /// `safe = sanitize_path_segment`；chat_log.rs::log_path 注释即契约）。
     pub fn with_dirs(
         trash_root: PathBuf,
         session_logs_dir: PathBuf,
         boundary_dir: PathBuf,
+        sessions_dir: PathBuf,
     ) -> Self {
         let logs_dir = session_logs_dir.clone();
         Self {
@@ -134,6 +149,12 @@ impl TrashLocations {
                     nemesis_utils::sanitize::sanitize_path_segment(k)
                 ))
             }),
+            todo_path: Arc::new(move |k: &str| {
+                sessions_dir.join(format!(
+                    "todo_{}.json",
+                    nemesis_utils::sanitize::sanitize_path_segment(k)
+                ))
+            }),
         }
     }
 
@@ -151,6 +172,10 @@ impl TrashLocations {
 
     pub fn boundary_path(&self, session_key: &str) -> PathBuf {
         (self.boundary_path)(session_key)
+    }
+
+    pub fn todo_path(&self, session_key: &str) -> PathBuf {
+        (self.todo_path)(session_key)
     }
 }
 
@@ -246,12 +271,13 @@ fn count_nonempty_lines(path: &Path) -> u64 {
 // 写侧：移入回收站
 // ---------------------------------------------------------------------------
 
-/// 把会话 chat_log 三件套移入回收站，返回条目目录名。
+/// 把会话 chat_log 三件套 + todo 文件移入回收站，返回条目目录名。
 ///
-/// 三件套全部缺席（从未物化的空会话）= 没有可恢复的东西 → 不建目录，返回
+/// 四件全部缺席（从未物化的空会话）= 没有可恢复的东西 → 不建目录，返回
 /// `Ok(None)`（删除即完成，handler 报 `trashed: false`）。清单 title 从
-/// entry 内 meta 读、message_count 从 chat.jsonl 数、bytes 为三件套合计。
-/// 目录 mtime ≈ 删除时刻（此后内容不变），sweeper 第六族按它 TTL 清扫。
+/// entry 内 meta 读、message_count 从 chat.jsonl 数、bytes 为四件套合计、
+/// `todo` 标记 todo 副本在场。目录 mtime ≈ 删除时刻（此后内容不变），
+/// sweeper 第六族按它 TTL 清扫。
 pub fn trash_chat_log(session_key: &str, source: &str) -> Result<Option<String>, String> {
     trash_chat_log_in(&TrashLocations::production(), session_key, source)
 }
@@ -265,9 +291,12 @@ pub fn trash_chat_log_in(
     let src_jsonl = loc.log_path(session_key);
     let src_meta = loc.meta_path(session_key);
     let src_boundary = loc.boundary_path(session_key);
-    if !src_jsonl.exists() && !src_meta.exists() && !src_boundary.exists() {
+    let src_todo = loc.todo_path(session_key);
+    if !src_jsonl.exists() && !src_meta.exists() && !src_boundary.exists() && !src_todo.exists() {
         return Ok(None);
     }
+    // todo 在场标记在移动前抓取（移动后 src_todo 已不存在）。
+    let has_todo = src_todo.exists();
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -300,6 +329,9 @@ pub fn trash_chat_log_in(
         (&src_jsonl, entry.join("chat.jsonl")),
         (&src_boundary, entry.join("boundary.jsonl")),
         (&src_meta, entry.join("meta.json")),
+        // todo 副本（2026-11-05 四件套化）：move_file_retry 对缺席源自动
+        // Ok 跳过——旧会话没有 todo 文件时本成员无副作用。
+        (&src_todo, entry.join("todo.json")),
     ] {
         if from.exists() {
             bytes += std::fs::metadata(from).map(|m| m.len()).unwrap_or(0);
@@ -321,6 +353,7 @@ pub fn trash_chat_log_in(
         message_count: count_nonempty_lines(&entry.join("chat.jsonl")),
         bytes,
         source: source.to_string(),
+        todo: has_todo,
     };
     let raw =
         serde_json::to_string_pretty(&manifest).map_err(|e| format!("清单序列化失败: {e}"))?;
@@ -376,7 +409,7 @@ pub fn trash_list_in(loc: &TrashLocations) -> Vec<serde_json::Value> {
             Some(m) => (m.message_count, m.bytes),
             None => {
                 let p = path.join("chat.jsonl");
-                let b: u64 = ["chat.jsonl", "boundary.jsonl", "meta.json"]
+                let b: u64 = ["chat.jsonl", "boundary.jsonl", "meta.json", "todo.json"]
                     .iter()
                     .map(|f| {
                         std::fs::metadata(path.join(f))
@@ -594,8 +627,10 @@ pub fn trash_restore_in(
         std::fs::write(&marker_path, raw).map_err(|e| format!("恢复标记写入失败: {e}"))?;
     }
 
-    // 移回三件套（boundary/meta 缺席 = 跳过；续作时已移走的同样按缺席跳过）。
-    let restore_pairs: [(&str, PathBuf, PathBuf); 3] = [
+    // 移回材料（boundary/meta/todo 缺席 = 跳过；续作时已移走的同样按缺席
+    // 跳过）。todo 副本只在条目内存在时追加（2026-11-05 四件套化；旧条目
+    // 无此文件不追加，expected 完成性验证对「两侧都缺席」成员本就不参与）。
+    let mut restore_pairs: Vec<(&str, PathBuf, PathBuf)> = vec![
         (
             "chat.jsonl",
             entry_dir.join("chat.jsonl"),
@@ -612,6 +647,20 @@ pub fn trash_restore_in(
             loc.meta_path(&target_key),
         ),
     ];
+    let todo_src = entry_dir.join("todo.json");
+    if todo_src.exists() {
+        // 目标键 live todo 先清：它只可能是已删会话的孤儿残留（BUG① 形态，
+        // 2026-11-05 之前旧条目恢复时必撞）或本事务上次半途已移走的半成品
+        //（后者 todo_src 已不在条目内，走不进本分支）。restore 语义 = 条目
+        // 内容为准；不先清则 Windows rename 目标已存在直接失败 → 恢复卡死。
+        // todo 不参与冲突判定（meta/jsonl 才是会话存在性权威）。
+        let live = loc.todo_path(&target_key);
+        if live.exists() {
+            nemesis_utils::fsutil::remove_file_retry(&live)
+                .map_err(|e| format!("清理目标键 live todo 失败: {e}"))?;
+        }
+        restore_pairs.push(("todo.json", todo_src, loc.todo_path(&target_key)));
+    }
     // 完成性验证基线：移动前「条目内有 或 目标键已有（续作半成品）」的成员
     // = 期望集合；两侧都缺席 = 本来就 lazy 不存在，不参与验证。
     let expected: Vec<usize> = restore_pairs
@@ -650,6 +699,11 @@ pub fn trash_restore_in(
 }
 
 /// 彻底删除单个条目（整目录物理删除，不可恢复）。
+///
+/// 2026-11-05 四件套化：删除条目前顺带清原键的 live todo——回收站语义 =
+/// 该会话已删，live todo 是 BUG① 的孤儿形态（2026-11-05 之前的旧条目 +
+/// 残留），purge 是最后一次清扫机会。todo 清理失败 = 诚实 Err（条目保留
+/// 可重试），不删条目装成功。
 pub fn trash_purge(entry: &str) -> Result<(), String> {
     trash_purge_in(&TrashLocations::production(), entry)
 }
@@ -663,6 +717,19 @@ pub fn trash_purge_in(loc: &TrashLocations, entry: &str) -> Result<(), String> {
     if !entry_dir.is_dir() {
         return Err(format!("回收站条目不存在: {entry}"));
     }
+    // 清 live todo：清单在 = 原键可寻址（不按 manifest.todo 闸——旧形态清单
+    // 无 todo 字段但 live 残留同样要清；键是 uuid，误清新会话不可能）。清单
+    // 缺失（孤儿目录）= 原键不可信寻址，跳过（目录本身照样删）。
+    let manifest = std::fs::read_to_string(entry_dir.join("trash.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<TrashManifest>(&raw).ok());
+    if let Some(m) = &manifest {
+        let live_todo = loc.todo_path(&m.original_session_key);
+        if live_todo.exists() {
+            nemesis_utils::fsutil::remove_file_retry(&live_todo)
+                .map_err(|e| format!("清理 live todo 失败（条目保留可重试）: {e}"))?;
+        }
+    }
     nemesis_utils::fsutil::remove_dir_all_retry(&entry_dir)
         .map_err(|e| format!("删除回收站条目失败: {e}"))
 }
@@ -672,7 +739,9 @@ pub fn trash_purge_all() -> Result<usize, String> {
     trash_purge_all_in(&TrashLocations::production())
 }
 
-/// [`trash_purge_all`] 的注入形态（测试用；语义逐字节同源）。
+/// [`trash_purge_all`] 的注入形态（测试用；语义逐字节同源）。逐条走
+/// [`trash_purge_in`]（2026-11-05：live todo 清扫单一收敛点；条目名来自
+/// read_dir 不含路径分隔符，valid_entry_name 校验天然通过）。
 pub fn trash_purge_all_in(loc: &TrashLocations) -> Result<usize, String> {
     let root = loc.trash_root();
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -685,12 +754,12 @@ pub fn trash_purge_all_in(loc: &TrashLocations) -> Result<usize, String> {
         if !path.is_dir() {
             continue;
         }
-        match nemesis_utils::fsutil::remove_dir_all_retry(&path) {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            continue;
+        };
+        match trash_purge_in(loc, &name) {
             Ok(()) => purged += 1,
-            Err(e) => failures.push(format!(
-                "{}: {e}",
-                path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-            )),
+            Err(e) => failures.push(format!("{name}: {e}")),
         }
     }
     if failures.is_empty() {

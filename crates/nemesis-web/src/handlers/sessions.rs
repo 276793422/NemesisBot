@@ -943,6 +943,24 @@ impl ModuleHandler for SessionsHandler {
 // 保证 busy 拒绝路径零副作用）。
 // ---------------------------------------------------------------------------
 
+/// BUG①（2026-11-05）：删除/清空链路的 live todo 清扫（回收站四件套之外
+/// 的直删路径：hard 删除、clear 清空）。文件缺席 = no-op；路径走
+/// nemesis-path 单一真相源（与 TodoWriteTool 写路径、回收站寻址同源）。
+/// 删除失败 = Err 上浮（与 chat_log 同严格级——删不干净报出来，不静默
+/// 留孤儿）；remove_file_retry 带 Windows 瞬时句柄重试，spawn_blocking
+/// 包裹防阻塞 tokio worker（trash_chat_log 同款纪律）。
+async fn remove_live_todo(workspace: &str, session_key: &str) -> Result<(), String> {
+    let todo =
+        nemesis_path::session_todo_file_in_workspace(std::path::Path::new(workspace), session_key);
+    if !todo.exists() {
+        return Ok(());
+    }
+    tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_file_retry(&todo))
+        .await
+        .map_err(|e| format!("todo remove task join failed: {e}"))?
+        .map_err(|e| format!("删除 todo 文件失败: {e}"))
+}
+
 /// sessions.delete 操作体：store 删除（内存 + sessions/*.json + jsonl）→
 /// 方言 SessionEnd → cron 级联停用 → 项目归属/绑定摘除。
 ///
@@ -974,6 +992,12 @@ async fn delete_session_body(
                 store.detach_session(session_key);
             }
         }
+    }
+    // BUG①（2026-11-05）：hard=true 不走回收站（旧语义不可恢复），todo
+    // 文件也要一并删——四件套接管只覆盖软删链路。软删（!hard）的 todo 由
+    // trash_chat_log 四件套化 rename 进条目，无需此处动作。
+    if hard && let Some(ws) = ctx.workspace.as_deref() {
+        remove_live_todo(ws, session_key).await?;
     }
     if !hard {
         // 移入回收站（guard 作用域外——trash 不持 store 锁）。三件套全
@@ -1100,6 +1124,11 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     // rebuild path unable to revive cleared data.
     nemesis_agent::chat_log::clear_chat_log(session_key)
         .map_err(|e| format!("清空会话失败: {e}"))?;
+    // BUG①（2026-11-05）：清空 = 全新会话语义，todo 清单一并清（不参与
+    // self-heal 重建，位置在 clear_chat_log 后保持「文件先动」惯例）。
+    if let Some(ws) = ctx.workspace.as_deref() {
+        remove_live_todo(ws, session_key).await?;
+    }
     let guard = ctx.state.agent_loop.read();
     if let Some(al) = guard.as_ref()
         && let Some(store) = al.session_store()

@@ -40,11 +40,10 @@ impl TodoCloseoutHook {
         Self { workspace }
     }
 
-    /// 与 `TodoWriteTool::execute` 同构的落盘路径（同一 sanitize 真相源）。
+    /// 落盘路径走 nemesis-path 单一真相源（2026-11-05：与 TodoWriteTool
+    /// 写路径、todo_get 读路径、回收站寻址同源）。
     fn todo_path_for(&self, session_key: &str) -> PathBuf {
-        let safe = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-        nemesis_path::resolve_sessions_dir_in_workspace(&self.workspace)
-            .join(format!("todo_{safe}.json"))
+        nemesis_path::session_todo_file_in_workspace(&self.workspace, session_key)
     }
 }
 

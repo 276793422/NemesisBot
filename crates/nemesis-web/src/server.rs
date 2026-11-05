@@ -2104,7 +2104,20 @@ pub async fn send_to_session(
     session_manager
         .broadcast(session_id, &data)
         .await
-        .map_err(|e| format!("failed to broadcast: {}", e))?;
+        .map_err(|e| {
+            // BUG②（2026-11-05）死房间 hint：目标房间（连接级 chat_id）已随
+            // 页面刷新/断连消亡时（后台子代理续行回复的典型场景——spawn 时
+            // 钉死的连接 id 在刷新后失效），帧投递失败但已进环形缓冲（record
+            // 先于 broadcast 的不变量）。旧链路只有 WS 重连触发 chat.sync，
+            // 活着的其他连接（同会话另一标签页/另一设备）永远看不到这条回复。
+            // 向全部活房间扇出 chat_dirty push（只带会话定位 + 原因，不带
+            // 内容），前端对当前会话节流触发 chat.sync 补拉。session_key
+            // 缺席（无元数据旧帧）不扇出——没有稳定键，前端无法定位会话。
+            if let Some(sk) = session_key {
+                broadcast_chat_dirty_hint(session_manager, sk);
+            }
+            format!("failed to broadcast: {}", e)
+        })?;
 
     // 接力入队放在广播成功后：帧先落 UI，TTS 随后出声（顺序可感知）。
     if voice_relay {
@@ -2117,6 +2130,36 @@ pub async fn send_to_session(
         "[WebServer] send_to_session completed"
     );
     Ok(())
+}
+
+/// BUG②（2026-11-05）：chat_dirty hint 全房间扇出（死房间投递失败时的补拉
+/// 信号）。载荷只带 session_id + reason，内容由前端 `chat.sync` 增量拉取
+/// （环形缓冲是数据源，seq 游标去重）。低频（仅投递失败触发）、小载荷，
+/// droppable 通道满员即丢不背压——hint 是尽力而为的加速器，缺席的最坏
+/// 后果 = 前端等下一次 sync 时机（重连/切会话），不丢数据。
+fn broadcast_chat_dirty_hint(session_manager: &SessionManager, session_key: &str) {
+    let sid = session_key
+        .strip_prefix("agent:main:session:")
+        .unwrap_or(session_key);
+    let payload = serde_json::json!({
+        "session_id": sid,
+        "reason": "delivery_missed",
+    });
+    let msg = crate::protocol::ProtocolMessage::new("push", "chat", "chat_dirty", Some(payload));
+    let Ok(bytes) = msg.to_json() else {
+        return;
+    };
+    let mut rooms = 0usize;
+    for s in session_manager.all_sessions() {
+        if session_manager.broadcast_droppable(&s.id, &bytes).is_ok() {
+            rooms += 1;
+        }
+    }
+    tracing::debug!(
+        session_key = %session_key,
+        rooms,
+        "[WebServer] chat_dirty hint fanned out (delivery missed on dead room)"
+    );
 }
 
 /// Send a history response to a specific session.
@@ -2764,3 +2807,7 @@ mod r4_tests;
 // agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
+
+// BUG②（2026-11-05）死房间补拉 hint：扇出语义单测。
+#[cfg(test)]
+mod chat_dirty_tests;
