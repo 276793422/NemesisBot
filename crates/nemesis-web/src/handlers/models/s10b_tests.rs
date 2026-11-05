@@ -4,7 +4,7 @@
 //! so its behavior stays pinned if it is ever revived). The other TSV gaps
 //! are structural: `load_config`/`write_raw_config` global-ConfigStore arms
 //! (setting the OnceLock store would poison every other test in this
-//! binary) and `catalog_update` (spawns `current_exe` as the real CLI —
+//! binary) and `catalog_update` (spawns `current_exe()` as the real CLI —
 //! under `cargo test` that is the test binary, so the arm is
 //! untestable without a real nemesisbot.exe).
 

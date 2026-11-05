@@ -614,7 +614,7 @@ fn agt_parse_request_iterations_stub_and_locals_attachment() {
         "body": { "choices": [ { "message": { "role": "assistant", "content": "ok" } } ] },
     });
     std::fs::write(d.join("03.AI.Response.raw.json"), resp1.to_string()).unwrap();
-    // 坏 JSON 请求 → round 兜底 = iterations.len+1 = 3（1946 unwrap_or 臂）
+    // 坏 JSON 请求 → round 兜底 = iterations.len()+1 = 3（1946 unwrap_or 臂）
     std::fs::write(d.join("04.AI.Request.raw.json"), b"{nope").unwrap();
 
     let iterations = parse_request_iterations(&d);

@@ -106,7 +106,7 @@ pub struct OpenAiMessage {
     #[serde(default)]
     pub content: Option<serde_json::Value>,
     /// 裸 lane 保真字段：assistant 历史轮的工具调用 + tool 结果回指。
-    /// 分离执行 lane 不消费（`.text` 只取 content）。
+    /// 分离执行 lane 不消费（`.text()` 只取 content）。
     #[serde(default)]
     pub tool_calls: Vec<nemesis_providers::types::ToolCall>,
     #[serde(default)]
@@ -133,8 +133,8 @@ impl OpenAiMessage {
         let content = match &self.content {
             Some(v) => normalize_openai_content(v).unwrap_or_else(|reason| {
                 // 兜底不吞文本（BUG-b）：归一失败（未知/畸形
-                // part）退化为纯文本（text 的数组 text-part 拼接语义），
-                // 绝不静默清空整条消息。原先 `unwrap_or_default` 会把
+                // part）退化为纯文本（text() 的数组 text-part 拼接语义），
+                // 绝不静默清空整条消息。原先 `unwrap_or_default()` 会把
                 // OpenAI `image_url` parts 连同 text part 一起清成空串。
                 tracing::warn!(
                     "[OpenAI-compat] 多模态 content 归一失败，退化为纯文本透传: {reason}"
@@ -625,7 +625,7 @@ async fn bare_forward(
 ) -> Response {
     // provider 槽：streaming_provider 是 default_following wrapper——空
     // 模型名路由到当前默认槽（set_default 热切即时生效），槽未装过走
-    // 启动捕获降级（NullProvider 时 chat 诚实报错 → 下错误面）。
+    // 启动捕获降级（NullProvider 时 chat() 诚实报错 → 下错误面）。
     let Some(provider) = state.streaming_provider.clone() else {
         return error_response(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -875,7 +875,7 @@ async fn bare_forward_stream(
     // stream 块内多次使用（tracing），头写入还要一份——clone 进块。
     let execution_model_stream = execution_model.clone();
     // 记账身份 + data_store 句柄（async_stream 块 'static，借不了 state
-    // clone Arc 进块，`as_deref` 出 `Option<&DataStore>`）。
+    // clone Arc 进块，`as_deref()` 出 `Option<&DataStore>`）。
     let proxy_ids = uuid::Uuid::new_v4().simple();
     let proxy_session_key = proxy_lane_session_key(caller, "openai-api", proxy_ids);
     let proxy_trace_id = format!("openai-proxy-{proxy_ids}");
@@ -1079,11 +1079,11 @@ async fn bare_forward_stream(
 }
 
 /// 裸 lane 流式回落（BUG-a）：provider 无流式 lane（`chat_stream`
-/// trait 缺省实现）时改走 `chat` 非流式，成功后合成 OpenAI SSE 完整流
+/// trait 缺省实现）时改走 `chat()` 非流式，成功后合成 OpenAI SSE 完整流
 /// （全量 content 单 delta 帧 + tool_calls delta 帧若有 + 终帧
 /// finish_reason/usage + `[DONE]`；语义对齐 llm_bridge `fallback_non_stream`
 /// 非流式 provider 也产生一次完整「流」，调用方无差别）。回落后的
-/// `chat` 失败 = 真实上游错误，诚实上报不伪装。
+/// `chat()` 失败 = 真实上游错误，诚实上报不伪装。
 async fn bare_fallback_non_stream(
     state: &AppState,
     provider: &dyn nemesis_providers::router::LLMProvider,

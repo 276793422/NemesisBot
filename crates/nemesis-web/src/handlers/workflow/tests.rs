@@ -2779,7 +2779,7 @@ async fn wsapi_create_update_validate_and_delete_error_with_defs_dir() {
     assert!(err.contains("workflow_defs_dir not set"), "err: {err}");
 
     // defs_dir 里放一个与目标同名的「目录」：delete_workflow_file 的
-    // exists 通过但 remove_file 对目录失败（Windows ERROR_ACCESS_DENIED）
+    // exists() 通过但 remove_file 对目录失败（Windows ERROR_ACCESS_DENIED）
     // → delete 臂的 map_err 闭包
     let dir_engine = build_test_engine();
     let tmp2 = tempfile::tempdir().unwrap();
@@ -2842,7 +2842,7 @@ async fn wsapi_chat_password_set_and_clear_require_dashboard_auth() {
     let mut ctx = make_ctx_with_engine(engine);
     let handler = WorkflowHandler;
 
-    // AuthMethod::default 是 Dashboard；用 WorkflowChat（独立聊天页会话）
+    // AuthMethod::default() 是 Dashboard；用 WorkflowChat（独立聊天页会话）
     // 才会命中 permission_denied 闸。
     ctx.auth_method = crate::session::AuthMethod::WorkflowChat {
         workflow: "some_wf".to_string(),

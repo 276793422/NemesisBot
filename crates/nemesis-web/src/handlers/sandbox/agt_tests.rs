@@ -146,7 +146,7 @@ async fn agt_set_network_reload_spawn_failure_arm() {
     let data = serde_json::json!({ "enabled": true });
 
     // ② ini 写成功但 Start.exe 缺失 → /reload spawn 失败（无副作用：
-    //    Command::new(不存在路径).spawn 立即 Err）
+    //    Command::new(不存在路径).spawn() 立即 Err）
     let dir2 = tempfile::tempdir().unwrap();
     agt_write_config_json(dir2.path());
     let ctx2 = agt_make_ctx(&dir2);
@@ -173,9 +173,9 @@ async fn agt_set_network_reload_spawn_failure_arm() {
 /// `Default` impl 三行（trait 转发 new）。
 #[test]
 fn w5_default_impl_delegates_to_new() {
-    // 经泛型间接调用：单元结构体直呼 `Default::default` 会被
+    // 经泛型间接调用：单元结构体直呼 `Default::default()` 会被
     // clippy::default_constructed_unit_structs 建议改成字面量（那就执行不到
-    // default 的产品行了）；间接一层 lint 干净，且真实走 trait 转发。
+    // default() 的产品行了）；间接一层 lint 干净，且真实走 trait 转发。
     fn via_default<H: Default>() -> H {
         H::default()
     }

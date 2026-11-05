@@ -419,8 +419,8 @@ async fn speakers_lists_kokoro_table() {
 #[tokio::test]
 async fn devices_tolerant_of_host_audio_stack() {
     // 【 CI nemesis-web 0xc0000005】本测试与 voice_extra_tests 的
-    // devices_returns_object 同经 cmd_devices 穿透调用
-    // nemesis_voice::audio::list_devices → cpal host 设备枚举。本轮 CI 实证：
+    // devices_returns_object 同经 cmd_devices() 穿透调用
+    // nemesis_voice::audio::list_devices() → cpal host 设备枚举。本轮 CI 实证：
     // 同进程内**第一次**枚举调用正常返回（本测试过），**第二次**调用挂死 +
     // 进程 native ACCESS_VIOLATION（voice crate 二连崩同族雷，时序/状态依赖）。
     // CI=true 且未 opt-in 时 SKIP（与 nemesis-voice audio::tests 的
@@ -1142,7 +1142,7 @@ async fn push_helpers_broadcast_to_missing_session_take_warn_arm() {
     push_stt_to_input("ghost", mgr.clone(), "text");
     push_stt_dialogue("ghost", mgr.clone(), "stt_dialogue_text", "text");
     push_stt_dialogue("ghost", mgr.clone(), "stt_accumulate", "acc");
-    // 给 spawn 的任务留运行窗口（Handle::current spawn 到本测试 runtime）
+    // 给 spawn 的任务留运行窗口（Handle::current() spawn 到本测试 runtime）
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 }
 

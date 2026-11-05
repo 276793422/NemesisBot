@@ -3725,7 +3725,7 @@ async fn test_board_config_review_budget_keys_roundtrip() {
 // 停车场复活（//）：tags 匹配、sweep 重试、⏸ 去重、
 // 父单受阻联动、级联取消、无派发取消。
 
-/// 独立 workspace 的离线 Cluster（不 start，纯注册表/任务账本内存态；
+/// 独立 workspace 的离线 Cluster（不 start()，纯注册表/任务账本内存态；
 /// peers.toml 落测试目录不污染源码树）。
 #[cfg(feature = "cluster")]
 fn offline_cluster(dir: &std::path::Path, node_id: &str) -> Arc<nemesis_cluster::cluster::Cluster> {
@@ -3754,7 +3754,7 @@ fn silent_peer_addr() -> String {
     format!("127.0.0.1:{}", addr.port())
 }
 
-/// 节点 → 哑对端地址的静态 [`PeerResolver`]（裸 `RpcClient::new` 无
+/// 节点 → 哑对端地址的静态 [`PeerResolver`]（裸 `RpcClient::new()` 无
 /// resolver，send 秒败 "peer unresolvable" → 回退路径抢跑——同步断言
 /// 竞态；本解析器让 send 真解析到哑 listener，ACK 挂外层超时）。
 #[cfg(feature = "cluster")]
@@ -3916,7 +3916,7 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
     super::dispatch_subissue_auto(&store, Some(&cluster), a.id, &actor, true).unwrap();
     assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
 
-    // 离线 Cluster 没有 RPC client（start 才装）——派发核心需要它拿
+    // 离线 Cluster 没有 RPC client（start() 才装）——派发核心需要它拿
     // fire-and-forget 发送句柄；注入空 client（对 127.0.0.1:19999 的
     // connect 失败走 spawn 内的 FAILED 终结，不影响本测试断言的同步面）。
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
@@ -6882,7 +6882,7 @@ async fn agt_review_retrigger_gate_hook_and_trace() {
     );
 
     // ③ 钩子未安装 → 诚实报错（本测试是 REVIEW_RETRIGGER_HOOK 唯一安装
-    //    点，安装前 get 恒 None；number 寻址顺带覆盖）。
+    //    点，安装前 get() 恒 None；number 寻址顺带覆盖）。
     let err = dispatch(
         &ctx,
         "review.retrigger",
@@ -6975,7 +6975,7 @@ async fn agt_project_retrigger_arm_gates_hook_and_trace() {
     assert!(!err.is_empty(), "{err}");
 
     // ② 钩子未安装 → 诚实报错（PROJECT_REVIEW_RETRIGGER_HOOK 唯一安装点
-    //    在本测试；装之前的 get 恒 None）。
+    //    在本测试；装之前的 get() 恒 None）。
     let err = dispatch(
         &ctx,
         "review.retrigger",
@@ -7905,7 +7905,7 @@ async fn agt_issue_draft_ac_returns_draft_without_persisting() {
         .unwrap_err();
     assert!(err.contains("agent 未运行"), "{err}");
 
-    // commands 注册（契约：system.commands 汇总发布）。
+    // commands() 注册（契约：system.commands 汇总发布）。
     let cmds = super::BoardHandler.commands();
     assert!(
         cmds.contains(&"issue.draft_ac"),
@@ -8755,7 +8755,7 @@ async fn agt_push_dispatch_baseline_paths() {
 // 既有纪律一致。
 // ===========================================================================
 
-/// 给离线 cluster 注入空 RPC client（resolver:None → spawn 体内 dispatch
+/// 给离线 cluster 注入空 RPC client（resolver:None → spawn 体内 dispatch()
 /// 瞬时「peer unresolvable」Err → 回滚）。**只用于 current_thread 测试**：
 /// spawn 体在断言窗口内不被调度（运行时关闭时丢弃未执行任务），同步断言
 /// 看到的都是 pre-rollback 状态；multi_thread 测试必须改用
@@ -11716,7 +11716,7 @@ async fn test_issue_timeline_surface_contract() {
         .await
         .is_err()
     );
-    // commands 清单含 issue.timeline（注册表漂移闸）。
+    // commands() 清单含 issue.timeline（注册表漂移闸）。
     assert!(BoardHandler.commands().contains(&"issue.timeline"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -12517,7 +12517,7 @@ async fn decision_visibility_projections_via_list_and_decision() {
     assert_eq!(out["attention"], true);
     assert_eq!(out["plan_ready"], serde_json::Value::Null);
 
-    // commands 清单含 issue.decision（注册表漂移闸）。
+    // commands() 清单含 issue.decision（注册表漂移闸）。
     assert!(BoardHandler.commands().contains(&"issue.decision"));
 
     // 清残留（plan 链纪律：持锁期间摘自己的条目）。
@@ -12588,7 +12588,7 @@ async fn test_board_resume_surface_contract() {
     .unwrap_err();
     assert!(e.contains("agent 未运行"), "actual: {e}");
 
-    // 注册表：commands 清单含 board.resume（漂移闸）。
+    // 注册表：commands() 清单含 board.resume（漂移闸）。
     assert!(BoardHandler.commands().contains(&"board.resume"));
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -117,7 +117,7 @@ impl SkinHost {
     }
 
     /// 从包读取皮肤 CSS（换色载荷）。缺 structure 的旧包照常可用。
-    /// 出口经 [`sanitize_css_urls`]（外链 url 零请求策略，见函数文档）。
+    /// 出口经 [`sanitize_css_urls`]（外链 url() 零请求策略，见函数文档）。
     fn load_css(&self, id: &str) -> Option<String> {
         let mut zip = self.open_zip(id)?;
         let entry = Self::manifest_str(&mut zip, "entry")?;

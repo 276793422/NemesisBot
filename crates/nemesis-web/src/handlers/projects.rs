@@ -126,7 +126,7 @@ pub(crate) static BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex:
 /// 不可会话诚实报错）；项目 bridge 归属命中 → 项目 loop（不可用诚实报错，
 /// 与 bus 路由的 send_unroutable_error 同语义）；无归属或 bridge 未装配
 /// → 主槽 `AppState.agent_loop`。调用方（chat/tools/approval/question/agent
-/// 各 handler）拿到的 Arc 直接替换原先的 `ctx.state.agent_loop.read.clone`。
+/// 各 handler）拿到的 Arc 直接替换原先的 `ctx.state.agent_loop.read().clone()`。
 pub fn resolve_session_loop(
     ctx: &RequestContext,
     session_key: &str,

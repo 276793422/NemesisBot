@@ -122,7 +122,7 @@ async fn stats_loads_existing_forge_config_file() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     write_main_config(ws, true);
-    // Existing config.forge.json → the load arm (not ForgeConfig::default).
+    // Existing config.forge.json → the load arm (not ForgeConfig::default()).
     std::fs::create_dir_all(ws.join("config")).unwrap();
     std::fs::write(
         ws.join("config/config.forge.json"),
@@ -155,7 +155,7 @@ async fn reflections_list_skips_directories() {
 async fn reflect_reports_write_failure_but_returns_analysis() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
-    // Experiences exist so reflect proceeds to the report write…
+    // Experiences exist so reflect() proceeds to the report write…
     let exp_dir = ws.join("forge/experiences");
     std::fs::create_dir_all(&exp_dir).unwrap();
     std::fs::write(

@@ -544,7 +544,7 @@ fn test_set_send_queue_replaces_existing() {
 async fn test_broadcast_releases_shard_guard_during_backpressure() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    // 无写者测试队列（cap=1）：填满后 send 永久背压，无人消费。
+    // 无写者测试队列（cap=1）：填满后 send() 永久背压，无人消费。
     let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(1);
     mgr.set_send_queue(&session.id, Arc::new(queue));
 
@@ -553,7 +553,7 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
         .await
         .expect("fill send");
 
-    // 背压挂起：该 broadcast 在 send.await 上永久等待（旧代码此刻已持
+    // 背压挂起：该 broadcast 在 send().await 上永久等待（旧代码此刻已持
     // 分片读守卫；修复代码在 await 前已归还）。
     let mgr_bg = Arc::clone(&mgr);
     let sid_bg = session.id.clone();
@@ -585,7 +585,7 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
 
 // cleanup 线程双重失职的行为锁，两段断言各钉一面。
 //
-// 旧缺陷一（活性缺失）：start_cleanup 用 `DashMap::clone` 把映射交给
+// 旧缺陷一（活性缺失）：start_cleanup 用 `DashMap::clone()` 把映射交给
 // 线程——dashmap 的 Clone 是逐 shard 深拷贝而非共享克隆，线程迭代的是
 // 构造瞬间的私有快照（永远为空），逐出从不落真表：活性段轮询等真表
 // 会话被逐出，旧实现 4s 预算内 count 恒 1 → 红。
@@ -597,7 +597,7 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
 // ~1.1s 处逐出它 → 1600ms 等待后断言红。
 #[test]
 fn test_shutdown_stops_cleanup_thread() {
-    // 逐出谓词是 num_seconds > timeout.as_secs（秒级地板）：timeout 取
+    // 逐出谓词是 num_seconds() > timeout.as_secs()（秒级地板）：timeout 取
     // 500ms → 实际阈值 = 年龄跨过 1s 后的首拍；拍间隔 100ms。
     let mgr = SessionManager::new_with_cleanup_interval(
         std::time::Duration::from_millis(500),

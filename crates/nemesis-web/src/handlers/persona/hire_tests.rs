@@ -137,7 +137,7 @@ fn backup_zips_present_files_with_contents_intact() {
     let zip_path = root.join(&rel);
     assert!(zip_path.exists(), "备份 zip 应存在: {}", zip_path.display());
 
-    // 解开验证条目与内容（zip 9 name 返回 Result）
+    // 解开验证条目与内容（zip 9 name() 返回 Result）
     let f = std::fs::File::open(&zip_path).unwrap();
     let mut archive = zip::ZipArchive::new(std::io::BufReader::new(f)).unwrap();
     assert_eq!(archive.len(), 2, "只备存在的两件");

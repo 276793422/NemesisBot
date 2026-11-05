@@ -13,7 +13,7 @@
 //! - diagnostics.run 三段门（缺参 / 无 client / resolver 缺 peer）
 //! - persona_generate 校验 + tier 门 + wiremock 全流程；persona_apply 全臂
 //!
-//! 所有测试用 tempdir 自建 ctx，不触碰 default_path_manager 单例 home。
+//! 所有测试用 tempdir 自建 ctx，不触碰 default_path_manager() 单例 home。
 
 use super::*;
 use crate::api_handlers::AppState;
@@ -234,7 +234,7 @@ async fn rt_status_task_state_metrics() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(result["running"], true); // service.is_running
+    assert_eq!(result["running"], true); // service.is_running()
     assert_eq!(result["total_nodes"], 1);
     assert_eq!(result["online_nodes"], 1);
     assert_eq!(result["active_tasks"], 2); // t3 Running + t4 Pending
@@ -438,7 +438,7 @@ async fn nodes_ping_success_marks_peer_healthy() {
     let addr = format!("127.0.0.1:{}", server.port());
     let cluster = test_cluster(&dir);
     cluster.register_node(node("n1", "alpha", NodeRole::Worker, false, &addr));
-    // 探针经 cluster 内 RpcClient 拨号——测试簇未 start，须注入 client。
+    // 探针经 cluster 内 RpcClient 拨号——测试簇未 start()，须注入 client。
     cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(Arc::new(
         SingleAddrResolver { addr: addr.clone() },
     ))));

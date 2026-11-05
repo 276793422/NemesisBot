@@ -164,8 +164,8 @@ mod voice_extra_tests {
     #[cfg(feature = "voice-capture")]
     #[tokio::test]
     async fn devices_returns_object() {
-        // 【 CI nemesis-web 0xc0000005】本测试经 cmd_devices 穿透
-        // 调用 nemesis_voice::audio::list_devices → cpal host 设备枚举。
+        // 【 CI nemesis-web 0xc0000005】本测试经 cmd_devices() 穿透
+        // 调用 nemesis_voice::audio::list_devices() → cpal host 设备枚举。
         // cpal 0.15 WASAPI 在 GitHub runner 虚拟音频栈上**枚举/查询同样挂死 +
         // native ACCESS_VIOLATION**（voice crate /09-02 二连崩同族雷；
         // nemesis-web 测试此前从未在 CI 跑到——voice 被排除后首跑即暴露）。

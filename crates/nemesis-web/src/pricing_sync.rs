@@ -119,7 +119,7 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    // 不走 resp.text（按响应头 charset 解码，被干扰的响应头会让完好的
+    // 不走 resp.text()（按响应头 charset 解码，被干扰的响应头会让完好的
     // 字节也解码失败——真机实证的 "error decoding response body" 根因）；
     // LiteLLM 表是 UTF-8 JSON，直取字节。
     let raw_bytes = match resp.bytes().await {

@@ -49,7 +49,7 @@ fn user_profile() -> PathBuf {
 /// await it. Generous timeout for UAC + download + KmdUtil install.
 async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    // resolve_home joins `.nemesisbot` onto the env var, so pass the PARENT:
+    // resolve_home() joins `.nemesisbot` onto the env var, so pass the PARENT:
     // `home` here is already `<...>/.nemesisbot` — passing it directly made the
     // child resolve `<...>/.nemesisbot/.nemesisbot` (double-join bug;
     // catalog_update hit the same trap).
@@ -139,7 +139,7 @@ fn current_allow_network(home: &std::path::Path) -> bool {
 /// Read the whole `executor` section (all four switches: enabled / sandbox /
 /// allow_network / strict) — single source for `overview` display and
 /// `set_config` echo. Same dual-path resolution as [`current_allow_network`];
-/// defaults mirror `ExecutorSeparationConfig::default` (all false).
+/// defaults mirror `ExecutorSeparationConfig::default()` (all false).
 fn current_executor(home: &std::path::Path) -> nemesis_config::ExecutorSeparationConfig {
     if let Some(store) = nemesis_config::global() {
         let handle = store.handle();
@@ -265,7 +265,7 @@ impl ModuleHandler for SandboxHandler {
             // 其他平台 → 用户态后端逐个探测（kind=userland，含每个后端的
             // 可用性 + 缺口/原因）。`ready` 与 exec_world 装配的就绪语义一致
             // （Windows = Start.exe + SbieSvc Running + engine_owned；非
-            // Windows = detect_backend 选中了后端）。
+            // Windows = detect_backend() 选中了后端）。
             "overview" => {
                 let executor = current_executor(&home);
                 let platform = if cfg!(target_os = "windows") {

@@ -2,7 +2,7 @@
 //!
 //! 契约面：真实 AgentLoop + 预置两条队列的条目 → 响应字段与计数逐项断言
 //! （steer/followUp/capacity/busy/mode/session_key 回显）；空队列零值形态；
-//! 缺 session_id 的守卫臂；commands 清单登记（debug 构建漂移 warn 兜底）。
+//! 缺 session_id 的守卫臂；commands() 清单登记（debug 构建漂移 warn 兜底）。
 
 use super::*;
 use crate::api_handlers::AppState;

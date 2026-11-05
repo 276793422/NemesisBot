@@ -929,7 +929,7 @@ impl ModuleHandler for BoardHandler {
                     return Err("⛔ 急停（E-STOP）生效中：恢复发车被拒绝（先释放急停）".to_string());
                 }
                 // as_ref 借用而非 clone：feature 关时字段退化为 Option<>（Copy），
-                // `.clone` 会撞 clippy clone_on_copy（裁剪构建 clippy -p 现实告警）；
+                // `.clone()` 会撞 clippy clone_on_copy（裁剪构建 clippy -p 现实告警）；
                 // 两个 cfg 臂的 project_resume 形参（&Arc<Cluster> / &）都恰好收借用。
                 let cluster = ctx
                     .state

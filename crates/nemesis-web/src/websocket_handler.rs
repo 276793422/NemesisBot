@@ -60,7 +60,7 @@ pub struct SendQueue {
     /// 礼貌断连）。writer 收到后发 Close 帧收尾；此后 `send`/`send_droppable`
     /// 随 writer 退出（rx 被 drop）诚实报错，不再静默入死队列。
     close_tx: tokio::sync::watch::Sender<bool>,
-    /// close 通道保活 receiver：通道内无存活 receiver 时 `send` 会因
+    /// close 通道保活 receiver：通道内无存活 receiver 时 `send()` 会因
     /// 关闭而丢值（borrow 读不到置位）。生产路径 writer 持另一份 receiver，
     /// 本字段持克隆；测试构造器（from_channels，无 writer）由本字段独持
     /// 与 `done` receiver 存struct 同一对称。
@@ -173,7 +173,7 @@ impl SendQueue {
             done: done_rx,
             close_tx,
             // 无 writer 的测试队列：保活 receiver 由本字段独持，否则
-            // close 的 send 撞「无 receiver=通道关闭」丢值。
+            // close() 的 send 撞「无 receiver=通道关闭」丢值。
             _close_rx_keepalive: close_rx,
             dropped,
         }

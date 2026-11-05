@@ -1,7 +1,7 @@
 //! Agent handler — status/start/stop.
 //!
-//! start triggers the factory to build a fresh AgentLoop from disk config.
-//! stop drops the old AgentLoop entirely.
+//! start() triggers the factory to build a fresh AgentLoop from disk config.
+//! stop() drops the old AgentLoop entirely.
 
 use crate::handlers::require_home;
 use crate::ws_router::{ModuleHandler, RequestContext};
@@ -359,7 +359,7 @@ impl AgentHandler {
 }
 
 /// Re-read model info from config and update AppState tracking fields.
-/// Called after start so the UI reflects the current model.
+/// Called after start() so the UI reflects the current model.
 fn update_model_info(ctx: &RequestContext) {
     let home = match require_home(ctx) {
         Ok(h) => h,

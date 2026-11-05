@@ -4,12 +4,12 @@
 //! - `create` 的 binding_key 原子 get-or-create 全链（显式标题、缺省标题、
 //!   纯空白键回落 plain create）+ plain create 的标题提取/缺省臂
 //! - `set_binding` / `remove_binding` 的缺参/错型臂 + 全链
-//! - `rename` 带 title 的 happy path（test_home::lock_home 重定向单例
+//! - `rename` 带 title 的 happy path（test_home::lock_home() 重定向单例
 //!   home——遵循 s10b 的 clear/delete 同款纪律）
 //! - `rewind_to_message` / `redo` 的缺参 bail 臂
 //!
 //! 归属写盘注意：create/rename 的 meta sidecar 与 chat_log 单例都经
-//! test_home::lock_home 重定向；workspace 侧 artifacts（jsonl/meta）
+//! test_home::lock_home() 重定向；workspace 侧 artifacts（jsonl/meta）
 //! 直接写在调用方 tempdir 的 `<ws>/logs/session_logs/` 下。
 
 use super::sessions::SessionsHandler;

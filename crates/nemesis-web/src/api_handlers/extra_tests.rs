@@ -1344,7 +1344,7 @@ async fn test_handle_api_internal_correct_token_shutdown() {
 async fn test_handle_api_internal_shutdown_wrong_token_unauthorized() {
     // shutdown 与 open_dashboard 同一鉴权门：错 token → 401，且命令不得入队。
     // 注意：必须额外持有一个 Sender 存活——否则 handler 返回后全部 Sender
-    // 落弃、recv 立刻回 Closed（而非 pend），无法用 timeout 区分「空」与「关」。
+    // 落弃、recv() 立刻回 Closed（而非 pend），无法用 timeout 区分「空」与「关」。
     let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::internal::InternalCommand>(8);
     let keep_alive = tx.clone();
     let state = make_state_with_tx(None, None, "expected", Some(tx));

@@ -1,5 +1,5 @@
 //! `agents.*` WSAPI 用例：未装配诚实报错 / 各命令臂经 bridge /
-//! `commands` 清单。进程级 bridge 槽是共享态——全部用例持
+//! `commands()` 清单。进程级 bridge 槽是共享态——全部用例持
 //! [`AGENTS_BRIDGE_TEST_LOCK`] 串行（同 PROJECTS_BRIDGE 家族纪律）。
 // 持锁跨 await 是刻意的测试串行化（槽位置换必须覆盖整个 handler await
 // 窗口，否则并行用例互相置换 bridge 假绿）；本进程内无其他同锁取用者，

@@ -1,5 +1,5 @@
 //! 子代理 WSAPI handler 测试（2026-11-03）。handler 走全局注册表
-//! （`subagent_registry::global`，测试进程未 init = 纯内存态）——断言
+//! （`subagent_registry::global()`，测试进程未 init = 纯内存态）——断言
 //! 一律按唯一 marker 过滤，不假设全局表为空（同二进制其他测试可能写入）。
 
 use super::subagents::SubagentsHandler;

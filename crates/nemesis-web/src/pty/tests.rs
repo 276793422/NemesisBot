@@ -281,7 +281,7 @@ fn count_zombie_children() -> usize {
 /// 会话不注册，且 **kill 不留 Unix 僵尸**——portable-pty 0.9 的
 /// `ChildKiller for std::process::Child`（Unix）kill=SIGHUP 后循环
 /// `try_wait`（waitpid WNOHANG）主动收尸（lib.rs:340-365），拒绝臂的
-/// `child.kill` 自带 reap。此钉防两件事回归：①上限拒绝语义被改坏；
+/// `child.kill()` 自带 reap。此钉防两件事回归：①上限拒绝语义被改坏；
 /// ②若未来 kill 语义换成裸信号（或 portable-pty 升级改契约），僵尸泄漏
 /// 在此处立刻红。该臂此前无任何集成覆盖（agt_tests 结构豁免明载）。
 ///
@@ -384,9 +384,9 @@ async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
 }
 
 /// 急停必须杀掉「stalled client」会话：会话任务的
-/// estop watch 在 select 循环里，而循环在 `socket.send.await`（客户端
+/// estop watch 在 select 循环里，而循环在 `socket.send().await`（客户端
 /// TCP 背压——网络挂起/浏览器休眠是常态）期间不被轮询——自醒路径失效，
-/// 宿主侧 `kill_all_for_estop` 挂点是唯一兜底（vm_display 同款纪律，
+/// 宿主侧 `kill_all_for_estop()` 挂点是唯一兜底（vm_display 同款纪律，
 /// post_agent.rs estop watcher）。红证（修复前）：灌满输出缓冲把任务
 /// 停进 send，estop 触发后注册表仍持有该会话；绿证：宿主侧直杀子进程，
 /// 注册表即时清空。
@@ -421,7 +421,7 @@ async fn bug234_estop_kills_stalled_client_session() {
     let addr = start_server(make_state("", Some(estop.clone()))).await;
 
     // 生产 watcher 形态复刻（post_agent.rs 修复同款主体
-    // 三行）：estop 触发 → 宿主侧 kill_all_for_estop 直杀。测试环境无
+    // 三行）：estop 触发 → 宿主侧 kill_all_for_estop() 直杀。测试环境无
     // gateway 装配，watcher 在此自装；红证（poll-only 形态，修复前函数
     // 不存在不可能带 watcher 编译）已先行捕获：estop 触发后 5s 注册表
     // 仍持 stalled 会话。
@@ -440,7 +440,7 @@ async fn bug234_estop_kills_stalled_client_session() {
     tokio::time::sleep(Duration::from_millis(800)).await; // 等 shell 起来
 
     // 无限输出灌满全部在途缓冲（ConPTY 内部缓冲 + 读泵 2MB 有界通道 +
-    // TCP 发送缓冲），把会话任务停进 socket.send.await。
+    // TCP 发送缓冲），把会话任务停进 socket.send().await。
     #[cfg(windows)]
     let flood = "while($true){Write-Output '0123456789abcdef'}\r\n";
     #[cfg(not(windows))]

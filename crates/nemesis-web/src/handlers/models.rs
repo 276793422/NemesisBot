@@ -472,7 +472,7 @@ impl ModelsHandler {
     fn proxy_overview(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let config = super::config::load_config(home)?;
         let default_llm = config.agents.defaults.llm.clone();
-        // 归属判定与 list 同源（ref_owner，resolver 同序； 隐患修复）。
+        // 归属判定与 list() 同源（ref_owner，resolver 同序； 隐患修复）。
         let pairs: Vec<(String, String)> = config
             .model_list
             .iter()
@@ -846,7 +846,7 @@ impl ModelsHandler {
         super::config::update_raw_config(home, |cfg| {
             // 守卫：禁止删除当前默认模型。否则 agents.defaults.llm 变成悬空引用，
             // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
-            // 归属判定与 list 同源（ref_owner，resolver 同序）：defaults.llm
+            // 归属判定与 list() 同源（ref_owner，resolver 同序）：defaults.llm
             // 为空沿用 list[0] 位置兜底；复制体共享模型串时精确名命中压倒软
             // 匹配——删的不是运行时默认就放行（隐患修复，此前
             // first_name 位置臂无条件生效，默认在别处时第一条也删不掉）。

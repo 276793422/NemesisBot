@@ -344,7 +344,7 @@ async fn test_check_with_empty_path_and_existing_install_status_keeps_status() {
         .unwrap()
         .unwrap();
     let engines = result["engines"].as_array().unwrap();
-    // Pre-existing "installed" status preserved (state.install_status.is_empty == false).
+    // Pre-existing "installed" status preserved (state.install_status.is_empty() == false).
     assert_eq!(engines[0]["state"]["install_status"], "installed");
 }
 

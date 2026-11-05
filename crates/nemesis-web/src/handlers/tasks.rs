@@ -301,7 +301,7 @@ impl TasksHandler {
     /// triggers the agent for real.
     ///
     /// 走 detached 形态——handler 是分钟级 agent turn，
-    /// 同步内联（旧形态 svc.lock.execute_job）会把 tokio worker（async
+    /// 同步内联（旧形态 svc.lock().execute_job()）会把 tokio worker（async
     /// 上下文同步直跑）、svc 外层锁（dashboard 全部 cron 操作冻结）、
     /// on_job 锁（计划触发排队）三层全部占住到 turn 完成。detached 快照段
     /// 微秒级返回，执行在独立线程；错误同径记账（last_status/账本）。

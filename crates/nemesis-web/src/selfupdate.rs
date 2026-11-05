@@ -1820,7 +1820,7 @@ pub struct SelfUpdateManager {
     /// 目录跨进程锁）两层互补。
     pub flight: tokio::sync::Mutex<()>,
     /// 下载单飞闸（与 apply 的 [`SelfUpdateManager::flight`] 分立：apply 会
-    /// `.lock.await` 这把锁等在途下载收口后再读 pending，反向则不会——
+    /// `.lock().await` 这把锁等在途下载收口后再读 pending，反向则不会——
     /// 下载方永不等待 apply）。下载任务自身 try_lock，占用中 = 幂等受理。
     pub download_flight: tokio::sync::Mutex<()>,
     /// 下载取消旗标（WSAPI cancel_download 置位；进度回调逐 chunk 轮询，
@@ -2630,7 +2630,7 @@ impl SelfUpdateManager {
     /// 桩平台变体（macOS 留位 / Android APK 形态）：诚实拒绝。apply 全链路
     /// 主体不参与桩平台编译（避免 unreachable 段）；check/status/boot 收口
     /// 全平台可用。macOS CI 产物（nightly-macos.tar.gz）就位后，把
-    /// `apply_supported` 与本 cfg 门一起放开即接通。
+    /// `apply_supported()` 与本 cfg 门一起放开即接通。
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     async fn apply_inner(
         &self,

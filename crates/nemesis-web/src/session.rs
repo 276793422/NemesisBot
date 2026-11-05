@@ -68,9 +68,9 @@ struct SessionEntry {
 /// Manages all active WebSocket sessions.
 ///
 /// `sessions`/`send_queues` 必须 `Arc<DashMap>`——
-/// `DashMap::clone` 是**逐 shard 深拷贝**（dashmap 6.1.0 `impl Clone`
-/// 对每 shard 内层 HashMap 做 `(*shard).clone`，Clone bound 要求
-/// `K: Clone, V: Clone` 即证据），旧实现 `self.sessions.clone` 给
+/// `DashMap::clone()` 是**逐 shard 深拷贝**（dashmap 6.1.0 `impl Clone`
+/// 对每 shard 内层 HashMap 做 `(*shard).clone()`，Clone bound 要求
+/// `K: Clone, V: Clone` 即证据），旧实现 `self.sessions.clone()` 给
 /// cleanup 线程的是构造瞬间的私有快照，逐出从未落到真表（生产
 /// session GC 从未生效）。Arc 克隆共享同一张表，线程逐出才落真账。
 pub struct SessionManager {
@@ -79,7 +79,7 @@ pub struct SessionManager {
     timeout: Duration,
     /// cleanup 线程取消信号（true = 退出）。receiver 在线程内，sender 随
     /// manager drop——不调 shutdown 的构造点（Drop 兜底）线程也会在下一拍
-    /// 因 `changed` 返回 Err 退出并归还映射 Arc。
+    /// 因 `changed()` 返回 Err 退出并归还映射 Arc。
     cleanup_cancel_tx: watch::Sender<bool>,
 }
 
@@ -192,7 +192,7 @@ impl SessionManager {
 
         // Try send queue first (thread-safe)
         // 先 clone Arc 归还 DashMap 分片读守卫，再进入
-        // 背压 await。旧写法 Ref 守卫跨越 `queue.send.await`——hi 通道
+        // 背压 await。旧写法 Ref 守卫跨越 `queue.send().await`——hi 通道
         // 满（慢客户端）时该 await 可等待任意久（「满则背压等待，绝不
         // 丢」），同分片的全部写操作（remove_session / set_send_queue /
         // evict_inactive 的 remove）停摆到慢客户端消费为止；而
@@ -267,7 +267,7 @@ impl SessionManager {
     /// Shutdown all sessions.
     ///
     /// 真正终止 cleanup 线程——旧实现 `stop_cleanup`
-    /// 永不 Some，`abort` 是死路径，线程永续。send(true) 后线程在
+    /// 永不 Some，`abort()` 是死路径，线程永续。send(true) 后线程在
     /// `select!` 的 cancel 臂（或下一拍前的兜底检查）退出。
     pub async fn shutdown(&self) {
         let _ = self.cleanup_cancel_tx.send(true);
@@ -284,7 +284,7 @@ impl SessionManager {
     /// 1. 映射走 `Arc::clone` 共享真表（旧 `DashMap::clone` 是深拷贝，
     ///    线程迭代一张永远为空的私有快照，逐出从不落真表）；
     /// 2. 取消经 watch 通道——shutdown send(true) 或 manager drop
-    ///    （sender 归还 → `changed` Err）都会让线程退出并归还映射 Arc。
+    ///    （sender 归还 → `changed()` Err）都会让线程退出并归还映射 Arc。
     ///    线程退出前映射 Arc 由线程持有，Drop 顺序无悬挂。
     fn start_cleanup(&self, cleanup_interval: Duration) {
         let timeout = self.timeout;
@@ -352,7 +352,7 @@ impl SessionManager {
 
         for session_id in &to_remove {
             // 先关队列再删映射：close 触发 Close 帧握手，随 writer 退出
-            // hi/lo receiver 被 drop，残余 send/send_droppable 诚实报错
+            // hi/lo receiver 被 drop，残余 send()/send_droppable() 诚实报错
             // （不会把帧静默排进无人消费的通道）。
             if let Some(queue) = send_queues.get(session_id) {
                 queue.close();

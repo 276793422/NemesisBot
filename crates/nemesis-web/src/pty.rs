@@ -44,7 +44,7 @@ const INITIAL_ROWS: u16 = 30;
 
 // 会话管理器（estop kill + 满员闸的挂点）
 
-/// 一条会话的终止句柄（portable-pty `clone_killer` 的产物，专为跨线程
+/// 一条会话的终止句柄（portable-pty `clone_killer()` 的产物，专为跨线程
 /// kill 设计——会话任务自己等子进程退出，管理器只管杀）。
 struct PtySessionHandle {
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
@@ -126,7 +126,7 @@ fn manager() -> Option<&'static Arc<PtySessionManager>> {
 
 /// 宿主侧急停杀链：estop 触发时由 gateway 侧 watcher
 /// （post_agent.rs，与 vm-display 同款纪律）调用。会话任务的自醒（select
-/// 循环内 estop watch）在 `socket.send.await`（客户端 TCP 背压——网络
+/// 循环内 estop watch）在 `socket.send().await`（客户端 TCP 背压——网络
 /// 挂起/浏览器休眠是常态）期间不被轮询，stalled client 会话的自醒杀
 /// 不掉——模块头安全声明「急停触发 → 全部 PTY 会话立即 kill」必须有
 /// 宿主侧兜底直杀。
@@ -156,7 +156,7 @@ fn read_terminal_config() -> Option<nemesis_config::TerminalConfig> {
 /// 测试注入点（仅 `terminal` feature 的测试编译进本 crate）：pty 单测把
 /// terminal 配置放这里，而不是 `set_global` 装进程级 store——config 全局
 /// OnceLock first-wins 首装不可拆卸，装上后同 binary 里 models.rs
-/// `load_config` 的全局优先分支（`load_live` 短路、忽略 home）会把依赖
+/// `load_config` 的全局优先分支（`load_live()` 短路、忽略 home）会把依赖
 /// home 隔离的既有测试（handlers::tests 的 stress_* 家族）整体劫持到测试
 /// 夹具上（stress_100_* 三连红的根因， 根修）。
 #[cfg(test)]
@@ -446,7 +446,7 @@ async fn handle_pty_socket(
         state.estop.as_ref().map(|e| e.subscribe());
     // 订阅竞态封口：upgrade 闸（estop 已触发 → 503 拒升级）之后、订阅落定
     // 之前 estop 仍可能触发——watch 新接收端的初始标记就是当前值，
-    // changed 对「订阅前已发生的触发」永不再通知，会话会漏杀。急停语义
+    // changed() 对「订阅前已发生的触发」永不再通知，会话会漏杀。急停语义
     // =冻结一切执行体，晚到的会话也要杀：入口显式查一次当前值作种子。
     let mut estop_kill = estop_rx.as_ref().is_some_and(|rx| *rx.borrow());
 
@@ -519,7 +519,7 @@ async fn handle_pty_socket(
     // 清理：摘牌（guard Drop）+ kill + reap。reap 用裸线程而非 tokio
     // blocking 池：Runtime drop 会等 in-flight blocking task——若 kill 在
     // 某些平台上未真正终止 ConPTY 子进程（CI windows-2022 镜像，
-    // 本机不复现），wait 永不返回，测试进程随 runtime drop 一起挂死
+    // 本机不复现），wait() 永不返回，测试进程随 runtime drop 一起挂死
     // （CI estop_engage_kills_session 100min+ SLOW 的
     // 根因；断言本身 10s 有界，挂的是进程退出）。裸线程不阻塞 runtime
     // drop，进程照常退出；wait 结果本就无人消费，纯 reap。

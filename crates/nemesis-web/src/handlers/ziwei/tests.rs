@@ -1,5 +1,5 @@
 //! `ziwei.*` WSAPI 用例（.5）：门关拒绝面 / list·show 只读面 / remove /
-//! 未装配诚实报 / `commands` 清单。
+//! 未装配诚实报 / `commands()` 清单。
 
 use super::*;
 use crate::api_handlers::AppState;

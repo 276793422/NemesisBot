@@ -494,7 +494,7 @@ async fn test_memory_config_set_main_enabled_true() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     write_config(ws);
-    // write_config serializes Config::default, where `memory: Option<...>` is
+    // write_config serializes Config::default(), where `memory: Option<...>` is
     // None — emitted as `null`. The `set_main_switch` helper only inserts
     // the `memory` object when the key is absent; when present as `null`
     // it leaves the field alone. Write a non-null `memory: {}` first so the

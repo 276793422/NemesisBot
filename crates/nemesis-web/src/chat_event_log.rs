@@ -31,7 +31,7 @@ pub struct ChatEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// HD（顺带修）：记录时刻（后端钟）——chat.sync 重放路径
-    /// 前端此前填本地 `new Date`，补拉消息时间显示为拉取时刻而非真实
+    /// 前端此前填本地 `new Date()`，补拉消息时间显示为拉取时刻而非真实
     /// 发生时刻。`skip_serializing_if` 兼容：旧条目无此字段，前端回退本地钟。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<String>,

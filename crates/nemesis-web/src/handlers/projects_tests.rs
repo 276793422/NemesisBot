@@ -520,7 +520,7 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
     }
     let ctx = make_ctx(None);
     let err = resolve_session_loop(&ctx, SENTINEL_KEY)
-        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持 .err.expect
+        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持 .err().expect()
         .err()
         .expect("bound-but-missing must fail honestly");
     assert!(

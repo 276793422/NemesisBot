@@ -1196,7 +1196,7 @@ async fn bare_stream_falls_back_to_non_stream_when_lane_missing() {
     assert!(text.contains("\"finish_reason\":\"tool_calls\""), "{text}");
     assert!(text.contains("\"total_tokens\":18"), "{text}");
     assert!(text.contains("data: [DONE]"), "{text}");
-    // 走的是非流式 chat（seen 恰 1 次、带 tools）。
+    // 走的是非流式 chat()（seen 恰 1 次、带 tools）。
     let seen = provider.seen();
     assert_eq!(seen.len(), 1, "应恰好一次非流式 chat() 调用");
     assert_eq!(seen[0].tools, 1);
@@ -1217,7 +1217,7 @@ async fn bare_stream_fallback_upstream_error_is_honest_json() {
     });
     let (state, provider) = with_streaming(state, provider);
 
-    // 回落后的 chat 失败 = 真实上游错误，诚实 JSON 上报（不是 SSE）。
+    // 回落后的 chat() 失败 = 真实上游错误，诚实 JSON 上报（不是 SSE）。
     let (status, _, v) =
         resp_parts(api_chat_completions(&state, &body(&bare_request(true))).await).await;
     assert_eq!(status, 502);
@@ -1228,7 +1228,7 @@ async fn bare_stream_fallback_upstream_error_is_honest_json() {
             .contains("connect error"),
         "{v}"
     );
-    // 回落确实跑过（chat 被调 1 次）——不是把流式失败直接透传。
+    // 回落确实跑过（chat() 被调 1 次）——不是把流式失败直接透传。
     assert_eq!(provider.seen().len(), 1);
 }
 
@@ -1304,7 +1304,7 @@ fn normalize_content_unknown_part_is_err_not_silent() {
 
 #[test]
 fn to_provider_message_malformed_parts_falls_back_to_text_not_empty() {
-    // 畸形 part（缺 text 字段）→ 兜底退化为纯文本（text 拼接），
+    // 畸形 part（缺 text() 字段）→ 兜底退化为纯文本（text 拼接），
     // 绝不清空整条消息（修复前 unwrap_or_default 落空串）。
     let m = OpenAiMessage {
         role: "user".to_string(),

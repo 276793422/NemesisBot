@@ -4,7 +4,7 @@
 //!
 //! Isolation note: the STATEFUL e2e (append → search → assert hit) moved to
 //! the dedicated integration binary `tests/history_search_e2e.rs` — the lib
-//! binary's ~3000 sibling tests bake the `default_path_manager` singleton
+//! binary's ~3000 sibling tests bake the `default_path_manager()` singleton
 //! home before any redirect could land, and under nextest (per-test process)
 //! the in-process IDX_LOCK / HOME_RACE_LOCK below are void, so the e2e was
 //! contending cross-process on the real global history_index.db (2026-10-10

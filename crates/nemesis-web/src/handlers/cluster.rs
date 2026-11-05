@@ -744,7 +744,7 @@ impl ClusterHandler {
         let workspace = require_workspace(ctx)?;
 
         // Use adapter's running state (reflects actual start/stop from Dashboard),
-        // not cluster.is_running which is true once cluster.start is called at init.
+        // not cluster.is_running() which is true once cluster.start() is called at init.
         let running = ctx
             .state
             .cluster_service

@@ -101,7 +101,7 @@ fn path_contains(root: &Path, target: &Path) -> bool {
     if t.len() <= r.len() {
         return false;
     }
-    // `t[..r.len]` 裸切片在 r.len 落于 t 的多字节
+    // `t[..r.len()]` 裸切片在 r.len() 落于 t 的多字节
     // 字符中间时 panic（`fs.open` 带模型输出的 CJK 绝对路径即可触发）。
     // `str::get` 边界安全：非边界 = None = 前缀必不等，诚实 false。
     let prefix = match t.get(..r.len()) {

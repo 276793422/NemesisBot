@@ -452,9 +452,9 @@ fn path_contains_boundary() {
 }
 
 /// 回归锁：target 含多字节字符且字节总长超过 root 时，
-/// 旧实现 `t[..r.len]` 字节切片会切在多字节字符中间 → str 切片 panic
+/// 旧实现 `t[..r.len()]` 字节切片会切在多字节字符中间 → str 切片 panic
 /// （`fs.open` 带模型输出的 CJK 绝对路径即可触发，WS handler 任务崩）。
-/// 修复 = `str::get(..r.len)` 边界安全切片，非边界诚实返回 false。
+/// 修复 = `str::get(..r.len())` 边界安全切片，非边界诚实返回 false。
 #[test]
 fn path_contains_multibyte_target_no_panic() {
     if cfg!(windows) {

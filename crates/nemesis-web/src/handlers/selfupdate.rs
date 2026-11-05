@@ -52,7 +52,7 @@ fn boot_identity() -> Option<&'static BootIdentity> {
 
 // manager 槽（selfupdate feature 门控——类型本体随 feature 进出）。
 // RwLock<Option> 而非 OnceLock：装配语义仍是「首个生效」，但测试进程需要
-// 可清——gateway full_assembly 冒烟在同进程跑生产 run 会占槽，OnceLock
+// 可清——gateway full_assembly 冒烟在同进程跑生产 run() 会占槽，OnceLock
 // 时代断言「未装配」的测试只能靠执行顺序，跨测试污染偶发假红。
 #[cfg(feature = "selfupdate")]
 static MANAGER: std::sync::RwLock<Option<std::sync::Arc<crate::selfupdate::SelfUpdateManager>>> =

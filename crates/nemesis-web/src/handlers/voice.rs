@@ -3185,7 +3185,7 @@ impl VoiceHandler {
                 // 接力播放一并停（关=立刻安静）：清注册只挡住后续入队，已入
                 // 队未播的句子会继续合成播完——「关了还在说话」。停播语义与
                 // barge-in 一致（当前音频清队列即刻静音 + 撤整个播放会话）。
-                // 本函数是 async 上下文：撤队列用 lock.await（trigger_barge_in
+                // 本函数是 async 上下文：撤队列用 lock().await（trigger_barge_in
                 // 在 spawn_blocking 音频线程才用 blocking_lock，两处不同）。
                 if let Some(p) = active_playback().lock().unwrap().as_ref() {
                     p.stop();
@@ -3518,7 +3518,7 @@ fn tts_playback_loop(
             }
         };
 
-        // barge-in 共享态：播放中挂停止句柄（STT 管线线程 stop 切音频用），
+        // barge-in 共享态：播放中挂停止句柄（STT 管线线程 stop() 切音频用），
         // 结束记尾窗锚点（300ms 内仍可抢断下一句开播前）。
         let stop_handle = playback.stop_handle();
         *active_playback().lock().unwrap() = Some(stop_handle);
@@ -4094,7 +4094,7 @@ mod wweb2_tests;
 // quality-hardening goal 冲刺 ：voice.rs 非豁免行覆盖第二子模块。
 // 聚焦 豁免范围外的 WSAPI dispatch 提取臂、start/stop 状态机（注入会话）、
 // 配置读写、纯逻辑 helper 与 push 广播路径。测试间全局状态竞态由模块内
-// voice_state_lock 串行化（wweb2_tests::voice_shutdown_idle_is_safe 也持有同一把锁）。
+// voice_state_lock() 串行化（wweb2_tests::voice_shutdown_idle_is_safe 也持有同一把锁）。
 #[cfg(all(test, target_os = "windows"))]
 mod s10_tests;
 

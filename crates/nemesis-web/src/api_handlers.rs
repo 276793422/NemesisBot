@@ -754,7 +754,7 @@ fn is_daily_nemesisbot_log(name: &str) -> bool {
 /// partial line, parses each remaining line as JSON. Files smaller than 64KB are
 /// read in full. Lines that fail to parse as JSON are silently dropped — the new
 /// JSONL format produces one valid SseLogEvent per line, so any parse failure is
-/// either a half-written tail (which `lines` already handles by virtue of the
+/// either a half-written tail (which `lines()` already handles by virtue of the
 /// trailing newline) or corruption that's not worth surfacing.
 fn read_log_entries(file_path: &str, n: usize) -> Vec<serde_json::Value> {
     use std::io::{Read, Seek, SeekFrom};

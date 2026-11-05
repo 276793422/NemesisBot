@@ -409,7 +409,7 @@ security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziw
     std::fs::write(&path, &md).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
     // 52ca8615 给 system 加了 open_home_dir 命令臂，本断言未同步 → ET Linux
-    // 全量假红；行内容必须与 system.rs::commands 静态清单逐字一致。
+    // 全量假红；行内容必须与 system.rs::commands() 静态清单逐字一致。
     assert!(
         written.contains(
             "| system | version, status, commands, lease_status, features, open_home_dir |"

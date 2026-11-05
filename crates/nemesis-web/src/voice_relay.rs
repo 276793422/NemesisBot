@@ -67,7 +67,7 @@ pub fn apply_realtime_config(realtime: &serde_json::Value) {
     set(&hot.barge_in, "barge_in");
     set(&hot.spoken_form, "spoken_form");
     set(&hot.voice_prompt, "voice_prompt");
-    // voice_prompt 双存储同步：AgentLoop 启动时只取一次 voice_prompt_flag
+    // voice_prompt 双存储同步：AgentLoop 启动时只取一次 voice_prompt_flag()
     // Arc，此后 loop 侧读的是镜像——写路径必须把它一起刷，否则热切换不生效。
     if let Some(b) = load_flag(realtime, "voice_prompt") {
         voice_prompt_flag().store(b, Ordering::Relaxed);

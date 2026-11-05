@@ -35,7 +35,7 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
-/// 订阅计数 RAII 守卫。`subscribe` 手工 +1、`unsubscribe`
+/// 订阅计数 RAII 守卫。`subscribe()` 手工 +1、`unsubscribe()`
 /// 手工 -1 的配对只覆盖「流自然跑完」路径——SSE 端点的流体被客户端断连时
 /// axum 直接 drop 生成器（不是跑完循环），尾部归还永不执行，计数单调泄漏：
 /// board/usage 两个空闲跳过 watcher 以 `subscriber_count == 0` 做闸，泄漏后
@@ -82,9 +82,9 @@ impl EventHub {
         self.subscriber_count.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// 取一条计数守卫（与刚执行的 `subscribe` 配对）：守卫 drop 时归还
-    /// 本次订阅的计数。调用形态固定为 `let rx = hub.subscribe; let guard =
-    /// hub.subscription_guard;`——两行间计数已被 +1，守卫保证终有一 -1。
+    /// 取一条计数守卫（与刚执行的 `subscribe()` 配对）：守卫 drop 时归还
+    /// 本次订阅的计数。调用形态固定为 `let rx = hub.subscribe(); let guard =
+    /// hub.subscription_guard();`——两行间计数已被 +1，守卫保证终有一 -1。
     pub fn subscription_guard(&self) -> SubscriptionGuard {
         SubscriptionGuard {
             count: Arc::clone(&self.subscriber_count),
@@ -99,7 +99,7 @@ impl EventHub {
         // seq 分配/入队/在线投递必须同一把缓冲写锁串行。原实现
         // fetch_add 在锁外——并发发布可交叠成「 得 seq=5、 得 seq=6、
         // 先抢锁入队」，环形缓冲变 [.., 6, 5]，违反下方字段注释声明的
-        // 「seq 升序」不变量：replay_after 按乱序回放、front 的 gap 判定
+        // 「seq 升序」不变量：replay_after 按乱序回放、front() 的 gap 判定
         // 失真、SSE id 倒退（浏览器 Last-Event-ID 回退 → 重连重复投递）。
         // chat_event_log::insert_event 同形态早已表锁内分配，此处对齐。
         // send 置于锁内保证 live 流序 == seq 序：broadcast send 非阻塞且不

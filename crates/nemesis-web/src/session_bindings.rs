@@ -17,7 +17,7 @@
 //!
 //! 存储：`<workspace>/data/session_bindings.json`（与 session_shares.json
 //! 同层同模式：serde + tmp+rename 原子落盘）。存活判定**纯 workspace
-//! 派生**（jsonl 或 meta 侧车任一在），不走 `default_path_manager` 全局
+//! 派生**（jsonl 或 meta 侧车任一在），不走 `default_path_manager()` 全局
 //! 单例——测试重定向 home 到临时目录即可全链路隔离，不碰真实 home。
 
 use serde::{Deserialize, Serialize};

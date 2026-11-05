@@ -110,7 +110,7 @@ fn map_provider_error(e: &nemesis_providers::failover::FailoverError) -> String 
 }
 
 /// agent 层 ChatOptions → provider 层（chat / chat_streamed 共用转换，
-/// 单一真相源——此前内联在 chat）。
+/// 单一真相源——此前内联在 chat()）。
 fn agent_options_to_provider(
     options: Option<nemesis_agent::types::ChatOptions>,
 ) -> nemesis_providers::types::ChatOptions {
@@ -173,7 +173,7 @@ fn provider_response_to_agent(
     // finished 判定：工具调用在场 ⇒ 恒未终答（loop 侧必须 dispatch）。此前
     // `|| finish_reason == "stop"` 会被异常上游（stop 邮票 + tools 在场）静默
     // 丢掉工具调用——judge_final_answer 见 finished=true 直接当终答
-    // （wal_crash 实证；与 chat 共用同源语义）。
+    // （wal_crash 实证；与 chat() 共用同源语义）。
     let finished = tool_calls.is_empty();
     nemesis_agent::r#loop::LlmResponse {
         content: resp.content,
@@ -278,8 +278,8 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
 
         // wire 语义闸（/ 根修）：provider 偏好非流式（显式
         // stream=no，或 auto 且 lane 缺省非流式——anthropic/openai 兼容）时
-        // 静默回落 chat。此前本 lane 无条件走 chat_stream 真流式，越权覆盖
-        // 了 chat 内部的 stream_mode 语义：流式路径 raw 请求/响应体恒 None
+        // 静默回落 chat()。此前本 lane 无条件走 chat_stream 真流式，越权覆盖
+        // 了 chat() 内部的 stream_mode 语义：流式路径 raw 请求/响应体恒 None
         // 且 usage 依赖上游 chunk 自带（多数兼容端点不带）→ 集群 usage 回传
         // 断粮（账本 0 行）+ raw 日志响应件缺失，观测 lane 不得改写 wire 语义。
         // 前端增量面由 fallback_non_stream 合成全量 delta，消费点无差别。

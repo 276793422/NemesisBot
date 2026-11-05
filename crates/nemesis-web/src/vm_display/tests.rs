@@ -1,7 +1,7 @@
 //! [`vm_display`] 单测（feature = vm-display 门控）。测试走模块级静态槽
 //! （[`super::set_endpoint`] / manager），与 pty tests 同款纪律：不安装
 //! 进程级 config store——config 闸（`read_display_config`）不在单测覆盖
-//! 面（它读 `load_live` 全局，会劫持同 binary 其他测试的家目录隔离），
+//! 面（它读 `load_live()` 全局，会劫持同 binary 其他测试的家目录隔离），
 //! 闸语义由 handler 闸链的结构位置保证（升级入口第一行）。
 
 use super::*;

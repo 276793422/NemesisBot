@@ -1,5 +1,5 @@
 //! `vm.*` WSAPI 用例（第 4 步）：未装配诚实报错 / 各命令臂经 bridge /
-//! config.set 缺参拒绝 / `commands` 清单。进程级 bridge 槽是共享态
+//! config.set 缺参拒绝 / `commands()` 清单。进程级 bridge 槽是共享态
 //! 全部用例持 [`VM_BRIDGE_TEST_LOCK`] 串行（AGENTS_BRIDGE 家族纪律）。
 // 持锁跨 await 是刻意的测试串行化（槽位置换必须覆盖整个 handler await
 // 窗口，否则并行用例互相置换 bridge 假绿）；agents_ws_tests 同款豁免。
@@ -239,7 +239,7 @@ async fn all_commands_route_through_bridge() {
 
         // 每条命令真的到了 bridge（配置臂以外全部录制在案）。守卫收进
         // 块作用域——闭包尾活守卫 + 后续 display 探针再触 bridge 的
-        // note 会同线程自死锁（std Mutex 非重入）。
+        // note() 会同线程自死锁（std Mutex 非重入）。
         {
             let calls = _b.calls.lock().unwrap();
             for expected in [

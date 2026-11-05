@@ -722,7 +722,7 @@ impl ForgeHandler {
             if let Some(ref forge) = ctx.state.forge
                 && !forge.is_running()
             {
-                // start requires Arc<Self>, so clone the Arc.
+                // start() requires Arc<Self>, so clone the Arc.
                 let forge_arc = forge.clone();
                 // Spawn start in background — it's async and takes Arc<Self>.
                 tokio::spawn(async move {
@@ -735,7 +735,7 @@ impl ForgeHandler {
             && let Some(ref forge) = ctx.state.forge
             && forge.is_running()
         {
-            // stop is async — spawn it.
+            // stop() is async — spawn it.
             let forge_arc = forge.clone();
             tokio::spawn(async move {
                 forge_arc.stop().await;
@@ -1054,8 +1054,8 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     if let Ok(month_entries) = std::fs::read_dir(dir) {
         // 月目录按名排序：read_dir 顺序是平台实现细节（NTFS 字典序
         // vs ext4 哈希序），无序基上「取尾/倒序截尾」=任意子集。升序迭代
-        // 保持本函数「旧→新」返回契约（消费方 `cycles.last` 取最新、
-        // `.rev.take(100)` 取最新 100）。
+        // 保持本函数「旧→新」返回契约（消费方 `cycles.last()` 取最新、
+        // `.rev().take(100)` 取最新 100）。
         let mut months: Vec<_> = month_entries.flatten().collect();
         months.sort_by_key(|e| e.file_name());
         for month_entry in months {
@@ -1118,7 +1118,7 @@ fn forge_test_cmd(
         .and_then(|v| v.as_str())
         .ok_or("missing 'name'")?;
     // name 围栏（引入， 起走 forge crate 单一真相源）：单段目录名，
-    // 拒 `../x` 穿越读面与 `C:evil` 盘符相对形态（is_absolute==false 但
+    // 拒 `../x` 穿越读面与 `C:evil` 盘符相对形态（is_absolute()==false 但
     // join 整段换基座）。合法技能目录名是 kebab/单段（slugify 产物）。
     nemesis_forge::forge::valid_skill_dir_name(name)?;
     let filter = data.get("test").and_then(|v| v.as_str());

@@ -5,7 +5,7 @@
 //! `sweep_uploads_older_than` 按 mtime 清旧留新。
 //!
 //! 竞态纪律（env-test-race-lock-pattern）：成功路径与 resolve 正例会把
-//! `default_path_manager` 单例 home 重定向到临时目录（进程全局副作用），
+//! `default_path_manager()` 单例 home 重定向到临时目录（进程全局副作用），
 //! 这些测试必须先拿同一把模块级锁串行；RAII guard 在 panic 展开时也会恢复
 //! 原 home，不污染同进程其它测试。
 

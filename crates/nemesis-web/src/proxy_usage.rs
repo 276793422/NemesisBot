@@ -40,9 +40,9 @@ pub(crate) struct ProxyUsageRecord<'a> {
     pub trace_id: String,
 }
 
-/// 落账单一出口。`ds` 传 `state.data_store.as_deref`——async_stream
+/// 落账单一出口。`ds` 传 `state.data_store.as_deref()`——async_stream
 /// 块内借不了 `&AppState`（'static 约束），调用方 clone
-/// `Option<Arc<DataStore>>` 进块后 `.as_deref`。
+/// `Option<Arc<DataStore>>` 进块后 `.as_deref()`。
 pub(crate) fn record_proxy_usage(ds: Option<&nemesis_data::DataStore>, rec: ProxyUsageRecord<'_>) {
     let Some(ds) = ds else {
         return; // usage-store 关 / 未装配：诚实 no-op，请求不失败

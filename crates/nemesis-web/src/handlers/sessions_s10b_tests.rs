@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // home 重定向（sessions_trash_tests 同款）：默认软删的 trash 移动走
-// production 寻址（进程单例 home），不重定向会把回收站条目落进真实
+// production() 寻址（进程单例 home），不重定向会把回收站条目落进真实
 // 数据目录（旧 delete_chat_log 清理对已移走的 jsonl 是 no-op——泄漏）。
 struct HomeGuard {
     old: PathBuf,

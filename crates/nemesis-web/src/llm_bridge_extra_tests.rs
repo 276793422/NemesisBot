@@ -255,7 +255,7 @@ async fn adapter_chat_stop_stamp_with_tools_never_marks_finished() {
     let mock = Arc::new(MockProvider::new("m", "p"));
     // 工具调用在场 ⇒ finished 恒 false（wal_crash 根修后语义）：
     // 异常上游（stop 邮票 + tools 在场）不再被当成终答——那会静默丢掉
-    // tool_calls，agent 侧只见空文本。finished = tool_calls.is_empty。
+    // tool_calls，agent 侧只见空文本。finished = tool_calls.is_empty()。
     let mut resp = tool_call_response();
     resp.finish_reason = "stop".to_string();
     mock.set_response(resp);

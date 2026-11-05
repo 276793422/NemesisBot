@@ -187,7 +187,7 @@ async fn inbox_status_empty_session_reports_idle() {
     assert_eq!(resp["next_step"], 0);
     assert_eq!(resp["capacity"], 8, "AgentLoop::new 用 DEFAULT_QUEUE_SIZE");
     assert_eq!(resp["busy"], false);
-    // AgentConfig::default 是 Reject 模式。
+    // AgentConfig::default() 是 Reject 模式。
     assert_eq!(resp["mode"], "reject");
 }
 

@@ -35,7 +35,7 @@ const FETCH_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 #[cfg(feature = "plugins-wasm")]
 pub(crate) const RELEASE_ASSET_MAX_BYTES: usize = 25 * 1024 * 1024;
 
-/// 渠道下载 SSRF 闸槽：`SecurityPlugin::ssrf_guard` 的克隆（Guard Clone
+/// 渠道下载 SSRF 闸槽：`SecurityPlugin::ssrf_guard()` 的克隆（Guard Clone
 /// 共享 inner 状态）。gateway 在 init_agent 后注入；None = 直通
 ///（security feature 关 / security.enabled=false / ssrf 层关）。
 #[cfg(feature = "security")]
@@ -54,9 +54,9 @@ pub fn set_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
 /// 空闲超时兜底）。
 ///
 /// `proxy` = 下载代理（批C：更新页独立下载代理）。Some → 只走
-/// 该代理（`ClientBuilder::proxy` 本身即关 auto_sys_proxy 的系统探测——
+/// 该代理（`ClientBuilder::proxy()` 本身即关 auto_sys_proxy 的系统探测——
 /// 「就这个代理」语义要脆）；解析失败 = **诚实 Err 上抛**（此前
-/// `.unwrap_or_default` 静默直连是隐患：配置了代理却无声走系统默认）。
+/// `.unwrap_or_default()` 静默直连是隐患：配置了代理却无声走系统默认）。
 /// None → 保持系统默认。
 fn fetch_client(
     total_timeout: Option<std::time::Duration>,
@@ -69,7 +69,7 @@ fn fetch_client(
     if let Some(p) = proxy {
         let proxied =
             reqwest::Proxy::all(p).map_err(|e| format!("下载代理地址无效（{p}）：{e}"))?;
-        // builder.proxy 自带 auto_sys_proxy=false（reqwest client.rs:1414）
+        // builder.proxy() 自带 auto_sys_proxy=false（reqwest client.rs:1414）
         // 显式代理 = 「就这个代理」，环境变量/系统代理探测一并关掉。
         builder = builder.proxy(proxied);
     }

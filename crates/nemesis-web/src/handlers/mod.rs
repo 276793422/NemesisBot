@@ -153,7 +153,7 @@ pub mod workflow;
 
 // 覆盖率：sessions 各命令缺参 bail 臂。
 // create/rename happy path 不测——chat_log::write_session_meta 走
-// default_path_manager 进程级 OnceLock 单例 home，会写真实 ~/.nemesisbot。
+// default_path_manager() 进程级 OnceLock 单例 home，会写真实 ~/.nemesisbot。
 #[cfg(test)]
 mod sessions_extra_tests;
 
@@ -165,7 +165,7 @@ mod sessions_s10b_tests;
 
 // AGT 覆盖率批次：mark_delivered / create 的 binding_key
 // get-or-create 全链与 plain 标题臂 / set·remove_binding / rename 带 title
-// happy path（test_home::lock_home 重定向单例 home）/ rewind_to_message
+// happy path（test_home::lock_home() 重定向单例 home）/ rewind_to_message
 // 与 redo 的缺参 bail。
 #[cfg(test)]
 mod sessions_agt_tests;
@@ -181,7 +181,7 @@ mod sessions_share_tests;
 mod sessions_snooze_tests;
 
 // 会话回收站：delete 默认回收站形态 + hard 旧语义 +
-// trash 四命令守卫与全链（home 单例重定向，production 寻址动态落 tempdir）。
+// trash 四命令守卫与全链（home 单例重定向，production() 寻址动态落 tempdir）。
 #[cfg(test)]
 mod sessions_trash_tests;
 

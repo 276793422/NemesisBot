@@ -179,7 +179,7 @@ pub(crate) fn select_firing(
 // Event pump（gateway 侧一次性任务）
 
 /// 订阅 agent 事件广播的工具事件泵。manager 级一次性任务（不随 agent 重启
-/// 泄）；广播 sender 全部 drop（gateway 收尾）→ `recv` Closed → 任务退出。
+/// 泄）；广播 sender 全部 drop（gateway 收尾）→ `recv()` Closed → 任务退出。
 /// 返回 JoinHandle 供测试等待（gateway 忽略返回值）。
 pub fn spawn_event_pump(
     mut rx: tokio::sync::broadcast::Receiver<nemesis_types::agent::AgentEvent>,

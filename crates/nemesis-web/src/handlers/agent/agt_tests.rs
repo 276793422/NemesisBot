@@ -56,7 +56,7 @@ impl LlmProvider for AgtNoopProvider {
     }
 }
 
-/// start 成功臂的最小 service 替身（同 tests.rs 的 Mock 形态）。
+/// start() 成功臂的最小 service 替身（同 tests.rs 的 Mock 形态）。
 struct AgtMockService {
     running: AtomicBool,
 }

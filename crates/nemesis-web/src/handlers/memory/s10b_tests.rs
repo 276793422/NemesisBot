@@ -3,7 +3,7 @@
 //!
 //! Existing coverage (`tests.rs` + `memory_extra_tests.rs`) runs every command
 //! with `memory_manager: None` in the AppState, so all `ctx.state
-//! .memory_manager.as_ref` arms (runtime vector disable, init rollback,
+//! .memory_manager.as_ref()` arms (runtime vector disable, init rollback,
 //! semantic search/store) were never executed. This module fills exactly
 //! those arms, plus:
 //! - `model.install` success arm (offline via `local_model_path` — never

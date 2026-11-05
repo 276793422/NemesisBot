@@ -1214,7 +1214,7 @@ async fn test_status_sorts_engines_alphabetically() {
 // 的 None 跳过臂——真实配置都是对象，此前只有对象分支被覆盖。
 
 /// status：引擎 raw 是 null → build_engine_response 只回 name/enabled 基础
-/// 字段（as_object None，无字段可并入），不 panic。
+/// 字段（as_object() None，无字段可并入），不 panic。
 #[tokio::test]
 async fn test_status_with_null_engine_raw() {
     let handler = scanner::ScannerHandler::new();
@@ -1240,7 +1240,7 @@ async fn test_status_with_null_engine_raw() {
 }
 
 /// enable：引擎 raw 是 null → install_status 为空触发 PENDING 注入路径，
-/// 但 as_object_mut None → state 无法并入，raw 原样写回（不 panic）。
+/// 但 as_object_mut() None → state 无法并入，raw 原样写回（不 panic）。
 #[tokio::test]
 async fn test_enable_with_null_engine_raw() {
     let handler = scanner::ScannerHandler::new();
@@ -1264,7 +1264,7 @@ async fn test_enable_with_null_engine_raw() {
 }
 
 /// install：引擎 raw 是 null → 无 URL 快速失败（不触网不下载）；失败标记里
-/// as_object_mut None 跳过 state 并入。用 cancel 探针轮询后台任务结束
+/// as_object_mut() None 跳过 state 并入。用 cancel 探针轮询后台任务结束
 /// （cancel 本身不启动任何东西：Ok=仍在跑，Err=已结束）。
 #[tokio::test]
 async fn test_install_null_engine_raw_fails_without_network() {

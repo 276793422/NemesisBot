@@ -4,8 +4,8 @@
 //! 四命令守卫与全链。
 //!
 //! home 单例经 session_bindings::tests 同款 HomeGuard 重定向到 tempdir
-//! （test_home::lock_home 可重入锁跨测试串行）——production 寻址按调用
-//! 动态走 default_path_manager，重定向后全部落 tempdir，零真实目录触碰。
+//! （test_home::lock_home 可重入锁跨测试串行）——production() 寻址按调用
+//! 动态走 default_path_manager()，重定向后全部落 tempdir，零真实目录触碰。
 //! 回收站核心语义（move 三件套/清单/孤儿/恢复冲突结构化返回）在
 //! nemesis-agent chat_trash 注入测试（trash_tests.rs）已覆盖，这里钉
 //! handler 编排面：delete 回执形态 + 四命令的参数契约与串联。

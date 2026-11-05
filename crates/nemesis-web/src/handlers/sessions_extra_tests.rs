@@ -4,7 +4,7 @@
 //! delete 级联停用 cron。这里补齐剩余可达缺口：各命令缺参的 bail 臂
 //! （rename/delete/clear/export 的 missing session_id / missing title）。
 //! create/rename 的 happy path 会经 `chat_log::write_session_meta` 写
-//! `default_path_manager` 单例 home（进程级 OnceLock，web 测试进程会烤到
+//! `default_path_manager()` 单例 home（进程级 OnceLock，web 测试进程会烤到
 //! `~/.nemesisbot`）——为不污染真实 home，明确不测（豁免记录 §9.4）。
 
 use super::sessions::SessionsHandler;

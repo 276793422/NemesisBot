@@ -438,7 +438,7 @@ fn ledger_projects_saved_state() {
 
 // ModuleHandler 契约
 
-/// commands 清单 + dispatch 路由 + 未知命令诚实报错。
+/// commands() 清单 + dispatch 路由 + 未知命令诚实报错。
 #[tokio::test]
 async fn handler_contract_and_unknown_command() {
     let dir = tempfile::tempdir().unwrap();

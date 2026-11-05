@@ -241,6 +241,6 @@ mod tests;
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次：Observer 名牌臂（name 契约）。
+// AGT 覆盖率批次：Observer 名牌臂（name() 契约）。
 #[cfg(test)]
 mod agt_tests;

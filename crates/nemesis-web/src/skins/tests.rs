@@ -554,7 +554,7 @@ fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
-// ===== 渠道安装 + 吊销第五态 + CSS url 消毒=====
+// ===== 渠道安装 + 吊销第五态 + CSS url() 消毒=====
 
 /// 锚 env 串行锁：`NEMESIS_ROOT_ANCHOR` 是进程全局，hooks 测试（本文件）
 /// 与 handlers 测试（`handlers/skins/tests.rs`）经
@@ -962,7 +962,7 @@ fn crl_snapshot_without_verified_donor_is_inert() {
     );
 }
 
-// CSS url 外链消毒 ---
+// CSS url() 外链消毒 ---
 
 /// 外链（https/http/协议相对，含引号形态与大小写）→ about:blank；栅格
 /// data: 放行、SVG data: 拦；相对路径放行；畸形未闭合原样照抄。
@@ -1013,7 +1013,7 @@ fn sanitize_css_urls_neuters_external_and_keeps_safe() {
         sanitize_css_urls("a{background:url(https://evil.com/x"),
         "a{background:url(https://evil.com/x"
     );
-    // 空串与无 url 的 CSS 原样通过
+    // 空串与无 url() 的 CSS 原样通过
     assert_eq!(sanitize_css_urls(""), "");
     assert_eq!(sanitize_css_urls("html{--x:1}"), "html{--x:1}");
 }

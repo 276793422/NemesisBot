@@ -14,7 +14,7 @@
 //!   post_discussion_core 两个落库点；短号在注册表才动作，杂散同形文本
 //!   零影响）。
 //!
-//! 注册表 = 进程级 [`registry`]（模块级 OnceLock——AppState 字面量散布
+//! 注册表 = 进程级 [`registry()`]（模块级 OnceLock——AppState 字面量散布
 //! 全库不可动，chat_event_log::EVENT_HUB 同款理由），零装配接线：worker
 //! 上行登记即入表，TTL 惰性清理（timeout + 60s 余量，ask_closed 丢失的
 //! 卡面残留自然过期）。

@@ -19,7 +19,7 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::skins::{SkinSignature, SkinStatus, classify_signature, scan_skins};
 // ModuleHandler 不在文件级导入：两个用例各自函数内 `as _` 精确引入（trait
-// 方法 `commands` 只在那两处用）；文件级导入在 workspace 统一 feature 面
+// 方法 `commands()` 只在那两处用）；文件级导入在 workspace 统一 feature 面
 // 下是 unused_imports 警告。
 use crate::ws_router::RequestContext;
 use std::io::Write as _;
@@ -29,7 +29,7 @@ use std::time::Instant;
 
 static SLOT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// 注册表契约：module 名 + commands 六命令单一真相源。
+/// 注册表契约：module 名 + commands() 六命令单一真相源。
 #[test]
 fn commands_registry_shape() {
     use crate::ws_router::ModuleHandler as _;
@@ -50,7 +50,7 @@ fn commands_registry_shape() {
 
 /// 路由级 dispatch 契约：ws_router 把 msg.cmd 原样递给 handle_cmd（不拼
 /// module 前缀），前端 `request('skins', 'list')` 必须命中裸名臂。此前
-/// commands/match 臂写 `skins.list` 前缀形态，直调方法的单测发现不了
+/// commands()/match 臂写 `skins.list` 前缀形态，直调方法的单测发现不了
 /// 这个不匹配——用本测试钉死。
 #[tokio::test]
 async fn handle_cmd_dispatches_bare_names_as_router_sends_them() {

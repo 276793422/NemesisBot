@@ -3,7 +3,7 @@
 //! 隔离：注册表文件走 `workspace/data/`（临时目录），meta/jsonl 存活判定
 //! 走 `resolve_session_logs_dir_in_workspace(workspace)`（同临时目录）；
 //! `get_or_create_session` 的 meta 写入经 `chat_log::write_session_meta`
-//! 触 `default_path_manager` 进程单例——重定向 home 到同一临时目录
+//! 触 `default_path_manager()` 进程单例——重定向 home 到同一临时目录
 //! （websocket_handler/tests.rs:63 先例），测试完恢复，不碰真实 home。
 
 use super::{get_or_create_session, live_bindings, remove_binding, remove_session, set_binding};
@@ -25,7 +25,7 @@ impl Drop for HomeGuard {
 }
 
 /// 重定向单例 home + 造 workspace 的 logs/session_logs 目录。workspace 取
-/// `<tmp>/workspace`——与单例 `workspace`（home/workspace）同一派生规则，
+/// `<tmp>/workspace()`——与单例 `workspace`（home/workspace）同一派生规则，
 /// meta 写入（走单例）与存活判定（走入参）落同一目录。
 fn isolate(home: &Path) -> HomeGuard {
     let lock = crate::test_home::lock_home();
@@ -206,7 +206,7 @@ impl std::io::Write for WarnSink40 {
 fn test_corrupted_registry_load_warns_and_recovers() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().join("workspace").to_string_lossy().to_string();
-    // meta 写入经 chat_log 进程单例——同既有用例 isolate 重定向 home
+    // meta 写入经 chat_log 进程单例——同既有用例 isolate() 重定向 home
     // （workspace = <tmp>/workspace 同派生规则），见文件头隔离注释。
     let _home = isolate(dir.path());
     std::fs::create_dir_all(dir.path().join("workspace/data")).unwrap();

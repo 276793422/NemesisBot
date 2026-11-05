@@ -2,7 +2,7 @@
 //!
 //! 覆盖：`skills.learned_list`（空账/有条目 + on_disk 幽灵核对）、
 //! `skills.learned_remove`（happy 清目录+账目 / 非 manifest 成员拒绝
-//! （registry 技能保护面）/ 路径穿越拒绝 / 缺参校验）、commands
+//! （registry 技能保护面）/ 路径穿越拒绝 / 缺参校验）、commands()
 //! 清单收录（漂移闸）。
 
 use super::skills::SkillsHandler;

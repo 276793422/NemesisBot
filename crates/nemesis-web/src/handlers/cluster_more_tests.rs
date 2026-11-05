@@ -580,7 +580,7 @@ name = ""
         .await
         .unwrap()
         .unwrap();
-    // Empty values should leave role/name as null (filtered by `if !val.is_empty`).
+    // Empty values should leave role/name as null (filtered by `if !val.is_empty()`).
     assert!(result["role"].is_null());
     assert!(result["node_name"].is_null());
 }
@@ -1556,7 +1556,7 @@ async fn test_status_fallback_config_exists_but_corrupt() {
     std::fs::write(dir.path().join("config/config.cluster.json"), "garbage").unwrap();
     let ctx = make_ctx(&dir);
 
-    // The runtime_status fallback uses serde_json::from_str::<Value>.ok
+    // The runtime_status fallback uses serde_json::from_str::<Value>.ok()
     // which silently converts to None on parse failure → config is null,
     // but config_exists is still true (file exists).
     let result = handler

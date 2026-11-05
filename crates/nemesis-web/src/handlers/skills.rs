@@ -278,7 +278,7 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
 
 /// 取消窗口兜底：force 更新在「备份已挪走、新版未落位」
 /// 的窗口内 future 被 drop（任务取消/超时）时，Drop 同步触发把备份复位回
-/// 原位。显式成功/失败路径先 `disarm` 再走自己的消费/回滚逻辑，guard
+/// 原位。显式成功/失败路径先 `disarm()` 再走自己的消费/回滚逻辑，guard
 /// 只对「没有任何一方负责」的取消场景兜底。复位失败 best-effort（备份
 /// 留在 `.skill-rollback/`，下次安装的恢复式清扫收编）。
 struct RollbackGuard {

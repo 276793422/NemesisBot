@@ -4,10 +4,10 @@
 use super::*;
 
 /// 槽触碰类测试统一在锁内跑（进程级共享态串行纪律）。
-/// 同步 #[test] 形态：tokio Mutex 的 `blocking_lock` 在无运行时的测试
-/// 线程上停等获取——此前 `lock` 不 await 只拿到未 poll 的 Future，串行
+/// 同步 #[test] 形态：tokio Mutex 的 `blocking_lock()` 在无运行时的测试
+/// 线程上停等获取——此前 `lock()` 不 await 只拿到未 poll 的 Future，串行
 /// 从未生效（外评）。切勿在 async 运行时内调用本 helper
-/// （blocking_lock 会 loud panic）；异步用例直接 `LOCK.lock.await`
+/// （blocking_lock 会 loud panic）；异步用例直接 `LOCK.lock().await`
 /// （handlers/tests.rs sessions 投影用例即此形态）。
 fn with_slot<T>(f: impl FnOnce() -> T) -> T {
     let _serial = SESSION_ALLOW_ALL_TEST_LOCK.blocking_lock();

@@ -335,8 +335,8 @@ pub struct WebServer {
     skins_dir: Option<String>,
     /// 激活皮肤 id（config `ui.skin`；"default"/空 = 内置皮肤，
     /// `/skins/active.css` 404）。共享锁句柄：`set_skins` 注入，
-    /// `skin_id_handle` 交给 WSAPI skins handler，`set_active` 免重启
-    /// 热翻。`skin_id` 读快照。
+    /// `skin_id_handle()` 交给 WSAPI skins handler，`set_active` 免重启
+    /// 热翻。`skin_id()` 读快照。
     #[cfg(feature = "skins")]
     skin_id: Arc<parking_lot::RwLock<String>>,
 }
@@ -401,7 +401,7 @@ impl WebServer {
     /// 注入皮肤装配（须在 `build_router` 前调用）：exe 同级 `skins/`
     /// 目录 + 激活 id（config `ui.skin`）。未注入 = `/skins/*` 路由不挂载
     /// （fail-closed，同 relay 路由装配哲学）。激活 id 被包进共享锁，
-    /// WSAPI skins handler 经 `skin_id_handle` 拿同一把锁。
+    /// WSAPI skins handler 经 `skin_id_handle()` 拿同一把锁。
     #[cfg(feature = "skins")]
     pub fn set_skins(&mut self, skins_dir: Option<String>, skin_id: String) {
         self.skins_dir = skins_dir;
@@ -652,7 +652,7 @@ impl WebServer {
             mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
 
         // minimal（无 feature）形态下这四个槽位别名退化为 Option<>（Copy），
-        // 字面量里 .clone 会触发 clippy::clone_on_copy（远端
+        // 字面量里 .clone() 会触发 clippy::clone_on_copy（远端
         // minimal clippy ；workspace 全量 feature unification 掩盖）。
         // 按 cfg 取值：full 形态 clone Arc 槽，minimal 形态直接 Copy。
         #[cfg(feature = "memory")]
@@ -1349,7 +1349,7 @@ impl WebServer {
         tracing::info!("[WebServer] Listening on {}", actual_addr);
 
         tokio::select! {
-            // 缺陷 12 修复：同 start——with_connect_info 挂载，
+            // 缺陷 12 修复：同 start()——with_connect_info 挂载，
             // 否则 webhook handler 的 ConnectInfo 提取必 500。
             result = axum::serve(
                 listener,
@@ -1404,7 +1404,7 @@ pub(crate) fn content_type_for(path: &str) -> String {
 
 /// CORS headers appended to every static-file response.
 ///
-/// The main CORS middleware is applied to the route router via `.layer`,
+/// The main CORS middleware is applied to the route router via `.layer()`,
 /// but on Linux/WebKitGTK the fallback handler may not inherit it.
 /// WebKitGTK is stricter than WebView2 (Chromium) about `crossorigin`
 /// module scripts — without `Access-Control-Allow-Origin` it silently
@@ -2730,7 +2730,7 @@ mod auth_tests;
 mod r4_tests;
 
 // AGT 覆盖率批次：签名/LSP 槽位、resolve_static_dir 与
-// DirectoryStaticFiles 越界、start 成功路径、relay 路由外壳（/d 双变体 +
+// DirectoryStaticFiles 越界、start() 成功路径、relay 路由外壳（/d 双变体 +
 // overview/enabled）、SSE 断线补拉双形态、process_messages 过滤链三裁决、
 // pump SessionCreated+Lagged、dispatch_outbound 路由矩阵。结构性豁免见
 // agt_tests 文件头注。

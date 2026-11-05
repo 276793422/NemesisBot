@@ -316,7 +316,7 @@ async fn r118_cancelled_force_update_restores_backup_via_drop_guard() {
             )
             .await
     });
-    // 等进入网络 await（此时备份 rename 已发生——它在 install 之前）。
+    // 等进入网络 await（此时备份 rename 已发生——它在 install() 之前）。
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if !server.received_requests().await.unwrap().is_empty() {
@@ -946,7 +946,7 @@ async fn install_convex_error_maps_chinese_prefix() {
     assert!(err.contains("no such skill"), "err: {err}");
 }
 
-// installed 列表顺序契约锁 ---
+// installed() 列表顺序契约锁 ---
 
 #[test]
 fn bug279_installed_skills_sorted_by_name() {

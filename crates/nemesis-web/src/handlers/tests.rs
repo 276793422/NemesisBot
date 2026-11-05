@@ -4529,7 +4529,7 @@ async fn stress_50_concurrent_write_with_verification() {
     }
 
     // 25 concurrent forge.config.save toggles（forge feature 可选——关时本批
-    // 退出，尾部总数断言按 handles.len 动态算，两形态都对）
+    // 退出，尾部总数断言按 handles.len() 动态算，两形态都对）
     #[cfg(feature = "forge")]
     for i in 0..25 {
         let ctx = ctx.clone();
