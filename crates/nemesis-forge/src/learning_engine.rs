@@ -723,9 +723,20 @@ impl LearningEngine {
                     let tool_sig = deploy_tool_signature(action);
 
                     // Write content to forge skills directory
+                    // 横扫族 C 四轮（2026-11-06）：写盘失败不再静默注册——旧
+                    // 形态 registry 说 Active、盘上没有 SKILL.md，还打无条件
+                    // 「Created skill」日志（部署假成功）。与同函数安全闸臂
+                    // 「不能部署 = 不落盘不注册」同口径：不能部署 = 不注册。
                     let artifact_dir = self.forge_dir.join("skills").join(&draft_name);
-                    if std::fs::create_dir_all(&artifact_dir).is_ok() {
-                        let _ = std::fs::write(artifact_dir.join("SKILL.md"), &content);
+                    if let Err(e) = std::fs::create_dir_all(&artifact_dir)
+                        .and_then(|_| std::fs::write(artifact_dir.join("SKILL.md"), &content))
+                    {
+                        tracing::warn!(
+                            name = %draft_name,
+                            error = %e,
+                            "[LearningEngine] skill SKILL.md write failed, not deploying (not registered)"
+                        );
+                        return;
                     }
 
                     // Register in registry
@@ -750,12 +761,20 @@ impl LearningEngine {
                     self.registry.add(artifact);
 
                     // Copy to workspace/skills/ with -forge suffix
+                    // （副本失败 WARN 留痕不回滚：forge 主副本已落盘已注册，
+                    // 缺副本=skills 列表看不见，横扫族 C 四轮，2026-11-06。）
                     if let Some(workspace) = self.forge_dir.parent() {
                         let ws_skill_dir = workspace
                             .join("skills")
                             .join(format!("{}-forge", draft_name));
-                        if std::fs::create_dir_all(&ws_skill_dir).is_ok() {
-                            let _ = std::fs::write(ws_skill_dir.join("SKILL.md"), &content);
+                        if let Err(e) = std::fs::create_dir_all(&ws_skill_dir)
+                            .and_then(|_| std::fs::write(ws_skill_dir.join("SKILL.md"), &content))
+                        {
+                            tracing::warn!(
+                                path = %ws_skill_dir.display(),
+                                error = %e,
+                                "[LearningEngine] workspace skill copy failed (forge primary copy intact)"
+                            );
                         }
                     }
 
@@ -917,7 +936,9 @@ impl LearningEngine {
                 continue;
             }
             // If any high-confidence pattern matches, remove the suggestion
-            let _ = std::fs::remove_file(entry.path());
+            // （清理面语义，横扫族 C 三轮：删除失败 WARN 留痕——静默滞留
+            // 会让同一建议下轮重复提出；下轮重试自愈）
+            nemesis_utils::fsutil::remove_file_resilient(entry.path());
         }
     }
 
@@ -1311,9 +1332,21 @@ impl LearningEngine {
                     let tool_sig = deploy_tool_signature(action);
 
                     // Write content to forge skills directory
+                    // 横扫族 C 四轮（2026-11-06）：与私有 execute_create_skill
+                    // 同口径——写盘失败 = 不能部署 = 不注册，result 诚实
+                    // failed（两条平行 create 路径必须同步演进，R17 纪律）。
                     let artifact_dir = self.forge_dir.join("skills").join(&draft_name);
-                    if std::fs::create_dir_all(&artifact_dir).is_ok() {
-                        let _ = std::fs::write(artifact_dir.join("SKILL.md"), &current_content);
+                    if let Err(e) = std::fs::create_dir_all(&artifact_dir).and_then(|_| {
+                        std::fs::write(artifact_dir.join("SKILL.md"), &current_content)
+                    }) {
+                        tracing::warn!(
+                            name = %draft_name,
+                            error = %e,
+                            "[LearningEngine] skill SKILL.md write failed, not deploying (not registered)"
+                        );
+                        result.status = "failed".to_string();
+                        result.error_msg = Some(format!("skill SKILL.md write failed: {e}"));
+                        return result;
                     }
 
                     // Register in registry

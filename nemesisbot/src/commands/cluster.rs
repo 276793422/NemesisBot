@@ -438,15 +438,18 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             "broadcast_interval".to_string(),
                             serde_json::Value::Number(broadcast_interval.into()),
                         );
-                        // REL-002：统一原子写入。
-                        let _ = nemesis_utils::write_file_atomic(
+                        // REL-002：统一原子写入。写失败不再静默宣称成功（横扫
+                        // 族 C 四轮，2026-11-06）——CLI 面用户意志写必须诚实。
+                        match nemesis_utils::write_file_atomic(
                             &cfg_path.to_string_lossy(),
                             serde_json::to_string_pretty(&cfg)
                                 .unwrap_or_default()
                                 .as_bytes(),
                             0o600,
-                        );
-                        println!("Configuration updated.");
+                        ) {
+                            Ok(()) => println!("Configuration updated."),
+                            Err(e) => eprintln!("配置写盘失败：{e}（变更未落盘，请重试）"),
+                        }
                     }
                 }
             } else {
@@ -631,13 +634,28 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         };
                         if let Some(key) = target_key {
                             if peers.remove(&key).is_some() {
-                                // REL-002：统一原子写入。
-                                let _ = nemesis_utils::write_file_atomic(
+                                // REL-002：统一原子写入。toml 序列化真实可败
+                                //（不同于 serde_json::Value）——失败不落盘诚实
+                                // 报错，写成功行只走写成功臂（横扫族 C 五轮，
+                                // 2026-11-06）。
+                                let serialized = match toml::to_string_pretty(&doc) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        return Err(anyhow::anyhow!(
+                                            "peers.toml 序列化失败：{e}（变更未落盘，peer 实际仍在）"
+                                        ));
+                                    }
+                                };
+                                match nemesis_utils::write_file_atomic(
                                     &peers_path.to_string_lossy(),
-                                    toml::to_string_pretty(&doc).unwrap_or_default().as_bytes(),
+                                    serialized.as_bytes(),
                                     0o600,
-                                );
-                                println!("  Peer {} removed.", id);
+                                ) {
+                                    Ok(()) => println!("  Peer {} removed.", id),
+                                    Err(e) => eprintln!(
+                                        "  peers.toml 写盘失败：{e}（变更未落盘，peer 实际仍在）"
+                                    ),
+                                }
                             } else {
                                 println!("  Peer {} not found.", id);
                             }
@@ -656,13 +674,18 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
                         match enable_peer_in_toml(&data, &id, true) {
                             Ok(new_data) => {
-                                // REL-002：统一原子写入。
-                                let _ = nemesis_utils::write_file_atomic(
+                                // REL-002：统一原子写入。写失败诚实报错（横扫
+                                // 族 C 四轮，2026-11-06）。
+                                match nemesis_utils::write_file_atomic(
                                     &peers_path.to_string_lossy(),
                                     new_data.as_bytes(),
                                     0o600,
-                                );
-                                println!("  Peer {} enabled.", id);
+                                ) {
+                                    Ok(()) => println!("  Peer {} enabled.", id),
+                                    Err(e) => eprintln!(
+                                        "  peers.toml 写盘失败：{e}（变更未落盘，实际仍为禁用）"
+                                    ),
+                                }
                             }
                             Err(msg) => println!("  {}", msg),
                         }
@@ -678,13 +701,18 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
                         match enable_peer_in_toml(&data, &id, false) {
                             Ok(new_data) => {
-                                // REL-002：统一原子写入。
-                                let _ = nemesis_utils::write_file_atomic(
+                                // REL-002：统一原子写入。写失败诚实报错（横扫
+                                // 族 C 四轮，2026-11-06）。
+                                match nemesis_utils::write_file_atomic(
                                     &peers_path.to_string_lossy(),
                                     new_data.as_bytes(),
                                     0o600,
-                                );
-                                println!("  Peer {} disabled.", id);
+                                ) {
+                                    Ok(()) => println!("  Peer {} disabled.", id),
+                                    Err(e) => eprintln!(
+                                        "  peers.toml 写盘失败：{e}（变更未落盘，实际仍为启用）"
+                                    ),
+                                }
                             }
                             Err(msg) => println!("  {}", msg),
                         }
@@ -946,14 +974,20 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     serde_json::Value::String(init_token.clone()),
                 );
             }
-            // REL-002：统一原子写入。
-            let _ = nemesis_utils::write_file_atomic(
+            // REL-002：统一原子写入。写失败 WARN 不致命——init 继续写
+            // peers.toml 并打印结果，用户从警告知晓配置未落盘（横扫族 C
+            // 四轮，2026-11-06）。
+            if let Err(e) = nemesis_utils::write_file_atomic(
                 &cfg_path.to_string_lossy(),
                 serde_json::to_string_pretty(&cluster_cfg)
                     .unwrap_or_default()
                     .as_bytes(),
                 0o600,
-            );
+            ) {
+                eprintln!(
+                    "  警告：config.cluster.json 写盘失败：{e}（token 未落盘，集群将无法鉴权）"
+                );
+            }
 
             // --- 写 peers.toml [node] 段（完整身份）---
             let cluster_dir = common::cluster_dir(&home);
@@ -1615,7 +1649,15 @@ fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
     let mut cfg: serde_json::Value = if path.exists() {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("读取 cluster 配置失败: {e}"))?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        // 横扫族 C 六轮（2026-11-06）：文件在但解析失败（损坏/半截写）不许
+        // 静默当 `{}`——本函数是读改写环，回写会把既有系统参数层
+        // （enabled/port/rpc_port/token/llm_timeout_secs 等）整段覆盖丢失。
+        serde_json::from_str(&content).map_err(|e| {
+            anyhow::anyhow!(
+                "cluster 配置解析失败（{}）：{e}；已拒绝写入，原配置未变更",
+                path.display()
+            )
+        })?
     } else {
         serde_json::json!({})
     };

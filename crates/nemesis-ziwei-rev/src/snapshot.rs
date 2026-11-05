@@ -149,14 +149,17 @@ impl SnapshotStore {
             })
             .collect();
         dirs.sort(); // 旧 → 新
-        // TTL（目录 mtime——目录名是 unixms 创建序号，不是绝对时间基准）
+        // TTL（目录 mtime——目录名是 unixms 创建序号，不是绝对时间基准）。
+        // 清理面语义（横扫族 C 三轮，2026-11-06）：删除改走 resilient——
+        // NotFound 仍算已删（计数语义不变），彻底失败 WARN 留痕不再静默；
+        // capacity 臂同。
         let mut removed = 0usize;
         for (_, p) in &dirs {
             let age = std::fs::metadata(p)
                 .and_then(|m| m.modified())
                 .map(|m| now.duration_since(m).unwrap_or_default())
                 .unwrap_or_default();
-            if age > ttl && nemesis_utils::fsutil::remove_dir_all_retry(p).is_ok() {
+            if age > ttl && nemesis_utils::fsutil::remove_dir_all_resilient(p) {
                 removed += 1;
             }
         }
@@ -164,7 +167,7 @@ impl SnapshotStore {
         let alive: Vec<(u64, PathBuf)> = dirs.iter().filter(|(_, p)| p.exists()).cloned().collect();
         if alive.len() > max_kept {
             for (_, p) in &alive[..alive.len() - max_kept] {
-                if nemesis_utils::fsutil::remove_dir_all_retry(p).is_ok() {
+                if nemesis_utils::fsutil::remove_dir_all_resilient(p) {
                     removed += 1;
                 }
             }

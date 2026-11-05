@@ -769,3 +769,78 @@ async fn test_pool_return_same_key_twice_does_not_overwrite_entry() {
     pool.close();
     server.abort();
 }
+
+/// return_connection 幕帘竞态窗回归锁（2026-11-05 风险报告评审）：
+/// 旧实现快路径守卫（读 closed）与拿 conns 锁插表/记账之间无原子性，
+/// close()（先 store(true) 再拿锁清三账）可在窗口内整体插队——活连接
+/// 塞进已关池（滞留活 socket，forget 的许可无条目可释放）或死臂对已
+/// 归零的 active_count fetch_sub（debug panic / release 回绕）。修复 =
+/// 拿锁后锁内复检 closed，记账同临界区（与 remove/cleanup_dead 既有
+/// 锁内记账模式对齐）。
+///
+/// 模拟形态：测试线程持 conns 锁（归还线程已过快路径、阻塞在拿锁），
+/// 持锁下手工执行 close() 的全部副作用（store(true) + 清三账——close
+/// 本体拿同一把锁，持锁模拟 = close 赢得插队），放锁后归还线程锁内
+/// 复检必读 true → 幕帘臂。另一种真实交错（线程未达锁时 close 已整体
+/// 完成 → 快路径幕帘）产生相同可观测终态，断言无 flake。
+#[tokio::test]
+async fn test_return_connection_curtain_recheck_closes_race_window() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+    let max_conns = 8usize;
+    let pool = std::sync::Arc::new(Pool::new(AsyncPoolConfig {
+        max_conns,
+        max_conns_per_node: 3,
+        ..Default::default()
+    }));
+
+    let (key, conn) = pool.get("node-race", &addr).await.unwrap();
+    assert_eq!(pool.active_connection_count(), 1);
+    // dial forget 了 1 个许可
+    assert_eq!(pool.semaphore.available_permits(), max_conns - 1);
+
+    // 持锁握手：归还线程过快路径守卫后必然阻塞在 conns.lock() 上
+    let guard = pool.conns.lock();
+    let handle = {
+        let pool = std::sync::Arc::clone(&pool);
+        let key = key.clone();
+        std::thread::spawn(move || pool.return_connection(key, conn))
+    };
+    // 给归还线程时间过守卫、抵达锁点（不足时线程走快路径幕帘，终态相同）
+    std::thread::sleep(Duration::from_millis(50));
+    // 持锁下执行 close() 的全部记账步骤（close 本体拿同一把锁；此处持锁
+    // 模拟 = close 的插队在本函数守卫通过之后、拿锁之前完成）
+    pool.closed.store(true, Ordering::SeqCst);
+    pool.node_counts.lock().clear();
+    pool.active_count.store(0, Ordering::SeqCst);
+    // 池内无条目 → close 不补许可
+    drop(guard);
+
+    handle.join().unwrap();
+
+    // 幕帘语义终态：归还走幕帘臂（只关连接 + 补还许可），不碰已清三账
+    assert_eq!(
+        pool.active_connection_count(),
+        0,
+        "active_count 保持 close 归零值（下溢形态=usize::MAX）"
+    );
+    assert!(
+        pool.conns.lock().is_empty(),
+        "已关池不得滞留归还连接（活 socket 泄漏形态）"
+    );
+    assert_eq!(
+        pool.node_counts.lock().len(),
+        0,
+        "节点计数不得复活（幻影键形态）"
+    );
+    assert_eq!(
+        pool.semaphore.available_permits(),
+        max_conns,
+        "归还连接 dial 消耗的许可由幕帘臂补还（许可泄漏形态={}-1）",
+        max_conns
+    );
+
+    server.abort();
+}

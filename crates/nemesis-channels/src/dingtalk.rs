@@ -345,24 +345,18 @@ impl DingTalkChannel {
         };
 
         // Store session webhook for replies
-        if let Some(ref webhook) = msg.session_webhook {
-            if !webhook.is_empty() {
-                session_webhooks.insert(chat_id.clone(), webhook.clone());
-            }
+        if let Some(ref webhook) = msg.session_webhook.filter(|w| !w.is_empty()) {
+            session_webhooks.insert(chat_id.clone(), webhook.clone());
         }
 
-        let is_group = msg.conversation_type.as_deref().map_or(false, |t| t == "2");
+        let is_group = msg.conversation_type.as_deref().is_some_and(|t| t == "2");
 
         let mut metadata = std::collections::HashMap::new();
-        if let Some(ref nick) = msg.sender_nick {
-            if !nick.is_empty() {
-                metadata.insert("sender_nick".to_string(), nick.clone());
-            }
+        if let Some(ref nick) = msg.sender_nick.filter(|n| !n.is_empty()) {
+            metadata.insert("sender_nick".to_string(), nick.clone());
         }
-        if let Some(ref msg_type) = msg.msg_type {
-            if !msg_type.is_empty() {
-                metadata.insert("msg_type".to_string(), msg_type.clone());
-            }
+        if let Some(ref msg_type) = msg.msg_type.filter(|t| !t.is_empty()) {
+            metadata.insert("msg_type".to_string(), msg_type.clone());
         }
         metadata.insert(
             "is_group".to_string(),
@@ -487,9 +481,8 @@ impl DingTalkChannel {
                                     backoff = INITIAL_BACKOFF;
 
                                     // Poll the stream endpoint for events
-                                    let poll_url = format!(
-                                        "https://api.dingtalk.com/v1.0/gateway/connections/poll",
-                                    );
+                                    let poll_url =
+                                        "https://api.dingtalk.com/v1.0/gateway/connections/poll";
                                     let mut poll_interval =
                                         tokio::time::interval(std::time::Duration::from_secs(1));
                                     // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的
@@ -512,7 +505,7 @@ impl DingTalkChannel {
                                                 }
 
                                                 match http
-                                                    .post(&poll_url)
+                                                    .post(poll_url)
                                                     .header("X-Acs-Dingtalk-Access-Token", &token)
                                                     .json(&serde_json::json!({
                                                         "endpoint": endpoint
@@ -521,8 +514,14 @@ impl DingTalkChannel {
                                                     .await
                                                 {
                                                     Ok(resp) if resp.status().is_success() => {
-                                                        let body_text = resp.text().await.unwrap_or_default();
-                                                        if let Ok(events) = serde_json::from_str::<Vec<StreamEvent>>(&body_text) {
+                                                        let status = resp.status();
+                                                        let body_text =
+                                                            resp.text().await.unwrap_or_default();
+                                                        if let Ok(events) =
+                                                            serde_json::from_str::<Vec<StreamEvent>>(
+                                                                &body_text,
+                                                            )
+                                                        {
                                                             for event in &events {
                                                                 Self::parse_and_dispatch_event(
                                                                     event,
@@ -531,12 +530,23 @@ impl DingTalkChannel {
                                                                     &allow_from,
                                                                 );
                                                             }
-                                                        } else if let Ok(event) = serde_json::from_str::<StreamEvent>(&body_text) {
+                                                        } else if let Ok(event) =
+                                                            serde_json::from_str::<StreamEvent>(
+                                                                &body_text,
+                                                            )
+                                                        {
                                                             Self::parse_and_dispatch_event(
                                                                 &event,
                                                                 &bus_sender,
                                                                 &session_webhooks,
                                                                 &allow_from,
+                                                            );
+                                                        } else {
+                                                            // 畸形 200 body = 在飞事件静默丢失，必须留痕（对齐下方非 200 warn 风格）
+                                                            warn!(
+                                                                status = %status,
+                                                                body = %body_text,
+                                                                "[DingTalkChannel] stream poll returned unparseable body, events dropped"
                                                             );
                                                         }
                                                     }

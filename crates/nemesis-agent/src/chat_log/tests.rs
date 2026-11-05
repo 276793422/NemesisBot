@@ -1,5 +1,12 @@
 use super::*;
 
+/// degraded 注册表按 kind 覆盖 detail（「最新现场」语义，degraded.rs 12-14 行）。
+/// 本模块触发 kind="chat_log" 失败登记的用例，若 report→snapshot 窗口与他方
+/// 报告交叠，自己的 tag 会被他方 detail 覆盖（2026-11-06 coverage job 连续
+/// 两次实录：opfail tag 蒸发 → 回归锁假红）。模块级互斥把登记敏感用例的
+/// 报告窗口串行化——只护登记窗口本身，不碰其余用例的并行度。
+static DEGRADED_REPORT_SER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn test_safe_key_conversion() {
     let path = log_path("agent:main:main");
@@ -271,7 +278,11 @@ fn test_directory_at_log_path_is_tolerated() {
     watchdog.step(1); // path resolved
     std::fs::create_dir_all(&path).unwrap();
     watchdog.step(2); // dir created
-    append_chat_log(&key, "user", "blocked"); // warn + return
+    let _ser = DEGRADED_REPORT_SER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    append_chat_log(&key, "user", "blocked"); // warn + report(chat_log) + return
+    drop(_ser);
     watchdog.step(3); // append returned
     let (rows, total, _, _) = read_chat_log(&key, 10, None);
     watchdog.step(4); // read returned
@@ -439,7 +450,11 @@ fn test_clear_chat_log_truncates_both_files() {
     let key2 = uniq_key("clearblocked");
     let lp = log_path(&key2);
     std::fs::create_dir_all(&lp).unwrap();
-    clear_chat_log(&key2).expect_err("dir squatter = 诚实 Err（BUG-20261030-205）"); // warn + Err
+    let _ser = DEGRADED_REPORT_SER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    clear_chat_log(&key2).expect_err("dir squatter = 诚实 Err（BUG-20261030-205）"); // warn + report(chat_log) + Err
+    drop(_ser);
     std::fs::remove_dir(&lp).unwrap();
 }
 
@@ -1075,6 +1090,11 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
         "content": "x",
         "timestamp": "2026-10-30T00:00:00+08:00"
     })];
+    // 报告窗口互斥（见文件顶 DEGRADED_REPORT_SER 注）：write 的 open 失败
+    // 登记与 snapshot 断言之间不许他方 chat_log 报告插入覆盖 tag。
+    let _ser = DEGRADED_REPORT_SER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     assert_eq!(write_chat_log_rows(&key, &rows), 0, "open 失败 = 0 行");
     // 降级登记表有痕（详情带本测试独有 tag 路径段，避开并行测试噪声）。
     assert!(
@@ -1083,6 +1103,7 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
             .any(|d| d.kind == "chat_log" && d.detail.contains(&tag)),
         "fork copy open 失败必须进降级登记表"
     );
+    drop(_ser);
     std::fs::remove_dir(&lp).unwrap();
 }
 

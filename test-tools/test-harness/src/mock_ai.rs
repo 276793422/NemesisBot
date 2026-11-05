@@ -63,7 +63,19 @@ impl MockAiServer {
                     if shutdown.load(Ordering::SeqCst) {
                         break;
                     }
-                    let Ok(mut stream) = stream else { break };
+                    // A transient accept error (Windows classic: WSAECONNRESET
+                    // for a connection reset out of the backlog, documented in
+                    // the Winsock FAQ) must NOT kill the mock server — the old
+                    // `else { break }` silently deaded it and every later
+                    // request got connection-refused (an untraceable fake
+                    // red). Break only on the shutdown path; otherwise keep
+                    // serving (BUG-20261106-013).
+                    let Ok(mut stream) = stream else {
+                        if shutdown.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        continue;
+                    };
                     let script = Arc::clone(&script);
                     let hits = Arc::clone(&hits);
                     // One request per connection: we always answer with
