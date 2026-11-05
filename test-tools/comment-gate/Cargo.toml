@@ -1,0 +1,15 @@
+[package]
+name = "comment-gate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "comment-gate"
+path = "src/main.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits", "fold"] }
+proc-macro2 = "1"
+sha2 = "0.10"
+anyhow = "1"

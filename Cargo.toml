@@ -75,6 +75,7 @@ members = [
     "crates/nemesis-ziwei-rev",
     "test-tools/fake-qmp",
     "test-tools/verify-probe",
+    "test-tools/comment-gate",
 ]
 
 [workspace.package]
