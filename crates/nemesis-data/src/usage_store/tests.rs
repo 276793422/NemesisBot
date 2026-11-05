@@ -605,3 +605,72 @@ fn guard_events_recorded_and_merged_into_health() {
 
     let _ = std::fs::remove_file(path);
 }
+
+// ===========================================================================
+// BUG-20261105-013：insert_request_log_dedup（trace_id 幂等插入）。
+// 集群回调记账场景：同一 task_id 的重复回调（worker 重试 / G5 恢复轮询
+// 重放）不得翻倍 token 账本。
+// ===========================================================================
+
+/// 首插成功；同 trace_id 二插被跳过（返回 false，行数不增）；不同
+/// trace_id 不受影响。去重只看 trace_id 精确相等，不碰常规日志。
+#[test]
+fn dedup_insert_skips_duplicate_trace_id() {
+    let (store, path) = open_store("dedup_insert");
+
+    let mk = |trace_id: &str, input: i64| crate::RequestLog {
+        id: 0,
+        trace_id: trace_id.to_string(),
+        model: format!("cluster_delegate:{trace_id}"),
+        provider_type: "cluster".to_string(),
+        input_tokens: input,
+        output_tokens: 3,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        total_cost_usd: 0.0,
+        latency_ms: 0,
+        status_code: 200,
+        error_message: None,
+        is_streaming: false,
+        created_at: 1_700_000_000,
+        pricing_model: String::new(),
+        input_cost_usd: 0.0,
+        output_cost_usd: 0.0,
+        cache_creation_cost_usd: 0.0,
+        cache_read_cost_usd: 0.0,
+        first_token_ms: None,
+        session_key: format!("cluster_rpc:node-a/{trace_id}"),
+    };
+
+    // 首插：落账。
+    let first = store
+        .insert_request_log_dedup(&mk("cluster-callback:t1", 100))
+        .expect("first insert");
+    assert!(first, "first insert should land");
+
+    // 重复回调重放（同 trace_id）：幂等跳过。
+    let dup = store
+        .insert_request_log_dedup(&mk("cluster-callback:t1", 100))
+        .expect("dup insert");
+    assert!(!dup, "duplicate trace_id should be skipped");
+
+    // 不同任务照常落账；普通请求 trace_id 不受去重影响。
+    assert!(
+        store
+            .insert_request_log_dedup(&mk("cluster-callback:t2", 50))
+            .expect("second task insert")
+    );
+    assert!(
+        store
+            .insert_request_log_dedup(&mk("tr-plain-request", 7))
+            .expect("plain request insert")
+    );
+
+    // 账本行数 = 3（去重后），t1 的 token 只记一次。
+    let summary = store
+        .query_summary(0, 2_000_000_000)
+        .expect("summary query");
+    assert_eq!(summary.total_requests, 3);
+
+    let _ = std::fs::remove_file(path);
+}

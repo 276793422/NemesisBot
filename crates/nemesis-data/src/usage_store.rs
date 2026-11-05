@@ -145,6 +145,69 @@ impl DataStore {
         Ok(())
     }
 
+    /// Idempotent insert: skip the write when a row with the same `trace_id`
+    /// already exists (BUG-20261105-013). Cluster callback usage rows use
+    /// `trace_id = "cluster-callback:{task_id}"`（单任务一笔聚合账），worker
+    /// 回调重试（send_callback 至多 3 次）/ G5 恢复轮询重复回调时同一
+    /// trace_id 重放——裸 INSERT 会把 token 记账翻倍，预算闸
+    /// （`board.budget.max_tokens_per_parent`）提前耗尽错误冻结单据。
+    /// 单语句 SELECT-INSERT 原子去重；返回 `false` = 命中重复已跳过。
+    ///
+    /// 语义边界：只对 `trace_id` 精确相等去重——普通 LLM 请求日志
+    /// trace_id 各自独立，互不影响；`cluster-callback:` 前缀为集群回调
+    /// 专用，不会与常规请求 trace_id 碰撞。
+    ///
+    /// usage-store 关：no-op stub（返回 `false` = 未落账，与
+    /// [`Self::insert_request_log`] 的空账本语义一致）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn insert_request_log_dedup(&self, _log: &RequestLog) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    #[cfg(feature = "usage-store")]
+    pub fn insert_request_log_dedup(&self, log: &RequestLog) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let inserted = conn
+            .execute(
+                "INSERT INTO request_logs
+                    (trace_id, model, provider_type, input_tokens, output_tokens,
+                     cache_creation_tokens, cache_read_tokens, total_cost_usd,
+                     latency_ms, status_code, error_message, is_streaming, created_at,
+                     pricing_model, input_cost_usd, output_cost_usd,
+                     cache_creation_cost_usd, cache_read_cost_usd,
+                     first_token_ms, session_key)
+                SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM request_logs WHERE trace_id = ?21
+                )",
+                params![
+                    log.trace_id,
+                    log.model,
+                    log.provider_type,
+                    log.input_tokens,
+                    log.output_tokens,
+                    log.cache_creation_tokens,
+                    log.cache_read_tokens,
+                    log.total_cost_usd,
+                    log.latency_ms,
+                    log.status_code,
+                    log.error_message,
+                    log.is_streaming as i32,
+                    log.created_at,
+                    log.pricing_model,
+                    log.input_cost_usd,
+                    log.output_cost_usd,
+                    log.cache_creation_cost_usd,
+                    log.cache_read_cost_usd,
+                    log.first_token_ms,
+                    log.session_key,
+                    log.trace_id,
+                ],
+            )
+            .map_err(|e| format!("insert_request_log_dedup: {e}"))?;
+        Ok(inserted == 1)
+    }
+
     /// Query aggregated summary for a time range.
     ///
     /// usage-store 关：全零聚合（空账本语义，与"库从未写入"一致）。

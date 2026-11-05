@@ -193,8 +193,12 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     )>::new()));
     // P4/B2b 自检取证路由表：selfcheck 派发不写 issue_dispatch，callback
     // 凭本表识别取证任务并路由到二段验收（评审任务与回调闭包共享）。
+    // BUG-20261105-012：路由键同步落 board store selfcheck_pending 持久
+    // 表——gateway 重启清零内存表后，worker 取证回调由持久层兜底路由 +
+    // sweep 恢复臂/轮询臂收口（此前证据被静默销毁、单据永久卡 in_review）。
     #[cfg(all(feature = "board", feature = "cluster"))]
-    let board_selfcheck_registry = crate::board_review::SelfcheckRegistry::new();
+    let board_selfcheck_registry =
+        crate::board_review::SelfcheckRegistry::with_store(board_store.clone());
     #[cfg(feature = "cluster")]
     {
         // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份；
@@ -1140,163 +1144,172 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         }
 
         // --- W2 P4: 派发超时 sweep（board 派发无人回报的兜底）---
-        // board.dispatch_timeout_secs = 0 关闭；扫描间隔
-        // dispatch_sweep_interval_secs（下限 1s）。失败处置（⛔ 评论 + 通知）
-        // 在 sweep_dispatch_timeouts 内完成，赢 fail_dispatch_checked 竞态才动账。
+        // 派发超时部分受 per-tick 的 board.dispatch_timeout_secs 闸（=0 关闭）；
+        // 扫描间隔 dispatch_sweep_interval_secs（下限 1s）。失败处置
+        // （⛔ 评论 + 通知）在 sweep_dispatch_timeouts 内完成，赢
+        // fail_dispatch_checked 竞态才动账。
+        // BUG-20261105-012：ticker 无条件装配——自检取证恢复臂
+        // （sweep_selfcheck_pending）随本 ticker 常开，不随
+        // dispatch_timeout_secs=0 短路（恢复是正确性机制，空闲成本 =
+        // 每 tick 一条 list_selfcheck_pending SQL）。
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let sweep_cfg = cfg.board.clone().unwrap_or_default();
-            if sweep_cfg.dispatch_timeout_secs > 0 {
-                let store_for_sweep = board_store.clone();
-                let cluster_for_sweep = cluster.clone();
-                let home_for_sweep = home.clone();
-                // M5-2（2026-10-10 机制加固）：清扫失败的 issue 回流验收
-                // 决策链——评审依赖集在此快照（与派发写回回调同一构造）。
-                // AOR 批三 5.2：sweep 策略化后自治链共用同一依赖集
-                // （estop/换节点加权/审计漏斗全走 BoardReviewDeps）。
-                let sweep_moderator = board_moderator_loop.clone();
-                let sweep_estop = estop.clone();
-                let sweep_estop_parked = board_estop_parked.clone();
-                let sweep_selfcheck = board_selfcheck_registry.clone();
-                // P4-d：评审结论→交付账本闭环的审计插件槽（同回调侧
-                // security_slot_for_cb 的惰性 get() 语义）。
-                #[cfg(feature = "security")]
-                let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
-                let sweep_workspace = home.join("workspace");
-                tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                        sweep_cfg.dispatch_sweep_interval_secs.max(1),
-                    ));
-                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                    // CD6（裁决⑫，2026-09-17）：mtime 缓存——config 文件未
-                    // 变化不重读，消除派发 sweep 每 20s tick 触发 load_config
-                    // 两条 INFO 刷屏；热生效语义保留（R4：改文件 → mtime 变化
-                    // → 下个 tick 重新现读）。AOR 批三 5.2：缓存携带
-                    // autonomy + max_redispatch（同一次 load_config 取齐，
-                    // 三键同步热生效）。AOR 批三 5.3：再带 replan 开关 +
-                    // unknown 阻塞超时（触发点④ 周期体检的两个闸参数）。
-                    let mut sweep_cfg_cache: Option<(
-                        std::time::SystemTime,
-                        u64,
-                        bool,
-                        u32,
-                        bool,
-                        u64,
-                    )> = None;
-                    loop {
-                        ticker.tick().await;
-                        let Some(store) = store_for_sweep.as_ref() else {
-                            continue;
-                        };
-                        // 超时阈值/自治开关/重派预算每 tick 现读（2026-09-15
-                        // R4 真机实证：config.set 改值后 sweep 仍用启动烘焙值
-                        // 跑到底——与旗标类键「每次现读」语义对齐；timeout
-                        // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆，
-                        // autonomy 回落 false（从严）。
-                        let (
-                            timeout_secs,
-                            autonomous,
-                            max_redispatch,
-                            replan_enabled,
-                            replan_unknown_timeout,
-                        ) = {
-                            let path = home_for_sweep.join("config.json");
-                            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                            let cached = match (mtime.as_ref(), sweep_cfg_cache.as_ref()) {
-                                (Some(t), Some((cached_t, v, a, m, re, ru))) if t == cached_t => {
-                                    Some((*v, *a, *m, *re, *ru))
+            let store_for_sweep = board_store.clone();
+            let cluster_for_sweep = cluster.clone();
+            let home_for_sweep = home.clone();
+            // M5-2（2026-10-10 机制加固）：清扫失败的 issue 回流验收
+            // 决策链——评审依赖集在此快照（与派发写回回调同一构造）。
+            // AOR 批三 5.2：sweep 策略化后自治链共用同一依赖集
+            // （estop/换节点加权/审计漏斗全走 BoardReviewDeps）。
+            let sweep_moderator = board_moderator_loop.clone();
+            let sweep_estop = estop.clone();
+            let sweep_estop_parked = board_estop_parked.clone();
+            let sweep_selfcheck = board_selfcheck_registry.clone();
+            // P4-d：评审结论→交付账本闭环的审计插件槽（同回调侧
+            // security_slot_for_cb 的惰性 get() 语义）。
+            #[cfg(feature = "security")]
+            let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
+            let sweep_workspace = home.join("workspace");
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                    sweep_cfg.dispatch_sweep_interval_secs.max(1),
+                ));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // CD6（裁决⑫，2026-09-17）：mtime 缓存——config 文件未
+                // 变化不重读，消除派发 sweep 每 20s tick 触发 load_config
+                // 两条 INFO 刷屏；热生效语义保留（R4：改文件 → mtime 变化
+                // → 下个 tick 重新现读）。AOR 批三 5.2：缓存携带
+                // autonomy + max_redispatch（同一次 load_config 取齐，
+                // 三键同步热生效）。AOR 批三 5.3：再带 replan 开关 +
+                // unknown 阻塞超时（触发点④ 周期体检的两个闸参数）。
+                let mut sweep_cfg_cache: Option<(
+                    std::time::SystemTime,
+                    u64,
+                    bool,
+                    u32,
+                    bool,
+                    u64,
+                )> = None;
+                loop {
+                    ticker.tick().await;
+                    let Some(store) = store_for_sweep.as_ref() else {
+                        continue;
+                    };
+                    // 超时阈值/自治开关/重派预算每 tick 现读（2026-09-15
+                    // R4 真机实证：config.set 改值后 sweep 仍用启动烘焙值
+                    // 跑到底——与旗标类键「每次现读」语义对齐；timeout
+                    // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆，
+                    // autonomy 回落 false（从严）。
+                    let (
+                        timeout_secs,
+                        autonomous,
+                        max_redispatch,
+                        replan_enabled,
+                        replan_unknown_timeout,
+                    ) = {
+                        let path = home_for_sweep.join("config.json");
+                        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                        let cached = match (mtime.as_ref(), sweep_cfg_cache.as_ref()) {
+                            (Some(t), Some((cached_t, v, a, m, re, ru))) if t == cached_t => {
+                                Some((*v, *a, *m, *re, *ru))
+                            }
+                            _ => {
+                                let parsed = nemesis_config::load_config(&path)
+                                    .ok()
+                                    .and_then(|c| c.board);
+                                let v = parsed
+                                    .as_ref()
+                                    .map(|b| b.dispatch_timeout_secs)
+                                    .unwrap_or(sweep_cfg.dispatch_timeout_secs);
+                                let a = parsed.as_ref().map(|b| {
+                                    b.autonomy == nemesis_config::BoardAutonomy::Autonomous
+                                });
+                                let m = parsed
+                                    .as_ref()
+                                    .map(|b| b.max_redispatch)
+                                    .unwrap_or(sweep_cfg.max_redispatch);
+                                let re = parsed.as_ref().map(|b| b.replan.enabled).unwrap_or(true);
+                                let ru = parsed
+                                    .as_ref()
+                                    .map(|b| b.replan.unknown_block_timeout_secs)
+                                    .unwrap_or(0);
+                                let tuple = (v, a.unwrap_or(false), m, re, ru);
+                                if let Some(t) = mtime {
+                                    sweep_cfg_cache =
+                                        Some((t, tuple.0, tuple.1, tuple.2, tuple.3, tuple.4));
                                 }
-                                _ => {
-                                    let parsed = nemesis_config::load_config(&path)
-                                        .ok()
-                                        .and_then(|c| c.board);
-                                    let v = parsed
-                                        .as_ref()
-                                        .map(|b| b.dispatch_timeout_secs)
-                                        .unwrap_or(sweep_cfg.dispatch_timeout_secs);
-                                    let a = parsed.as_ref().map(|b| {
-                                        b.autonomy == nemesis_config::BoardAutonomy::Autonomous
-                                    });
-                                    let m = parsed
-                                        .as_ref()
-                                        .map(|b| b.max_redispatch)
-                                        .unwrap_or(sweep_cfg.max_redispatch);
-                                    let re =
-                                        parsed.as_ref().map(|b| b.replan.enabled).unwrap_or(true);
-                                    let ru = parsed
-                                        .as_ref()
-                                        .map(|b| b.replan.unknown_block_timeout_secs)
-                                        .unwrap_or(0);
-                                    let tuple = (v, a.unwrap_or(false), m, re, ru);
-                                    if let Some(t) = mtime {
-                                        sweep_cfg_cache =
-                                            Some((t, tuple.0, tuple.1, tuple.2, tuple.3, tuple.4));
-                                    }
-                                    Some(tuple)
-                                }
-                            };
-                            cached.unwrap_or((
-                                sweep_cfg.dispatch_timeout_secs,
-                                false,
-                                sweep_cfg.max_redispatch,
-                                true,
-                                0,
-                            ))
+                                Some(tuple)
+                            }
                         };
-                        if timeout_secs == 0 {
-                            continue;
-                        }
-                        // AOR 批三 5.2：sweep 策略化——自治链（预算/冻结/换节点
-                        // 重派）在 sweep 内闭环，返回列表只剩回落评审链的
-                        // issue（assisted 全量 + 自治的无候选/重派失败臂）。
-                        let sweep_deps = crate::board_review::BoardReviewDeps {
-                            store: store.clone(),
-                            workspace: sweep_workspace.clone(),
-                            home: home_for_sweep.clone(),
-                            moderator_loop: sweep_moderator.clone(),
-                            cluster: cluster_for_sweep.clone(),
-                            estop: sweep_estop.clone(),
-                            estop_parked: sweep_estop_parked.clone(),
-                            selfcheck: sweep_selfcheck.clone(),
-                            #[cfg(feature = "security")]
-                            security_slot: Some(security_slot_for_sweep.clone()),
-                        };
-                        for review_issue_id in sweep_dispatch_timeouts(
+                        cached.unwrap_or((
+                            sweep_cfg.dispatch_timeout_secs,
+                            false,
+                            sweep_cfg.max_redispatch,
+                            true,
+                            0,
+                        ))
+                    };
+                    // AOR 批三 5.2：sweep 策略化——自治链（预算/冻结/换节点
+                    // 重派）在 sweep 内闭环，返回列表只剩回落评审链的
+                    // issue（assisted 全量 + 自治的无候选/重派失败臂）。
+                    // BUG-20261105-012：自检取证路由持久层兜底（臂 A
+                    // 二段残留重放 + 臂 B 恢复轮询/超龄收口）——**在
+                    // 超时闸之前**：恢复是正确性机制，不随 dispatch
+                    // timeout=0（用户关超时 sweep）一起短路。
+                    let sweep_deps = crate::board_review::BoardReviewDeps {
+                        store: store.clone(),
+                        workspace: sweep_workspace.clone(),
+                        home: home_for_sweep.clone(),
+                        moderator_loop: sweep_moderator.clone(),
+                        cluster: cluster_for_sweep.clone(),
+                        estop: sweep_estop.clone(),
+                        estop_parked: sweep_estop_parked.clone(),
+                        selfcheck: sweep_selfcheck.clone(),
+                        #[cfg(feature = "security")]
+                        security_slot: Some(security_slot_for_sweep.clone()),
+                    };
+                    // BUG-20261105-012：自检取证路由持久层兜底（臂 A
+                    // 二段残留重放 + 臂 B 恢复轮询/超龄收口）。
+                    crate::board_review::sweep_selfcheck_pending(&sweep_deps).await;
+                    // 派发超时 sweep：0=用户显式关（selfcheck 兜底臂
+                    // 不受此闸——见上注）。
+                    if timeout_secs == 0 {
+                        continue;
+                    }
+                    for review_issue_id in sweep_dispatch_timeouts(
+                        &sweep_deps,
+                        timeout_secs,
+                        autonomous,
+                        max_redispatch,
+                    ) {
+                        crate::board_review::spawn_board_review(
+                            sweep_deps.clone(),
+                            review_issue_id,
+                        );
+                    }
+                    // AOR 批三 5.3 触发点④：子树全终态但 FINISH 谓词被未
+                    // 裁决 unknown 阻塞超时 → 起草重规划建议（周期体检
+                    // 兜底——终态后无事件可挂；0=关）。
+                    if replan_enabled && replan_unknown_timeout > 0 {
+                        for replan_issue_id in crate::board_replan::sweep_unknown_block_candidates(
                             &sweep_deps,
-                            timeout_secs,
-                            autonomous,
-                            max_redispatch,
+                            replan_unknown_timeout,
                         ) {
-                            crate::board_review::spawn_board_review(
+                            crate::board_replan::spawn_replan_draft(
                                 sweep_deps.clone(),
-                                review_issue_id,
+                                replan_issue_id,
+                                "unknown_block_timeout",
                             );
                         }
-                        // AOR 批三 5.3 触发点④：子树全终态但 FINISH 谓词被未
-                        // 裁决 unknown 阻塞超时 → 起草重规划建议（周期体检
-                        // 兜底——终态后无事件可挂；0=关）。
-                        if replan_enabled && replan_unknown_timeout > 0 {
-                            for replan_issue_id in
-                                crate::board_replan::sweep_unknown_block_candidates(
-                                    &sweep_deps,
-                                    replan_unknown_timeout,
-                                )
-                            {
-                                crate::board_replan::spawn_replan_draft(
-                                    sweep_deps.clone(),
-                                    replan_issue_id,
-                                    "unknown_block_timeout",
-                                );
-                            }
-                        }
                     }
-                });
-                info!(
-                    "[Gateway] Board dispatch sweep armed (timeout={}s, interval={}s)",
-                    sweep_cfg.dispatch_timeout_secs,
-                    sweep_cfg.dispatch_sweep_interval_secs.max(1)
-                );
-            }
+                }
+            });
+            info!(
+                "[Gateway] Board dispatch sweep armed (timeout={}s, interval={}s)",
+                sweep_cfg.dispatch_timeout_secs,
+                sweep_cfg.dispatch_sweep_interval_secs.max(1)
+            );
         }
 
         // --- F-U3-4（2026-09-15 U3 真机）：停车场周期兜底 sweep ticker ---
@@ -1512,6 +1525,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         "[Gateway] peer_chat_callback selfcheck branch: task_id={}, issue={}",
                         task_id, sc_issue_id
                     );
+                    // BUG-20261105-012：路由落地持久行——status/取证内容
+                    // 烧入 selfcheck_pending（二段完成前 gateway 崩溃由
+                    // sweep 臂 A 重放；重复回调不覆盖已烧入证据）。
+                    if let Some(sc_store) = board_store_for_cb.as_ref()
+                        && let Err(e) = sc_store.mark_selfcheck_routed(task_id, status, fail_text)
+                    {
+                        warn!("[Gateway] selfcheck 路由落地失败（task {task_id}）：{e}");
+                    }
                     crate::board_review::spawn_selfcheck_second_stage(
                         crate::board_review::BoardReviewDeps {
                             store: board_store_for_cb.clone().expect(
@@ -1530,6 +1551,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         sc_issue_id,
                         status.to_string(),
                         fail_text.to_string(),
+                        Some(task_id.to_string()),
                     );
                     // TaskManager 状态收口（同 Route 3 语义）。
                     let result_value = serde_json::json!({

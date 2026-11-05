@@ -8,6 +8,10 @@
 /// 家族；per-task 粒度让 token 预算闸能按派发行精确聚合，`{worker}%` LIKE
 /// 前缀聚合同时可用）。诚实边界：无 usage（旧 worker / 错误回调）/ 无
 /// DataStore / 落库失败 → 静默跳过（warn），绝不影响回调路由。
+/// BUG-20261105-013：worker 回调重试 / G5 恢复轮询会重放同一回调（同
+/// task_id），记账走 trace_id 去重幂等插入（`cluster-callback:{task_id}`
+/// 单任务一笔），重复回调不再翻倍 token 账本——与同 handler 的
+/// `record_delivery`（`{task_id}:branch` 幂等键）对齐。
 #[cfg(feature = "cluster")] // 唯一消费点在 peer_chat_callback（集群回调闭包内）
 pub(crate) fn record_cluster_usage(
     ds: Option<&std::sync::Arc<nemesis_data::DataStore>>,
@@ -55,8 +59,16 @@ pub(crate) fn record_cluster_usage(
         first_token_ms: None,
         session_key: format!("cluster_rpc:{source_node}/{task_id}"),
     };
-    if let Err(e) = ds.insert_request_log(&log) {
-        tracing::warn!("[Gateway] Failed to record cluster callback usage: {e}");
+    match ds.insert_request_log_dedup(&log) {
+        Ok(true) => {}
+        Ok(false) => {
+            // BUG-20261105-013：同 task_id 重复回调（worker 重试 / 恢复
+            // 轮询重放），幂等跳过不翻倍记账。
+            tracing::debug!(
+                "[Gateway] Cluster callback usage already recorded (task {task_id}), dedup skip"
+            );
+        }
+        Err(e) => tracing::warn!("[Gateway] Failed to record cluster callback usage: {e}"),
     }
 }
 

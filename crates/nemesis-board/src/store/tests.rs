@@ -5004,3 +5004,80 @@ fn search_team_memory_escapes_like_wildcards() {
 
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// 自检取证路由持久层（表 selfcheck_pending；BUG-20261105-012）
+// ---------------------------------------------------------------------------
+
+/// 状态机全流程：register（未路由）→ 兜底路由可见 → mark_routed 烧入 →
+/// 重复回调不覆盖 → 兜底路由不再可见（防二次二段）→ 完成删行。
+#[test]
+fn selfcheck_pending_state_machine_end_to_end() {
+    let (store, dir) = temp_store("selfcheck-pending");
+    let issue = store.create_issue(new_issue("取证路由状态机")).unwrap();
+
+    // 未路由：兜底路由可见；同 issue 在途判定命中。
+    store
+        .register_selfcheck_pending("sc-task-1", issue.id, "node-b")
+        .unwrap();
+    assert_eq!(
+        store.get_pending_selfcheck_route("sc-task-1").unwrap(),
+        Some(issue.id),
+        "重启恢复：内存表 miss 后持久行应兜底路由"
+    );
+    assert!(
+        store.has_selfcheck_pending_for_issue(issue.id).unwrap(),
+        "在途判定（跨重启重入闸）应命中"
+    );
+
+    // 路由落地：首个回调烧入 status/response。
+    let routed = store
+        .mark_selfcheck_routed("sc-task-1", "ok", "证据正文")
+        .unwrap();
+    assert!(routed, "首路由应成功");
+
+    // worker 重试的重复回调：不覆盖已烧入证据（语义 = 内存表 take 即移除）。
+    let dup = store
+        .mark_selfcheck_routed("sc-task-1", "error", "重复回调的污染文本")
+        .unwrap();
+    assert!(!dup, "重复路由必须被拒（status IS NULL 闸）");
+
+    // 已路由行不再进兜底路由（防二次二段验收）。
+    assert_eq!(
+        store.get_pending_selfcheck_route("sc-task-1").unwrap(),
+        None,
+        "已路由行不得再次兜底路由"
+    );
+
+    // 全量枚举带状态与证据（sweep 臂 A 数据源）。
+    let rows = store.list_selfcheck_pending().unwrap();
+    assert_eq!(rows.len(), 1);
+    let _row: SelfcheckPendingRow = rows[0].clone();
+    assert_eq!(rows[0].task_id, "sc-task-1");
+    assert_eq!(rows[0].worker_id, "node-b");
+    assert_eq!(rows[0].status.as_deref(), Some("ok"));
+    assert_eq!(rows[0].response.as_deref(), Some("证据正文"));
+
+    // 二段完成删行：在途判定解除、枚举清零。
+    store.delete_selfcheck_pending("sc-task-1").unwrap();
+    assert!(
+        !store.has_selfcheck_pending_for_issue(issue.id).unwrap(),
+        "完成删行后在途判定应解除"
+    );
+    assert!(store.list_selfcheck_pending().unwrap().is_empty());
+
+    cleanup(&dir);
+}
+
+/// 未路由行的兜底路由对不存在 task 返回 None（Route 0 miss 落点的
+/// 诚实语义——Ok("received") 前最后一次机会落空）。
+#[test]
+fn selfcheck_pending_route_miss_returns_none() {
+    let (store, dir) = temp_store("selfcheck-miss");
+    assert_eq!(
+        store.get_pending_selfcheck_route("no-such-task").unwrap(),
+        None
+    );
+    assert_eq!(store.list_selfcheck_pending().unwrap().len(), 0);
+    cleanup(&dir);
+}

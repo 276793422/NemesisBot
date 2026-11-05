@@ -159,6 +159,24 @@ pub struct DispatchRecord {
     pub generation: i64,
 }
 
+/// 自检取证在途路由持久行（表 `selfcheck_pending`；BUG-20261105-012）。
+/// selfcheck 派发不写 `issue_dispatch`（写了会被 Route 0 当交付写回），
+/// 路由键以本表持久化：gateway 重启后内存注册表清零，worker 取证回调凭
+/// 本表兜底路由；`status`/`response` 同时是二段验收状态机——`None` =
+/// 回调未到（可被恢复轮询捞回），`Some` = 已路由待二段完成（完成删行）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfcheckPendingRow {
+    pub task_id: String,
+    pub issue_id: i64,
+    /// 派发目标节点 id（worker；恢复轮询目标）。
+    pub worker_id: String,
+    /// 回调状态（"ok"/"error"；NULL = 回调未到）。
+    pub status: Option<String>,
+    /// 回调取证内容（与 status 同批烧入）。
+    pub response: Option<String>,
+    pub created_at: i64,
+}
+
 // ---------------------------------------------------------------------------
 // 实体
 // ---------------------------------------------------------------------------

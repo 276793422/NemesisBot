@@ -38,7 +38,7 @@
 //! `subagent:board-review:{uuid}` 互不相干），共享件均为 `Arc`，无串行
 //! 队列必要。评审失败不回滚、不炸写回——评论留痕 + warn，人工兜底。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -102,39 +102,125 @@ pub struct BoardReviewDeps {
 /// `issue_dispatch`（那是正式派发的写回路由键，写了会被 Route 0 当交付
 /// 写回推进状态），callback 回来时凭本表识别这是取证任务并路由到二段
 /// 验收——peer_chat_callback payload 只有 task_id，没有 chat_id，字面
-/// marker 路由不可行，注册表是唯一可靠路由。std Mutex：持锁不跨 await。
+/// marker 路由不可行。std Mutex：持锁不跨 await。
+///
+/// BUG-20261105-012：内存表是 gateway 进程态，重启清零后 worker 取证回调
+/// 路由 miss → master 仍回 `Ok("received")` → worker 销毁唯一持久副本 →
+/// 证据蒸发、单据永久卡死 in_review。修复 = 路由键同步落 board store
+/// `selfcheck_pending` 表（[`Self::with_store`]）：`take` 内存 miss 时以
+/// 持久行兜底路由；`status`/`response` 烧入后二段完成前再崩由
+/// [`selfcheck::sweep_selfcheck_pending`] 恢复重放。store 缺席（无 board
+/// feature 的测试形态）= 纯内存旧行为。
 #[derive(Clone, Default)]
 pub struct SelfcheckRegistry {
     inner: Arc<std::sync::Mutex<HashMap<String, i64>>>,
+    /// 路由持久层（None = 纯内存；生产装配带 board store）。
+    store: Option<Arc<nemesis_board::BoardStore>>,
+    /// 本进程内二段验收在途集合（task_id）：sweep 恢复臂的重放判据——
+    /// 在途不重放（评审进行中防双跑）；进程重启后集合清零，残留行自然
+    /// 重放。std Mutex：持锁不跨 await。
+    inflight_reviews: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl SelfcheckRegistry {
+    /// 纯内存形态（BUG-20261105-012 后仅测试使用——生产装配走
+    /// [`Self::with_store`] 挂持久层）。
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn register(&self, task_id: String, issue_id: i64) {
+    /// BUG-20261105-012：生产装配形态（gateway 持 board store 时）。
+    pub fn with_store(store: Option<Arc<nemesis_board::BoardStore>>) -> Self {
+        Self {
+            store,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn register(&self, task_id: String, issue_id: i64, worker_id: &str) {
         self.inner
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(task_id, issue_id);
+            .insert(task_id.clone(), issue_id);
+        // 路由键持久化：写失败 warn 降级（内存表照常 = 旧行为，本进程内
+        // 路由不受影响；重启恢复面收窄但不阻断派发）。
+        if let Some(store) = self.store.as_ref()
+            && let Err(e) = store.register_selfcheck_pending(&task_id, issue_id, worker_id)
+        {
+            warn!("[BoardReview] selfcheck 路由持久化失败（task {task_id}）：{e}");
+        }
     }
 
     pub(crate) fn take(&self, task_id: &str) -> Option<i64> {
-        self.inner
+        let memory_hit = self
+            .inner
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(task_id)
+            .remove(task_id);
+        if memory_hit.is_some() {
+            return memory_hit;
+        }
+        // BUG-20261105-012 重启恢复：内存表清零后持久行兜底路由。只认未
+        // 路由行（status IS NULL，store 层把关）——已路由行的重复回调不
+        // 二次触发二段验收。
+        let durable = self
+            .store
+            .as_ref()
+            .and_then(|s| s.get_pending_selfcheck_route(task_id).ok())
+            .flatten();
+        if durable.is_some() {
+            warn!(
+                "[BoardReview] selfcheck 路由内存表 miss，持久层兜底命中（task {task_id}，gateway 重启恢复）"
+            );
+        }
+        durable
     }
 
     /// 同 issue 是否已有在途取证（防重入：重派循环里评审反复挂起会重复
-    /// 发取证任务）。
+    /// 发取证任务）。内存表 ∪ 持久行（重启后内存表清零，持久行兜住跨
+    /// 重启重入——已路由待二段的行同样算在途）。
     pub(crate) fn has_inflight(&self, issue_id: i64) -> bool {
-        self.inner
+        let memory_hit = self
+            .inner
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .values()
-            .any(|&v| v == issue_id)
+            .any(|&v| v == issue_id);
+        memory_hit
+            || self
+                .store
+                .as_ref()
+                .and_then(|s| s.has_selfcheck_pending_for_issue(issue_id).ok())
+                .unwrap_or(false)
+    }
+
+    /// 二段验收在途标记（本进程；sweep 恢复臂重放判据）。
+    pub(crate) fn mark_review_started(&self, task_id: &str) {
+        self.inner_mark_review(task_id, true);
+    }
+
+    pub(crate) fn mark_review_finished(&self, task_id: &str) {
+        self.inner_mark_review(task_id, false);
+    }
+
+    fn inner_mark_review(&self, task_id: &str, started: bool) {
+        let mut set = self
+            .inflight_reviews
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if started {
+            set.insert(task_id.to_string());
+        } else {
+            set.remove(task_id);
+        }
+    }
+
+    pub(crate) fn has_inflight_review(&self, task_id: &str) -> bool {
+        self.inflight_reviews
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(task_id)
     }
 }
 
@@ -1096,7 +1182,13 @@ async fn review_issue(
             if let Some(evidence) = gather_execution_evidence(deps, &issue) {
                 let note = "🔎 执行档案直读取证：评审需要更多证据，已从项目执行档案本地读取 worker 执行记录（免 worker 取证轮），自动进行二段验收。";
                 let _ = post_review_comment(store, issue_id, &deps.cluster, note);
-                spawn_selfcheck_second_stage(deps.clone(), issue_id, "ok".to_string(), evidence);
+                spawn_selfcheck_second_stage(
+                    deps.clone(),
+                    issue_id,
+                    "ok".to_string(),
+                    evidence,
+                    None,
+                );
                 info!(
                     "[BoardReview] issue {issue_id} 执行档案直读取证完成，二段验收已发起（免 worker 取证轮）"
                 );
@@ -1108,7 +1200,8 @@ async fn review_issue(
                 .ok_or_else(|| "无历史派发记录，无法确定取证目标".to_string())?;
             match dispatch_selfcheck(deps, &issue, &target_worker, &request).await {
                 Ok(task_id) => {
-                    deps.selfcheck.register(task_id.clone(), issue_id);
+                    deps.selfcheck
+                        .register(task_id.clone(), issue_id, &target_worker);
                     let note = format!(
                         "⏳ 验收暂缓（board.review.selfcheck）：评审 agent 需要更多证据，已向执行 worker 发起取证（task {task_id}）。\n\n取证请求：{request}\n\nworker 回报后自动进行二段验收。"
                     );

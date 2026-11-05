@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 23;
+const SCHEMA_VERSION: i32 = 24;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -422,6 +422,27 @@ const SCHEMA_V23: &str = r#"
 ALTER TABLE issue_dispatch ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v24（BUG-20261105-012 自检取证路由持久层）：selfcheck 在途路由表。
+/// selfcheck 派发刻意不写 issue_dispatch（那是正式派发的写回路由键，写了
+/// 会被 Route 0 当交付写回推进状态）——但纯内存注册表在 gateway 重启后
+/// 清零，worker 取证回调 miss 后 master 仍回 Ok("received")，worker 侧
+/// `send_callback_or_persist` 见送达成功即销毁唯一持久副本，取证证据从此
+/// 不存在于任何介质，单据永久卡死 in_review。本表 = 路由键持久化 +
+/// 二段验收状态机（status/response 为 NULL = 回调未到；非空 = 已路由待
+/// 二段完成，完成删行）。`worker_id` 供 G5 式 query_task_result 恢复轮询。
+const SCHEMA_V24: &str = r#"
+CREATE TABLE IF NOT EXISTS selfcheck_pending (
+    task_id    TEXT PRIMARY KEY,
+    issue_id   INTEGER NOT NULL REFERENCES issue(id),
+    worker_id  TEXT NOT NULL DEFAULT '',
+    status     TEXT,
+    response   TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_selfcheck_pending_issue ON selfcheck_pending(issue_id);
+"#;
+
 /// L20 门面迁移链（v1-v23 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
 const fn mig(
@@ -535,6 +556,11 @@ static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
         23,
         SCHEMA_V23,
         "Database migrated to v23 (AOR batch-2a: issue_dispatch.generation 代际号)",
+    ),
+    mig(
+        24,
+        SCHEMA_V24,
+        "Database migrated to v24 (BUG-20261105-012: selfcheck_pending 取证路由持久层)",
     ),
 ];
 

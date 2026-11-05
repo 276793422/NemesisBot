@@ -88,7 +88,8 @@ pub use models::{
     ActivityLog, Attachment, Autopilot, AutopilotPatch, BoardAsset, Channel, ChannelMember,
     ChannelMessage, Comment, CommentType, Issue, IssueFilter, IssuePatch, IssueStatus, NewAsset,
     NewAutopilot, NewChannel, NewChannelMessage, NewComment, NewIssue, NewNotification,
-    Notification, Project, ProjectPatch, TaskOrigin, channel_message_type, notification_kind,
+    Notification, Project, ProjectPatch, SelfcheckPendingRow, TaskOrigin, channel_message_type,
+    notification_kind,
 };
 pub use node_perf::{
     MIN_WORKER_SAMPLES, WORKER_SAMPLE_CAP, WorkerDurationSample, normalize_category,
