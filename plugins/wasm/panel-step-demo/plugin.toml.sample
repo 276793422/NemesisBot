@@ -1,6 +1,8 @@
 # panel-step-demo 示例插件 manifest 样例（组合 world plugin-panel-flow-step）。
-# 真实安装时 wasm-sha256 由安装漏斗对账（此样例省略）；e2e 测试在
+# `wasm-sha256` 行由 devkit pack 工具替换为真实哈希（根键必须位于任何
+# table 段之前——TOML 语义）；e2e 测试在
 # crates/nemesis-plugins-wasm/tests/e2e_guest.rs 内嵌同款 manifest 动态填 sha。
+wasm-sha256 = "<由 pack 工具填充>"
 api-version = 1
 slug = "panel-step-demo"
 kind = "panel"
