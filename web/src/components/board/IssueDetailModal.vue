@@ -824,7 +824,7 @@ const decisionOnlineNodes = computed(
 // 重派目标单一数据源（2026-10-17 去重根修）：后端权威投影 online_nodes
 // （在线非本机，按 name 寻址）非空时只渲染它；集群离线/投影缺失时才回退
 // workerNodes（注册表全部 worker，按 id 寻址，dispatch 端 name/id 均收）。
-// 此前两组无条件拼接，同一在线节点渲染两次（实录：2 worker 显示 4 项）；
+// 此前两组无条件拼接，同一在线节点渲染两次（案例：2 worker 显示 4 项）；
 // role 过滤只留 worker（coordinator 等非执行角色不在重派目标域）。
 const redispatchTargetOptions = computed(() => {
   const online = decisionOnlineNodes.value.filter((n) => !n.role || n.role === 'worker')

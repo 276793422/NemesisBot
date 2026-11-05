@@ -89,7 +89,7 @@ async function saveTopN() {
   foldingSaving.value = false
 }
 
-// codemode 开关（2026-10-25 默认开拍板）：agents.codemode.enabled。
+// codemode 开关（2026-10-25 默认开决策）：agents.codemode.enabled。
 // 开关热生效——check_config_reload 每轮 LLM 前重读 config.json，改动下一条
 // 消息起生效，无需重启；timeout/memory 是构造期值，改动需重启 Agent。
 const codemodeEnabled = ref(true)
@@ -266,7 +266,7 @@ onMounted(() => {
 
 .folding-unavailable { color: var(--text-muted); font-size: var(--text-sm); }
 
-/* codemode 开关卡（2026-10-25 默认开拍板） */
+/* codemode 开关卡（2026-10-25 默认开决策） */
 .codemode-card {
   margin-bottom: var(--space-4);
   border-left: 3px solid var(--accent);

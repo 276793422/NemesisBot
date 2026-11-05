@@ -202,7 +202,7 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     // C1/C3：项目列表 + 进度摘要并行拉取；board-changed 推送时静默刷新
-    // 实现「进度实时跳变」（拍板②=事件推送）。第三路 issue.list 供拆解
+    // 实现「进度实时跳变」（决策②=事件推送）。第三路 issue.list 供拆解
     // 在途聚合（失败不阻塞主加载）。
     const [r, pr, il] = await Promise.all([
       request('board', 'project.list', {}),

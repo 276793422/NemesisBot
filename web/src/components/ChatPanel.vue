@@ -2996,7 +2996,7 @@ onUnmounted(() => {
 
     <!-- Toolbar（launcher 启动器模式不渲染——首屏只留品牌 + 输入盒；
          归模板管而非皮肤 CSS display:none：scoped display:flex 与 :where 基线
-         同特异性且后加载会赢回，2026-09-26 实录） -->
+         同特异性且后加载会赢回，2026-09-26 案例） -->
     <div v-if="!toolbarCollapsed && !launcherMode" class="voice-toolbar">
       <button
         v-if="isDefaultChat"

@@ -305,7 +305,7 @@ describe('IssueDetailModal 决策面板（F2）', () => {
   })
 
   it('重派下拉去重：在线组非空只渲染在线组（2 worker 不显示 4 项）', async () => {
-    // 实录根修（2026-10-17）：在线组（issue.decision）与注册表组
+    // 案例根修（2026-10-17）：在线组（issue.decision）与注册表组
     // （nodes.list）此前无条件拼接，同一在线节点渲染两次。两组同装
     // 才钉得住旧 bug——nodes.list 返回同两台 worker（旧代码出 4 项）。
     requestMock.mockImplementation((_m: string, cmd: string, data: any) => {

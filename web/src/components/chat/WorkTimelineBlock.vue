@@ -27,7 +27,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: 'grown'): void }>()
 
-// 折叠态：落地默认收起（用户要看自己去点，2026-10-30 拍板）；执行中默认
+// 折叠态：落地默认收起（用户要看自己去点，2026-10-30 决策）；执行中默认
 // 展开实时滚动。两态是两个组件实例，各自的初值即终值（live 块随回复落地
 // 整体卸载，由落地态实例接棒）。
 const open = ref(props.live)
@@ -97,7 +97,7 @@ watch(
     <div v-if="open" class="wt-body">
       <template v-for="(r, ri) in work.rounds" :key="ri">
         <div v-if="r.text" class="wt-round-text">{{ r.text }}</div>
-        <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户拍板：思考
+        <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户决策：思考
              是可看不可刷的次级内容，65k 级长文不默认展开）；正文 pre-wrap，
              高度钳制滚动——万级 token 思考不撑爆时间线。 -->
         <details v-if="r.reasoning" class="wt-think">

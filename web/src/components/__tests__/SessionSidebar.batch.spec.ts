@@ -9,7 +9,7 @@ import { useToast } from '../../composables/useToast'
 // - 批量模式下行点击 = 勾选切换（不切换当前会话 currentId）；
 // - 对话区「全选」/ 组头「全选本组」（含孤儿组）勾满对应行；
 // - 删除所选(N) → confirm → 逐条顺序调 sessions.delete（默认移入回收站；
-//   拍板③：批量删除 = 批量进回收站）→ 成功 toast + 强制刷新列表 + 退出
+//   决策③：批量删除 = 批量进回收站）→ 成功 toast + 强制刷新列表 + 退出
 //   批量模式；单条失败不中断批次，汇总 toast 报成功/失败数；
 // - 取消：清空选择并退出模式，不发生任何 delete 调用。
 // 后端软删/回收站语义由 sessions_trash_tests.rs + trash_tests.rs 钉住。
@@ -167,7 +167,7 @@ describe('SessionSidebar 批量管理（2026-10-30 会话回收站）', () => {
     await delBtn.trigger('click')
     await flushPromises()
 
-    // 确认文案 = 拍板③ 口径（移入回收站 + 90 天 + 回收站入口指路）
+    // 确认文案 = 决策③ 口径（移入回收站 + 90 天 + 回收站入口指路）
     expect(window.confirm).toHaveBeenCalledTimes(1)
     const msg = vi.mocked(window.confirm).mock.calls[0][0] as string
     expect(msg).toContain('2 个会话移入回收站')

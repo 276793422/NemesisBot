@@ -240,7 +240,7 @@ function onFallbackTarget(ev: Event) {
   void setFlag('dispatch_fallback_target', raw === '' ? null : raw)
 }
 
-// ---- 必需检查规则（项 B「必需的必须跑」，2026-10-22 拍板）----
+// ---- 必需检查规则（项 B「必需的必须跑」，2026-10-22 决策）----
 // 行态编辑（key + 逗号分隔 ids 原文），每次行变更整 map 保存（后端 whole-map
 // 键 review.required_checks）。空 key 行填了 ids = 全局兜底规则；key+ids 全
 // 空 = 未填完的草稿行（保存时跳过）；key 填了但 ids 空 / 键重复 = 校验失败
