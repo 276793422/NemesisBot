@@ -116,6 +116,18 @@ fn main() -> Result<()> {
                 red += 1;
                 println!("RED    {path} (ast differs: base={b} head={h})");
                 report_first_diff_item(&base_src, &head_src, &path);
+                // 归一化 Debug 全文落盘（首个 RED 文件），供人工比对定位盲区
+                if !path.contains("comment-gate")
+                    && let (Ok(base_file), Ok(head_file)) = (
+                        syn::parse_str::<syn::File>(&base_src),
+                        syn::parse_str::<syn::File>(&head_src),
+                    )
+                {
+                    let dump = format!("{:#?}", normalize_docs(base_file));
+                    let _ = std::fs::write("comment-gate-base-dump.txt", dump);
+                    let dump = format!("{:#?}", normalize_docs(head_file));
+                    let _ = std::fs::write("comment-gate-head-dump.txt", dump);
+                }
             }
             (e, h) => {
                 red += 1;
