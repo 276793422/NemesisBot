@@ -64,6 +64,33 @@ fn clear_loopback_slot_if_owner(stop: &Arc<AtomicBool>) {
     }
 }
 
+/// 等待失败后的探针分流决策。
+///
+/// wasapi 的 `wait_for_event` 把 `WAIT_TIMEOUT` 与 `WAIT_FAILED` 归并为同一个
+/// `Err(WasapiError::EventTimeout)`，无法从返回值区分「静音期事件未触发（良性）」
+/// 和「客户端已死（故障）」。用 COM 层 `GetNextPacketSize` 探针判活：调用成功 =
+/// 客户端存活，报错 = 客户端已死。
+#[derive(Debug, PartialEq, Eq)]
+enum WaitFailAction {
+    /// 存活且无挂起数据：回顶继续等（顺路查 stop 标志）。
+    Idle,
+    /// 存活且有挂起数据：直接走读取臂（事件停摆但数据仍在流动的兜底）。
+    Read,
+    /// 客户端已死：退出（清 slot，下次 start_loopback 可重生——保留旧失败
+    /// 语义，不得让僵尸线程占住 slot 把幂等闸变成永久拒绝重启）。
+    Dead,
+}
+
+/// 纯函数可单测（真实事件环需音频硬件，CI 无）。shared 模式 packet size 恒为
+/// `Some`；`None`（exclusive 模式）按 Idle 保守处理（本模块只用 shared）。
+fn wait_fail_action(packet_size: Result<Option<u32>, wasapi::WasapiError>) -> WaitFailAction {
+    match packet_size {
+        Ok(Some(n)) if n > 0 => WaitFailAction::Read,
+        Ok(_) => WaitFailAction::Idle,
+        Err(_) => WaitFailAction::Dead,
+    }
+}
+
 fn run_loopback(stop: Arc<AtomicBool>) {
     match run_loopback_inner(&stop) {
         Ok(()) => {}
@@ -124,11 +151,32 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
         channels
     );
 
+    // 等待失败告警的连续期只发一次（静音期探针每 100ms 走一轮，逐轮 warn 会刷屏）。
+    let mut wait_warned = false;
     while !stop.load(Ordering::SeqCst) {
-        // 等数据就绪（100ms 超时，便于周期性查 stop）
+        // 等数据就绪（100ms 超时 = 周期性查 stop 的节拍）。WASAPI loopback 的
+        // "data is ready" 事件在无活动渲染流（静音期）不保证触发（MS 官方
+        // Loopback Recording 文档 + van Eerde 开发者文函；NAudio 同问题用轮询
+        // 兜底）——超时是常态而非故障。旧实现超时即 break 会把 far-end 参考
+        // 永久打死（无人自动重启 → AEC 静默直通 = 回声反馈环回归）。改为探针
+        // 分流：客户端存活继续等（有挂起数据直接读），客户端死亡才退出清 slot。
         if h_event.wait_for_event(100).is_err() {
-            tracing::warn!("[AEC Loopback] event wait timeout/error, stopping");
-            break;
+            if !wait_warned {
+                tracing::warn!(
+                    "[AEC Loopback] event wait timeout/error (loopback events may stall while silence); probing capture client liveness"
+                );
+                wait_warned = true;
+            }
+            match wait_fail_action(capture_client.get_next_packet_size()) {
+                WaitFailAction::Idle => continue,
+                WaitFailAction::Read => {}
+                WaitFailAction::Dead => {
+                    tracing::warn!("[AEC Loopback] capture client not responding, stopping");
+                    break;
+                }
+            }
+        } else {
+            wait_warned = false;
         }
         if stop.load(Ordering::SeqCst) {
             break;

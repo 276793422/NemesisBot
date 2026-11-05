@@ -168,3 +168,37 @@ fn start_loopback_spawns_thread_and_stop_clears_slot() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261106-019 回归锁：等待失败探针分流（wait_fail_action 纯函数）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wait_fail_action_branches() {
+    // 存活 + 有挂起数据 → 直接走读取臂（事件停摆但数据仍在流动的兜底）
+    assert_eq!(
+        wait_fail_action(Ok(Some(160))),
+        WaitFailAction::Read,
+        "alive client with pending packets must proceed to read"
+    );
+    // 存活 + 静音（无挂起数据）→ 回顶继续等——静音期 loopback 事件不触发是
+    // 平台行为（MS Loopback Recording 文档），超时绝不等价于故障
+    assert_eq!(
+        wait_fail_action(Ok(Some(0))),
+        WaitFailAction::Idle,
+        "alive silent client must keep waiting, not exit"
+    );
+    // exclusive 模式的 None 本模块不达此处（只用 shared），保守按存活处理
+    assert_eq!(
+        wait_fail_action(Ok(None)),
+        WaitFailAction::Idle,
+        "None (exclusive) is conservatively treated as alive-idle"
+    );
+    // COM 探针报错 = 客户端真死 → 退出清 slot（保留「下次 start 重生」语义，
+    // 防僵尸线程占住 slot 让幂等闸变成永久拒绝重启）
+    assert_eq!(
+        wait_fail_action(Err(wasapi::WasapiError::EventTimeout)),
+        WaitFailAction::Dead,
+        "failed liveness probe must exit so start_loopback can respawn later"
+    );
+}
