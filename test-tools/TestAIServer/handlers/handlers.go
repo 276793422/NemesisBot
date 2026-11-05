@@ -419,25 +419,31 @@ func (h *Handler) handleStreamingResponseWithTools(c *gin.Context, modelName, co
 		}
 	}
 
-	// 3. 发送工具调用
+	// 3. 发送工具调用（OpenAI 流式契约：每个工具调用独立 delta 块，显式
+	// 递增 index。消费端按 index 分桶装配——同块塞全部调用且缺 index 会
+	// 全部塌进桶 0：id/name 互相覆盖、arguments 串联成非法 JSON。
+	// BUG-20261105-039）
 	if len(toolCalls) > 0 {
-		// 发送工具调用开始
-		toolCallStartChunk := models.StreamChunk{
-			ID:      chatID,
-			Object:  "chat.completion.chunk",
-			Created: created,
-			Model:   modelName,
-			Choices: []models.StreamChoice{
-				{
-					Index: 0,
-					Delta: models.Delta{
-						ToolCalls: toolCalls,
+		for k, tc := range toolCalls {
+			idx := k // go.mod 声明 1.21：循环变量跨迭代复用，取指针必须局部拷贝
+			tc.Index = &idx
+			toolCallChunk := models.StreamChunk{
+				ID:      chatID,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   modelName,
+				Choices: []models.StreamChoice{
+					{
+						Index: 0,
+						Delta: models.Delta{
+							ToolCalls: []models.ToolCall{tc},
+						},
+						FinishReason: nil,
 					},
-					FinishReason: nil,
 				},
-			},
+			}
+			h.sendSSEChunk(c.Writer, toolCallChunk)
 		}
-		h.sendSSEChunk(c.Writer, toolCallStartChunk)
 	}
 
 	// 4. 发送完成标记

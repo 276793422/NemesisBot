@@ -302,9 +302,23 @@ impl ManagedProcess {
         if let Some(profile) = coverage_profile_file(name) {
             cmd.env("LLVM_PROFILE_FILE", &profile);
         }
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to spawn {}: {}", name, program.display()))?;
+        // 后台抽干 stdout（2026-11-06 ET core T49 根修）：piped 无人读取，
+        // 子进程（TestAIServer：gin Logger 每请求一行访问日志写 stdout）
+        // 在 ~540 请求后撑满 OS 管道缓冲——Logger 中间件在 c.Next() 之后
+        // 阻塞，net/http 链路不收尾、响应永不 flush，全桩「收请求、零响应」，
+        // 四节点 agent loop 顺序卡死在途 LLM 调用（15:17:55.906 起实录）。
+        // 详细请求日志在子进程自己的 stub-requests/ 文件侧，stdout 量级
+        // ~60KB，读到内存弃置即可。
+        if let Some(mut stdout) = child.stdout.take() {
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut sink = Vec::new();
+                let _ = stdout.read_to_end(&mut sink).await;
+            });
+        }
         println!("  {} started (PID: {:?})", name, child.id());
         Ok(Self {
             child: Some(child),

@@ -19,20 +19,33 @@ pub fn service_state(name: &str) -> ServiceState {
         Ok(o) => o,
         Err(_) => return ServiceState::NotFound,
     };
-    // sc.exe exits 1060 when the service doesn't exist.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let combined = format!("{stdout}\n{stderr}");
-    if combined.contains("1060")
-        || combined.contains("does not exist")
-        || combined.contains("not exist")
-    {
+    classify_sc_query(
+        out.status.code(),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    )
+}
+
+/// sc.exe 结果分类（BUG-20261105-038 抽纯函数——真实 sc spawn 没法在测试里
+/// 注入输出）。服务不存在的权威信号是**退出码** 1060
+/// （ERROR_SERVICE_DOES_NOT_EXIST，sc.exe 透传 Win32 错误码）——旧实现查
+/// `combined.contains("1060")` stdout/stderr 子串，而正常查询输出含
+/// `PID : 1060` 形态的行（PID 数字撞串，运行中的机器任何时刻都有 ~0.1%
+/// 概率命中）→ 已注册服务（哪怕 RUNNING）被误判 NotFound：`engine_owned`
+/// 所有权闸把「外国 Sandboxie 已注册」当「名字空闲」放行 install 覆盖，
+/// `wait_for_installed` 对我们刚装好的服务轮询到超时假报失败。RUNNING 仍
+/// 按 stdout 文本判（STATE 行值关键词不随 locale 本地化；退出码 0 只代表
+/// 服务在册，不代表在跑）。
+fn classify_sc_query(exit_code: Option<i32>, stdout: &str, stderr: &str) -> ServiceState {
+    if exit_code == Some(1060) {
         return ServiceState::NotFound;
     }
+    let combined = format!("{stdout}\n{stderr}");
     if combined.contains("RUNNING") {
-        return ServiceState::Running;
+        ServiceState::Running
+    } else {
+        ServiceState::Stopped
     }
-    ServiceState::Stopped
 }
 
 /// Return a service's registered binary path (`BINARY_PATH_NAME` from

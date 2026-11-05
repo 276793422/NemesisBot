@@ -148,11 +148,15 @@ type Delta struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// ToolCall 定义工具调用
+// ToolCall 定义工具调用。
+// Index 仅流式 delta 携带（OpenAI 契约：多工具调用按增量块下发，index 决定
+// 消费端分桶装配顺序）；非流式保持 nil（omitempty 序列化省略，线上报文字节
+// 与历史形态不变）。指针而非值：流式下 index=0 也必须显式出现。
 type ToolCall struct {
 	ID       string        `json:"id"`
 	Type     string        `json:"type"`
 	Function *FunctionCall `json:"function,omitempty"`
+	Index    *int          `json:"index,omitempty"`
 }
 
 // FunctionCall 定义函数调用

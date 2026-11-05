@@ -57,3 +57,48 @@ fn engine_owned_with_states_foreign_binary_is_refused() {
         "registered + unverifiable binary must read foreign"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261105-038 回归：服务存在性判定以退出码为权威信号（PID 撞串）。
+// ---------------------------------------------------------------------------
+
+/// 正常查询输出带 `PID : 1060`（退出码 0）→ RUNNING 不得被旧实现的
+/// `contains("1060")` 子串判吞成 NotFound（修复前本测试红）。
+#[test]
+fn classify_sc_query_running_with_pid_1060_is_running_not_notfound() {
+    let stdout = "SERVICE_NAME: Themes\r\n        STATE              : 4  RUNNING\r\n        PID                : 1060\r\n";
+    let s = classify_sc_query(Some(0), stdout, "");
+    assert_eq!(
+        s,
+        ServiceState::Running,
+        "PID 含 1060 的在册运行服务 ≠ 不存在"
+    );
+}
+
+/// 退出码 1060 → NotFound（权威信号，输出文本随便长啥都不翻案；
+/// 对照臂：退出码 1060 + 输出恰含 RUNNING 仍 NotFound）。
+#[test]
+fn classify_sc_query_exit_1060_is_notfound_regardless_of_text() {
+    assert_eq!(
+        classify_sc_query(
+            Some(1060),
+            "",
+            "The specified service does not exist as an installed service.\r\n"
+        ),
+        ServiceState::NotFound
+    );
+    assert_eq!(
+        classify_sc_query(Some(1060), "STATE : 4 RUNNING", ""),
+        ServiceState::NotFound
+    );
+}
+
+/// 对照：退出码 0 + 无 RUNNING（STOPPED/PENDING 等文本）→ Stopped。
+#[test]
+fn classify_sc_query_exit_zero_without_running_is_stopped() {
+    let stdout = "SERVICE_NAME: W32Time\r\n        STATE              : 1  STOPPED\r\n";
+    assert_eq!(
+        classify_sc_query(Some(0), stdout, ""),
+        ServiceState::Stopped
+    );
+}
