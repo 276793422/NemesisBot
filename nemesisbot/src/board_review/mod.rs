@@ -949,7 +949,9 @@ async fn review_issue(
             }
         }
     };
-    let output = if !anchor_results.is_empty() && !nemesis_board::all_passed(&anchor_results) {
+    let anchor_short_circuit =
+        !anchor_results.is_empty() && !nemesis_board::all_passed(&anchor_results);
+    let output = if anchor_short_circuit {
         warn!("[BoardReview] issue {issue_id} 客观锚点检查失败 → 短路 FAIL（跳过 LLM 语义评审）");
         nemesis_board::ReviewOutput {
             verdict: nemesis_board::ReviewVerdict::Fail,
@@ -1152,7 +1154,13 @@ async fn review_issue(
     if ctx.allow_selfcheck
         && (eff_review.selfcheck || anchor_forced)
         && let Some(request) = nemesis_board::selfcheck_request_text(&output).or_else(|| {
-            anchor_forced.then(|| {
+            // 锚点短路输出（确定性 FAIL）不得合成取证请求——1140 行的设计
+            // 断言「短路输出无 need_evidence 槽位，天然不进本分支」被下方
+            // 强制臂打破：短路 FAIL 被拖进取证悬挂（T30 ET 实录 2026-11-05：
+            // ⏳ 验收暂缓取证取代首轮短路 FAIL 处置），重派漏斗被取证轮
+            // 挤占，转人工评论丢锚点明细。F6 强制臂语义本就是「锚点已过 +
+            // 语义评审仍嫌疑」——短路 = 锚点未过，不属强制臂射程。
+            (!anchor_short_circuit && anchor_forced).then(|| {
                 format!(
                     "本单验收标准包含 {} 交付文本锚点（存在引用欺骗风险）：请实际执行相关验证并回报可核验证据（真实命令输出、产物文件内容片段），不得引用任务卡原文来满足锚点。",
                     nemesis_board::ANCHOR_PREFIX
