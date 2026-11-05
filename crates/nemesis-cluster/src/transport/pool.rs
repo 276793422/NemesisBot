@@ -378,15 +378,28 @@ impl Pool {
         // LOW-10：close() 后迟到的归还——三账已被 close 归零/清空，任何
         // fetch_sub 都会下溢（debug panic / release 回绕）、节点计数是幻影
         // 键；只关连接 + 补还许可（该连接的许可在 dial 时 forget 消耗），
-        // 不复活池内条目。
+        // 不复活池内条目。快路径免锁。
+        if self.closed.load(Ordering::SeqCst) {
+            conn.close();
+            self.semaphore.add_permits(1);
+            return;
+        }
+        let node_id = conn.node_id().to_string();
+        let mut conns = self.conns.lock();
+        // 幕帘锁内复检（竞态窗口闭合）：快路径与拿锁之间 close() 可整体
+        // 插队（store(true) → 拿同一把 conns 锁清三账）。close 与本函数以
+        // conns 锁为屏障：close 先赢 → 本函数锁内复检必读到 true → 走幕帘
+        // 释放，不碰已清三账；本函数先赢锁 → 记账在同一临界区完成，close
+        // 随后整池清零覆盖为一致终态。旧实现守卫通过后直接动账，插队窗口
+        // 内 = 活连接塞进已关池（close 后滞留活 socket 且 forget 的许可无
+        // 条目可释放）/ 死臂对已归零的 active_count 做 fetch_sub（下溢）。
+        // remove/remove_node/cleanup_dead/get_inner 记账全程持锁无此窗口。
         if self.closed.load(Ordering::SeqCst) {
             conn.close();
             self.semaphore.add_permits(1);
             return;
         }
         if conn.is_active() {
-            let node_id = conn.node_id().to_string();
-            let mut conns = self.conns.lock();
             // 同 key 二次归还（BUG-20261105-027）：per-node limit 允许同
             // node+address 并发租借多条连接（get 直接拨新、不走池），它们
             // 的 key 相同；顺序归还时 HashMap::insert 的覆盖语义会 drop 池
@@ -396,9 +409,9 @@ impl Pool {
             // "connection limit reached"（50 次 = max_conns 默认值）与
             // "per-node limit reached" 假限流。修复：池内已有同 key 条目时
             // 后来者改走死连接同款释放路径（关连接 + 三账各回吐一份），
-            // 健康连接留给先到者。
+            // 健康连接留给先到者。记账持 conns 锁完成（锁序 conns →
+            // node_counts 与 remove/cleanup_dead 一致），不在临界区外留残窗。
             if conns.contains_key(&key) {
-                drop(conns);
                 conn.close();
                 self.dec_node_count(&node_id);
                 self.active_count.fetch_sub(1, Ordering::SeqCst);
@@ -416,8 +429,7 @@ impl Pool {
             );
         } else {
             // Connection is dead, release resources（T5：节点计数与许可、
-            // active_count 三账对齐回落，镜像 dial 的消耗）。
-            let node_id = conn.node_id().to_string();
+            // active_count 三账对齐回落，镜像 dial 的消耗；记账同临界区）。
             conn.close();
             self.dec_node_count(&node_id);
             self.active_count.fetch_sub(1, Ordering::SeqCst);

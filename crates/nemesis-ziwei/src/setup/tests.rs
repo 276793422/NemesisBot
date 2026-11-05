@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use super::{
-    SetupInfo, SetupManager, SetupState, draft_dir, global, load_draft, save_draft,
-    save_draft_anchors,
+    SetupInfo, SetupManager, SetupState, draft_dir, global, init_draft_files, load_draft,
+    rollback_draft_error, save_draft, save_draft_anchors,
 };
 use nemesis_ziwei_profile::{AnchorSet, Machine, Profile, ProfileStore, SCHEMA_VERSION};
 
@@ -73,6 +73,29 @@ fn seed_draft(ws: &std::path::Path, id: &str) {
     .unwrap();
 }
 
+/// pid=0 占位形态的 info（select_target 预占态 / analyze 重建态共用形状）。
+fn placeholder_info(id: &str) -> SetupInfo {
+    SetupInfo {
+        profile_id: id.to_string(),
+        pid: 0,
+        module_base: 0,
+        module_size: 0,
+        machine: Machine::X64,
+        exe_path: PathBuf::new(),
+        exe_name: String::new(),
+        file_sha256: String::new(),
+    }
+}
+
+/// 预占占位态（select_target 锁内插入的窗口期形态）。
+fn inject_reserved(mgr: &SetupManager, id: &str) {
+    mgr.state.lock().unwrap().replace(SetupState {
+        info: placeholder_info(id),
+        analysis: None,
+        reserved: true,
+    });
+}
+
 fn inject_state(mgr: &SetupManager, id: &str) {
     mgr.state.lock().unwrap().replace(SetupState {
         info: SetupInfo {
@@ -86,6 +109,7 @@ fn inject_state(mgr: &SetupManager, id: &str) {
             file_sha256: "aa".repeat(32),
         },
         analysis: None,
+        reserved: false,
     });
 }
 
@@ -412,5 +436,281 @@ fn draft_only_id_is_invisible_to_committed_store() {
     let committed = ProfileStore::new(&ws).load(id);
     assert!(committed.is_err(), "已提交库不得看到 draft：{committed:?}");
 
+    cleanup(&ws);
+}
+
+// ── 预占态竞态修复（2026-11-05 风险报告评审）：reserved 单一真相源 ────────
+//
+// select_target 预占窗口（BUG-20261105-019）以 pid=0 占位态插入，旧形态无
+// 显式标记：并发 abort 跳过 detach 后无条件删 draft + 清态，预占者写回无
+// 条件复活 → 僵尸活动态 + 注入会话泄漏；Err 臂无条件清态可误清他人态。
+// 修复 = SetupState.reserved 显式字段 + 清态/写回归属校验式 + abort 拒绝
+// 预占态。pid==0 不可作占位判据（analyze 重建态合法 pid=0），重建态照常
+// 可 abort 由 abort_clears_rebuilt_state 钉死。
+// select_target_reserved 本体（windows + 真实进程）归 UAT。
+
+#[test]
+fn clear_state_if_owned_only_clears_own_state() {
+    let mgr = SetupManager::new();
+
+    // 自己的态：清空 + true
+    inject_state(&mgr, "zw-pro-c1");
+    assert!(mgr.clear_state_if_owned("zw-pro-c1"));
+    assert!(mgr.state.lock().unwrap().is_none());
+
+    // 他人态（id 不匹配）：不清 + false
+    inject_state(&mgr, "zw-pro-c1");
+    assert!(!mgr.clear_state_if_owned("zw-pro-c2"));
+    assert!(mgr.state.lock().unwrap().is_some(), "易主时不得误清他人态");
+
+    // None：false
+    *mgr.state.lock().unwrap() = None;
+    assert!(!mgr.clear_state_if_owned("zw-pro-c1"));
+    assert!(mgr.state.lock().unwrap().is_none());
+}
+
+#[test]
+fn publish_state_if_owned_closes_reservation_and_refuses_takeover() {
+    let mgr = SetupManager::new();
+    let info = SetupInfo {
+        profile_id: "zw-pro-p1".to_string(),
+        pid: 1234,
+        module_base: 0x140000000,
+        module_size: 0x10000,
+        machine: Machine::X64,
+        exe_path: PathBuf::from("C:/x/t.exe"),
+        exe_name: "t.exe".to_string(),
+        file_sha256: "bb".repeat(32),
+    };
+
+    // 预占态 + 同 id 写回：替换为完整态且 reserved 落 false（窗口收口）
+    inject_reserved(&mgr, "zw-pro-p1");
+    assert!(mgr.publish_state_if_owned("zw-pro-p1", info.clone()));
+    {
+        let st = mgr.state.lock().unwrap();
+        let st = st.as_ref().expect("写回后状态应在场");
+        assert_eq!(st.info.pid, 1234);
+        assert!(!st.reserved, "写回应落 reserved=false（预占收口）");
+    }
+
+    // 易主（当前态 id ≠ 写回 id）：拒写且不覆盖
+    inject_state(&mgr, "zw-pro-p1");
+    let mut foreign = info.clone();
+    foreign.profile_id = "zw-pro-other".to_string();
+    assert!(!mgr.publish_state_if_owned("zw-pro-other", foreign));
+    assert_eq!(
+        mgr.state.lock().unwrap().as_ref().unwrap().info.profile_id,
+        "zw-pro-p1",
+        "易主时不得覆盖他人态"
+    );
+
+    // None：拒写且不复活（旧实现无条件写回正是僵尸态来源）
+    *mgr.state.lock().unwrap() = None;
+    assert!(!mgr.publish_state_if_owned("zw-pro-p1", info));
+    assert!(mgr.state.lock().unwrap().is_none(), "None 态不得被写回复活");
+}
+
+#[test]
+fn init_draft_files_creates_all_three() {
+    let ws = temp_ws("init-ok");
+    let id = "zw-pro-init1";
+    let profile = test_draft(id);
+    let draft = init_draft_files(&ws, &profile).unwrap();
+    assert_eq!(draft, draft_dir(&ws, id));
+    assert!(draft.join("draft.json").exists(), "draft.json 应落盘");
+    assert!(draft.join("anchors.json").exists(), "anchors.json 应落盘");
+    assert!(load_draft(&ws, id).is_ok(), "draft.json 应可回读");
+    cleanup(&ws);
+}
+
+#[test]
+fn init_draft_files_rolls_back_partial_failure() {
+    let ws = temp_ws("init-fail");
+    let id = "zw-pro-init2";
+    let profile = test_draft(id);
+    // 失败注入：draft.json 位置预置为目录 → save_draft 的 fs::write 必败
+    let draft = draft_dir(&ws, id);
+    std::fs::create_dir_all(draft.join("draft.json")).unwrap();
+    let err = init_draft_files(&ws, &profile).unwrap_err();
+    assert!(err.contains("draft.json"), "实际：{err}");
+    assert!(
+        !draft.exists(),
+        "失败应回滚整个 draft 目录（不留半成品挡死新向导）"
+    );
+    cleanup(&ws);
+}
+
+#[tokio::test]
+async fn abort_refuses_during_reservation() {
+    let ws = temp_ws("abort-res");
+    let id = "zw-pro-abt1";
+    let mgr = SetupManager::new();
+    inject_reserved(&mgr, id);
+
+    let err = mgr.abort(&ws).await.unwrap_err();
+    assert!(err.contains("预占"), "实际：{err}");
+    // 状态保留：select_target 继续持有预占，收尾写回不受干扰
+    let st = mgr.status(&ws).unwrap();
+    assert_eq!(st["profile_id"], id, "预占态应原样保留");
+    cleanup(&ws);
+}
+
+#[tokio::test]
+async fn abort_clears_rebuilt_state_from_disk() {
+    // gateway 重启后 analyze 重建的 pid=0 态（reserved=false）必须照常可
+    // abort——预占拒绝只针对 reserved=true 占位态，不误伤重建态合法路径。
+    let ws = temp_ws("abort-rebuild");
+    let id = "zw-pro-abt2";
+    seed_draft(&ws, id);
+    let mgr = SetupManager::new();
+    mgr.state.lock().unwrap().replace(SetupState {
+        info: placeholder_info(id),
+        analysis: None,
+        reserved: false,
+    });
+
+    let out = mgr.abort(&ws).await.unwrap();
+    assert_eq!(out["aborted"], id);
+    assert!(mgr.state.lock().unwrap().is_none(), "abort 后状态应清空");
+    assert!(!draft_dir(&ws, id).exists(), "draft 目录应已删除");
+    cleanup(&ws);
+}
+
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
+// ── 清理失败诚实化（横扫族 C，2026-11-06）────────────────────────────────
+// Windows 形态测试（编译期消失，Linux 打开句柄不阻碍删除）。失败注入：
+// 持有句柄且 share_mode 不含 FILE_SHARE_DELETE → remove_dir_all 报
+// sharing violation（ERROR 32），确定性失败。注意裸 File::open 挡不住——
+// std 默认 share mode 含 FILE_SHARE_DELETE（实测实证），必须显式 share_mode。
+// 失败注入会让 remove_dir_all_retry 走满 ~4.4s 退避窗口，两测各多耗数秒。
+
+#[cfg(windows)]
+#[tokio::test]
+async fn abort_reports_draft_cleanup_failure_and_keeps_state() {
+    let ws = temp_ws("abort-lock");
+    let id = "zw-pro-abt3";
+    seed_draft(&ws, id);
+    let mgr = SetupManager::new();
+    inject_state(&mgr, id);
+
+    // 失败注入：draft 目录内放一个被持有句柄的文件 → 删除必败
+    let locked = draft_dir(&ws, id).join("locked.bin");
+    std::fs::write(&locked, b"x").unwrap();
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x1 | 0x2) // READ|WRITE，无 DELETE → 删除必撞 sharing violation
+        .open(&locked)
+        .unwrap();
+
+    let err = mgr.abort(&ws).await.unwrap_err();
+    assert!(err.contains("清理失败"), "实际：{err}");
+    assert!(err.contains("可重试"), "实际：{err}");
+    // 未收尾：状态保留（可重试 abort），draft 目录仍在
+    assert!(
+        mgr.state.lock().unwrap().is_some(),
+        "清理失败不得清态（假成功）"
+    );
+    assert!(draft_dir(&ws, id).exists(), "draft 目录应保留待重试");
+
+    // 释放句柄后重试 abort = 收敛成功（幂等可重试的实证）
+    drop(handle);
+    let out = mgr.abort(&ws).await.unwrap();
+    assert_eq!(out["aborted"], id);
+    assert!(mgr.state.lock().unwrap().is_none());
+    assert!(!draft_dir(&ws, id).exists());
+    cleanup(&ws);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn commit_reports_draft_cleanup_failure_in_warnings() {
+    let ws = temp_ws("commit-lock");
+    let id = "zw-pro-cmt4";
+    seed_draft(&ws, id);
+    let mgr = SetupManager::new();
+    inject_state(&mgr, id);
+    // 补齐提交前置（同 commit_migrates_draft_to_profile）
+    mgr.define_struct(
+        &ws,
+        &serde_json::json!({
+            "name": "DataHeader", "size": 24,
+            "fields": [{"offset": 0, "name": "magic", "type": "u32"}],
+        }),
+    )
+    .unwrap();
+    mgr.annotate(&ws, &annotate_body("push_record", true))
+        .unwrap();
+    mgr.define_tool(
+        &ws,
+        &serde_json::json!({
+            "tool_name": "dummy_area_read",
+            "description": "读",
+            "action": {"primitive": "poll_report", "addr": "struct:DataHeader"},
+        }),
+    )
+    .unwrap();
+
+    // 失败注入：draft 目录内放一个被持有句柄的文件 → 删除必败
+    let locked = draft_dir(&ws, id).join("locked.bin");
+    std::fs::write(&locked, b"x").unwrap();
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x1 | 0x2) // READ|WRITE，无 DELETE → 删除必撞 sharing violation
+        .open(&locked)
+        .unwrap();
+
+    // save 已落盘不可回滚 → commit 不假失败，清理失败进返回值注记
+    let out = mgr.commit(&ws).unwrap();
+    assert_eq!(out["committed"], id);
+    let warnings = out["cleanup_warnings"].as_array().unwrap();
+    assert!(
+        !warnings.is_empty()
+            && warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").contains("draft")),
+        "cleanup_warnings 应注记 draft 清理失败：{warnings:?}"
+    );
+    // 正式 profile 已提交可读回（提交本体不受清理降级影响）
+    let store = ProfileStore::new(&ws);
+    assert!(store.load(id).is_ok());
+
+    drop(handle);
+    cleanup(&ws);
+}
+
+#[cfg(windows)]
+#[test]
+fn rollback_draft_error_is_honest_about_rollback_failure() {
+    // 横扫族 C 二轮：select_target_reserved 三处失败臂的「已回滚」断言
+    // 不得谎报——回滚失败时错误串必须含「回滚失败」+ abort 收尸指引、
+    // 不得含 ok_suffix；回滚成功时 base+ok_suffix 原样拼接。
+    let ws = temp_ws("rb-lock");
+    let id = "zw-pro-rb5";
+    seed_draft(&ws, id);
+    let draft = draft_dir(&ws, id);
+
+    // 失败注入：同款 share_mode 剥 DELETE 位 → 删除必撞 sharing violation
+    let locked = draft.join("locked.bin");
+    std::fs::write(&locked, b"x").unwrap();
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x1 | 0x2)
+        .open(&locked)
+        .unwrap();
+
+    let err = rollback_draft_error(&draft, "主错误原文".to_string(), "（draft 已回滚）");
+    assert!(err.starts_with("主错误原文"), "主错误保首位：{err}");
+    assert!(err.contains("回滚失败"), "回滚失败必须说话：{err}");
+    assert!(err.contains("abort 收尸"), "应带收尸指引：{err}");
+    assert!(!err.contains("已回滚"), "不得谎报已回滚：{err}");
+    assert!(draft.exists(), "残留目录应保留待收尸");
+
+    // 释放句柄后重试：回滚成功 → base+ok_suffix 拼接，目录删除
+    drop(handle);
+    let ok = rollback_draft_error(&draft, "主错误原文".to_string(), "（draft 已回滚）");
+    assert_eq!(ok, "主错误原文（draft 已回滚）");
+    assert!(!draft.exists());
     cleanup(&ws);
 }

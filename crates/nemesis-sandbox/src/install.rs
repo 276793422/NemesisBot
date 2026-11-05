@@ -138,15 +138,22 @@ pub fn stop(paths: &SandboxPaths, purge: bool) -> Result<()> {
     tracing::info!("[sandbox] engine deactivated (SbieSvc={svc:?}, SbieDrv={drv:?})");
 
     if purge {
-        // 韧性删除：引擎刚停，SbieSvc/索引器可能还短暂持有句柄。
-        nemesis_utils::fsutil::remove_dir_all_resilient(&paths.runtime_dir);
-        nemesis_utils::fsutil::remove_dir_all_resilient(&paths.box_root);
-        let _ = std::fs::remove_file(&paths.ini_path);
+        // 韧性删除：引擎刚停，SbieSvc/索引器可能还短暂持有句柄；失败项由
+        // fsutil 内部 WARN 留痕。ini 旧为裸 `let _` 且下方日志无条件宣称
+        // removed——删除失败时日志谎报（横扫族 C 三轮，2026-11-06）：三项
+        // 均按实际结果陈述。
+        let runtime_removed = nemesis_utils::fsutil::remove_dir_all_resilient(&paths.runtime_dir);
+        let box_removed = nemesis_utils::fsutil::remove_dir_all_resilient(&paths.box_root);
+        let ini_removed = nemesis_utils::fsutil::remove_file_resilient(&paths.ini_path);
+        let word = |ok: bool| if ok { "removed" } else { "remove failed" };
         tracing::info!(
-            "[sandbox] --purge: removed runtime {}, box {}, ini {}",
+            "[sandbox] --purge: runtime {} {}, box {} {}, ini {} {}",
             paths.runtime_dir.display(),
+            word(runtime_removed),
             paths.box_root.display(),
-            paths.ini_path.display()
+            word(box_removed),
+            paths.ini_path.display(),
+            word(ini_removed)
         );
     }
     Ok(())

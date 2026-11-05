@@ -763,7 +763,14 @@ pub(crate) async fn init_services(
                         if let Some(parent) = url_path.parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        let _ = std::fs::write(&url_path, &base_url);
+                        // heal_slot 内存态已生效，盘上缓存写失败 WARN 留痕（横扫
+                        // 族 C 四轮，2026-11-06）——重启后回读旧值重 heal。
+                        if let Err(e) = std::fs::write(&url_path, &base_url) {
+                            tracing::warn!(
+                                "[Gateway] Asset base url cache write failed ({}): {e}",
+                                url_path.display()
+                            );
+                        }
                         info!(
                             "[Gateway] Asset base url healed: {base_url} (cluster registry changed)"
                         );
