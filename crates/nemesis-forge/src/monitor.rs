@@ -215,17 +215,25 @@ impl DeploymentMonitor {
                 // Handle auto-deprecation
                 self.handle_verdict(artifact, &outcome);
                 // F 线：实效快照写回 registry（Dashboard/裁决数据源）。
-                let snapshot = nemesis_types::forge::EfficacySnapshot {
-                    measured_at: outcome.measured_at.clone(),
-                    success_before: outcome.success_before,
-                    success_after: outcome.success_after,
-                    samples_before: outcome.sample_size_before,
-                    samples_after: outcome.sample_size,
-                    verdict: outcome.verdict.clone(),
-                };
-                self.registry.update(&artifact.id, |a| {
-                    a.last_efficacy = Some(snapshot.clone());
-                });
+                // insufficient_data（样本不足、无结论）**不写回**：快照槽位
+                // 语义是「最后一次有效实效结论」，无结论测量覆盖它会周期性
+                // 冲掉历史证据（滚动窗口把 after 样本滚出窗后，verdict=
+                // positive 的快照会被 insufficient_data + 全 0 数值冒充的
+                // 「新结论」顶掉——handle_verdict 对同一 outcome 走 `_ =>`
+                // 忽略，两个消费面语义必须一致）。outcome 仍进返回值。
+                if outcome.verdict != "insufficient_data" {
+                    let snapshot = nemesis_types::forge::EfficacySnapshot {
+                        measured_at: outcome.measured_at.clone(),
+                        success_before: outcome.success_before,
+                        success_after: outcome.success_after,
+                        samples_before: outcome.sample_size_before,
+                        samples_after: outcome.sample_size,
+                        verdict: outcome.verdict.clone(),
+                    };
+                    self.registry.update(&artifact.id, |a| {
+                        a.last_efficacy = Some(snapshot.clone());
+                    });
+                }
                 outcomes.push(outcome);
             }
         }

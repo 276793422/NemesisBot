@@ -1199,3 +1199,56 @@ fn test_build_conversation_traces_missing_tool_field_skips_step() {
     assert_eq!(traces[0].total_rounds, 1);
     assert!(traces[0].tool_steps.is_empty());
 }
+
+#[test]
+fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
+    // R554 回归锁：evaluate_outcomes 此前对 insufficient_data outcome 无条件
+    // 写回 last_efficacy——滚动窗口把 after 样本滚出窗后（样本 <
+    // min_samples），无结论快照（verdict=insufficient_data + success 全 0
+    // 假零）会周期性覆盖上次有效 verdict 快照，Dashboard 实效列与裁决数据
+    // 源丢历史证据。修复 = 写回前加 verdict 闸，与 handle_verdict 对同一
+    // outcome 的 `_ =>` 忽略语义对齐；outcome 本身仍进返回值（可观测）。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.min_outcome_samples = 0; // → 默认下限 5 生效
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let mut artifact = make_artifact("eff1", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    let id = registry.add(artifact);
+
+    // 第一轮：5 条足样本（全部成功、无信号）→ improvement=0.4 > 0.1 →
+    // positive + 快照写回。
+    let good_traces: Vec<_> = (0..5)
+        .map(|_| make_trace(2, 100, &["file_read"], false))
+        .collect();
+    let outcomes = monitor.evaluate_outcomes(&good_traces);
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].verdict, "positive");
+    let first = monitor
+        .registry
+        .get(&id)
+        .unwrap()
+        .last_efficacy
+        .clone()
+        .expect("有效评估必须写回快照");
+    assert_eq!(first.verdict, "positive");
+
+    // 第二轮：一条不匹配签名的轨迹（recent_traces 非空——零轨迹会在窗口
+    // 过滤处提前返回，走不到 artifact 循环）→ after_traces 空 →
+    // insufficient_data outcome 照常产出，但快照必须保持第一轮的值。
+    let mismatched = vec![make_trace(2, 100, &["other_tool"], false)];
+    let outcomes = monitor.evaluate_outcomes(&mismatched);
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].verdict, "insufficient_data");
+    let after = monitor
+        .registry
+        .get(&id)
+        .unwrap()
+        .last_efficacy
+        .clone()
+        .expect("快照不应被 insufficient_data 清除");
+    assert_eq!(after.verdict, first.verdict, "无结论测量不得覆盖有效快照");
+    assert_eq!(after.measured_at, first.measured_at);
+    assert_eq!(after.samples_after, first.samples_after);
+}
