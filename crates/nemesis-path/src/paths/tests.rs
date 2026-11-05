@@ -228,15 +228,6 @@ fn test_path_manager_skills_config_override() {
 }
 
 #[test]
-fn test_path_manager_auth_path() {
-    let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(
-        pm.auth_path(),
-        PathBuf::from("/tmp/test_home/workspace/config/auth.json")
-    );
-}
-
-#[test]
 fn test_path_manager_audit_log_dir() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
     assert_eq!(
@@ -1064,10 +1055,6 @@ fn test_path_manager_all_config_paths() {
     );
     assert_eq!(pm.workspace(), PathBuf::from("/tmp/all_paths/workspace"));
     assert_eq!(
-        pm.auth_path(),
-        PathBuf::from("/tmp/all_paths/workspace/config/auth.json")
-    );
-    assert_eq!(
         pm.audit_log_dir(),
         PathBuf::from("/tmp/all_paths/workspace/logs/security_logs")
     );
@@ -1597,10 +1584,6 @@ fn test_path_manager_all_directory_methods() {
     assert_eq!(
         pm.audit_log_dir(),
         PathBuf::from("/tmp/comprehensive_test/workspace/logs/security_logs")
-    );
-    assert_eq!(
-        pm.auth_path(),
-        PathBuf::from("/tmp/comprehensive_test/workspace/config/auth.json")
     );
 }
 
@@ -2187,15 +2170,6 @@ fn test_path_manager_agent_workspace_with_underscore() {
     let pm = PathManager::with_home(PathBuf::from("/test"));
     let result = pm.agent_workspace("my_agent");
     assert_eq!(result, PathBuf::from("/test/workspace-my_agent"));
-}
-
-#[test]
-fn test_path_manager_auth_path_method() {
-    let pm = PathManager::with_home(PathBuf::from("/test"));
-    assert_eq!(
-        pm.auth_path(),
-        PathBuf::from("/test/workspace/config/auth.json")
-    );
 }
 
 #[test]
