@@ -64,6 +64,42 @@ pub(crate) fn extract_usage(u: &serde_json::Value) -> UsageInfo {
     }
 }
 
+/// 文本形态工具调用修复（DSML/```json/XML 伪工具调用）——启发式恢复 +
+/// 白名单过滤（BUG-20261025-16：恢复名必须 ∈ 本请求 tools，全滤空 = 维持
+/// 原状宁可不修复不可误修复），恢复成功强改 finish_reason="tool_calls"。
+/// 返回 true = 发生了修复。
+///
+/// 三条消费路径共用（单一真相源，BUG-20261106-007）：
+/// - HttpProvider `chat()` 非流式解析出口；
+/// - HttpProvider `chat()` `stream=yes` 内部流式化聚合出口；
+/// - nemesis-web llm_bridge `chat_streamed` 真流式聚合分支（agent loop
+///   对 stream=yes 模型的生产主路径；fallback_non_stream 走 `chat()` 已含）。
+pub fn repair_text_tool_calls(
+    provider: &str,
+    model: &str,
+    content: &str,
+    tool_calls: &mut Vec<ToolCall>,
+    finish_reason: &mut String,
+    tools: &[ToolDefinition],
+) -> bool {
+    if !tool_calls.is_empty() || content.is_empty() {
+        return false;
+    }
+    let repaired = crate::tool_call_repair::repair_tool_calls_in_whitelist(content, tools);
+    if repaired.is_empty() {
+        return false;
+    }
+    tracing::info!(
+        provider = %provider,
+        model = %model,
+        repaired_count = repaired.len(),
+        "[Provider] tool-call repair: recovered tool call(s) from content"
+    );
+    *tool_calls = repaired;
+    *finish_reason = "tool_calls".to_string();
+    true
+}
+
 /// 块内全部 data: 行载荷（按行保序）。SSE 规范 `data` 字段名后的空格
 /// 可选——两种形态都识别；此前只认 `"data: "` 带空格形态，无空格上游
 /// （合规服务存在）事件全被跳过 → 流式回复静默变空。
@@ -994,13 +1030,25 @@ impl LLMProvider for HttpProvider {
         // `chat_stream`（SSE 解析/tool_calls 累积/usage 全同源）聚合为非流式
         // `LLMResponse`，`chat()` 对调用方签名不变。语义对齐 protocol：构造期
         // 消费，改条目需重新设默认或重启。auto（缺省）维持非流式现状。
+        // 聚合结果与非流式解析同一出口语义：文本形态工具调用修复照常跑
+        // （BUG-20261106-007——修复此前只在非流式路径，同 lane 显式流式键
+        // 下小模型的文本发射静默降级成纯文本轮）。
         if self.config.stream_mode == "yes" {
-            return crate::stream_util::collect_stream_response(
+            let mut resp = crate::stream_util::collect_stream_response(
                 &self.config.name,
                 model,
                 HttpProvider::chat_stream(self, messages, tools, model, options),
             )
-            .await;
+            .await?;
+            repair_text_tool_calls(
+                &self.config.name,
+                model,
+                &resp.content,
+                &mut resp.tool_calls,
+                &mut resp.finish_reason,
+                tools,
+            );
+            return Ok(resp);
         }
 
         let model = if model.is_empty() {
@@ -1118,7 +1166,7 @@ impl LLMProvider for HttpProvider {
         // 在下方 LLMResponse 构造处与 reasoning_content 字段合并（\n\n）。
         let (content, inline_thinking) = crate::think_strip::strip_inline_thinking(&raw_content);
 
-        let mut finish_reason = data["choices"][0]["finish_reason"]
+        let finish_reason = data["choices"][0]["finish_reason"]
             .as_str()
             .unwrap_or("stop")
             .to_string();
@@ -1129,7 +1177,7 @@ impl LLMProvider for HttpProvider {
             .filter(|u| u.is_object())
             .map(extract_usage);
 
-        let mut tool_calls =
+        let tool_calls =
             if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
                 tc_array
                     .iter()
@@ -1154,37 +1202,9 @@ impl LLMProvider for HttpProvider {
         // tool calls as plain text in `content` (DSML / JSON / XML) instead of the
         // standard `tool_calls` structure. When the standard field is empty,
         // recover tool calls from the content so the agent loop still runs them.
-        // 白名单过滤（BUG-20261025-16）：启发式对 `name` 键零校验，文档性
-        // JSON（```json 配置示例等）会被劫持成幻影工具调用 + finish_reason
-        // 强改 "tool_calls"。恢复出的名字必须命中本请求的 tools 白名单
-        // （不在白名单的工具无论如何执行不了）；全滤空 = 维持原 finish，
-        // 宁可不修复不可误修复。
-        if tool_calls.is_empty() && !content.is_empty() {
-            let repaired = crate::tool_call_repair::repair_tool_calls_in_whitelist(&content, tools);
-            if !repaired.is_empty() {
-                tracing::info!(
-                    provider = %self.config.name,
-                    model = model,
-                    repaired_count = repaired.len(),
-                    "[Provider] tool-call repair: recovered tool call(s) from content"
-                );
-                tool_calls = repaired;
-                finish_reason = "tool_calls".to_string();
-            }
-        }
-
-        tracing::debug!(
-            provider = %self.config.name,
-            model = model,
-            finish_reason = %finish_reason,
-            tool_call_count = tool_calls.len(),
-            prompt_tokens = usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
-            completion_tokens = usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
-            total_tokens = usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
-            "[Provider] Response received"
-        );
-
-        Ok(LLMResponse {
+        // 白名单过滤（BUG-20261025-16）；与 stream=yes 内部流式化共用
+        // repair_text_tool_calls 单一真相源（BUG-20261106-007）。
+        let mut resp = LLMResponse {
             content,
             tool_calls,
             finish_reason,
@@ -1198,7 +1218,28 @@ impl LLMProvider for HttpProvider {
             extra: HashMap::new(),
             raw_request_body: Some(body),
             raw_response_body: Some(raw_response_text),
-        })
+        };
+        repair_text_tool_calls(
+            &self.config.name,
+            model,
+            &resp.content,
+            &mut resp.tool_calls,
+            &mut resp.finish_reason,
+            tools,
+        );
+
+        tracing::debug!(
+            provider = %self.config.name,
+            model = model,
+            finish_reason = %resp.finish_reason,
+            tool_call_count = resp.tool_calls.len(),
+            prompt_tokens = resp.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+            completion_tokens = resp.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+            total_tokens = resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+            "[Provider] Response received"
+        );
+
+        Ok(resp)
     }
 
     fn chat_stream(

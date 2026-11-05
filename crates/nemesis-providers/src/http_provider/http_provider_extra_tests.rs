@@ -2035,6 +2035,134 @@ async fn test_chat_null_usage_field_not_fabricated_as_zero_row() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261106-007 回归锁：stream=yes 内部流式化同样跑文本形态工具调用修复
+// ---------------------------------------------------------------------------
+
+/// BUG-20261106-007：stream=yes 聚合结果与非流式解析同一出口语义——正文
+/// 伪工具调用（白名单内）必须被修复成结构化调用 + finish_reason 强改
+/// "tool_calls"（此前修复启发式只在非流式路径跑，同 lane 显式流式键下
+/// 小模型的文本发射静默降级成纯文本轮）。
+#[tokio::test]
+async fn test_chat_stream_yes_text_form_tool_call_repaired() {
+    let server = MockServer::start().await;
+
+    let tool_json = r#"[{"name": "exec", "arguments": {"cmd": "ls -la"}}]"#;
+    let delta1 = serde_json::json!({
+        "choices": [{"delta": {"content": format!("I'll run it now.\n```json\n{tool_json}\n```")}}]
+    })
+    .to_string();
+    let finish = serde_json::json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    })
+    .to_string();
+    let sse_body = format!("data: {delta1}\n\ndata: {finish}\n\ndata: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "exec".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        },
+    }];
+
+    let resp = provider
+        .chat(
+            &[user_message("hi")],
+            &tools,
+            "gpt-4",
+            &ChatOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.finish_reason, "tool_calls",
+        "流式路径修复必须强改 finish_reason"
+    );
+    assert_eq!(resp.tool_calls.len(), 1);
+    let tc = &resp.tool_calls[0];
+    assert_eq!(tc.function.as_ref().unwrap().name, "exec");
+    let args: serde_json::Value =
+        serde_json::from_str(&tc.function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["cmd"], "ls -la");
+}
+
+/// 对照臂：stream=yes 下白名单外的名字照旧滤净（宁可不修复不可误修复，
+/// BUG-20261025-16 不变量在流式路径同样成立）。
+#[tokio::test]
+async fn test_chat_stream_yes_phantom_tool_call_not_repaired() {
+    let server = MockServer::start().await;
+
+    let tool_json = r#"{"name": "my-app", "version": "1.0"}"#;
+    let delta1 = serde_json::json!({
+        "choices": [{"delta": {"content": format!("配置这样写：\n```json\n{tool_json}\n```")}}]
+    })
+    .to_string();
+    let finish = serde_json::json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    })
+    .to_string();
+    let sse_body = format!("data: {delta1}\n\ndata: {finish}\n\ndata: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "exec".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        },
+    }];
+
+    let resp = provider
+        .chat(
+            &[user_message("hi")],
+            &tools,
+            "gpt-4",
+            &ChatOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.finish_reason, "stop",
+        "白名单外名字滤净，维持原 finish"
+    );
+    assert!(
+        resp.tool_calls.is_empty(),
+        "文档性 JSON 不得在流式路径被劫持成幻影工具调用"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // BUG-20261029-153 回归锁：非流式 200 body 读传输失败 ≠ Format
 // ---------------------------------------------------------------------------
 

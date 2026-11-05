@@ -404,6 +404,23 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             }
         }
 
+        // BUG-20261106-007 同族：文本形态工具调用修复与非流式同一出口语义。
+        // fallback_non_stream 走 inner.chat()（lane 出口已含修复）；真流式
+        // 聚合分支此前漏接——stream=yes 模型在 agent loop 流式主路径下，
+        // 正文里的文本形态工具调用静默降级成纯文本轮。仅恢复成功才回写
+        // finish_reason（None 语义不变）。
+        let mut finish_for_repair = finish_reason.clone().unwrap_or_default();
+        if nemesis_providers::http_provider::repair_text_tool_calls(
+            self.inner.name(),
+            model_to_use,
+            &content,
+            &mut last_tool_calls,
+            &mut finish_for_repair,
+            &provider_tools,
+        ) {
+            finish_reason = Some(finish_for_repair);
+        }
+
         let tool_calls: Vec<nemesis_agent::types::ToolCallInfo> = last_tool_calls
             .into_iter()
             .filter_map(|tc| {
