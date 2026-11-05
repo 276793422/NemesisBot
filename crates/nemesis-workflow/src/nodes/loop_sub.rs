@@ -351,22 +351,41 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
         // `state: exec_result.state` (the scheduler branches on
         // `state != Failed`), not off `error`; without the state passthrough
         // a Failed child would be treated as success regardless of `error`.
-        let error = if exec_result.state == ExecutionState::Failed {
-            Some(
-                exec_result
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "sub_workflow child execution failed".to_string()),
-            )
-        } else {
-            None
+        //
+        // BUG-20261106-018：子执行被外部 cancel_execution 打成终态
+        // Cancelled 时不得原样透传——调度器失败判定 keyed off
+        // `state != Failed`，透传 Cancelled 会被收进成功臂，父执行继续跑
+        // 下游并最终报 Completed（取消语义被静默吞掉）。改写为 Failed +
+        // 点名子执行 id 的错误，对齐 resume 侧 resume_subworkflow_node
+        // （engine.rs：子执行 Failed/Cancelled → 父诚实失败）与
+        // BUG-20261030-211 composite 守卫（暂停类子状态不得当成功吞掉）。
+        // Waiting 保持透传：sub_workflow 停在审批是父执行暂停屏障的
+        // 正当形态（resume 经 resume_subworkflow_node 路由进子执行）。
+        let (state, error) = match exec_result.state {
+            ExecutionState::Failed => (
+                ExecutionState::Failed,
+                Some(
+                    exec_result
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "sub_workflow child execution failed".to_string()),
+                ),
+            ),
+            ExecutionState::Cancelled => (
+                ExecutionState::Failed,
+                Some(format!(
+                    "sub_workflow 子执行 {} 已被取消（终态 Cancelled）——父节点诚实失败",
+                    exec_result.id
+                )),
+            ),
+            other => (other, None),
         };
 
         Ok(NodeResult {
             node_id: node.id.clone(),
             output: serde_json::Value::Object(output_map),
             error,
-            state: exec_result.state,
+            state,
             started_at: now,
             ended_at: Local::now(),
             metadata: result_metadata,
