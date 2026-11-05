@@ -1580,6 +1580,12 @@ mod bypass_llm_tests;
 #[cfg(test)]
 mod b4_b2_gate_tests;
 
+// turn 末持久化 stale-cache-wipe 回归锁（2026-11-05 压缩成果被抹根修）：
+// cache=None 臂不得清空 store 中并发压缩刚写入的摘要（15:01 自动压缩
+// 16ms 竞态被抹 + 17:05 手动压缩同机制被抹的设备实证）；Some 臂照常写回。
+#[cfg(test)]
+mod turn_end_summary_wipe_tests;
+
 // L10-量测（改进项三期 2026-11-02）：tool defs 字节量测埋点（单一真相源
 // 一致性 / hidden_tools 闸联动 / 序列化口径钉子——L10-建设惰性 schema
 // 前后对比基线的口径稳定性回归锁）。
