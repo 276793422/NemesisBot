@@ -517,7 +517,7 @@ async fn test_chat_error_503_overloaded() {
 
 #[tokio::test]
 async fn test_chat_error_500_overloaded() {
-    // 500 必须归 Overloaded（可重试可轮转）——此前落
+    // BUG-20261025-83：500 必须归 Overloaded（可重试可轮转）——此前落
     // Unknown 时 fallback 链在主级间歇 500 时永不轮转（文本分类路径与
     // loop 词表同口径判 500 可重试，结构化路径漏对齐）。
     let server = MockServer::start().await;
@@ -712,14 +712,14 @@ async fn test_chat_stream_success_content_done() {
         }
     }
     assert_eq!(received_content, "Hello, world");
-    // 终态帧单发（根修）：finish chunk 即终态，[DONE] 只关闭
+    // 终态帧单发（2026-10-13 根修）：finish chunk 即终态，[DONE] 只关闭
     // 通道不再补发第二发合成 stop——二连发会把聚合侧已收的 finish_reason
     // 覆盖掉（覆盖式消费的下游丢 tool_calls，wal_crash 实证）。
     assert_eq!(stop_count, 1);
     assert!(got_usage);
 }
 
-/// 红证：SSE 事件块内多行 `data:` 行按规范拼接为单一载荷
+/// BUG-20261029-191 红证：SSE 事件块内多行 `data:` 行按规范拼接为单一载荷
 /// （W3C SSE；anthropic/codex lane 同语义）。此前逐行独立解析会把按行拆分
 /// 发送的 JSON（pretty-print SSE 形态）拆成多个不完整载荷——from_str 失败
 /// continue 静默丢全部内容。
@@ -728,7 +728,7 @@ async fn test_chat_stream_multiline_data_event_content_survives() {
     let server = MockServer::start().await;
     let provider = HttpProvider::new(basic_config(server.uri()));
 
-    // 第一个事件的 JSON 按行拆分（3 行 data）；第二个事件单行正常形态对照。
+    // 第一个事件的 JSON 按行拆分（3 行 data:）；第二个事件单行正常形态对照。
     let sse_body = concat!(
         "data: {\n",
         "data: \"choices\":[{\"delta\":{\"content\":\"Split\"}}]\n",
@@ -877,7 +877,7 @@ async fn test_chat_stream_accumulates_tool_calls() {
     assert!(got_tool_call_chunk);
 }
 
-// wal_crash 回归钉：TestAIServer 形态的完整 SSE 工具调用序列
+// 2026-10-13 wal_crash 回归钉：TestAIServer 形态的完整 SSE 工具调用序列
 // （role chunk → 完整 tool_calls chunk → finish chunk("tool_calls") →
 // [DONE]）。修复前 [DONE] 补发第二发 finish_reason="stop" 的合成帧，聚合侧
 // 取最后 finish_reason → finished=true + 空文本 → agent 把工具调用轮当空终答
@@ -1030,9 +1030,9 @@ async fn test_chat_stream_multiple_tool_calls_with_index() {
     panic!("never received tool_calls finish chunk");
 }
 
-/// 回归锁：多工具调用终态 flush 必须按模型 index 升序
+/// BUG-20261025-53 回归锁：多工具调用终态 flush 必须按模型 index 升序
 /// （index 序 = 执行顺序语义；非流式路径按 JSON 数组序保留，anthropic lane
-/// 用显式 tool_order 同语义）。旧形态用 HashMap 累积 +.iter() 展开——迭代序
+/// 用显式 tool_order 同语义）。旧形态用 HashMap 累积 + .iter() 展开——迭代序
 /// 不定，多工具调用顺序被打乱（执行乱序且逐次运行不同）。本测试让 6 个
 /// index 乱序到达：修复后确定性绿；旧 HashMap 形态下恰好按升序迭代的概率
 /// 仅 1/720（近似确定性红）。
@@ -1345,7 +1345,7 @@ fn test_default_timeout_constant() {
     // default_timeout() is used via serde when timeout_secs is absent
     let json = r#"{"name":"x","base_url":"u","api_key":"k"}"#;
     let config: HttpProviderConfig = serde_json::from_str(json).unwrap();
-    // P3A 超时对齐：lane 统一默认 600s。
+    // P3A 超时对齐（2026-09-12）：lane 统一默认 600s。
     assert_eq!(config.timeout_secs, 600);
 }
 
@@ -1466,7 +1466,7 @@ fn test_stream_chunk_full_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Tool-call repair integration tests
+// Tool-call repair integration tests (Phase 1)
 // Mock HTTP server returns DSML/JSON-text/XML in content, no tool_calls →
 // http_provider.chat() should repair → LLMResponse.tool_calls populated.
 // ---------------------------------------------------------------------------
@@ -1655,7 +1655,7 @@ async fn test_no_repair_when_content_is_plain_text() {
 }
 
 // ---------------------------------------------------------------------------
-// Retry-After 头 + 流式中断恢复
+// J1: Retry-After 头 + 流式中断恢复
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1782,8 +1782,8 @@ async fn test_chat_stream_eof_plain_text_synthesizes_stop() {
     assert_eq!(finals, 1, "exactly one synthesized stop chunk");
 }
 
-/// SSE 流中途真读错误（Content-Length 谎报 + 提前关闭连接）→ 诚实
-/// connect error（transport_error 映射），而非旧分类 Format
+/// J1：SSE 流中途真读错误（Content-Length 谎报 + 提前关闭连接）→ 诚实
+/// connect error（2026-10-13 transport_error 映射），而非旧分类 Format
 /// （不可重试、直接放弃整条链）。可重试性锚点从变体（Timeout）移到
 /// message 前缀（"connect error"）——llm_error_class 早判把它归 Timeout
 /// 类，failover 语义不变。
@@ -1821,7 +1821,7 @@ async fn test_chat_stream_read_error_classified_as_timeout() {
         }
         other => panic!("expected Unknown connect error, got {:?}", other),
     }
-    // 纪律另一半（审计补钉）：错误已是终态——Err 之后
+    // J1 纪律另一半（2026-10-13 B10 审计补钉）：错误已是终态——Err 之后
     // 不得再出现任何合成 Ok chunk（EOF flush 路径被 return 短路），通道
     // 应直接关闭。二次产物会让聚合侧把错误消费成「部分成功」。
     if let Some(chunk_result) = rx.recv().await {
@@ -1834,7 +1834,7 @@ async fn test_chat_stream_read_error_classified_as_timeout() {
 }
 
 // ---------------------------------------------------------------------------
-// include_usage（根修）
+// include_usage（2026-10-23 R30 根修）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1932,7 +1932,7 @@ async fn test_chat_stream_trailing_usage_after_tool_calls() {
 
 #[tokio::test]
 async fn test_chat_stream_usage_chunk_without_choices_key_forwarded() {
-    // 兼容端点的 usage 专用 chunk 常省略 choices 键
+    // BUG-20261104-366：兼容端点的 usage 专用 chunk 常省略 choices 键
     //（旧闸只认「choices 在场且为空数组」→ 该形态被当噪音丢弃，stream=yes
     // 账本断粮）。缺失视同空数组，端到端必须收下 usage。
     let server = MockServer::start().await;
@@ -1975,7 +1975,7 @@ async fn test_chat_stream_usage_chunk_without_choices_key_forwarded() {
 
 #[tokio::test]
 async fn test_chat_stream_null_usage_not_fabricated_as_zero_row() {
-    // 同族：OpenAI 形态每个 chunk 带 "usage":null（含
+    // BUG-20261104-366 同族：OpenAI 形态每个 chunk 带 "usage":null（含
     // finish chunk）。端点不支持 include_usage 时旧代码把 null 提取成
     // 0/0/0 行当最终记账（假 0 token 账本）——null 必须视作无 usage。
     let server = MockServer::start().await;
@@ -2011,7 +2011,7 @@ async fn test_chat_stream_null_usage_not_fabricated_as_zero_row() {
 
 #[tokio::test]
 async fn test_chat_null_usage_field_not_fabricated_as_zero_row() {
-    // 同族（非流式）：body "usage":null → None，不造 0 行。
+    // BUG-20261104-366 同族（非流式）：body "usage":null → None，不造 0 行。
     let server = MockServer::start().await;
 
     let response_body = serde_json::json!({
@@ -2035,10 +2035,138 @@ async fn test_chat_null_usage_field_not_fabricated_as_zero_row() {
 }
 
 // ---------------------------------------------------------------------------
-// 回归锁：非流式 200 body 读传输失败 ≠ Format
+// BUG-20261106-007 回归锁：stream=yes 内部流式化同样跑文本形态工具调用修复
 // ---------------------------------------------------------------------------
 
-/// 非流式 200 响应 body 读取传输失败（连接中途断开）必须
+/// BUG-20261106-007：stream=yes 聚合结果与非流式解析同一出口语义——正文
+/// 伪工具调用（白名单内）必须被修复成结构化调用 + finish_reason 强改
+/// "tool_calls"（此前修复启发式只在非流式路径跑，同 lane 显式流式键下
+/// 小模型的文本发射静默降级成纯文本轮）。
+#[tokio::test]
+async fn test_chat_stream_yes_text_form_tool_call_repaired() {
+    let server = MockServer::start().await;
+
+    let tool_json = r#"[{"name": "exec", "arguments": {"cmd": "ls -la"}}]"#;
+    let delta1 = serde_json::json!({
+        "choices": [{"delta": {"content": format!("I'll run it now.\n```json\n{tool_json}\n```")}}]
+    })
+    .to_string();
+    let finish = serde_json::json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    })
+    .to_string();
+    let sse_body = format!("data: {delta1}\n\ndata: {finish}\n\ndata: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "exec".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        },
+    }];
+
+    let resp = provider
+        .chat(
+            &[user_message("hi")],
+            &tools,
+            "gpt-4",
+            &ChatOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.finish_reason, "tool_calls",
+        "流式路径修复必须强改 finish_reason"
+    );
+    assert_eq!(resp.tool_calls.len(), 1);
+    let tc = &resp.tool_calls[0];
+    assert_eq!(tc.function.as_ref().unwrap().name, "exec");
+    let args: serde_json::Value =
+        serde_json::from_str(&tc.function.as_ref().unwrap().arguments).unwrap();
+    assert_eq!(args["cmd"], "ls -la");
+}
+
+/// 对照臂：stream=yes 下白名单外的名字照旧滤净（宁可不修复不可误修复，
+/// BUG-20261025-16 不变量在流式路径同样成立）。
+#[tokio::test]
+async fn test_chat_stream_yes_phantom_tool_call_not_repaired() {
+    let server = MockServer::start().await;
+
+    let tool_json = r#"{"name": "my-app", "version": "1.0"}"#;
+    let delta1 = serde_json::json!({
+        "choices": [{"delta": {"content": format!("配置这样写：\n```json\n{tool_json}\n```")}}]
+    })
+    .to_string();
+    let finish = serde_json::json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    })
+    .to_string();
+    let sse_body = format!("data: {delta1}\n\ndata: {finish}\n\ndata: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "exec".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        },
+    }];
+
+    let resp = provider
+        .chat(
+            &[user_message("hi")],
+            &tools,
+            "gpt-4",
+            &ChatOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.finish_reason, "stop",
+        "白名单外名字滤净，维持原 finish"
+    );
+    assert!(
+        resp.tool_calls.is_empty(),
+        "文档性 JSON 不得在流式路径被劫持成幻影工具调用"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261029-153 回归锁：非流式 200 body 读传输失败 ≠ Format
+// ---------------------------------------------------------------------------
+
+/// BUG-20261029-153：非流式 200 响应 body 读取传输失败（连接中途断开）必须
 /// 诚实上抛 transport_error（Unknown + "connect error" 前缀，可重试），而非
 /// 旧 resp.json() 一步混合传输/解析两类错误伪装 Format（不可重试，fallback
 /// 链/轮转直接终止）。可读的坏 JSON 仍走 from_str→Format（应用层），见既有
@@ -2116,9 +2244,9 @@ fn drain_request(sock: &mut std::net::TcpStream) {
     }
 }
 
-/// 红证：重复 finish 帧（代理双序列无 [DONE] 分隔形态）
+/// BUG-20261105-026 红证：重复 finish 帧（代理双序列无 [DONE] 分隔形态）
 /// 不得发第二终态 chunk——覆盖式消费端（collect_stream_response /
-/// llm_bridge:chat_streamed 同契约「出现即覆盖」）已收的 finish_reason 会被
+/// llm_bridge::chat_streamed 同契约「出现即覆盖」）已收的 finish_reason 会被
 /// 第二发覆盖（首终 "length" 被覆盖成 "stop" 后 length 升档与 usage 缺失
 /// 回落判定双双失效；wal_crash 双终态覆盖根因第三形态：[DONE]/EOF 已闸、
 /// finish 帧本体此前漏闸）。终态后只认 include_usage 尾帧（choices 空缺 +

@@ -71,6 +71,16 @@ function roundText(content: string): any {
   }
 }
 
+/** R575（BUG-20261106-005）：带环内 seq 的 RoundText 帧（seq 是 tool_event
+ *  envelope 字段，与 kind 同级——pump 注入，WS 分支据它推进补拉游标）。 */
+function roundTextSeq(content: string, seq: number): any {
+  return {
+    type: 'push',
+    cmd: 'tool_event',
+    data: { kind: 'RoundText', seq, data: { chat_id: 'web:s1', content } },
+  }
+}
+
 /** 批次二：带思考链的 RoundText 帧（reasoning 可选字段）。 */
 function roundTextR(content: string, reasoning: string): any {
   return {
@@ -195,6 +205,57 @@ describe('ChatPanel work 时间线（2026-10-30）', () => {
     await flushPromises()
 
     expect(chat.pendingWork?.rounds.flatMap(r => r.tools)).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  // --- R575（BUG-20261106-005）：RoundText seq 幂等（双通道投递去重）---
+
+  it('RoundText 同 seq 重复投递（实时帧 + 环回放双通道）只成一轮', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    // 实时帧先到，环回放（sync 补拉/重灌）后到——同一事件 seq 5 双投递。
+    h(roundTextSeq('实时到达的叙述', 5))
+    h(roundTextSeq('实时到达的叙述', 5))
+    h(roundTextSeq('回放窗口内的另一轮', 6))
+    await flushPromises()
+
+    expect(chat.pendingWork?.rounds).toHaveLength(2)
+    expect(chat.pendingWork?.rounds[0].text).toBe('实时到达的叙述')
+    wrapper.unmount()
+  })
+
+  it('RoundText 无 seq 帧（旧网关）不去重，保持旧行为', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    h(roundText('第一轮'))
+    h(roundText('第一轮'))
+    await flushPromises()
+
+    expect(chat.pendingWork?.rounds).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('flush/adopt 后幂等集重置：新 turn 同 seq 不被误抑', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    // turn 1：seq 5 摄取 → 回复落地 flush（幂等集随缓冲清空）。
+    h(roundTextSeq('turn1 叙述', 5))
+    h(assistantReply('turn1 完成'))
+    await flushPromises()
+    expect(chat.messages[0].work?.rounds).toHaveLength(1)
+    expect(chat.pendingWork).toBeNull()
+
+    // turn 2：新会话轮次 seq 重新单调，同值 5 必须照常摄取。
+    h(roundTextSeq('turn2 叙述', 5))
+    await flushPromises()
+    expect(chat.pendingWork?.rounds).toHaveLength(1)
+    expect(chat.pendingWork?.rounds[0].text).toBe('turn2 叙述')
     wrapper.unmount()
   })
 

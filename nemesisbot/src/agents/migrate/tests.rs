@@ -276,11 +276,14 @@ fn sweep_migrating_converges_both_ways() {
     let staging = migrate_staging_root(&ws, done_id);
     std::fs::create_dir_all(&staging).unwrap();
 
-    // 案例二：migrating + 无墓碑 = commit 未达 → 回滚 active。
+    // 案例二：migrating + 无墓碑 = commit 未达 → 回滚 active
+    // （崩溃在打包后/推送前的 staging 残留一并清扫——横扫四轮补漏）。
     let stuck_id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     let mut rec2 = selfbuilt_record(stuck_id, "node-a");
     rec2.status = agent_status::MIGRATING.to_string();
     store.upsert(&rec2).unwrap();
+    let stuck_staging = migrate_staging_root(&ws, stuck_id);
+    std::fs::create_dir_all(&stuck_staging).unwrap();
 
     // 案例三：migrating + 意图日志在场、无墓碑 = commit 已发出
     // （B 端可能已激活）→ 冻结转人工，绝不自动回滚。
@@ -315,6 +318,7 @@ fn sweep_migrating_converges_both_ways() {
         agent_status::ACTIVE,
         "commit 未达应回滚 active"
     );
+    assert!(!stuck_staging.exists(), "回滚分支 staging 残留应被清扫");
     assert_eq!(
         store.get(frozen_id).unwrap().unwrap().status,
         agent_status::MIGRATING,

@@ -45,6 +45,11 @@ const ASSET_META_TIMEOUT: Duration = Duration::from_secs(10);
 /// asset.chunk 超时（256KB 读盘 + base64 + 帧，30s 富余）。
 const ASSET_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 崩溃孤儿 `.part` 陈旧闸（24h）。进行中的下载持续写盘刷新 mtime，
+/// 任何合法下载（fetch ≤64MiB / publish ≤1GiB）都不会持有 .part 一天
+/// 以上；超龄即进程崩溃/被杀窗口的残留（横扫四轮，2026-11-06）。
+pub const PART_STALE_TTL: Duration = Duration::from_secs(24 * 3600);
+
 /// board_asset 工具：从提供方节点拉取任务资产，或把本地文件发布为可
 /// 分发的看板资产。
 pub struct BoardAssetTool {
@@ -126,7 +131,7 @@ impl BoardAssetTool {
             // Windows rename 不覆盖已存在目标：先清旧隔离件（瞬时句柄
             // 占用让 rename 失败 = 本轮跳过该文件，下轮启动再试——不升级
             // 为致命，见返回值语义）。
-            let _ = std::fs::remove_file(&corrupt);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&corrupt);
             match std::fs::rename(&path, &corrupt) {
                 Ok(()) => {
                     tracing::warn!(
@@ -145,6 +150,55 @@ impl BoardAssetTool {
             }
         }
         Ok((checked, quarantined))
+    }
+
+    /// 崩溃孤儿 `.part` 按龄清扫（横扫四轮，2026-11-06）。fetch 写 `.part`
+    /// 的两处窗口：下载中（进程崩溃/被杀即残）与 finalize 失败（本轮起
+    /// 失败即清，见 finalize_download）。崩溃窗口的残留此前无人认领——
+    /// verify_cached_assets 显式跳过 `.part`，全仓无删除路径，长跑实例
+    /// 单调增长。只动 mtime 早于 `max_age` 的文件（生产闸 = `PART_STALE_TTL`
+    /// 24h；进行中的下载持续写盘刷新 mtime，不受影响）；`.corrupt` 是
+    /// 刻意留证的隔离件，不在射程。消费点：gateway bind 后的后台体检
+    /// （services.rs，与 verify_cached_assets 同一 spawn_blocking，清完
+    /// 再核验）。返回清除数。
+    pub fn sweep_stale_parts(&self, max_age: Duration) -> usize {
+        let assets_dir = self.assets_dir();
+        let Ok(entries) = std::fs::read_dir(&assets_dir) else {
+            return 0;
+        };
+        let now = std::time::SystemTime::now();
+        let mut removed = 0usize;
+        // 显式排序（CLAUDE.md diff 自检：read_dir 顺序是平台实现细节）。
+        let mut entries: Vec<std::fs::DirEntry> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            if !entry.file_name().to_string_lossy().ends_with(".part") {
+                continue;
+            }
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            // 无 mtime / 未来时间戳（时钟偏斜）= 保守视为新鲜，跳过。
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .map(|age| age < max_age)
+                .unwrap_or(true);
+            if fresh {
+                continue;
+            }
+            tracing::info!(
+                part = %path.display(),
+                "[board_asset] sweeping stale .part (crash orphan, never finalized)"
+            );
+            if nemesis_utils::fsutil::remove_file_resilient(&path) {
+                removed += 1;
+            }
+        }
+        removed
     }
 }
 
@@ -345,20 +399,20 @@ impl BoardAssetTool {
             Err(e) => {
                 if !is_connection_level_error(&e) {
                     // HTTP 业务错 / 本地 IO 错：通路没问题，换通路无意义。
-                    let _ = std::fs::remove_file(&dest);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&dest);
                     return Err(format!("download failed: {e}"));
                 }
                 // 连接级失败 → 集群 RPC 兜底（需要集群句柄 + bundle 带来
                 // 的提供方 node_id，两者缺一诚实报缺）。
                 let Some(cluster) = self.cluster.as_ref() else {
-                    let _ = std::fs::remove_file(&dest);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&dest);
                     return Err(format!(
                         "download failed: {e} — provider unreachable over HTTP, \
                          and this node has no cluster connection for RPC fallback"
                     ));
                 };
                 let Some(node_id) = node_id.filter(|s| !s.is_empty()) else {
-                    let _ = std::fs::remove_file(&dest);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&dest);
                     return Err(format!(
                         "download failed: {e} — provider unreachable over HTTP, \
                          and the reference bundle carries no node_id (legacy \
@@ -383,7 +437,7 @@ impl BoardAssetTool {
                         final_path.display()
                     )),
                     Err(rpc_err) => {
-                        let _ = std::fs::remove_file(&dest);
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(&dest);
                         Err(format!(
                             "download failed: {e}; cluster RPC fallback via \
                              `{node_id}` also failed: {rpc_err}"
@@ -395,8 +449,26 @@ impl BoardAssetTool {
     }
 
     /// 落定共享腿（HTTP 与 RPC 两路共用）：sha256 校验 → 原子改名。
-    /// 校验不过删 part 返回 Err（调用方无需重复清理）。
+    /// **任何失败**（校验读失败 / sha 漂移 / 改名失败）都清掉 part 文件
+    /// 再上抛——「任何失败都清掉 part 文件」不变量在共享腿单点兑现
+    /// （此前 rename 失败与校验读失败经 `?` 直上抛漏清，半截内容留在
+    /// 盘面；横扫四轮修复）。清理尽力而为：瞬时句柄占用下的残留交
+    /// sweep_stale_parts 按龄兜底。
     fn finalize_download(
+        &self,
+        dest: &Path,
+        asset_ref: &str,
+        expected_sha: &str,
+    ) -> Result<(PathBuf, u64), String> {
+        let result = self.finalize_step(dest, asset_ref, expected_sha);
+        if result.is_err() {
+            let _ = nemesis_utils::fsutil::remove_file_resilient(dest);
+        }
+        result
+    }
+
+    /// finalize_download 的校验改名主体（失败统一由外壳清 part）。
+    fn finalize_step(
         &self,
         dest: &Path,
         asset_ref: &str,
@@ -404,7 +476,6 @@ impl BoardAssetTool {
     ) -> Result<(PathBuf, u64), String> {
         let actual_sha = nemesis_board::sha256_file(dest)?;
         if actual_sha != expected_sha {
-            let _ = std::fs::remove_file(dest);
             return Err(format!(
                 "sha256 mismatch: expected {expected_sha}, got {actual_sha} — \
                  file discarded; request a fresh reference if the source changed"

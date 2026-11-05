@@ -12,7 +12,7 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 
 pub struct SessionsHandler;
 
-/// sessions.import 单次行数上限（与 export 读侧 100_000 上限同量级
+/// L22 sessions.import 单次行数上限（与 export 读侧 100_000 上限同量级
 /// 取整——正常会话远达不到，挡的是误传巨型载荷/恶意输入）。
 const IMPORT_MAX_ROWS: usize = 50_000;
 
@@ -62,7 +62,7 @@ impl ModuleHandler for SessionsHandler {
         match cmd {
             "list" => {
                 let workspace = require_workspace(ctx)?.to_string();
-                // scan_session_logs 对目录内每个 jsonl 全量
+                // BUG-20261102-302：scan_session_logs 对目录内每个 jsonl 全量
                 // 解析（read_jsonl_lines 逐行 JSON parse）——侧栏热路径的同步
                 // 阻塞 IO 直跑 tokio worker 会占住 worker（read_chat_log_async
                 // 同款纪律），spawn_blocking 移出。
@@ -77,7 +77,7 @@ impl ModuleHandler for SessionsHandler {
                 // `agent:main:session:{sid}` with `:`→`_`). Strip the prefix
                 // so the client gets the bare `sid` — exactly what it sends
                 // back as moduleData.session_id. (Legacy `agent_main_main`
-                // migration is.)
+                // migration is Phase 2.)
                 let mut web: Vec<_> = all
                     .into_iter()
                     .filter_map(|mut s| {
@@ -87,10 +87,10 @@ impl ModuleHandler for SessionsHandler {
                         Some(s)
                     })
                     .collect();
-                // 侧栏条目回填 tokens/cost（session_key
+                // M5（2026-09-05）：侧栏条目回填 tokens/cost（session_key
                 // 聚合；无记录时缺省，前端不展示）。
                 crate::handlers::logs::backfill_session_usage(ctx, &mut web);
-                // 会话级全部放行投影（长任务）：列表
+                // 会话级全部放行投影（2026-10-24 长任务无人值守计划）：列表
                 // 一眼可见哪个会话在放行（读运行态内存——gateway 启动 hydrate
                 // 先于 WS 服务可用，无「sidecar 真但内存假」窗口）。
                 // security feature 关闭时状态模块不编译，投影恒 false（诚实
@@ -115,7 +115,7 @@ impl ModuleHandler for SessionsHandler {
                         row["allow_all"] = serde_json::Value::Bool(false);
                     }
                 }
-                // （snooze 排队）：暂停期排队条数投影（>0 才
+                // L22（2026-11-03 snooze 排队）：暂停期排队条数投影（>0 才
                 // 加字段，前端据此渲染 💤+n 徽标）。一次 stat + 小文件读，
                 // 无 pending 的会话（常态）接近零开销。
                 for row in web.iter_mut() {
@@ -131,7 +131,7 @@ impl ModuleHandler for SessionsHandler {
                         row["pendingCount"] = serde_json::Value::from(pending);
                     }
                 }
-                // B（多会话并行清账）：回带绑定表（仅存活绑定，
+                // B（2026-09-23 多会话并行清账）：回带绑定表（仅存活绑定，
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
                 // 上移服务端。
                 let bindings = crate::session_bindings::live_bindings(&workspace);
@@ -140,7 +140,7 @@ impl ModuleHandler for SessionsHandler {
                 ))
             }
             "mark_delivered" => {
-                // （真机日志）：前端拉取会话历史后清零未送达
+                // P2（2026-09-11 真机日志）：前端拉取会话历史后清零未送达
                 // 标记（adapters 推送失败时打点）。零计数/缺席 sidecar 幂等。
                 let session_id = data
                     .as_ref()
@@ -155,7 +155,7 @@ impl ModuleHandler for SessionsHandler {
                 Ok(Some(serde_json::json!({ "cleared": cleared })))
             }
             "snooze" => {
-                // （snooze）：暂停会话到指定时刻（相对秒或
+                // B11（2026-10-18 snooze）：暂停会话到指定时刻（相对秒或
                 // RFC3339）。幂等 upsert（重复 snooze = 改期）；到期由
                 // gateway snooze sweeper 摘标记 + 注入恢复 system 行。期间
                 // 消息照常处理——snooze 只是 UI 标记 + 到期唤醒语义。
@@ -193,12 +193,12 @@ impl ModuleHandler for SessionsHandler {
                 ))
             }
             "detach" => {
-                // 脱离父分支：清血缘 meta 四字段（parent /
+                // 脱离父分支（2026-10-20）：清血缘 meta 四字段（parent /
                 // forked_at_turn / fork_reason / branch_summary）——UI 谱系
                 // 视图回平、Branch Context 停止注入。消息内容零改动（fork
                 // 时整段 VERBATIM 拷贝，零共享状态）；子分支跟随独立（子树
                 // 挂在本会话下，本会话成根后树自动重组）。不可逆；boundary
-                // 审计行保留（jsonl 内部，UI 不可）。无血缘 = 诚实拒绝。
+                // 审计行保留（jsonl 内部，UI 不可见）。无血缘 = 诚实拒绝。
                 let session_id = data
                     .as_ref()
                     .and_then(|d| d.get("session_id"))
@@ -221,8 +221,8 @@ impl ModuleHandler for SessionsHandler {
                 ))
             }
             "unsnooze" => {
-                // 立即解除暂停。无标记 = 幂等成功（unsnoozed=false 仍回
-                // 200，前端刷新列表即可）。：解除后立即重放暂停期排队的
+                // B11：立即解除暂停。无标记 = 幂等成功（unsnoozed=false 仍回
+                // 200，前端刷新列表即可）。L22：解除后立即重放暂停期排队的
                 // 消息（同 wake 重放语义；幂等臂无标记也照调——幂等调用的
                 // 前提通常是前一次唤醒失败滞留，重放是无害的单次消费）。
                 let session_id = data
@@ -247,7 +247,7 @@ impl ModuleHandler for SessionsHandler {
             }
             "create" => {
                 let workspace = require_workspace(ctx)?;
-                // B（多会话并行清账）：可选 binding_key —— 原子
+                // B（2026-09-23 多会话并行清账）：可选 binding_key —— 原子
                 // get-or-create。key 已绑且会话存活 → 返回既有会话（零新
                 // 建，前端 localStorage 误判重建的复制机器在服务端终结）；
                 // 未绑/陈旧 → 新建并写绑定。与 project_id 互斥设计：绑定
@@ -260,7 +260,7 @@ impl ModuleHandler for SessionsHandler {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                 {
-                    // 同款 title 解析（显式命名 = manual）。
+                    // E7 同款 title 解析（显式命名 = manual）。
                     let explicit_title = data
                         .as_ref()
                         .and_then(|d| d.get("title"))
@@ -272,9 +272,9 @@ impl ModuleHandler for SessionsHandler {
                     let title = explicit_title.clone().unwrap_or_else(|| {
                         nemesis_agent::chat_log::DEFAULT_SESSION_TITLE.to_string()
                     });
-                    // get_or_create_session 在 BINDING_LOCK
+                    // BUG-20261102-302：get_or_create_session 在 BINDING_LOCK
                     // 持锁段内做全目录扫描（session_title→scan_session_logs）
-                    // 持锁 + 阻塞 IO 双重占位，spawn_blocking 整体移出
+                    // ——持锁 + 阻塞 IO 双重占位，spawn_blocking 整体移出
                     // （锁在阻塞线程内自旋，不占 tokio worker）。
                     let has_explicit = explicit_title.is_some();
                     let outcome = {
@@ -304,7 +304,7 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // 可选 project_id——先校验+烧归属
+                // L6++ G4（2026-09-08）：可选 project_id——先校验+烧归属
                 // （bridge bind_session：项目存在 + 目录在 → sidecar project
                 // 字段 + 内存索引），失败则整个 create 失败、不落任何 meta
                 // （放在 title 写入之前：归属失败不产生半途副作用）。
@@ -320,7 +320,7 @@ impl ModuleHandler for SessionsHandler {
                     })?;
                     bridge.bind_session(&session_key, &project_id)?;
                 }
-                // 显式命名 = 用户意志（manual，自动标题永不覆盖）；
+                // E7：显式命名 = 用户意志（manual，自动标题永不覆盖）；
                 // 未带 title = 默认占位符（自动标题可覆盖）。
                 let explicit_title = data
                     .as_ref()
@@ -342,7 +342,7 @@ impl ModuleHandler for SessionsHandler {
                     serde_json::json!({ "session_id": session_id, "title": title }),
                 ))
             }
-            // B（多会话并行清账）：重绑——draft_apply 成功后把
+            // B（2026-09-23 多会话并行清账）：重绑——draft_apply 成功后把
             // 当前会话绑到新目标（键 upsert，旧持有者让出；目标不存在诚实
             // 拒绝，孤儿绑定不可能产生）。
             "set_binding" => {
@@ -364,7 +364,7 @@ impl ModuleHandler for SessionsHandler {
                     "session_id": session_id,
                 })))
             }
-            // B（多会话并行清账）：摘键——draft_apply 后释放
+            // B（2026-09-23 多会话并行清账）：摘键——draft_apply 后释放
             // 「__new__」引导键（会话已重绑到正式工作流名）。键不存在幂等。
             "remove_binding" => {
                 let workspace = require_workspace(ctx)?;
@@ -397,7 +397,7 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // rename 是用户意志——置 manual 标记，自动标题永不覆盖。
+                // E7：rename 是用户意志——置 manual 标记，自动标题永不覆盖。
                 nemesis_agent::chat_log::write_session_meta_manual(&session_key, &title);
                 Ok(Some(
                     serde_json::json!({ "session_id": session_id, "title": title }),
@@ -410,14 +410,14 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
-                // 回收站：默认移入回收站（可恢复，90d
+                // 回收站（2026-10-30 拍板③）：默认移入回收站（可恢复，90d
                 // TTL 清扫）；`hard: true` = 旧硬删除语义原样保留。
                 let hard = data
                     .as_ref()
                     .and_then(|d| d.get("hard"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                // 回收站条目来源（浏览器 E2E 根修）：单删
+                // 回收站条目来源（2026-10-30 浏览器 E2E T4 根修）：单删
                 // 缺席/未知值落 "single"；侧栏批量循环显式传 "batch"。
                 let source = match data
                     .as_ref()
@@ -431,14 +431,14 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // 会话闸（同 rewind 家族——admission
+                // 会话闸（BUG-HUNT R6，同 rewind 家族——admission
                 // under_history_gate）：turn 在飞时的 delete 与在飞回合竞态，
                 // jsonl 删掉后回合尾巴把内存会话回写，被删会话以孤儿行复活。
                 // 经 resolve_session_loop 拿归属 loop（busy 旗标 per-loop，
                 // 项目会话必须闸在项目 loop 上）；持有期间新消息排队/诚实
                 // 拒绝，操作完成（含错误路径）释放 + 排空。参数解析在闸外
                 // （零副作用）。无 loop（退化 ctx）诚实降级为不闸——没有
-                // 回合引擎就没有在飞回合，竞态窗口不存在； 记录的跳臂
+                // 回合引擎就没有在飞回合，竞态窗口不存在；S10b 记录的跳臂
                 // 行为（store 臂跳过、jsonl 幸存）保持原样。
                 match crate::handlers::projects::resolve_session_loop(ctx, &session_key) {
                     Ok(al) => {
@@ -463,7 +463,7 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // 会话闸（同 delete 臂）：clear 的 jsonl 截断
+                // 会话闸（BUG-HUNT R6，同 delete 臂）：clear 的 jsonl 截断
                 // 与在飞回合竞态——截空后回合尾巴回写孤儿行。归属 loop 真互斥；
                 // 无 loop 诚实降级（理由同 delete 臂）。
                 match crate::handlers::projects::resolve_session_loop(ctx, &session_key) {
@@ -488,13 +488,16 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // export 全量读会话日志（100_000 ≥ whole_log
-                // 阈值 = 整文件解析），同步阻塞 IO 直跑 tokio worker，spawn_
-                // blocking 移出（read_chat_log_async 同款纪律）。
+                // BUG-20261102-302：export 全量读会话日志，同步阻塞 IO 直跑
+                // tokio worker，spawn_blocking 移出（read_chat_log_async 同款
+                // 纪律）。BUG-20261106-002：limit 用全量读者契约 `usize::MAX`
+                // ——此前传 100_000 触发 whole_log 旗标但滑窗仍在 >limit 时
+                // 从头驱逐，超 10 万行会话的最旧历史被静默截掉（count 照报
+                // 真实总数，迁移副本永久缺前缀且无任何告警）。
                 let (messages, total, _, _) = {
                     let key = session_key;
                     tokio::task::spawn_blocking(move || {
-                        nemesis_agent::chat_log::read_chat_log(&key, 100_000, None)
+                        nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None)
                     })
                     .await
                     .map_err(|e| format!("sessions.export task join failed: {e}"))?
@@ -506,7 +509,7 @@ impl ModuleHandler for SessionsHandler {
                 })))
             }
             "import" => {
-                // （跨设备移动）：sessions.export 的配对面——
+                // L22（2026-11-03 跨设备移动）：sessions.export 的配对面——
                 // 导入导出消息行重建会话（搬运最小形态）。messages 行保持
                 // 导出形态（jsonl Value 数组，逐行 VERBATIM 落盘——时间戳/
                 // 模型徽标等全保真）；session_id 可选（缺省生成 uuid）；
@@ -557,13 +560,22 @@ impl ModuleHandler for SessionsHandler {
                     None => uuid::Uuid::new_v4().to_string(),
                 };
                 let session_key = format!("agent:main:session:{sid}");
+                // BUG-20261106-003：落盘走排他创建（create_new）——上面的
+                // exists 预检只是友好快速路径，真实「不覆盖」契约由文件系统
+                // 原子性背书（check-then-create 竞态窗口不再能覆盖既有会话）。
                 let written = {
                     let key = session_key.clone();
                     tokio::task::spawn_blocking(move || {
-                        nemesis_agent::chat_log::write_chat_log_rows(&key, &rows)
+                        nemesis_agent::chat_log::create_chat_log_exclusive(&key, &rows)
                     })
                     .await
                     .map_err(|e| format!("sessions.import task join failed: {e}"))?
+                    .map_err(|e| match e {
+                        nemesis_agent::chat_log::ChatLogCreateError::AlreadyExists => {
+                            format!("会话已存在: {sid}（导入不覆盖既有会话）")
+                        }
+                        nemesis_agent::chat_log::ChatLogCreateError::Io(m) => m,
+                    })?
                 };
                 if written != messages.len() {
                     return Err(format!(
@@ -589,7 +601,7 @@ impl ModuleHandler for SessionsHandler {
                 ))
             }
             "changed_files" => {
-                // session PR（最小形态）：分支会话的变更文件清单——
+                // L22 session PR（最小形态）：分支会话的变更文件清单——
                 // jsonl assistant 行 `file_changes` 聚合去重（按首次出现序）。
                 // 前端拿清单逐文件调 `sessions.file_diff` 展示 unified diff。
                 let session_id = data
@@ -614,16 +626,16 @@ impl ModuleHandler for SessionsHandler {
                     serde_json::json!({ "session_id": session_id, "files": files }),
                 ))
             }
-            // （devtool-upgrade）：消息级回退——会话截断 + 文件恢复
+            // E3（devtool-upgrade 阶段 5）：消息级回退——会话截断 + 文件恢复
             // 到锚 turn 开始时的状态 + 压 undo 栈。message_index 契约：本模块
             // `export`（= logs.session_detail 的行序，同一 jsonl）里
             // messages 数组下标。编排在 AgentLoop（checkpoint/undo 栈都住
             // 那边），这里只做参数解析与 agent_loop 装配检查。
-            // 可选 `force`（bool，默认 false）——
+            // P20（2026-09-25 能力扩展）：可选 `force`（bool，默认 false）——
             // 冲突预检检出「文件在 checkpoint 后被外部修改」时默认零副作用
             // 拒绝（blocked:true + 结构化冲突清单），force=true 强过（回执
             // 与日志留痕）。
-            // mode（重新生成修复）：缺省/"turn" = turn 对齐
+            // mode（2026-10-20 重新生成修复）：缺省/"turn" = turn 对齐
             // （index 所在整轮保留，其后截掉）；"before" = 按轮首回退（保留
             // index 之前，该行及其后移除——前端「重新生成」：目标=提问行，
             // 文件滚回提问前，支持 cut=0 首轮）。未知值 loud 拒绝。
@@ -654,7 +666,7 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // undo 栈与 checkpoint store 都住 loop
+                // L6++ G6（2026-09-08）：undo 栈与 checkpoint store 都住 loop
                 // 实例——项目会话的回退必须由项目 loop 执行（此前硬编码主
                 // 槽，项目会话回退拿到主 loop 的空 checkpoint 索引，文件恢
                 // 复静默 no-op 只截对话）。无归属/bridge 未装配回主槽不变。
@@ -676,7 +688,7 @@ impl ModuleHandler for SessionsHandler {
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
             }
-            // redo：弹本会话 undo 栈顶反向恢复（行回填 + 文件前向恢复；
+            // E3 redo：弹本会话 undo 栈顶反向恢复（行回填 + 文件前向恢复；
             // 陈旧性守卫在 AgentLoop 侧）。undo 栈是内存态，网关重启即失。
             "redo" => {
                 let session_id = data
@@ -689,8 +701,8 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // redo 的 undo 栈住 loop 实例，同 rewind 路由项目会话。
-                // 可选 force——冲突预检（回退窗口内
+                // L6++ G6：redo 的 undo 栈住 loop 实例，同 rewind 路由项目会话。
+                // M4（2026-10-27 整改）：可选 force——冲突预检（回退窗口内
                 // 外部漂移）拒绝时前端确认后带 force 重试。
                 let force = data
                     .as_ref()
@@ -702,7 +714,7 @@ impl ModuleHandler for SessionsHandler {
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
             }
-            // （devtool-upgrade）：会话级文件 diff——聚合侧在
+            // M3（devtool-upgrade 阶段 5）：会话级文件 diff——聚合侧在
             // 前端（session_detail 行的 file_changes），这里按 (session_id,
             // path) 取「最早 checkpoint 基线 vs 现盘」unified diff。编排
             // 在 AgentLoop 侧（checkpoint store 住那边）。
@@ -723,13 +735,13 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                // checkpoint 索引住 loop 实例，同 rewind 路由项目会话。
+                // L6++ G6：checkpoint 索引住 loop 实例，同 rewind 路由项目会话。
                 let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
                 let mut out = al.session_file_diff(&session_key, &path).await?;
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
             }
-            // （扩展计划）：会话事件账本全链重算验证。链断裂/篡改 =
+            // T6（扩展计划 D5）：会话事件账本全链重算验证。链断裂/篡改 =
             // Err（消息即失败原因），成功返回统计。
             "ledger_verify" => {
                 let session_id = data
@@ -758,7 +770,7 @@ impl ModuleHandler for SessionsHandler {
                     "rows_total": stats.rows_total,
                 })))
             }
-            // （devtool-upgrade）：会话分享——创建/列出/撤销只读
+            // L4（devtool-upgrade 阶段 7）：会话分享——创建/列出/撤销只读
             // 分享 token（存储 + 白名单投影 + 公开 GET 端点都在 crate::share）。
             "share_create" => {
                 let workspace = require_workspace(ctx)?;
@@ -778,7 +790,7 @@ impl ModuleHandler for SessionsHandler {
             "share_list" => {
                 let workspace = require_workspace(ctx)?.to_string();
                 // 标题实时解析（会话改名/删除跟随 live 语义）。
-                // list_shares + 每条 session_title（每次 =
+                // BUG-20261102-302：list_shares + 每条 session_title（每次 =
                 // scan_session_logs 全目录全量解析）——N 条分享 = N 次全目录
                 // 扫描，同步阻塞 IO 直跑 tokio worker，spawn_blocking 整体移出。
                 let shares: Vec<serde_json::Value> = tokio::task::spawn_blocking(move || {
@@ -813,7 +825,7 @@ impl ModuleHandler for SessionsHandler {
                 }
                 Ok(Some(serde_json::json!({ "ok": true })))
             }
-            // 会话回收站：sessions.delete 默认移入
+            // 会话回收站（2026-10-30）：sessions.delete 默认移入
             // `logs/trash/sessions/`，这里四个读侧命令管理它。条目寻址只见
             // 目录名（core 侧严格校验，防注入）；无在飞竞态（对象不是活会话），
             // 不进 history gate。
@@ -834,7 +846,7 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
-                // trash_restore 内部 move_file_retry 带
+                // BUG-20261031-248：trash_restore 内部 move_file_retry 带
                 // 100ms×5 退避重试，spawn_blocking 包裹防阻塞 tokio worker
                 // （LOW-5 同款纪律，与 nemesis-cluster 内 4 处先例对齐）。
                 let out = {
@@ -887,8 +899,8 @@ impl ModuleHandler for SessionsHandler {
                 let n = nemesis_agent::chat_trash::trash_purge_all()?;
                 Ok(Some(serde_json::json!({ "purged": n })))
             }
-            // 会话执行统计：8 字段只读视图（工具调用/失败/重试/校验失败/
-            // 压缩/审面）。读盘不读内存——先经聚合器 flush pending 增量
+            // L14 会话执行统计：8 字段只读视图（工具调用/失败/重试/校验失败/
+            // 压缩/审批三面）。读盘不读内存——先经聚合器 flush pending 增量
             // 落盘再读 sidecar meta，进程重启后统计不归零。聚合器未装配
             // （headless 形态或老 gateway）= 诚实报错。
             "stats" => {
@@ -924,15 +936,35 @@ impl ModuleHandler for SessionsHandler {
     }
 }
 
-// delete/clear 操作体抽出——原 inline 臂原样搬移，
+// ---------------------------------------------------------------------------
+// BUG-HUNT R6（2026-10-23）：delete/clear 操作体抽出——原 inline 臂原样搬移，
 // 供 handle_cmd 在 `under_history_gate` 持闸下调用（归属 loop 在场时）；
 // 无 loop（退化 ctx）直调不闸。本节函数自身不闸（参数解析同样留在闸外，
 // 保证 busy 拒绝路径零副作用）。
+// ---------------------------------------------------------------------------
+
+/// BUG①（2026-11-05）：删除/清空链路的 live todo 清扫（回收站四件套之外
+/// 的直删路径：hard 删除、clear 清空）。文件缺席 = no-op；路径走
+/// nemesis-path 单一真相源（与 TodoWriteTool 写路径、回收站寻址同源）。
+/// 删除失败 = Err 上浮（与 chat_log 同严格级——删不干净报出来，不静默
+/// 留孤儿）；remove_file_retry 带 Windows 瞬时句柄重试，spawn_blocking
+/// 包裹防阻塞 tokio worker（trash_chat_log 同款纪律）。
+async fn remove_live_todo(workspace: &str, session_key: &str) -> Result<(), String> {
+    let todo =
+        nemesis_path::session_todo_file_in_workspace(std::path::Path::new(workspace), session_key);
+    if !todo.exists() {
+        return Ok(());
+    }
+    tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_file_retry(&todo))
+        .await
+        .map_err(|e| format!("todo remove task join failed: {e}"))?
+        .map_err(|e| format!("删除 todo 文件失败: {e}"))
+}
 
 /// sessions.delete 操作体：store 删除（内存 + sessions/*.json + jsonl）→
 /// 方言 SessionEnd → cron 级联停用 → 项目归属/绑定摘除。
 ///
-/// `hard=false`（默认， 回收站）：store 只 detach 内存/json
+/// `hard=false`（默认，2026-10-30 回收站）：store 只 detach 内存/json
 /// 上下文（不删 chat_log 三件套），三件套 rename 进
 /// `logs/trash/sessions/{ms}_{safe}/`（可恢复，90d TTL 清扫）。顺序刻意
 /// 先 detach 后移文件：两步间崩溃 = 会话从 store 消失但 jsonl 还在
@@ -961,6 +993,12 @@ async fn delete_session_body(
             }
         }
     }
+    // BUG①（2026-11-05）：hard=true 不走回收站（旧语义不可恢复），todo
+    // 文件也要一并删——四件套接管只覆盖软删链路。软删（!hard）的 todo 由
+    // trash_chat_log 四件套化 rename 进条目，无需此处动作。
+    if hard && let Some(ws) = ctx.workspace.as_deref() {
+        remove_live_todo(ws, session_key).await?;
+    }
     if !hard {
         // 移入回收站（guard 作用域外——trash 不持 store 锁）。三件套全
         // 缺席（从未物化）= Ok(None)，删除即完成（trashed:false）。
@@ -970,7 +1008,7 @@ async fn delete_session_body(
         // 缺席（从未物化）= Ok(None)，删除即完成（trashed:false）。
         // source 由调用方声明（单删 single / 批量循环 batch——回收站列表
         // 来源徽标的依据；展示性字段，未知值由 dispatch 层落 single）。
-        // trash_chat_log 内部 move_file_retry 带
+        // BUG-20261031-248：trash_chat_log 内部 move_file_retry 带
         // 100ms×5 退避重试，spawn_blocking 包裹防阻塞 tokio worker。
         trash_entry = {
             let key = session_key.to_string();
@@ -982,7 +1020,7 @@ async fn delete_session_body(
             .map_err(|e| format!("trash_chat_log task join failed: {e}"))?
         }?;
     }
-    // 方言 SessionEnd（观察型）：显式删除也触发
+    // 方言 SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
     // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
     // 先把桥 Arc 克隆出 guard 作用域，再 await（guard 不跨 await）。
     let session_end_bridge = {
@@ -992,7 +1030,7 @@ async fn delete_session_body(
     if let Some(bridge) = session_end_bridge {
         bridge.on_session_end(session_key, "deleted").await;
     }
-    // Cron cascade: a scheduled job pinned to this
+    // Cron cascade (2026-08-25): a scheduled job pinned to this
     // session_key would otherwise FIRE on a deleted conversation
     // and resurrect it — an empty jsonl re-created + cron rows
     // appended, a session the user explicitly deleted coming
@@ -1025,7 +1063,7 @@ async fn delete_session_body(
             }
         }
     }
-    // （三期）：看板 autopilot 父会话绑定级联——绑定本会话
+    // L23（三期 2026-11-03）：看板 autopilot 父会话绑定级联——绑定本会话
     // 的启用规则自动暂停 + 评论留痕（父会话删除后规则孤儿运行 = 绑定语义
     // 破约；回收站软删同样移走 chat_log → 一致裁决）。board 未装配 = 无
     // 绑定语义，跳过。
@@ -1038,13 +1076,13 @@ async fn delete_session_body(
         ),
         None => Vec::new(),
     };
-    // 项目归属联动摘除（内存索引 + sidecar
+    // L6++ G4（2026-09-08）：项目归属联动摘除（内存索引 + sidecar
     // project 字段——meta 已随 delete_chat_log 删除时为 no-op）。
     // bridge 未装配 = 无项目分组语义，跳过。
     if let Some(bridge) = crate::handlers::projects::projects_bridge() {
         bridge.forget_session(session_key);
     }
-    // B（多会话并行清账）：绑定注册表级联摘除（指向
+    // B（2026-09-23 多会话并行清账）：绑定注册表级联摘除（指向
     // 该会话的键全清，不留悬空绑定）。best-effort：workspace 缺
     // 席（退化 ctx）= 跳过；删除会话后绑定残留会让 get-or-create
     // 误判「已绑」，产生「保存了却找不到会话」的错觉。
@@ -1078,7 +1116,7 @@ async fn delete_session_body(
 /// 项目归属摘除。clear 不做 cron 级联（会话还在，job 跟着空会话合法）。
 async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(), String> {
     // Clear SessionStore messages + session_logs jsonl (keep meta/key).
-    // Order matters (self-heal note): truncate the
+    // Order matters (2026-08-25 self-heal note): truncate the
     // chat_log FIRST, then drop the store json. If we crashed
     // between the two steps the other way round, the surviving
     // jsonl would let `rebuild_from_chat_log` resurrect the
@@ -1086,6 +1124,11 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     // rebuild path unable to revive cleared data.
     nemesis_agent::chat_log::clear_chat_log(session_key)
         .map_err(|e| format!("清空会话失败: {e}"))?;
+    // BUG①（2026-11-05）：清空 = 全新会话语义，todo 清单一并清（不参与
+    // self-heal 重建，位置在 clear_chat_log 后保持「文件先动」惯例）。
+    if let Some(ws) = ctx.workspace.as_deref() {
+        remove_live_todo(ws, session_key).await?;
+    }
     let guard = ctx.state.agent_loop.read();
     if let Some(al) = guard.as_ref()
         && let Some(store) = al.session_store()
@@ -1093,14 +1136,14 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
         store.clear_session(session_key);
     }
     drop(guard);
-    // clear 重置会话 → 项目归属一并解除
+    // L6++ G4（2026-09-08）：clear 重置会话 → 项目归属一并解除
     // （摘索引 + sidecar project 字段，title 保留——防 owner_of
     // 的 sidecar 兜底把绑定「复活」）。bridge 未装配 = 跳过。
     if let Some(bridge) = crate::handlers::projects::projects_bridge() {
         bridge.forget_session(session_key);
     }
-    // （三期）：看板 autopilot 父会话绑定级联——clear 后
-    // 父会话账本空（chat_log 截空 = 存活判据不成立），绑定规则自动
+    // L23（三期 2026-11-03）：看板 autopilot 父会话绑定级联——clear 后
+    // 父会话账本空（chat_log 截空 = L23 存活判据不成立），绑定规则自动
     // 暂停（规格明确 clear 也在裁决范围：空会话继承零上下文 = 绑定无意义，
     // 与 cron job 的「clear 不级联」刻意不同——那边会话骨架还在）。board
     // 未装配 = 无绑定语义，跳过。
@@ -1122,7 +1165,9 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     Ok(())
 }
 
-// （snooze）：暂停时刻解析 + 到期唤醒 sweeper
+// ---------------------------------------------------------------------------
+// B11（2026-10-18 snooze）：暂停时刻解析 + 到期唤醒 sweeper
+// ---------------------------------------------------------------------------
 
 /// 解析暂停时刻：i64 相对秒（自现在起）或 RFC3339 绝对时刻，统一归一为
 /// RFC3339（本地时区）。过去时刻/非正秒数 = 诚实报错——「立即恢复」是
@@ -1170,9 +1215,9 @@ pub fn spawn_snooze_sweeper() {
     });
 }
 
-// （snooze 排队）：暂停期消息重放 hook ——
+// —— L22（2026-11-03 snooze 排队）：暂停期消息重放 hook ——
 
-/// 重放 hook 签名：按会话键取走全部 pending（[`nemesis_agent::chat_log:
+/// 重放 hook 签名：按会话键取走全部 pending（[`nemesis_agent::chat_log::
 /// take_session_pending`]）并经该会话归属 loop 的 reinject 通道逐条重放，
 /// 返回成功注入条数。loop 缺席（停机窗口/未装配）= 0——pending 落盘保
 /// 留，sweeper 下轮重试（自愈不丢失）。
@@ -1203,7 +1248,7 @@ pub(crate) fn replay_pending_for(session_key: &str) -> usize {
     }
 }
 
-/// 滞留兜底（sweeper 每轮）：摘标记后 loop 短暂不可用的停机窗口会把
+/// L22 滞留兜底（sweeper 每轮）：摘标记后 loop 短暂不可用的停机窗口会把
 /// pending 滞留在盘上（标记已摘，正常唤醒不再覆盖）——每轮扫 pending
 /// 残留，对「非暂停中」的会话补投。会话已删除（jsonl 没了）= 重放无主，
 /// 就地清 pending（防复活已删会话 + 防无限重试）。hook 返 0（loop 仍缺
@@ -1240,7 +1285,7 @@ pub(crate) fn drain_orphan_pending() {
 /// `chat_event_log::record` 入环 + chat.activity 广播（sweep 不经 web 的
 /// record 点，已开 ChatPanel 窗口的活同步必须在这里手动补）→
 /// `publish_global_event("session.updated")`（侧栏 force 刷新信号）→
-/// **重放暂停期排队的消息**（经 replay hook 逐条 inject_inbound；
+/// **重放暂停期排队的消息**（L22：经 replay hook 逐条 inject_inbound；
 /// 标记已摘所以重放消息过 gate 不再被排队——顺序不可颠倒，先重放会被
 /// 本闸再度排队成环）。
 pub(crate) fn wake_due_sessions() -> usize {
@@ -1261,7 +1306,7 @@ pub(crate) fn wake_due_sessions() -> usize {
             continue;
         }
         let session_key = format!("agent:main:session:{sid}");
-        // 会话 jsonl 重写窗口（rewind/redo）进行中 →
+        // BUG-20261031-231：会话 jsonl 重写窗口（rewind/redo）进行中 →
         // 本轮整条目跳过（标记保留，10s 后下轮重试——窗口通常亚秒级）。
         // 必须先于摘标记：旧序「摘标记 → 落唤醒行」在窗口内行被截断吞掉
         // = 标记已摘、留痕永久丢失。
@@ -1271,7 +1316,7 @@ pub(crate) fn wake_due_sessions() -> usize {
         let Some((_, note)) = nemesis_agent::chat_log::clear_session_snooze(&session_key) else {
             continue; // 已被并发方摘掉
         };
-        // 会话可能在暂停期间被删除——不复活（no jsonl = scan 不可）。
+        // 会话可能在暂停期间被删除——不复活（no jsonl = scan 不可见）。
         if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
             continue;
         }
@@ -1280,7 +1325,7 @@ pub(crate) fn wake_due_sessions() -> usize {
             None => "⏰ 会话暂停已到期，自动恢复".to_string(),
         };
         nemesis_agent::chat_log::append_chat_log(&session_key, "system", &content);
-        // record 键空间契约是完整会话键（send_to_session
+        // BUG-HUNT R9：record 键空间契约是完整会话键（send_to_session
         // 「记录键优先会话键（跨连接稳定）」、record_tool「与 send_to_session
         // 同域」），chat.sync 按完整键重建桶查。此前传裸 sid——恢复行落进
         // 无人查询的孤儿桶，断线窗口内唤醒的会话重连补拉看不到此行
@@ -1294,7 +1339,7 @@ pub(crate) fn wake_due_sessions() -> usize {
                 "snoozed_until": serde_json::Value::Null,
             }),
         );
-        // 重放暂停期排队的消息（标记已摘——重放消息过 gate 不再被
+        // L22：重放暂停期排队的消息（标记已摘——重放消息过 gate 不再被
         // 排队）。loop 缺席（停机窗口）= 0，pending 落盘保留，sweeper 下
         // 轮的 orphan 兜底臂补投（自愈不丢失）。
         let delivered = replay_pending_for(&session_key);

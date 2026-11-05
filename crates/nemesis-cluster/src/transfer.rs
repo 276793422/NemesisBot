@@ -553,6 +553,108 @@ impl TransferSink {
         removed
     }
 
+    /// 已落地未消费 `inbox/<task_id>/` 按龄清扫（横扫四轮，2026-11-06）。
+    ///
+    /// 落地的消费方全是事件驱动（基线解包=派发时 / 档案重灌=派发绑定
+    /// 在场 / migrate commit=A 端提交到达 / dossier 导出=inbox-unplaced
+    /// 收编）：任务取消、board 重置、A 端永久崩溃等路径下落地目录永远
+    /// 不到达消费点，且全仓无删除路径（`.staging` 中转有
+    /// sweep_stale_staging，落地侧此前没有）。只动 mtime 早于 `max_age`
+    /// 的任务目录——正常消费分钟级完成，7 天远大于一切合法驻留
+    /// （dispatch_timeout 默认 3600s / A 端收敛安全网 24h+）。删除同步
+    /// 摘除 dedup 索引条目并持久化（begin 侧去重闸本就要求实体在场，
+    /// 实体已摘的条目是死重量；键=原始 task_id、目录名=消毒后形态，
+    /// 按消毒映射对账）。`.staging`/`.done`/`.dedup.json` 等隐藏条目与
+    /// 非目录条目不碰。返回清除数。
+    pub fn sweep_stale_landed(&self, max_age: std::time::Duration) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.inbox_root) else {
+            return 0;
+        };
+        let now = std::time::SystemTime::now();
+        let mut swept_names: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // 隐藏抽屉（.staging/.done）、去重索引文件、非目录条目不碰。
+            if name.starts_with('.') || !entry.path().is_dir() {
+                continue;
+            }
+            // 无 mtime / 未来时间戳（时钟偏斜）= 保守视为新鲜，跳过。
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .map(|age| age < max_age)
+                .unwrap_or(true);
+            if fresh {
+                continue;
+            }
+            tracing::info!(
+                dir = %entry.path().display(),
+                "[Transfer] sweeping stale landed inbox dir (task never consumed)"
+            );
+            if crate::fsutil::remove_dir_all_resilient(entry.path()) {
+                swept_names.push(name);
+            }
+        }
+        if swept_names.is_empty() {
+            return 0;
+        }
+        {
+            let mut dedup = self.dedup.write();
+            dedup.retain(|k, _| !swept_names.contains(&crate::fsutil::safe_task_file_name(k)));
+        }
+        save_dedup(&self.inbox_root, &self.dedup.read());
+        swept_names.len()
+    }
+
+    /// 幂等重放回执 `.done/<transfer_id>.json` 按龄清扫（横扫六轮，
+    /// 2026-11-06）。
+    ///
+    /// end() 成功落地后写入（写点=end 步骤 5），唯一用途 = end ACK 丢失
+    /// 后 sender 短窗重试时幂等重放成功回复（防 outbox 零丢失语义下
+    /// sender 永远重试的死锁）。transfer_id 每次传输新生成 → 回执只增
+    /// 不删，长跑节点永久积累小 JSON。重放窗口上界 = sender 侧
+    /// dispatch_timeout（默认 3600s）/ RPC ACK 等待（60min），远小于本
+    /// 仓 7 天 TTL 口径——按龄清扫安全；回执缺席时重放诚实落 Err
+    /// 「staging 不存在」（sender 保留本地重试，语义不变）。只动
+    /// `.done/` 抽屉内 mtime 早于 `max_age` 的 `*.json` 条目；缺/未来
+    /// mtime 保守视为新鲜；抽屉外与非 .json 条目不碰。删除走 fsutil
+    /// 韧性包装（尽力而为，残留交下轮）。返回清除数。
+    pub fn sweep_stale_done_receipts(&self, max_age: std::time::Duration) -> usize {
+        let done_dir = self.inbox_root.join(".done");
+        let Ok(entries) = std::fs::read_dir(&done_dir) else {
+            return 0;
+        };
+        let now = std::time::SystemTime::now();
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // 无 mtime / 未来时间戳（时钟偏斜）= 保守视为新鲜，跳过。
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .map(|age| age < max_age)
+                .unwrap_or(true);
+            if fresh {
+                continue;
+            }
+            tracing::info!(
+                file = %path.display(),
+                "[Transfer] sweeping stale .done replay receipt (retry window long past)"
+            );
+            if crate::fsutil::remove_file_resilient(&path) {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes.load(Ordering::Relaxed)
     }

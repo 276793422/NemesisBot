@@ -4,7 +4,7 @@ use std::fs;
 
 use super::{
     read_config_string, remove_dir_all_resilient, remove_dir_all_retry, remove_dir_all_retry_async,
-    remove_file_resilient, remove_file_retry,
+    remove_dir_retry, remove_file_resilient, remove_file_retry,
 };
 
 #[test]
@@ -73,6 +73,27 @@ fn file_resilient_removes_and_reports_true() {
     assert!(!f.exists());
     // 缺失文件同语义：清理类调用点 NotFound 不算失败。
     assert!(remove_file_resilient(&f));
+}
+
+// remove_dir_retry 的 rmdir 语义（2026-11-06 cluster_logs 空壳摘除护栏）：
+// 非空即败是「判空到删除」窗口竞态的安全护栏——新条目落进来时诚实失败，
+// 不能把新条目一起带走（remove_dir_all 没有这层保护）。
+#[test]
+fn dir_retry_removes_empty_dir_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 空目录：删成功。
+    let empty = tmp.path().join("empty-shell");
+    fs::create_dir(&empty).unwrap();
+    remove_dir_retry(&empty).unwrap();
+    assert!(!empty.exists());
+    // 非空目录：失败且内容原样（这是与 remove_dir_all 的本质差异）。
+    let non_empty = tmp.path().join("non-empty");
+    fs::create_dir_all(&non_empty).unwrap();
+    fs::write(non_empty.join("live.txt"), b"x").unwrap();
+    assert!(remove_dir_retry(&non_empty).is_err());
+    assert!(non_empty.join("live.txt").exists(), "内容不得被带走");
+    // 目录缺席：NotFound 视为成功（幂等）。
+    remove_dir_retry(&empty).unwrap();
 }
 
 // 重试耗尽面（真 AV/索引器句柄冲突）无零依赖模拟手段：std 打开的句柄默认

@@ -1119,3 +1119,38 @@ fn verify_skips_part_corrupt_and_unregistered() {
     assert!(assets.join("wip.bin.part").exists());
     assert!(assets.join("old.bin.corrupt").exists());
 }
+
+// ---- 横扫四轮（2026-11-06）：sweep_stale_parts 崩溃孤儿 `.part` 按龄清扫 ----
+
+/// max_age=0：过期 `.part` 整删；`.corrupt` 留证不碰、正常实体不碰；
+/// 大 max_age：新鲜 `.part`（进行中下载）一律保留。
+#[test]
+fn sweep_stale_parts_clears_expired_parts_only() {
+    let (_dir, ws) = temp_workspace();
+    let assets = ws.join("board").join("assets");
+    std::fs::create_dir_all(&assets).expect("mkdir assets");
+    std::fs::write(assets.join("asset-a.part"), b"partial").expect("write part");
+    std::fs::write(assets.join("asset-b.corrupt"), b"evidence").expect("write corrupt");
+    std::fs::write(assets.join("asset-c"), b"entity").expect("write entity");
+    let tool = BoardAssetTool::new(ws.clone());
+
+    // 100 天闸：刚刚创建的文件是新鲜的，什么都不删。
+    let fresh = tool.sweep_stale_parts(std::time::Duration::from_secs(100 * 24 * 3600));
+    assert_eq!(fresh, 0, "新鲜 .part 不清扫");
+    assert!(assets.join("asset-a.part").exists());
+
+    // 零闸：全部视为过期，只删 .part。
+    let swept = tool.sweep_stale_parts(std::time::Duration::ZERO);
+    assert_eq!(swept, 1, "只清 .part 孤儿");
+    assert!(!assets.join("asset-a.part").exists(), ".part 孤儿退场");
+    assert!(assets.join("asset-b.corrupt").exists(), ".corrupt 留证不删");
+    assert!(assets.join("asset-c").exists(), "正常实体不碰");
+}
+
+/// assets 目录缺席（从未有下载）→ 静默 0，不 panic。
+#[test]
+fn sweep_stale_parts_missing_dir_is_zero() {
+    let (_dir, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws);
+    assert_eq!(tool.sweep_stale_parts(std::time::Duration::ZERO), 0);
+}

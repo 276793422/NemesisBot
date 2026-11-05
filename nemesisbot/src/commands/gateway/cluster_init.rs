@@ -754,8 +754,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         // BUG-2：孤儿分块暂存按龄清扫 TTL
                         // （对齐 task_result / outbox 死信 / 续行快照 7 天
                         // 口径）；进行中传输的分块写入持续刷新目录 mtime，
-                        // TTL 内不受影响。
-                        const STAGING_STALE_TTL: std::time::Duration =
+                        // TTL 内不受影响。横扫四轮（2026-11-06）起同一
+                        // 闸也管已落地未消费任务目录（sweep_stale_landed
+                        // ——正常消费分钟级，7 天远大于一切合法驻留）。
+                        const TRANSFER_STALE_TTL: std::time::Duration =
                             std::time::Duration::from_secs(7 * 24 * 3600);
                         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -772,7 +774,15 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             }
                             // 只动 mtime 早于 TTL 的目录；常态空目录一次
                             // read_dir，开销可忽略。
-                            sink_ref.sweep_stale_staging(STAGING_STALE_TTL);
+                            sink_ref.sweep_stale_staging(TRANSFER_STALE_TTL);
+                            // 已落地未消费任务目录同闸（横扫四轮）：消费方
+                            // 全事件驱动，取消/重置/A 端崩溃路径的落地残留
+                            // 此前无删除路径。
+                            sink_ref.sweep_stale_landed(TRANSFER_STALE_TTL);
+                            // 幂等重放回执同闸（横扫六轮）：回执唯一用途
+                            // = end 重试短窗幂等重放，重试窗（dispatch_
+                            // timeout / RPC ACK）远小于 TTL。
+                            sink_ref.sweep_stale_done_receipts(TRANSFER_STALE_TTL);
                         }
                     });
                 }

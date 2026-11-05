@@ -86,6 +86,8 @@ fn read_chat_log_open_failure_returns_empty_page() {
 }
 
 /// whole-log 形态（limit ≥ 100_000）：解析行直接滑入窗口。
+/// BUG-20261106-002 差分同场：全量读者契约 = `usize::MAX` 无驱逐
+/// （>10 万行整卷返回，最旧行在首）；`limit=100_000` 则照旧从头驱逐。
 #[test]
 fn read_chat_log_whole_log_window_eviction() {
     let key = cov_key("whole_log");
@@ -108,6 +110,16 @@ fn read_chat_log_whole_log_window_eviction() {
     assert_eq!(page[0]["content"].as_str(), Some("m2"));
     assert_eq!(page[99_999]["content"].as_str(), Some("m100001"));
 
+    // BUG-20261106-002 差分：同一 >10 万行文件，usize::MAX = 全量读者
+    // 契约——零驱逐、全部 100_002 行、最旧行在首、无后续页。
+    let (all, total_all, more_all, oldest_all) = read_chat_log(&key, usize::MAX, None);
+    assert_eq!(total_all, 100_002);
+    assert_eq!(all.len(), 100_002);
+    assert!(!more_all);
+    assert_eq!(oldest_all, 0);
+    assert_eq!(all[0]["content"].as_str(), Some("m0"));
+    assert_eq!(all[100_001]["content"].as_str(), Some("m100001"));
+
     delete_chat_log(&key);
 }
 
@@ -115,20 +127,29 @@ fn read_chat_log_whole_log_window_eviction() {
 // truncate_chat_log_rows
 // ---------------------------------------------------------------------------
 
-/// tmp 文件被目录占位 → open 失败 → warn + 返回 0。
+/// 遗留崩溃残留（旧实现的 `.jsonl.rewinding` 中断目录、任何孤儿文件）
+/// 不得阻塞截断——BUG-20261106-001 后 truncate 委托
+/// `nemesis_utils::write_file_atomic`（自造唯一临时名），旧实现的中断
+/// 残留退化为无害垃圾。旧测试在 `.rewinding` 路径建目录阻断 tmp open，
+/// helper 下该路径不再是截断通道，测试改语义：残留在场时截断照常成功。
 #[test]
-fn truncate_returns_zero_when_tmp_unopenable() {
+fn truncate_succeeds_with_legacy_residue() {
     let key = cov_key("trunc_tmp");
     delete_chat_log(&key);
     append_chat_log(&key, "user", "row");
     let tmp = log_path(&key).with_extension("jsonl.rewinding");
-    // 同上：中断遗留的同路径文件会让 create_dir_all 死循环，先消干净。
+    // 中断遗留的同路径文件会让 create_dir_all 死循环，先消干净。
     let _ = fs::remove_file(&tmp);
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).unwrap();
 
     let rows = vec![serde_json::json!({"role":"user","content":"keep"})];
-    assert_eq!(truncate_chat_log_rows(&key, &rows), 0);
+    assert_eq!(truncate_chat_log_rows(&key, &rows), 1);
+
+    // 截断生效：重写后的文件只含 kept 行。
+    let (page, _, _, _) = read_chat_log(&key, 10, None);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0]["content"].as_str(), Some("keep"));
 
     fs::remove_dir(&tmp).unwrap();
     delete_chat_log(&key);
@@ -150,12 +171,53 @@ fn truncate_returns_zero_when_rename_target_is_dir() {
 
     let rows = vec![serde_json::json!({"role":"user","content":"keep"})];
     assert_eq!(truncate_chat_log_rows(&key, &rows), 0);
-    // tmp 已被清理。
-    let tmp = path.with_extension("jsonl.rewinding");
-    assert!(!tmp.exists());
+    // 失败后原目标（目录 + 守卫文件）原封不动——helper 原子性契约的
+    // 失败臂：要么原样、要么截断后完好，绝不半截。
+    assert!(path.join("cov_guard").exists(), "失败后原目标不得被动过");
 
     let _ = fs::remove_file(path.join("cov_guard"));
     fs::remove_dir(&path).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// create_chat_log_exclusive / write_chat_log_rows（排他创建语义）
+// ---------------------------------------------------------------------------
+
+/// BUG-20261106-003：批次创建从 append 改排他（create_new）——已存在键
+/// 必须诚实败北（Result 版回 AlreadyExists / usize 包装版归一 0），
+/// 既有文件内容原封不动（此前 append 语义会把导入行追加进既有会话，
+/// check-then-create 竞态窗口同理）。新键照常成功。
+#[test]
+fn exclusive_create_refuses_existing_target() {
+    let key = cov_key("excl");
+    delete_chat_log(&key);
+    append_chat_log(&key, "user", "original");
+    let rows = vec![serde_json::json!({"role":"user","content":"invader"})];
+
+    match create_chat_log_exclusive(&key, &rows) {
+        Err(ChatLogCreateError::AlreadyExists) => {}
+        other => panic!("已存在键必须回 AlreadyExists，实际 {other:?}"),
+    }
+    let (page, total, _, _) = read_chat_log(&key, 10, None);
+    assert_eq!(total, 1, "既有文件不得被触碰");
+    assert_eq!(page[0]["content"].as_str(), Some("original"));
+
+    // usize 包装版（fork 消费）：同键归一 0 = fork 回退臂语义。
+    assert_eq!(write_chat_log_rows(&key, &rows), 0);
+    let (page, total, _, _) = read_chat_log(&key, 10, None);
+    assert_eq!(total, 1);
+    assert_eq!(page[0]["content"].as_str(), Some("original"));
+
+    // 新键：排他创建成功，行数如实。
+    let fresh = cov_key("excl_fresh");
+    delete_chat_log(&fresh);
+    assert!(matches!(create_chat_log_exclusive(&fresh, &rows), Ok(1)));
+    let (page, total, _, _) = read_chat_log(&fresh, 10, None);
+    assert_eq!(total, 1);
+    assert_eq!(page[0]["content"].as_str(), Some("invader"));
+
+    delete_chat_log(&key);
+    delete_chat_log(&fresh);
 }
 
 // ---------------------------------------------------------------------------

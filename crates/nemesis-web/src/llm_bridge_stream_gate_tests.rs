@@ -1,4 +1,4 @@
-//! wire 语义闸（2026-10-14 / 根修）：`ProviderAdapter::chat_streamed`
+//! wire 语义闸（2026-10-14 T37/T42 根修）：`ProviderAdapter::chat_streamed`
 //! 必须尊重 provider 的 `stream_preferred` 裁决——偏好非流式时静默回落
 //! `chat()`（usage / raw 请求响应体全量保留），不得越权走真流式。此前该
 //! lane 无条件 `chat_stream`，流式路径 raw 体恒 None 且 usage 依赖上游
@@ -137,7 +137,7 @@ fn delta_collector() -> Arc<std::sync::Mutex<Vec<String>>> {
 #[tokio::test]
 async fn gate_non_preferred_falls_back_to_chat_preserving_usage_and_raw() {
     // 偏好非流式 + 流 lane 可用（若被调到即失败）：闸必须短路在 chat_stream
-    // 之前，chat() 的 usage / raw 请求响应体原样透传（/ 的生命线）。
+    // 之前，chat() 的 usage / raw 请求响应体原样透传（T37/T42 的生命线）。
     let mock = Arc::new(GateMock::new(false, true));
     let adapter = ProviderAdapter::new(mock.clone(), "mock/model".to_string());
     let deltas = delta_collector();
@@ -232,13 +232,146 @@ async fn gate_preferred_but_unsupported_lane_falls_back() {
     assert_eq!(deltas.lock().unwrap().join(""), "非流式正文");
 }
 
-// 流中断 partial 保留（契约在 chat_streamed 自带聚合循环的接线）
+// ---------------------------------------------------------------------------
+// BUG-20261106-007 回归：真流式聚合分支同样跑文本形态工具调用修复
+// ---------------------------------------------------------------------------
+
+/// 真·流 lane 发正文伪工具调用（白名单内）。fallback_non_stream 走
+/// inner.chat() 已含修复（lane 出口），本 mock 只供真流分支路径。
+struct StreamRepairMock {
+    tool_json: String,
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for StreamRepairMock {
+    async fn chat(
+        &self,
+        _messages: &[ProviderMessage],
+        _tools: &[ProviderToolDef],
+        _model: &str,
+        _options: &ProviderChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        panic!("本测只走真流分支，chat() 不应被触达")
+    }
+
+    fn chat_stream(
+        &self,
+        _messages: &[ProviderMessage],
+        tools: &[ProviderToolDef],
+        _model: &str,
+        _options: &ProviderChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
+        // 白名单输入必须在场：修复过滤依赖本请求的 tools 透传。
+        assert!(
+            tools.iter().any(|t| t.function.name == "exec"),
+            "tools 必须透传到流 lane（修复白名单输入）"
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let _ = tx.try_send(Ok(StreamChunk {
+            delta: format!("I'll run it.\n```json\n{}\n```", self.tool_json),
+            tool_calls: vec![],
+            finish_reason: None,
+            usage: None,
+            reasoning_content: None,
+        }));
+        let _ = tx.try_send(Ok(StreamChunk {
+            delta: String::new(),
+            tool_calls: vec![],
+            finish_reason: Some("stop".to_string()),
+            usage: None,
+            reasoning_content: None,
+        }));
+        rx
+    }
+
+    fn stream_preferred(&self, _model: &str) -> bool {
+        true
+    }
+
+    fn default_model(&self) -> &str {
+        "mock/model"
+    }
+
+    fn name(&self) -> &str {
+        "stream-repair-mock"
+    }
+}
+
+#[tokio::test]
+async fn stream_lane_text_form_tool_call_repaired() {
+    // BUG-20261106-007：真流式聚合分支与非流式同一出口语义——正文伪工具
+    // 调用（白名单内）修复成结构化调用 + finish_reason 强改；finished
+    // 随 tool_calls 在场翻转（工具轮不被误判终答）。
+    let adapter = ProviderAdapter::new(
+        Arc::new(StreamRepairMock {
+            tool_json: r#"[{"name": "exec", "arguments": {"cmd": "ls"}}]"#.to_string(),
+        }),
+        "mock/model".to_string(),
+    );
+    let tools = vec![nemesis_agent::types::ToolDefinition {
+        function: nemesis_agent::types::ToolFunctionDef {
+            name: "exec".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        },
+        ..Default::default()
+    }];
+    let resp = adapter
+        .chat_streamed("mock/model", one_user_msg(), None, tools, &|_: String| {})
+        .await
+        .expect("stream lane succeeds");
+
+    assert_eq!(resp.tool_calls.len(), 1, "文本形态工具调用必须被修复");
+    assert_eq!(resp.tool_calls[0].name, "exec");
+    assert_eq!(
+        resp.tool_calls[0].arguments, r#"{"cmd":"ls"}"#,
+        "恢复参数为序列化 JSON"
+    );
+    assert_eq!(
+        resp.finish_reason.as_deref(),
+        Some("tool_calls"),
+        "修复成功强改 finish_reason"
+    );
+    assert!(!resp.finished, "工具调用在场恒未终答（修复后同样成立）");
+}
+
+#[tokio::test]
+async fn stream_lane_phantom_tool_call_not_repaired() {
+    // 对照臂：白名单外名字滤净——宁可不修复不可误修复（BUG-20261025-16
+    // 不变量在真流分支同样成立），维持原 finish "stop"。
+    let adapter = ProviderAdapter::new(
+        Arc::new(StreamRepairMock {
+            tool_json: r#"{"name": "my-app", "version": "1.0"}"#.to_string(),
+        }),
+        "mock/model".to_string(),
+    );
+    let tools = vec![nemesis_agent::types::ToolDefinition {
+        function: nemesis_agent::types::ToolFunctionDef {
+            name: "exec".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        },
+        ..Default::default()
+    }];
+    let resp = adapter
+        .chat_streamed("mock/model", one_user_msg(), None, tools, &|_: String| {})
+        .await
+        .expect("stream lane succeeds");
+
+    assert!(resp.tool_calls.is_empty(), "文档性 JSON 不得被劫持");
+    assert_eq!(resp.finish_reason.as_deref(), Some("stop"), "维持原 finish");
+    assert!(resp.finished);
+}
+
+// ---------------------------------------------------------------------------
+// 流中断 partial 保留（L02 契约在 chat_streamed 自带聚合循环的接线，2026-11-01）
 //
 // chat_streamed 不走 provider.chat() 内部的 collect_stream_response，自带
-// 聚合循环——中途 Err 臂漏接 StreamInterrupted 包装即 partial 丢弃（
+// 聚合循环——中途 Err 臂漏接 StreamInterrupted 包装即 partial 丢弃（L21
 // agent-bench stream_break 终局臂实证）。三臂对齐 collect_stream_response
 // Err 臂契约：内容非空 → 包装；内容空但出现过 tool_calls → 包装；全空 →
 // 原错误原样上抛。
+// ---------------------------------------------------------------------------
 
 /// 中途断流 mock：先发 partial 块（delta / tool_calls 按配置），再发 Err。
 struct MidStreamBreakMock {
@@ -332,7 +465,7 @@ async fn mid_stream_err_with_partial_content_wraps_stream_interrupted() {
         err.starts_with("stream interrupted from provider break-mock/mock/model"),
         "头行前缀缺失：{err}"
     );
-    // 根因链保留 + partial 全文随注记框架携带（生命线）。
+    // 根因链保留 + partial 全文随注记框架携带（L02 生命线）。
     assert!(
         err.contains("unexpected EOF during chunk size line"),
         "{err}"
@@ -386,7 +519,9 @@ async fn mid_stream_err_with_nothing_aggregated_maps_raw_error() {
     assert!(!err.contains("stream interrupted"), "{err}");
 }
 
-// 真实 lane 的 stream_preferred 判据（与各自 chat 内部切换同源钉死）
+// ---------------------------------------------------------------------------
+// 真实 lane 的 stream_preferred 判据（与各自 chat() 内部切换同源钉死）
+// ---------------------------------------------------------------------------
 
 #[test]
 fn stream_preferred_lane_semantics() {

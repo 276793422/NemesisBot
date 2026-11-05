@@ -61,6 +61,38 @@ pub fn remove_dir_all_resilient(dir: impl AsRef<Path>) -> bool {
     }
 }
 
+/// 带退避重试的单层空目录删除（rmdir 语义：目录非空时失败）。
+///
+/// 与 [`remove_dir_all_retry`] 的差异是**安全性而非递归性**：「非空即败」
+/// 是删空壳路径的竞态护栏——调用方判空到删除的窗口内新条目落进来时，
+/// rmdir 诚实失败而不是把新条目一起带走（remove_dir_all 没有这层保护，
+/// 不能用于该场景）。调用方对失败天然容忍（空壳留到下一拍重试，无
+/// 正确性影响）。`NotFound` 视为成功。
+pub fn remove_dir_retry(dir: impl AsRef<Path>) -> std::io::Result<()> {
+    let dir = dir.as_ref();
+    let mut last_err = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match std::fs::remove_dir(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                tracing::debug!(
+                    dir = %dir.display(),
+                    attempt,
+                    error = %e,
+                    "[FsUtil] 空目录删除失败，退避重试"
+                );
+                last_err = Some(e);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(BACKOFF_MS * (attempt as u64 + 1)));
+    }
+    match last_err {
+        Some(e) => Err(e),
+        None => Err(std::io::Error::other("remove_dir retry exhausted")),
+    }
+}
+
 /// 带退避重试的单文件删除；耗尽后返回最后一次错误，`NotFound` 视为成功。
 ///
 /// 操作面变体（rename 覆盖目标清理、临时文件清扫等「必须删掉才能继续」

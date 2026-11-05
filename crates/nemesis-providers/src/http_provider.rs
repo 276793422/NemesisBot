@@ -15,7 +15,7 @@ use std::collections::HashMap;
 /// 均含缓存（子集语义），此处统一剥出；miss 段就是普通输入——OpenAI 族
 /// 没有缓存写概念，恒不落 `cache_creation_tokens`（Anthropic 族除外）。
 ///
-/// 这是 OpenAI chat/completions 形态 usage 归一的**单一
+/// BUG-20261104-389：这是 OpenAI chat/completions 形态 usage 归一的**单一
 /// 真相源**——openai_compat lane 的 `parse_response` 委托本函数（此前它自带
 /// 第三份裸减法归一，缺 `.clamp(0, prompt_raw.max(0))` 守卫，畸形上游
 /// cached > prompt_raw 时落负 prompt_tokens 记账；同族两处
@@ -64,6 +64,42 @@ pub(crate) fn extract_usage(u: &serde_json::Value) -> UsageInfo {
     }
 }
 
+/// 文本形态工具调用修复（DSML/```json/XML 伪工具调用）——启发式恢复 +
+/// 白名单过滤（BUG-20261025-16：恢复名必须 ∈ 本请求 tools，全滤空 = 维持
+/// 原状宁可不修复不可误修复），恢复成功强改 finish_reason="tool_calls"。
+/// 返回 true = 发生了修复。
+///
+/// 三条消费路径共用（单一真相源，BUG-20261106-007）：
+/// - HttpProvider `chat()` 非流式解析出口；
+/// - HttpProvider `chat()` `stream=yes` 内部流式化聚合出口；
+/// - nemesis-web llm_bridge `chat_streamed` 真流式聚合分支（agent loop
+///   对 stream=yes 模型的生产主路径；fallback_non_stream 走 `chat()` 已含）。
+pub fn repair_text_tool_calls(
+    provider: &str,
+    model: &str,
+    content: &str,
+    tool_calls: &mut Vec<ToolCall>,
+    finish_reason: &mut String,
+    tools: &[ToolDefinition],
+) -> bool {
+    if !tool_calls.is_empty() || content.is_empty() {
+        return false;
+    }
+    let repaired = crate::tool_call_repair::repair_tool_calls_in_whitelist(content, tools);
+    if repaired.is_empty() {
+        return false;
+    }
+    tracing::info!(
+        provider = %provider,
+        model = %model,
+        repaired_count = repaired.len(),
+        "[Provider] tool-call repair: recovered tool call(s) from content"
+    );
+    *tool_calls = repaired;
+    *finish_reason = "tool_calls".to_string();
+    true
+}
+
 /// 块内全部 data: 行载荷（按行保序）。SSE 规范 `data` 字段名后的空格
 /// 可选——两种形态都识别；此前只认 `"data: "` 带空格形态，无空格上游
 /// （合规服务存在）事件全被跳过 → 流式回复静默变空。
@@ -106,7 +142,7 @@ pub struct HttpProviderConfig {
     /// If true, preserve the provider prefix in model names (e.g. "openrouter/model").
     #[serde(default)]
     pub preserve_prefix: bool,
-    /// per-model 流式开关（stream 键）：空（auto）= 维持非流式
+    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 维持非流式
     /// （现状）；"yes" = `chat()` 内部走流式（聚合固有 `chat_stream`，对外
     /// 签名不变）——非流式请求等完整补全才回响应头，推理型模型 + 大上下文
     /// 会撞中转链路 ~120s 墙钟（gpt-5.6-sol 风暴根因，openai 兼容 lane 同墙）。
@@ -115,7 +151,7 @@ pub struct HttpProviderConfig {
     pub stream_mode: String,
 }
 
-// P3A 超时对齐：serde 缺省与 factory 显式值统一 600s
+// P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
 // （原 120s——评审 LLM 连续 120s 超时根因的 http 分支）。
 fn default_timeout() -> u64 {
     600
@@ -275,10 +311,10 @@ impl HttpProvider {
     /// Sets `stream: true` in the request body and returns a channel receiver
     /// that yields `StreamChunk`s as they arrive from the LLM API.
     ///
-    /// The returned `tokio::sync:mpsc::Receiver` will be closed when the
+    /// The returned `tokio::sync::mpsc::Receiver` will be closed when the
     /// stream ends (either naturally on `[DONE]` or on error).
     ///
-    /// 流式边界：
+    /// J1 流式边界：
     /// - HTTP 错误（status≥400）携带 `Retry-After` 头解析出的秒数（failover
     ///   侧冷却据此优先于公式退避）。
     /// - SSE 读错误分类为 `Timeout`（可 failover）而非 `Format`（不可重试）——
@@ -307,7 +343,7 @@ impl HttpProvider {
         );
         let mut body = self.build_request_body(messages, tools, &model, options);
         body["stream"] = serde_json::json!(true);
-        // include_usage（根修）：OpenAI 语义下流式 usage 只在请求
+        // include_usage（2026-10-23 根修）：OpenAI 语义下流式 usage 只在请求
         // 带 stream_options.include_usage 时出现——终态 finish chunk 之后、
         // choices:[] 的专用 usage chunk。此前既不请求也不转发，stream=yes
         // 模型在严格 OpenAI 形态端点上账本恒按 0 记（usage 面板/审计/
@@ -345,7 +381,7 @@ impl HttpProvider {
             let resp = match req.json(&body).send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    // 诚实化：真超时→Timeout；其余传输错误→
+                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
                     // Unknown + "connect error: <根因链>"（不伪装）。
                     let _ = tx
                         .send(Err(crate::failover::transport_error(
@@ -381,7 +417,7 @@ impl HttpProvider {
                 return;
             }
 
-            // 200-包装错误诚实化（同 chat() 根修）：显式
+            // 200-包装错误诚实化（同 chat() 根修，2026-09-17）：显式
             // application/json 的 200 响应不是 SSE 流——两种可能：
             // ① 网关错误包装体（CC Switch 实测 {"code":500,"msg":"404
             //    NOT_FOUND"}，旧逻辑静默产出空流）→ Format 错误带 body 摘要；
@@ -395,7 +431,7 @@ impl HttpProvider {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if content_type.contains("application/json") {
-                // body 读传输失败诚实上抛（同族）：空串会让
+                // body 读传输失败诚实上抛（BUG-20261029-153 同族）：空串会让
                 // 下方 from_str 落 Format("non-SSE JSON body") 伪装应用层错误，
                 // fallback 链不轮转。unwrap_or_default 只留给 4xx 路径（状态码
                 // 本身已定类）。
@@ -438,7 +474,7 @@ impl HttpProvider {
                         .as_str()
                         .unwrap_or("stop")
                         .to_string();
-                    // 非流式完整形态的 message.tool_calls 原样带上（
+                    // 非流式完整形态的 message.tool_calls 原样带上（2026-10-13
                     // wal_crash 实证修）：工具调用模型在此路径此前被丢弃成
                     // tool_calls=[]，agent 侧只见空文本终答。anthropic 同路径
                     // （parse_response）一直保留，此处对齐。
@@ -480,7 +516,7 @@ impl HttpProvider {
                         .map(extract_usage);
                     // message.reasoning_content 同源提取（对齐非流式 parse
                     // 的字段口径）：该字段是多轮回放的功能性输入——deepseek
-                    // 形态 API 缺它直接 400；合成路径此前硬编码 None，
+                    // 形态 API 第二轮缺它直接 400；合成路径此前硬编码 None，
                     // stream=yes 撞上忽略 stream 的端点时静默丢 reasoning。
                     let reasoning_content = parsed["choices"][0]["message"]["reasoning_content"]
                         .as_str()
@@ -535,7 +571,7 @@ impl HttpProvider {
 
             // Parse the SSE stream from the response body.
             let mut stream = resp.bytes_stream();
-            // 墙钟约束（实证根修）：reqwest client 级
+            // 墙钟约束（2026-10-16 NB-123 实证根修）：reqwest client 级
             // `.timeout()` 在 `bytes_stream()` 读路径不兜底（0.12.28 实测：
             // 上游静默停流时整个任务在 `stream.next()` 挂死，1800s 配置形同
             // 虚设，直到 B 端 2h 兜底才解）。以「请求起点 + timeout_secs」为
@@ -551,14 +587,14 @@ impl HttpProvider {
                 )
             };
             let mut buffer = String::new();
-            // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符）。
+            // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符，BUG-HUNT R38）。
             let mut utf8_pending: Vec<u8> = Vec::new();
             // Accumulated tool calls across chunks (index -> partial ToolCall).
             // BTreeMap 而非 HashMap：终态 flush 三处（finish 帧 / [DONE] 合成 /
-            // EOF 合成）直接.iter() 展开——模型下发的 index 序就是执行顺序语义
+            // EOF 合成）直接 .iter() 展开——模型下发的 index 序就是执行顺序语义
             // （非流式路径按 JSON 数组序保留；anthropic lane 用显式 tool_order
             // 同语义），HashMap 迭代序不定会把多工具调用顺序打乱（执行乱序、
-            // 且逐次运行不同）。。
+            // 且逐次运行不同）。BUG-20261025-53。
             let mut pending_tool_calls: std::collections::BTreeMap<
                 usize,
                 (String, String, String),
@@ -569,7 +605,7 @@ impl HttpProvider {
             // think_strip 模块）：content delta 过滤，剥出并入上方累积。
             let mut think_stripper = crate::think_strip::ThinkStripper::new();
             // 终态帧是否已发（finish chunk 正常先行，[DONE] 只收尾不再补发；
-            // wal_crash 实证根修——[DONE] 硬编码 "stop" 二连发会把
+            // 2026-10-13 wal_crash 实证根修——[DONE] 硬编码 "stop" 二连发会把
             // 聚合侧已收的 finish_reason="tool_calls" 覆盖成 "stop"，工具调用
             // 轮被判成空终答）。
             let mut finish_emitted = false;
@@ -607,8 +643,8 @@ impl HttpProvider {
                             error = %e,
                             "[Provider] SSE stream read error"
                         );
-                        // 读错误（连接中断）是暂时性故障 → 可 failover；
-                        // 诚实化：客户端超时→Timeout，其余读
+                        // J1：读错误（连接中断）是暂时性故障 → 可 failover；
+                        // 诚实化（2026-10-13）：客户端超时→Timeout，其余读
                         // 错误→Unknown + "connect error: <根因链>"。旧分类
                         // Format 会直接放弃整条链。终止后 return（不走下方
                         // EOF flush——错误已是终态，不再发合成 chunk 混淆
@@ -624,7 +660,7 @@ impl HttpProvider {
                     }
                 };
 
-                // 增量解码：劈在 chunk 边界上的多字节字符先 holdback，
+                // 增量解码（R38）：劈在 chunk 边界上的多字节字符先 holdback，
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
@@ -700,16 +736,16 @@ impl HttpProvider {
                             Err(_) => continue,
                         };
 
-                        // 终态后帧闸：finish_emitted 后只认
+                        // 终态后帧闸（BUG-20261105-026）：finish_emitted 后只认
                         // include_usage 尾帧（choices 空缺/缺失 + usage 对象）
                         // 转发 usage，其余一律丢弃。重复 finish 帧（代理双序列
                         // 无 [DONE] 分隔 / 网关聚合形态）会再发一个终态 chunk，
                         // 覆盖式消费端（collect_stream_response /
-                        // llm_bridge:chat_streamed 同契约「出现即覆盖」）已收的
+                        // llm_bridge::chat_streamed 同契约「出现即覆盖」）已收的
                         // finish_reason 被第二发覆盖——如首终 "length" 被覆盖成
                         // "stop" 后 length 升档（length_escalation）与 usage 缺
                         // 失回落判定（run_loop）双双静默失效。这是 wal_crash
-                        // 双终态覆盖根因的第三形态：[DONE]/EOF
+                        // （2026-10-13）双终态覆盖根因的第三形态：[DONE]/EOF
                         // 两路已闸，finish 帧本体此前漏闸。终后文本增量同属
                         // 异常形态，一并拦截。
                         if finish_emitted {
@@ -892,13 +928,13 @@ impl HttpProvider {
                 }
             }
 
-            // EOF 无 [DONE]（半截响应）——不悬挂 receiver。合成唯一
+            // J1：EOF 无 [DONE]（半截响应）——不悬挂 receiver。合成唯一
             // final chunk：有累积 tool_calls 时一并 flush（finish_reason=
             // "tool_calls"，OpenAI 语义），否则纯 "stop"。单 chunk 而非
             // tool_calls chunk + stop chunk 两连发——覆盖式消费 final chunk
             // 的下游会在第二发丢掉 tool_calls。
             // 终态帧已发（finish chunk 正常收尾后服务端直接断流）→ 不再补发：
-            // 二连发会让聚合侧把已收的 "tool_calls" 覆盖成 "stop"（
+            // 二连发会让聚合侧把已收的 "tool_calls" 覆盖成 "stop"（2026-10-13
             // wal_crash 实证根修）。
             if finish_emitted {
                 tracing::debug!(
@@ -990,17 +1026,29 @@ impl LLMProvider for HttpProvider {
         model: &str,
         options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError> {
-        // per-model `stream` 键：`yes` = 内部流式化——复用固有
+        // per-model `stream` 键（2026-10-13）：`yes` = 内部流式化——复用固有
         // `chat_stream`（SSE 解析/tool_calls 累积/usage 全同源）聚合为非流式
         // `LLMResponse`，`chat()` 对调用方签名不变。语义对齐 protocol：构造期
         // 消费，改条目需重新设默认或重启。auto（缺省）维持非流式现状。
+        // 聚合结果与非流式解析同一出口语义：文本形态工具调用修复照常跑
+        // （BUG-20261106-007——修复此前只在非流式路径，同 lane 显式流式键
+        // 下小模型的文本发射静默降级成纯文本轮）。
         if self.config.stream_mode == "yes" {
-            return crate::stream_util::collect_stream_response(
+            let mut resp = crate::stream_util::collect_stream_response(
                 &self.config.name,
                 model,
                 HttpProvider::chat_stream(self, messages, tools, model, options),
             )
-            .await;
+            .await?;
+            repair_text_tool_calls(
+                &self.config.name,
+                model,
+                &resp.content,
+                &mut resp.tool_calls,
+                &mut resp.finish_reason,
+                tools,
+            );
+            return Ok(resp);
         }
 
         let model = if model.is_empty() {
@@ -1037,7 +1085,7 @@ impl LLMProvider for HttpProvider {
             .json(&body)
             .send()
             .await
-            // 诚实化：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
+            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
             // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
             // Timeout，连接失败与上游慢处置不同却不可区分）。
             .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
@@ -1066,7 +1114,7 @@ impl LLMProvider for HttpProvider {
 
         // 200 后 body 读传输失败（连接中途断开等）≠ 格式错误：真超时→Timeout，
         // 其余→Unknown + "connect error" 前缀（可重试，与 send 路径同判——
-        // 此前归 Format 不可重试，fallback 链在 body 断连
+        // BUG-20261029-153：此前归 Format 不可重试，fallback 链在 body 断连
         // 时直接终止不轮转）。下方 from_str 的解析错误才是 Format（应用层）。
         let raw_response_text = resp
             .text()
@@ -1078,7 +1126,7 @@ impl LLMProvider for HttpProvider {
                 message: e.to_string(),
             })?;
 
-        // 200-包装错误诚实化（根修附带）：部分网关（实测 CC Switch）
+        // 200-包装错误诚实化（2026-09-17 根修附带）：部分网关（实测 CC Switch）
         // 对未知路径回 HTTP 200 + 错误 JSON（如 {"code":500,"msg":"404 NOT_FOUND"}）。
         // 旧逻辑 choices 缺失时 unwrap_or("") → 空响应静默成功，上游真相被吞
         //（集群人格生成 0.4s 假失败根因链的一环）。现要求响应体含非空 choices
@@ -1118,7 +1166,7 @@ impl LLMProvider for HttpProvider {
         // 在下方 LLMResponse 构造处与 reasoning_content 字段合并（\n\n）。
         let (content, inline_thinking) = crate::think_strip::strip_inline_thinking(&raw_content);
 
-        let mut finish_reason = data["choices"][0]["finish_reason"]
+        let finish_reason = data["choices"][0]["finish_reason"]
             .as_str()
             .unwrap_or("stop")
             .to_string();
@@ -1129,7 +1177,7 @@ impl LLMProvider for HttpProvider {
             .filter(|u| u.is_object())
             .map(extract_usage);
 
-        let mut tool_calls =
+        let tool_calls =
             if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
                 tc_array
                     .iter()
@@ -1154,37 +1202,9 @@ impl LLMProvider for HttpProvider {
         // tool calls as plain text in `content` (DSML / JSON / XML) instead of the
         // standard `tool_calls` structure. When the standard field is empty,
         // recover tool calls from the content so the agent loop still runs them.
-        // 白名单过滤：启发式对 `name` 键零校验，文档性
-        // JSON（```json 配置示例等）会被劫持成幻影工具调用 + finish_reason
-        // 强改 "tool_calls"。恢复出的名字必须命中本请求的 tools 白名单
-        // （不在白名单的工具无论如何执行不了）；全滤空 = 维持原 finish，
-        // 宁可不修复不可误修复。
-        if tool_calls.is_empty() && !content.is_empty() {
-            let repaired = crate::tool_call_repair::repair_tool_calls_in_whitelist(&content, tools);
-            if !repaired.is_empty() {
-                tracing::info!(
-                    provider = %self.config.name,
-                    model = model,
-                    repaired_count = repaired.len(),
-                    "[Provider] tool-call repair: recovered tool call(s) from content"
-                );
-                tool_calls = repaired;
-                finish_reason = "tool_calls".to_string();
-            }
-        }
-
-        tracing::debug!(
-            provider = %self.config.name,
-            model = model,
-            finish_reason = %finish_reason,
-            tool_call_count = tool_calls.len(),
-            prompt_tokens = usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
-            completion_tokens = usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
-            total_tokens = usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
-            "[Provider] Response received"
-        );
-
-        Ok(LLMResponse {
+        // 白名单过滤（BUG-20261025-16）；与 stream=yes 内部流式化共用
+        // repair_text_tool_calls 单一真相源（BUG-20261106-007）。
+        let mut resp = LLMResponse {
             content,
             tool_calls,
             finish_reason,
@@ -1198,7 +1218,28 @@ impl LLMProvider for HttpProvider {
             extra: HashMap::new(),
             raw_request_body: Some(body),
             raw_response_body: Some(raw_response_text),
-        })
+        };
+        repair_text_tool_calls(
+            &self.config.name,
+            model,
+            &resp.content,
+            &mut resp.tool_calls,
+            &mut resp.finish_reason,
+            tools,
+        );
+
+        tracing::debug!(
+            provider = %self.config.name,
+            model = model,
+            finish_reason = %resp.finish_reason,
+            tool_call_count = resp.tool_calls.len(),
+            prompt_tokens = resp.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+            completion_tokens = resp.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+            total_tokens = resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+            "[Provider] Response received"
+        );
+
+        Ok(resp)
     }
 
     fn chat_stream(
@@ -1208,7 +1249,7 @@ impl LLMProvider for HttpProvider {
         model: &str,
         options: &ChatOptions,
     ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
-        // trait 投影（B 根修）：trait 默认实现是「不支持」，OpenAI
+        // trait 投影（B 根修 2026-09-17）：trait 默认实现是「不支持」，OpenAI
         // wire lane 在此接通真流式。完全限定调用解析到本类型固有 impl（固有
         // 方法优先于 trait 方法）。
         HttpProvider::chat_stream(self, messages, tools, model, options)
@@ -1216,7 +1257,7 @@ impl LLMProvider for HttpProvider {
 
     fn stream_preferred(&self, _model: &str) -> bool {
         // 与 chat() 的内部切换同判据（767 行）：openai 兼容 lane auto =
-        // 非流式（stream 键语义），显式 yes 才流式。
+        // 非流式（2026-10-13 stream 键语义），显式 yes 才流式。
         self.config.stream_mode == "yes"
     }
 

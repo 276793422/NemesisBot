@@ -276,3 +276,85 @@ async fn w4a_quarantine_rename_failure_removes_in_place() {
     assert!(!cp_path.exists());
     assert!(corrupt_as_file.is_file());
 }
+
+// ---------------------------------------------------------------------------
+// 横扫五轮（2026-11-06）：终态执行 checkpoint 目录按龄清扫
+// （sweep_stale_checkpoint_dirs）。terminal=false（挂起态）永不删；
+// 无可解析 checkpoint 回落目录 mtime 闸。带参钟免测试：ZERO=全过期、
+// 100 天=全新鲜（夹具 mtime 不可回拨，不引 filetime）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sweep_checkpoint_dirs_zero_age_clears_terminal_keeps_suspended() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    // 终态执行（terminal=true，60 天前存档）
+    let mut done = make_checkpoint("exec_a", "cp_term", -(60 * 24 * 3600));
+    done.terminal = true;
+    let store = FileCheckpointStore::new(root).unwrap();
+    store.save(done).await.unwrap();
+
+    // 挂起执行（terminal=false 最新）——restore 恢复链依赖，永不删
+    store
+        .save(make_checkpoint("exec_b", "cp_wait", -(60 * 24 * 3600)))
+        .await
+        .unwrap();
+
+    // 仅损坏文件目录（无可解析 checkpoint）→ mtime 闸
+    let corrupt_dir = root.join("checkpoints").join("exec_c");
+    std::fs::create_dir_all(&corrupt_dir).unwrap();
+    std::fs::write(corrupt_dir.join("bad.json"), b"not json").unwrap();
+
+    // 空目录 → mtime 闸
+    std::fs::create_dir_all(root.join("checkpoints").join("exec_d")).unwrap();
+
+    // 隐藏目录与非目录条目不碰
+    std::fs::create_dir_all(root.join("checkpoints").join(".hidden")).unwrap();
+    std::fs::write(root.join("checkpoints").join("stray.txt"), b"keep").unwrap();
+
+    let removed = super::sweep_stale_checkpoint_dirs(root, std::time::Duration::ZERO);
+    // exec_a（终态超龄）+ exec_c（垃圾 mtime 闸）+ exec_d（空目录 mtime 闸）= 3
+    assert_eq!(
+        removed, 3,
+        "terminal + corrupt-only + empty; suspended kept"
+    );
+    assert!(!root.join("checkpoints").join("exec_a").exists());
+    assert!(root.join("checkpoints").join("exec_b").exists());
+    assert!(!corrupt_dir.exists());
+    assert!(!root.join("checkpoints").join("exec_d").exists());
+    assert!(root.join("checkpoints").join(".hidden").exists());
+    assert!(root.join("checkpoints").join("stray.txt").exists());
+
+    // 挂起执行对 restore 仍可见
+    let restored = store.list_executions().await.unwrap();
+    assert_eq!(restored, vec!["exec_b".to_string()]);
+}
+
+#[tokio::test]
+async fn sweep_checkpoint_dirs_large_age_keeps_everything() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let store = FileCheckpointStore::new(root).unwrap();
+
+    let mut done = make_checkpoint("exec_a", "cp_term", -(60 * 24 * 3600));
+    done.terminal = true;
+    store.save(done).await.unwrap();
+    store
+        .save(make_checkpoint("exec_b", "cp_wait", -(60 * 24 * 3600)))
+        .await
+        .unwrap();
+
+    let removed =
+        super::sweep_stale_checkpoint_dirs(root, std::time::Duration::from_secs(100 * 24 * 3600));
+    assert_eq!(removed, 0);
+    assert!(root.join("checkpoints").join("exec_a").exists());
+    assert!(root.join("checkpoints").join("exec_b").exists());
+}
+
+#[tokio::test]
+async fn sweep_checkpoint_dirs_missing_checkpoints_root_is_zero() {
+    let tmp = TempDir::new().unwrap();
+    let removed = super::sweep_stale_checkpoint_dirs(tmp.path(), std::time::Duration::ZERO);
+    assert_eq!(removed, 0);
+}

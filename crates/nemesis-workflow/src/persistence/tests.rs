@@ -275,3 +275,85 @@ fn w4a_list_executions_skips_garbage_lines() {
         "test_wf"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 横扫五轮（2026-11-06）：终态执行文件按龄清扫（sweep_stale_execution_files）
+// 生产布局一执行一文件；挂起态永不删；空/全垃圾行回落 mtime 闸。
+// 带参钟免测试：ZERO=全过期、100 天=全新鲜（夹具 mtime 不可回拨，不引 filetime）。
+// ---------------------------------------------------------------------------
+
+/// 追加两行同 ID 快照（Pending → terminal），模拟真实生命周期。
+fn write_lifecycle(dir: &Path, name: &str, final_state: ExecutionState) -> std::path::PathBuf {
+    use std::io::Write;
+    let mut e = Execution::new(name.to_string(), HashMap::new());
+    e.state = ExecutionState::Pending;
+    let mut line = serde_json::to_string(&e).unwrap();
+    line.push('\n');
+    e.state = final_state;
+    e.ended_at = Some(Local::now() - TimeDelta::days(60));
+    line.push_str(&serde_json::to_string(&e).unwrap());
+    line.push('\n');
+    let path = dir.join(format!("{}_{}.jsonl", name, e.id));
+    let mut f = std::fs::File::create(&path).unwrap();
+    f.write_all(line.as_bytes()).unwrap();
+    path
+}
+
+#[test]
+fn sweep_executions_zero_age_clears_terminal_keeps_suspended() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("executions");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let done = write_lifecycle(&root, "wf-done", ExecutionState::Completed);
+    let failed = write_lifecycle(&root, "wf-failed", ExecutionState::Failed);
+    let running = write_lifecycle(&root, "wf-running", ExecutionState::Running);
+    let waiting = write_lifecycle(&root, "wf-waiting", ExecutionState::Waiting);
+    // 空文件：无可恢复数据 → mtime 闸
+    let empty = root.join("wf-empty_deadbeef.jsonl");
+    std::fs::write(&empty, b"").unwrap();
+    // 全垃圾行：同上
+    let garbage = root.join("wf-garbage_deadbeef.jsonl");
+    std::fs::write(&garbage, b"not json\nalso not json\n").unwrap();
+    // 非 .jsonl 后缀与子目录不碰
+    let stray = root.join("stray.txt");
+    std::fs::write(&stray, b"keep me").unwrap();
+    let sub = root.join("subdir");
+    std::fs::create_dir_all(sub.join("wf-x_1.jsonl")).unwrap();
+
+    let removed = super::sweep_stale_execution_files(&root, std::time::Duration::ZERO);
+    // 终态 2（done/failed）+ 空文件 + 垃圾文件 = 4；挂起态（running/waiting）永不删。
+    assert_eq!(removed, 4, "terminal x2 + empty + garbage, suspended kept");
+    assert!(!done.exists());
+    assert!(!failed.exists());
+    assert!(running.exists(), "Running 挂起态永不删");
+    assert!(waiting.exists(), "Waiting 挂起态永不删");
+    assert!(!empty.exists());
+    assert!(!garbage.exists());
+    assert!(stray.exists());
+    assert!(sub.join("wf-x_1.jsonl").exists());
+}
+
+#[test]
+fn sweep_executions_large_age_keeps_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("executions");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let done = write_lifecycle(&root, "wf-done", ExecutionState::Completed);
+    let waiting = write_lifecycle(&root, "wf-waiting", ExecutionState::Waiting);
+
+    let removed =
+        super::sweep_stale_execution_files(&root, std::time::Duration::from_secs(100 * 24 * 3600));
+    assert_eq!(removed, 0);
+    assert!(done.exists());
+    assert!(waiting.exists());
+}
+
+#[test]
+fn sweep_executions_missing_dir_is_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("no-such-dir");
+    let removed = super::sweep_stale_execution_files(&root, std::time::Duration::ZERO);
+    assert_eq!(removed, 0);
+}

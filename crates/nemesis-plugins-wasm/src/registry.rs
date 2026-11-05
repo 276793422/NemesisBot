@@ -1205,27 +1205,10 @@ fn value_to_config_string(v: serde_json::Value) -> String {
     }
 }
 
-/// 原子写（temp + rename；tmp 名带进程+毫秒后缀——并发写者不同名互不踩踏，
-/// 固定名会在并发写下互相覆盖；失败清理 temp）。
+/// 原子写：委托 `nemesis_utils::write_file_atomic` 单一出口（BUG-20261106-001
+/// 横向同族——此前自制 tmp+rename 无 flush/sync_all，断电级只保进程崩溃
+/// 语义；lockfile/实例配置是插件登记真相源，半截 JSON = 已装插件清单丢失）。
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let stem = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".to_string());
-    let tmp = path.with_file_name(format!(
-        "{stem}.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&tmp, bytes)?;
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), bytes, 0o644)
+        .map_err(std::io::Error::other)
 }
