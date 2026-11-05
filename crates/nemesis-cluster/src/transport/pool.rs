@@ -385,12 +385,35 @@ impl Pool {
             return;
         }
         if conn.is_active() {
-            let entry = PoolEntry {
-                node_id: conn.node_id().to_string(),
-                address: conn.address().to_string(),
-                conn,
-            };
-            self.conns.lock().insert(key, entry);
+            let node_id = conn.node_id().to_string();
+            let mut conns = self.conns.lock();
+            // 同 key 二次归还（BUG-20261105-027）：per-node limit 允许同
+            // node+address 并发租借多条连接（get 直接拨新、不走池），它们
+            // 的 key 相同；顺序归还时 HashMap::insert 的覆盖语义会 drop 池
+            // 内旧连接，而旧连接在 dial 时 forget 的 permit 连同它的
+            // node_count / active_count 一起永久蒸发——泄漏单位不在池内，
+            // cleanup_dead 摸不到，反复并发调用即逼近
+            // "connection limit reached"（50 次 = max_conns 默认值）与
+            // "per-node limit reached" 假限流。修复：池内已有同 key 条目时
+            // 后来者改走死连接同款释放路径（关连接 + 三账各回吐一份），
+            // 健康连接留给先到者。
+            if conns.contains_key(&key) {
+                drop(conns);
+                conn.close();
+                self.dec_node_count(&node_id);
+                self.active_count.fetch_sub(1, Ordering::SeqCst);
+                self.semaphore.add_permits(1);
+                return;
+            }
+            let address = conn.address().to_string();
+            conns.insert(
+                key,
+                PoolEntry {
+                    node_id,
+                    address,
+                    conn,
+                },
+            );
         } else {
             // Connection is dead, release resources（T5：节点计数与许可、
             // active_count 三账对齐回落，镜像 dial 的消耗）。
