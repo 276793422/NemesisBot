@@ -101,7 +101,7 @@ fn test_default_config() {
     assert_eq!(config.ws_path, "/ws");
 }
 
-// --- DirectoryStaticFiles tests ---
+// DirectoryStaticFiles tests ---
 
 #[test]
 fn test_directory_static_files_read() {
@@ -1232,7 +1232,7 @@ fn test_resolve_static_dir_current_dir_static() {
     let _ = result;
 }
 
-// A3 回归（2026-08-31）：`/api/usage/logs/{id}` 曾误用 axum v0.7 `:id` 捕获语法
+// 回归：`/api/usage/logs/{id}` 曾误用 axum v0.7 `:id` 捕获语法
 // → build_router panic → web 任务静默死亡（gateway 只剩一条 "Failed to receive
 // web server bound address" WARN，dashboard 全黑；panic 只落 stderr）。
 // 请求级钉死：`{id}` 捕获真命中 detail handler——无 data_store 时返回

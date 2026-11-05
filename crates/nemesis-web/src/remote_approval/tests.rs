@@ -1,4 +1,4 @@
-//! M5（2026-10-10 集群无人值守硬化）— remote_approval 单元测试。
+//! （2026-10-10 集群无人值守硬化）— remote_approval 单元测试。
 //!
 //! 覆盖：回执解析四态、廉价预检、注册表登记/查/摘/TTL 惰性清理/短号冲突
 //! 加长、快照排序与字段、回源 relay 的 false 路径与失败留痕分支（真实
@@ -210,7 +210,7 @@ fn snapshot_sorts_by_remaining_secs() {
     assert_eq!(first, Some("short-ttl-request"), "soonest-to-expire first");
 }
 
-// 2026-10-15 真机「刷新页面闪审批卡」回归锁：worker 侧超时自动拒生效后、
+// 真机「刷新页面闪审批卡」回归锁：worker 侧超时自动拒生效后、
 // 注册表 +60s 兜底未扫前（裁决窗口外、TTL 窗口内），remote_list/snapshot
 // 不得再吐死条目（前端种卡即自摘=闪卡）；resolve 仍可命中（迟到裁决/
 // ask_closed 竞态安全面不变）。

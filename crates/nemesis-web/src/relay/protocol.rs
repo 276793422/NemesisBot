@@ -44,7 +44,7 @@ pub const HEARTBEAT_TIMEOUT_SECS: u64 = 90;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BridgeFrame {
-    // ---- 链路控制（设备 → 服务端）----
+    // 链路控制（设备 → 服务端）----
     /// 桥接入握手：携带接入门 token + 设备身份（node_id/显示名/版本——
     /// 显示名为二期身份交换预留，一期仅记录展示）。
     ///
@@ -88,11 +88,11 @@ pub enum BridgeFrame {
     /// 设备主动关闭桥连接（如本机 Bot 正在关停）。
     BridgeClose { reason: String },
 
-    // ---- 链路控制（服务端 → 设备）----
+    // 链路控制（服务端 → 设备）----
     /// hello 回执：`ok=false` = 拒绝接入（token 错 / 已关闭 / node_id 冲突），
     /// 服务端随后关连接；客户端据此诚实报错（区分「配对失败」与「网络断」）。
     /// `hub_node_id` = hub 侧集群身份（正常模式非空；`--relay` 纯中继为空
-    /// ——设备据此感知 hub 是否集群节点，三期跨桥寻址用）。
+    /// 设备据此感知 hub 是否集群节点，三期跨桥寻址用）。
     BridgeWelcome {
         ok: bool,
         reason: String,
@@ -102,7 +102,7 @@ pub enum BridgeFrame {
     /// 心跳回执。
     Pong,
 
-    // ---- 面板访问鉴权（服务端 → 设备 + 回执）----
+    // 面板访问鉴权（服务端 → 设备 + 回执）----
     /// 面板访问 token 校验转发：`hash_hex` = 浏览器端 SHA-256(token) 的 hex。
     /// 设备比对 `SHA-256(access_token)` 后回 `AccessResult`。服务端全程
     /// 只见哈希、零存储。
@@ -114,14 +114,14 @@ pub enum BridgeFrame {
     /// access_check 回执（设备 → 服务端）。
     AccessResult { request_id: String, ok: bool },
 
-    // ---- 数据帧（双向）----
+    // 数据帧（双向）----
     /// 开一条 conn：`target` 一期恒 `"local"`（本机 web server；为二期
     /// 多目标预留）。conn_id 由**服务端**分配（全局原子递增）。
     ConnOpen { conn_id: u64, target: String },
     /// conn 字节搬运：`data_b64` = base64 字节；`seq` 单调递增（0 起，设备
     /// 侧按序写出）；`fin=true` = 该方向最后一包。下行（服务端 → 设备）
     /// fin 仅为信息性提示（请求完整性由 content-length 界定，设备侧**不**
-    /// 半关闭写半——2026-09-19 真机实测 shutdown 使 hyper 于处理前断连）；
+    /// 半关闭写半—— 真机实测 shutdown 使 hyper 于处理前断连）；
     /// 上行空载荷 + fin = EOF 约定（设备侧读到本机关连接时收口用）。
     ConnData {
         conn_id: u64,
@@ -133,7 +133,7 @@ pub enum BridgeFrame {
     /// `reason` 供日志与错误页展示）。
     ConnClose { conn_id: u64, reason: String },
 
-    // ---- 二/三期预留（一期收到即忽略 + WARN）----
+    // 二/三期预留（一期收到即忽略 + WARN）----
     /// 三期：集群 RPC 帧经桥转发（`payload` 结构二三期细化）。
     ClusterRpc { payload: serde_json::Value },
     /// 三期：成员表广播（`payload` 结构三期细化）。
@@ -156,7 +156,7 @@ pub fn decode_frame(text: &str) -> Result<BridgeFrame, serde_json::Error> {
 /// 「搬运浏览器与 web server 之间的原始字节流」，axum 必然先解析（构造
 /// axum Response 也必然要解析响应头），设备侧拿到的字节与浏览器发出的
 /// 报文等价。hop-by-hop 头（connection/keep-alive/transfer-encoding）不透传
-/// ——这些语义由每跳自行协商；`content-length` 按实际 body 重算。
+/// 这些语义由每跳自行协商；`content-length` 按实际 body 重算。
 pub fn serialize_http_request(
     method: &http::Method,
     uri: &http::Uri,

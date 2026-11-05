@@ -1,4 +1,4 @@
-//! S5（2026-10-09）：入站 OpenAI 兼容端点测试。
+//! （2026-10-09）：入站 OpenAI 兼容端点测试。
 //!
 //! 两层：
 //! 1. `assemble_task` 纯函数——messages → 分离执行任务的映射规则
@@ -22,9 +22,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness（AppState 字面量——l1_tests 同款双臂；agent_loop/estop 由用例注入）
-// ---------------------------------------------------------------------------
 
 fn make_state(
     agent_loop: Option<Arc<AgentLoop>>,
@@ -106,9 +104,7 @@ async fn resp_json(resp: Response) -> (u16, serde_json::Value) {
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
-// ---------------------------------------------------------------------------
 // Mock provider（credential_injection_tests 同款脚本形态）
-// ---------------------------------------------------------------------------
 
 struct ScriptProvider {
     responses: Mutex<Vec<LlmResponse>>,
@@ -197,9 +193,7 @@ fn tool_call_reply(name: &str, args: &str) -> LlmResponse {
     }
 }
 
-// ---------------------------------------------------------------------------
 // assemble_task 纯函数
-// ---------------------------------------------------------------------------
 
 #[test]
 fn single_message_passes_through_verbatim() {
@@ -272,9 +266,7 @@ fn system_only_falls_back_to_instructions() {
     assert_eq!(assemble_task(&msgs), "只回答数字");
 }
 
-// ---------------------------------------------------------------------------
 // 端点级：错误面
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn malformed_body_is_openai_shaped_400() {
@@ -346,9 +338,7 @@ async fn engaged_estop_is_503_before_loop_dispatch() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 端点级：非流式成功路径
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn non_stream_completion_shape() {
@@ -438,9 +428,7 @@ async fn agent_error_maps_to_500() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 端点级：stream:true（SSE 帧形态）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn stream_frames_are_chunk_shaped_with_done() {
@@ -486,9 +474,7 @@ async fn stream_frames_are_chunk_shaped_with_done() {
     assert!(text.contains("test-model"), "{text}");
 }
 
-// ---------------------------------------------------------------------------
-// 裸转发 lane（BUG-③A 2026-10-15）：带 tools 的请求 → provider 直转
-// ---------------------------------------------------------------------------
+// 裸转发 lane（BUG-③A）：带 tools 的请求 → provider 直转
 
 use nemesis_providers::failover::FailoverError as SlotError;
 use nemesis_providers::http_provider::StreamChunk;
@@ -990,7 +976,7 @@ async fn bare_stream_midstream_error_gets_inline_note_and_stop() {
     );
     let (state, _) = with_streaming(state, provider);
 
-    // 中途断流：带内注记（worker 可见）+ 合成 stop 终态（worker 侧 J1
+    // 中途断流：带内注记（worker 可见）+ 合成 stop 终态（worker 侧
     // 否则把无终态断流当完整 stop 静默截断）。
     let (status, _, text) =
         resp_text(api_chat_completions(&state, &body(&bare_request(true))).await).await;
@@ -1028,9 +1014,7 @@ async fn bare_estop_still_gates_bare_lane() {
     assert!(bare.seen().is_empty(), "estop 下 provider 不得被调用");
 }
 
-// ---------------------------------------------------------------------------
 // 裸 lane 模型卡语义注入（纯函数 + options 装配）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn model_card_semantics_reads_effort_and_max_output() {
@@ -1051,7 +1035,7 @@ fn model_card_semantics_reads_effort_and_max_output() {
     assert_eq!(max_out, None);
 }
 
-/// BUG-20261029-144：`max_output_tokens` 0/负值按缺席处理——bare lane 以
+/// `max_output_tokens` 0/负值按缺席处理——bare lane 以
 /// Option<i64> 原样透传 ChatOptions.max_tokens（providers 侧无 u32 收口），
 /// resolver 层不加 filter 时负数直接进请求体打 provider 400。
 #[test]
@@ -1117,9 +1101,7 @@ async fn bare_chat_options_merge_caller_params_and_master_card() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// BUG-a（2026-10-30）：无 chat_stream lane 的 provider → 流式回落非流式
-// ---------------------------------------------------------------------------
+// BUG-a：无 chat_stream lane 的 provider → 流式回落非流式
 
 /// 无 `chat_stream` 覆写的槽 provider：stream 请求踩 LLMProvider trait
 /// 缺省实现（首帧 Unknown "streaming ... not implemented ..."）——此前
@@ -1214,7 +1196,7 @@ async fn bare_stream_falls_back_to_non_stream_when_lane_missing() {
     assert!(text.contains("\"finish_reason\":\"tool_calls\""), "{text}");
     assert!(text.contains("\"total_tokens\":18"), "{text}");
     assert!(text.contains("data: [DONE]"), "{text}");
-    // 走的是非流式 chat()（seen 恰 1 次、带 tools）。
+    // 走的是非流式 chat（seen 恰 1 次、带 tools）。
     let seen = provider.seen();
     assert_eq!(seen.len(), 1, "应恰好一次非流式 chat() 调用");
     assert_eq!(seen[0].tools, 1);
@@ -1235,7 +1217,7 @@ async fn bare_stream_fallback_upstream_error_is_honest_json() {
     });
     let (state, provider) = with_streaming(state, provider);
 
-    // 回落后的 chat() 失败 = 真实上游错误，诚实 JSON 上报（不是 SSE）。
+    // 回落后的 chat 失败 = 真实上游错误，诚实 JSON 上报（不是 SSE）。
     let (status, _, v) =
         resp_parts(api_chat_completions(&state, &body(&bare_request(true))).await).await;
     assert_eq!(status, 502);
@@ -1246,13 +1228,11 @@ async fn bare_stream_fallback_upstream_error_is_honest_json() {
             .contains("connect error"),
         "{v}"
     );
-    // 回落确实跑过（chat() 被调 1 次）——不是把流式失败直接透传。
+    // 回落确实跑过（chat 被调 1 次）——不是把流式失败直接透传。
     assert_eq!(provider.seen().len(), 1);
 }
 
-// ---------------------------------------------------------------------------
-// BUG-b（2026-10-30）：OpenAI image_url 多模态 parts 归一（不再静默清空）
-// ---------------------------------------------------------------------------
+// BUG-b：OpenAI image_url 多模态 parts 归一（不再静默清空）
 
 #[test]
 fn normalize_content_string_passthrough() {
@@ -1324,7 +1304,7 @@ fn normalize_content_unknown_part_is_err_not_silent() {
 
 #[test]
 fn to_provider_message_malformed_parts_falls_back_to_text_not_empty() {
-    // 畸形 part（缺 text 字段）→ 兜底退化为纯文本（text() 拼接），
+    // 畸形 part（缺 text 字段）→ 兜底退化为纯文本（text 拼接），
     // 绝不清空整条消息（修复前 unwrap_or_default 落空串）。
     let m = OpenAiMessage {
         role: "user".to_string(),
@@ -1404,11 +1384,9 @@ async fn bare_multimodal_request_reaches_provider_with_both_parts() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// caller 线程化（2026-11-03 LLM代理调用方key管理 P4）：带代理 caller 的裸
+// caller 线程化（LLM代理调用方key管理）：带代理 caller 的裸
 // lane 请求落账 session_key 带 caller 段（使用统计页按调用方分行）；无
 // caller（共享 token 老路径）旧形态不变。
-// ---------------------------------------------------------------------------
 
 fn open_store() -> (tempfile::TempDir, Arc<nemesis_data::DataStore>) {
     let dir = tempfile::tempdir().unwrap();

@@ -9,7 +9,7 @@ fn headers_with(sig: Option<&str>) -> HeaderMap {
     h
 }
 
-// ---- verify_signature ----------------------------------------------
+// verify_signature ----------------------------------------------
 
 #[test]
 fn hex_signature_validates_when_secret_matches() {
@@ -86,7 +86,7 @@ fn invalid_hex_is_rejected() {
     assert!(err.contains("not valid hex") || err.contains("length"));
 }
 
-// ---- WebhookRateLimiter --------------------------------------------
+// WebhookRateLimiter --------------------------------------------
 
 #[tokio::test]
 async fn rate_limiter_allows_until_max_then_rejects() {
@@ -115,7 +115,7 @@ async fn rate_limiter_separates_ips() {
     assert!(limiter.check(ip_a).await.is_err());
 }
 
-// 2026-10-16 hardening: the IP table itself is bounded (P2-2) — a spoofed-
+// hardening: the IP table itself is bounded — a spoofed-
 // source flood must not grow the map without limit. When the table is full:
 //   - expired entries are swept globally to admit a new IP;
 //   - a table full of LIVE entries rejects the new IP (429) instead of
@@ -171,7 +171,7 @@ async fn rate_limiter_sweeps_expired_entries_to_admit_new_ip() {
     assert!(hits.contains_key(&fresh));
 }
 
-// ---- handle_workflow_run auth + timeout (1c-E6) -------------------
+// handle_workflow_run auth + timeout (1c-) -------------------
 
 /// Build a minimal AppState for workflow handler tests. Most fields
 /// are unused by run/list/etc. — they just need to satisfy the struct.
@@ -270,7 +270,7 @@ async fn workflow_run_allows_anon_when_no_token_configured() {
     assert_eq!(body["error"], "workflow_engine_unavailable");
 }
 
-// ---- ModuleHandler (WSAPI) ----------------------------------------
+// ModuleHandler (WSAPI) ----------------------------------------
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 
@@ -370,7 +370,7 @@ async fn wsapi_list_returns_registered_workflows() {
     let result = handler.handle_cmd("list", None, &ctx).await.unwrap();
     let payload = result.unwrap();
     assert_eq!(payload["count"], 1);
-    // After Phase 3, workflows[] holds summary objects, not name strings.
+    // After , workflows[] holds summary objects, not name strings.
     assert_eq!(payload["workflows"][0]["name"], "wf_alpha");
     assert_eq!(payload["workflows"][0]["node_count"], 1);
     // trigger_driver_status is the global capability declaration.
@@ -401,7 +401,7 @@ async fn wsapi_list_returns_error_when_engine_missing() {
     assert!(err.contains("not configured"), "got: {}", err);
 }
 
-// --- Coverage gap: previously-untested commands (update/delete + error paths) ---
+// Coverage gap: previously-untested commands (update/delete + error paths) ---
 
 #[tokio::test]
 async fn wsapi_update_overwrites_existing_workflow() {
@@ -557,7 +557,7 @@ async fn wsapi_list_checkpoints_returns_error_when_no_store_configured() {
     assert!(err.contains("checkpoint_store_unavailable"), "got: {}", err);
 }
 
-// ---- Phase A: WSAPI get / create / update / delete / validate / run_now
+// Phase A: WSAPI get / create / update / delete / validate / run_now
 
 fn sample_workflow_def(name: &str) -> serde_json::Value {
     serde_json::json!({
@@ -838,7 +838,7 @@ fn ctx_with_dashboard(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> 
     ctx
 }
 
-// ---- fire_event ----
+// fire_event ----
 
 #[tokio::test]
 async fn wsapi_fire_event_missing_data() {
@@ -908,7 +908,7 @@ async fn wsapi_fire_event_publishes_and_reports_matches() {
     assert_eq!(r["matched_workflows"][0], "reactor");
 }
 
-// ---- resolve_chat_target ----
+// resolve_chat_target ----
 
 #[tokio::test]
 async fn wsapi_resolve_chat_target_missing_data() {
@@ -987,7 +987,7 @@ async fn wsapi_resolve_chat_target_human_review_ineligible() {
     assert!(r["reason"].as_str().unwrap().contains("human_review"));
 }
 
-// ---- cancel / resume (unknown execution_id → engine error) ----
+// cancel / resume (unknown execution_id → engine error) ----
 
 #[tokio::test]
 async fn wsapi_cancel_missing_data() {
@@ -1048,7 +1048,7 @@ async fn wsapi_resume_unknown_id_errors() {
     assert!(!err.is_empty());
 }
 
-// ---- get_checkpoint (engine has no store → unavailable) ----
+// get_checkpoint (engine has no store → unavailable) ----
 
 #[tokio::test]
 async fn wsapi_get_checkpoint_missing_data() {
@@ -1088,7 +1088,7 @@ async fn wsapi_get_checkpoint_no_store_configured() {
     assert!(err.contains("checkpoint_store_unavailable"));
 }
 
-// ---- chat password CRUD ----
+// chat password CRUD ----
 
 #[tokio::test]
 async fn wsapi_set_chat_password_requires_dashboard() {
@@ -1226,7 +1226,7 @@ async fn wsapi_clear_chat_password_success() {
 }
 
 // =====================================================================
-// quality-hardening goal 冲刺 S10a（web 批次 1，2026-08-26）
+// quality-hardening goal 冲刺 （web 批次 1）
 //
 // 上面 58 个测试已覆盖 WSAPI 主干 + verify_signature 基本臂。本批补：
 // engine_error 全 7 臂、REST run/start/list/status/executions 实跑、
@@ -1303,7 +1303,7 @@ fn state_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> A
     make_ctx_with_engine(engine).state.clone()
 }
 
-// ---- engine_error 全 7 臂 --------------------------------------------
+// engine_error 全 7 臂 --------------------------------------------
 
 #[test]
 fn engine_error_maps_every_variant_to_status_and_kind() {
@@ -1342,7 +1342,7 @@ fn engine_error_maps_every_variant_to_status_and_kind() {
     }
 }
 
-// ---- REST run / start / list / status / executions -------------------
+// REST run / start / list / status / executions -------------------
 
 #[tokio::test]
 async fn rest_run_missing_name_is_400() {
@@ -1537,7 +1537,7 @@ async fn rest_executions_filters_state_and_applies_limit() {
     assert_eq!(json["total"], 0);
 }
 
-// ---- webhook 完整流 --------------------------------------------------
+// webhook 完整流 --------------------------------------------------
 
 #[tokio::test]
 async fn webhook_rate_limit_returns_429_on_61st_call_same_ip() {
@@ -1667,7 +1667,7 @@ async fn webhook_get_variant_triggers_via_query_params() {
     assert_eq!(json["state"], "Running");
 }
 
-// 2026-10-16 hardening (P1-2): a signed workflow can never be triggered via
+// hardening : a signed workflow can never be triggered via
 // GET — there is no body to HMAC, so the old silently-ignore-secret behavior
 // turned the signature into decoration. GET must answer 405 with a pointer
 // to POST + X-Signature.
@@ -1708,7 +1708,7 @@ async fn webhook_get_on_signed_workflow_returns_405() {
     assert_eq!(status_post, StatusCode::UNAUTHORIZED);
 }
 
-// 2026-10-16 hardening (P1-3): the public webhook URL only reaches workflows
+// hardening : the public webhook URL only reaches workflows
 // that declare a webhook trigger. Manual/cron/event-only workflows — and
 // unknown names — answer the same 404 for both HTTP methods, so the route
 // can't be used as a workflow-existence oracle either.
@@ -1806,7 +1806,7 @@ async fn workflow_webhook_secret_reads_trigger_config() {
     assert_eq!(workflow_webhook_secret(&state, "ghost").await, None);
 }
 
-// ---- decode_signature / hex_decode -----------------------------------
+// decode_signature / hex_decode -----------------------------------
 
 #[test]
 fn decode_signature_hex_base64_prefix_and_garbage_arms() {
@@ -1857,7 +1857,7 @@ fn rate_limited_and_unauthorized_helper_shapes() {
     assert_eq!(body["reason"], "because");
 }
 
-// ---- parse_input_object / ensure_unified_input ------------------------
+// parse_input_object / ensure_unified_input ------------------------
 
 #[test]
 fn parse_input_object_object_wrapped_and_none_arms() {
@@ -1898,7 +1898,7 @@ fn ensure_unified_input_keeps_synthesizes_and_empty_arms() {
     assert_eq!(m.get("input").unwrap(), &serde_json::json!("{}"));
 }
 
-// ---- checkpoint REST（mock store 注入）--------------------------------
+// checkpoint REST（mock store 注入）--------------------------------
 //
 // 引擎默认不带 store（上面 no-store 臂已测）。这里注入自定义 mock 以打
 // 到 list/load 的全部错误映射臂（InMemoryCheckpointStore 无错误路径可走）。
@@ -2105,7 +2105,7 @@ async fn checkpoints_rest_load_all_four_outcomes() {
     assert_eq!(body["error"], "checkpoint_load_failed");
 }
 
-// ---- workflow-chat REST ----------------------------------------------
+// workflow-chat REST ----------------------------------------------
 
 #[tokio::test]
 async fn chat_info_engine_missing_not_found_eligible_and_human_review() {
@@ -2249,7 +2249,7 @@ async fn chat_verify_missing_index_wrong_password_orphan_and_success() {
 
 #[tokio::test]
 async fn chat_info_legacy_link_reports_password_across_migration_states() {
-    // 2026-10-16 复查回归锁：chat/info 曾直接用客户端原始 index 查
+    // 复查回归锁：chat/info 曾直接用客户端原始 index 查
     // has_password——旧 8-hex 链接在密码重设（canonical 16-hex 落库、legacy
     // 孪生键被清）后会误报 needs_password:false，页面免密连 WS 再被升级闸
     // 401。两条读路径必须同一 canonical 口径。
@@ -2410,7 +2410,7 @@ async fn wsapi_verify_chat_password_legacy_link() {
     assert_eq!(r["index"], canonical);
 }
 
-// ---- WSAPI 成功路径残差 ----------------------------------------------
+// WSAPI 成功路径残差 ----------------------------------------------
 
 #[tokio::test]
 async fn wsapi_run_now_start_and_status_success() {
@@ -2606,11 +2606,9 @@ async fn wsapi_delete_without_defs_dir_succeeds_and_deregisters() {
     assert_eq!(payload["count"], 0);
 }
 
-// ---------------------------------------------------------------------------
-// S10a 补充批次 2：llvm-cov 复测后仍缺的单行/单臂（504 超时 / GET 限流 /
+// 补充批次 2：llvm-cov 复测后仍缺的单行/单臂（504 超时 / GET 限流 /
 // 内容不匹配签名 / create+update+validate 成功臂 / delete Err 闭包 /
 // run_now 启动失败闭包 / chat password set+clear 臂）
-// ---------------------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
 async fn rest_run_sync_timeout_returns_504_with_paused_clock() {
@@ -2781,7 +2779,7 @@ async fn wsapi_create_update_validate_and_delete_error_with_defs_dir() {
     assert!(err.contains("workflow_defs_dir not set"), "err: {err}");
 
     // defs_dir 里放一个与目标同名的「目录」：delete_workflow_file 的
-    // exists() 通过但 remove_file 对目录失败（Windows ERROR_ACCESS_DENIED）
+    // exists 通过但 remove_file 对目录失败（Windows ERROR_ACCESS_DENIED）
     // → delete 臂的 map_err 闭包
     let dir_engine = build_test_engine();
     let tmp2 = tempfile::tempdir().unwrap();
@@ -2844,7 +2842,7 @@ async fn wsapi_chat_password_set_and_clear_require_dashboard_auth() {
     let mut ctx = make_ctx_with_engine(engine);
     let handler = WorkflowHandler;
 
-    // AuthMethod::default() 是 Dashboard；用 WorkflowChat（独立聊天页会话）
+    // AuthMethod::default 是 Dashboard；用 WorkflowChat（独立聊天页会话）
     // 才会命中 permission_denied 闸。
     ctx.auth_method = crate::session::AuthMethod::WorkflowChat {
         workflow: "some_wf".to_string(),

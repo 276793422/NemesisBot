@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// env 测试竞争锁惯例：2026-09-23 起并入全 crate 共享的
+// env 测试竞争锁惯例： 起并入全 crate 共享的
 // `test_home::HOME_RACE_LOCK`（HTTP 测试经全局 chat_log 单例，与重定向
 // home 的模块互相踩会偶发 count 0——模块内私有锁挡不住跨模块窗口）。
 
@@ -57,7 +57,7 @@ fn make_state(ws: &str) -> Arc<AppState> {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        // AppState 双声明字段（workflow-gated 真 / Arc<()> stub）——按
+        // AppState 双声明字段（workflow-gated 真 / Arc<> stub）——按
         // feature 组合构造，保证 --no-default-features 也编译。
         #[cfg(feature = "workflow")]
         chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
@@ -121,7 +121,7 @@ fn test_revoked_share_not_resolvable_and_not_reused() {
 
 #[test]
 fn test_create_sanitizes_session_id_no_path_traversal() {
-    // 安全回归（2026-09-07）：sid 拼进 read_chat_log 的文件路径
+    // 安全回归：sid 拼进 read_chat_log 的文件路径
     // （log_path 只替换 `:`），含分隔符的裸 sid 可路径穿越读任意 jsonl。
     // create_share 必须就地消毒（与 sessions export/rewind 臂同源）。
     let _g = crate::test_home::lock_home();
@@ -195,7 +195,7 @@ fn test_projection_empty_and_no_model() {
     assert!(project_messages(&[]).is_empty());
 }
 
-// --- HTTP handler 三态（unknown / 会话已删 / live 视图 + 撤销后 404）---
+// HTTP handler 三态（unknown / 会话已删 / live 视图 + 撤销后 404）---
 
 async fn call_share(
     state: Arc<AppState>,
@@ -269,10 +269,8 @@ async fn test_http_share_live_view_whitelisted_then_revoke_404() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-// ---------------------------------------------------------------------------
-// 写串行锁并发回归钉（2026-10-13 横扫四期）：SHARE_LOCK 罩 load→改→save，
+// 写串行锁并发回归钉（横扫四期）：SHARE_LOCK 罩 load→改→save，
 // create∥create 并发互不丢记录（锁缺席时各持旧快照互写覆盖，N 里只剩 1）。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_concurrent_creates_all_survive() {
@@ -353,11 +351,11 @@ fn test_concurrent_create_and_revoke_no_loss() {
     }
 }
 
-// ===== BUG-20261025-40 回归锁：损坏注册表装载 loud + 恢复语义 =====
+// ===== 回归锁：损坏注册表装载 loud + 恢复语义 =====
 
-/// 日志捕获 sink（BUG-20261025-38/39 同形态）。DefaultGuard 必须由测试体
+/// 日志捕获 sink（/39 同形态）。DefaultGuard 必须由测试体
 /// 持有——关在 setup 内会随 setup 返回卸载 thread-local subscriber，
-/// 之后的 emit 全部丢失（R113 实录教训）。
+/// 之后的 emit 全部丢失（教训）。
 #[derive(Clone)]
 struct WarnSink40(std::sync::Arc<std::sync::Mutex<String>>);
 
@@ -371,7 +369,7 @@ impl std::io::Write for WarnSink40 {
     }
 }
 
-/// BUG-20261025-40：session_shares.json 损坏（如断电零长度/半截 JSON）时，
+/// session_shares.json 损坏（如断电零长度/半截 JSON）时，
 /// 装载必须 loud 留痕（静默返空会被下次保存整体覆盖 = 全部分享链接无声
 /// 死亡），且恢复语义保持：按空注册表继续后 create/resolve 照常工作。
 #[test]

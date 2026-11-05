@@ -12,7 +12,7 @@ use nemesis_config::{CommandEntry, CommandsConfig, load_commands_config, save_co
 use nemesis_path::resolve_commands_config_path_in_workspace;
 use std::path::{Path, PathBuf};
 
-/// K3：内置命令的展示元数据（描述 / 参数提示）。**名称**的单一真相源在
+/// 内置命令的展示元数据（描述 / 参数提示）。**名称**的单一真相源在
 /// `nemesis_types::constants::BUILTIN_SLASH_COMMANDS`；这里只是 UI 标签表，
 /// 未知名兜底「内置命令」（清单扩了没改这里也不会崩）。
 fn builtin_display_meta(name: &str) -> (&'static str, &'static str) {
@@ -51,7 +51,7 @@ impl CommandsHandler {
     /// config.commands.json RMW 事务唯一入口——写串行锁在函数内取得，罩
     /// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
     /// 纪律：闭包内不得再调任何 update_* / config_write_lock（非重入死锁）。
-    /// （同类横扫七期补网，2026-10-13。）
+    /// （同类横扫七期补网，。）
     fn update_commands_config<T>(
         &self,
         workspace: &str,
@@ -66,7 +66,7 @@ impl CommandsHandler {
 
     fn commands_list(&self, workspace: &str) -> Result<serde_json::Value, String> {
         let cfg = load_commands_config(&self.config_path(workspace));
-        // K3（devtool-upgrade 阶段 4）：内置命令名随清单下发（单一真相源 =
+        // （devtool-upgrade）：内置命令名随清单下发（单一真相源 =
         // nemesis_types::constants::BUILTIN_SLASH_COMMANDS，与 AgentLoop 改写
         // 跳过名单同源）；这里只补 UI 展示元数据（描述/参数提示是标签不是
         // 行为）。前端补全菜单把 builtins 并进菜单数据源。
@@ -145,7 +145,7 @@ impl ModuleHandler for CommandsHandler {
 
         match cmd {
             // 路由按 module_name 分发后 cmd 是裸名（模块前缀已被剥掉）——
-            // 不要写成 "commands.list"（2026-08-29 曾因此 100% 未知命令）。
+            // 不要写成 "commands.list"（曾因此 100% 未知命令）。
             "list" => Ok(Some(self.commands_list(workspace)?)),
             "save" => {
                 let data = data.ok_or("missing data")?;

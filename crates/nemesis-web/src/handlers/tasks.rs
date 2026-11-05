@@ -17,11 +17,11 @@ use std::sync::Arc;
 
 pub struct TasksHandler;
 
-/// P1-2 (2026-08-24 UI entry gap): three-state `max_rounds` parsing shared by
+/// (UI entry gap): three-state `max_rounds` parsing shared by
 /// cron.add / cron.update —
 /// * key absent → `Ok(None)` = leave unchanged (update) / global default (add)
-/// * `null`     → `Ok(Some(None))` = explicitly clear to the global default
-/// * integer    → `Ok(Some(Some(n)))` = set
+/// * `null` → `Ok(Some(None))` = explicitly clear to the global default
+/// * integer → `Ok(Some(Some(n)))` = set
 ///
 /// Present-but-invalid values (wrong type, negative, fractional, 0,
 /// > u32::MAX) error LOUDLY. Degrading them to "absent" would silently wipe a
@@ -72,7 +72,7 @@ impl ModuleHandler for TasksHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
-            // --- boot / heartbeat (unchanged: workspace file ops) ---
+            // boot / heartbeat (unchanged: workspace file ops) ---
             "boot.get" => {
                 let workspace = require_workspace(ctx)?;
                 self.get_file(workspace, "BOOT.md")
@@ -93,7 +93,7 @@ impl ModuleHandler for TasksHandler {
                 let content = get_str(&data, "content")?;
                 self.save_file(workspace, "HEARTBEAT.md", &content)
             }
-            // --- cron: all go through the live CronService ---
+            // cron: all go through the live CronService ---
             "cron.list" => {
                 let svc = require_cron(ctx)?;
                 self.cron_list(&svc)
@@ -206,7 +206,7 @@ impl TasksHandler {
         let channel = get_opt_str(data, "channel");
         let to = get_opt_str(data, "to");
         let session_key = get_opt_str(data, "session_key");
-        // T3 (U12): optional per-fire tool-round budget (continuation turns).
+        // optional per-fire tool-round budget (continuation turns).
         // Absent/null → global default; invalid present values rejected.
         let max_rounds = parse_max_rounds_patch(data)?.flatten();
         let prompt = get_opt_str(data, "prompt").unwrap_or_default();
@@ -255,7 +255,7 @@ impl TasksHandler {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             enabled: get_opt_bool_loud(data, "enabled")?,
-            // P1-2: three states via parse_max_rounds_patch — key absent =
+            // three states via parse_max_rounds_patch — key absent =
             // leave unchanged, null = clear (global default), 1..=u32::MAX =
             // set; present-but-invalid is rejected loudly (would otherwise
             // degrade to "clear" and silently wipe the job's budget).
@@ -300,8 +300,8 @@ impl TasksHandler {
     /// the schedule). With execute_job now actually invoking on_job, this
     /// triggers the agent for real.
     ///
-    /// BUG-20261105-033：走 detached 形态——handler 是分钟级 agent turn，
-    /// 同步内联（旧形态 svc.lock().execute_job()）会把 tokio worker（async
+    /// 走 detached 形态——handler 是分钟级 agent turn，
+    /// 同步内联（旧形态 svc.lock.execute_job）会把 tokio worker（async
     /// 上下文同步直跑）、svc 外层锁（dashboard 全部 cron 操作冻结）、
     /// on_job 锁（计划触发排队）三层全部占住到 turn 完成。detached 快照段
     /// 微秒级返回，执行在独立线程；错误同径记账（last_status/账本）。
@@ -315,9 +315,7 @@ impl TasksHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /// Get the live CronService handle from AppState, or error if not injected.
 fn require_cron(ctx: &RequestContext) -> Result<Arc<std::sync::Mutex<CronService>>, String> {
@@ -355,7 +353,7 @@ fn job_to_view(job: &CronJob) -> serde_json::Value {
         "to": job.payload.to,
         "session_key": job.payload.session_key,
         "prompt": job.payload.message,
-        // P1-2: current per-job budget (null = global default applies).
+        // current per-job budget (null = global default applies).
         "max_rounds": job.payload.max_rounds,
         "enabled": job.enabled,
         "description": description,

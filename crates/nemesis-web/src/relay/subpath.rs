@@ -16,7 +16,7 @@
 //!    relay 转发路由。远程设备的 HTML 由**远程设备自己**注入 base。
 //!
 //! base href 不影响 JS 运行时构造的 URL（`/api/...`、`/ws` 等根相对
-//! 字符串）——那些由前端 `appBase()` helper 统一处理（web/src/lib）。
+//! 字符串）——那些由前端 `appBase` helper 统一处理（web/src/lib）。
 //!
 //! 本层对所有路由生效（Router::layer 最外层），包括 relay 转发路由——
 //! 但注入/剥离的判定都基于请求原始路径，转发请求天然不在注入集合内。
@@ -85,8 +85,8 @@ impl Service<Request<Body>> for BridgeSubpathService {
 ///
 /// 三种形态（详见模块头注释）：
 /// - `/d/<自身>/...` → 剥前缀，返回 `Some("/d/<自身>/")`
-/// - `/d/<其他>...`  → 内置中继的转发请求，不动，返回 None
-/// - 其余（直连）    → 返回 `Some("/")`
+/// - `/d/<其他>...` → 内置中继的转发请求，不动，返回 None
+/// - 其余（直连） → 返回 `Some("/")`
 pub(crate) fn strip_self_prefix(node_id: &Option<String>, uri: &mut http::Uri) -> Option<String> {
     let path = uri.path().to_string();
     let Some(rest) = path.strip_prefix("/d/") else {

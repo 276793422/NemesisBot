@@ -15,9 +15,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 use tracing;
 
-// ---------------------------------------------------------------------------
 // CORSConfig
-// ---------------------------------------------------------------------------
 
 /// Persistent CORS configuration, serialised as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,9 +92,7 @@ impl Default for CORSConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // CORSManager
-// ---------------------------------------------------------------------------
 
 /// Manages CORS configuration with file persistence and runtime mutation.
 ///
@@ -108,9 +104,7 @@ pub struct CORSManager {
 }
 
 impl CORSManager {
-    // -----------------------------------------------------------------------
     // Construction
-    // -----------------------------------------------------------------------
 
     /// Create a new `CORSManager`.
     ///
@@ -137,9 +131,7 @@ impl CORSManager {
         })
     }
 
-    // -----------------------------------------------------------------------
     // Origin validation
-    // -----------------------------------------------------------------------
 
     /// Check whether the given `origin` string is permitted.
     ///
@@ -180,9 +172,7 @@ impl CORSManager {
         false
     }
 
-    // -----------------------------------------------------------------------
     // Runtime mutation
-    // -----------------------------------------------------------------------
 
     /// Add an origin to the allow-list. No-op if it already exists.
     /// Persists the updated config to disk.
@@ -243,9 +233,7 @@ impl CORSManager {
         self.config.read().clone()
     }
 
-    // -----------------------------------------------------------------------
     // File helpers (private)
-    // -----------------------------------------------------------------------
 
     fn load_from_file(path: &Path) -> std::io::Result<CORSConfig> {
         let data = std::fs::read_to_string(path)?;
@@ -254,7 +242,7 @@ impl CORSManager {
         Ok(cfg)
     }
 
-    /// Write config to `path` atomically — REL-002（2026-09-23）起委托统一
+    /// Write config to `path` atomically — 委托统一
     /// helper `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all +
     /// 失败清理），替换旧的固定 `.json.tmp` + 失败回退裸写实现（回退会
     /// 把原子性悄悄降级为 truncate 写，已废弃）。
@@ -266,9 +254,7 @@ impl CORSManager {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Static CORS layer helpers (preserved from original implementation)
-// ---------------------------------------------------------------------------
 
 /// Build a CORS layer for development (allows all origins).
 pub fn dev_cors_layer() -> CorsLayer {
@@ -311,7 +297,7 @@ pub fn production_cors_layer(allowed_origins: &[String]) -> CorsLayer {
 /// browser-enforced contract they never enter.
 ///
 /// This is the default when no CORS config exists and `cors_allow_all` is
-/// off (2026-10-16 hardening): the previous mapping "empty origin list →
+/// off (hardening): the previous mapping "empty origin list →
 /// allow-all" silently turned a missing config file into `*`.
 pub fn restrictive_cors_layer() -> CorsLayer {
     CorsLayer::new()
@@ -344,20 +330,18 @@ pub fn cors_layer_from_manager(mgr: &CORSManager) -> CorsLayer {
     production_cors_layer(&origins)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): error arms —
+// (, quality-hardening goal 冲刺 web 批次 2): error arms —
 // invalid JSON load, create_dir_all failure, read-only rename fallback,
 // CDN Url::parse failure.
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：CORSManager::new 的 tracing::info! 字段
+// AGT 覆盖率批次：CORSManager::new 的 tracing::info! 字段
 // 求值（无 subscriber 时宏短路）。豁免（收括号 lcov 伪零）见 agt_tests
 // 头注。
 #[cfg(test)]

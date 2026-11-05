@@ -70,7 +70,7 @@ fn test_broadcast_flag_passes_on_any_platform() {
     assert_eq!(r["pass"], true);
 }
 
-// --- iroh 跨网漫游开关面（config 闸 + enable/disable） ---
+// iroh 跨网漫游开关面（config 闸 + enable/disable） ---
 
 #[test]
 fn test_roaming_config_write_and_gate_roundtrip() {
@@ -129,8 +129,8 @@ async fn test_roaming_status_payload_requires_restart_consistency() {
 
 #[tokio::test]
 async fn test_roaming_status_payload_carries_rendezvous_state() {
-    // rendezvous 段透传：同步状态原样进 payload；Null = 循环未挂（N0 形态）。
-    // QUIC 插件化 M2：node_id 读走桥（测试环境插件缺席 = null 诚实降级）。
+    // rendezvous 段透传：同步状态原样进 payload；Null = 循环未挂（形态）。
+    // QUIC 插件化 ：node_id 读走桥（测试环境插件缺席 = null 诚实降级）。
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
     let state = nemesis_cluster::roaming::rendezvous::RendezvousClientState {
@@ -164,7 +164,7 @@ async fn test_roaming_status_payload_carries_rendezvous_state() {
 #[test]
 fn test_cluster_gate_payload_reads_both_config_layers() {
     // 集群闸链快照：与 gateway cluster_should_start 同源两道闸的读面回归。
-    // 用户实录（2026-10-22）：只开叠加层（roaming.enabled）而本体闸未开时
+    // 用户只开叠加层（roaming.enabled）而本体闸未开时
     // 重启永远不生效——payload 必须把闸链原值带出来，前端才能区分
     // 「待重启」与「集群未启用」。
     let dir = tempfile::tempdir().unwrap();
@@ -182,7 +182,7 @@ fn test_cluster_gate_payload_reads_both_config_layers() {
     assert_eq!(g["open"], serde_json::json!(false));
     assert_eq!(g["token_broken"], serde_json::json!(false));
 
-    // 只开子系统闸（config.cluster.json enabled=true，用户实录形态）：
+    // 只开子系统闸（config.cluster.json enabled=true，实际形态）：
     // 闸链仍关——重启不生效的根因形态
     let cfg_path = cluster_config_path(ws_s);
     std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
@@ -215,7 +215,7 @@ fn test_cluster_gate_payload_reads_both_config_layers() {
 
 #[tokio::test]
 async fn test_roaming_set_enabled_gate_write_and_plugin_absent_note() {
-    // QUIC 插件化 M2 语义：身份备料面（keygen）在 plugin_roaming——闸写是
+    // QUIC 插件化 语义：身份备料面（keygen）在 plugin_roaming——闸写是
     // 主操作照常落盘；插件缺席（测试环境桥空）= key_created=false + node_id
     // null + identity_note 诚实注记（闸写不回滚，gateway 启动时叠加层诚实
     // 降级）。插件在场的备料语义由 live 形态覆盖（本处是宿主面回归锁）。
@@ -260,12 +260,12 @@ async fn test_roaming_set_enabled_gate_write_and_plugin_absent_note() {
     )));
 }
 
-// --- QUIC 自建中继管理面 ---
+// QUIC 自建中继管理面 ---
 
 #[test]
 fn test_roaming_enabled_write_preserves_relay_siblings() {
     // 回归锁：roaming.enabled 单键写曾整段替换 roaming 对象，把段内兄弟键
-    // 静默抹掉（2026-10-21 relay WSAPI 面上线前修复）。2026-10-23 解耦后
+    // 静默抹掉（relay WSAPI 面上线前修复）。 解耦后
     // QUIC 键真相源迁 config.quic.json，cluster.json 段内残留 = 无害遗留
     //（首读迁移只拷贝不删除）——单键写依旧不碰它们。
     let dir = tempfile::tempdir().unwrap();
@@ -304,7 +304,7 @@ fn test_roaming_enabled_write_preserves_relay_siblings() {
     assert_eq!(v["token"], serde_json::json!("cluster-tok"));
 }
 
-// --- L16（2026-11-02 三期）：roaming.trust.* 互信 allowlist 管理面（表面契约） ---
+// （三期）：roaming.trust.* 互信 allowlist 管理面（表面契约） ---
 
 /// 测试身份：真实 ed25519 派生（管理面入参走 node_id_from_hex on-curve
 /// 校验——与生产同口径）。递增 seed：多次调用互异。

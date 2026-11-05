@@ -88,9 +88,7 @@ fn ok_val(v: Option<serde_json::Value>) -> serde_json::Value {
     v.expect("Ok arm must carry a payload")
 }
 
-// -----------------------------------------------------------------------
 // config_get / config_set
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn w4_config_get_reports_missing_then_present() {
@@ -112,9 +110,7 @@ async fn w4_config_get_reports_missing_then_present() {
     assert_eq!(present["content"], "[models]\n", "{present}");
 }
 
-// -----------------------------------------------------------------------
 // voice_config_get / voice_config_set（全字段合并）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn w4_voice_config_set_merges_every_documented_field() {
@@ -139,7 +135,7 @@ async fn w4_voice_config_set_merges_every_documented_field() {
         "speaker_enabled": false,
         "silence_timeout": 4,
         "aec_enabled": true,
-        // BUG-20261031-252：AEC 进阶参数此前不在「documented」清单里
+        // AEC 进阶参数此前不在「documented」清单里
         // （FE 发送、STT 启动读取、保存漏接）——补齐全量 13 字段。
         "aec_filter_length": 1024,
         "aec_preprocess": false,
@@ -167,9 +163,7 @@ async fn w4_voice_config_set_merges_every_documented_field() {
     assert_eq!(after["aec_preprocess"], false, "{after}");
 }
 
-// -----------------------------------------------------------------------
 // chat_config_get / chat_config_set
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn w4_chat_config_get_set_roundtrip() {
@@ -193,9 +187,7 @@ async fn w4_chat_config_get_set_roundtrip() {
     assert_eq!(after["silence_ms"], 1500, "{after}");
 }
 
-// -----------------------------------------------------------------------
 // speakers / engine_status / engine_stop
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn w4_speakers_lists_builtin_voice_table() {
@@ -275,9 +267,7 @@ async fn w4_engine_stop_not_loaded_reports_was_loaded_false() {
     assert!(err.contains("unknown model"), "{err}");
 }
 
-// -----------------------------------------------------------------------
 // stop/reset 空状态诚实报错臂
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn w4_stop_commands_report_honest_errors_when_idle() {

@@ -1,10 +1,10 @@
-//! T6 (U20) tests for the `logs.history_search` / `logs.history_reindex`
+//! tests for the `logs.history_search` / `logs.history_reindex`
 //! WSAPI commands. NOT security-gated: these commands depend only on
 //! nemesis-agent (non-optional dep).
 //!
 //! Isolation note: the STATEFUL e2e (append → search → assert hit) moved to
 //! the dedicated integration binary `tests/history_search_e2e.rs` — the lib
-//! binary's ~3000 sibling tests bake the `default_path_manager()` singleton
+//! binary's ~3000 sibling tests bake the `default_path_manager` singleton
 //! home before any redirect could land, and under nextest (per-test process)
 //! the in-process IDX_LOCK / HOME_RACE_LOCK below are void, so the e2e was
 //! contending cross-process on the real global history_index.db (2026-10-10
@@ -55,10 +55,10 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_log_dir: None,
         workflow_engine: None,
         // AppState dual-declares these two fields (workflow-gated real /
-        // `Arc<()>` stub — api_handlers.rs). This module deliberately has NO
+        // `Arc<>` stub — api_handlers.rs). This module deliberately has NO
         // feature gate (history commands depend only on nemesis-agent), so the
         // fields must be built per-combo: without the workflow feature the
-        // stubs get `Arc::new(())` (fixes `cargo test -p nemesis-web`
+        // stubs get `Arc::new` (fixes `cargo test -p nemesis-web`
         // zero-feature compile, broken since this file landed in dd2e522).
         #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(

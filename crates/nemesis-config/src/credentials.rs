@@ -2,8 +2,8 @@
 //!
 //! A `config.json` model entry's `api_key` may be a REFERENCE instead of an
 //! inline literal:
-//! `env:VAR_NAME` — resolved from the process environment (, earlier batch)
-//! `yaml:<alias>` — resolved from this file's `keys:` map (this module)
+//! - `env:VAR_NAME` — resolved from the process environment (, earlier batch)
+//! - `yaml:<alias>` — resolved from this file's `keys:` map (this module)
 //!
 //! Resolution order (`provider_resolver::resolve_api_key_value`):
 //! `env:VAR` > `yaml:<alias>` > inline literal (legacy, unchanged).

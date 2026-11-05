@@ -101,7 +101,7 @@ pub(crate) fn load_config(home: &str) -> Result<nemesis_config::Config, String> 
 /// config.json RMW 事务唯一入口（typed Config 视图）——写串行锁在函数内
 /// 取得，罩「live 优先 load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘
 /// （abort 语义）。调用方结构上不可能忘锁：落盘原语要求传入锁 guard，
-/// 裸组合 load+save 编译不过（同类横扫二期收口，2026-10-13）。
+/// 裸组合 load+save 编译不过（同类横扫二期收口）。
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 /// （Mutex 非重入，嵌套即死锁）。
 pub(crate) fn update_config<T>(
@@ -131,7 +131,7 @@ pub(crate) fn write_raw_config(home: &str, cfg: &serde_json::Value) -> Result<()
     let path = config_path(home);
     let out =
         serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config.json: {e}"))?;
-    // REL-002：统一原子写入（config.json 含 API key）。
+    // 统一原子写入（config.json 含 API key）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
         .map_err(|e| format!("write config.json: {e}"))?;
     if let Some(store) = nemesis_config::global() {
@@ -158,7 +158,7 @@ pub(crate) fn update_raw_config<T>(
 
 /// [`update_raw_config`] 的缺失容忍变体：config.json 不存在时从空对象起
 /// （NotFound 以外读/解析失败仍 Err；语义对齐 update_json_file 家族的
-/// 「文件缺失从空对象起」）。消费方：connectors.set_master（B4 总闸——
+/// 「文件缺失从空对象起」）。消费方：connectors.set_master（总闸——
 /// 新装配态也允许一键落键，不因缺母版拒绝）。唯一消费方在 connectors
 /// feature 闸后——helper 同闸，防最小 feature 集下 dead_code 警告。
 #[cfg(feature = "connectors")]
@@ -201,7 +201,7 @@ pub(crate) fn update_json_file<T>(
     }
     let content = serde_json::to_string_pretty(&v)
         .map_err(|e| format!("serialize {}: {e}", path.display()))?;
-    // REL-002：统一原子写入（家族配置文件含 token/key 类敏感值）。
+    // 统一原子写入（家族配置文件含 token/key 类敏感值）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(out)
@@ -242,7 +242,7 @@ impl ConfigHandler {
         // get 响应是脱敏形态（api_key/token 等掩码为 `****` 串）：UI 回存
         // 时掩码值必须还原为存量原值，绝不落盘掩码——channels.save 同款
         // 纪律，且在锁内做（杜绝与并发写之间的丢更新）。漏接实证
-        // （2026-10-25）：编辑器原样保存把 model_list[].api_key 覆盖成
+        // 编辑器原样保存把 model_list[].api_key 覆盖成
         // '****'，真 key 丢失。
         update_config(home, |config| {
             let existing = serde_json::to_value(&*config)
@@ -274,7 +274,7 @@ impl ConfigHandler {
             // Typed reparse silently drops unknown keys (serde ignores unrecognized
             // fields). Verify the field survived the round-trip before claiming
             // success — otherwise an unknown path would answer `updated:true` while
-            // persisting nothing (R1 真机验收发现的诚实性缺口，G6 loud 拒绝要求).
+            // persisting nothing (真机验收发现的诚实性缺口， loud 拒绝要求).
             let reserialized = serde_json::to_value(&*config)
                 .map_err(|e| format!("failed to serialize config: {}", e))?;
             match json_path_get(&reserialized, path) {
@@ -370,7 +370,7 @@ fn set_json_path(
             current = &mut current[idx];
             continue;
         }
-        // BUG-20261029-174：父节点是 scalar（bool/string/number）时，
+        // 父节点是 scalar（bool/string/number）时，
         // serde_json IndexMut 对非 object 键访问直接 panic——路径拼错/
         // 类型撞上（如 `…enabled.x`）会崩掉 WS handler 任务。显式检查，
         // loud Err 替代 panic（Null 保留 auto-vivify 语义）。

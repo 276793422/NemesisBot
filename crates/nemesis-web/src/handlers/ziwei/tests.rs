@@ -1,5 +1,5 @@
-//! `ziwei.*` WSAPI 用例（T0.5）：门关拒绝面 / list·show 只读面 / remove /
-//! 未装配诚实报 / L1 `commands()` 清单。
+//! `ziwei.*` WSAPI 用例（.5）：门关拒绝面 / list·show 只读面 / remove /
+//! 未装配诚实报 / `commands` 清单。
 
 use super::*;
 use crate::api_handlers::AppState;
@@ -91,7 +91,7 @@ async fn call(
     ZiweiHandler.handle_cmd(cmd, data, ctx).await
 }
 
-/// 门关（默认 enabled=false）：全部命令诚实拒绝（T0.5 验收面）。
+/// 门关（默认 enabled=false）：全部命令诚实拒绝（.5 验收面）。
 #[tokio::test]
 async fn gate_closed_rejects_everything() {
     let (ctx, dir) = make_ctx();
@@ -163,9 +163,9 @@ async fn gate_open_show_and_remove() {
 }
 
 /// 门开：运行期/配置期命令未装配 → 诚实报（点出里程碑）。
-/// M1 起 attach/detach/status 已实装；M2 起 invoke/refresh 已实装
+/// attach/detach/status 已实装；invoke/refresh 已实装
 /// （invoke 缺会话管理器=装配面诚实报；refresh 缺钩子=钩子未装配诚实报），
-/// 未装配面收窄到 setup.*（M3）。
+/// 未装配面收窄到 setup.*。
 #[tokio::test]
 async fn unwired_commands_honest() {
     let (ctx, dir) = make_ctx();
@@ -190,7 +190,7 @@ async fn unwired_commands_honest() {
         let err = call(cmd, &ctx, None).await.unwrap_err();
         assert!(!err.contains("未装配"), "{cmd}: {err}");
     }
-    // setup.* 已实装（M3）：缺参/无向导走参数与状态校验诚实拒（不再报未装配）。
+    // setup.* 已实装：缺参/无向导走参数与状态校验诚实拒（不再报未装配）。
     // select_target 在 windows 测试进程可能真去选 pid=1 → 期待任意诚实错误。
     for cmd in [
         "setup.select_target",
@@ -224,7 +224,7 @@ async fn gate_open_status() {
     assert_eq!(out["setup_engine"]["disasm_archs"][0], "x64");
 }
 
-/// L1：命令清单与注册表口径一致（drift 纠偏）。
+/// 命令清单与注册表口径一致（drift 纠偏）。
 #[test]
 fn l1_command_list_complete() {
     let expected = [
@@ -284,7 +284,7 @@ fn sample_profile_for_test() -> nemesis_ziwei::profile::Profile {
     }
 }
 
-/// 急停活性闸（同族先例：board EST-01/02 派发族 estop 闸）：estop 生效中
+/// 急停活性闸（同族board EST-01/02 派发族 estop 闸）：estop 生效中
 /// attach/invoke/resolve（注入/远程调用/活体扫描）一律拒绝；本地面（list）
 /// 照常；释放后恢复（闸只认 engaged 实态，不做一次性锁）。背景：紫微的
 /// estop 卸载只在触发上升沿跑一次——不闸 attach 的话，estop 期间新建的

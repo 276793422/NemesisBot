@@ -1,4 +1,4 @@
-//! connector 数据面 WSAPI 测试（行动代理 P0，2026-10-14）。
+//! connector 数据面 WSAPI 测试（行动代理 ，2026-10-14）。
 //!
 //! 覆盖三条只读命令的投影面：`connectors.list`（合法 + 损坏诚实入列）、
 //! `connectors.receipts.list`（append → 回读 / limit / connector 过滤）、
@@ -17,9 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // 夹具
-// ---------------------------------------------------------------------------
 
 /// 带临时 workspace 的 RequestContext（TempDir 由调用方持有保活）。
 fn make_ctx(dir: &Path) -> RequestContext {
@@ -202,9 +200,7 @@ fn mk_receipt(connector: &str, op: &str, millis: i64, outcome: &str) -> Receipt 
     }
 }
 
-// ---------------------------------------------------------------------------
 // connectors.list
-// ---------------------------------------------------------------------------
 
 /// 空注册表（缺 connectors 目录）= count 0 + enabled 缺省 true（无
 /// config.json 时与供给闸同源语义）。
@@ -245,7 +241,7 @@ fn list_reports_valid_and_corrupt_connectors() {
     assert_eq!(valid["id"], "demo-quotes");
     assert_eq!(valid["kind"], "rest");
     assert_eq!(valid["enabled"], true);
-    // M1：未签名 connector → unsigned 徽标（信任库缺席 = 全 unsigned）。
+    // 未签名 connector → unsigned 徽标（信任库缺席 = 全 unsigned）。
     assert_eq!(valid["trust"], "unsigned");
     assert!(valid["error"].is_null());
     let ops = valid["ops"].as_array().unwrap();
@@ -261,13 +257,13 @@ fn list_reports_valid_and_corrupt_connectors() {
     let corrupt = &rows[1];
     assert_eq!(corrupt["id"], "b-broken", "损坏条目以目录名代 id");
     assert_eq!(corrupt["enabled"], false);
-    // M1：损坏条目 trust = null（无有效清单，谈不上「未签名」的判断）。
+    // 损坏条目 trust = null（无有效清单，谈不上「未签名」的判断）。
     assert!(corrupt["trust"].is_null(), "corrupt trust: {corrupt}");
     let err = corrupt["error"].as_str().unwrap();
     assert!(!err.is_empty(), "损坏原因必须可见: {corrupt}");
 }
 
-/// M1 信任徽标三态（2026-10-19）：verified（信任库内密钥签名）/ unsigned
+/// 信任徽标三态：verified（信任库内密钥签名）/ unsigned
 /// （无 sig 文件）/ 损坏（null）同场投影——前端徽标色的数据面契约。
 #[test]
 fn list_trust_badges_three_states() {
@@ -321,9 +317,7 @@ fn list_without_workspace_errors() {
     assert!(err.contains("workspace"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
 // connectors.receipts.list
-// ---------------------------------------------------------------------------
 
 /// append 三条 → 回读新→旧全量；limit 截断取最新的 N 条。
 #[test]
@@ -392,9 +386,7 @@ fn receipts_list_filters_by_connector_and_caps_limit() {
     assert_eq!(out["limit"], 500);
 }
 
-// ---------------------------------------------------------------------------
 // paperbroker.ledger
-// ---------------------------------------------------------------------------
 
 /// 缺账本文件 = 全新模拟账本（现金 1M 零持仓零订单，零账号 demo 常态）。
 #[test]
@@ -444,11 +436,9 @@ fn ledger_projects_saved_state() {
     assert_eq!(out["order_count"], 1);
 }
 
-// ---------------------------------------------------------------------------
 // ModuleHandler 契约
-// ---------------------------------------------------------------------------
 
-/// commands() 清单 + dispatch 路由 + 未知命令诚实报错。
+/// commands 清单 + dispatch 路由 + 未知命令诚实报错。
 #[tokio::test]
 async fn handler_contract_and_unknown_command() {
     let dir = tempfile::tempdir().unwrap();
@@ -487,9 +477,7 @@ async fn handler_contract_and_unknown_command() {
     assert!(err.contains("unknown command: paperbroker.nope"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
-// connectors.undo（E3 页内撤销）
-// ---------------------------------------------------------------------------
+// connectors.undo（页内撤销）
 
 /// 带撤销声明矩阵的 connector：read（quote）/ write+undo（place_order ←
 /// cancel_order）/ write 无 undo（post_note）/ network 无 undo（ping_net）。
@@ -579,7 +567,7 @@ async fn undo_front_gates() {
     assert!(err.contains("未真实生效"), "{err}");
 }
 
-/// 撤销防重闸（边界补强 2026-10-20）：已发起过撤销的凭条拒绝再撤——
+/// 撤销防重闸（边界补强）：已发起过撤销的凭条拒绝再撤——
 /// 反向 op 重复执行会叠加外部副作用（双退款形态）。
 #[tokio::test]
 async fn undo_rejects_already_undone() {
@@ -729,7 +717,7 @@ async fn undo_domain_b_session_key_and_loop_gates() {
     assert!(err.contains("agent loop not running"), "{err}");
 }
 
-/// network/exec 类无 undo 声明：能力建模 = none（R5）——结构化响应诚实
+/// network/exec 类无 undo 声明：能力建模 = none——结构化响应诚实
 /// 说明无通用撤销语义（前端按 capability 隐藏撤销按钮/点击明示）。
 #[tokio::test]
 async fn undo_network_class_without_undo_reports_no_capability() {
@@ -752,15 +740,13 @@ async fn undo_network_class_without_undo_reports_no_capability() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// undo_ledger_verdict（R5 结构化判定纯函数，三臂）
-// ---------------------------------------------------------------------------
+// undo_ledger_verdict（结构化判定纯函数，三臂）
 
 /// 三臂：新凭条 executed → Ok(新凭条 id)；新凭条非 executed → Err（含
 /// outcome）；无新凭条 → Err。外加三条钉死不误判：派发前在册（before
 /// 快照内）的旧 executed 凭条不算撤销成功；connector/op 不匹配的新凭条
 /// 不算（比如并发其他 op 也落了账）；args digest 不匹配的新凭条不算
-/// （BUG-20261105-023：并发双撤销互认防护）。
+/// （并发双撤销互认防护）。
 #[test]
 fn undo_ledger_verdict_three_arms() {
     let digest = "0123456789abcdef0123456789abcdef"; // mk_receipt 固定值
@@ -787,7 +773,7 @@ fn undo_ledger_verdict_three_arms() {
     assert!(err.contains("budget_blocked"), "{err}");
     assert!(err.contains("未真实生效"), "{err}");
 
-    // F3（2026-10-16 二轮复查）：unknown 措辞与前缀闸同口径——「结果未知，
+    // （二轮复查）：unknown 措辞与前缀闸同口径——「结果未知，
     // 可能未被撤销」，不出现「未真实生效」的假确定性。
     let mut unknown = undo_receipt("u-broker", "cancel_order", "unknown");
     unknown.receipt_id = "RCPT-AFTER-UNKNOWN".to_string();
@@ -832,7 +818,7 @@ fn undo_ledger_verdict_three_arms() {
     .unwrap_err();
     assert!(err.contains("未落新凭条"), "{err}");
 
-    // BUG-20261105-023：新凭条 connector/op 全匹配但 args digest 不同
+    // 新凭条 connector/op 全匹配但 args digest 不同
     // （并发另一路撤销的同形凭条）→ 不认领，诚实报未落新凭条。
     let mut alien = undo_receipt("u-broker", "cancel_order", "executed");
     alien.receipt_id = "RCPT-ALIEN-DIGEST".to_string();
@@ -848,9 +834,7 @@ fn undo_ledger_verdict_three_arms() {
     assert!(err.contains("未落新凭条"), "digest 不匹配不得认领: {err}");
 }
 
-// ---------------------------------------------------------------------------
-// M4b（2026-10-19）tool 绑定在位探测（mcp_ready）
-// ---------------------------------------------------------------------------
+// tool 绑定在位探测（mcp_ready）
 
 /// tool 绑定 connector 模板（window-mcp 形态；desktop-ui 模板同构）。
 fn write_tool_connector(ws: &Path, dir: &str, id: &str) {
@@ -970,9 +954,7 @@ tool = "mcp_my_window_enumerate_windows"
     );
 }
 
-// ---------------------------------------------------------------------------
-// 管理面（2026-10-19）：create / set_enabled / remove
-// ---------------------------------------------------------------------------
+// 管理面：create / set_enabled / remove
 
 const HANDLER_TOML: &str = r#"[connector]
 id = "mng-c"
@@ -1108,9 +1090,7 @@ async fn management_param_and_registry_errors_are_honest() {
     assert!(err.contains("不在注册表"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
-// B4 总开关（2026-10-19）：connectors.set_master
-// ---------------------------------------------------------------------------
+// 总开关：connectors.set_master
 
 /// 关→config.json 真落键→list 反映；再开走「已有段更新」分支。缺省开
 /// （无 config.json 时与供给闸同源语义）。
@@ -1173,9 +1153,7 @@ async fn set_master_param_errors() {
     assert!(!tmp.path().join("config.json").exists());
 }
 
-// ---------------------------------------------------------------------------
-// B2 per-tool 例外（2026-10-19）：connectors.tool_policy + mirrors 投影
-// ---------------------------------------------------------------------------
+// per-tool 例外：connectors.tool_policy + mirrors 投影
 
 /// 独占接管 connector 模板（接管 `stub` server）。
 fn write_excl_connector(ws: &Path, dir: &str, id: &str) {
@@ -1318,7 +1296,7 @@ async fn tool_policy_param_errors() {
         .await
         .unwrap_err();
     assert!(err.contains("未知 policy"), "{err}");
-    // 在册校验先行（边界补强 2026-10-20）：`../escape` 与任意不存在的
+    // 在册校验先行（边界补强）：`../escape` 与任意不存在的
     // id 一样不在注册表——成员资格是最早、最安全的拒绝面（不拼路径）；
     // 字符集闸仍在下一层 state_path 兜底（其它调用方仍受它保护）。
     let err = h
@@ -1393,11 +1371,11 @@ fn exclusive_tool_rows_projects_live_tools_and_offline_exceptions() {
         rows[1]["args_schema"],
         json!({ "type": "object", "required": ["url"] })
     );
-    // G1 标记（边界补强 2026-10-20）：无 loop 形态 = 配置隐藏标记恒 false
+    // 标记（边界补强）：无 loop 形态 = 配置隐藏标记恒 false
     // （行照列、不带假信号）；带 loop 时由 tool_matches_hidden_config 现裁。
     assert_eq!(rows[0]["hidden_by_config"], json!(false));
 
-    // B3 四档基线随行：readOnly 自述=low/read 免卡；destructive 自述=
+    // 四档基线随行：readOnly 自述=low/read 免卡；destructive 自述=
     // high/write 强制确认卡。
     assert_eq!(rows[0]["risk"], json!("high"));
     assert_eq!(rows[0]["class"], json!("write"));

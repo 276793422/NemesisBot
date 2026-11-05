@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Helpers
-// -----------------------------------------------------------------------
 
 fn make_state_no_data_store() -> Arc<AppState> {
     Arc::new(AppState {
@@ -140,9 +138,7 @@ fn now_ts() -> i64 {
     chrono::Local::now().timestamp()
 }
 
-// -----------------------------------------------------------------------
 // Summary — DataStore absent
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn summary_no_data_store_returns_error() {
@@ -155,9 +151,7 @@ async fn summary_no_data_store_returns_error() {
     assert_eq!(v["error"], "DataStore not configured");
 }
 
-// -----------------------------------------------------------------------
 // Summary — empty store
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn summary_empty_store_returns_zeros() {
@@ -177,9 +171,7 @@ async fn summary_empty_store_returns_zeros() {
     assert_eq!(v["data"]["totalCostUsd"], 0.0);
 }
 
-// -----------------------------------------------------------------------
 // Summary — with inserted log
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn summary_with_log_aggregates() {
@@ -201,9 +193,7 @@ async fn summary_with_log_aggregates() {
     assert_eq!(v["data"]["totalCostUsd"], 0.01);
 }
 
-// -----------------------------------------------------------------------
 // Summary — default range (start/end None)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn summary_default_range_no_panic() {
@@ -217,9 +207,7 @@ async fn summary_default_range_no_panic() {
     assert_eq!(v["status"], "success");
 }
 
-// -----------------------------------------------------------------------
 // Summary — out-of-range log excluded
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn summary_excludes_out_of_range_logs() {
@@ -237,9 +225,7 @@ async fn summary_excludes_out_of_range_logs() {
     assert_eq!(v["data"]["totalRequests"], 0);
 }
 
-// -----------------------------------------------------------------------
 // Trends
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn trends_no_data_store_returns_error() {
@@ -321,9 +307,7 @@ async fn trends_default_group_by_is_hour() {
     assert_eq!(v["status"], "success");
 }
 
-// -----------------------------------------------------------------------
 // Logs
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn logs_no_data_store_returns_error() {
@@ -445,9 +429,7 @@ async fn logs_default_range_used() {
     assert_eq!(v["status"], "success");
 }
 
-// -----------------------------------------------------------------------
 // Query-struct construction (cheap sanity)
-// -----------------------------------------------------------------------
 
 #[test]
 fn usage_query_deserialize() {
@@ -477,9 +459,7 @@ fn usage_query_empty_json_ok() {
     assert!(q.end.is_none());
 }
 
-// -----------------------------------------------------------------------
-// Pricing — layered table endpoint (A2)
-// -----------------------------------------------------------------------
+// Pricing — layered table endpoint
 
 #[tokio::test]
 async fn pricing_returns_embedded_table() {
@@ -516,7 +496,7 @@ async fn pricing_returns_embedded_table() {
     assert_eq!(gpt["inputCostPerMillion"], 2.5);
     assert_eq!(gpt["outputCostPerMillion"], 10.0);
     // LiteLLM 派生条目的 displayName = provider 字符串（pricing_lite.rs；
-    // 2026-09-08 A2 全量表起，精选表时代的人工名 "GPT-4o" 不复存在）。
+    // 全量表起，精选表时代的人工名 "GPT-4o" 不复存在）。
     assert_eq!(gpt["displayName"], "openai");
     // Aliases field is always present (may be empty for OpenAI entries).
     assert!(gpt["aliases"].is_array());
@@ -531,7 +511,7 @@ async fn pricing_returns_embedded_table() {
         .as_f64()
         .expect("cache read numeric");
     assert!(ds_cache >= 0.0, "cache read price must be non-negative");
-    // 上游 2026-09 快照已自带裸名 deepseek-chat（无 aliases，同义名靠
+    // 上游 快照已自带裸名 deepseek-chat（无 aliases，同义名靠
     // lookup 后缀匹配）；aliases 序列化改钉 extras 精选条目（带反查别名，
     // 与 nemesis-data pricing/tests.rs 的 aliases 钉法对齐）。
     assert!(ds["aliases"].is_array());
@@ -554,9 +534,7 @@ async fn pricing_returns_embedded_table() {
     }
 }
 
-// -----------------------------------------------------------------------
-// Pricing — management endpoints (A2: custom CRUD / import / update gate)
-// -----------------------------------------------------------------------
+// Pricing — management endpoints (: custom CRUD / import / update gate)
 
 use crate::api_usage::{
     PricingCustomRemoveBody, PricingUpdateBody, handle_api_usage_pricing_custom_remove,
@@ -671,7 +649,7 @@ async fn pricing_custom_upsert_and_remove_endpoints() {
     assert!(v["error"].is_string(), "removing missing entry must error");
 }
 
-// L3（2026-10-12 内部专项 T0）：阶梯价 WSAPI 全链路——upsert 载荷携带
+// （内部专项）：阶梯价 WSAPI 全链路——upsert 载荷携带
 // price_tiers（serde 原名透传）→ 落盘 → /api/usage/pricing 视图以
 // priceTiers 投影回前端（None 字段按 null 投影，前端按继承渲染）。
 #[tokio::test]
@@ -764,13 +742,11 @@ async fn pricing_update_requires_data_store() {
     assert_eq!(v["error"], "DataStore not configured");
 }
 
-// -----------------------------------------------------------------------
-// Log detail endpoint + A3 filters (A3, 2026-08-31)
-// -----------------------------------------------------------------------
+// Log detail endpoint + filters (,)
 
 use crate::api_usage::handle_api_usage_log_detail;
 
-/// 列表响应包含 A3 新字段（分项成本 / pricingModel / firstTokenMs / sessionKey）。
+/// 列表响应包含 新字段（分项成本 / pricingModel / firstTokenMs / sessionKey）。
 #[tokio::test]
 async fn logs_json_includes_a3_fields() {
     let (_dir, ds) = open_store();
@@ -882,7 +858,7 @@ async fn log_detail_found_missing_and_no_store() {
         .id;
     let state = make_state_with_store(ds);
 
-    // 命中：data 带 A3 字段。
+    // 命中：data 带 字段。
     let Json(v) = handle_api_usage_log_detail(State(state.clone()), axum::extract::Path(id)).await;
     assert_eq!(v["status"], "success");
     assert_eq!(v["data"]["traceId"], "t-detail");

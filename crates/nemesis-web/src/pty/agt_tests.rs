@@ -145,9 +145,7 @@ async fn agt_read_until(ws: &mut AgtWs, marker: &str, timeout: Duration) -> Stri
     }
 }
 
-// ---------------------------------------------------------------------------
 // AuditWriter
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_audit_writer_roundtrip_dir_fail_and_no_workspace() {
@@ -188,9 +186,7 @@ fn agt_audit_writer_roundtrip_dir_fail_and_no_workspace() {
     assert!(c.file.is_none());
 }
 
-// ---------------------------------------------------------------------------
 // 升级闸：连接时刻已处急停 → 503
-// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agt_pty_upgrade_estop_engaged_rejected_503() {
@@ -208,9 +204,7 @@ async fn agt_pty_upgrade_estop_engaged_rejected_503() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // 会话内 control 帧 + shell 退出收尾
-// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agt_pty_session_control_frames_and_shell_exit() {

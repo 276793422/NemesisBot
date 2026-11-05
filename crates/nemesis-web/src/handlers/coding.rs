@@ -1,11 +1,11 @@
-//! Coding handler — P2-1 (2026-08-24 UI entry gap) 「代码开发」页后端。
+//! Coding handler — (2026-08-24 UI entry gap) 「代码开发」页后端。
 //!
 //! Read-only status commands for the three delegation/semantic-code tool
 //! configs; writes deliberately go through the existing generic
 //! `config.set_field` WSAPI (dot-path into config.json via ConfigStore) —
 //! this handler only adds what config files cannot express: runtime PATH
 //! probing of the five LSP language servers (§九.6 状态显示原则：能力状态
-//! 必须问后端，禁止前端硬编码)，以及 C6 的 `lsp_install` 一键安装（唯一
+//! 必须问后端，禁止前端硬编码)，以及 的 `lsp_install` 一键安装（唯一
 //! 带副作用的命令：经 agent loop 的 exec dispatch 走安全 8 层 + 审批卡，
 //! 不在本 handler 内裸 spawn）。
 //!
@@ -47,7 +47,7 @@ impl ModuleHandler for CodingHandler {
         match cmd {
             #[cfg(feature = "lsp")]
             "lsp_status" => self.lsp_status(),
-            // C6: 一键安装缺失的语言服务器（走 agent 的 exec dispatch——
+            // 一键安装缺失的语言服务器（走 agent 的 exec dispatch——
             // 安全 8 层 + 审批卡 + executor 隔离全链路）。
             #[cfg(feature = "lsp")]
             "lsp_install" => self.lsp_install(data, ctx).await,
@@ -66,7 +66,7 @@ impl CodingHandler {
         let languages: Vec<serde_json::Value> = nemesis_lsp::registry::SERVERS
             .iter()
             .map(|spec| {
-                // C6: 每语言附带平台相关安装命令（一键执行或复制）。
+                // 每语言附带平台相关安装命令（一键执行或复制）。
                 let install = nemesis_lsp::install::install_command(spec.lang);
                 serde_json::json!({
                     "lang": format!("{:?}", spec.lang),
@@ -88,10 +88,10 @@ impl CodingHandler {
         })))
     }
 
-    /// C6（devtool-upgrade 阶段 6）：一键安装缺失的语言服务器。
+    /// （devtool-upgrade）：一键安装缺失的语言服务器。
     ///
     /// 执行走 **AgentLoop 的 exec dispatch**（`handle_tool_call`）——estop /
-    /// hidden / Plan 闸 / 安全 8 层 / guardian / 审批卡（M7）/ executor 隔离
+    /// hidden / Plan 闸 / 安全 8 层 / guardian / 审批卡/ executor 隔离
     /// 全链路，与模型调用 exec 完全同权同责；审批弹卡复用 dashboard 审批卡
     /// （process_exec 是 CRITICAL → RequireApproval → WebApprovalManager）。
     /// 交互命令（sudo 等）诚实拒绝只给复制。Agent 未运行时诚实报错。
@@ -128,7 +128,7 @@ impl CodingHandler {
                 cmd.display, cmd.display
             ));
         }
-        // 槽读取窗口窄：clone Arc 后立即放锁（M7 approval.rs 同款纪律）。
+        // 槽读取窗口窄：clone Arc 后立即放锁（approval.rs 同款纪律）。
         let agent_loop = {
             let guard = ctx.state.agent_loop.read();
             guard.clone()
@@ -155,8 +155,8 @@ impl CodingHandler {
             name: "exec".to_string(),
             arguments: serde_json::json!({"command": cmd.display, "timeout": 600}).to_string(),
         };
-        // 独立 RequestContext：不挂任何会话（安装不是聊天轮次——D3 文件映射
-        // /checkpoint/A6 都按工具类天然不触发 exec）。
+        // 独立 RequestContext：不挂任何会话（安装不是聊天轮次—— 文件映射
+        // /checkpoint/ 都按工具类天然不触发 exec）。
         let agent_ctx = nemesis_agent::context::RequestContext::new(
             "dashboard:lsp_install",
             &ctx.chat_id,
@@ -181,7 +181,7 @@ impl CodingHandler {
                 "enabled": cfg.agents.lsp_tool.enabled,
                 "timeout_secs": cfg.agents.lsp_tool.timeout_secs,
                 "idle_secs": cfg.agents.lsp_tool.idle_secs,
-                // C6: 静默自举缺失服务器（网关启动期后台安装）。
+                // 静默自举缺失服务器（网关启动期后台安装）。
                 "auto_install": cfg.agents.lsp_tool.auto_install,
             },
             "claude_code": {
@@ -198,21 +198,21 @@ impl CodingHandler {
                 // (empty → read_only fail-safe at spawn; NOT model-selectable).
                 "sandbox": cfg.agents.codex_tool.sandbox,
             },
-            // C4: edit→diagnostics feedback loop. Independent of `lsp` above
+            // edit→diagnostics feedback loop. Independent of `lsp` above
             // (loop on + lsp tool off is a legal, recommended default combo).
             "diagnostics": {
                 "enabled": cfg.agents.defaults.diagnostics_loop.enabled,
                 "max_errors": cfg.agents.defaults.diagnostics_loop.max_errors,
                 "wait_max_ms": cfg.agents.defaults.diagnostics_loop.wait_max_ms,
             },
-            // E2 (devtool-upgrade 阶段 3): concurrent request mode card.
-            // Valid modes: reject | queue | steer (queue = E1 default).
+            // (devtool-upgrade): concurrent request mode card.
+            // Valid modes: reject | queue | steer (queue = default).
             // Read at AgentLoop build time → save then restart Agent.
             "concurrent": {
                 "mode": cfg.agents.defaults.concurrent_request_mode,
                 "queue_size": cfg.agents.defaults.queue_size,
             },
-            // N2 (devtool-upgrade 阶段 4): small-model chore lane. Sole
+            // (devtool-upgrade): small-model chore lane. Sole
             // consumer is manual /compact summarization (auto compression
             // stays on the main model). Read at AgentLoop build time →
             // save then restart Agent; unresolvable refs fall back to the
@@ -253,7 +253,7 @@ fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：lsp_install 的交互型命令诚实拒绝臂
+// AGT 覆盖率批次：lsp_install 的交互型命令诚实拒绝臂
 // （平台条件化）、Plan 模式预检拒绝臂、dispatch 全身（裸 loop 的
 // Unknown tool 短路，不执行安装命令）。豁免见 agt_tests 文件头注。
 // 全文件均 lsp 域（lsp_install/lsp_status）→ 随 lsp feature 进出。

@@ -1,4 +1,4 @@
-//! S5（2026-10-09 高优差距批次）：入站 OpenAI 兼容端点
+//! （2026-10-09 高优差距批次）：入站 OpenAI 兼容端点
 //! `POST /v1/chat/completions`。
 //!
 //! 让持有 OpenAI SDK 生态的调用方把本 bot 当作一个 chat completions 后端：
@@ -37,7 +37,7 @@
 //! 标志形态）——本 bot 只当**模型代理**，不起 AgentLoop：master 侧的
 //! 工具/文件系统/看板对 worker 执行语义整体错位（master detached agent
 //! 会用自己的 cluster_rpc 把任务派回 worker、在 master 文件系统上找
-//! worker 工作副本——2026-10-14 NB-1 事故根因，详见 BUG 报告归档）。
+//! worker 工作副本——2026-10-14 事故根因，详见 BUG 报告归档）。
 //! 裸 lane 把请求消息/工具转成 provider 中立类型，调 `AppState`
 //! streaming_provider（`default_following` wrapper，空模型名 = 当前默认
 //! 模型槽），并把 master 模型卡语义补齐进 ChatOptions（reasoning_effort
@@ -66,9 +66,7 @@ use std::time::Instant;
 /// 请求日志按此检索）。
 const OPENAI_LABEL: &str = "openai-api";
 
-// ---------------------------------------------------------------------------
 // 请求/响应 wire 形态
-// ---------------------------------------------------------------------------
 
 /// `POST /v1/chat/completions` 请求体。未列出的 OpenAI 字段由 serde 默认
 /// 忽略；`stream` 缺省 = false。
@@ -80,7 +78,7 @@ pub struct OpenAiChatRequest {
     pub messages: Vec<OpenAiMessage>,
     #[serde(default)]
     pub stream: bool,
-    /// 裸转发 lane 判据（2026-10-15 BUG-③A）：非空 = 调用方自带工具编排
+    /// 裸转发 lane 判据（BUG-③A）：非空 = 调用方自带工具编排
     /// （集群 worker 执行形态），走 provider 直转；空 = 历史 AgentLoop
     /// 分离执行路径字节不变。
     #[serde(default)]
@@ -108,7 +106,7 @@ pub struct OpenAiMessage {
     #[serde(default)]
     pub content: Option<serde_json::Value>,
     /// 裸 lane 保真字段：assistant 历史轮的工具调用 + tool 结果回指。
-    /// 分离执行 lane 不消费（`.text()` 只取 content）。
+    /// 分离执行 lane 不消费（`.text` 只取 content）。
     #[serde(default)]
     pub tool_calls: Vec<nemesis_providers::types::ToolCall>,
     #[serde(default)]
@@ -134,9 +132,9 @@ impl OpenAiMessage {
     fn to_provider_message(&self) -> nemesis_providers::types::Message {
         let content = match &self.content {
             Some(v) => normalize_openai_content(v).unwrap_or_else(|reason| {
-                // 兜底不吞文本（BUG-b 2026-10-30）：归一失败（未知/畸形
-                // part）退化为纯文本（text() 的数组 text-part 拼接语义），
-                // 绝不静默清空整条消息。原先 `unwrap_or_default()` 会把
+                // 兜底不吞文本（BUG-b）：归一失败（未知/畸形
+                // part）退化为纯文本（text 的数组 text-part 拼接语义），
+                // 绝不静默清空整条消息。原先 `unwrap_or_default` 会把
                 // OpenAI `image_url` parts 连同 text part 一起清成空串。
                 tracing::warn!(
                     "[OpenAI-compat] 多模态 content 归一失败，退化为纯文本透传: {reason}"
@@ -157,7 +155,7 @@ impl OpenAiMessage {
     }
 }
 
-/// OpenAI wire 多模态 content 归一（BUG-b 2026-10-30，纯函数供测试）：
+/// OpenAI wire 多模态 content 归一（BUG-b ，纯函数供测试）：
 /// OpenAI 形态 `{"type":"image_url","image_url":{"url":...}}` 与内部
 /// [`ContentPart`] serde tag（`type:"image"`）不同，直接 `from_value` 会
 /// 整体失败 → 整条消息被清空。本函数把 string / text part / image_url
@@ -258,9 +256,7 @@ fn error_response(status: axum::http::StatusCode, message: String, err_type: &st
     (status, axum::Json(body)).into_response()
 }
 
-// ---------------------------------------------------------------------------
 // messages → 分离执行任务
-// ---------------------------------------------------------------------------
 
 /// 组装分离执行任务文本（模块头映射规则；纯函数供测试）。
 pub(crate) fn assemble_task(messages: &[OpenAiMessage]) -> String {
@@ -309,9 +305,7 @@ pub(crate) fn assemble_task(messages: &[OpenAiMessage]) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
 // 执行 + 响应组装
-// ---------------------------------------------------------------------------
 
 /// 分离执行 + Done-first 折叠（与 `AgentLoop::run_detached` 同语义；
 /// 附带 tool_calls 计数给扩展元数据）。
@@ -553,9 +547,7 @@ pub(crate) async fn api_chat_completions_with_caller(
     response
 }
 
-// ---------------------------------------------------------------------------
-// 裸转发 lane（BUG-③A，2026-10-15）
-// ---------------------------------------------------------------------------
+// 裸转发 lane（BUG-③A）
 
 /// `FailoverError` → (HTTP 状态码, OpenAI error type)。调用方鉴权已过
 /// REST 中间件——Auth/Billing 是 **master 侧上游凭据**问题，映射 502 而
@@ -566,7 +558,7 @@ fn bare_error_status(
     use nemesis_providers::failover::FailoverError as FE;
     match e {
         FE::Timeout { .. }
-        // L02：流中断与 Timeout 同门（瞬态可重试）——同映射 504。
+        // 流中断与 Timeout 同门（瞬态可重试）——同映射 504。
         | FE::StreamInterrupted { .. } => {
             (axum::http::StatusCode::GATEWAY_TIMEOUT, "timeout")
         }
@@ -633,7 +625,7 @@ async fn bare_forward(
 ) -> Response {
     // provider 槽：streaming_provider 是 default_following wrapper——空
     // 模型名路由到当前默认槽（set_default 热切即时生效），槽未装过走
-    // 启动捕获降级（NullProvider 时 chat() 诚实报错 → 下错误面）。
+    // 启动捕获降级（NullProvider 时 chat 诚实报错 → 下错误面）。
     let Some(provider) = state.streaming_provider.clone() else {
         return error_response(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -866,7 +858,7 @@ fn tool_calls_delta_json(tool_calls: &[nemesis_providers::types::ToolCall]) -> s
 
 /// 裸 lane 流式透传：`chat_stream` receiver → OpenAI SSE。首帧即 Err =
 /// 上游起流失败 → 诚实 JSON 错误（不吐半个 SSE 流）；中途 Err = 带内
-/// 注记 + 合成 stop 收尾（worker 侧 J1 否则会把断流当完整 stop 静默截断）。
+/// 注记 + 合成 stop 收尾（worker 侧 否则会把断流当完整 stop 静默截断）。
 async fn bare_forward_stream(
     state: &AppState,
     provider: &dyn nemesis_providers::router::LLMProvider,
@@ -883,7 +875,7 @@ async fn bare_forward_stream(
     // stream 块内多次使用（tracing），头写入还要一份——clone 进块。
     let execution_model_stream = execution_model.clone();
     // 记账身份 + data_store 句柄（async_stream 块 'static，借不了 state
-    // ——clone Arc 进块，`as_deref()` 出 `Option<&DataStore>`）。
+    // clone Arc 进块，`as_deref` 出 `Option<&DataStore>`）。
     let proxy_ids = uuid::Uuid::new_v4().simple();
     let proxy_session_key = proxy_lane_session_key(caller, "openai-api", proxy_ids);
     let proxy_trace_id = format!("openai-proxy-{proxy_ids}");
@@ -892,7 +884,7 @@ async fn bare_forward_stream(
     let tid_block = proxy_trace_id.clone();
 
     // 首帧判定：起流失败不 commit SSE（错误面保持 JSON 形态）；唯「流式
-    // 不被该 provider 支持」（trait 缺省实现，BUG-a 2026-10-30）例外——
+    // 不被该 provider 支持」（trait 缺省实现，BUG-a）例外——
     // 回落非流式合成 SSE，不把本地能力缺口伪装成上游故障（此前直接 502
     // "not implemented"，请求死在本进程未出网；agent 链路 llm_bridge 同判
     // 同源回落，两条链路行为对齐）。
@@ -967,7 +959,7 @@ async fn bare_forward_stream(
                 None => match rx.recv().await {
                     Some(Ok(c)) => c,
                     Some(Err(e)) => {
-                        // 中途断流：带内注记 + 合成 stop（worker 侧 J1 把
+                        // 中途断流：带内注记 + 合成 stop（worker 侧 把
                         // 无终态断流当完整 stop——静默截断不可见）。
                         let err_msg = e.to_string();
                         record_proxy_usage(
@@ -1049,7 +1041,7 @@ async fn bare_forward_stream(
             }
         }
         if !finish_sent {
-            // receiver 耗尽无终态（provider J1 保证合成终帧，防御性兜底）。
+            // receiver 耗尽无终态（provider 保证合成终帧，防御性兜底）。
             record_proxy_usage(
                 ds_block.as_deref(),
                 ProxyUsageRecord {
@@ -1086,12 +1078,12 @@ async fn bare_forward_stream(
     response
 }
 
-/// 裸 lane 流式回落（BUG-a 2026-10-30）：provider 无流式 lane（`chat_stream`
-/// trait 缺省实现）时改走 `chat()` 非流式，成功后合成 OpenAI SSE 完整流
+/// 裸 lane 流式回落（BUG-a）：provider 无流式 lane（`chat_stream`
+/// trait 缺省实现）时改走 `chat` 非流式，成功后合成 OpenAI SSE 完整流
 /// （全量 content 单 delta 帧 + tool_calls delta 帧若有 + 终帧
 /// finish_reason/usage + `[DONE]`；语义对齐 llm_bridge `fallback_non_stream`
-/// ——非流式 provider 也产生一次完整「流」，调用方无差别）。回落后的
-/// `chat()` 失败 = 真实上游错误，诚实上报不伪装。
+/// 非流式 provider 也产生一次完整「流」，调用方无差别）。回落后的
+/// `chat` 失败 = 真实上游错误，诚实上报不伪装。
 async fn bare_fallback_non_stream(
     state: &AppState,
     provider: &dyn nemesis_providers::router::LLMProvider,

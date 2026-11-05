@@ -1,4 +1,4 @@
-//! P4-c（2026-10-17）— `deliveries.*` WSAPI + 交付账本查询/裁决面。
+//! c（2026-10-17）— `deliveries.*` WSAPI + 交付账本查询/裁决面。
 //!
 //! 依赖方向（同 [`crate::handlers::agents`] 先例）：nemesis-web 不能反向
 //! 依赖 nemesisbot（deliveries 表的 `Arc<TaskDb>` 在那边），所以这里定义
@@ -13,9 +13,7 @@
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Bridge trait + 进程级槽
-// ---------------------------------------------------------------------------
 
 /// 交付条目的 web 侧投影（serde 序列化直接进 WSAPI 响应）。不带 payload
 /// 原文（含 patch 体）；payload 里的结构化摘要字段（files_changed 等）
@@ -29,22 +27,22 @@ pub struct DeliveryInfo {
     pub kind: String,
     pub idempotency_key: String,
     /// `recorded` / `delivered` / `confirmed` / `rejected` / `published`
-    /// （项 C 2026-10-22 起：记账即 recorded，通道接受才 delivered；
-    /// published = P3 外循环已推远端并开出 PR——终态，PR 号在 payload）。
+    /// （项 C 起：记账即 recorded，通道接受才 delivered；
+    /// published = 外循环已推远端并开出 PR——终态，PR 号在 payload）。
     pub status: String,
     pub created_at: String,
     pub delivered_at: Option<String>,
     pub confirmed_at: Option<String>,
     pub rejected_at: Option<String>,
     pub reject_reason: Option<String>,
-    // -- 通知义务维度（项 C，与 status 正交）--
+    // 通知义务维度（项 C，与 status 正交）--
     /// `pending` / `channel_accepted` / `confirmed` / `none` / `legacy` / `dead`。
     pub notify_state: String,
     /// 通知失败累计次数（重试债记账；0 = 无失败）。
     pub notify_attempts: i64,
     /// 最近一次通知失败原因（None = 无失败记录）。
     pub notify_last_error: Option<String>,
-    // -- payload 展开字段（branch 交付；缺失 = null/false）--
+    // payload 展开字段（branch 交付；缺失 = null/false）--
     pub branch: Option<String>,
     pub node: Option<String>,
     pub files_changed: Option<i64>,
@@ -54,7 +52,7 @@ pub struct DeliveryInfo {
     pub patch_path: Option<String>,
     /// payload 里有内联 patch 文本 = true（内容走 `deliveries.patch`）。
     pub patch_present: bool,
-    // -- 不可变 tree 标识（G4，2026-10-18 批六；旧 payload 缺键 = null）--
+    // 不可变 tree 标识（旧 payload 缺键 = null）--
     /// 交付时 head commit（`DeliveryBranchCapture.commit`）。
     pub commit: Option<String>,
     /// 交付时 head tree（payload 键 `tree`——完整快照的不可变内容标识）。
@@ -62,7 +60,7 @@ pub struct DeliveryInfo {
     /// 执行前 base tree（diff 的锚点侧；与 head_tree 一起构成可复验的
     /// 变更区间标识）。
     pub base_tree: Option<String>,
-    // -- 发布留痕（payload 键；未发布 = null；域剥离批 2026-11-02 键改
+    // 发布留痕（payload 键；未发布 = null；域剥离-02 键改
     //    通用 external_*，旧 pr_* 由账本投影垫片兜底读取）--
     /// 外部条目引用号（payload 键 `external_ref`）。
     pub external_ref: Option<i64>,
@@ -123,14 +121,12 @@ pub(crate) fn set_deliveries_bridge_for_test(bridge: Option<Arc<dyn DeliveriesBr
 #[cfg(test)]
 pub(crate) static DELIVERIES_BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-// ---------------------------------------------------------------------------
-// P3 外循环（PR 发布）bridge——异步能力面（与查询/裁决 bridge 分槽）
-// ---------------------------------------------------------------------------
+// 外循环（PR 发布）bridge——异步能力面（与查询/裁决 bridge 分槽）
 
-/// 交付发布桥（P3 外循环，2026-10-25）：board 模块 `delivery.publish` 命令
+/// 交付发布桥（外循环）：board 模块 `delivery.publish` 命令
 /// 消费。发布是异步重活（connector invoke 走 agent loop dispatch 瀑布 +
 /// git push + 状态机落账），实现落 nemesisbot 侧（本 crate 不能反向依赖
-/// ——同 [`DeliveriesBridge`] 依赖反转模式）。请求/响应按 JSON 值透传：
+/// 同 [`DeliveriesBridge`] 依赖反转模式）。请求/响应按 JSON 值透传：
 /// 参数解析权在实现侧（task_id/connector/owner/repo/base/copy_path/title/
 /// body），返回 `{status, external_ref, external_url, commit, branch, detail}`。
 #[async_trait::async_trait]
@@ -157,9 +153,7 @@ pub fn delivery_publish_bridge() -> Option<Arc<dyn DeliveryPublishBridge>> {
         .clone()
 }
 
-// ---------------------------------------------------------------------------
 // WSAPI handler
-// ---------------------------------------------------------------------------
 
 /// list 视图缺省上限（防一次拉全表；bridge 侧再兜底）。
 const DEFAULT_LIST_LIMIT: usize = 50;

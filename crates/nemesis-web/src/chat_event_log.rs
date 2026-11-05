@@ -1,10 +1,10 @@
-//! L2（devtool-upgrade 阶段 6）— per-session WS chat 帧环形缓冲。
+//! （devtool-upgrade）— per-session WS chat 帧环形缓冲。
 //!
 //! 与 [`crate::events::EventHub`]（SSE 全局事件流）平行：WS chat 推送帧
 //!（`message.chat.receive`）按 session 记录并盖**会话内单调 seq**，
 //! `chat.sync {session_id, after_seq}` 断线补拉（useWebSocket 重连点调用）。
 //!
-//! 存放形态：模块级 `OnceLock`（L1 同款理由——AppState 字面量散布 69 个
+//! 存放形态：模块级 `OnceLock`（同款理由——AppState 字面量散布 69 个
 //! 测试文件 105 处不可动，加字段是全库爆破；模块级快照保有单一真相源
 //! 性质且零爆破半径）。
 
@@ -30,12 +30,12 @@ pub struct ChatEvent {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// HD（2026-09-17 顺带修）：记录时刻（后端钟）——chat.sync 重放路径
-    /// 前端此前填本地 `new Date()`，补拉消息时间显示为拉取时刻而非真实
+    /// HD（顺带修）：记录时刻（后端钟）——chat.sync 重放路径
+    /// 前端此前填本地 `new Date`，补拉消息时间显示为拉取时刻而非真实
     /// 发生时刻。`skip_serializing_if` 兼容：旧条目无此字段，前端回退本地钟。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<String>,
-    /// P1（2026-09-21）：条目类别。`None` = 普通 chat 行（assistant/user
+    /// 条目类别。`None` = 普通 chat 行（assistant/user
     /// 文本，兼容旧条目与旧测试）；`Some("tool")` = 工具事件——`tool` 字段
     /// 携带完整 push 载荷（ToolStarted/ToolFinished/ModeChanged），chat.sync
     /// 回放时前端据此恢复工具卡（切页/重连/重载后工具流程可见）。
@@ -44,7 +44,7 @@ pub struct ChatEvent {
     /// `kind = "tool"` 条目的完整工具事件载荷（帧内层 data 原样）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<serde_json::Value>,
-    /// 集群续行归属（2026-09-23）：实际干活的 worker 节点名——chat.sync
+    /// 集群续行归属：实际干活的 worker 节点名——chat.sync
     /// 断线补拉重放的帧同样携带「节点 X」徽章。缺省不写键（非集群回复）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_node: Option<String>,
@@ -64,18 +64,18 @@ struct SessionTable {
 
 static SESSION_LOGS: OnceLock<Mutex<SessionTable>> = OnceLock::new();
 
-/// P8（2026-09-21）：EventHub 槽（chat.activity 多端感知信号的数据源）。
+/// EventHub 槽（chat.activity 多端感知信号的数据源）。
 /// 模块级 OnceLock——与本文件 SESSION_LOGS 同款理由：AppState 字面量散布
 /// 全库不可动，装配期 install 一次、record 路径只读。未安装时静默跳过
 /// （单测/无 SSE 场景零开销）。
 static EVENT_HUB: OnceLock<Arc<EventHub>> = OnceLock::new();
 
-/// gateway 装配期安装 EventHub（P8：record 即广播 chat.activity）。
+/// gateway 装配期安装 EventHub（record 即广播 chat.activity）。
 pub fn install_event_hub(hub: Arc<EventHub>) {
     let _ = EVENT_HUB.set(hub);
 }
 
-/// M5（2026-10-10 集群无人值守硬化）：跨 crate 全局事件发布口——不经
+/// （集群无人值守硬化）：跨 crate 全局事件发布口——不经
 /// AppState（模块级 EVENT_HUB 槽），nemesisbot 侧（board_bus 远程审批
 /// 登记/摘除路由）与 crate 内（remote_approval 回源 relay）共用。未安装时
 /// 静默跳过（单测/无 SSE 场景零开销，`publish_activity` 同款语义）。
@@ -141,7 +141,7 @@ fn insert_event(
             buf: VecDeque::new(),
         });
     let seq = entry.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
-    // is_tool 先于 move 求值：kind 属权随后移入 ChatEvent（E0382）。
+    // is_tool 先于 move 求值：kind 属权随后移入 ChatEvent。
     let is_tool = kind.is_some();
     let event = Arc::new(ChatEvent {
         seq,
@@ -192,7 +192,7 @@ pub fn record(
     insert_event(session_id, role, content, model, None, None, source_node)
 }
 
-/// P1（2026-09-21）：记录一条工具事件（kind="tool"，`tool` 携带完整 push
+/// 记录一条工具事件（kind="tool"，`tool` 携带完整 push
 /// 载荷）。与 `record` 同键空间、同 seq 序列——回放时工具事件与 assistant
 /// 行按 seq 交错还原真实时序。返回其 seq。
 pub fn record_tool(session_id: &str, tool: serde_json::Value) -> u64 {
@@ -236,7 +236,7 @@ pub fn replay_after(session_id: &str, after: u64) -> (Vec<ChatEvent>, bool) {
     }
 }
 
-/// A1（2026-09-22 聊天切会话竞态修复）：当前会话环内已分配的最大 seq
+/// （聊天切会话竞态修复）：当前会话环内已分配的最大 seq
 /// （无记录 = 0）。`handle_history_request` 在 `read_chat_log` **之后**
 /// 采样，随历史响应下发 `last_seq`——前端据此剔除「先于历史快照渲染、
 /// 且必然已含于历史批次」的 assistant 实时帧（assistant 入环点在

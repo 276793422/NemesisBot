@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 board.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -50,11 +48,11 @@ fn sync_one_parent(
         return Ok(next);
     }
 
-    // AOR 批二b（⑥ FINISH 谓词）：全 done 垫升前过收口谓词（只 gate
+    // FINISH 谓词：全 done 垫升前过收口谓词（只 gate
     // all_done 分支——any_cancelled 分支维持原样：缺口评论+进评审等人工，
     // 语义不变）。谓词在正常路径恒真；全 done 却不满足 = 活跃派发在途或
-    // 未裁决 unknown（批一c ③ 落盘的 `unknown:` 清单）——阻塞垫升/收口 +
-    // 缺口评论显式列出（C-F4 去重），防「评审还没裁决完单子就被钩子拉走」。
+    // 未裁决 unknown（c ③ 落盘的 `unknown:` 清单）——阻塞垫升/收口 +
+    // 缺口评论显式列出（C- 去重），防「评审还没裁决完单子就被钩子拉走」。
     if all_done && !terminal {
         let unsatisfied = nemesis_board::finish::evaluate_parent_finish(store, &subtree);
         if !unsatisfied.is_empty() {
@@ -72,7 +70,7 @@ fn sync_one_parent(
     }
 
     // backlog/todo 不能直接进 in_review，先垫 in_progress（blocked 同理：
-    // blocked→in_progress 合法而 blocked→in_review 非法——B5 停车联动的
+    // blocked→in_progress 合法而 blocked→in_review 非法—— 停车联动的
     // 受阻父单全子落定走这里必须先垫）。终态父单跳过一切推列。
     if !terminal
         && matches!(
@@ -86,7 +84,7 @@ fn sync_one_parent(
         if !terminal && parent.status != IssueStatus::InReview {
             store.transition_issue(parent_id, IssueStatus::InReview, actor)?;
         }
-        // 全自动流转 P1（A3）：子单全部落定 → 触发父单收口验收钩子。
+        // 全自动流转 ：子单全部落定 → 触发父单收口验收钩子。
         // 旗标判定在 hook 内（未注册 / auto_close_parent=false = no-op，
         // 等价现行为）；cancelled 缺口闸也在 hook 侧。终态父单已收过口，
         // 不重复触发。
@@ -110,7 +108,7 @@ fn sync_one_parent(
                 "⚠ 子任务存在未完成项，父任务收口进评审等待人工裁决：{}",
                 gap.join("、")
             );
-            // C-F4（复核 2026-09-16）：终态父单缺口评论去重——terminal 分支
+            // C-（复核）：终态父单缺口评论去重——terminal 分支
             // 没有状态变化可依（旧防重语义「已在 in_review 不重复写」对终态
             // 单恒不命中），此后每次子单落定触发 sync 都会重写同款评论刷屏。
             // 与最近一条同款系统评论逐字比较，内容未变则跳过；缺口集合变化
@@ -141,12 +139,12 @@ fn sync_one_parent(
     Ok(next)
 }
 
-/// 子单落定（done/cancelled）后的联动 = M1 补派触发器 + 父单收口：扫
+/// 子单落定（done/cancelled）后的联动 = 补派触发器 + 父单收口：扫
 /// dependents 中依赖已满足的待派子单补派（`dispatch_subissue_auto` 自带
 /// 状态/在途/依赖闸），随后父单状态联动。错误只 warn 不上抛（联动是
 /// 附加动作，不阻断落定本身）。接线点：WSAPI `issue.status` / `issue.move`
-/// 落到 done/cancelled 时（CLI 直写 store 不经此路径——M1 已知边界）。
-/// 返回级联取消的编号列表（C3：`issue.cancel` 响应体披露）。
+/// 落到 done/cancelled 时（CLI 直写 store 不经此路径—— 已知边界）。
+/// 返回级联取消的编号列表（`issue.cancel` 响应体披露）。
 #[cfg(feature = "cluster")]
 pub fn on_issue_settled(
     store: &Arc<BoardStore>,
@@ -164,15 +162,15 @@ pub fn on_issue_settled(
     {
         tracing::warn!("[Board] 父单 {pid} 联动失败：{e}");
     }
-    // F3：顶层父单落定是项目收口验收的触发面（前置聚合检查在 notify 内，
+    // 顶层父单落定是项目收口验收的触发面（前置聚合检查在 notify 内，
     // 不过 = no-op）。
     notify_project_review_on_parent_done(store, issue_id);
     if cancelled {
-        // B1：依赖闸只认 done 且状态机无 reopen——依赖取消后 dependents
+        // 依赖闸只认 done 且状态机无 reopen——依赖取消后 dependents
         // 永远无法派发（死链）。级联取消让死链显形：各自留痕 + 父单经
         // sync_parent_status 进 in_review + 缺口评论。（reopen 已补上
         // cancelled→backlog 出口：级联取消的单可用 issue.reopen 复活。）
-        // F-U4-3：级联边 = 依赖边 ∪ 父子边（见 cascade_cancel_dependents）。
+        // F-：级联边 = 依赖边 ∪ 父子边（见 cascade_cancel_dependents）。
         cascade_cancel_dependents(store, cluster, issue_id, actor)
     } else {
         match store.dependents_of(issue_id) {
@@ -196,8 +194,8 @@ pub fn on_issue_settled(
 #[cfg(feature = "cluster")]
 /// pub：replan 执行臂（nemesisbot `board_replan.rs`）跨 crate 共用（同
 /// `dispatch_issue_core`/`confirm_plan`/`cascade_cancel_dependents` 先例）
-/// ——取消建议动作命中在途派发时必须走同一下行取消出口，不得另搓第二套
-/// （AOR 批三 5.3）。
+/// 取消建议动作命中在途派发时必须走同一下行取消出口，不得另搓第二套
+///
 pub fn spawn_task_cancel(
     store: &Arc<BoardStore>,
     cluster: &Arc<nemesis_cluster::cluster::Cluster>,
@@ -249,7 +247,7 @@ pub fn spawn_task_cancel(
     });
 }
 
-/// 级联取消（B1 + F-U4-3 + SAN-08）：root 落 cancelled 后，两条「挂在
+/// 级联取消（+ F- + SAN-08）：root 落 cancelled 后，两条「挂在
 /// 我身上就会陪葬」的边全部级联——**依赖边**（`dependents_of`：依赖我的
 /// 单，依赖闸只认 done，死链显形）+ **父子边**（`list_children`：planner
 /// 拆解的依赖边是兄弟链、从不指向父单，只走依赖边则 cancel 父单恒零级联，
@@ -263,12 +261,12 @@ pub fn spawn_task_cancel(
 /// 父单经 [`sync_parent_status`] any_cancelled 分支进 in_review + 缺口
 /// 评论。传导断路：某节点取消失败（竞态输给 worker 完成）则其下游不再
 /// 连带取消（与旧「失败不入队」语义等价）。返回被连带取消的编号列表
-/// （C3：cancel 响应体披露，不再无声）。
+/// （cancel 响应体披露，不再无声）。
 ///
 /// pub：replan 执行臂（nemesisbot `board_replan.rs`）跨 crate 共用（同
 /// `dispatch_issue_core`/`confirm_plan` 先例）——取消建议动作必须走同一
 /// 级联取消机制（传导断路/在途派发取消/父单同步/留痕全对齐），不得另搓
-/// 第二套（AOR 批三 5.3）。
+/// 第二套。
 #[cfg(feature = "cluster")]
 pub fn cascade_cancel_dependents(
     store: &Arc<BoardStore>,
@@ -339,7 +337,7 @@ pub fn cascade_cancel_dependents(
     cascaded
 }
 
-/// `issue.cancel` 实现（cluster 编译时，W2 P4 per-task cancel + B2/B3 修复）：
+/// `issue.cancel` 实现（cluster 编译时， per-task cancel + / 修复）：
 /// 有在途派发 → 竞态守卫（只认 dispatched 态，Some=赢）→ 终态 → 下行
 /// task_cancel；无在途派发（停车场单/依赖闸未放行单）→ 直接终态，集群
 /// 非必需。两条路径落定后统一走 [`on_issue_settled`] 联动（父单收口 +
@@ -359,7 +357,7 @@ pub(super) async fn issue_cancel(
     let issue = store.get_issue(id)?;
     let dispatch = store.get_active_dispatch(id)?;
 
-    // 有在途派发：集群必需 + 竞态守卫（只认 dispatched/running 态——D0b
+    // 有在途派发：集群必需 + 竞态守卫（只认 dispatched/running 态——
     // running 同样在途、可取消，worker 侧 token cancel 打断执行中任务；
     // 输掉竞态——worker 恰好回报/超时 sweep 先到——不动 issue，报错让
     // 前端刷新）。
@@ -383,7 +381,7 @@ pub(super) async fn issue_cancel(
         spawn_task_cancel(store, &cluster, id, &worker_id, &tid);
     }
 
-    // 状态机：→ cancelled（终态）。无在途派发时直接转（B3：停车场单/
+    // 状态机：→ cancelled（终态）。无在途派发时直接转（停车场单/
     // 依赖闸未放行单不需要集群参与）。
     let issue = if issue.status != IssueStatus::Cancelled {
         store.transition_issue(id, IssueStatus::Cancelled, &actor)?
@@ -391,8 +389,8 @@ pub(super) async fn issue_cancel(
         issue
     };
 
-    // B2：落定联动（父单收口 + dependents 级联取消）——错误只 warn，
-    // 不回滚取消。C3：级联清单随响应披露（被连带取消的子单编号），不再
+    // 落定联动（父单收口 + dependents 级联取消）——错误只 warn，
+    // 不回滚取消。：级联清单随响应披露（被连带取消的子单编号），不再
     // 无声——用户据此知道哪些单被连带、可用 issue.reopen 拉回。
     let cascade_cancelled = on_issue_settled(store, ctx.state.cluster.as_ref(), id, &actor);
 
@@ -417,7 +415,7 @@ pub(super) async fn issue_cancel(
     Err("issue.cancel 需要集群支持（cluster feature 未编译）".to_string())
 }
 
-/// `issue.cancel_dispatch` 实现（B14，2026-10-18 B 级清零）：**只撤派发、
+/// `issue.cancel_dispatch` 实现（B 级清零）：**只撤派发、
 /// 单据存活**——与 `issue.cancel`（连单终杀）互补的轻量出口。适用场景：
 /// 派错节点想换人重派、worker 假死不等超时 sweep。语义：
 /// - A 侧撤派发行（→ cancelled 终态）+ 下行 task_cancel（fire-and-forget，

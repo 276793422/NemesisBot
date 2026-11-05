@@ -1,4 +1,4 @@
-//! 价目表在线同步（A2，2026-08-31）：LiteLLM 主源拉取 → 解析 → 落分层价目表。
+//! 价目表在线同步（2026-08-31）：LiteLLM 主源拉取 → 解析 → 落分层价目表。
 //!
 //! 设计契约（对齐 goal 硬约束）：**断网/解析失败降级 = 保留现有表继续用旧
 //! 数据**——失败时只刷新 meta（`record_failed_fetch`），绝不因价目表同步
@@ -88,7 +88,7 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
 
     let resp = match req.send().await {
         Ok(r) => r,
-        // BUG-20261025-62：网络/读取/解析失败同样要刷 meta（fetched_at/
+        // 网络/读取/解析失败同样要刷 meta（fetched_at/
         // source_url）——模块契约「失败（网络/解析/空表）→ record_failed_fetch」
         // 此前三条 Err 路径漏走，只有 HTTP 状态失败留痕；受限网络下最常见的
         // 连接失败与代理劫持 200 垃圾页（解析失败）恰恰完全不留尝试痕迹，
@@ -119,7 +119,7 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    // 不走 resp.text()（按响应头 charset 解码，被干扰的响应头会让完好的
+    // 不走 resp.text（按响应头 charset 解码，被干扰的响应头会让完好的
     // 字节也解码失败——真机实证的 "error decoding response body" 根因）；
     // LiteLLM 表是 UTF-8 JSON，直取字节。
     let raw_bytes = match resp.bytes().await {

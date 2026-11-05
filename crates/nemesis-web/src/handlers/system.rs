@@ -40,7 +40,7 @@ impl ModuleHandler for SystemHandler {
         match cmd {
             "version" => self.version(ctx),
             "status" => self.status(ctx),
-            // WS9/P22：workspace 写租约现状探针（无副作用——试取锁立即释
+            // /：workspace 写租约现状探针（无副作用——试取锁立即释
             // 放 + 读持有者 sidecar）。设置页网关卡片展示当前持有者。
             "lease_status" => Ok(Some(nemesis_agent::workspace_lease::WorkspaceLease::probe(
                 ctx.workspace.as_deref(),
@@ -56,7 +56,7 @@ impl ModuleHandler for SystemHandler {
                     .unwrap_or_else(|| serde_json::Value::Array(vec![]));
                 Ok(Some(serde_json::json!({ "features": features })))
             }
-            // L1（devtool-upgrade 阶段 6）：全量 WSAPI 命令注册表——
+            // （devtool-upgrade）：全量 WSAPI 命令注册表——
             // register_all 发布的 OnceLock 快照（module → 静态清单）。
             "commands" => {
                 let modules: Vec<serde_json::Value> = crate::handlers::commands_registry()
@@ -73,7 +73,7 @@ impl ModuleHandler for SystemHandler {
                     "total_cmds": total_cmds,
                 })))
             }
-            // 打开主目录（2026-10-29 侧边栏【打开主目录】按钮后端）：用系统
+            // 打开主目录（侧边栏【打开主目录】按钮后端）：用系统
             // 文件管理器打开 home 根目录，免用户满盘找 .nemesisbot 位置。路径
             // 完全由服务端 ctx 解析、不收客户端任何路径参数——比
             // projects.open_dir（注册表白名单闸）攻击面更低一档；信任级 =

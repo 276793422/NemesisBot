@@ -1,4 +1,4 @@
-//! L6++ G4（2026-09-08）— `projects.list/create/remove/rename/open_dir`
+//! （2026-09-08）— `projects.list/create/remove/rename/open_dir`
 //! WSAPI + 会话归属解析（resolve）基础设施。
 //!
 //! 依赖方向（关键）：nemesis-web 不能反向依赖 nemesisbot（项目注册表与
@@ -16,9 +16,7 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::r#loop::AgentLoop;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Bridge trait + 进程级槽
-// ---------------------------------------------------------------------------
 
 /// 项目条目的 web 侧投影（serde 序列化直接进 WSAPI 响应）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -31,7 +29,7 @@ pub struct ProjectInfo {
     pub created_at: String,
     /// 项目 loop 是否在运行。
     pub running: bool,
-    /// N7：项目工作区指令是否受信（`projects.trust` 可翻转；缺省 true）。
+    /// 项目工作区指令是否受信（`projects.trust` 可翻转；缺省 true）。
     pub instructions_trusted: bool,
 }
 
@@ -46,9 +44,9 @@ pub trait ProjectsBridge: Send + Sync {
     /// 移除项目（只解除分组——不删会话与项目目录内的任何文件）。
     /// 内部：写 registry + stop loop。返回被移除条目（前端提示用）。
     fn remove(&self, project_id: &str) -> Result<ProjectInfo, String>;
-    /// 重命名（path 不可改——Phase 1 语义）。
+    /// 重命名（path 不可改—— 语义）。
     fn rename(&self, project_id: &str, new_name: &str) -> Result<ProjectInfo, String>;
-    /// N7（2026-10-13）：翻转项目指令信任位（`projects.trust`）。实现方
+    /// 翻转项目指令信任位（`projects.trust`）。实现方
     /// 写注册表（read-modify-write，损坏 loud 拒绝）+ 热更新在跑 loop
     /// （下一轮 build_messages 生效）；未在跑 = 仅写盘，spawn 时按注册表
     /// 解析起点。
@@ -72,7 +70,7 @@ pub trait ProjectsBridge: Send + Sync {
     /// 的 project 字段（title 等保留；sidecar 已随 delete_chat_log 删除时
     /// best-effort no-op）。
     fn forget_session(&self, session_key: &str);
-    /// 模型配置热切联动（BUG 2026-09-21）：项目 loop 在 gateway 装配期一次
+    /// 模型配置热切联动（BUG）：项目 loop 在 gateway 装配期一次
     /// 性 spawn 且模型热切"不在范围"——主 loop 的 models.set_default 换了
     /// provider 后项目 loop 永远停在构建时的 provider（典型：先起网关后配
     /// LLM，项目模式永远 NullProvider「未配置模型」）。实现方用**当前盘上
@@ -121,16 +119,14 @@ pub(crate) fn set_projects_bridge_for_test(bridge: Option<Arc<dyn ProjectsBridge
 #[cfg(test)]
 pub(crate) static BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-// ---------------------------------------------------------------------------
 // resolve：这条会话该用哪个 AgentLoop（单一裁决点）
-// ---------------------------------------------------------------------------
 
-/// 归属解析：agent 会话臂（G1，`agents:{id}:session:{sid}` 形态——纯字符
+/// 归属解析：agent 会话臂（`agents:{id}:session:{sid}` 形态——纯字符
 /// 串解析，与项目臂键空间不相交，故在先）→ 自建 agent 常驻 loop（不存在/
 /// 不可会话诚实报错）；项目 bridge 归属命中 → 项目 loop（不可用诚实报错，
 /// 与 bus 路由的 send_unroutable_error 同语义）；无归属或 bridge 未装配
 /// → 主槽 `AppState.agent_loop`。调用方（chat/tools/approval/question/agent
-/// 各 handler）拿到的 Arc 直接替换原先的 `ctx.state.agent_loop.read().clone()`。
+/// 各 handler）拿到的 Arc 直接替换原先的 `ctx.state.agent_loop.read.clone`。
 pub fn resolve_session_loop(
     ctx: &RequestContext,
     session_key: &str,
@@ -167,9 +163,7 @@ pub fn project_root_for_session(session_key: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
-// ---------------------------------------------------------------------------
 // WSAPI handler（projects.list / create / remove / rename / open_dir）
-// ---------------------------------------------------------------------------
 
 /// `open_dir` 目标解析：**只允许打开注册表已登记的项目目录**（防任意路径
 /// 被诱导打开——打开能力虽然轻，入口也收在已知集合内）。未注册 / 目录已
@@ -201,7 +195,7 @@ pub(crate) fn resolve_open_target(
 /// `Command::arg` 直传不经 shell，路径含空格/特殊字符安全。
 /// 系统文件管理器打开目录（Windows explorer / macOS open / Linux
 /// xdg-open；CREATE_NO_WINDOW spawn 不等待）。pub(crate)：board 模块的
-/// `project.open_dir`（看板项目档案 P6/F10）同源复用，不复制第二份。
+/// `project.open_dir`（看板项目档案 /）同源复用，不复制第二份。
 pub(crate) fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     let spawn = || -> std::io::Result<std::process::Child> {
         #[cfg(target_os = "windows")]
@@ -302,7 +296,7 @@ impl ModuleHandler for ProjectsHandler {
     }
 }
 
-// AGT 覆盖率批次（2026-09-25）：ProjectsBridge 两个默认方法体（display_label
+// AGT 覆盖率批次：ProjectsBridge 两个默认方法体（display_label
 // pid 兜底 + reload_provider_all no-op）——既有 MockBridge 覆写了 display_label，
 // 默认体从未执行；本批用不覆写的最小桩直调。豁免（open_in_file_manager 弹窗
 // 纪律）见 agt_tests 头注。

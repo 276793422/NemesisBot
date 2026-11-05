@@ -77,9 +77,7 @@ fn agt_ctx(
     }
 }
 
-// ---------------------------------------------------------------------------
 // WebhookRateLimiter：窗口过期弹出臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_rate_limiter_window_expiry_pops_stale_hits() {
@@ -107,9 +105,7 @@ async fn agt_rate_limiter_window_expiry_pops_stale_hits() {
     assert_eq!(q.len(), 2, "旧时间戳必须被弹出");
 }
 
-// ---------------------------------------------------------------------------
 // clear_chat_password：持久化失败上抛臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_clear_chat_password_persist_error_surfaces() {
@@ -144,9 +140,7 @@ async fn agt_clear_chat_password_persist_error_surfaces() {
     assert!(store.has_password("agtdead01"), "失败清除不得动内存账本");
 }
 
-// ---------------------------------------------------------------------------
 // draft_* 缺参 / 错型 bail
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_draft_commands_missing_name_guards() {

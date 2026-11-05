@@ -117,9 +117,7 @@ impl ModuleHandler for ScannerHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn scanner_config_path(workspace: &str) -> PathBuf {
     // 委托 nemesis-path 唯一拼接点。
@@ -131,7 +129,7 @@ fn scanner_config_path(workspace: &str) -> PathBuf {
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 /// （Mutex 非重入，嵌套即死锁）；长窗口臂（install/update_db 的 spawn
 /// 任务）在 await 完成后调本入口权威重读——锁不横跨 await。
-/// （同类横扫七期补网，2026-10-13：本文件与 mcp.rs 同款漏网——helper 名
+/// （同类横扫七期补网，：本文件与 mcp.rs 同款漏网——helper 名
 /// 带 scanner 前缀，前六轮按 handler 清单的模式匹配落空。）
 fn update_scanner_config<T>(
     workspace: &str,
@@ -236,9 +234,7 @@ async fn mark_op_finished(name: &str) {
     ops.remove(name);
 }
 
-// ---------------------------------------------------------------------------
 // Command implementations
-// ---------------------------------------------------------------------------
 
 impl ScannerHandler {
     fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
@@ -753,9 +749,7 @@ impl ScannerHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Background operation helpers
-// ---------------------------------------------------------------------------
 
 /// Create a progress callback that publishes SSE events via the EventHub.
 fn make_download_progress_cb(
@@ -1032,13 +1026,13 @@ async fn update_db_inner(
     Ok(())
 }
 
-// Phase 3 批次 18（2026-08-25）：scanner.rs 纯逻辑子模块测试（私有项访问：
+// 批次 18：scanner.rs 纯逻辑子模块测试（私有项访问：
 // cmd_cancel 三态匹配 / install 与 update_db 早期错误臂 / mark_op 去重 /
 // format_bytes / 进度回调）。真下载与真扫描臂 → 结构性豁免（台账 §9.4）。
 #[cfg(test)]
 mod wweb2_tests;
 
-// AGT 覆盖率批次（2026-09-24）：第二子模块。Default/命令表接口面、
+// AGT 覆盖率批次：第二子模块。Default/命令表接口面、
 // cmd_enable 空 state 引擎的 PENDING 注入落盘、update_db_inner 的
 // data_dir 双臂（freshclam.exe 缺失即 Err，无网络）。真下载/真扫描臂仍豁免。
 #[cfg(test)]

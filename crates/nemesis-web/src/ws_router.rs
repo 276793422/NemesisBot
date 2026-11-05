@@ -11,9 +11,7 @@ use crate::websocket_handler::SendQueue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // ModuleHandler trait
-// ---------------------------------------------------------------------------
 
 /// A handler for a specific module's commands.
 ///
@@ -23,7 +21,7 @@ pub trait ModuleHandler: Send + Sync {
     /// The module name this handler responds to (e.g., "models", "channels").
     fn module_name(&self) -> &str;
 
-    /// L1（devtool-upgrade 阶段 6）：本模块的静态命令清单（单一真相源——
+    /// （devtool-upgrade）：本模块的静态命令清单（单一真相源——
     /// 与 `handle_cmd` 的 `match cmd` 臂保持一致，运行时 debug warn 纠偏）。
     /// 默认空（渐进补齐）；只列**可枚举的字面量命令**——chat.send 这类走
     /// message 帧不经 request dispatch 的、以及守卫臂动态前缀（如
@@ -44,9 +42,7 @@ pub trait ModuleHandler: Send + Sync {
     ) -> Result<Option<serde_json::Value>, String>;
 }
 
-// ---------------------------------------------------------------------------
 // Request context
-// ---------------------------------------------------------------------------
 
 /// Context provided to each handler invocation.
 #[derive(Clone)]
@@ -71,9 +67,7 @@ pub struct RequestContext {
     pub auth_method: AuthMethod,
 }
 
-// ---------------------------------------------------------------------------
 // WsRouter
-// ---------------------------------------------------------------------------
 
 /// Router that dispatches `type="request"` messages to the appropriate module handler.
 pub struct WsRouter {
@@ -94,7 +88,7 @@ impl WsRouter {
             .insert(handler.module_name().to_string(), handler);
     }
 
-    /// L1：全 router 的命令注册表（module → 静态清单）。按 module 名排序——
+    /// 全 router 的命令注册表（module → 静态清单）。按 module 名排序——
     /// 内部是 HashMap，迭代顺序不定；不排序则 OnceLock 快照与文档每次漂移。
     /// `system.commands` 与文档生成的单一数据源。
     pub fn commands_registry(&self) -> Vec<(String, Vec<&'static str>)> {
@@ -111,7 +105,7 @@ impl WsRouter {
     ///
     /// If no handler is found for the module, sends an error response.
     ///
-    /// Capability gate (2026-10-16 hardening): workflow-chat sessions get
+    /// Capability gate (hardening): workflow-chat sessions get
     /// **nothing** from this router. Their `workflow_chat` module frames are
     /// handled before the router in the WS message loop; every routed module
     /// here is dashboard scope (workflow create/delete/run, board, connectors,
@@ -154,7 +148,7 @@ impl WsRouter {
 
         let result = match self.handlers.get(&msg.module) {
             Some(handler) => {
-                // L1 渐进纠偏：debug 构建下 dispatch 到清单外命令时 warn
+                // 渐进纠偏：debug 构建下 dispatch 到清单外命令时 warn
                 //（清单与 match 臂漂移的运行时信号；release 零开销）。
                 #[cfg(debug_assertions)]
                 {
@@ -195,14 +189,12 @@ impl Default for WsRouter {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): dispatch
+// (, quality-hardening goal 冲刺 web 批次 2): dispatch
 // send-failure arm (dead SendQueue → warn, no panic).
 #[cfg(test)]
 mod s10b_tests;

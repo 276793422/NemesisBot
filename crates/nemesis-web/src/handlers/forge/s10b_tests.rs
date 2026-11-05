@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): forge handler narrow arms
+//! (quality-hardening goal 冲刺, web 批次 2): forge handler narrow arms
 //! not reached by `forge_extra_tests.rs` (which covers the main command
 //! flows), all offline:
 //!
@@ -115,16 +115,14 @@ async fn run(
     ForgeHandler::new().handle_cmd(cmd, data, ctx).await
 }
 
-// -----------------------------------------------------------------------
 // stats / reflections.list / reflect narrow arms
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stats_loads_existing_forge_config_file() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     write_main_config(ws, true);
-    // Existing config.forge.json → the load arm (not ForgeConfig::default()).
+    // Existing config.forge.json → the load arm (not ForgeConfig::default).
     std::fs::create_dir_all(ws.join("config")).unwrap();
     std::fs::write(
         ws.join("config/config.forge.json"),
@@ -157,7 +155,7 @@ async fn reflections_list_skips_directories() {
 async fn reflect_reports_write_failure_but_returns_analysis() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
-    // Experiences exist so reflect() proceeds to the report write…
+    // Experiences exist so reflect proceeds to the report write…
     let exp_dir = ws.join("forge/experiences");
     std::fs::create_dir_all(&exp_dir).unwrap();
     std::fs::write(
@@ -180,9 +178,7 @@ async fn reflect_reports_write_failure_but_returns_analysis() {
     assert!(msg.contains("报告写入失败"), "got: {}", msg);
 }
 
-// -----------------------------------------------------------------------
 // config.save runtime arms + garbage sub-arms
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_save_enable_with_forge_instance_triggers_runtime_start() {
@@ -254,9 +250,7 @@ async fn config_save_with_garbage_forge_config_silently_recreates() {
     );
 }
 
-// -----------------------------------------------------------------------
 // learning.toggle error arms
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn learning_toggle_fails_when_forge_config_is_a_directory() {
@@ -271,7 +265,7 @@ async fn learning_toggle_fails_when_forge_config_is_a_directory() {
     )
     .await
     .unwrap_err();
-    // 2026-10-13 闭包事务收口：读/解析错误统一走 update_json_file 的
+    // 闭包事务收口：读/解析错误统一走 update_json_file 的
     // 「read/parse {path}: {e}」形态——fail-closed 与「点名肇事文件」语义
     // 不变，前缀词随统一错误面收敛。
     assert!(err.contains("read "), "got: {}", err);
@@ -296,9 +290,7 @@ async fn learning_toggle_fails_when_forge_config_unparseable() {
     assert!(err.contains("config.forge.json"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // Direct helper coverage
-// -----------------------------------------------------------------------
 
 #[test]
 fn compute_experience_stats_unreadable_file_returns_zeros() {

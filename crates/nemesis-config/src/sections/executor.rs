@@ -5,13 +5,13 @@ use super::*;
 /// Executor separation + sandbox switch (Layer 1 / Layer 2). See
 /// `executor-separation`.
 ///
-/// `enabled`: Layer 1 — run execution-class tools (exec/file/grep/git/...) in
+/// - `enabled`: Layer 1 — run execution-class tools (exec/file/grep/git/...) in
 ///   a separate child process (per-call spawn). `false` = today's in-process
 ///   behavior (safe fallback).
-/// `sandbox`: Layer 2 — wrap the child spawn with Sandboxie `Start.exe /box:`.
+/// - `sandbox`: Layer 2 — wrap the child spawn with Sandboxie `Start.exe /box:`.
 ///   Requires `enabled = true` AND Sandboxie installed (next phase). The gateway
 ///   probes for Start.exe and falls back if absent.
-/// `allow_network`: Sandboxie box-level network switch — writes
+/// - `allow_network`: Sandboxie box-level network switch — writes
 ///   `AllowNetworkAccess=y/n` into Sandboxie.ini for the NemesisBox box. Applies
 ///   to every process in the box (the executor child AND any program the user
 ///   launches from the in-box explorer). Independent of `enabled`/`sandbox`.
@@ -19,7 +19,7 @@ use super::*;
 ///   /reload`; already-running box processes keep their old network state until
 ///   restarted (Sandboxie's WFP callout reads a per-process `BlockInternet`
 ///   cache that reload does not refresh).
-/// `strict`（严格模式）: fail-closed 闸门 — `sandbox=true` 被要求但本机
+/// - `strict`（严格模式）: fail-closed 闸门 — `sandbox=true` 被要求但本机
 ///   沙盒后端不可用（Windows=Sandboxie 未就绪；Linux=landlock/bwrap 均不可用；
 ///   裁剪构建=`sandbox` feature 被裁掉）时**拒绝执行高危工具**并明确报错，
 ///   而非默认的 warn + 无盒降级（fail-open）。注意 Partial 强制（后端可用但

@@ -1,8 +1,8 @@
-//! P4（能力扩展 WS8）：`chat.queue_status` WSAPI 契约测试。
+//! （能力扩展）：`chat.queue_status` WSAPI 契约测试。
 //!
 //! 契约面：真实 AgentLoop + 预置两条队列的条目 → 响应字段与计数逐项断言
 //! （steer/followUp/capacity/busy/mode/session_key 回显）；空队列零值形态；
-//! 缺 session_id 的守卫臂；commands() 清单登记（debug 构建漂移 warn 兜底）。
+//! 缺 session_id 的守卫臂；commands 清单登记（debug 构建漂移 warn 兜底）。
 
 use super::*;
 use crate::api_handlers::AppState;
@@ -94,7 +94,7 @@ fn make_ctx_with_loop(al: Option<Arc<AgentLoop>>) -> RequestContext {
     }
 }
 
-/// handler 侧 session_key 构造规则的同构镜像（与 chat.rs E6 顶部一致）。
+/// handler 侧 session_key 构造规则的同构镜像（与 chat.rs 顶部一致）。
 fn session_key_of(sid: &str) -> String {
     format!(
         "agent:main:session:{}",
@@ -202,11 +202,11 @@ async fn queue_status_missing_session_id_bails() {
 
 #[test]
 fn queue_status_registered_in_commands_list() {
-    // L1 注册表纪律：清单外命令在 debug 构建会 warn 漂移——契约测试兜底。
+    // 注册表纪律：清单外命令在 debug 构建会 warn 漂移——契约测试兜底。
     assert!(ChatHandler.commands().contains(&"queue_status"));
 }
 
-// —— BUG-HUNT R6（2026-10-23）：chat.clear / chat.compact 的会话闸 ——
+// chat.clear / chat.compact 的会话闸 ——
 
 /// busy 诚实拒绝（compact/clear 同闸，拒绝路径零副作用）；释放后 clear
 /// 放行直达 clear_session 尾巴（jsonl 截断）。

@@ -1,4 +1,4 @@
-//! B11（2026-10-18 snooze）：sessions.snooze / sessions.unsnooze 两命令 +
+//! （2026-10-18 snooze）：sessions.snooze / sessions.unsnooze 两命令 +
 //! 到期唤醒 sweeper 的 handler 层测试。
 //!
 //! home 单例经 session_bindings::tests 同款 HomeGuard 重定向到 tempdir
@@ -206,7 +206,7 @@ async fn b11_snooze_unsnooze_roundtrip() {
     .unwrap()
     .unwrap();
     // 归一只换表示不换时刻：输出按本地时区 RFC3339（UTC runner 上是 +00:00 形态），
-    // 断言同一时刻而非同一字符串——字符串相等会把断言钉死在开发机时区上（CI 实录）。
+    // 断言同一时刻而非同一字符串——字符串相等会把断言钉死在开发机时区上（CI）。
     assert_eq!(
         chrono::DateTime::parse_from_rfc3339(
             out["snoozed_until"].as_str().expect("snoozed_until 缺失")
@@ -291,7 +291,7 @@ async fn b11_wake_due_sessions_injects_recovery_line() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-/// BUG-HUNT R9：唤醒恢复行必须落进 chat.sync 读侧的桶——chat_event_log
+/// 唤醒恢复行必须落进 chat.sync 读侧的桶——chat_event_log
 /// record 键空间契约是完整会话键 `agent:main:session:{sid}`（send_to_session
 /// 「记录键优先会话键（跨连接稳定）」、record_tool「键取 session_key，与
 /// send_to_session 的 record 同域」），chat.sync 按同构变换重建桶查。此前
@@ -325,7 +325,7 @@ async fn b11_wake_recovery_line_lands_in_chat_sync_bucket() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-/// BUG-20261031-231 回归锁：rewind/redo 的会话 jsonl 重写窗口内，到期
+/// 回归锁：rewind/redo 的会话 jsonl 重写窗口内，到期
 /// 唤醒 sweeper 必须整条目跳过（标记保留，下轮重试）——旧行为先摘标记
 /// 再落唤醒行，行被窗口内截断吞掉后唤醒留痕永久丢失。
 #[tokio::test]

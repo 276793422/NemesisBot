@@ -1,4 +1,4 @@
-//! P21（2026-09-25 能力扩展 WS1）：`sandbox.denials.list` 查询面测试。
+//! （2026-09-25 能力扩展）：`sandbox.denials.list` 查询面测试。
 //!
 //! 覆盖：空账（无文件）→ 空列表不炸；种子账 → 记录回传（六字段齐全）；
 //! limit 缺省/截断/上限；最新在前排序；ledger 路径回显。台账写入侧语义由
@@ -15,7 +15,7 @@ use std::time::Instant;
 /// 与 tests.rs / agt_tests.rs 同款 AppState 脚手架（本文件自包含——兄弟测试
 /// 模块的 fn 不互见，照抄最小化模板）。
 fn denials_ctx(dir: &tempfile::TempDir) -> RequestContext {
-    // F9 契约对齐（2026-09-26 复查）：denials.list 读 ctx.workspace（gateway
+    // 契约对齐（复查）：denials.list 读 ctx.workspace（gateway
     // 注入的真实工作区，台账在其 logs/ 下）。脚手架此前把 workspace 字段也
     // 填 tmp 根、台账却种在 <tmp>/workspace/logs/——镜像的是修复前硬编码
     // `home/workspace` 的旧语义，契约翻转后查询落空。现按生产布局拆开：

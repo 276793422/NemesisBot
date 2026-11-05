@@ -1,9 +1,9 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): manager-dependent arms of
+//! (quality-hardening goal 冲刺, web 批次 2): manager-dependent arms of
 //! the memory handler + offline-safe model install + helper edge cases.
 //!
 //! Existing coverage (`tests.rs` + `memory_extra_tests.rs`) runs every command
 //! with `memory_manager: None` in the AppState, so all `ctx.state
-//! .memory_manager.as_ref()` arms (runtime vector disable, init rollback,
+//! .memory_manager.as_ref` arms (runtime vector disable, init rollback,
 //! semantic search/store) were never executed. This module fills exactly
 //! those arms, plus:
 //! - `model.install` success arm (offline via `local_model_path` — never
@@ -25,9 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Helpers
-// -----------------------------------------------------------------------
 
 /// AppState builder with an optional injected MemoryManager rooted at
 /// `data_dir` (the manager's own tree — `<ws>/memory_vector` in production).
@@ -123,9 +121,7 @@ async fn run(
     MemoryHandler.handle_cmd(cmd, Some(data), ctx).await
 }
 
-// -----------------------------------------------------------------------
 // config.set runtime-control arms (manager present)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_set_main_disabled_with_manager_turns_vector_off() {
@@ -286,9 +282,7 @@ async fn config_set_sub_disabled_with_manager_disables_runtime_vector() {
     assert_eq!(after["enabled"], serde_json::json!(false));
 }
 
-// -----------------------------------------------------------------------
 // entries.search / entries.store semantic arms (manager + vector flag on)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn entries_search_with_enabled_manager_reports_semantic() {
@@ -349,9 +343,7 @@ async fn entries_store_raw_append_fails_when_dir_path_is_a_file() {
     assert!(err.contains("failed to create dir"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // entries.list / entries.search JSONL parsing edges
-// -----------------------------------------------------------------------
 
 fn write_vector_jsonl(workspace: &std::path::Path, body: &str) {
     let path = vector_store_jsonl_path(&workspace.to_string_lossy()).to_path_buf();
@@ -407,9 +399,7 @@ async fn entries_search_keyword_skips_blank_and_contentless_lines() {
     assert_eq!(out["results"][0]["id"], serde_json::json!("y"));
 }
 
-// -----------------------------------------------------------------------
 // model.install: lock contention + offline success arm
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn model_install_rejects_when_tier_already_locked() {
@@ -484,9 +474,7 @@ async fn model_install_succeeds_offline_via_local_model_path() {
     assert!(!install_locks().lock().unwrap().contains("small"));
 }
 
-// -----------------------------------------------------------------------
 // stats: memory/ dir counting
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stats_counts_files_under_memory_dir() {
@@ -504,9 +492,7 @@ async fn stats_counts_files_under_memory_dir() {
     assert_eq!(out["memory_entries"], serde_json::json!(2));
 }
 
-// -----------------------------------------------------------------------
 // Direct helper edge cases
-// -----------------------------------------------------------------------
 
 #[test]
 fn count_episodic_flat_file_counts_as_session_and_episode() {
@@ -584,9 +570,7 @@ fn migrate_legacy_fails_cleanly_when_target_parent_uncreatable() {
     assert!(!vector_store_jsonl_path(&dir.path().to_string_lossy()).exists());
 }
 
-// -----------------------------------------------------------------------
-// 条目管理（自动记忆注入 TAB，2026-08-28）：entries.get / delete / update
-// -----------------------------------------------------------------------
+// 条目管理（自动记忆注入 TAB）：entries.get / delete / update
 
 #[tokio::test]
 async fn entries_get_returns_full_untruncated_content_offline() {

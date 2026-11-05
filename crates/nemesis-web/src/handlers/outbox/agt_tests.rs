@@ -1,4 +1,4 @@
-//! outbox.rs AGT 覆率批次（2026-09-25）。CD6 死信面 handler 此前无任何测试
+//! outbox.rs AGT 覆率批次（2026-09-25）。 死信面 handler 此前无任何测试
 //! 模块，本批补全确定性臂：
 //! - dead_list：只列 dead 态条目（pending 不混入），entry_json 字段透传
 //! - dead_replay：dead → pending 全链（attempts / 退避窗口 / 错误清零、

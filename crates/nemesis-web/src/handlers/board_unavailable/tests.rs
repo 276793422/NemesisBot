@@ -145,7 +145,7 @@ fn unavailable_cfg_defaults_on_missing_home() {
     assert_eq!(c, default_cfg());
 }
 
-// ---- 中断档案 ----
+// 中断档案 ----
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!(

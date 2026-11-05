@@ -29,9 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // 夹具
-// ---------------------------------------------------------------------------
 
 struct AgtNoopProvider;
 
@@ -58,7 +56,7 @@ impl LlmProvider for AgtNoopProvider {
     }
 }
 
-/// start() 成功臂的最小 service 替身（同 tests.rs 的 Mock 形态）。
+/// start 成功臂的最小 service 替身（同 tests.rs 的 Mock 形态）。
 struct AgtMockService {
     running: AtomicBool,
 }
@@ -175,9 +173,7 @@ fn agt_live_loop() -> Arc<AgentLoop> {
     ))
 }
 
-// ---------------------------------------------------------------------------
 // retry_status：Err（无 loop）+ Ok/None（有 loop 无重试中）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_retry_status_unavailable_then_ok_no_retry() {
@@ -217,9 +213,7 @@ async fn agt_retry_status_unavailable_then_ok_no_retry() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // cancel / rewind / checkpoints 的 session_id 分派臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_session_scoped_cancel_rewind_checkpoints() {
@@ -276,9 +270,7 @@ async fn agt_session_scoped_cancel_rewind_checkpoints() {
     assert!(out["checkpoints"].as_array().unwrap().is_empty(), "{out}");
 }
 
-// ---------------------------------------------------------------------------
 // start：bridge 热切联动 + update_model_info 的 config 缺失臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 持 BRIDGE_TEST_LOCK 串行化共享 bridge 槽（测试纪律，故意跨 await）

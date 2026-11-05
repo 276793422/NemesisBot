@@ -127,9 +127,7 @@ fn test_nonexistent_workspace_errors() {
     assert!(err.contains("workspace not found"), "{}", err);
 }
 
-// ---------------------------------------------------------------------------
 // handle_cmd 层（RequestContext 直构；build_state 形态同 memory/s10b_tests）
-// ---------------------------------------------------------------------------
 
 fn build_state(ws: &str) -> AppState {
     AppState {
@@ -252,9 +250,7 @@ fn test_module_name() {
     assert_eq!(FsHandler.module_name(), "fs");
 }
 
-// ---------------------------------------------------------------------------
-// M4：fs.tree 目录树（懒展开 / 忽略表 / 500 上限 / 越权拒绝）
-// ---------------------------------------------------------------------------
+// fs.tree 目录树（懒展开 / 忽略表 / 500 上限 / 越权拒绝）
 
 fn tree(ws: &TempDir, path: &str, depth: u64) -> serde_json::Value {
     let h = FsHandler::new();
@@ -332,7 +328,7 @@ fn tree_lazy_expand_subdir() {
     assert_eq!(names, vec!["main.rs", "util.rs"], "{v}");
 }
 
-/// 越权/不存在诚实拒绝：`..` 逃逸、绝对路径（含盘符形态——F7：join 遇
+/// 越权/不存在诚实拒绝：`..` 逃逸、绝对路径（含盘符形态——：join 遇
 /// 绝对路径替换整个 root，显式拒绝）、缺失目录。
 #[test]
 fn tree_rejects_traversal_and_missing() {
@@ -354,7 +350,7 @@ fn tree_rejects_traversal_and_missing() {
     assert!(err.contains("workspace not found"), "{err}");
 }
 
-/// F7（2026-10-14）回归锁：绝对路径（含 Windows 盘符形态）显式拒绝——
+/// 回归锁：绝对路径（含 Windows 盘符形态）显式拒绝——
 /// `PathBuf::join` 遇绝对路径替换整个 root，此前只拒 `..` 时
 /// `fs.tree {path: "C:/Windows"}` 可列举任意目录。盘符形态是 Windows
 /// 语义（Unix 上归一化剥前导 `/` 后无绝对形态存活，闸不可达）。
@@ -419,9 +415,7 @@ async fn tree_handle_cmd_defaults() {
     assert_eq!(out["entries"].as_array().unwrap().len(), 2);
 }
 
-// ---------------------------------------------------------------------------
 // fs.open：聊天文件链接打开（决策纯函数面——spawn 臂不进单测）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn openable_extension_whitelist() {
@@ -457,10 +451,10 @@ fn path_contains_boundary() {
     }
 }
 
-/// BUG-20261029-173 回归锁：target 含多字节字符且字节总长超过 root 时，
-/// 旧实现 `t[..r.len()]` 字节切片会切在多字节字符中间 → str 切片 panic
+/// 回归锁：target 含多字节字符且字节总长超过 root 时，
+/// 旧实现 `t[..r.len]` 字节切片会切在多字节字符中间 → str 切片 panic
 /// （`fs.open` 带模型输出的 CJK 绝对路径即可触发，WS handler 任务崩）。
-/// 修复 = `str::get(..r.len())` 边界安全切片，非边界诚实返回 false。
+/// 修复 = `str::get(..r.len)` 边界安全切片，非边界诚实返回 false。
 #[test]
 fn path_contains_multibyte_target_no_panic() {
     if cfg!(windows) {
@@ -593,7 +587,7 @@ async fn open_handle_cmd_error_paths() {
     assert!(err.contains("越出 workspace"), "{err}");
 }
 
-// ---- 存在性回退（2026-10-19 用户设计：CJK 引导语粘连剥前缀找真实文件）----
+// 存在性回退（用户设计：CJK 引导语粘连剥前缀找真实文件）----
 
 /// 相对路径头粘连：「见docs/总结.md」→ 剥引导语 → docs/总结.md 命中。
 #[test]

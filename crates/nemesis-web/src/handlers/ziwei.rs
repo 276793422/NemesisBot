@@ -1,4 +1,4 @@
-//! 紫微系统 WSAPI handler（总控 §1/§8/§9；T0.5 空壳 + 门关拒绝面）。
+//! 紫微系统 WSAPI handler（总控 §1/§8/§9；.5 空壳 + 门关拒绝面）。
 //!
 //! 命令清单（l1 注册表全量登记）：
 //! - 会话/资产面：`ziwei.list` / `show` / `attach` / `detach` / `invoke` /
@@ -11,9 +11,9 @@
 //! 1. cargo feature `ziwei`（关 = 本 handler 整体不注册，命令 unknown）；
 //! 2. config `ziwei.enabled`（默认 false = 全部命令诚实拒绝）。
 //!
-//! 里程碑实装面：list/show/status/remove = M0；attach/detach = M1；
-//! invoke（poll 一次性快照）/refresh（动态工具重注册钩子）= M2；
-//! setup.* = M3。refresh 经 `set_refresh_hook` 桥（依赖方向：nemesis-web
+//! 里程碑实装面：list/show/status/remove = ；attach/detach = ；
+//! invoke（poll 一次性快照）/refresh（动态工具重注册钩子）= ；
+//! setup.* = 。refresh 经 `set_refresh_hook` 桥（依赖方向：nemesis-web
 //! 不依赖 nemesisbot，钩子由 gateway 装配时安装）。
 
 use std::sync::{Arc, OnceLock};
@@ -40,7 +40,7 @@ pub(crate) fn run_refresh_hook(workspace: &std::path::Path) -> Option<usize> {
 }
 
 /// 一次性 poll 快照读（WSAPI `ziwei.invoke` / CLI `ziwei_invoke` 同源；
-/// call_fn/hook_capture 诚实报 M4）。
+/// call_fn/hook_capture 诚实报）。
 pub(crate) async fn invoke_poll_tool(
     manager: &Arc<nemesis_ziwei::session::SessionManager>,
     store: &ProfileStore,
@@ -97,7 +97,7 @@ impl ZiweiHandler {
             .ok_or_else(|| "workspace 未知（gateway 未装配）".to_string())
     }
 
-    /// data 里可选 `struct_addrs: {"Name": <u64>}`（M2 显式注入；M3 起锚解析）。
+    /// data 里可选 `struct_addrs: {"Name": <u64>}`（显式注入； 起锚解析）。
     fn struct_addrs(data: Option<&serde_json::Value>) -> std::collections::HashMap<String, u64> {
         let mut out = std::collections::HashMap::new();
         if let Some(map) = data
@@ -113,7 +113,7 @@ impl ZiweiHandler {
         out
     }
 
-    /// M5 verify/recover 的目标 exe 路径解析：`data.exe` 显式优先，缺省 =
+    /// verify/recover 的目标 exe 路径解析：`data.exe` 显式优先，缺省 =
     /// profile.target.exe_path_hint；两者皆缺 = 诚实报错。
     fn resolve_exe(
         data: &serde_json::Value,
@@ -133,7 +133,7 @@ impl ZiweiHandler {
     }
 }
 
-/// 急停活性闸（同族先例：board 的 `refuse_dispatch_when_estopped`，EST-01/02
+/// 急停活性闸（同族board 的 `refuse_dispatch_when_estopped`，EST-01/02
 /// 横扫加固）：estop 生效中拒绝紫微活性面（attach 注入 / invoke 远程调用 /
 /// resolve 活体扫描）。estop 卸载（nemesis-ziwei estop_hook）只在触发上升沿
 /// 执行一次——闸住 estop 期间新建会话 = 堵「estop 中 attach 的会话永不被
@@ -208,7 +208,7 @@ impl ModuleHandler for ZiweiHandler {
         // invoke 远程调用 / resolve 活体扫描）。紫微的 estop 卸载只在触发
         // 上升沿跑一次（nemesis-ziwei estop_hook）——不闸 attach 的话，
         // estop 期间新建的会话在下降沿前永不被卸载；estop 期间向目标进程
-        // 注入 payload 也直接违背急停冻结语义。同族先例：board 的
+        // 注入 payload 也直接违背急停冻结语义。同族board 的
         // refuse_dispatch_when_estopped（EST-01/02 横扫加固）。
         // 放行面：detach（降险动作，与 estop 卸载同向）、list/show/status/
         // remove/verify/recover*/setup.*（离线本地件）、refresh（agent 侧
@@ -218,7 +218,7 @@ impl ModuleHandler for ZiweiHandler {
         }
 
         match cmd {
-            // ── 只读面（数据层 T0.4 即 backing）──
+            // ── 只读面（数据层 .4 即 backing）──
             "list" => {
                 let store = ProfileStore::new(&Self::workspace(ctx)?);
                 let profiles = store.list().map_err(|e| e.to_string())?;
@@ -242,7 +242,7 @@ impl ModuleHandler for ZiweiHandler {
                 })))
             }
             "status" => {
-                // 会话面（M1 实装）：SessionManager 全局槽快照；未装配 = 空表诚实。
+                // 会话面（实装）：SessionManager 全局槽快照；未装配 = 空表诚实。
                 let sessions = nemesis_ziwei::session::global()
                     .map(|m| m.list_sessions())
                     .unwrap_or_default();
@@ -269,7 +269,7 @@ impl ModuleHandler for ZiweiHandler {
                 tracing::info!("[ziwei] profile {} 已删除（WSAPI）", id);
                 Ok(Some(serde_json::json!({ "removed": id })))
             }
-            // ── 运行期面（M1：attach/detach；M2：invoke/refresh）──
+            // ── 运行期面（attach/detach；：invoke/refresh）──
             "attach" => {
                 let id = data
                     .as_ref()
@@ -311,7 +311,7 @@ impl ModuleHandler for ZiweiHandler {
                 Ok(Some(serde_json::json!({ "detached": id, "message": msg })))
             }
             "invoke" => {
-                // M2：poll_report 一次性快照；M4 起 call_fn / hook_capture
+                // poll_report 一次性快照； 起 call_fn / hook_capture
                 // 同口 invoke（统一实现在 nemesis_ziwei::runtime——与 agent
                 // 子工具桥同源，两入口语义恒一致）。
                 let obj = data.as_ref().ok_or("缺 data")?;
@@ -400,7 +400,7 @@ impl ModuleHandler for ZiweiHandler {
                 }
             }
             "resolve" => {
-                // M4：函数锚批量解析（byte_pattern 活体扫描 / rva 直算）→
+                // 函数锚批量解析（byte_pattern 活体扫描 / rva 直算）→
                 // 会话 fn_addrs；报告含 notes 诚实清单。
                 let id = data
                     .as_ref()
@@ -421,14 +421,14 @@ impl ModuleHandler for ZiweiHandler {
                 }
             }
             "refresh" => {
-                // M2：动态工具重注册（profile 新增/编辑后；钩子由 gateway 安装）。
+                // 动态工具重注册（profile 新增/编辑后；钩子由 gateway 安装）。
                 let hook = REFRESH_HOOK
                     .get()
                     .ok_or("动态工具刷新钩子未装配（gateway 未启用 ziwei）")?;
                 let n = hook(&Self::workspace(ctx)?);
                 Ok(Some(serde_json::json!({ "registered": n })))
             }
-            // ── 验证链 / 找回（M5 实装：T5.1/T5.2/T5.3）──
+            // ── 验证链 / 找回（实装：.1/.2/.3）──
             "verify" => {
                 let obj = data.as_ref().ok_or("缺 data")?;
                 let id = obj
@@ -487,7 +487,7 @@ impl ModuleHandler for ZiweiHandler {
                     nemesis_ziwei::verify::recover_confirm(&store, &workspace, id, &exe, &accept)?;
                 Ok(Some(out))
             }
-            // ── 配置期向导（M3 实装；SetupManager 全局槽惰性自建）──
+            // ── 配置期向导（实装；SetupManager 全局槽惰性自建）──
             "setup.select_target" => {
                 let pid = data
                     .as_ref()

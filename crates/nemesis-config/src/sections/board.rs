@@ -7,11 +7,11 @@ use super::agents::default_worker_max_inflight;
 
 /// 停车场兜底派发档位（`board.dispatch_fallback`；用户裁决 ：
 /// 角色缺失是集群常态，默认不停车但仍保角色纪律）。三档语义：
-/// `Off` = 无人匹配即诚实停车等节点（旧 false）。
-/// `Role`（默认）= 松弛阶梯走到「丢职能」为止（②保职能丢标签 →
+/// - `Off` = 无人匹配即诚实停车等节点（旧 false）。
+/// - `Role`（默认）= 松弛阶梯走到「丢职能」为止（②保职能丢标签 →
 ///   ③丢职能保角色标签）：职能与随行的 tier 门槛放开，但 worker/coordinator
 ///   **角色纪律保留**（架构单可降级给开发，不可降级给 coordinator）。
-/// `Full` = 阶梯全开 ②③④，角色也放开（旧 true）。
+/// - `Full` = 阶梯全开 ②③④，角色也放开（旧 true）。
 ///
 /// serde 兼容：旧配置布尔 false→`Off`、true→`Full`；字符串 `off`/`role`/
 /// `full` 大小写不敏感；序列化恒为小写字符串。缺省键 = `Role`。

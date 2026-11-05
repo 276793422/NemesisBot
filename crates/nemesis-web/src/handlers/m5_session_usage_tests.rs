@@ -1,4 +1,4 @@
-//! M5（2026-09-05）：会话级用量 WSAPI 测试——`logs.session_usage`、
+//! （2026-09-05）：会话级用量 WSAPI 测试——`logs.session_usage`、
 //! `backfill_session_usage`（logs.session_list / sessions.list 共用回填）
 //! 与 `chat.context_status` 三条链路。
 
@@ -14,9 +14,7 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness
-// ---------------------------------------------------------------------------
 
 /// 与 unit_tests / m5_session_usage_tests（nemesis-data）同款唯一 db 路径
 /// （pid + 进程内单调计数器；时间戳在 Windows 上有同窗口碰撞前科）。
@@ -134,9 +132,7 @@ fn log(session_key: &str, input: i64, cache_read: i64, output: i64, cost: f64) -
     }
 }
 
-// ---------------------------------------------------------------------------
 // logs.session_usage
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn session_usage_happy_path() {
@@ -214,9 +210,7 @@ async fn session_usage_requires_identifier() {
     assert!(err.contains("session_id or session_key is required"));
 }
 
-// ---------------------------------------------------------------------------
 // backfill_session_usage
-// ---------------------------------------------------------------------------
 
 #[test]
 fn backfill_fills_tokens_and_cost_only_for_keyed_entries() {
@@ -250,9 +244,7 @@ fn backfill_without_store_is_noop() {
     assert!(sessions[0].get("tokens").is_none(), "无 store = 静默跳过");
 }
 
-// ---------------------------------------------------------------------------
 // chat.context_status
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn context_status_requires_agent_loop() {
@@ -298,7 +290,7 @@ async fn context_status_returns_snapshot() {
     assert!(status["used_tokens"].as_u64().unwrap() > 0);
     assert_eq!(status["window"], 128_000, "无 config/价目表 → 实例默认");
     assert!(status["pct"].as_u64().unwrap() <= 100);
-    // L10-量测（改进项三期）：tool defs 字节块随行（AgentLoop 单一真相源
+    // 量测（改进项三期）：tool defs 字节块随行（AgentLoop 单一真相源
     // 量测；测试 loop 无注册工具 → 0 工具、空数组序列化恰 2 字节）。
     let td = &r["tool_defs"];
     assert!(td.is_object(), "tool_defs 块必须随行");

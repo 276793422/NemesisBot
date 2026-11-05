@@ -1,4 +1,4 @@
-//! Tests for `AutomationsHandler`（B12）——匹配核纯函数 / 注册表文件
+//! Tests for `AutomationsHandler`——匹配核纯函数 / 注册表文件
 //! round-trip / WSAPI dispatch 链路。pump 全链路（broadcast → engine 观察
 //! 执行效果）不铺：需要注册 workflow 才能观测，纯件已覆盖匹配与冷却；
 //! spawn_event_pump 的 Closed 退出用冒烟测试钉住。
@@ -9,9 +9,7 @@
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // pattern_matches / validate_pattern
-// ---------------------------------------------------------------------------
 
 #[test]
 fn pattern_matches_exact_and_wildcard() {
@@ -37,9 +35,7 @@ fn validate_pattern_rejects_bad_shapes() {
     assert!(validate_pattern("a*").is_ok(), "结尾星号合法");
 }
 
-// ---------------------------------------------------------------------------
 // 冷却闸 + select_firing
-// ---------------------------------------------------------------------------
 
 fn trigger(id: &str, pattern: &str, cooldown_secs: u64, enabled: bool) -> AutomationTrigger {
     AutomationTrigger {
@@ -102,9 +98,7 @@ fn select_firing_no_match_is_free() {
     assert!(select_firing(&[], "exec", &mut gate, Instant::now()).is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // 注册表文件 round-trip
-// ---------------------------------------------------------------------------
 
 #[test]
 fn registry_round_trip_and_corrupt_file() {
@@ -137,9 +131,7 @@ fn registry_round_trip_and_corrupt_file() {
     assert!(err.contains("解析失败"), "got: {err}");
 }
 
-// ---------------------------------------------------------------------------
 // Dispatch wiring（ctx.workspace 路径 + 缓存同步）
-// ---------------------------------------------------------------------------
 
 /// Same AppState scaffold as hooks tests（agent_loop None etc.）。
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -307,9 +299,7 @@ async fn dispatch_set_list_remove_roundtrip() {
     assert!(h.handle_cmd("bogus", None, &ctx).await.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // Pump smoke：sender 全 drop → 任务退出（gateway 收尾语义）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn pump_exits_when_sender_dropped() {

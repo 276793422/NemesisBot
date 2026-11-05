@@ -1,4 +1,4 @@
-//! L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键（去重索引）。
+//! （改进项三期 2026-11-02）：chat.send 写入侧幂等键（去重索引）。
 //!
 //! 同一消息因网络重试 / 多端并发重复提交：`(session_key, client_msg_id)`
 //! 命中去重索引 → **不重复入环、不二次触发 agent**（server.rs 入站咽喉点
@@ -14,7 +14,7 @@
 //! 会话表沿用 chat_event_log 同款 FIFO 逐出纪律（[`MAX_SESSIONS`] 上限，
 //! victim = 最老插入的非本会话条目；被逐会话只是失去幂等窗口）。
 //!
-//! 纯图消息（content 空带 media，P8 语义不入环不回声）：幂等键照常登记，
+//! 纯图消息（content 空带 media， 语义不入环不回声）：幂等键照常登记，
 //! seq 记 0 标记「无环行」——重复提交仍被去重短路，回声跳过。
 
 use std::collections::{HashMap, VecDeque};

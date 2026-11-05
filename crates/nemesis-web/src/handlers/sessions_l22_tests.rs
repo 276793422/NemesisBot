@@ -1,4 +1,4 @@
-//! L22（2026-11-03 snooze 排队 + 跨设备移动 + session PR 最小形态）：
+//! （2026-11-03 snooze 排队 + 跨设备移动 + session PR 最小形态）：
 //! sessions handler 层测试。
 //!
 //! - import/changed_files 新动词（守卫链 / VERBATIM roundtrip / 导出→删→
@@ -147,9 +147,7 @@ fn reset_hook() {
     set_snooze_replay_hook(None);
 }
 
-// ---------------------------------------------------------------------------
 // import：守卫链 + VERBATIM roundtrip + 冲突拒绝
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn l22_import_guards() {
@@ -319,9 +317,7 @@ async fn l22_export_delete_import_roundtrip() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-// ---------------------------------------------------------------------------
 // changed_files：session PR 最小形态（file_changes 聚合投影）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn l22_changed_files_aggregates_deduped() {
@@ -385,9 +381,7 @@ async fn l22_changed_files_aggregates_deduped() {
     nemesis_agent::chat_log::delete_chat_log(&key2);
 }
 
-// ---------------------------------------------------------------------------
 // snooze 重放 hook：unsnooze delivered / wake 到期重放 / 无 hook 滞留保留
-// ---------------------------------------------------------------------------
 
 /// 无 hook（单测/未装配）= 0 投递——pending 保留在盘的诚实契约（调用方
 /// 据此不动文件，sweeper 重试）。
@@ -503,9 +497,7 @@ async fn l22_wake_without_hook_retains_pending() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-// ---------------------------------------------------------------------------
 // drain_orphan_pending：滞留兜底四臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn l22_drain_orphan_four_arms() {
@@ -581,9 +573,7 @@ async fn l22_drain_orphan_without_hook_retains() {
     nemesis_agent::chat_log::delete_chat_log(&live_key);
 }
 
-// ---------------------------------------------------------------------------
 // list：pendingCount 投影
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn l22_list_projects_pending_count() {

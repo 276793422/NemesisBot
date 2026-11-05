@@ -222,7 +222,7 @@ impl PluginsHandler {
         eval_monitor["capabilities"] =
             serde_json::json!(["沙盒驱动事件采集（注入宿主 + SbieAPI）"]);
 
-        // WASM 宿主壳：wasmtime 运行时所在（2026-10-21 宿主剥离）。
+        // WASM 宿主壳：wasmtime 运行时所在（宿主剥离）。
         let mut wasm_shell = self.native_entry(
             "plugin_wasm",
             "WASM 插件宿主壳",
@@ -260,7 +260,7 @@ impl PluginsHandler {
             "iroh 身份派生"
         ]);
 
-        // 管线插件（T2 三段化的进程内插件；启停经 set_metrics_enabled）。
+        // 管线插件（三段化的进程内插件；启停经 set_metrics_enabled）。
         let metrics = nemesis_agent::hooks::metrics_plugin_slot();
         let pipeline_plugins = serde_json::json!([{
             "name": metrics.name(),
@@ -364,7 +364,7 @@ fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usi
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
         }
-        // 有界解压（BUG 2026-10-29 横扫角度 B）：单条目 64 MiB 上限，
+        // 有界解压（BUG 横扫角度 B）：单条目 64 MiB 上限，
         // 解压炸弹在撑爆内存前拒绝。
         const DEVKIT_ENTRY_CAP: usize = 64 * 1024 * 1024;
         let buf = nemesis_utils::zip_util::read_entry_capped(&mut entry, DEVKIT_ENTRY_CAP)
@@ -429,7 +429,7 @@ impl ModuleHandler for PluginsHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // W6：`plugins.wasm.*` 命令代理到 plugins_wasm.rs（宿主运行时整槽
+        // `plugins.wasm.*` 命令代理到 plugins_wasm.rs（宿主运行时整槽
         // 注入；槽空/未编译均诚实报错）。devkit 下载不依赖宿主运行时槽，
         // 在代理前拦截自处理。
         if let Some(bare) = cmd.strip_prefix("wasm.") {
@@ -449,9 +449,9 @@ impl ModuleHandler for PluginsHandler {
                 ));
             }
         }
-        // 面板通道（2026-10-31 面板扩展批）：`ui.registry` 只读声明投影
+        // 面板通道（面板扩展批）：`ui.registry` 只读声明投影
         // 不冻结（Dashboard 渲染【定制】锚点无害）；`ui.invoke` 是动作面
-        // ——estop 生效中 guest 命令转发一律拒绝（看板派发护栏同族）。
+        // estop 生效中 guest 命令转发一律拒绝（看板派发护栏同族）。
         if let Some(bare) = cmd.strip_prefix("ui.") {
             #[cfg(feature = "plugins-wasm")]
             {
@@ -502,7 +502,7 @@ impl ModuleHandler for PluginsHandler {
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：Default 转发体。豁免（exe 旁 plugins/
+// AGT 覆盖率批次：Default 转发体。豁免（exe 旁 plugins/
 // 探测目录劫持并行断言）见 agt_tests 头注。
 #[cfg(test)]
 mod agt_tests;

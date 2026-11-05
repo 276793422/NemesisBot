@@ -2,22 +2,22 @@
 //! 不进 config.json，独立文件收「进程级环境变量代理 + 自更新下载代理」两类）。
 //!
 //! 语义（与 [`crate::plugin_wasm`] 开关文件同范式）：
-//! 文件缺失 = 未配置：读路径静默 None，**不落盘不生成**（无默认模板，
+//! - 文件缺失 = 未配置：读路径静默 None，**不落盘不生成**（无默认模板，
 //!   onboard 不预置）；用户首次保存才创建。
-//! 空串 = 不设置该项（env 段=不碰该变量；selfupdate 段=直连）。
-//! 保存 = read-modify-write：env 段与 selfupdate 段各存各的互不覆盖。
-//! 保存时前缀校验（`http:// https:// socks:// socks5:// socks5h://`；
+//! - 空串 = 不设置该项（env 段=不碰该变量；selfupdate 段=直连）。
+//! - 保存 = read-modify-write：env 段与 selfupdate 段各存各的互不覆盖。
+//! - 保存时前缀校验（`http:// https:// socks:// socks5:// socks5h://`；
 //!   no_proxy 例外=自由文本），非法 loud 拒绝不落盘。
-//! 损坏 JSON：load 返回 `Err`（调用方 WARN + 按未配置走，不阻断启动）；
+//! - 损坏 JSON：load 返回 `Err`（调用方 WARN + 按未配置走，不阻断启动）；
 //!   损坏文件上保存 = 以空底重建（无从解析保留，plugin_wasm 同口径）。
-//! 纯 serde_json 读写，不进 typed Config——独立文件红利：彻底绕开 typed
+//! - 纯 serde_json 读写，不进 typed Config——独立文件红利：彻底绕开 typed
 //!   save 静默抹键的回归类（2026-09-03）。
 //!
 //! 生效时机（两段不同）：
-//! env 段：gateway 启动早期 `set_var` 注入进程环境（**重启生效**）——
+//! - env 段：gateway 启动早期 `set_var` 注入进程环境（**重启生效**）——
 //!   必须先于一切 reqwest client 构建；[`env_vars_to_apply`] 是注入清单的
 //!   纯函数单一真相源。
-//! selfupdate 段：更新下载/检查链路**调用时读盘**（下载是逐次操作，
+//! - selfupdate 段：更新下载/检查链路**调用时读盘**（下载是逐次操作，
 //!   **保存即对下次生效**，免重启）——[`load_selfupdate_proxy`] 是唯一读点。
 
 use serde::{Deserialize, Serialize};

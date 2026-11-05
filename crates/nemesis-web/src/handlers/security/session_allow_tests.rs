@@ -4,10 +4,10 @@
 use super::*;
 
 /// 槽触碰类测试统一在锁内跑（进程级共享态串行纪律）。
-/// 同步 #[test] 形态：tokio Mutex 的 `blocking_lock()` 在无运行时的测试
-/// 线程上停等获取——此前 `lock()` 不 await 只拿到未 poll 的 Future，串行
-/// 从未生效（2026-10-24 外评 T0）。切勿在 async 运行时内调用本 helper
-/// （blocking_lock 会 loud panic）；异步用例直接 `LOCK.lock().await`
+/// 同步 #[test] 形态：tokio Mutex 的 `blocking_lock` 在无运行时的测试
+/// 线程上停等获取——此前 `lock` 不 await 只拿到未 poll 的 Future，串行
+/// 从未生效（外评）。切勿在 async 运行时内调用本 helper
+/// （blocking_lock 会 loud panic）；异步用例直接 `LOCK.lock.await`
 /// （handlers/tests.rs sessions 投影用例即此形态）。
 fn with_slot<T>(f: impl FnOnce() -> T) -> T {
     let _serial = SESSION_ALLOW_ALL_TEST_LOCK.blocking_lock();
@@ -147,9 +147,9 @@ fn session_allow_persisted_flag_survives_state_rebuild() {
     });
 }
 
-// --- R1 回归锁（2026-10-24 外评探针反转）：持久化失败必须诚实响应 ---
+// 回归锁（外评探针反转）：持久化失败必须诚实响应 ---
 //
-// 旧形态：write_session_allow_all 吞错返 ()，handler 无视结果照常返回普通
+// 旧形态：write_session_allow_all 吞错返 ，handler 无视结果照常返回普通
 // 成功——「关闭放行」持久化失败后磁盘残留 true，重启 hydrate 把放行复活。
 // 修复后：persisted:false + warning；内存态按当次意志保留（关=安全方向）。
 // share_mode(1)（仅 FILE_SHARE_READ）锁 meta 文件逼原子替换失败。Windows

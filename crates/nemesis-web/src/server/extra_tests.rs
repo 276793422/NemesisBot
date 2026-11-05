@@ -268,7 +268,7 @@ async fn test_serve_embedded_static_root_path_serves_index() {
     assert_eq!(resp.status(), 200);
 }
 
-// 2026-10-15 部署旧壳缓存根修：HTML 壳恒带 Cache-Control: no-cache——前端
+// 部署旧壳缓存根修：HTML 壳恒带 Cache-Control: no-cache——前端
 // 每次构建资产文件名换哈希，浏览器缓存的旧 index.html 指向已删 chunk =
 // 懒加载路由 404（设置页打不开/新页签消失）。覆盖四条 HTML 出口：精确匹配
 // / SPA fallback / chat 壳；带 hash 的资产（js/css）不加头维持启发式缓存。
@@ -307,7 +307,7 @@ async fn test_serve_embedded_static_hashed_asset_has_no_cache_header() {
     assert!(resp.headers().get(http::header::CACHE_CONTROL).is_none());
 }
 
-// LO2（2026-09-04 四轮盲审）：`/chat` 与 `/chat/` 直达 standalone chat 壳；
+// （四轮盲审）：`/chat` 与 `/chat/` 直达 standalone chat 壳；
 // 旧行为两者都落到 SPA fallback 的 Dashboard index.html。
 #[tokio::test]
 async fn lo2_chat_without_trailing_slash_serves_chat_shell() {
@@ -987,7 +987,7 @@ async fn test_send_to_session_includes_model_badge() {
         "None model must omit the field, not serialize null"
     );
 
-    // 集群续行归属（2026-09-23）：带 source_node → 帧带节点键（前端渲染
+    // 集群续行归属：带 source_node → 帧带节点键（前端渲染
     // 「节点 X」徽章）；不带 → 字段缺席（非集群回复与历史行为逐字节一致）。
     send_to_session(
         &mgr,
@@ -1029,7 +1029,7 @@ async fn test_send_to_session_includes_model_badge() {
     );
 }
 
-/// L6++：receive 帧必须带 agent 会话 id（session_key 前缀还原），前端据此
+/// receive 帧必须带 agent 会话 id（session_key 前缀还原），前端据此
 /// 过滤异会话晚到帧（跨组切换不串台）；无 session_key → 字段缺席（legacy
 /// 兼容，前端保持接受）。
 #[tokio::test]
@@ -1247,7 +1247,7 @@ fn test_config_debug_includes_all_fields() {
     let s = format!("{:?}", config);
     assert!(s.contains("listen_addr"));
     assert!(s.contains("127.0.0.1:9999"));
-    // SEC-002（2026-09-22）：auth_token 必须脱敏——字段名在、真实值不在。
+    // SEC-002：auth_token 必须脱敏——字段名在、真实值不在。
     // 注意不能裸断言 !contains("tok")：字段名 auth_token 本身含 "tok" 子串，
     // 断言值形态。
     assert!(s.contains("auth_token"));
@@ -1353,7 +1353,7 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
 }
 
 // ============================================================
-// Phase 3 覆盖率（2026-08-25）：WebServer 全部 setter 一次扫过。
+// 覆盖率：WebServer 全部 setter 一次扫过。
 // 这些是 gateway 装配线的注入点（每个一行 Arc 赋值），单测钉
 // 「可装配 + 字段真的进去」——用 build_router 成功作为装配完整信号。
 // ============================================================
@@ -1533,11 +1533,11 @@ async fn webserver_all_setters_assemble() {
 }
 
 // ============================================================
-// P8 补全（2026-09-21）：user 行入环 + 发起连接回声帧
+// 补全：user 行入环 + 发起连接回声帧
 //
 // 此前 user 行只落 chat_log（loop.rs turn 开始时）与发送方本地视图，环形
 // 补拉窗口里没有它——多端（第二标签）落后信号走增量 sync 拉不到，游标
-// 短路修掉无谓全量刷新后更无到达路径（真机 F 剧本 F3）。入站咽喉点
+// 短路修掉无谓全量刷新后更无到达路径（真机 F 剧本）。入站咽喉点
 // process_messages_with_router 现在 record + 回声（Some(session_manager)
 // 时）。
 // ============================================================
@@ -1550,7 +1550,7 @@ async fn test_process_messages_records_user_row_and_echoes_to_sender() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    // 回声走可丢通道（BUG 2026-09-22：qrx 须绑 lo 位；绑 hi 位时回声帧
+    // 回声走可丢通道（BUG ：qrx 须绑 lo 位；绑 hi 位时回声帧
     // 落 lo，而 hi 随 mgr 析构关闭 → recv 恒 None，正向断言必炸）。
     let (queue, _hi_rx, mut qrx, _done_tx) = SendQueue::test_channels(16);
     mgr.set_send_queue(&session.id, Arc::new(queue));

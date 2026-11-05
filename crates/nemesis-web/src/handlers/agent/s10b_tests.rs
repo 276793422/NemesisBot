@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): AgentHandler arms with a
+//! (quality-hardening goal 冲刺, web 批次 2): AgentHandler arms with a
 //! REAL AgentLoop attached (existing tests only cover the None/stub paths) —
 //! cancel Some-loop, checkpoints Some-loop, rewind with a live loop but no
 //! checkpoint store, and the missing/mistyped `turn` guards.
@@ -147,7 +147,7 @@ async fn rewind_with_live_loop_but_no_checkpoint_store_errors() {
 }
 
 // ============================================================
-// U7 dashboard visibility (G1): agent.inbox_status handler。
+// dashboard visibility : agent.inbox_status handler。
 // ============================================================
 
 #[tokio::test]
@@ -187,7 +187,7 @@ async fn inbox_status_empty_session_reports_idle() {
     assert_eq!(resp["next_step"], 0);
     assert_eq!(resp["capacity"], 8, "AgentLoop::new 用 DEFAULT_QUEUE_SIZE");
     assert_eq!(resp["busy"], false);
-    // AgentConfig::default() 是 Reject 模式。
+    // AgentConfig::default 是 Reject 模式。
     assert_eq!(resp["mode"], "reject");
 }
 

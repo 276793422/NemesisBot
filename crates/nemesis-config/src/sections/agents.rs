@@ -584,7 +584,7 @@ pub struct AgentDefaults {
     /// format-on-save after write/edit (see [`FormatOnSaveConfig`]).
     #[serde(default)]
     pub format_on_save: FormatOnSaveConfig,
-    /// 429 重试环（BUG 文档裁决④）：上游限流（HTTP 429）重试次数，
+    /// 429 重试环：上游限流（HTTP 429）重试次数，
     /// 默认 10。间隔走 10 档阶梯（5s→…→210s），上游带 Retry-After 时取
     /// max(上游要求, 阶梯值)。0 = 关闭重试（一次失败即终局，旧行为）。
     #[serde(default = "default_rate_limit_retries")]

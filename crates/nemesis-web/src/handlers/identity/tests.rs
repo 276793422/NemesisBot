@@ -1,4 +1,4 @@
-//! G5 (U18)：identity handler 的 AGENTS.md/CLAUDE.md 指令链文档。
+//! identity handler 的 AGENTS.md/CLAUDE.md 指令链文档。
 //!
 //! 钉三件事：list 覆盖六件套且 instruction_chain 标志正确；save→get 对
 //! 新指令链文件可创建/回读；缺失文件的 get 保持既有语义（报错，不返回空）。

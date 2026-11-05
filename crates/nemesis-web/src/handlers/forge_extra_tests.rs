@@ -15,9 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure (mirror of tests.rs)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -183,9 +181,7 @@ fn sample_experience(id: &str, success: bool) -> serde_json::Value {
     })
 }
 
-// -----------------------------------------------------------------------
 // Module metadata
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_module_name() {
@@ -193,9 +189,7 @@ fn test_module_name() {
     assert_eq!(handler.module_name(), "forge");
 }
 
-// -----------------------------------------------------------------------
 // require_home / require_workspace error paths
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_status_no_workspace_returns_error() {
@@ -221,9 +215,7 @@ async fn test_stats_no_workspace_returns_error() {
     );
 }
 
-// -----------------------------------------------------------------------
 // status
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_status_missing_config_returns_error() {
@@ -341,9 +333,7 @@ async fn test_status_counts_files_in_forge_dir() {
     assert!(result["forge_dir_exists"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // stats
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_stats_missing_config_returns_error() {
@@ -465,9 +455,7 @@ async fn test_stats_finds_latest_reflection() {
     );
 }
 
-// -----------------------------------------------------------------------
 // experiences.stats
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_experiences_stats_no_file_returns_zeros() {
@@ -512,9 +500,7 @@ async fn test_experiences_stats_with_data() {
     assert_eq!(recent.last().unwrap()["id"].as_str().unwrap(), "e2");
 }
 
-// -----------------------------------------------------------------------
 // reflections.list / reflections.latest
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_reflections_list_no_dir() {
@@ -621,9 +607,7 @@ async fn test_reflections_latest_empty_dir_returns_not_found() {
     assert!(!result["found"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // cycles.list
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_cycles_list_no_dir() {
@@ -701,9 +685,7 @@ async fn test_cycles_list_truncates_to_100() {
     assert_eq!(cycles[0]["id"].as_str().unwrap(), "c-149");
 }
 
-// -----------------------------------------------------------------------
 // registry.list / registry.update
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_registry_list_empty() {
@@ -887,9 +869,7 @@ async fn test_registry_update_success() {
     assert_ne!(arr[1]["updated_at"].as_str().unwrap(), "old");
 }
 
-// -----------------------------------------------------------------------
 // config.save (data validation + config.forge.json sync)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_config_save_missing_data() {
@@ -1001,9 +981,7 @@ async fn test_config_save_enable_updates_existing_forge_config() {
     assert_eq!(on_disk["reflection"]["interval_secs"], 4242);
 }
 
-// -----------------------------------------------------------------------
 // learning.toggle
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_learning_toggle_missing_data() {
@@ -1112,9 +1090,7 @@ async fn test_learning_toggle_inserts_learning_section_when_absent() {
     );
 }
 
-// -----------------------------------------------------------------------
 // artifacts (legacy)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_artifacts_no_forge_dir_returns_empty() {
@@ -1158,9 +1134,7 @@ async fn test_artifacts_mixed_files_and_dirs() {
     assert_eq!(arr[1]["type"].as_str().unwrap(), "directory");
 }
 
-// -----------------------------------------------------------------------
 // reflect
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_reflect_no_experiences_file_returns_not_triggered() {
@@ -1230,9 +1204,7 @@ async fn test_reflect_runs_analysis_and_writes_report() {
     assert_eq!(count, 1, "exactly one reflection report should be written");
 }
 
-// -----------------------------------------------------------------------
 // Unknown command
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_unknown_command_returns_error() {
@@ -1263,9 +1235,7 @@ async fn test_unknown_command_with_data() {
     assert_eq!(err, "unknown command: forge.enable");
 }
 
-// -----------------------------------------------------------------------
-// reflect：use_llm 消费（2026-10-16 R16 缺陷 21）
-// -----------------------------------------------------------------------
+// reflect：use_llm 消费（缺陷 21）
 
 /// use_llm=false（用户显式关闭）→ 统计反思，llm_insights=false，且**不带**
 /// 「未产出」注记（用户主动关的，不是失败）。
@@ -1331,7 +1301,7 @@ async fn test_reflect_use_llm_true_without_models_reports_honest_note() {
     assert!(result["total_records"].as_u64().unwrap() >= 2);
 }
 
-/// registry.update 状态值白名单（R17）：非法 status 必须 loud 拒绝且**不改
+/// registry.update 状态值白名单：非法 status 必须 loud 拒绝且**不改
 /// 写 registry.json**——该文件是 Vec<Artifact> 严格反序列化，一个毒值让
 /// Registry::load 整体失败且无自愈（web 统计静默归零、CLI 反思去重失效会
 /// 追加重复条目）。回归钉咬合：摘掉 ArtifactStatus 反序列化校验，本测试
@@ -1398,7 +1368,7 @@ async fn test_registry_update_rejects_invalid_status() {
     );
 }
 
-/// forge.test 的 name 围栏（R17）：`name` 直拼 skills/{name}/SKILL.md，
+/// forge.test 的 name 围栏：`name` 直拼 skills/{name}/SKILL.md，
 /// 分隔符/父引用可读 workspace 外任意同名文件并送进沙盒执行面。回归钉
 /// 咬合：摘掉围栏校验，本测试翻红（"../outside" 走到 runner 未装配错误）。
 #[tokio::test]

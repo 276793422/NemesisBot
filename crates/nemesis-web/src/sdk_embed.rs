@@ -1,4 +1,4 @@
-//! P2-2 (2026-08-24 UI entry gap): compile-time embedded Python SDK artifacts.
+//! (2026-08-24 UI entry gap): compile-time embedded Python SDK artifacts.
 //!
 //! `build.rs` zips the filtered SDK tree (`test-tools/python/sdk/`, build
 //! junk excluded — see build.rs for why not `include_dir!`) into two layouts

@@ -51,12 +51,12 @@ pub fn set_embedded_defaults(
 ///
 /// This mirrors the Go `SetEmbeddedDefaultsFromFS` function. Reads the
 /// standard set of configuration files from the given directory:
-/// `config.default.json`
-/// `config.mcp.default.json`
-/// platform-specific security config
-/// `config.cluster.default.json`
-/// `config.skills.default.json`
-/// `config.scanner.default.json` (optional)
+/// - `config.default.json`
+/// - `config.mcp.default.json`
+/// - platform-specific security config
+/// - `config.cluster.default.json`
+/// - `config.skills.default.json`
+/// - `config.scanner.default.json` (optional)
 pub fn set_embedded_defaults_from_fs(config_dir: &Path) -> Result<()> {
     // Read config.default.json
     let config_path = config_dir.join("config.default.json");
@@ -262,24 +262,24 @@ pub fn is_local_mode(config_path: &Path) -> bool {
 /// Mirrors Go's `env.Parse(cfg)` which reads NEMESISBOT_* env vars.
 ///
 /// Supported environment variables (matching Go's env tags):
-/// NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE
-/// NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE
-/// NEMESISBOT_AGENTS_DEFAULTS_LLM
-/// NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL
-/// NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS
-/// NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE
-/// NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS
-/// NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE
-/// NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE
-/// NEMESISBOT_CHANNELS_WEB_ENABLED
-/// NEMESISBOT_CHANNELS_WEB_HOST
-/// NEMESISBOT_CHANNELS_WEB_PORT
-/// NEMESISBOT_GATEWAY_HOST
-/// NEMESISBOT_GATEWAY_PORT
-/// NEMESISBOT_HEARTBEAT_ENABLED
-/// NEMESISBOT_HEARTBEAT_INTERVAL
-/// NEMESISBOT_SECURITY_ENABLED
-/// NEMESISBOT_FORGE_ENABLED
+/// - NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE
+/// - NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE
+/// - NEMESISBOT_AGENTS_DEFAULTS_LLM
+/// - NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL
+/// - NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS
+/// - NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE
+/// - NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS
+/// - NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE
+/// - NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE
+/// - NEMESISBOT_CHANNELS_WEB_ENABLED
+/// - NEMESISBOT_CHANNELS_WEB_HOST
+/// - NEMESISBOT_CHANNELS_WEB_PORT
+/// - NEMESISBOT_GATEWAY_HOST
+/// - NEMESISBOT_GATEWAY_PORT
+/// - NEMESISBOT_HEARTBEAT_ENABLED
+/// - NEMESISBOT_HEARTBEAT_INTERVAL
+/// - NEMESISBOT_SECURITY_ENABLED
+/// - NEMESISBOT_FORGE_ENABLED
 ///
 /// 布尔覆盖（`*_ENABLED` / `RESTRICT_TO_WORKSPACE`）的
 /// 识别集 = Go `strconv.ParseBool` 全集（true/false/t/f/1/0，大小写不敏感）

@@ -1,9 +1,9 @@
 //! Cluster node persona generation from JD / resume text.
 //!
 //! 三阶段机制（信息单元去向追踪 + 覆盖对账）：
-//! - 阶段1 分段穷尽提取信息单元（带 key_entities，作为对账基准）
-//! - 阶段2 基于单元定向创作 identity/soul/expertise
-//! - 阶段3 程序确定性校验（实体字面覆盖 + 段落覆盖）+ 对抗性 LLM 审计 → 覆盖率报告
+//! - 分段穷尽提取信息单元（带 key_entities，作为对账基准）
+//! - 基于单元定向创作 identity/soul/expertise
+//! - 程序确定性校验（实体字面覆盖 + 段落覆盖）+ 对抗性 LLM 审计 → 覆盖率报告
 //!
 //! 机制有效性保证：输入的每条信息都有明确去向（进产物 / 显式标注丢弃理由）；
 //! 遗漏 = 对账缺口（可枚举、可计数），不靠人眼通读；校验主要靠程序（字面匹配）而非
@@ -39,7 +39,7 @@ pub struct PersonaPackage {
     /// 专业知识库（核心架构方案/踩坑经验的结构化沉淀）。空则不产出。
     #[serde(default)]
     pub expertise_md: String,
-    /// 完整性覆盖报告（阶段3 对账结果）。
+    /// 完整性覆盖报告（对账结果）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<CoverageReport>,
 }
@@ -78,7 +78,7 @@ pub struct InputSegment {
     pub unit_count: usize,
 }
 
-/// 阶段1 产物：信息单元清单 + 段落覆盖统计。
+/// 产物：信息单元清单 + 段落覆盖统计。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InformationUnits {
     pub units: Vec<InformationUnit>,
@@ -136,7 +136,7 @@ impl CoverageReport {
 // 输入清洗
 // ============================================================================
 
-/// Sanitize raw pasted text: drop C0 control chars, normalize line endings, trim,
+/// Sanitize raw pasted text: drop control chars, normalize line endings, trim,
 /// reject too-short input, cap length. Does NOT interpret format.
 pub fn sanitize_input(text: &str) -> Result<String, String> {
     let cleaned: String = text
@@ -339,7 +339,7 @@ fn audit_tool_def() -> ToolDefinition {
 // ============================================================================
 
 fn extract_prompt(kind: &str) -> String {
-    // 文本单一真相源在 `nemesis-prompts::persona_gen`（M7 集中化）；此处只
+    // 文本单一真相源在 `nemesis-prompts::persona_gen`（集中化）；此处只
     // 保留 resume/jd 取向选择逻辑。
     let orientation = if kind == "resume" {
         nemesis_prompts::persona_gen::RESUME_EXTRACT_ORIENTATION
@@ -619,9 +619,9 @@ async fn chat_json(
     let messages = vec![mk_msg("system", system.to_string()), mk_msg("user", user)];
     let opts = ChatOptions {
         temperature: Some(temperature),
-        // 16384（2026-09-17 真机根因）：glm-5.3-flash 等思考模型 thinking 先烧
+        // 16384（真机根因）：glm-5.3-flash 等思考模型 thinking 先烧
         // 2000-3000 token，人格包三阶段（抽取/创作/审计）正文再要 4000-6000；
-        // 旧 8192 会被截断 → 阶段2「缺字段/空输出」两连败（真机实锤：16384 下
+        // 旧 8192 会被截断 → 「缺字段/空输出」两连败（真机实锤：16384 下
         // thinking 2878 + 完整 JSON 正文，stop=end_turn 正常收口）。
         max_tokens: Some(16384),
         top_p: None,
@@ -636,7 +636,7 @@ async fn chat_json(
     extract_response_json(&resp)
 }
 
-/// 阶段1：分段穷尽提取信息单元。
+/// 分段穷尽提取信息单元。
 async fn extract_units(
     provider: &dyn LLMProvider,
     model: &str,
@@ -655,7 +655,7 @@ async fn extract_units(
     serde_json::from_value::<InformationUnits>(v).map_err(|e| format!("解析信息单元失败: {}", e))
 }
 
-/// 阶段2：基于信息单元创作人格。
+/// 基于信息单元创作人格。
 async fn author_persona(
     provider: &dyn LLMProvider,
     model: &str,
@@ -681,7 +681,7 @@ async fn author_persona(
     serde_json::from_value::<PersonaPackage>(v).map_err(|e| format!("解析人格包失败: {}", e))
 }
 
-/// 阶段3-审计：对抗性 LLM 审计（找茬模式）。失败时返回空（程序校验兜底）。
+/// 审计：对抗性 LLM 审计（找茬模式）。失败时返回空（程序校验兜底）。
 async fn audit_coverage(
     provider: &dyn LLMProvider,
     model: &str,
@@ -734,7 +734,7 @@ pub async fn generate_persona(
 ) -> Result<PersonaPackage, String> {
     let clean = sanitize_input(text)?;
 
-    // 阶段1：提取信息单元（对账基准）。
+    // 提取信息单元（对账基准）。
     let units = extract_units(provider, model, kind, &clean).await?;
     let seg_gaps = check_segment_coverage(&units);
     if !seg_gaps.is_empty() {
@@ -746,7 +746,7 @@ pub async fn generate_persona(
     let mut missing_hint: Option<String> = None;
 
     for attempt in 0..max_attempts {
-        // 阶段2：创作。
+        // 创作。
         let mut pkg = match author_persona(
             provider,
             model,
@@ -770,9 +770,9 @@ pub async fn generate_persona(
             continue;
         }
 
-        // 阶段3：程序确定性校验。
+        // 程序确定性校验。
         let prog = check_entity_coverage(&units.units, &pkg);
-        // 阶段3：对抗性 LLM 审计（失败则空，程序校验兜底）。
+        // 对抗性 LLM 审计（失败则空，程序校验兜底）。
         let audit = match audit_coverage(provider, model, &units, &pkg).await {
             Ok(a) => a,
             Err(e) => {
@@ -849,7 +849,7 @@ pub async fn generate_persona(
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): full
+// (, quality-hardening goal 冲刺 web 批次 2): full
 // generate_persona pipeline against a wiremock OpenAI-compatible backend —
 // clean run / retry-exhausted / stage-2 parse & validate continue arms /
 // audit HTTP failure fallback.

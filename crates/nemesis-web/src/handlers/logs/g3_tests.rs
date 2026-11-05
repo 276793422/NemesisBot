@@ -1,4 +1,4 @@
-//! G3（spill 状态卡，2026-08-28）：logs.spill_status / logs.spill_cleanup。
+//! （spill 状态卡，2026-08-28）：logs.spill_status / logs.spill_cleanup。
 //!
 //! 夹具：home=workspace 的 tempdir；spill 树手工构造（set_modified 制造
 //! 过期/新鲜文件，与 nemesis-agent spill/tests.rs 同法）。
@@ -89,7 +89,7 @@ fn make_spill_file(
 fn spill_status_reports_tree_and_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    // 2026-08-31 spill 迁回 workspace：根 = workspace/logs/spill（U4 设计位）
+    // spill 迁回 workspace：根 = workspace/logs/spill（设计位）
     let root = dir.path().join("workspace").join("logs").join("spill");
     make_spill_file(&root, "s1", "newer.txt", 24 * 3600, "0123456789"); // 10 B
     make_spill_file(&root, "s2", "older.txt", 24 * 3600, "ab"); // 2 B

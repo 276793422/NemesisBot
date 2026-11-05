@@ -165,7 +165,7 @@ fn test_history_page_negative_oldest_index() {
     assert_eq!(parsed.oldest_index, -1);
 }
 
-// --- Additional history tests ---
+// Additional history tests ---
 
 #[test]
 fn test_history_message_clone() {

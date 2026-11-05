@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness(approval/tests.rs 同款 AppState literal,无 loop 依赖)
-// ---------------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir, workspace: Option<String>) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -90,9 +88,7 @@ fn wired_ctx(dir: &tempfile::TempDir) -> (RequestContext, Arc<EditorAccessState>
     )
 }
 
-// ---------------------------------------------------------------------------
 // 未装配:诚实错
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn get_without_install_is_honest_error() {
@@ -138,9 +134,7 @@ async fn unknown_cmd_is_honest_error() {
     set_editor_access_for_test(None);
 }
 
-// ---------------------------------------------------------------------------
 // get / set 主链路
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn get_returns_initial_double_off() {
@@ -290,9 +284,7 @@ async fn set_without_data_is_honest_error() {
     set_editor_access_for_test(None);
 }
 
-// ---------------------------------------------------------------------------
 // roots 刷新降级:无 workspace + 无 bridge 不炸(get/set 照常)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn no_workspace_and_no_bridge_degrades_gracefully() {

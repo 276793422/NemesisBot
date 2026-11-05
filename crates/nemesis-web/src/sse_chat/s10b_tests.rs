@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): handle_chat_stream arms the
+//! (quality-hardening goal 冲刺, web 批次 2): handle_chat_stream arms the
 //! existing extra tests skip — explicit `model` passthrough to the provider
 //! (vs. the empty-model default arm), and a backend stream that ends WITHOUT
 //! finish_reason / [DONE] (handler still emits its own done event).
@@ -152,7 +152,7 @@ async fn unterminated_backend_stream_still_gets_done_event() {
     assert!(!body.contains("event: error"), "{body}");
 }
 
-// -- L02（2026-11-01）error 帧 retained_partial -------------------------------
+// error 帧 retained_partial -------------------------------
 
 /// 受控流 mock：chat_stream 按脚本回放 chunk/Err 序列（直触发 SSE 代理的
 /// Err 臂——wiremock 无法做「先发 delta 再断流」）。

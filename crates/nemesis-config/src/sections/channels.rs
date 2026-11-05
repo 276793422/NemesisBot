@@ -234,7 +234,7 @@ pub struct WebChannelConfig {
     pub enabled: bool,
     #[serde(default = "default_web_host")]
     pub host: String,
-    // flexible_i64: 历史 CLI 把端口写成字符串（BUG #41），容忍两种磁盘形态
+    // flexible_i64: 历史 CLI 把端口写成字符串，容忍两种磁盘形态
     #[serde(
         default = "default_web_port",
         deserialize_with = "deserialize_flexible_i64"
@@ -307,7 +307,7 @@ pub struct WebSocketChannelConfig {
     pub enabled: bool,
     #[serde(default)]
     pub host: String,
-    // flexible_i64: 历史 CLI 把端口写成字符串（BUG #41），容忍两种磁盘形态
+    // flexible_i64: 历史 CLI 把端口写成字符串，容忍两种磁盘形态
     #[serde(default, deserialize_with = "deserialize_flexible_i64")]
     pub port: i64,
     #[serde(default)]

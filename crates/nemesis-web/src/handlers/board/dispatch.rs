@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 board.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -8,7 +6,7 @@ use super::*;
 /// worker 端按普通任务 prompt 走自己的 agent（工具/安全层照常生效），
 /// 结尾固定要求结果汇报——最终回复是唯一回传渠道（经 callback 写回看板）。
 #[cfg(feature = "cluster")]
-/// 汇报格式五段真相源在 nemesis-board::report（交付线程首评 / M4 验收
+/// 汇报格式五段真相源在 nemesis-board::report（交付线程首评 / 验收
 /// agent 同源解析；此处只引用）。
 use nemesis_board::report::REPORT_FORMAT_SECTION;
 
@@ -17,15 +15,15 @@ use nemesis_board::report::REPORT_FORMAT_SECTION;
 /// 原文放「背景」段不做二次加工。唯一调用方 dispatch_issue_core（cluster），
 /// 同 cfg 门控（REPORT_FORMAT_SECTION 是 cluster-only const）。
 #[cfg(feature = "cluster")]
-/// `review_feedback`（Swarm M4）：FAIL 重派时验收 agent 的差距意见，渲染
+/// `review_feedback`（Swarm）：FAIL 重派时验收 agent 的差距意见，渲染
 /// 成「上轮验收意见」段——worker 必须知道为什么被打回，否则重派就是掷
 /// 骰子（§6.1 检视 2）。首派传 `None`。
-/// `experience_section`（Swarm M4.5）：团队过往经验注入段（注入端已渲染），
+/// `experience_section`（Swarm .5）：团队过往经验注入段（注入端已渲染），
 /// 无匹配传 `None`——不塞空段，保持提示词字节与无经验时一致。
-/// `attempt`（PR5，2026-10-10 机制加固）：本次派发序号（1 起；首派 `None`
+/// `attempt`（机制加固）：本次派发序号（1 起；首派 `None`
 /// 不渲染，prompt 字节与历史一致）。重派任务卡告知轮次 + 循环升级契约：
 /// worker 不知道自己是第几回挨打，就无法判断「同一问题反复重派无解」，
-/// 只会静默再写一轮（C1 无限重写循环的 worker 侧根因）。
+/// 只会静默再写一轮（无限重写循环的 worker 侧根因）。
 pub(super) fn build_dispatch_prompt(
     issue: &nemesis_board::Issue,
     assets_section: Option<&str>,
@@ -54,7 +52,7 @@ pub(super) fn build_dispatch_prompt(
             _ => "（未提供——完成判据以背景描述为准，无法客观判定时在自检结果中说明）",
         }
     ));
-    // Swarm M4（§6.1 检视 2）：重派上下文延续——上轮验收差距原文随包走。
+    // Swarm （§6.1 检视 2）：重派上下文延续——上轮验收差距原文随包走。
     if let Some(feedback) = review_feedback
         && !feedback.trim().is_empty()
     {
@@ -63,7 +61,7 @@ pub(super) fn build_dispatch_prompt(
             feedback.trim()
         ));
     }
-    // PR5（2026-10-10 机制加固）：重派轮次 + 循环升级通道（worker 侧编码）。
+    // （机制加固）：重派轮次 + 循环升级通道（worker 侧编码）。
     // 只在重派时渲染（首派 prompt 字节与历史一致）。
     if let Some(n) = attempt {
         p.push_str(&format!(
@@ -71,12 +69,12 @@ pub(super) fn build_dispatch_prompt(
             n - 1
         ));
     }
-    // Swarm M3（§5.4 层 1）：issue 名下资产随包走（引用+签名 token；
+    // Swarm （§5.4 层 1）：issue 名下资产随包走（引用+签名 token；
     // 内容对端按需 HTTP 拉）。
     if let Some(section) = assets_section {
         p.push_str(section);
     }
-    // Swarm M4.5（§6.5.2）：scope 匹配的团队经验随包走（经验段是参考，
+    // Swarm .5（§6.5.2）：scope 匹配的团队经验随包走（经验段是参考，
     // 不是验收标准——提示词里写明）。
     if let Some(section) = experience_section {
         p.push_str(section);
@@ -93,7 +91,7 @@ pub(super) fn build_dispatch_prompt(
     p
 }
 
-/// 急停发车护栏（F-U4-5，2026-09-15 真机实证）：estop 生效中一切看板
+/// 急停发车护栏（F-， 真机实证）：estop 生效中一切看板
 /// 发车入口一律拒绝。与 `project.resume` 的「护栏三不变：estop 急停中
 /// 拒绝恢复发车」同族——手动发车（issue.dispatch / issue.plan /
 /// autopilot.run / project.create auto_start）都是发车面，此前唯独它们
@@ -123,7 +121,7 @@ pub(super) async fn issue_dispatch(
     ctx: &RequestContext,
     data: Option<serde_json::Value>,
 ) -> Result<Option<serde_json::Value>, String> {
-    // F-U4-5：急停中拒绝发车（护栏，最便宜也最根本的一闸先行）。
+    // F-：急停中拒绝发车（护栏，最便宜也最根本的一闸先行）。
     refuse_dispatch_when_estopped(ctx)?;
     let data = data.ok_or("missing data")?;
     let id = data
@@ -133,7 +131,7 @@ pub(super) async fn issue_dispatch(
     let issue = store.get_issue(id)?;
 
     // 目标解析：显式 target 优先，否则取 worker 指派；manager_self 由
-    // coordinator 本机执行（P4 autopilot），不支持远端派发。
+    // coordinator 本机执行（autopilot），不支持远端派发。
     let target = match get_opt_str(&data, "target") {
         Some(t) if !t.trim().is_empty() => t.to_string(),
         Some(_) => return Err("target 不能为空".to_string()),
@@ -148,7 +146,7 @@ pub(super) async fn issue_dispatch(
 
     let cluster = ctx.state.cluster.clone();
     let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
-    // §6.4D：手动重派 = 人类明确意图 → 失败账清零（M3「人工处理后计数作废」
+    // §6.4D：手动重派 = 人类明确意图 → 失败账清零（「人工处理后计数作废」
     // 在手动路径成真；熔断停车后 reopen 重派不再因存量 count 秒熔断）。与评
     // 审链同源同一 JSON（nemesis-board fail_streak 单一真相源）；清账失败不
     // 阻断派发结果（护栏非主路径）。workspace 未注入 = 跳过（测试形态）。
@@ -158,7 +156,7 @@ pub(super) async fn issue_dispatch(
     Ok(Some(out))
 }
 
-/// dispatch prompt 的「## 任务资产」段渲染（Swarm M3 §5.4 层 1）。签发
+/// dispatch prompt 的「## 任务资产」段渲染（Swarm §5.4 层 1）。签发
 /// 上下文挂 store（gateway 装配 set 一次）——未注入 / issue 无资产逐级
 /// 诚实降级为 None。
 #[cfg(feature = "cluster")]
@@ -177,7 +175,7 @@ pub(super) fn render_dispatch_assets_section(
     ))
 }
 
-/// 派发经验注入的检索（M4.5 §6.5.2）：查库（滤 deprecated）→ scope 对
+/// 派发经验注入的检索（.5 §6.5.2）：查库（滤 deprecated）→ scope 对
 /// 任务文本（标题+描述+验收标准）与 required_tags 匹配 → top-N。返回
 /// （渲染好的注入段, 命中条目 id——发车成功后由调用方计 use_count）。
 /// 查库失败诚实降级为无注入（经验是增值段，任何异常都不阻断派发主线）。
@@ -212,10 +210,10 @@ fn render_issue_experience_section(
     )
 }
 
-/// P1 派发硬闸（2026-09-12 双端真机 S2 拓扑误杀根修）：远端目标 +
+/// 派发硬闸（双端真机 拓扑误杀根修）：远端目标 +
 /// `file:` 锚点 = 拒绝派发。`file:` 锚点在派发端（看板权威端）workspace
 /// 解析实核，而任务在远端节点 workspace 执行——执行者真实交付成功也会被
-/// 假 FAIL（S2 实证：NB-16 烧光 2 轮重派预算转人工，B 端交付物早已存在）。
+/// 假 FAIL（实证： 烧光 2 轮重派预算转人工，B 端交付物早已存在）。
 /// 本闸是**模型无关**的确定性拦截（planner 提示词拓扑纪律是软防线，这是
 /// 硬防线；手动派发 / FAIL 重派 / autopilot 全走 dispatch_issue_core =
 /// 单一漏斗全覆盖）。返回 Some(拒绝理由) = 拦截。
@@ -255,17 +253,15 @@ file: 锚点在派发端 workspace 解析实核，远端任务的交付文件不
     ))
 }
 
-// ---------------------------------------------------------------------------
-// P4/E2：基线下发（看板项目档案 goal 合并批）
+// /：基线下发（看板项目档案 goal 合并批）
 //
 // BaselinePusher 走模块级 OnceLock 而非 AppState 字段（PARENT_REVIEW_HOOK
 // 同款理由：AppState 全库字面构造测试点太多，加字段是断点级改动）。
 // gateway 装配时注册；未注册（单测/极简装配）= 派发走既有无基线管线，
-// 存量项目（无 directory）同样不参与——两条边界与 goal §P4/E2 一致。
-// ---------------------------------------------------------------------------
+// 存量项目（无 directory）同样不参与——两条边界与 goal §/ 一致。
 
 /// 派发基线推送器：既有分块传输通路（transfer.begin/chunk/end，AEAD 鉴权）
-/// + D4 护栏现读 provider（gateway 30s 热刷新循环注入的 cell）。
+/// + 护栏现读 provider（gateway 30s 热刷新循环注入的 cell）。
 #[cfg(feature = "cluster")]
 pub struct BaselinePusher {
     pub transport: Arc<dyn nemesis_cluster::outbox::TransferTransport>,
@@ -283,14 +279,12 @@ pub fn install_baseline_pusher(pusher: Arc<BaselinePusher>) -> bool {
     BASELINE_PUSHER.set(pusher).is_ok()
 }
 
-// ---------------------------------------------------------------------------
-// EST-01/02（2026-09-16 横扫加固）：看板派发族的 estop 闸。
+// EST-01/02（横扫加固）：看板派发族的 estop 闸。
 // estop 生效时全部自动/手动派发诚实冻结，而不是照常发车（此前 board 侧
 // 完全不感知 estop——急停只冻结 agent loop，看板 cron/补派/停车场 sweep
 // 会继续向 worker 派新任务）。同 BASELINE_PUSHER 理由：AppState 全库字面
 // 构造测试点太多，加字段是断点级改动，故走模块级 OnceLock 注入。gateway
 // 装配时注册；未注册（单测/极简装配）= 闸不生效（等价旧行为）。
-// ---------------------------------------------------------------------------
 
 /// 模块级 estop 状态槽（gateway 启动注入，与 AppState.estop 同一实例）。
 #[cfg(feature = "cluster")]
@@ -309,13 +303,11 @@ pub(super) fn board_estop_engaged() -> bool {
     estop_dispatch_frozen(BOARD_ESTOP.get().map(|e| e.as_ref()))
 }
 
-// ---------------------------------------------------------------------------
-// U-A（2026-10-12 停车现场工程）：派发/拆解侧停车档案的工作区根。
+// U-A（停车现场工程）：派发/拆解侧停车档案的工作区根。
 // handoff 落盘需要 `<workspace>/board/handoffs/`，而派发/拆解族全是
 // store+cluster 纯函数（AppState 字面量测试点太多，加参数是断点级改动）
-// ——同 BASELINE_PUSHER/BOARD_ESTOP 理由走模块级 OnceLock 注入，gateway
+// 同 BASELINE_PUSHER/BOARD_ESTOP 理由走模块级 OnceLock 注入，gateway
 // 装配时注册；未装配（单测/极简装配）= 停车档案缺席但评论照常（诚实降级）。
-// ---------------------------------------------------------------------------
 
 static HANDOFF_WORKSPACE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
@@ -362,7 +354,7 @@ pub(super) fn write_side_handoff(
     }
 }
 
-/// 恢复类动作成功后的停车档案归档（决策可见性批 2026-10-15）：移入
+/// 恢复类动作成功后的停车档案归档（决策可见性-15）：移入
 /// `handoffs/archive/` 保留追溯、清空「在等人」集合（issue.list 的
 /// needs_user 徽标随之熄灭）。best-effort：失败只 WARN 不阻塞动作——档案
 /// 残留只影响徽标时效，status 闸（done/cancelled/backlog 不亮牌）兜底正确性。
@@ -429,13 +421,13 @@ pub(super) fn estop_frozen_error() -> String {
         .to_string()
 }
 
-/// 派发基线下发（E2）。项目档案仓库幂等 ensure → HEAD 树导出 staging →
+/// 派发基线下发。项目档案仓库幂等 ensure → HEAD 树导出 staging →
 /// 分块推给 worker（对端收件箱 `<workspace>/cluster/inbox/<task_id>/`）。
 /// 返回 `Ok(Some(commit))` = 档案管线派发（基线已落地并记账）；
 /// `Ok(None)` = 非档案管线（推送器未装配 / 单未绑项目 / 存量项目无
 /// directory），走既有无基线路径；`Err` = 诚实弃派（调用方清理）。
 ///
-/// **版本混布停车**（goal E2 边界②）：旧 worker 无 transfer handler，begin
+/// **版本混布停车**（goal 边界②）：旧 worker 无 transfer handler，begin
 /// RPC 得 "no handler" error 帧 → 本函数 Err → 派发诚实停车，提示升级。
 ///
 /// 同步桥：dispatch_issue_core 是 sync（fire_autopilot/auto_dispatch_* /
@@ -460,7 +452,7 @@ pub(super) fn push_dispatch_baseline(
         return Ok(None);
     };
     let root = std::path::PathBuf::from(dir);
-    // 幂等 ensure（P4 部署后首次派发补 init + 对现有内容首 commit）。
+    // 幂等 ensure（部署后首次派发补 init + 对现有内容首 commit）。
     nemesis_board::git_repo::ensure_repo(&root)?;
     let commit = nemesis_board::git_repo::head_commit_hex(&root)?
         .ok_or_else(|| "项目仓库无 HEAD commit（空仓库且 init commit 失败？）".to_string())?;
@@ -525,10 +517,10 @@ pub(super) fn push_dispatch_baseline(
 /// 派发闸 → 登记 task + 派发绑定 → 推进 in_progress → fire-and-forget 发
 /// peer_chat RPC。`issue.dispatch`（WSAPI）与 gateway 的 autopilot 定时
 /// 触发共用（单一真相源）。`target="self"` 在入口即委托本地执行面
-/// [`dispatch_issue_local`]（BUG 2026-11-05 单点下沉，全部调用方生效）。
+/// [`dispatch_issue_local`]（BUG 单点下沉，全部调用方生效）。
 /// `cluster` 传 `None` 时本地闸先行、集群缺失
 /// 最后报（校验矩阵不依赖集群实例，可单测）。`review_feedback`（Swarm
-/// M4）为 FAIL 重派专用——验收差距渲染进 dispatch prompt「上轮验收意见」
+/// ）为 FAIL 重派专用——验收差距渲染进 dispatch prompt「上轮验收意见」
 /// 段；常规派发传 `None`。
 #[cfg(feature = "cluster")]
 pub fn dispatch_issue_core(
@@ -539,7 +531,7 @@ pub fn dispatch_issue_core(
     actor: &Actor,
     review_feedback: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    // target="self" 单机本地执行面（一等公民，BUG 2026-11-05 单点下沉）：
+    // target="self" 单机本地执行面（一等公民，BUG 单点下沉）：
     // "self" 不是集群概念（canonical_peer_id 必然查无此节点），恒委托
     // [`dispatch_issue_local`]（自带五闸镜像，estop/冲突冻结/状态/查重/
     // 计划全部重查）。分臂放在入口最前 = WSAPI 手动派发 / conflict
@@ -558,7 +550,7 @@ pub fn dispatch_issue_core(
     }
     let issue = store.get_issue(issue_id)?;
 
-    // P5/F2 冲突冻结闸（派发单一入口 = 唯一落点）：项目冲突冻结中一律
+    // / 冲突冻结闸（派发单一入口 = 唯一落点）：项目冲突冻结中一律
     // 诚实拒绝——解冻只有一条路（project.resume 补合并回放），不存在旁路。
     if let Some(pid) = issue.project_id
         && let Ok(project) = store.get_project(pid)
@@ -585,8 +577,8 @@ pub fn dispatch_issue_core(
         return Err("该 issue 已有进行中的派发（等 worker 回报或超时后再试）".to_string());
     }
 
-    // BUG-②（2026-10-15 NB-1 事故）：挂有未确认计划的父单不可直接派发
-    // ——子单只在 confirm_plan 时刻物化，直接派发 = 父单本体当单任务
+    // BUG-②（事故）：挂有未确认计划的父单不可直接派发
+    // 子单只在 confirm_plan 时刻物化，直接派发 = 父单本体当单任务
     // 派出（绕过拆解）。running（拆解进行中）同拦——等确认或等失败，
     // 不与拆解链赛跑。过期/失败计划不拦（TTL 惰性清理与 plan.list 同
     // 判据；confirm 成功即摘除，都不在缓存里）。
@@ -626,7 +618,7 @@ pub fn dispatch_issue_core(
     // 派发 = 给远端 worker 发 peer_chat，集群必需。
     let cluster = cluster.ok_or("集群未运行，无法派发（issue.dispatch 需要集群）")?;
 
-    // RPC client 前置检查（2026-10-17 根修）：此前检查在 try_claim_dispatch /
+    // RPC client 前置检查（根修）：此前检查在 try_claim_dispatch /
     // 状态推进 / 指派回填之后——「集群在册但 RPC client 槽位未填」的启动窗口
     // 内派发会 Err 上抛且不清理，留下幽灵 dispatched 行 + in_progress 卡死
     // （该窗口内 sweep 尚未 armed，需人工恢复）。前置到一切状态变更之前：
@@ -635,12 +627,12 @@ pub fn dispatch_issue_core(
         return Err("集群 RPC client 未就绪（启动窗口），请稍后重试派发".to_string());
     }
 
-    // 单一真相源（T37 双身份失配第三处落点，2026-09-13）：账本 worker_id
+    // 单一真相源（双身份失配第三处落点）：账本 worker_id
     // 必须与 worker 上报的传输层身份（_rpc.from = 运行时节点 id）同形态
-    // ——人工指派/兜底可能给 peer 名（"Alex"），不归一化则 task.started /
+    // 人工指派/兜底可能给 peer 名（"Alex"），不归一化则 task.started /
     // delivery.files 的 worker 校验永远失配。matcher 产出已是节点 id，此
     // 步幂等。
-    // F1（2026-09-30 派发目标校验前置）：解析失败 = 注册表无此节点，直接
+    // （派发目标校验前置）：解析失败 = 注册表无此节点，直接
     // 拒绝——旧行为放行原名去 RPC 撞墙，API 层却返回 dispatched=true（行为
     // 分裂，真机幽灵 target 实证）。归一化（含大小写回落）见
     // Cluster::canonical_peer_id。
@@ -648,7 +640,7 @@ pub fn dispatch_issue_core(
         .canonical_peer_id(target)
         .ok_or_else(|| format!("未知节点：{target}（不在集群注册表中，请核对节点名或 id）"))?;
 
-    // P1 拓扑硬闸（模型无关）：远端目标 + file: 锚点 = 拒绝（软防线是
+    // 拓扑硬闸（模型无关）：远端目标 + file: 锚点 = 拒绝（软防线是
     // planner 提示词拓扑纪律；手动派发/重派/autopilot 都过这道闸）。
     if let Some(reason) = reject_remote_file_anchors(
         issue.acceptance_criteria.as_deref(),
@@ -659,10 +651,10 @@ pub fn dispatch_issue_core(
         return Err(reason);
     }
 
-    // M4.5：经验注入段在 prompt 组装前检索（命中计数待发车成功后落）。
+    // .5：经验注入段在 prompt 组装前检索（命中计数待发车成功后落）。
     let (experience_section, experience_ids) = render_issue_experience_section(store, &issue);
 
-    // PR5（2026-10-10 机制加固）：重派轮次 = 历史（已完结）派发行数 + 1。
+    // （机制加固）：重派轮次 = 历史（已完结）派发行数 + 1。
     // 首派 0 行 → None（不渲染重派段）；重派 → Some(N) 渲染轮次 + 循环
     // 升级契约。行数口径含失败派发——worker 需要的是「这是第几回」的完整
     // 感知，UNAVAILABLE 等未跑完的尝试同样计入挨打次数。
@@ -687,7 +679,7 @@ pub fn dispatch_issue_core(
         "channel": "board",
         "chat_id": chat_id,
     });
-    // M2：职能 slug 随派发载荷下行（顶层键；旧 B 端忽略未知键 = 优雅
+    // 职能 slug 随派发载荷下行（顶层键；旧 B 端忽略未知键 = 优雅
     // 降级）。A 端只传 slug，契约文本由 B 端本地渲染（跨 RPC 不传文本）。
     let mut chat_payload = serde_json::json!({ "content": prompt, "_source": source_payload });
     if let Some(p) = issue.required_profession.as_deref().map(str::trim)
@@ -698,7 +690,7 @@ pub fn dispatch_issue_core(
     let task_id =
         cluster.submit_peer_chat(&target, "peer_chat", chat_payload, "board", &chat_id)?;
 
-    // G3：派发账本开账（确定性 id=board_dispatch:{task_id}；账本未安装=
+    // 派发账本开账（确定性 id=board_dispatch:{task_id}；账本未安装=
     // 零变化，best-effort 不阻断派发）。收口点：写回终态（nemesisbot
     // board_dispatch.rs）、本函数三处派发中止、RPC 送达失败分支、超时
     // sweep（autopilot.rs）。
@@ -710,14 +702,14 @@ pub fn dispatch_issue_core(
         serde_json::json!({ "issue_id": issue.id, "issue_number": issue.number }),
     );
 
-    // M4.5：注入计数只认实际发车的派发（提交失败不计 use_count）。
+    // .5：注入计数只认实际发车的派发（提交失败不计 use_count）。
     if !experience_ids.is_empty()
         && let Err(e) = store.mark_team_memory_used(&experience_ids)
     {
         tracing::warn!("[Board] team_memory use_count 更新失败（不影响派发）：{e}");
     }
 
-    // P4/E2（看板项目档案 goal 合并批）：项目档案基线下发。推送器未装配 /
+    // /（看板项目档案 goal 合并批）：项目档案基线下发。推送器未装配 /
     // 单未绑项目 / 存量项目无 directory = Ok(None)（走既有无基线路径）；
     // Err = **诚实弃派**——此刻 insert_dispatch 还没执行，fail_task 清理
     // 本地 task + 系统评论留痕即可，不留悬挂 dispatched 态（版本混布时旧
@@ -726,7 +718,7 @@ pub fn dispatch_issue_core(
         Ok(v) => v,
         Err(e) => {
             cluster.fail_task(&task_id, &e);
-            // G3：派发中止收账（诚实失败，可重派=新 task 新账行）。
+            // 派发中止收账（诚实失败，可重派=新 task 新账行）。
             nemesis_taskstore::ledger::settle_run(
                 &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
                 "failed",
@@ -744,17 +736,17 @@ pub fn dispatch_issue_core(
     };
 
     // 2. 登记派发绑定（peer_chat_callback 的写回路由键）+ 审计活动。
-    //    原子占用闸（R5-BUG-2 根修）：claim 返回 None = 并发路径（依赖闸
+    //    原子占用闸（BUG-2 根修）：claim 返回 None = 并发路径（依赖闸
     //    补派 × 停车场 sweep 等）已占用该 issue → 本次 submit 的 task 诚实
     //    取消，不写行、不留幽灵 dispatched（幽灵行会永久占满 worker
     //    inflight，后续派发全部静默 deferred）。Some(generation) = 占用
-    //    成功，代际号（AOR 批二a ④）随下行 payload 带给 worker、写回时
+    //    成功，代际号随下行 payload 带给 worker、写回时
     //    原样回声（写回闸据此拒绝旧代迟到回调覆盖新一代派发）。
     let dispatch_generation = match store.try_claim_dispatch(&task_id, issue.id, &target, actor)? {
         Some(generation) => generation,
         None => {
             cluster.fail_task(&task_id, "并发派发竞态：该 issue 已有进行中的派发");
-            // G3：并发竞态取消收账。
+            // 并发竞态取消收账。
             nemesis_taskstore::ledger::settle_run(
                 &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
                 "cancelled",
@@ -764,8 +756,8 @@ pub fn dispatch_issue_core(
         }
     };
 
-    // C 里程碑 2（看板项目档案 goal P2）：派发落定 → records/NB-xx/
-    // dispatch.md + timeline（P4 起第 5 参填基线 commit——执行档案 merge
+    // C 里程碑 2（看板项目档案 goal）：派发落定 → records/NB-xx/
+    // dispatch.md + timeline（起第 5 参填基线 commit——执行档案 merge
     // 的 base 对照锚）。失败不阻塞派发（writer 内部 WARN+审计）；存量
     // 项目静默跳过。
     nemesis_board::archive_writer::write_dispatch_milestone(
@@ -779,8 +771,8 @@ pub fn dispatch_issue_core(
     // 3. 状态推进：→ in_progress（状态机转移，写 status_change 审计）。
     //    转移失败（人工同刻挪状态 / 竞态余波）→ 回滚本次 claim 的 dispatch
     //    行（置 failed）+ 取消 task——行生命周期与派发决策同生共死，不留
-    //    幽灵 dispatched（R5-BUG-2 对称彻底）。
-    //    F2（2026-09-30）：派发前快照（状态+指派）随 RPC 闭包下行——送达
+    //    幽灵 dispatched（BUG-2 对称彻底）。
+    //    派发前快照（状态+指派）随 RPC 闭包下行——送达
     //    失败（任务从未开始）时把推进出的 in_progress 回退到派发前状态、
     //    指派恢复派发前值（rollback_dispatch_failure 守卫竞态）。
     let dispatch_prev_status = issue.status;
@@ -793,7 +785,7 @@ pub fn dispatch_issue_core(
                 let _ =
                     store.finish_dispatch(&task_id, nemesis_board::models::dispatch_state::FAILED);
                 cluster.fail_task(&task_id, &format!("派发中止：状态转移失败（{e}）"));
-                // G3：状态转移失败收账。
+                // 状态转移失败收账。
                 nemesis_taskstore::ledger::settle_run(
                     &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
                     "failed",
@@ -805,12 +797,12 @@ pub fn dispatch_issue_core(
     } else {
         issue
     };
-    // F2 项目状态联动：项目绑定的单实际派出 → 项目 active → in_progress
+    // 项目状态联动：项目绑定的单实际派出 → 项目 active → in_progress
     // （首派语义；已在 in_progress/completed 的项目不回退不重复触发）。
     link_project_on_dispatch(store, issue.project_id);
 
-    // 派发即指派（2026-09-17）：派发目标落 assignee 字段。显式 target /
-    // 匹配器 / 兜底 / D3 换节点重派四路都汇经本单一入口——此前派发只路由
+    // 派发即指派：派发目标落 assignee 字段。显式 target /
+    // 匹配器 / 兜底 / 换节点重派四路都汇经本单一入口——此前派发只路由
     // 不回填，看板「指派」列在任务执行完仍显示未指派（字段与事实脱节）。
     // 已指向同一 worker 时跳过（幂等，防重复 activity）；回填失败不阻断
     // 派发（此刻派发已落定，字段只是显示层事实）——WARN 留痕。显式
@@ -833,7 +825,7 @@ pub fn dispatch_issue_core(
     //    已在函数头前置检查；此处 unwrap 失败理论上不可达，防御性保留。）
     let issue_id = issue.id;
     let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
-    // E2：档案管线派发带基线 commit（worker 侧以收件箱基线为起点开跑）。
+    // 档案管线派发带基线 commit（worker 侧以收件箱基线为起点开跑）。
     let mut payload = serde_json::json!({
         "content": prompt,
         "task_id": task_id,
@@ -846,7 +838,7 @@ pub fn dispatch_issue_core(
     if let Some(commit) = &baseline_commit {
         payload["_baseline_commit"] = serde_json::json!(commit);
     }
-    // AOR 批二a ④：派发代际号下行（worker 写回原样回声；旧 B 端不认识
+    // 派发代际号下行（worker 写回原样回声；旧 B 端不认识
     // 该键 = 回声缺席 = 写回闸放行，向后兼容）。
     payload["dispatch_generation"] = serde_json::json!(dispatch_generation);
     if let Some(p) = issue
@@ -874,8 +866,8 @@ pub fn dispatch_issue_core(
     let prev_assignee_id_for_rpc = dispatch_prev_assignee_id.clone();
     tokio::spawn(async move {
         let timeout = std::time::Duration::from_secs(30);
-        // 统一失败收尾：传输失败与 B 端拒单（BUG-1，2026-10-17——ACK
-        // status=error = 工作队列满，任务从未开始）同走 F2 路径
+        // 统一失败收尾：传输失败与 B 端拒单（BUG-1，——ACK
+        // status=error = 工作队列满，任务从未开始）同走 路径
         // （finish FAILED + 回退 + ⛔ 留痕，sweep 按 MARK 前缀识别重试候选）。
         let failure: Option<(&'static str, String)> = match rpc_client
             .call_with_timeout(&target_for_rpc, request, timeout)
@@ -885,7 +877,7 @@ pub fn dispatch_issue_core(
                 if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(
                     resp.result.as_ref(),
                 ) {
-                    // L13-b：ACK error 字段（B 端 mandate 拒绝原因等）优先
+                    // b：ACK error 字段（B 端 mandate 拒绝原因等）优先
                     // 透传——缺失回落队列满文案（旧 B 端 wire 无 error 键）。
                     let ack_reason = resp
                         .result
@@ -908,7 +900,7 @@ pub fn dispatch_issue_core(
             tracing::warn!(
                 "[Board] dispatch send failed (task_id={task_id_for_rpc}): [{category}] {detail}"
             );
-            // G3：送达失败收账（此分支不落 fail_task——本地 task 由 stale
+            // 送达失败收账（此分支不落 fail_task——本地 task 由 stale
             // 安全网兜底回收，账本面这里直接诚实收口）。
             nemesis_taskstore::ledger::settle_run(
                 &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id_for_rpc),
@@ -919,7 +911,7 @@ pub fn dispatch_issue_core(
                 &task_id_for_rpc,
                 nemesis_board::models::dispatch_state::FAILED,
             );
-            // F2（2026-09-30）：送达失败 = 任务从未开始 → 状态回退到
+            // 送达失败 = 任务从未开始 → 状态回退到
             // 派发前值 + 指派恢复（守卫内部自含：人工同刻挪过状态就让
             // 位）。失败仅留日志（⛔ 评论与审计已在下面/rollback 内落）。
             match store_for_rpc.rollback_dispatch_failure(
@@ -940,7 +932,7 @@ pub fn dispatch_issue_core(
                 issue_id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
-                    // F2：前缀走单一真相源常量（sweep 重试候选按前缀识别，
+                    // 前缀走单一真相源常量（sweep 重试候选按前缀识别，
                     // 字面量漂移 = 重试静默失效）。
                     "{}: [{}] RPC 送达失败（{detail}）",
                     nemesis_board::SEND_FAILURE_MARK,
@@ -972,7 +964,7 @@ pub(super) async fn issue_dispatch(
 ) -> Result<Option<serde_json::Value>, String> {
     Err("issue.dispatch 需要集群支持（cluster feature 未编译）".to_string())
 }
-/// F2 项目状态联动：项目绑定的单实际派出 → 项目 `active → in_progress`
+/// 项目状态联动：项目绑定的单实际派出 → 项目 `active → in_progress`
 /// （首派语义）。项目不在 active（已 in_progress/completed/archived）或
 /// 绑定缺失 → 不动。联动是派发的伴生效果——失败只 WARN 不回滚派发。
 #[cfg(feature = "cluster")]
@@ -1008,7 +1000,7 @@ pub(super) fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Opti
 }
 
 /// 三路 sweep 触发源（announce 回调 / 派发落定重估波 / 周期兜底 ticker，
-/// F-U3-4）的进程级串行锁：sweep 体是 check-then-dispatch 序列，两个
+/// F）的进程级串行锁：sweep 体是 check-then-dispatch 序列，两个
 /// wave 并发时可同时通过 `has_active_dispatch` 闸对同一单双派。同步锁
 /// 即可——sweep 体全同步（SQLite + fire-and-forget RPC spawn），常态
 /// 持锁毫秒级；**例外**：档案基线转移（write_side_handoff 内 block_in_place
@@ -1017,11 +1009,11 @@ pub(super) fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Opti
 /// `unwrap_or_else(into_inner)` 惯例。
 #[cfg(feature = "cluster")]
 static PARK_SWEEP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// D0 准入停车评论标记（与 PARK_NOTICE_MARK 分开：原因不同、去重不互斥）。
+/// 准入停车评论标记（与 PARK_NOTICE_MARK 分开：原因不同、去重不互斥）。
 #[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 const INFLIGHT_NOTICE_MARK: &str = "在途派发已达上限";
 
-/// D0 准入判定（纯函数，单测直测）：目标 worker 在途派发数 ≥ 上限（上限
+/// 准入判定（纯函数，单测直测）：目标 worker 在途派发数 ≥ 上限（上限
 /// >0 时）= 满，自动派发不派、留 backlog 等承接。
 #[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 pub(super) fn inflight_full(
@@ -1086,7 +1078,7 @@ pub fn dispatch_subissue_auto_with_config(
             return Ok(None);
         }
     }
-    // 父单存活闸（F-U4-3）：父单已取消 = 任务线已死，本单不再派出——
+    // 父单存活闸（F）：父单已取消 = 任务线已死，本单不再派出——
     // 否则补派触发器/停车场 sweep 会在父单死后继续派子单空烧 token。
     //（reopen 侧同款校验：父单 cancelled 的子单不可单独复活。）
     if let Some(pid) = issue.parent_issue_id
@@ -1098,7 +1090,7 @@ pub fn dispatch_subissue_auto_with_config(
         return Ok(None);
     }
 
-    // R-9（goal P4）touch_paths 互斥：本单声明的写路径与「同父在途单」的
+    // R-9（goal）touch_paths 互斥：本单声明的写路径与「同父在途单」的
     // 写路径相交 → 本波不派（静默延后，下一触发波重估）——防多 worker 并发
     // 写同一路径互相覆盖。无声明（空 [TOUCH]）不拦。
     {
@@ -1134,16 +1126,16 @@ pub fn dispatch_subissue_auto_with_config(
             match pick_target_by_matcher(store, cluster, &issue) {
                 Some(t) => t,
                 None => {
-                    // B1（goal P1）：匹配失败明细——要求 vs 每个在线候选差什么
+                    // （goal）：匹配失败明细——要求 vs 每个在线候选差什么
                     // （与 rank_peers 同语义：role 精确、tags 交集非空）。
                     let candidates = project_dispatch_candidates(cluster);
-                    let detail = match_failure_detail(&issue, &candidates); // 兜底开关（集群完备性 2026-09-11）：无人匹配但任务必须
+                    let detail = match_failure_detail(&issue, &candidates); // 兜底开关（集群完备性）：无人匹配但任务必须
                     // 做下去——按配置兜底派给在线节点（派发前 ⚠ 评论留痕；
-                    // 与 ⏸ 停车评论是不同语义，不受 B4 去重约束）。
+                    // 与 ⏸ 停车评论是不同语义，不受 去重约束）。
                     if let Some((fb_target, reason)) =
                         pick_fallback_target(board_cfg, store, cluster, &issue)
                     {
-                        // E（goal P2/P5）：标签授予——把 relaxed 掉的缺失标签
+                        // E（goal /）：标签授予——把 relaxed 掉的缺失标签
                         // 授予目标节点（board_meta 台账；同类后续任务正常匹配，
                         // 降级路径越走越少）。
                         let granted_new = store
@@ -1166,9 +1158,9 @@ pub fn dispatch_subissue_auto_with_config(
                         fb_target
                     } else {
                         // 诚实留痕：不悄悄留 backlog。sweep 静默路径（!notify_park）
-                        // 不落评论不动父单。B1：评论附匹配明细（差什么一眼可见）。
+                        // 不落评论不动父单。：评论附匹配明细（差什么一眼可见）。
                         if notify_park {
-                            // B4 去重：最后一条 system 评论已是暂缓说明 → 不重复落。
+                            // 去重：最后一条 system 评论已是暂缓说明 → 不重复落。
                             let already_noted = store
                                 .last_system_comment(issue.id)
                                 .ok()
@@ -1207,7 +1199,7 @@ pub fn dispatch_subissue_auto_with_config(
                                     })],
                                 );
                             }
-                            // B5 可见性：整条链都在等节点 → 父单转 blocked 显形。
+                            // 可见性：整条链都在等节点 → 父单转 blocked 显形。
                             mark_parent_blocked_if_stalled(store, &issue, actor);
                         }
                         return Ok(None);
@@ -1218,16 +1210,16 @@ pub fn dispatch_subissue_auto_with_config(
     };
 
     // 单一真相源：target 归一化为节点 id（与账本 worker_id / worker 上报
-    // 身份 _rpc.from 同形态；D0 负载表键随之统一，防同一 worker 名字/id
-    // 双键分裂计数）。T37 双身份失配第三处落点（2026-09-13）。
+    // 身份 _rpc.from 同形态； 负载表键随之统一，防同一 worker 名字/id
+    // 双键分裂计数）。 双身份失配第三处落点。
     let target = cluster
         .and_then(|c| c.canonical_peer_id(&target))
         .unwrap_or(target);
 
-    // D0（goal P2）派发准入控制：目标 worker 在途派发数达上限 → 本单不派、
+    // （goal）派发准入控制：目标 worker 在途派发数达上限 → 本单不派、
     // 留 backlog——新节点上线后 sweep 自然承接（防「同波多就绪单全挤单
-    // worker、后上线的设备接不到活」）。cap=0 = 不限（旧行为）。B4 同款
-    // 去重（独立 INFLIGHT_NOTICE_MARK）+ B5 父单受阻联动。
+    // worker、后上线的设备接不到活」）。cap=0 = 不限（旧行为）。 同款
+    // 去重（独立 INFLIGHT_NOTICE_MARK）+ 父单受阻联动。
     let cap = board_cfg.map(|c| c.worker_max_inflight).unwrap_or(1);
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     if inflight_full(&load, &target, cap) {
@@ -1257,7 +1249,7 @@ pub fn dispatch_subissue_auto_with_config(
     let out = dispatch_issue_core(store, cluster, issue.id, &target, actor, None)?;
 
     // 父单联动：首张子单派出 → 父单 backlog/todo/blocked → in_progress
-    //（blocked 来自 B5 停车联动，状态机 blocked→in_progress 合法）。
+    //（blocked 来自 停车联动，状态机 blocked→in_progress 合法）。
     if let Some(pid) = issue.parent_issue_id
         && let Ok(parent) = store.get_issue(pid)
         && matches!(
@@ -1279,10 +1271,10 @@ pub fn dispatch_subissue_auto_with_config(
     Ok(Some(out))
 }
 
-/// 停车场父单受阻联动（B5）：停车单的父单尚未开工（backlog/todo）且
+/// 停车场父单受阻联动：停车单的父单尚未开工（backlog/todo）且
 /// 所有兄弟子单都没派出过（无在途派发）→ 父单转 blocked + 系统评论。
 /// 「整条链都在等节点」在看板受阻列显形，而不是停在 backlog 假装没发生
-/// （生产实测 2026-09-10：用户建任务后"然后就没了"）。后续任一子单
+/// （生产实测 ：用户建任务后"然后就没了"）。后续任一子单
 /// 派出时由派发侧父单联动（bump 条件含 blocked）推回 in_progress。
 #[cfg(feature = "cluster")]
 pub(super) fn mark_parent_blocked_if_stalled(
@@ -1324,7 +1316,7 @@ pub(super) fn mark_parent_blocked_if_stalled(
     }
 }
 
-/// 停车场 sweep（A2）：对「待派态 + planner 来源或曾被自动派发暂缓」的
+/// 停车场 sweep：对「待派态 + planner 来源或曾被自动派发暂缓」的
 /// 候选重试 [`dispatch_subissue_auto`]（其自带状态/在途/依赖/匹配/兜底闸）。
 /// 触发点 = 节点发现回调（gateway 装配接线）——节点上线、身份/tags 变更、
 /// 周期 announce 刷新都会触发；重试仍不满足时**静默**（notify_park=false）。
@@ -1338,8 +1330,8 @@ pub fn sweep_parked_dispatches(
     sweep_parked_dispatches_notify(store, cluster, actor, false)
 }
 
-/// 周期兜底 ticker（F-U3-4）专用入口：`notify_park=true`——首次停车落
-/// ⏸ 评论 + 父单 blocked 显形（与直派路径同语义；B4 去重保证重复 tick
+/// 周期兜底 ticker（F）专用入口：`notify_park=true`——首次停车落
+/// ⏸ 评论 + 父单 blocked 显形（与直派路径同语义； 去重保证重复 tick
 /// 不刷屏），其余行为与 [`sweep_parked_dispatches`] 完全一致。
 #[cfg(feature = "cluster")]
 pub fn sweep_parked_dispatches_notify(
@@ -1370,7 +1362,7 @@ pub fn sweep_parked_dispatches_with_config(
     notify_park: bool,
 ) -> (usize, usize, usize) {
     let _serial = PARK_SWEEP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // EST-02（2026-09-16 横扫加固）：estop 生效中 sweep 短路——派发核心
+    // EST-02（横扫加固）：estop 生效中 sweep 短路——派发核心
     // 的 estop 闸本会逐单拒绝，这里提前收敛，避免 20s 周期对全部停车候选
     // 的无效报错 churn。release 后（resume watcher / 定时器）自然恢复。
     if board_estop_engaged() {
@@ -1409,12 +1401,12 @@ pub fn sweep_parked_dispatches_with_config(
             }
         }
     }
-    // F2（2026-10-13）：送达失败自动重试——待派态或 in_review 且最后一条
+    // 送达失败自动重试——待派态或 in_review 且最后一条
     // system 评论是 ⛔ 送达失败标记且最新派发行 state=failed 的单进入重试
     // 池（评论 + 派发行账本双闸，gateway 重启不丢退避进度）。池含 in_review：
     // 评审 FAIL 自动重派绕过 backlog/todo 状态闸，issue 带 in_review 直进
     // dispatch_issue_core，送达失败回滚也回 in_review——只捞 backlog/todo
-    // 会漏掉该形态（复检批补：NB-24 原始事故形状）。账本闸（多角度审计批）：
+    // 会漏掉该形态（复检批补： 原始事故形状）。账本闸（多角度审计批）：
     // 成功交付只写 Delivery/Comment 评论不写 system 评论——无账本闸则旧 ⛔
     // 标记仍是最后一条 system 评论，交付后 in_review 立即重新入池，评审进行
     // 中被重派（乒乓循环）。
@@ -1432,7 +1424,7 @@ pub fn sweep_parked_dispatches_with_config(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            // 重试预算（多角度审计批 2026-10-13，替换旧 E1 max_total_redispatch
+            // 重试预算（多角度审计-13，替换旧 max_total_redispatch
             // 挪用）：专用键 board.budget.max_send_retries，默认 5，按本单
             // ⛔ 标记评论计数；0 = 关闭保险丝；unlimited_mode = true 视为 0
             //（操作者显式放弃护栏）。与父单全链派发行口径（max_total_redispatch）
@@ -1445,7 +1437,7 @@ pub fn sweep_parked_dispatches_with_config(
             };
             for (id, attempts, last_fail, _snapshot_status) in send_fails {
                 considered += 1;
-                // 快照复核（并发审计批 2026-10-13）：池 SELECT 与本臂执行间
+                // 快照复核（并发审计-13）：池 SELECT 与本臂执行间
                 // 可隔基线转移等秒级窗口——单子可能已被并发链收口（done/
                 // cancelled）或改道（评审回 todo 等）。终态单不派发也不落
                 // 评论（⏸/🛑 落在收口单上是对事实撒谎）；分流一律用新鲜
@@ -1468,7 +1460,7 @@ pub fn sweep_parked_dispatches_with_config(
                     );
                     // 🛑 评论是熔断出池的载体（落盘 = 最后一条 system 评论
                     // 不再是 ⛔）——写入失败必须可见，静默吞掉 = 熔断永不
-                    // 落盘 + 每 tick 静默重写（并发审计批 2026-10-13）。
+                    // 落盘 + 每 tick 静默重写（并发审计-13）。
                     if let Err(e) = store.add_comment(nemesis_board::models::NewComment {
                         issue_id: id,
                         author: actor.clone(),
@@ -1497,18 +1489,18 @@ pub fn sweep_parked_dispatches_with_config(
                     // 评审已经认可原目标的能力面，先原地重试）。差距意见
                     // 从评论找回随包重发（worker 必须知道为什么被打回，
                     // 否则重派就是掷骰子——§6.1 检视 2 同源纪律）。
-                    // D0 在途闸（闭环批 2026-10-13 补齐：backlog 臂经
+                    // 在途闸（闭环-13 补齐：backlog 臂经
                     // dispatch_subissue_auto_with_config 自带此闸，本直派
-                    // 臂此前绕过——目标 worker 在途满载仍硬塞，D0 的
+                    // 臂此前绕过——目标 worker 在途满载仍硬塞， 的
                     // 「同波多就绪单不挤单 worker」语义对重试臂失效）。
-                    // **只 debug 延后，不落任何 system 评论**——F2 候选的
+                    // **只 debug 延后，不落任何 system 评论**—— 候选的
                     // 身份锚 = 最后一条 system 评论是 ⛔ 标记，此处写评论
                     // 会把单子自己旋出重试池（自败）。
                     let target = pick_send_failure_redispatch_target(store, cluster, id);
                     match target {
                         Some(target) => {
                             let target = cluster.canonical_peer_id(&target).unwrap_or(target);
-                            // 拓扑预检（并发审计批 2026-10-13）：file: 锚点 +
+                            // 拓扑预检（并发审计-13）：file: 锚点 +
                             // 远端目标 = 确定性拓扑死锁，dispatch_issue_core
                             // 的拓扑闸必拒——先于派发尝试落 ⏸（成因精确）。
                             // 此前在 Err 臂事后判形态，冲突冻结/基线中止等
@@ -1565,7 +1557,7 @@ pub fn sweep_parked_dispatches_with_config(
                             }
                         }
                         None => {
-                            // 无可用目标分两类（多角度审计批 2026-10-13）：
+                            // 无可用目标分两类（多角度审计-13）：
                             // file: 锚点单 = 拓扑死锁（只能本节点执行，而送达
                             // 失败的目标是远端）——自动重试永不可能成功，⏸
                             // 出池转人工；其余（全员离线等）= 瞬态，debug 留池
@@ -1650,7 +1642,7 @@ pub fn sweep_parked_dispatches_with_config(
                         // 状态竞态等）：留池按退避重试（1m→30m 限频，不是每
                         // tick），冻结类由 project.resume 自愈后自然续跑。
                         // 拓扑死锁已在派发前预检出池——此处不再事后判 file:
-                        // 形态（并发审计批 2026-10-13 修：冻结等先序闸的瞬态
+                        // 形态（并发审计-13 修：冻结等先序闸的瞬态
                         // Err 曾被误诊成拓扑死锁而永久停车）。
                         tracing::warn!(
                             "[Board] 送达失败重试派发 issue {id} 失败（留池按退避重试）：{e}"
@@ -1664,8 +1656,8 @@ pub fn sweep_parked_dispatches_with_config(
     (considered, dispatched, failed)
 }
 
-/// F2 送达失败重试的 in_review 重派目标：末次派发 worker 在线则原地重试
-/// （送达失败 = 可达性本身是失败项，与 D3 评审重派的 Same(last) 不同——
+/// 送达失败重试的 in_review 重派目标：末次派发 worker 在线则原地重试
+/// （送达失败 = 可达性本身是失败项，与 评审重派的 Same(last) 不同——
 /// 那里 worker 刚交付过、可达性成立）；末次 worker 离线/无派发记录 →
 /// 在线候选首选（[`rank_dispatch_candidates`] 匹配序）。无在线可用节点
 /// 返回 None（调用方本 tick 跳过留池，退避闸继续生效）。
@@ -1688,12 +1680,12 @@ pub(super) fn pick_send_failure_redispatch_target(
         .find(|name| cluster.get_peer(name).is_some_and(|p| p.is_online()))
 }
 
-/// F2 送达失败重试（in_review）的验收差距找回：评审 FAIL 臂把差距以
+/// 送达失败重试（in_review）的验收差距找回：评审 FAIL 臂把差距以
 /// 「❌ agent 验收未通过（第 N/M 次重派）## 差距…」用户评论落库
 /// （board_review.rs 唯一写入方），取最后一条以「❌ agent 验收未通过」
 /// **开头**的用户评论**整段原文**作 review_feedback——不解析差距/reasons
 /// 边界，整段随「上轮验收意见」段重发（信息只多不少）。前缀锚定而非
-/// contains（多角度审计批 2026-10-13）：人工评审意见若引用「## 差距」
+/// contains（多角度审计-13）：人工评审意见若引用「## 差距」
 /// 字样（引用 worker 自述/粘贴旧意见），contains 会把人工评论误当自动
 /// 重派差距重发。无此类评论（人工 in_review 直派送达失败等形态）返回
 /// None——不造空意见。
@@ -1711,12 +1703,12 @@ pub(super) fn recover_review_feedback(store: &Arc<BoardStore>, issue_id: i64) ->
         .map(|c| c.content)
 }
 
-/// D0b（goal P2）重平衡：节点 announce（上线/刷新）时，把其他 worker 手里
+/// （goal）重平衡：节点 announce（上线/刷新）时，把其他 worker 手里
 /// 「已派未开跑」（dispatched 且未 running）的排队单，按空闲 slot 挪给本
 /// 节点——只从超载者（活跃 = 在途+排队 > cap，排队单存在即满载证据）偷
 /// 队首；running 单不可迁移。新 worker 需满足该单角色/标签要求（同匹配器
 /// 语义）。**file: 锚点单不偷**（[`nemesis_board::anchor::has_file_anchor`]，
-/// 拓扑约束：转派远端必被派发拓扑闸拒绝——真机 NB-5/NB-6 实证取消后无法
+/// 拓扑约束：转派远端必被派发拓扑闸拒绝——真机 / 实证取消后无法
 /// 重派）。转派失败补偿：原排队派发已被取消，系统评论诚实留痕（issue 保
 /// 留可重派状态，人工/autopilot 一发即活），不无声死透。竞态诚实边界：
 /// task_cancel 下行到达前旧 worker 已出队开跑 → 任务照跑、其回写因
@@ -1773,7 +1765,7 @@ pub async fn rebalance_queued_to_worker(
         let Ok(issue) = store.get_issue(d.issue_id) else {
             continue;
         };
-        // 拓扑约束（2026-10-08 NB-5/NB-6 根修①）：file: 锚点单只能在派发端
+        // 拓扑约束（/ 根修①）：file: 锚点单只能在派发端
         // workspace 实核，转派远端必被 dispatch_issue_core 拓扑闸拒绝——
         // 而本函数 cancel 先行、失败不可逆。跳过不偷（留在原队列，原节点
         // 空闲后自然出队），谓词单一真相源 = has_file_anchor。
@@ -1840,7 +1832,7 @@ pub async fn rebalance_queued_to_worker(
             }
             Err(e) => {
                 tracing::warn!("[Board] D0b 重平衡重派 issue {} 失败：{e}", d.issue_id);
-                // 补偿（2026-10-08 NB-5/NB-6 根修②）：取消已落库且不可逆，
+                // 补偿（/ 根修②）：取消已落库且不可逆，
                 // issue 此时无活跃派发——系统评论诚实留痕，把「无声死透」
                 // 变成「可见停车」。状态机 in_progress → todo 非法（不走
                 // 回退）；issue 保留 in_progress 可被 dispatch_issue_core
@@ -1865,7 +1857,7 @@ pub async fn rebalance_queued_to_worker(
 
 /// 在线节点 → PeerCandidate 投影（[`rank_dispatch_candidates`] 与兜底
 /// 松弛排序 [`pick_fallback_target`] 共用的单一真相源）：数据源 = 注册表
-/// 真实 tags ∪ category（A1 后 announce/静态 peers/get_info 的 tags 全链
+/// 真实 tags ∪ category（后 announce/静态 peers/get_info 的 tags 全链
 /// 落地；曾长期降级为 `tags := [category]`，planner 的 required_tags 天然
 /// 不可满足 → 全部停车）。
 #[cfg(feature = "cluster")]
@@ -1883,7 +1875,7 @@ pub(super) fn project_dispatch_candidates(
                 nemesis_types::cluster::NodeRole::Worker => "worker",
             }
             .to_string(),
-            // A1：announce 携带的 tags 已落注册表——投影 = 真实 tags ∪
+            // announce 携带的 tags 已落注册表——投影 = 真实 tags ∪
             // category（category 保留兜底：无 tags 的老节点行为不变）。
             tags: {
                 let mut t = p.tags.clone();
@@ -1894,11 +1886,11 @@ pub(super) fn project_dispatch_candidates(
                 t
             },
             capabilities: p.capabilities.clone(),
-            // M2：announce/静态 peers 携带的职能与档位已落注册表——同
+            // announce/静态 peers 携带的职能与档位已落注册表——同
             // tags 先例投影进 matcher（tier None = 闸 fail-open）。
             professions: p.professions.clone(),
             tier: p.tier.clone(),
-            // P6-R1：announce/静态 peers 携带的 backend 宣告已落注册表——
+            // announce/静态 peers 携带的 backend 宣告已落注册表——
             // 同 tags/tier 先例投影进 matcher（None = 闸 fail-closed）。
             runtime_backend: p.runtime_backend.clone(),
         })
@@ -1910,10 +1902,10 @@ pub(super) fn project_dispatch_candidates(
 /// 匹配面共用（rank_dispatch_candidates / rebalance_queued_to_worker /
 /// pick_fallback_target / match_failure_detail）。此前 pick_fallback_target
 /// 独家丢弃词表外角色词（其余三处转 tags），兜底松弛丢标签后零约束、
-/// 任意在线节点可接单（2026-10-17 根修）。
+/// 任意在线节点可接单（根修）。
 /// （cfg 随调用面走：四个调用方全部 cluster-gated，本函数不裸挂——此前
 /// cfg 错位挂到本函数、rank_dispatch_candidates 反而裸奔，IoT 裁剪构建
-/// （无 cluster）四处 E0433/E0425；修正后两者同闸，裁剪构建零死代码。）
+/// （无 cluster）四处 /；修正后两者同闸，裁剪构建零死代码。）
 #[cfg(feature = "cluster")]
 fn normalize_dispatch_role(
     required_role: Option<&str>,
@@ -1930,7 +1922,7 @@ fn normalize_dispatch_role(
     }
 }
 
-/// 匹配器全量排序（D3 换节点重派的候选来源 + [`pick_target_by_matcher`]
+/// 匹配器全量排序（换节点重派的候选来源 + [`pick_target_by_matcher`]
 /// 的单一真相源）：在线节点（不含本机）→ 投影 →
 /// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
 /// worker/coordinator，planner 给的其他角色词（如 "qa"）转标签语义与
@@ -1947,7 +1939,7 @@ pub fn rank_dispatch_candidates(
         normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
 
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
-    // 拓扑约束（2026-10-08 NB-4/NB-5/NB-6 根修③）：file: 锚点单只能本节点
+    // 拓扑约束（// 根修③）：file: 锚点单只能本节点
     // 执行，而候选投影全是远端节点（excluding_self）——返回空候选，让
     // 消费方走各自的「无候选」路径（换节点决策回落 Same(本节点) / 匹配器
     // 停车 / 冲突解决同节点重派），不产出注定被拓扑闸拒绝的非法目标。
@@ -1963,7 +1955,7 @@ pub fn rank_dispatch_candidates(
         required_backend: issue.required_backend.as_deref(),
         description: &issue.description,
     };
-    // E（goal P2/P5）：候选 tags 合并 master 授予标签（granted_tags 台账）。
+    // E（goal /）：候选 tags 合并 master 授予标签（granted_tags 台账）。
     let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
     nemesis_board::rank_peers(&input, &candidates, &load)
         .into_iter()
@@ -1971,7 +1963,7 @@ pub fn rank_dispatch_candidates(
         .collect()
 }
 
-/// 匹配器选节点：取 [`rank_dispatch_candidates`] 榜首（先过 A1 耗时
+/// 匹配器选节点：取 [`rank_dispatch_candidates`] 榜首（先过 耗时
 /// 次级重排——见 [`duration_weighted_candidates`]）。
 #[cfg(feature = "cluster")]
 pub(super) fn pick_target_by_matcher(
@@ -1988,12 +1980,12 @@ pub(super) fn pick_target_by_matcher(
     .next()
 }
 
-/// A1（2026-10-21 引入）：耗时估计次级重排。匹配器硬条件
+/// （引入）：耗时估计次级重排。匹配器硬条件
 /// 排序（分数↓负载↑）之后，按 (worker, required_profession) 历史耗时
 /// 中位数把「同类任务跑得快」的节点提前——借鉴前代实现运行时估计器
 /// （滑窗中位数 + 欠采样回落全局 + 无数据零干预），数据面 = 本仓现成的
 /// `issue_dispatch` 完结派发表（master 侧单钟），无需新计时埋点。
-/// 单候选 / 无样本 / 查询失败 → 原序返回（零行为变化红线）。与 P34
+/// 单候选 / 无样本 / 查询失败 → 原序返回（零行为变化红线）。与
 /// 指纹稳定加权（成功率，board_review 侧）正交：本函数管速度。
 #[cfg(feature = "cluster")]
 pub(super) fn duration_weighted_candidates(
@@ -2021,15 +2013,15 @@ pub(super) fn duration_weighted_candidates(
     }
 }
 
-/// 停车场兜底目标（集群完备性加固 2026-09-11；2026-09-29 三档化）。自动
+/// 停车场兜底目标（集群完备性加固 ； 三档化）。自动
 /// 派发匹配不到节点时，为了任务做下去由「一个客户端」推进。返回
 /// `(节点 id, 兜底说明)`；None = 不兜底（调用方走原停车路径）。
 ///
-/// 语义（用户裁决 2026-09-11 钉住规则 / 2026-09-29 三档默认 Role）：
+/// 语义（用户裁决 钉住规则 / 三档默认 Role）：
 /// - `Off` / 无在线节点 → None（兜底造不出客户端，诚实停车）。
 /// - `dispatch_fallback_target` 钉住目标：按 name 或 id 精确匹配在线节点
 ///   （大小写不敏感）；**钉住的不在线 = None，不悄悄换人**（钉住即点名）。
-/// - 未钉住：按档位走 D13 松弛阶梯——`Role` 档 ②保职能丢标签 → ③丢职能
+/// - 未钉住：按档位走 松弛阶梯——`Role` 档 ②保职能丢标签 → ③丢职能
 ///   保角色标签（worker/coordinator 纪律保留）；`Full` 档阶梯全开 ②③④。
 ///   rank_peers 同分按负载↑、id 字典序，确定性。
 #[cfg(feature = "cluster")]
@@ -2040,7 +2032,7 @@ pub(super) fn pick_fallback_target(
     issue: &nemesis_board::Issue,
 ) -> Option<(String, &'static str)> {
     use nemesis_config::DispatchFallbackMode;
-    // 拓扑约束（2026-10-08 根修④）：file: 锚点单只能本节点执行，兜底候选
+    // 拓扑约束（根修④）：file: 锚点单只能本节点执行，兜底候选
     // 全是远端节点——兜底产物必被拓扑闸拒绝，直接 None 走停车路径（与
     // 匹配器无候选同语义）。谓词单一真相源 = has_file_anchor。
     if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
@@ -2069,13 +2061,13 @@ pub(super) fn pick_fallback_target(
             .map(|p| (p.base.id.clone(), "指定兜底节点"));
     }
 
-    // 2. 松弛排序（D13 阶梯 = matcher::pick_relaxed：②保职能丢标签 →
+    // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
     //    角色丢标签」，行为不变）。角色归一沿用严格匹配（词表外角色词
     //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
     let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
-    // 2. 松弛排序（D13 阶梯 = matcher::pick_relaxed：②保职能丢标签 →
+    // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
     //    角色丢标签」，行为不变）。角色归一走单一真相源
     //    normalize_dispatch_role（词表外角色词转 tags——此前这里独家丢词，
@@ -2093,7 +2085,7 @@ pub(super) fn pick_fallback_target(
     nemesis_board::pick_relaxed(&base, &candidates, &load, depth)
 }
 
-/// E（goal P2/P5）：候选投影合并 master 授予标签（tags ∪ granted_tags）。
+/// E（goal /）：候选投影合并 master 授予标签（tags ∪ granted_tags）。
 /// 查询失败按无授予处理（不阻塞派发）。
 #[cfg(feature = "cluster")]
 fn merge_granted_tags(
@@ -2115,7 +2107,7 @@ fn merge_granted_tags(
     candidates
 }
 
-/// B1（goal P1）匹配失败明细（纯函数，单测直测）：要求 vs 每个在线候选
+/// （goal）匹配失败明细（纯函数，单测直测）：要求 vs 每个在线候选
 /// 差什么（与 rank_peers 同语义：required_role 精确、required_tags 交集
 /// 非空；词表外角色词已在 rank_dispatch_candidates 归一进 tags）。
 /// 输出人读行集，直接拼进停车评论——「差什么」一眼可见。
@@ -2130,7 +2122,7 @@ pub(super) fn match_failure_detail(
     if candidates.is_empty() {
         return "无在线候选节点".to_string();
     }
-    // 职能需求（M2）：精确匹配语义 + tier 闸差值都要在停车评论里可见。
+    // 职能需求：精确匹配语义 + tier 闸差值都要在停车评论里可见。
     let prof_need = issue
         .required_profession
         .as_deref()
@@ -2171,7 +2163,7 @@ pub(super) fn match_failure_detail(
         {
             missing.push(format!("档位 {tier} 低于门槛 {min_tier}"));
         }
-        // 环境能力硬条件（NB-122 批）：逐项查缺口（大小写不敏感精确词）。
+        // 环境能力硬条件（批）：逐项查缺口（大小写不敏感精确词）。
         for need in &issue.required_capabilities {
             let need = need.trim();
             let hit = !need.is_empty()
@@ -2215,8 +2207,8 @@ pub(super) fn match_failure_detail(
     lines.join("；")
 }
 /// 自动派发判定（纯函数，可单测）：config 开关开 **且** 指派对象是 worker。
-/// 开关 = `config.json` 的 `board.auto_dispatch`（W2.5 接口预留，用户拍板
-/// 2026-08-31：现阶段不做自动派发，默认 false；置 true 即激活）。
+/// 开关 = `config.json` 的 `board.auto_dispatch`（.5 接口预留，
+/// 现阶段不做自动派发，默认 false；置 true 即激活）。
 pub(super) fn should_auto_dispatch(
     board_cfg: Option<&nemesis_config::BoardFlagConfig>,
     assignee: Option<AssignmentType>,
@@ -2230,7 +2222,7 @@ pub(super) fn live_board_config() -> Option<nemesis_config::BoardFlagConfig> {
     nemesis_config::load_live().and_then(|c| c.board)
 }
 
-/// 指派成功后的自动派发（`issue.assign` 末尾调用；W2.5 接口预留）。走
+/// 指派成功后的自动派发（`issue.assign` 末尾调用；.5 接口预留）。走
 /// [`dispatch_issue_core`] 单一派发入口。失败**不回滚指派**：warn + ⛔ 系统
 /// 评论留痕（与派发 RPC 送达失败同语义）。返回是否实际派发（调用方据此
 /// 重取 issue 保证响应反映派发后的 in_progress 态）。
@@ -2303,9 +2295,7 @@ pub(super) fn auto_dispatch_after_assign(
     false
 }
 
-// ---------------------------------------------------------------------------
 // flow 导入单的自动派发（外循环域剥离后唯一消费方 = flow 引擎 board_land 步）
-// ---------------------------------------------------------------------------
 
 /// flow 导入单的派发（flow 引擎模板 land 步建单后的自动派发）。目标解析
 /// 阶梯 = 显式 `target`（模板钉住，不在线诚实停车不换人）→ 匹配器硬条件 →
@@ -2420,9 +2410,7 @@ pub fn dispatch_issue_for_flow(
 ) -> bool {
     false
 }
-// ---------------------------------------------------------------------------
 // target="self" 单机本地执行面（一等公民，与集群是否启用无关）
-// ---------------------------------------------------------------------------
 
 /// 本地执行请求（target="self" 派发经 [`dispatch_issue_local`] 组装，交由
 /// 网关注册的执行器上总线驱动本机 AgentLoop）。
@@ -2430,11 +2418,11 @@ pub fn dispatch_issue_for_flow(
 pub struct LocalDispatchRequest {
     pub task_id: String,
     pub issue_id: i64,
-    /// 展示编号（"NB-1" 形态， nemesis_board::Issue.number 原样透传，
+    /// 展示编号（"" 形态， nemesis_board::Issue.number 原样透传，
     /// 日志/评审上下文用）。
     pub issue_number: String,
     pub prompt: String,
-    /// 派发代际号（AOR 批二a ④）：claim 成功的 generation 原样下行，
+    /// 派发代际号：claim 成功的 generation 原样下行，
     /// 执行器写回时经 `write_back_board_dispatch` 回声——写回闸据此
     /// 拒绝旧代迟到回调覆盖新一代派发。None = 老调用方未带（回声闸
     /// 放行，兼容存量）。
@@ -2442,7 +2430,7 @@ pub struct LocalDispatchRequest {
 }
 
 /// 本地执行器（gateway 侧装配，见 nemesisbot local_dispatch.rs）。`submit`
-/// 同步面只做校验/消息入总线（Err = 派发未成行，调用方走 F2 同款回滚）；
+/// 同步面只做校验/消息入总线（Err = 派发未成行，调用方走 同款回滚）；
 /// 回复捕获/写回/评审触发在执行器内部异步完成（镜像 RPC ACK 后异步回报
 /// 语义——dispatched 行存续到执行器写回终态为止）。
 #[cfg(feature = "cluster")]
@@ -2467,7 +2455,7 @@ pub fn install_local_dispatch_executor(executor: std::sync::Arc<dyn LocalDispatc
 /// 账务链（estop/冲突冻结/状态/查重/计划五闸 → 经验注入 → attempt →
 /// prompt → 账本开账 → claim("self") → 派发里程碑 → in_progress → 指派
 /// 回填），只把「集群 RPC 发车」换成「本地执行器上总线」。submit 失败 =
-/// 任务从未开始，走 F2 同款回滚（finish FAILED + 账本收口 + 状态/指派
+/// 任务从未开始，走 同款回滚（finish FAILED + 账本收口 + 状态/指派
 /// 回退 + ⛔ SEND_FAILURE_MARK 评论，sweep 按 MARK 前缀识别重试候选）。
 /// 本地面无 push_dispatch_baseline（对端收件箱协议）/无 canonical_peer_id
 /// （目标恒字面 "self"）/无 remote file 锚点闸（执行根在本机，file: 锚
@@ -2489,7 +2477,7 @@ pub fn dispatch_issue_local(
     }
     let issue = store.get_issue(issue_id)?;
 
-    // P5/F2 冲突冻结闸（镜像 core）。
+    // / 冲突冻结闸（镜像 core）。
     if let Some(pid) = issue.project_id
         && let Ok(project) = store.get_project(pid)
         && project.conflict_frozen
@@ -2547,9 +2535,9 @@ pub fn dispatch_issue_local(
     }
 
     let target = "self";
-    // M4.5：经验注入段在 prompt 组装前检索（镜像 core）。
+    // .5：经验注入段在 prompt 组装前检索（镜像 core）。
     let (experience_section, experience_ids) = render_issue_experience_section(store, &issue);
-    // PR5：重派轮次 = 历史派发行数 + 1（镜像 core）。
+    // 重派轮次 = 历史派发行数 + 1（镜像 core）。
     let attempt_count = store.list_dispatches(issue.id)?.len() as u32;
     let attempt = (attempt_count > 0).then_some(attempt_count + 1);
     let prompt = build_dispatch_prompt(
@@ -2564,7 +2552,7 @@ pub fn dispatch_issue_local(
     // task_id 匹配，前缀无路由语义，纯人读可辨）。
     let task_id = format!("local-{}", uuid::Uuid::new_v4());
 
-    // G3：派发账本开账（镜像 core；收口点 = 执行器写回终态 + 本函数
+    // 派发账本开账（镜像 core；收口点 = 执行器写回终态 + 本函数
     // 两处派发中止）。
     nemesis_taskstore::ledger::begin_run(
         &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
@@ -2574,17 +2562,17 @@ pub fn dispatch_issue_local(
         serde_json::json!({ "issue_id": issue.id, "issue_number": issue.number }),
     );
 
-    // M4.5：注入计数只认实际发车的派发（镜像 core）。
+    // .5：注入计数只认实际发车的派发（镜像 core）。
     if !experience_ids.is_empty()
         && let Err(e) = store.mark_team_memory_used(&experience_ids)
     {
         tracing::warn!("[Board] team_memory use_count 更新失败（不影响派发）：{e}");
     }
 
-    // 2. 原子占用闸（R5-BUG-2 镜像 core；claim 目标 = "self"）。
+    // 2. 原子占用闸（BUG-2 镜像 core；claim 目标 = "self"）。
     //    远端签名升级：bool → Option<i64>（代际号）；None = 已被占用
     //    → 竞态取消；Some(generation) 随执行器请求下行、写回时原样
-    //    回声（AOR 批二a ④ 写回闸拒绝旧代迟到回调——本地形态同一语义）。
+    //    回声（写回闸拒绝旧代迟到回调——本地形态同一语义）。
     let dispatch_generation = match store.try_claim_dispatch(&task_id, issue.id, target, actor)? {
         Some(generation) => generation,
         None => {
@@ -2634,7 +2622,7 @@ pub fn dispatch_issue_local(
         tracing::warn!("[Board] 派发回填指派失败（不阻断派发）：{e}");
     }
 
-    // 4. 发车：执行器同步面失败 = 任务从未开始 → F2 同款回滚（诚实失败，
+    // 4. 发车：执行器同步面失败 = 任务从未开始 → 同款回滚（诚实失败，
     // ⛔ SEND_FAILURE_MARK 评论 = sweep 重试候选识别前缀）。
     let submit_result = executor.submit(LocalDispatchRequest {
         task_id: task_id.clone(),

@@ -3,12 +3,12 @@
 //! Translated from Go `module/config/provider_resolver.go`.
 //!
 //! This module provides:
-//! [`resolve_model_config`] - resolves a model reference to a full provider config
-//! [`get_model_by_name`] - finds a model by name with round-robin load balancing
-//! [`get_effective_llm`] - gets the effective LLM for the default agent
-//! [`infer_provider_from_model`] - infers provider from model name
-//! [`infer_default_model`] - gets default model for a provider
-//! [`get_default_api_base`] - gets default API base URL for a provider
+//! - [`resolve_model_config`] - resolves a model reference to a full provider config
+//! - [`get_model_by_name`] - finds a model by name with round-robin load balancing
+//! - [`get_effective_llm`] - gets the effective LLM for the default agent
+//! - [`infer_provider_from_model`] - infers provider from model name
+//! - [`infer_default_model`] - gets default model for a provider
+//! - [`get_default_api_base`] - gets default API base URL for a provider
 
 use serde::{Deserialize, Serialize};
 
@@ -224,9 +224,9 @@ fn extract_timeout_secs(extra: &std::collections::BTreeMap<String, serde_json::V
 
 /// per-model 流式开关提取（stream 键）：读模型条目 extra 的
 /// `stream`。值集归一到 "yes" / "no" / ""（auto）：
-/// 布尔 `true` / 字符串 "yes"/"true"（大小写不敏感）→ "yes"；
-/// 布尔 `false` / 字符串 "no"/"false" → "no"；
-/// 缺省 / 其他值 → ""（auto，lane 默认形态）。未知值诚实忽略落 auto
+/// - 布尔 `true` / 字符串 "yes"/"true"（大小写不敏感）→ "yes"；
+/// - 布尔 `false` / 字符串 "no"/"false" → "no"；
+/// - 缺省 / 其他值 → ""（auto，lane 默认形态）。未知值诚实忽略落 auto
 ///   （与 timeout 的「非 u64 忽略」同策略——配置层不做静默纠偏）。
 fn extract_stream_mode(extra: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
     extra

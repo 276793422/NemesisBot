@@ -1,4 +1,4 @@
-//! G2（U9 注入/replay 可见性，2026-08-28）：
+//! （注入/replay 可见性，2026-08-28）：
 //!
 //! - `injection_summary`：台账聚合投影（source/index/role/chars），绝不回传原文
 //! - `replay_verify`：session store + 台账重建 → 与 request_logs 原始请求
@@ -183,9 +183,7 @@ fn make_request_dir(
     dir
 }
 
-// ---------------------------------------------------------------------------
 // injection_summary
-// ---------------------------------------------------------------------------
 
 #[test]
 fn injection_summary_aggregates_without_raw_content() {
@@ -265,9 +263,7 @@ fn injection_summary_missing_ledger_reports_unavailable() {
     assert!(out["rounds"].as_array().unwrap().is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // replay_verify
-// ---------------------------------------------------------------------------
 
 #[test]
 fn replay_verify_byte_exact_via_fingerprint() {

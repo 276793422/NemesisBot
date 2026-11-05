@@ -1,25 +1,25 @@
-//! Workflow REST + WSAPI handlers — milestones 1a-E3/E4, 1b-A1 step 8,
-//! 1c-E5 (webhook hardening), 1c-E6 (sync API auth/timeout), 1c-E7 (WSAPI).
+//! Workflow REST + WSAPI handlers — milestones 1a-/, 1b step 8,
+//! 1c (webhook hardening), 1c (sync API auth/timeout), 1c (WSAPI).
 //!
 //! REST routes:
-//!   POST /api/workflow/run              — run synchronously, return final result
-//!   POST /api/workflow/start            — start async, return execution_id
-//!   GET  /api/workflow/list             — list registered workflows
-//!   GET  /api/workflow/status/:id       — get one execution status
-//!   GET  /api/workflow/executions       — list executions (with filters)
-//!   POST /api/workflow/webhook/:name    — webhook trigger (HMAC + rate-limited)
-//!   GET  /api/workflow/webhook/:name    — webhook trigger via query params
-//!   GET  /api/workflow/checkpoints/:execution_id              — list checkpoints
-//!   GET  /api/workflow/checkpoints/:execution_id/:checkpoint_id — load checkpoint
+//!   POST /api/workflow/run — run synchronously, return final result
+//!   POST /api/workflow/start — start async, return execution_id
+//!   GET /api/workflow/list — list registered workflows
+//!   GET /api/workflow/status/:id — get one execution status
+//!   GET /api/workflow/executions — list executions (with filters)
+//!   POST /api/workflow/webhook/:name — webhook trigger (HMAC + rate-limited)
+//!   GET /api/workflow/webhook/:name — webhook trigger via query params
+//!   GET /api/workflow/checkpoints/:execution_id — list checkpoints
+//!   GET /api/workflow/checkpoints/:execution_id/:checkpoint_id — load checkpoint
 //!
 //! WSAPI commands (module: "workflow"):
-//!   workflow.list               — list registered workflows
-//!   workflow.start              — async-start a workflow, returns execution_id
-//!   workflow.status             — query one execution status
-//!   workflow.cancel             — cancel a running execution
-//!   workflow.resume             — resume a Waiting execution
-//!   workflow.list_executions    — list executions (with filters)
-//!   workflow.list_checkpoints   — list checkpoints for an execution (time travel)
+//!   workflow.list — list registered workflows
+//!   workflow.start — async-start a workflow, returns execution_id
+//!   workflow.status — query one execution status
+//!   workflow.cancel — cancel a running execution
+//!   workflow.resume — resume a Waiting execution
+//!   workflow.list_executions — list executions (with filters)
+//!   workflow.list_checkpoints — list checkpoints for an execution (time travel)
 
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
@@ -77,7 +77,7 @@ fn engine_error(
 /// `POST /api/workflow/run` — run a workflow synchronously and return the
 /// final execution result. Body: `{ "name": "...", "input": {...} }`.
 ///
-/// **1c-E6**: adds `X-Auth-Token` auth and a 30s timeout. Longer workflows
+/// **1c-**: adds `X-Auth-Token` auth and a 30s timeout. Longer workflows
 /// must use `POST /api/workflow/start` instead.
 pub async fn handle_workflow_run(
     State(state): State<Arc<AppState>>,
@@ -264,7 +264,7 @@ pub async fn handle_workflow_executions(
 
 /// `POST /api/workflow/webhook/:name` — trigger a workflow via webhook.
 ///
-/// **1c-E5 hardening**:
+/// **1c hardening**:
 /// - HMAC-SHA256 signature verification via `X-Signature` header (only
 ///   enforced when the workflow defines a webhook `secret` in its trigger
 ///   config; unsigned workflows stay open)
@@ -324,7 +324,7 @@ pub async fn handle_workflow_webhook(
 /// workflow with the payload taken from the query string (some external
 /// services, e.g. Slack's URL verification flow, use GET).
 ///
-/// Hardening (2026-10-16):
+/// Hardening :
 /// - Workflows without a webhook trigger are not reachable (404), same as POST.
 /// - Workflows that define a webhook `secret` reject GET entirely (405):
 ///   GET has no body to HMAC, so a signed workflow can never be triggered
@@ -528,13 +528,13 @@ fn hex_nibble(b: u8) -> Result<u8, &'static str> {
     }
 }
 
-/// Per-IP sliding-window webhook rate limiter (1c-E5).
+/// Per-IP sliding-window webhook rate limiter (1c-).
 ///
 /// Keeps a `VecDeque<Instant>` per IP, drops timestamps older than the
 /// window on each `check`, and rejects once the queue length exceeds
 /// `WEBHOOK_RATE_MAX`. Mutex is held for microseconds; no awaits inside.
 ///
-/// Bound (2026-10-16 hardening): the IP table itself is capped at
+/// Bound (hardening): the IP table itself is capped at
 /// [`DEFAULT_MAX_TRACKED_IPS`] entries. A public endpoint fed spoofed or
 /// high-cardinality proxy addresses used to grow the map monotonically —
 /// each first-time IP cost one entry forever. When the table is full, the
@@ -562,7 +562,7 @@ impl WebhookRateLimiter {
         }
     }
 
-    /// Returns `Ok(())` if the call is allowed, or `Err(retry_after)`
+    /// Returns `Ok` if the call is allowed, or `Err(retry_after)`
     /// with how long the client should wait before retrying.
     pub async fn check(&self, ip: IpAddr) -> Result<(), Duration> {
         let mut hits = self.hits.lock().await;
@@ -739,7 +739,7 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         )
 }
 
-/// List every checkpoint (metadata only) for an execution — milestone 1b-A1
+/// List every checkpoint (metadata only) for an execution — milestone 1b-
 /// step 8 ("time travel" read-only API). Returns `CheckpointMeta` records
 /// oldest-first so callers can render an audit trail.
 pub async fn handle_workflow_checkpoints_list(
@@ -779,7 +779,7 @@ pub async fn handle_workflow_checkpoints_list(
 }
 
 /// Load a specific checkpoint's full contents (context + variables + node
-/// results) — milestone 1b-A1 step 8. Useful for diffing workflow state at
+/// results) — milestone 1b step 8. Useful for diffing workflow state at
 /// different points in time.
 pub async fn handle_workflow_checkpoint_load(
     State(state): State<Arc<AppState>>,
@@ -824,7 +824,6 @@ pub async fn handle_workflow_checkpoint_load(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Standalone workflow-chat HTTP endpoints
 //
 // These are intentionally public (no `X-Auth-Token` requirement). The
@@ -837,7 +836,6 @@ pub async fn handle_workflow_checkpoint_load(
 // truncated to 64 bit), so enumerating them is impractical. The metadata
 // returned (name + description + chat_eligible) is what the page needs to
 // render the password form. Legacy 8-hex links keep resolving (prefix match).
-// ---------------------------------------------------------------------------
 
 /// Query params for `GET /api/workflow/chat/info`.
 #[derive(Debug, serde::Deserialize)]
@@ -984,9 +982,7 @@ pub async fn handle_workflow_chat_verify(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// WebSocket API (WSAPI) — milestone 1c-E7
-// ---------------------------------------------------------------------------
+// WebSocket API (WSAPI) — milestone 1c-
 
 /// WebSocket handler for the `workflow` module. Mirrors the REST surface
 /// above so the Vue dashboard can drive everything via the three-level
@@ -1023,7 +1019,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
             "set_chat_password",
             "clear_chat_password",
             "verify_chat_password",
-            // 对话生成（2026-09-22）：草稿面板 + 能力表
+            // 对话生成：草稿面板 + 能力表
             "capabilities",
             "draft_list",
             "draft_get",
@@ -1309,7 +1305,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: execution_id")?;
                 let review = parse_input_object(data.get("review"));
-                // BUG-20261024-13：可选 `node_id` 定向评审落点——多个
+                // 可选 `node_id` 定向评审落点——多个
                 // human_review 并行等待时必须指定；单等待节点缺省兼容。
                 let node_id = data.get("node_id").and_then(|v| v.as_str());
                 let exec = engine
@@ -1488,11 +1484,9 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                 }
             }
 
-            // -----------------------------------------------------------------
-            // 对话生成（2026-09-22）：能力表 + 草稿面板五命令。
+            // 对话生成：能力表 + 草稿面板五命令。
             // 草稿的写路径只有 workflow_create agent 工具；这里的 draft_apply
             // 是唯一把草稿转正的入口（人工在 UI 点「应用」）。
-            // -----------------------------------------------------------------
             "capabilities" => Ok(Some(
                 serde_json::to_value(nemesis_workflow::capabilities::capabilities())
                     .map_err(|e| format!("serialize capabilities: {}", e))?,
@@ -1555,7 +1549,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：WebhookRateLimiter 窗口过期弹出臂（私有
+// AGT 覆盖率批次：WebhookRateLimiter 窗口过期弹出臂（私有
 // hits 种旧时间戳）、clear_chat_password 持久化失败上抛臂、draft_* 缺参/
 // 错型 bail。豁免（vanish 竞争窗 + serde 防御臂）见 agt_tests 文件头注。
 #[cfg(test)]

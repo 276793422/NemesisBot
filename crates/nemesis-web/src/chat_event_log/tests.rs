@@ -1,4 +1,4 @@
-//! L2（devtool-upgrade 阶段 6）— chat_event_log 单元测试。
+//! （devtool-upgrade）— chat_event_log 单元测试。
 //!
 //! ⚠️ 进程级全局状态（SESSION_LOGS OnceLock）——并行测试共用一张表。
 //! 隔离手段：每测试用唯一 session id（pid + 单调计数），互不可见；
@@ -109,7 +109,7 @@ fn session_cap_eviction_does_not_evict_current_session() {
     }
 }
 
-// --- P1（2026-09-21）：工具事件持久化（record_tool 同 seq 序列回放） ---
+// 工具事件持久化（record_tool 同 seq 序列回放） ---
 
 #[test]
 fn tool_events_share_seq_space_and_replay_interleaved() {
@@ -164,15 +164,15 @@ fn record_tool_respects_replay_window_cap() {
     assert_eq!(events[0].seq, 11);
 }
 
-// --- A1（2026-09-22 聊天切会话竞态）：latest_seq——历史响应 last_seq
-// --- 的环尾采样（read_chat_log 之后调用，前端据此剔除先于快照渲染的
-// --- assistant 实时帧）。
+// （聊天切会话竞态）：latest_seq——历史响应 last_seq
+// 的环尾采样（read_chat_log 之后调用，前端据此剔除先于快照渲染的
+// assistant 实时帧）。
 
 #[test]
 fn latest_seq_unknown_session_is_zero() {
     let _guard = table_guard!();
     let sid = unique_session("latest-unknown");
-    // 无记录 → 0 → 序列化省略 → 前端按缺省跳过剔除（A2 兜底）。
+    // 无记录 → 0 → 序列化省略 → 前端按缺省跳过剔除（兜底）。
     assert_eq!(latest_seq(&sid), 0);
 }
 
@@ -193,7 +193,7 @@ fn latest_seq_tracks_chat_and_tool_entries() {
     assert_eq!(latest_seq(&sid), 3);
 }
 
-// --- P8（2026-09-21）：record 即广播 chat.activity（多端感知信号） ---
+// record 即广播 chat.activity（多端感知信号） ---
 
 /// 并行污染免疫的信号等待：同进程其他测试（无 table_guard 的计数测试、
 /// server 层入站测试等）的 record 也会广播到已 install 的全局 hub——丢弃

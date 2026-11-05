@@ -1,11 +1,11 @@
-//! T8（多模态 goal 2026-09-03）上传端点 + media 引用解析 + TTL 清扫测试。
+//! （多模态 goal 2026-09-03）上传端点 + media 引用解析 + TTL 清扫测试。
 //!
 //! 覆盖 goal 验证清单：未鉴权 401 / 非白名单扩展名 400 / magic 伪装 415 /
 //! 成功 200 + 文件落盘可读回 / 超限 413 / `resolve_media_ref` 穿越拒绝 /
 //! `sweep_uploads_older_than` 按 mtime 清旧留新。
 //!
 //! 竞态纪律（env-test-race-lock-pattern）：成功路径与 resolve 正例会把
-//! `default_path_manager()` 单例 home 重定向到临时目录（进程全局副作用），
+//! `default_path_manager` 单例 home 重定向到临时目录（进程全局副作用），
 //! 这些测试必须先拿同一把模块级锁串行；RAII guard 在 panic 展开时也会恢复
 //! 原 home，不污染同进程其它测试。
 
@@ -22,7 +22,7 @@ use std::time::Instant;
 use tower::ServiceExt;
 
 /// 模块级共享锁：串行化所有重定向 PathManager 单例的测试。
-/// 2026-09-23：并入全 crate 共享的 `test_home::HOME_RACE_LOCK`——模块内
+/// 并入全 crate 共享的 `test_home::HOME_RACE_LOCK`——模块内
 /// 私有锁挡不住跨模块 chat_log 单例读写的竞态窗口。
 fn uploads_state_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
     crate::test_home::lock_home()
@@ -107,7 +107,7 @@ fn png_bytes() -> Vec<u8> {
     v
 }
 
-/// 最小合法 JPEG：FF D8 FF 前缀（sniff 只看前缀）。
+/// 最小合法 JPEG：FF FF 前缀（sniff 只看前缀）。
 fn jpeg_bytes() -> Vec<u8> {
     let mut v = vec![0xFF, 0xD8, 0xFF, 0xE0];
     v.extend_from_slice(b"fake-jpeg-payload");
@@ -245,7 +245,7 @@ async fn upload_stores_file_and_refs_resolve() {
     );
 }
 
-// F-C（2026-09-04 四轮盲审）：落盘扩展名按**内容**定，不信 `?name=` 声明——
+// F-C（四轮盲审）：落盘扩展名按**内容**定，不信 `?name=` 声明——
 // JPEG 字节命名 .png 若按 name 落盘，下游水合按扩展名定 media_type 时
 // content/type 失配。
 #[tokio::test]
@@ -268,7 +268,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
     let id = json["id"].as_str().unwrap();
     assert!(id.ends_with(".jpg"), "JPEG 字节必须落盘为 .jpg: id={id}");
 
-    // .jpeg 声明同样归一为内容判定的 .jpg（与 C3 URL 下载命名一致）。
+    // .jpeg 声明同样归一为内容判定的 .jpg（与 URL 下载命名一致）。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),

@@ -6,9 +6,9 @@
 //! 编、可 version control，泄密面为零（不含值）。
 //!
 //! 判定语义（dispatch 凭据闸 v2 臂，见 nemesis-agent tool_dispatch）：
-//! 域内（全部 ref 命中各自绑定）→ 免卡直过（绑定即预授权）；
-//! 出域（任一 ref 的别名有绑定但 (tool, field) 不命中）→ 审计拒绝 loud；
-//! 无绑定（任一 ref 的别名没配域）→ v1 审批卡路径（绑定 opt-in，存量零回归）。
+//! - 域内（全部 ref 命中各自绑定）→ 免卡直过（绑定即预授权）；
+//! - 出域（任一 ref 的别名有绑定但 (tool, field) 不命中）→ 审计拒绝 loud；
+//! - 无绑定（任一 ref 的别名没配域）→ v1 审批卡路径（绑定 opt-in，存量零回归）。
 //!
 //! crate 归位：判定臂 always-on（不依赖 security feature / 审批通道），
 //! 所以 loader 住本 crate（nemesis-agent 的非 cfg 依赖）；nemesis-security

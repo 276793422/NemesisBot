@@ -1,4 +1,4 @@
-//! WS4 供应链工作流 WSAPI 面覆盖（2026-09-25）：`skills.install` 走
+//! 供应链工作流 WSAPI 面覆盖（2026-09-25）：`skills.install` 走
 //! SkillInstaller 漏斗（lockfile 记账 / gate 拒绝）、`skills.uninstall`
 //! 联动记账移除、`skills.verify` 漂移检测命令。
 //!
@@ -17,9 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // helpers
-// -----------------------------------------------------------------------
 
 fn make_ctx_with_gate(
     dir: &tempfile::TempDir,
@@ -114,9 +112,7 @@ fn convex_ok(value: serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "status": "success", "value": value })
 }
 
-// -----------------------------------------------------------------------
 // verify 命令
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn verify_unrecorded_slug_errors() {
@@ -198,7 +194,7 @@ async fn verify_reports_clean_after_wsapi_install() {
     assert_eq!(r["installed"], true);
     assert_eq!(r["is_malware_blocked"], false);
 
-    // P14：lockfile 落盘且带逐文件记账。
+    // lockfile 落盘且带逐文件记账。
     let lock_path = ws.join("skills.lock.json");
     assert!(lock_path.exists(), "skills.lock.json must exist");
     let lock: serde_json::Value =
@@ -347,7 +343,7 @@ async fn uninstall_via_wsapi_removes_lockfile_entry() {
     assert_eq!(r["uninstalled"], true);
     assert!(!ws.join("skills/shortlived").exists());
 
-    // P14：记账同步移除——verify 回到未记账态。
+    // 记账同步移除——verify 回到未记账态。
     let err = handler
         .handle_cmd(
             "verify",
@@ -412,7 +408,7 @@ async fn deny_gate_blocks_wsapi_install_without_writing() {
         "err: {err}"
     );
 
-    // P13：deny 全程不落盘（无技能目录、无 lockfile、staging 无技能残留；
+    // deny 全程不落盘（无技能目录、无 lockfile、staging 无技能残留；
     // `.skill-staging` 空父目录允许留存）。
     assert!(!ws.join("skills/gated").exists());
     assert!(!ws.join("skills.lock.json").exists());
@@ -512,10 +508,8 @@ async fn force_reinstall_replaces_locked_skill() {
     assert_eq!(r["clean"], true, "report: {r}");
 }
 
-// -----------------------------------------------------------------------
-// BUG-HUNT R35：skills.install 入口拒绝穿越 slug（早于 exists join / force
+// skills.install 入口拒绝穿越 slug（早于 exists join / force
 // uninstall / installer staging 删除），错误可读、哨兵目录存活。
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn install_rejects_traversal_slug_at_entry() {

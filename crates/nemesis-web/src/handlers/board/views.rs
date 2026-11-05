@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 board.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -11,7 +9,7 @@ pub(super) fn issue_to_view(
     let comments = store.list_comments(issue.id)?;
     let activity = store.list_activity(issue.id)?;
     let subscribers = store.list_subscribers(issue.id)?;
-    // 依赖上游投影（2026-10-15 用户需求：列表/详情可见「等 NB-x」徽标）：
+    // 依赖上游投影（用户需求：列表/详情可见「等 NB-x」徽标）：
     // 每上游 {id, number, status}——前端渲染阻塞态（非 done = 等待）与
     // 跳转文案。单数场景上游 ≤ 拆解上限，逐点查无感；FK 保证上游存在，
     // 查询失败（防御性）降级 unknown 占位不炸视图。
@@ -42,7 +40,7 @@ pub(super) fn issue_to_view(
             serde_json::to_value(subscribers).unwrap_or_default(),
         );
         obj.insert("depends_on".to_string(), serde_json::json!(depends_on));
-        // 在途派发投影（B14）：撤回派发按钮的显示依据（有在途才显示）；
+        // 在途派发投影：撤回派发按钮的显示依据（有在途才显示）；
         // None 不插键（前端 undefined falsy）。只投影撤回需要的最小面。
         if let Some(d) = store.get_active_dispatch(issue.id)? {
             obj.insert(
@@ -76,10 +74,10 @@ pub(super) fn build_filter(data: &serde_json::Value) -> Result<IssueFilter, Stri
     if let Some(p) = data.get("priority").and_then(|v| v.as_i64()) {
         filter.priority = Some(p as i32);
     }
-    // P1/A2+A2b（看板项目档案 goal）：用户面列表默认排除——归档项目子单 /
+    // /+（看板项目档案 goal）：用户面列表默认排除——归档项目子单 /
     // 已取消单 / hidden 单。前端两个页签（列表/看板）同走 issue.list，一处
     // 默认两处生效；显式 `include_*: true` 才放行。hidden 没有放行口
-    // （永久收起语义，goal A2b）；详情接口不走这里（单查不受影响）。
+    // （永久收起语义，goal）；详情接口不走这里（单查不受影响）。
     filter.exclude_archived_projects = !data
         .get("include_archived_projects")
         .and_then(|v| v.as_bool())
@@ -94,7 +92,7 @@ pub(super) fn build_filter(data: &serde_json::Value) -> Result<IssueFilter, Stri
 
 /// 拒绝嵌套 patch 形态（`{id, patch:{...}}`）。本模块所有 update 命令只认
 /// 扁平形态（字段直接放 data 顶层）；嵌套形态下空 patch 静默不生效还回
-/// `updated:true`（gw36 实录：前端发嵌套形态排障近一小时，后端必须 loud
+/// `updated:true`（前端嵌套形态排障成本高，后端必须 loud
 /// 拒绝而不是靠调用方自觉）。
 pub(super) fn reject_nested_patch(data: &serde_json::Value) -> Result<(), String> {
     if data.get("patch").is_some_and(|v| v.is_object()) {
@@ -145,11 +143,11 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
         ni.assignee = Some(at);
         ni.assignee_id = Some(aid);
     }
-    // M2：职能 slug 直建单面（planner 之外的手工入口；空串/空白 = 不限）。
+    // 职能 slug 直建单面（planner 之外的手工入口；空串/空白 = 不限）。
     if let Some(p) = get_opt_str(data, "required_profession") {
         ni.required_profession = (!p.trim().is_empty()).then_some(p);
     }
-    // 环境能力硬条件（NB-122 批）：直建单面手工入口；字符串数组、空白项
+    // 环境能力硬条件（批）：直建单面手工入口；字符串数组、空白项
     // 剔除（形态校验只在 planner 拆解链，这里宽容收纳）。
     if let Some(arr) = data.get("required_capabilities").and_then(|v| v.as_array()) {
         ni.required_capabilities = arr

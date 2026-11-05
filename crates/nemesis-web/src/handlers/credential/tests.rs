@@ -1,4 +1,4 @@
-//! B4 — CredentialHandler 测试：槽空诚实报错 / 载荷校验 / 透传回执。
+//! CredentialHandler 测试：槽空诚实报错 / 载荷校验 / 透传回执。
 //!
 //! 静态槽是进程级单例——用例持 `TEST_LOCK`（tokio Mutex，await 安全，
 //! vault handler 测试同族纪律）串行，`clear_broker` 还原，互不污染。

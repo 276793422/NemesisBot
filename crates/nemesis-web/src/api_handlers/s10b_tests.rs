@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): api_handlers helpers +
+//! (quality-hardening goal 冲刺, web 批次 2): api_handlers helpers +
 //! narrow handler arms not reached by the existing test modules, all offline:
 //!
 //! - `handle_api_models` api_key masking arms (short key → "****", long key
@@ -82,9 +82,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
     })
 }
 
-// ---------------------------------------------------------------------------
 // handle_api_models api_key masking
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn models_config_masks_api_keys_in_all_arms() {
@@ -123,9 +121,7 @@ async fn models_config_masks_api_keys_in_all_arms() {
     assert!(by_name("bare").get("api_key").is_none());
 }
 
-// ---------------------------------------------------------------------------
 // pure helpers
-// ---------------------------------------------------------------------------
 
 #[test]
 fn find_latest_request_summary_walks_newest_dir_then_newest_md() {
@@ -252,9 +248,7 @@ fn first_line_trunc_first_non_empty_line_and_ellipsis() {
     assert!(cjk.ends_with('…'));
 }
 
-// ---------------------------------------------------------------------------
 // resolve_fork_store
-// ---------------------------------------------------------------------------
 
 #[test]
 fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
@@ -322,9 +316,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
     drop(store);
 }
 
-// ---------------------------------------------------------------------------
 // turns / fork HTTP arms (house pattern: unique keys + cleanup)
-// ---------------------------------------------------------------------------
 
 fn make_router(state: Arc<AppState>) -> Router {
     Router::new()

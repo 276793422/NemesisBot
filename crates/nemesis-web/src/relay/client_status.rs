@@ -1,7 +1,7 @@
 //! 桥客户端状态槽（goal 批次三：通道页【中继通道】数据源）。
 //!
 //! 桥客户端跑在 nemesisbot（bin crate），而通道页的数据出口在 nemesis-web
-//! ——nemesisbot 依赖 nemesis-web，所以状态用「模块级全局槽」回传：客户端
+//! nemesisbot 依赖 nemesis-web，所以状态用「模块级全局槽」回传：客户端
 //! 主循环在状态迁移点调 [`report_client_status`]，HTTP 端点
 //! `GET /api/relay/overview` 调 [`client_status`] 读取。手动重连按钮调
 //! [`kick_reconnect`]，客户端主循环在退避等待与会话主 select 两处监听
@@ -59,8 +59,8 @@ pub struct BridgeClientStatus {
 /// const——零 OnceLock 样板。
 pub(crate) static CLIENT_STATUS: Mutex<Option<BridgeClientStatus>> = Mutex::new(None);
 
-/// 手动重连踢信号（此 tokio 版本 `Notify::new()` 非 const，用 OnceLock）。
-/// 客户端主循环与会话主 select 各挂一个 `notified()` 分支。
+/// 手动重连踢信号（此 tokio 版本 `Notify::new` 非 const，用 OnceLock）。
+/// 客户端主循环与会话主 select 各挂一个 `notified` 分支。
 static RECONNECT_KICK: std::sync::OnceLock<Notify> = std::sync::OnceLock::new();
 
 /// 上报一次状态快照（整体替换）。bridge_client 主循环的状态迁移点调用。
@@ -92,12 +92,12 @@ pub fn client_status() -> Option<BridgeClientStatus> {
 
 /// 手动重连：唤醒客户端（退避等待被跳过 / 当前会话被断开立即重连）。
 /// 客户端未运行时调用无害——permit 留在 Notify 里，下次 spawn 后的
-/// 第一个 `notified()` 立即消费（语义仍正确：尽快连接）。
+/// 第一个 `notified` 立即消费（语义仍正确：尽快连接）。
 pub fn kick_reconnect() {
     reconnect_notify().notify_one();
 }
 
-/// 客户端侧监听句柄（主循环 / 会话 select 挂 `.notified()`）。
+/// 客户端侧监听句柄（主循环 / 会话 select 挂 `.notified`）。
 pub fn reconnect_notify() -> &'static Notify {
     RECONNECT_KICK.get_or_init(Notify::new)
 }

@@ -52,9 +52,7 @@ fn cred_path(home: &std::path::Path) -> std::path::PathBuf {
     nemesis_config::credentials::credentials_path_for_home(home)
 }
 
-// ---------------------------------------------------------------------------
 // target=yaml
-// ---------------------------------------------------------------------------
 
 #[test]
 fn yaml_end_to_end_migrates_inline_and_preserves_extras() {
@@ -179,9 +177,7 @@ fn target_validation_rejects_unknown() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // target=vault（security feature 闸内）
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "security")]
 mod vault_arm {
@@ -321,7 +317,7 @@ mod vault_arm {
         assert_eq!(read_config_text(&home), snap, "幂等：配置逐字节不变");
     }
 
-    /// BUG-20261028-119 回归锁：config 提交失败（文件被占用）→ Err；
+    /// 回归锁：config 提交失败（文件被占用）→ Err；
     /// **yaml 别名必须仍在**（config 的 yaml: 引用可解析，重试收敛）；
     /// vault 已落盘（密钥零丢失）。修复前：闭包内先删别名 → 提交失败 =
     /// 永久断链，重试 Ok + yaml_broken。Windows 形态测试（rename-while-open
@@ -395,7 +391,7 @@ mod vault_arm {
         assert!(!creds.keys.contains_key("legacy"), "重试收敛后别名清除");
     }
 
-    /// BUG-20261028-119 回归锁②：creds 后置回写失败 → Ok + 诚实 warning；
+    /// 回归锁②：creds 后置回写失败 → Ok + 诚实 warning；
     /// config 已提交为 vault 引用（功能自洽）；重试经 already_vault 残留
     /// 清扫臂清掉明文别名，真正收敛。Windows 形态（同上）。
     #[cfg(windows)]
@@ -459,7 +455,7 @@ mod vault_arm {
         );
     }
 
-    /// BUG-20261028-119 回归锁③：断引自修复——config 指 `yaml:legacy` 但
+    /// 回归锁③：断引自修复——config 指 `yaml:legacy` 但
     /// creds 缺条目、vault 有同名条目（历史受损现场）→ 引用直接升格
     /// `vault:legacy`（死路变自愈），不再 Ok + yaml_broken 挂死。
     #[test]

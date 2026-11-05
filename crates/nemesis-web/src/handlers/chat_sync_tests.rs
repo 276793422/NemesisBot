@@ -1,4 +1,4 @@
-//! L2（devtool-upgrade 阶段 6）— `chat.sync` 断线补拉 dispatch 测试。
+//! （devtool-upgrade）— `chat.sync` 断线补拉 dispatch 测试。
 //!
 //! sync 是只读命令且**不依赖 AgentLoop**（提前返回臂）——headless fixture
 //! 即可全链路测：record 推帧 → sync 补拉 → 窗口/gap 语义。

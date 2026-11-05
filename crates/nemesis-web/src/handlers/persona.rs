@@ -11,9 +11,7 @@ use std::sync::OnceLock;
 use crate::handlers::{get_str, require_workspace, resolve_path};
 use crate::ws_router::{ModuleHandler, RequestContext};
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
 
 const PERSONA_FILES: &[&str] = &["IDENTITY.md", "SOUL.md", "AGENT.md", "TOOLS.md"];
 
@@ -46,19 +44,19 @@ const SKIP_FILENAMES: &[&str] = &[
 /// Browser-like User-Agent for GitHub API requests.
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
-/// persona 名/id 路径安全闸——复用技能 slug 验证器单一真相源（BUG-20261101-294：
+/// persona 名/id 路径安全闸——复用技能 slug 验证器单一真相源（
 /// web 面 activate/remove/file.*/shop.download 此前零校验。`name: ""` 经
 /// resolve_path("personas/") 命中 personas 目录本身：remove 直接全灭人格库
 /// （default 档案 + 激活标记 + 全部已装人格，不可逆），activate 清空工作区
 /// 人格文件后把激活标记写成空名。验证器拒空串/路径分隔符/`..`/`:`（盘符
 /// 相对路径 + NTFS ADS）/Windows 保留名/尾点尾空格，必须在触碰文件系统
-/// 与网络之前调用（CLI install/remove 同源，BUG-20261028-117 起）。
+/// 与网络之前调用（CLI install/remove 同源， 起）。
 fn validate_persona_name(name: &str) -> Result<(), String> {
     nemesis_skills::types::validate_skill_identifier(name)
         .map_err(|e| format!("persona name '{}' invalid: {}", name, e))
 }
 
-/// persona 文件编辑面白名单（BUG-20261101-294：`file` 参数此前裸拼
+/// persona 文件编辑面白名单（`file` 参数此前裸拼
 /// resolve_path，`../config.json` 形态命中 workspace 内任意路径——人格文件
 /// 编辑器成了任意 workspace 文件读/裸写原语，可绕过 config schema 校验
 /// 直接改写 config.json / cron store / approval_rules 等。PersonaView
@@ -75,9 +73,7 @@ fn validate_persona_file(file: &str) -> Result<(), String> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Data types
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -106,9 +102,7 @@ struct Section {
     content: String,
 }
 
-// ---------------------------------------------------------------------------
 // Category mapping
-// ---------------------------------------------------------------------------
 
 /// 目录名 → 中文分类展示名（单一真相源；CLI `persona search` 同源消费）。
 pub fn map_category(dir: &str) -> &'static str {
@@ -133,11 +127,9 @@ pub fn map_category(dir: &str) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------------------
 // File filtering & parsing
-// ---------------------------------------------------------------------------
 
-/// 超市 .md 路径筛选（CLI `persona search` 同源消费；BUG-20261028-117 前
+/// 超市 .md 路径筛选（CLI `persona search` 同源消费； 前
 /// CLI 侧简化版漏 `filename == id` 臂）。
 pub fn is_agent_file(path: &str) -> bool {
     if !path.ends_with(".md") {
@@ -201,7 +193,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
 }
 
 /// 剥掉取值段的 markdown 强调标记与空白：「**姓名：** Alice」与
-///「**姓名：Alice**」两种形态都不留星号（BUG-20261028-117：尾部 `**`
+///「**姓名：Alice**」两种形态都不留星号（尾部 `**`
 /// 残留曾写进 PERSONA.json 展示名）。
 fn clean_name_value(raw: &str) -> String {
     raw.trim().trim_matches('*').trim().to_string()
@@ -243,9 +235,7 @@ fn extract_identity_info(content: &str) -> (String, String) {
     (name, emoji)
 }
 
-// ---------------------------------------------------------------------------
 // GitHub API helpers
-// ---------------------------------------------------------------------------
 
 fn get_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -258,7 +248,7 @@ fn get_client() -> &'static reqwest::Client {
     })
 }
 
-/// L1 cache: file tree from GitHub Trees API.
+/// cache: file tree from GitHub Trees API.
 static TREE_CACHE: std::sync::LazyLock<std::sync::Mutex<Option<Vec<(String, i64)>>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
@@ -310,16 +300,16 @@ async fn fetch_tree() -> Result<Vec<(String, i64)>, String> {
     Ok(cache.as_ref().unwrap().clone())
 }
 
-/// L2 cache: frontmatter extracted from downloaded files.
+/// cache: frontmatter extracted from downloaded files.
 static FM_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Frontmatter>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-/// L3 cache: full .md content downloaded from GitHub.
+/// cache: full .md content downloaded from GitHub.
 static CONTENT_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 async fn fetch_agent_content(id: &str) -> Result<String, String> {
-    // Check L3 cache
+    // Check cache
     {
         let cache = CONTENT_CACHE.lock().unwrap();
         if let Some(content) = cache.get(id) {
@@ -373,13 +363,13 @@ async fn fetch_agent_content(id: &str) -> Result<String, String> {
 
     let text = String::from_utf8(content).map_err(|e| format!("utf8 error: {}", e))?;
 
-    // Parse frontmatter and update L2 cache
+    // Parse frontmatter and update cache
     if let Some(fm) = parse_frontmatter(&text) {
         let mut cache = FM_CACHE.lock().unwrap();
         cache.insert(id.to_string(), fm);
     }
 
-    // Update L3 cache
+    // Update cache
     {
         let mut cache = CONTENT_CACHE.lock().unwrap();
         cache.insert(id.to_string(), text.clone());
@@ -388,9 +378,7 @@ async fn fetch_agent_content(id: &str) -> Result<String, String> {
     Ok(text)
 }
 
-// ---------------------------------------------------------------------------
 // Frontmatter parsing (simple, no serde_yaml dependency)
-// ---------------------------------------------------------------------------
 
 fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     let trimmed = content.trim_start();
@@ -440,9 +428,7 @@ fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     })
 }
 
-// ---------------------------------------------------------------------------
 // Section parsing
-// ---------------------------------------------------------------------------
 
 fn strip_emoji(s: &str) -> String {
     s.chars()
@@ -505,7 +491,7 @@ fn parse_sections(content: &str) -> ParsedContent {
         } else if found_first_h2 {
             current_lines.push(line.to_string());
         } else {
-            // Before first ## — collect as preamble (skip H1 title)
+            // Before first ## — collect as preamble (skip title)
             let is_h1 = trimmed.starts_with("# ") && !trimmed.starts_with("## ");
             if !is_h1 {
                 preamble_lines.push(line.to_string());
@@ -526,9 +512,7 @@ fn parse_sections(content: &str) -> ParsedContent {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Conversion engine
-// ---------------------------------------------------------------------------
 
 enum SectionTarget {
     Identity,
@@ -679,11 +663,9 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 共享真相源 API（BUG-20261028-117：CLI `nemesisbot persona` 同源消费。
+// 共享真相源 API（CLI `nemesisbot persona` 同源消费。
 // 此前 CLI 侧各自维护简化实现——activate 不归档旧人格、install 转换产物缺
 // 字段——与 web 面语义分裂，跨入口切换会串档/丢文件。）
-// ---------------------------------------------------------------------------
 
 /// 初始化人格存储：首次（无 `_active.json`）把 workspace 根的现有人格文件
 /// 与 memory/sessions/logs 归档进 `personas/default/` 并写 default 激活标记。
@@ -745,7 +727,7 @@ pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
     let active = serde_json::json!({"name": "default"});
     let active_str = serde_json::to_string_pretty(&active)
         .map_err(|e| format!("failed to serialize _active.json: {}", e))?;
-    // REL-002：统一原子写入（人格激活状态）。
+    // 统一原子写入（人格激活状态）。
     nemesis_utils::write_file_atomic(
         &personas_dir.join("_active.json").to_string_lossy(),
         active_str.as_bytes(),
@@ -870,7 +852,7 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
     let path = resolve_path(workspace, "personas/_active.json")?;
     let v = serde_json::json!({"name": name});
     let s = serde_json::to_string_pretty(&v).map_err(|e| format!("serialize error: {}", e))?;
-    // REL-002：统一原子写入（人格激活状态）。
+    // 统一原子写入（人格激活状态）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), s.as_bytes(), 0o600)
         .map_err(|e| format!("failed to write _active.json: {}", e))
 }
@@ -886,7 +868,7 @@ pub struct ConvertedPersona {
 
 /// 把超市 .md 原文转换为五件套：IDENTITY/SOUL 全量替换；AGENT/TOOLS =
 /// 系统默认模板 + 人格附加段；PERSONA.json 含 color/tools/vibe/frontmatter
-/// 扩展字段（BUG-20261028-117 前 CLI 简化版缺这些字段与 HEARTBEAT.md）。
+/// 扩展字段（前 CLI 简化版缺这些字段与 HEARTBEAT.md）。
 pub fn convert_agent_content(content: &str) -> ConvertedPersona {
     let fm = parse_frontmatter(content);
     let files = convert_agent_md(content);
@@ -907,9 +889,7 @@ pub fn convert_agent_content(content: &str) -> ConvertedPersona {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PersonaHandler
-// ---------------------------------------------------------------------------
 
 pub struct PersonaHandler;
 
@@ -968,7 +948,7 @@ impl ModuleHandler for PersonaHandler {
                 validate_persona_name(&name)?;
                 let was_active = self.read_active(workspace).unwrap_or_default() == name;
                 let result = self.cmd_remove(workspace, &name)?;
-                // BUG-20261101-294 次生修复：remove-active 在 cmd_remove 内部落
+                // 次生修复：remove-active 在 cmd_remove 内部落
                 // default（文件面已切），但此前不同步重启 agent——activate/restore
                 // 臂都经 restart_agent 加载新人格，remove-active 漏重启让 agent
                 // 继续用已删除人格的 system prompt 直到下次重启。agent 缺席
@@ -1049,9 +1029,7 @@ impl PersonaHandler {
         Self
     }
 
-    // -----------------------------------------------------------------------
     // Auto-migration
-    // -----------------------------------------------------------------------
 
     fn ensure_initialized(&self, workspace: &str) -> Result<(), String> {
         ensure_persona_store(workspace)
@@ -1081,9 +1059,7 @@ impl PersonaHandler {
             .map_err(|e| format!("failed to parse personas/{}/PERSONA.json: {}", dir_name, e))
     }
 
-    // -----------------------------------------------------------------------
     // Local management commands (synchronous)
-    // -----------------------------------------------------------------------
 
     fn cmd_current(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         self.ensure_initialized(workspace)?;
@@ -1239,9 +1215,7 @@ impl PersonaHandler {
         Ok(Some(serde_json::json!({"saved": true, "name": file})))
     }
 
-    // -----------------------------------------------------------------------
     // Shop commands (async, GitHub API)
-    // -----------------------------------------------------------------------
 
     async fn cmd_shop_browse(
         &self,
@@ -1413,7 +1387,7 @@ impl PersonaHandler {
     }
 
     /// 集群聘用：把已安装的本地超市人格映射进 workspace/cluster/ 三件套。
-    /// 决策与零丢失契约：docs/REPORT/2026-10-23_集群聘用需求评估与决策.md。
+    /// 决策与零丢失契约：集群聘用需求评估与决策。
     /// 前置：必须先 shop.download（决策 4）；覆盖前 zip 备份（决策 5）；
     /// 节点身份只换 name（决策 3）；EXPERTISE 保守不动（决策 2）。
     #[cfg(feature = "cluster")]
@@ -1473,11 +1447,9 @@ impl PersonaHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Cluster hire（集群聘用）—— 映射/备份/身份纯函数 + 写盘主体
 // 全体随 cluster feature 门控：write 盘主体跨调 cluster handler（feature 门
 // 模块），映射纯函数虽不依赖 cluster，随主体同进出避免 feature-off 死代码。
-// ---------------------------------------------------------------------------
 
 /// 剥离系统模板前缀，取人格自有附加段。超市下载写入形态是
 /// `format!("{}\n{}", DEFAULT_*, extra)`；strip 失败（用户手改过 / 模板
@@ -1571,11 +1543,11 @@ fn backup_cluster_persona_files(workspace: &str) -> Result<Option<String>, Strin
         std::io::Write::write_all(&mut zw, content)
             .map_err(|e| format!("写入备份条目 {name} 失败: {e}"))?;
     }
-    // BUG-HUNT R16：finish 返回的 BufWriter 若靠 drop 收尾，缓冲里最后
+    // finish 返回的 BufWriter 若靠 drop 收尾，缓冲里最后
     // ≤8KiB 的 flush 错误会被 std 静默吞掉——本函数返回 Ok 却留下截断的
     // 备份 zip，调用方照常覆盖旧人格文件，架空「绝不在无备份的情况下
     // 覆盖旧文件」的 fail-closed 契约（截断备份比没有更糟：虚假信心）。
-    // 对齐 REL-002 纪律：显式落盘报错 + sync_all 后才算备份成功（备份必须
+    // 对齐 纪律：显式落盘报错 + sync_all 后才算备份成功（备份必须
     // 先于紧随其后的覆盖写，确保掉电也存活）。
     let inner = zw.finish().map_err(|e| format!("收尾备份 zip 失败: {e}"))?;
     inner
@@ -1628,27 +1600,25 @@ fn hire_write_cluster_persona(
     Ok((name, backup))
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 // pub(crate)：仅测试构建生效——SHOP_TEST_LOCK（shop.* 缓存串行锁）需要被
 // sibling 测试模块（persona_extra/persona_more）引用，防全局缓存互踩。
 #[cfg(test)]
 pub(crate) mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): uncovered
+// (, quality-hardening goal 冲刺 web 批次 2): uncovered
 // helpers + offline cache-injected shop paths + activate/restore archive
 // arms.
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：Default impl；其余零区为网络绑定
+// AGT 覆盖率批次：Default impl；其余零区为网络绑定
 // （GITHUB_API 硬编码 https 无注入缝）或防御臂，定性见 agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
 
-// 集群聘用（2026-10-23）：strip/build 映射纯函数 + 备份 zip + 写盘主体
+// 集群聘用：strip/build 映射纯函数 + 备份 zip + 写盘主体
 //（无 ctx，temp workspace 文件级验证）。随 cluster feature 门控。
 #[cfg(all(test, feature = "cluster"))]
 mod hire_tests;

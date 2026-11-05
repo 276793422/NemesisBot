@@ -1,4 +1,4 @@
-//! P2B（2026-09-12，NB-15 根修配套）：`models.health` WSAPI 测试——
+//! P2B（2026-09-12， 根修配套）：`models.health` WSAPI 测试——
 //! 工具健康视图的阈值建议、窗口夹取与账本未装配诚实空三臂。
 
 use super::models::ModelsHandler;
@@ -138,7 +138,7 @@ async fn models_health_hint_threshold_and_small_sample() {
     );
 }
 
-/// A2：守卫事件 hint 三臂——零工具调用的纯守卫模型并集出行 + 建议；
+/// 守卫事件 hint 三臂——零工具调用的纯守卫模型并集出行 + 建议；
 /// 校验失败 hint 优先于守卫 hint；<5 次不下结论。
 #[tokio::test]
 async fn models_health_guard_events_hint_and_priority() {

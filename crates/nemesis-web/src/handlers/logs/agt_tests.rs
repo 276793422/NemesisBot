@@ -341,7 +341,7 @@ async fn agt_replay_explicit_request_id_without_round_envelope() {
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn agt_session_list_bm25_query_on_empty_workspace() {
-    // query 无可匹配会话 → docs 空 → avg_len 0 守卫臂（1237-1238）+ BM25
+    // query 无可匹配会话 → docs 空 → avg_len 0 守卫臂（1237-1238）+
     // 块完整走空（1260）
     let dir = tempfile::tempdir().unwrap();
     let ctx = agt_ctx(&dir);
@@ -614,7 +614,7 @@ fn agt_parse_request_iterations_stub_and_locals_attachment() {
         "body": { "choices": [ { "message": { "role": "assistant", "content": "ok" } } ] },
     });
     std::fs::write(d.join("03.AI.Response.raw.json"), resp1.to_string()).unwrap();
-    // 坏 JSON 请求 → round 兜底 = iterations.len()+1 = 3（1946 unwrap_or 臂）
+    // 坏 JSON 请求 → round 兜底 = iterations.len+1 = 3（1946 unwrap_or 臂）
     std::fs::write(d.join("04.AI.Request.raw.json"), b"{nope").unwrap();
 
     let iterations = parse_request_iterations(&d);
@@ -786,11 +786,9 @@ fn agt_build_iteration_json_unreadable_local_yields_empty_tool_results() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Wave5 批次：cluster 任务目录 walk 的 continue 臂 + replay_verify dispatch
 // 层完整载体提取（round/request_id/trace_id 的 Some 臂——直调 bypass
 // dispatch 测不到）。
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_w5_walk_continue_arms_and_replay_dispatch_carriers() {

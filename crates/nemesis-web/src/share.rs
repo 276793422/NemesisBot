@@ -1,4 +1,4 @@
-//! L4 会话分享 —— 只读分享 token 存储 + chat_log 白名单投影。
+//! 会话分享 —— 只读分享 token 存储 + chat_log 白名单投影。
 //!
 //! 存储：`<workspace>/data/session_shares.json`（派生数据布局约定，与
 //! models_catalog.json 同层）。token = uuid v4 simple（32 hex，122 bit 熵，
@@ -47,7 +47,7 @@ fn shares_path(workspace: &str) -> PathBuf {
 
 /// 分享注册表写串行锁——罩 load→改→save 全程（session_shares.json 是共享
 /// RMW 文件，create∥create 并发各持旧快照会互丢记录；姊妹文件
-/// session_bindings.json 的 BINDING_LOCK 同构先例，2026-10-13 补锁）。
+/// session_bindings.json 的 BINDING_LOCK 同构先例， 补锁）。
 /// 读路径不入锁（tmp+rename 原子性已够）。
 static SHARE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -56,7 +56,7 @@ fn load_shares(workspace: &str) -> Vec<ShareEntry> {
         Ok(s) => match serde_json::from_str::<ShareFile>(&s) {
             Ok(f) => f.shares,
             Err(e) => {
-                // BUG-20261025-40：注册表解析失败不能静默返空——空表会被下次
+                // 注册表解析失败不能静默返空——空表会被下次
                 // 写整体覆盖（全部分享链接无声死亡，404 还谎称「已撤销」）。
                 // 保留返空恢复语义（注册表可自然重建），但必须留痕。
                 tracing::warn!(
@@ -70,7 +70,7 @@ fn load_shares(workspace: &str) -> Vec<ShareEntry> {
     }
 }
 
-/// 原子落盘（torn write 会砸掉全部分享记录）。BUG-20261025-40：换 REL-002
+/// 原子落盘（torn write 会砸掉全部分享记录）。：换
 /// 唯一权威 helper——手搓 tmp+rename 无 sync_all，断电可落零长度目标，叠加
 /// load 静默返空即整表清零链；token 即凭据 → 0o600。
 fn save_shares(workspace: &str, shares: &[ShareEntry]) -> Result<(), String> {
@@ -210,7 +210,7 @@ pub async fn handle_api_share(
     let Some(entry) = resolve_share(&workspace, &token) else {
         return Err(not_found("分享不存在或已撤销"));
     };
-    // BUG-20261102-302：公开无鉴权端点——整会话 jsonl 全量读（usize::MAX）
+    // 公开无鉴权端点——整会话 jsonl 全量读（usize::MAX）
     // + session_title（scan_session_logs 全目录全量解析）同步直跑 tokio
     // worker，分享链接被多人打开即放大占位。spawn_blocking 移出
     // （read_chat_log_async 同款纪律）。

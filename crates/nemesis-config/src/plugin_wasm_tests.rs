@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // set_enabled/set_config/remove 走 config_write_lock（进程级串行锁）；
-// 起读路径迁移写（load_switches/switch）同样全程罩锁
+// 读路径迁移写（load_switches/switch）同样全程罩锁
 // （迁移是 RMW+删旧文件，零锁时与开关写互相以旧底覆盖、迁移数据不可恢复）；
 // 写侧走 write_file_atomic 唯一临时名（同毫秒撞名已消除）。
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -161,7 +161,7 @@ fn legacy_dir_noise_handled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ==================== （BUG-HUNT）回归锁 ====================
+// ==================== 回归锁 ====================
 //
 // write_switch_file 曾是手搓 tmp+rename：tmp 名只到毫秒精度（读路径迁移写
 // 不罩锁，同毫秒并发可撞名），且无 sync_all（崩溃/断电撕裂目标文件——读侧

@@ -55,9 +55,7 @@ pub const AUTH_COOKIE: &str = "nemesis_bridge_auth";
 /// `/relay` 与 `/api/relay/*`）。
 pub const ADMIN_COOKIE: &str = "nemesis_relay_admin";
 
-// ---------------------------------------------------------------------------
 // /bridge：桥设备接入
-// ---------------------------------------------------------------------------
 
 /// `/bridge` WS 升级入口。
 pub async fn handle_bridge_ws(ws: WebSocketUpgrade, relay: Arc<RelayServer>) -> Response {
@@ -71,7 +69,7 @@ pub async fn handle_bridge_ws(ws: WebSocketUpgrade, relay: Arc<RelayServer>) -> 
 async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // ---- hello 握手（10s）----
+    // hello 握手（10s）----
     let hello = match tokio::time::timeout(Duration::from_secs(HELLO_TIMEOUT_SECS), async {
         loop {
             match ws_rx.next().await {
@@ -135,7 +133,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
         _ => None,
     };
 
-    // ---- 鉴权登记 ----
+    // 鉴权登记 ----
     let (out_tx, mut out_rx) = mpsc::channel::<BridgeFrame>(DEVICE_OUTBOUND_CAPACITY);
     let generation = match relay.authenticate_device(
         &token,
@@ -170,14 +168,14 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
         let _ = ws_tx.send(Message::Text(text.into())).await;
     }
 
-    // ---- 双向泵 ----
+    // 双向泵 ----
     loop {
         if !relay.generation_valid(&node_id, generation) {
             tracing::debug!(node_id = %node_id, "[Relay] 本连接已被新连接顶替，退出");
             break;
         }
         tokio::select! {
-            // 下行：服务端 → 设备（ ConnOpen/ConnData/AccessCheck/Pong/... ）
+            // 下行：服务端 → 设备（ConnOpen/ConnData/AccessCheck/Pong/...）
             maybe_frame = out_rx.recv() => {
                 match maybe_frame {
                     Some(frame) => {
@@ -291,9 +289,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
     relay.mark_device_gone(&node_id, generation);
 }
 
-// ---------------------------------------------------------------------------
 // /d/{node_id}/：设备面板隧道
-// ---------------------------------------------------------------------------
 
 /// `/d/{node_id}/{*rest}` 入口（任意方法）。
 pub async fn handle_device_request(
@@ -394,7 +390,7 @@ async fn handle_http_tunnel(relay: Arc<RelayServer>, node_id: String, req: Reque
 
     let mut resp_rx = relay.register_conn(conn_id, &node_id, 0);
 
-    // ---- 等响应头 ----
+    // 等响应头 ----
     let mut head_buf: Vec<u8> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(RESPONSE_HEAD_TIMEOUT_SECS);
     let (status, resp_headers, head_len) = loop {
@@ -437,9 +433,9 @@ async fn handle_http_tunnel(relay: Arc<RelayServer>, node_id: String, req: Reque
         }
     };
 
-    // ---- 构造响应 ----
+    // 构造响应 ----
     let chunked = is_chunked(&resp_headers);
-    // 非 chunked 响应的 body 收口长度：设备侧不再半关闭写半（2026-09-19
+    // 非 chunked 响应的 body 收口长度：设备侧不再半关闭写半（
     // 真机实测 shutdown 使 hyper 断连），本机连接 keep-alive 存续 → EOF
     // 兜底不可依赖。有 content-length 按长度收口；无长度头（罕见）仍留
     // EOF 兜底（设备侧读到本机关连接才发空 fin）。
@@ -491,7 +487,7 @@ async fn handle_http_tunnel(relay: Arc<RelayServer>, node_id: String, req: Reque
             }
         } else {
             // 非 chunked：头后前缀字节（可能与头同帧到达、甚至已含完整
-            // body）**必须先吐**——此前版本在此处丢过 body（2026-09-19
+            // body）**必须先吐**——此前版本在此处丢过 body（
             // 测试暴露：remaining=0 时跳过 yield，缓冲里的 body 从未下发）。
             let mut served: u64 = 0;
             if !body_buf.is_empty() {
@@ -612,7 +608,7 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
         let (mut ws_tx, mut ws_rx) = socket.split();
         let mut resp_rx = relay.register_conn(conn_id, &node_id, 0);
 
-        // ---- 等设备侧升级响应头（30s）----
+        // 等设备侧升级响应头（30s）----
         let mut head_buf: Vec<u8> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(RESPONSE_HEAD_TIMEOUT_SECS);
         // (升级是否成功, 头部字节数)——头部之后若还有字节，属于首个 ws 帧
@@ -647,7 +643,7 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
             return;
         }
 
-        // ---- 双向长泵 ----
+        // 双向长泵 ----
         let mut down_seq: u64 = 0; // 浏览器 → 设备帧序号
         // 先把 101 头之后的残余字节（首个 ws 帧前缀）写给浏览器。
         let mut up_buf = std::mem::take(&mut pending_after_head);
@@ -745,9 +741,7 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
     })
 }
 
-// ---------------------------------------------------------------------------
 // /d/{node_id}/__auth：设备访问令牌输入页（服务端自处理，不走隧道）
-// ---------------------------------------------------------------------------
 
 /// GET：输入页。
 pub async fn handle_auth_page(relay: Arc<RelayServer>, node_id: String, req: Request) -> Response {
@@ -861,7 +855,7 @@ fn auth_json_response(
 /// 共用；随页面 `<script>` 注入）。
 ///
 /// `crypto.subtle` 是安全上下文（HTTPS / localhost）专属——经
-/// `http://<公网IP>` 访问时为 undefined（2026-09-20 用户真机暴露：输入
+/// `http://<公网IP>` 访问时为 undefined（用户真机暴露：输入
 /// 令牌报 "Cannot read properties of undefined (reading 'digest')"）。
 /// `sha256Hex` 优先走 WebCrypto，非安全上下文自动回落纯 JS 实现
 /// （FIPS 180-4，标准 K/H 常量），两者输出一致；`TextEncoder` 非安全
@@ -1024,9 +1018,7 @@ justify-content:center;align-items:center;min-height:100vh;color:#444\">\
         .into_response()
 }
 
-// ---------------------------------------------------------------------------
 // 工具
-// ---------------------------------------------------------------------------
 
 /// 从 Cookie 头提取指定 cookie 值。
 pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -1051,9 +1043,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
         && headers.contains_key(header::UPGRADE)
 }
 
-// ---------------------------------------------------------------------------
 // /relay：极简状态页（ws token 门：未通过不可见任何设备信息）
-// ---------------------------------------------------------------------------
 
 /// 状态页管理门校验（cookie 值 == ws token SHA-256 hex）。
 fn admin_gate_pass(relay: &RelayServer, req_headers: &HeaderMap) -> bool {
@@ -1145,11 +1135,9 @@ pub async fn handle_relay_api_status(relay: Arc<RelayServer>, req: Request) -> R
     .into_response()
 }
 
-// ---------------------------------------------------------------------------
 // 批次三：通道页【中继通道】HTTP 端点（dashboard 语义——与 /api/status 同
 // 信任边界：本机/内网 dashboard 用户；不走状态页的 admin cookie 门，那是
 // 「知道 ws token」的带外通道，两者受众不同）。
-// ---------------------------------------------------------------------------
 
 /// GET /api/relay/overview：服务端态 + 客户端态一次取全（通道页轮询源）。
 ///
@@ -1381,7 +1369,7 @@ setInterval(refresh, 5000);
     )
 }
 
-// AGT 覆盖率批次（2026-09-24）：直调错误梯子（门关/过大/坏 JSON/坏哈希/
+// AGT 覆盖率批次：直调错误梯子（门关/过大/坏 JSON/坏哈希/
 // 设备不在表）+ in-process 设备的隧道 EOF 臂 + /bridge 上行帧梯子与重连
 // 顶替（真 socket）。超时臂/竞态臂/防御 encode 失败臂豁免（见报告）。
 #[cfg(test)]

@@ -1,11 +1,11 @@
-//! L1（devtool-upgrade 阶段 6）— WSAPI 命令注册表测试。
+//! （devtool-upgrade）— WSAPI 命令注册表测试。
 //!
 //! 三件事：
 //! 1. 结构不变量——注册模块清单（含 feature 门控模块，按 cfg 计入下限；
 //!    security 门控带 scanner/editor/vault 三个附加模块）
 //!    清单非空、模块内无重复、锚点命令在位；
 //! 2. `system.commands` dispatch 链路（OnceLock 快照 → handler → JSON）；
-//! 3. 文档生成——`docs/INFO/wsapi-commands.md`（docs/ 已 gitignore，测试
+//! 3. 文档生成——`wsapi-commands`（docs/ 已 gitignore，测试
 //!    写仓库树无副作用泄漏）；安全子集 dispatch 冒烟（只挑无参只读命令；
 //!    依赖 agent loop 的命令断言其诚实报错路径）。
 //!
@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness（AppState 全量字面量——与 m5_session_usage_tests 同款双臂）
-// ---------------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
     if with_config {
@@ -103,13 +101,13 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 28 个模块（register_all 的无条件注册段；L6++ G4 起
-/// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
-/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道，2026-10-23 起
-/// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖），
-/// 2026-10-31 起含 proxy——独立代理配置 config.proxy.json 读写面。board
-/// 2026-10-17 起随 `board` feature 门控——nemesis-board 转 optional，SQLite
-/// 随它进出；connectors/paperbroker 2026-10-17 起随 `connectors` feature
+/// 无 feature 闸的 28 个模块（register_all 的无条件注册段； 起
+/// 含 projects，起含 canvas， 起含 roles——角色目录
+/// WSAPI 含 selfupdate——版本自切换通道；
+/// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖）；
+/// 含 proxy——独立代理配置 config.proxy.json 读写面。board
+/// 随 `board` feature 门控——nemesis-board 转 optional，SQLite
+/// 随它进出；connectors/paperbroker 随 `connectors` feature
 /// 门控——nemesis-security（被 connectors 无条件依赖）随之进出）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system",
@@ -142,9 +140,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "proxy",
 ];
 
-// ---------------------------------------------------------------------------
 // 结构不变量
-// ---------------------------------------------------------------------------
 
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
@@ -158,17 +154,17 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "memory"),
         cfg!(feature = "security"), // 同时带 scanner，两个模块
         cfg!(feature = "sandbox"),
-        cfg!(feature = "vm"), // P5：桌面级 VM 管理面
+        cfg!(feature = "vm"), // 桌面级 VM 管理面
         cfg!(feature = "forge"),
         cfg!(feature = "skins"),
-        cfg!(feature = "board"), // 2026-10-17 起 nemesis-board 转 optional
-        cfg!(feature = "connectors"), // 2026-10-17 起，同时带 paperbroker，两个模块
-        cfg!(feature = "ziwei"), // 2026-11-01 起进下限清单（BUG-20261101-289：紫微管理面 feature 门控，此前漏列）
+        cfg!(feature = "board"),      // nemesis-board 转 optional
+        cfg!(feature = "connectors"), // 同时带 paperbroker，两个模块
+        cfg!(feature = "ziwei"),      // 进下限清单（紫微管理面 feature 门控，此前漏列）
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
         // security 门控附加三模块:scanner + editor(Full Access 放行开关,
-        // 2026-09-20) + vault(凭据 vault 管理面, 2026-10-09)——security 模块
+        // ) + vault(凭据 vault 管理面,)——security 模块
         // 本体已由 gated_on 的 security 项计入。
         + if cfg!(feature = "security") { 3 } else { 0 };
     assert!(
@@ -200,21 +196,21 @@ fn registry_anchor_commands_present() {
     let reg = build_registry();
     assert!(cmds_of(&reg, "system").contains(&"commands"));
     assert!(cmds_of(&reg, "system").contains(&"version"));
-    // WS9/P22：租约状态探针（无副作用命令，安全子集 dispatch 冒烟覆盖）。
+    // /：租约状态探针（无副作用命令，安全子集 dispatch 冒烟覆盖）。
     assert!(cmds_of(&reg, "system").contains(&"lease_status"));
     assert!(cmds_of(&reg, "estop").contains(&"trigger"));
-    // P30（WS14）：canvas 关闭回执锚点。
+    // canvas 关闭回执锚点。
     assert!(cmds_of(&reg, "canvas").contains(&"close"));
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
-    // 会话回收站（2026-10-30）：列表/恢复/单条清除/清空四命令锚点。
+    // 会话回收站：列表/恢复/单条清除/清空四命令锚点。
     assert!(cmds_of(&reg, "sessions").contains(&"trash_list"));
     assert!(cmds_of(&reg, "sessions").contains(&"trash_restore"));
     assert!(cmds_of(&reg, "sessions").contains(&"trash_purge"));
     assert!(cmds_of(&reg, "sessions").contains(&"trash_purge_all"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));
     assert!(cmds_of(&reg, "projects").contains(&"create"));
-    // 角色目录（2026-09-28）：roles.list + chat.spawn 锚点。
+    // 角色目录：roles.list + chat.spawn 锚点。
     assert!(cmds_of(&reg, "roles").contains(&"list"));
     assert!(cmds_of(&reg, "chat").contains(&"spawn"));
     // feature 门控模块锚点
@@ -223,7 +219,7 @@ fn registry_anchor_commands_present() {
         // 19（对话生成前）+ capabilities/draft_list/draft_get/draft_apply/draft_discard
         assert_eq!(w.len(), 24);
         assert!(w.contains(&"set_chat_password"));
-        // 对话生成（2026-09-22）：能力表 + 草稿面板五命令锚点
+        // 对话生成：能力表 + 草稿面板五命令锚点
         assert!(w.contains(&"capabilities"));
         assert!(w.contains(&"draft_list"));
         assert!(w.contains(&"draft_get"));
@@ -231,7 +227,7 @@ fn registry_anchor_commands_present() {
         assert!(w.contains(&"draft_discard"));
     }
     if cfg!(feature = "voice") {
-        // 本地模型框架（2026-10-25）：model_catalog + set_model 两命令入列。
+        // 本地模型框架：model_catalog + set_model 两命令入列。
         assert_eq!(cmds_of(&reg, "voice").len(), 41);
         assert!(cmds_of(&reg, "voice").contains(&"model_catalog"));
         assert!(cmds_of(&reg, "voice").contains(&"set_model"));
@@ -239,34 +235,34 @@ fn registry_anchor_commands_present() {
     if cfg!(feature = "cluster") {
         assert!(cmds_of(&reg, "cluster").contains(&"node.update_identity"));
     }
-    // QUIC 中继独立 WSAPI（2026-10-23 与集群解耦）：quic.relay.* +
+    // QUIC 中继独立 WSAPI（与集群解耦）：quic.relay.* +
     // quic.registry.members 恒注册（零 Cluster 类型依赖），锚点在这里红。
     assert!(cmds_of(&reg, "quic").contains(&"relay.status"));
     assert!(cmds_of(&reg, "quic").contains(&"relay.config"));
     assert!(cmds_of(&reg, "quic").contains(&"registry.members"));
-    // 独立代理配置（2026-10-31）：proxy.get/save 恒注册，锚点在这里红。
+    // 独立代理配置：proxy.get/save 恒注册，锚点在这里红。
     assert!(cmds_of(&reg, "proxy").contains(&"get"));
     assert!(cmds_of(&reg, "proxy").contains(&"save"));
-    // M5-1（2026-10-10 机制加固）：评审重触发入口（模块内无条件注册，钩子
-    // 未安装时诚实报错）。模块本体 2026-10-17 起随 board feature 门控。
+    // （机制加固）：评审重触发入口（模块内无条件注册，钩子
+    // 未安装时诚实报错）。模块本体 起随 board feature 门控。
     if cfg!(feature = "board") {
         assert!(cmds_of(&reg, "board").contains(&"review.retrigger"));
     }
     if cfg!(feature = "security") {
         assert!(cmds_of(&reg, "security").contains(&"config.get"));
-        // Full Access 编辑器放行开关(2026-09-20)。
+        // Full Access 编辑器放行开关。
         assert!(cmds_of(&reg, "editor").contains(&"get"));
         assert!(cmds_of(&reg, "editor").contains(&"set"));
-        // S3c（2026-10-09）：凭据 vault 管理面锚点。
+        // 凭据 vault 管理面锚点。
         assert!(cmds_of(&reg, "vault").contains(&"list"));
         assert!(cmds_of(&reg, "vault").contains(&"set"));
-        // L7c（2026-10-13）：解锁测试命令。
+        // 解锁测试命令。
         assert!(cmds_of(&reg, "vault").contains(&"unlock"));
     }
-    // scanner 2026-09-28 从 security 拆分（细粒度化）：handler 模块在
+    // scanner 从 security 拆分（细粒度化）：handler 模块在
     // handlers/mod.rs 随 `scanner` feature 单独门控（security 只含本体+
     // editor+vault），锚点闸必须与 cfg 对齐——security-on/scanner-off 构建
-    // 下模块缺席，挂在 security 闸里恒红（2026-10-30 全量跑批实录）。
+    // 下模块缺席，挂在 security 闸里恒红（全量跑批）。
     if cfg!(feature = "scanner") {
         assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
     }
@@ -279,7 +275,7 @@ fn registry_anchor_commands_present() {
     if cfg!(feature = "memory") {
         assert!(cmds_of(&reg, "memory").contains(&"entries.search"));
     }
-    // WASM 插件（2026-09-30 插件体系复查 #12）：plugins 模块的 wasm.* 命令
+    // WASM 插件（插件体系复查 #12）：plugins 模块的 wasm.* 命令
     // 锚点——命令面随 feature 编译，清单漂移在这里红。
     if cfg!(feature = "plugins-wasm") {
         let p = cmds_of(&reg, "plugins");
@@ -292,11 +288,11 @@ fn registry_anchor_commands_present() {
             "wasm.config.get",
             "wasm.config.set",
             "wasm.logs",
-            // 面板 LLM 总闸（2026-11-01 决策 C）。
+            // 面板 LLM 总闸（决策 C）。
             "wasm.panel_llm.get",
             "wasm.panel_llm.set",
             "wasm.devkit_download",
-            // 面板通道（2026-10-31 面板扩展批）。
+            // 面板通道（面板扩展批）。
             "ui.registry",
             "ui.invoke",
         ] {
@@ -308,9 +304,7 @@ fn registry_anchor_commands_present() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // system.commands dispatch 链路
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn system_commands_returns_registry_via_dispatch() {
@@ -334,22 +328,20 @@ async fn system_commands_returns_registry_via_dispatch() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 文档生成（docs/INFO/wsapi-commands.md）
-// ---------------------------------------------------------------------------
+// 文档生成（wsapi-commands）
 
 #[test]
 fn docs_generation_writes_wsapi_commands_md() {
     let reg = build_registry();
-    // 生成前置闸（2026-09-30 插件体系复查教训）：feature 不全的构建里
+    // 生成前置闸（插件体系复查教训）：feature 不全的构建里
     // registry 缺 feature 门控模块，无条件重写会把完整文档冲成残表（真实
     // 发生：只带 plugins-wasm 跑本测试，37 模块被冲成 26）。缺任一已知
     // 门控模块（或 plugins 行缺 wasm 命令）= 诚实 SKIP 并注明，不写盘。
     // 门控模块（或 plugins 行缺 wasm 命令，或 coding 行缺 lsp 命令）= 诚实
-    // SKIP 并注明，不写盘。board/connectors/paperbroker 2026-10-17 起 feature
+    // SKIP 并注明，不写盘。board/connectors/paperbroker 起 feature
     // 门控（board/connectors 整包进出），coding 行的 lsp_* 随 `lsp` feature
     // 进出——三者缺一都会静默冲掉命令行（真实发生：只带 12 feature 不带 lsp
-    // 跑，coding 3 命令被冲成 1）。ziwei 2026-11-01 起进闸（BUG-20261101-289
+    // 跑，coding 3 命令被冲成 1）。ziwei 进闸（
     // 真实发生：不带 ziwei 重跑，紫微 23 命令整模块冲没且旧闸放行不 SKIP）。
     const GATED_DOC_MODULES: &[&str] = &[
         "cluster",
@@ -373,7 +365,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         .find(|m| cmds_of(&reg, m).is_empty());
     let lsp_missing = !cmds_of(&reg, "coding").contains(&"lsp_status");
     let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
-    // 注：quic.relay.*（2026-10-23 与集群解耦）挂在 quic 模块下且**恒注册**
+    // 注：quic.relay.*（与集群解耦）挂在 quic 模块下且**恒注册**
     //（无 feature 闸，handler 内诚实降级）——命令表面不随 feature 进出，
     // 文档无被冲风险，不设前置闸（与上面 feature 门控行的区别是刻意的）。
     if let Some(missing) = missing_module
@@ -417,7 +409,7 @@ security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziw
     std::fs::write(&path, &md).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
     // 52ca8615 给 system 加了 open_home_dir 命令臂，本断言未同步 → ET Linux
-    // 全量假红；行内容必须与 system.rs::commands() 静态清单逐字一致。
+    // 全量假红；行内容必须与 system.rs::commands 静态清单逐字一致。
     assert!(
         written.contains(
             "| system | version, status, commands, lease_status, features, open_home_dir |"
@@ -426,9 +418,7 @@ security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziw
     assert!(written.contains(&format!("{} 条命令", total)));
 }
 
-// ---------------------------------------------------------------------------
 // 安全子集 dispatch 冒烟
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn dispatch_safe_readonly_subset_ok() {
@@ -448,7 +438,7 @@ async fn dispatch_safe_readonly_subset_ok() {
     ok_cmd!(super::system::SystemHandler, "version");
     ok_cmd!(super::system::SystemHandler, "status");
     ok_cmd!(super::system::SystemHandler, "commands");
-    // WS9/P22：租约探针（make_ctx 的 workspace=临时目录 → supported=true，
+    // /：租约探针（make_ctx 的 workspace=临时目录 → supported=true，
     // 无持有者 → held=false）。
     ok_cmd!(super::system::SystemHandler, "lease_status");
     ok_cmd!(super::estop::EstopHandler, "status");
@@ -457,12 +447,12 @@ async fn dispatch_safe_readonly_subset_ok() {
     ok_cmd!(super::config::ConfigHandler::new(), "get");
 }
 
-// 打开主目录（2026-10-29）：注册面 + 诚实报错分支。**不得**把 open_home_dir
+// 打开主目录：注册面 + 诚实报错分支。**不得**把 open_home_dir
 // 加进上面 ok_cmd! 清单——make_ctx 的 home=Some(临时目录)，直调会真 spawn
 // explorer 弹窗（弹窗纪律，同 projects agt_tests 豁免先例）。
 #[tokio::test]
 async fn system_open_home_dir_registration_and_honest_error() {
-    // ① L1 注册面：命令清单含 open_home_dir。
+    // ① 注册面：命令清单含 open_home_dir。
     assert!(
         super::system::SystemHandler
             .commands()

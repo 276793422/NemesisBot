@@ -131,7 +131,7 @@ fn legacy_file_discarded_when_new_name_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ==================== （BUG-HUNT）回归锁 ====================
+// ==================== 回归锁 ====================
 //
 // set_enabled 曾是裸 std::fs::write 直写目标（崩溃撕裂整文件 → 读侧
 // fail-open 短期放行，但下次 set_enabled 的 RMW 从撕裂内容解析失败落到

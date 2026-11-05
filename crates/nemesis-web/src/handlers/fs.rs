@@ -1,15 +1,15 @@
-//! Workspace 文件路径补全（I2，devtool-upgrade 阶段 3）+ 目录树（M4，阶段 5）。
+//! Workspace 文件路径补全（devtool-upgrade）+ 目录树。
 //!
 //! Dashboard 聊天输入框 `@` 引用的补全后端：`fs.complete_path {prefix}` 在
 //! workspace 内做前缀匹配（路径前缀或 basename 前缀，大小写不敏感），
 //! 返回 ≤[`MAX_COMPLETIONS`] 条工作区相对路径（`/` 分隔）+ truncated 标记。
 //!
-//! M4 目录树：`fs.tree {path?, depth?=3}` 列出 workspace 内目录树（条目
+//! 目录树：`fs.tree {path?, depth?=3}` 列出 workspace 内目录树（条目
 //! 上限 [`MAX_TREE_ENTRIES`]，忽略表同补全），`children: null` 的目录项
 //! 表示「深度边界未加载」——前端点击目录再查子层（懒展开）。
 //!
 //! 噪声纪律与 fs_watcher 的 watch 过滤**共用同一张表**
-//! （`nemesis_path::is_workspace_ignored`——I2 收敛：两消费方不再各写一份）：
+//! （`nemesis_path::is_workspace_ignored`—— 收敛：两消费方不再各写一份）：
 //! `node_modules`/`target`/`logs` 等运行时目录与 `*.jsonl`/`*.db` 等
 //! 运行时产物永远不会出现在补全/树列表里。
 //!
@@ -24,14 +24,14 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// 补全列表上限（计划 I2：≤20 条）。
+/// 补全列表上限（计划 ：≤20 条）。
 pub const MAX_COMPLETIONS: usize = 20;
 /// 扫描项上限（目录爆炸兜底；与 deadline 先到为准）。
 pub const MAX_SCAN_ENTRIES: usize = 20_000;
 /// 单次补全的时间预算。
 pub const SCAN_DEADLINE: Duration = Duration::from_secs(1);
 
-/// 目录树条目上限（计划 M4：500；所有层级合计）。
+/// 目录树条目上限（计划 ：500；所有层级合计）。
 pub const MAX_TREE_ENTRIES: usize = 500;
 /// 目录树深度钳制上限（请求 depth 再大也不超过；默认 3）。
 pub const MAX_TREE_DEPTH: usize = 8;
@@ -51,10 +51,8 @@ impl Default for FsHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
-// fs.open：聊天文件链接打开（2026-10-19 用户报告问题 2——模型输出 markdown
+// fs.open：聊天文件链接打开（用户报告问题 2——模型输出 markdown
 // 里的文件路径在 UI 上不可点击，用户得手动翻目录找文件）
-// ---------------------------------------------------------------------------
 
 /// 允许「默认应用直接打开」的扩展名白名单（小写带点）。
 ///
@@ -103,7 +101,7 @@ fn path_contains(root: &Path, target: &Path) -> bool {
     if t.len() <= r.len() {
         return false;
     }
-    // BUG-20261029-173：`t[..r.len()]` 裸切片在 r.len() 落于 t 的多字节
+    // `t[..r.len]` 裸切片在 r.len 落于 t 的多字节
     // 字符中间时 panic（`fs.open` 带模型输出的 CJK 绝对路径即可触发）。
     // `str::get` 边界安全：非边界 = None = 前缀必不等，诚实 false。
     let prefix = match t.get(..r.len()) {
@@ -159,7 +157,7 @@ fn resolve_click_target(
     match try_resolve_once(session_root, main_workspace, &norm) {
         Ok(hit) => Ok(hit),
         Err(e) if e.contains("文件不存在") => {
-            // 存在性回退（2026-10-19 用户设计：候选不存在不应直接死，先剥
+            // 存在性回退（用户设计：候选不存在不应直接死，先剥
             // 粘连的中文引导语找真实文件——「见docs/总结.md」→ docs/总结.md）。
             // 每个候选先过同一套 normalize 闸（`..` 段拒绝必须重跑——raw
             // 「见../x」因首段是「见..」可通过整体检查，切出的候选「../x」
@@ -217,7 +215,7 @@ fn is_cjk_char(c: char) -> bool {
 /// CJK 引导语剥前缀候选：模型输出「见docs/总结.md」「文件在C:/ws/a.md」时
 /// 中英文直接粘连（无空格），整段路径不存在；在 CJK→ASCII 边界切开后取
 /// 后缀作为候选路径重试。只在「后一字符是路径合法 ASCII 字符」处切，
-/// 全角标点（：、。）后不切。候选按边界从左到右（长后缀优先——第一个
+/// 全角标点（。）后不切。候选按边界从左到右（长后缀优先——第一个
 /// 边界剥掉的通常就是引导语本身）。
 fn cjk_boundary_candidates(norm: &str) -> Vec<String> {
     let chars: Vec<char> = norm.chars().collect();
@@ -376,7 +374,7 @@ impl FsHandler {
         Ok(serde_json::json!({ "paths": matches, "truncated": truncated }))
     }
 
-    /// 列出 workspace 内目录树（M4）。`path` 为工作区相对路径（空=根），
+    /// 列出 workspace 内目录树。`path` 为工作区相对路径（空=根），
     /// 禁绝对路径与 `..` 逃逸；`depth` 钳到 [`MAX_TREE_DEPTH`]；条目总数
     /// 钳到 [`MAX_TREE_ENTRIES`]（含子层），到限 `truncated: true`。
     fn tree_in(
@@ -396,7 +394,7 @@ impl FsHandler {
         if norm.split('/').any(|seg| seg == "..") {
             return Err(format!("path 越出 workspace: {}", path));
         }
-        // F7（2026-10-14）根修：`PathBuf::join` 遇绝对路径会**替换整个
+        // 根修：`PathBuf::join` 遇绝对路径会**替换整个
         // root**——Windows 盘符形态（`C:/Windows`）归一化后仍是绝对路径，
         // 此前只拒 `..` 时漏挡 = 任意目录列举。`has_root` 覆盖盘符与根
         // 形态（Unix 绝对路径已被 trim 剥成相对，此闸在 Windows 生效）。
@@ -514,7 +512,7 @@ impl ModuleHandler for FsHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // L6++ G4（2026-09-08）：可选 session_id 项目判别——项目会话把遍历
+        // 可选 session_id 项目判别——项目会话把遍历
         // 根切到项目目录（仍只读有界遍历）；无归属/未装配 = 主 workspace。
         let mut workspace = require_workspace(ctx)?.to_string();
         if let Some(sid) = data
@@ -542,7 +540,7 @@ impl ModuleHandler for FsHandler {
                     .to_string();
                 Ok(Some(self.complete_path_in(&workspace, &prefix)?))
             }
-            // M4：目录树（懒展开 = 前端点目录再查子层，depth=1 即一层）。
+            // 目录树（懒展开 = 前端点目录再查子层，depth=1 即一层）。
             "tree" => {
                 let path = data
                     .as_ref()

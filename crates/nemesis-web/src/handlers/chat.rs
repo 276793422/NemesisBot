@@ -1,9 +1,9 @@
 //! Chat handler — 会话维护 WSAPI。
 //!
-//! E6（2026-09-05）：`chat.compact` / `chat.clear`；H1（2026-09-05）：
-//! `chat.todo_get`；M5（2026-09-05）：`chat.context_status`（context 占用快照）；
-//! F1（2026-09-05）：`chat.set_mode` / `chat.get_mode`（plan/build 双模式）；
-//! L2（2026-09-06）：`chat.sync`（WS chat 帧断线补拉，per-session 环形缓冲）。
+//! （2026-09-05）：`chat.compact` / `chat.clear`；（2026-09-05）：
+//! `chat.todo_get`；（2026-09-05）：`chat.context_status`（context 占用快照）；
+//! （2026-09-05）：`chat.set_mode` / `chat.get_mode`（plan/build 双模式）；
+//! （2026-09-06）：`chat.sync`（WS chat 帧断线补拉，per-session 环形缓冲）。
 //!
 //! 双入口对齐：与聊天侧 `/compact` `/clear` slash 命令走**同一 AgentLoop
 //! 实现**（`compact_session` / `clear_session`，busy 闸 + 摘要持久化 +
@@ -47,7 +47,7 @@ impl ModuleHandler for ChatHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // L2（devtool-upgrade 阶段 6）：WS chat 帧断线补拉——useWebSocket
+        // （devtool-upgrade）：WS chat 帧断线补拉——useWebSocket
         // 重连点调用。只读 + 不依赖 AgentLoop（提前返回，不占 loop 句柄）。
         // session_id 缺省取本连接会话；after_seq 缺省 0（重放窗口内全量）。
         // 环形缓冲按 **agent 会话键** 记录（chat_id 是连接级 id，重连即变；
@@ -87,8 +87,8 @@ impl ModuleHandler for ChatHandler {
             "agent:main:session:{}",
             nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
         );
-        // H1（2026-09-05）：todo_get 是只读文件读取，不需要 AgentLoop——
-        // 提前返回，不占用 loop 句柄。L6++ G4（2026-09-08）：项目会话的
+        // todo_get 是只读文件读取，不需要 AgentLoop——
+        // 提前返回，不占用 loop 句柄。 ：项目会话的
         // todo 落在项目目录（TodoWriteTool 按 loop 的 workspace root 解析
         // sessions/），先判项目根再读；无归属回落主 workspace。
         if cmd == "todo_get" {
@@ -102,18 +102,18 @@ impl ModuleHandler for ChatHandler {
                 "todos": todos,
             })));
         }
-        // L6++ G4（2026-09-08）：归属解析单一裁决点——项目会话拿项目 loop
+        // 归属解析单一裁决点——项目会话拿项目 loop
         // （不可用诚实报错），其余拿主槽（不扩 AppState）。锁内 clone Arc，
         // 不持 guard 跨 await（compact 是分钟级 LLM 调用）。
         let agent_loop: Arc<AgentLoop> =
             crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
-        // M5（2026-09-05）：会话级 context 占用快照——只读，同走 AgentLoop
+        // 会话级 context 占用快照——只读，同走 AgentLoop
         // 的测量口径（与压缩压力同公式，见 loop.rs session_context_status）。
         if cmd == "context_status" {
             let status = agent_loop.session_context_status(&session_key);
-            // L10-量测（改进项三期 2026-11-02）：tool defs 供给面字节随行
-            // ——AgentLoop 单一真相源量测（openai 形态代理口径），与压缩
-            // 压力快照同请求返回；L10-建设惰性 schema 的前后对比基线源。
+            // 量测（改进项三期）：tool defs 供给面字节随行
+            // AgentLoop 单一真相源量测（openai 形态代理口径），与压缩
+            // 压力快照同请求返回；-建设惰性 schema 的前后对比基线源。
             let tool_defs = agent_loop.tool_defs_metrics();
             return Ok(Some(serde_json::json!({
                 "session_id": session_id,
@@ -122,7 +122,7 @@ impl ModuleHandler for ChatHandler {
                 "tool_defs": tool_defs,
             })));
         }
-        // F1（devtool-upgrade 阶段 4）：plan/build 模式切换。与 /plan /build
+        // （devtool-upgrade）：plan/build 模式切换。与 /plan /build
         // slash 走同一 `set_mode_with_event`（翻转 + ModeChanged 事件发布，
         // 前端徽标实时刷新）；chat_id 用 `web:{session_id}`——与 agent 事件
         // pump 的路由前缀约定一致（server.rs pump_agent_events）。
@@ -142,7 +142,7 @@ impl ModuleHandler for ChatHandler {
                 "mode": mode.as_str(),
             })));
         }
-        // F1：当前模式只读查询（前端打开会话时初始化徽标用）。
+        // 当前模式只读查询（前端打开会话时初始化徽标用）。
         if cmd == "get_mode" {
             let mode = agent_loop.mode();
             return Ok(Some(serde_json::json!({
@@ -151,7 +151,7 @@ impl ModuleHandler for ChatHandler {
                 "mode": mode.as_str(),
             })));
         }
-        // Work 时间线活查询（2026-10-30 ChatPanel 长任务时间线改造）：进行中
+        // Work 时间线活查询（ChatPanel 长任务时间线改造）：进行中
         // turn 的「叙述+工具」交错时间线整体快照（直查 loop 内活累加器，无
         // 环 200 条滑窗限制）——切走再切回 / 刷新页面时经 detectPendingTurn
         // 拉取，全量恢复执行中任务的过程视图。无进行中 turn / 尚无中间轮 /
@@ -164,10 +164,10 @@ impl ModuleHandler for ChatHandler {
                 "work": work,
             })));
         }
-        // P4（能力扩展 WS8）：steer/followUp 队列可观测——`chat.queue_status`
+        // （能力扩展）：steer/followUp 队列可观测——`chat.queue_status`
         // 返回两条队列各几条（steer = next_step 插队，followUp = next_turn
         // 排队），前端徽标数据源。只读快照，与 `agent.inbox_status` 同源
-        // 同口径（`InboxStatus` 单一真相源），字段名按 P19 契约语义命名；
+        // 同口径（`InboxStatus` 单一真相源），字段名按 契约语义命名；
         // loop 归属解析失败由 resolve 的 Err 传播（与 compact/clear 同姿态）。
         if cmd == "queue_status" {
             let s = agent_loop.inbox_status(&session_key);
@@ -182,7 +182,7 @@ impl ModuleHandler for ChatHandler {
                 "mode": s.mode,
             })));
         }
-        // 客户端驱动委派（2026-09-28 角色目录与分档供给）：把任务派给指定
+        // 客户端驱动委派（角色目录与分档供给）：把任务派给指定
         // 角色的子代理，同步等最终回复。角色合法性走 AgentLoop 的
         // `check_client_role`（与 dispatch 闸同一 visible_roles 裁决）；
         // 派发走 `client_spawn`（与模型 spawn 同一 SpawnFn detached 通道，
@@ -206,7 +206,7 @@ impl ModuleHandler for ChatHandler {
                 .map(str::trim)
                 .unwrap_or("");
             // 值域校验与 SpawnTool schema 同款；空 = readonly 缺省（BUG 修复
-            // 2026-11-04：此前空串透传 client_spawn → detached_tools_for_profile
+            // 此前空串透传 client_spawn → detached_tools_for_profile
             // 直接 Err「Unknown tools profile ''」——注释声称缺省但没落地，
             // 现归一化后传 loop，响应回带归一化值）。
             let tools_profile = match tools_profile {
@@ -219,7 +219,7 @@ impl ModuleHandler for ChatHandler {
                 }
             };
             agent_loop.check_client_role(role)?;
-            // 子代理可见性（BUG 修复 2026-11-04 + 路由修正同日）：父会话标识
+            // 子代理可见性（BUG 修复 + 路由修正同日）：父会话标识
             // 随行——chat_id 用发起连接级房间 id（`web:{连接id}`，即
             // SessionManager send_queue 的键；deliverables/tool_event 投递
             // 同款。会话级 `web:{sid}` 进不了房间表——pump 按 chat_id 剥前缀
@@ -239,7 +239,7 @@ impl ModuleHandler for ChatHandler {
                 "result": result,
             })));
         }
-        // 会话闸（BUG-HUNT R6，2026-10-23）：compact/clear 都是有副作用的
+        // 会话闸：compact/clear 都是有副作用的
         // 会话级操作——旧直调不持会话闸，在飞回合的行会在截断后回写（孤儿
         // 行/内容复活）。under_history_gate 真互斥：持有期间新消息排队/
         // 诚实拒绝，操作完成释放 + 排空。slash /compact /clear 路径经
@@ -254,7 +254,7 @@ impl ModuleHandler for ChatHandler {
                     .await?
             }
             "clear" => {
-                // L07（2026-11-01）孤儿卡配对清理：会话清空 = 该会话的请求
+                // 孤儿卡配对清理：会话清空 = 该会话的请求
                 // 已终局——同 loop responder 槽的未决审批卡定向关闭（trait
                 // 默认空实现 = 无审批面/非交互形态零开销；槽空静默跳过）。
                 if let Some(responder) = agent_loop.approval_responder() {
@@ -281,9 +281,9 @@ impl ModuleHandler for ChatHandler {
     }
 }
 
-/// H1（2026-09-05）：读会话 todo 清单（`chat.todo_get` 支撑）。
+/// 读会话 todo 清单（`chat.todo_get` 支撑）。
 ///
-/// 路径与 `TodoWriteTool` 的写路径严格同构：session_key 构造（E6 顶部）
+/// 路径与 `TodoWriteTool` 的写路径严格同构：session_key 构造（顶部）
 /// → `':' → '_'` 净化 → `sessions/todo_{safe}.json`。文件缺失 = 空清单
 /// （会话没有 todo 是常态，不是错误）；损坏 JSON = 空清单 + warn
 /// （渲染型接口不把坏文件炸给前端，但日志留痕）。
@@ -309,11 +309,11 @@ pub(crate) fn read_session_todos(
     }
 }
 
-// AGT 覆盖率批次（2026-09-25）：todo_get 的两个确定性 bail 臂（缺
+// AGT 覆盖率批次：todo_get 的两个确定性 bail 臂（缺
 // session_id / workspace 未配置）。
 #[cfg(test)]
 mod agt_tests;
 
-// P4（能力扩展 WS8）：chat.queue_status 契约测试（steer/followUp 计数面）。
+// （能力扩展）：chat.queue_status 契约测试（steer/followUp 计数面）。
 #[cfg(test)]
 mod queue_status_tests;

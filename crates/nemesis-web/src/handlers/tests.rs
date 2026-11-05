@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure
-// -----------------------------------------------------------------------
 
 /// Create a RequestContext with a temp workspace directory.
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -127,9 +125,7 @@ fn ensure_config_dir(workspace: &Path) {
     std::fs::create_dir_all(workspace.join("config")).unwrap();
 }
 
-// -----------------------------------------------------------------------
 // Utility function tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_mask_sensitive_short() {
@@ -213,9 +209,7 @@ fn test_write_creates_subdirs() {
     assert_eq!(content, "hello");
 }
 
-// -----------------------------------------------------------------------
 // register_all test
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_register_all_registers_16_handlers() {
@@ -255,9 +249,7 @@ fn test_register_all_registers_16_handlers() {
     });
 }
 
-// -----------------------------------------------------------------------
 // System handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_system_version() {
@@ -297,9 +289,7 @@ async fn test_system_unknown_cmd() {
     assert!(result.is_err());
 }
 
-// -----------------------------------------------------------------------
 // Identity handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_identity_list() {
@@ -315,7 +305,7 @@ async fn test_identity_list() {
         .unwrap()
         .unwrap();
     let docs = result["documents"].as_array().unwrap();
-    // G5 (U18)：四件套 + 指令链 AGENTS.md/CLAUDE.md = 六条目
+    // 四件套 + 指令链 AGENTS.md/CLAUDE.md = 六条目
     assert_eq!(docs.len(), 6); // AGENT/IDENTITY/SOUL/USER/AGENTS/CLAUDE .md
     let agent_doc = docs.iter().find(|d| d["name"] == "AGENT.md").unwrap();
     assert!(agent_doc["exists"].as_bool().unwrap());
@@ -366,9 +356,7 @@ async fn test_identity_get_nonexistent() {
     assert!(result.is_err());
 }
 
-// -----------------------------------------------------------------------
 // Tools handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_tools_get_save_roundtrip() {
@@ -393,9 +381,7 @@ async fn test_tools_get_save_roundtrip() {
     assert!(result["content"].as_str().unwrap().contains("search"));
 }
 
-// -----------------------------------------------------------------------
 // Config handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_config_get() {
@@ -529,9 +515,7 @@ async fn test_config_cors_commands() {
         .unwrap();
 }
 
-// -----------------------------------------------------------------------
 // Models handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_models_add_list_delete() {
@@ -641,9 +625,7 @@ async fn test_models_delete_nonexistent() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
-// -----------------------------------------------------------------------
 // Channels handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_channels_list() {
@@ -674,10 +656,8 @@ async fn test_channels_get_nonexistent() {
     assert!(result.is_err());
 }
 
-// -----------------------------------------------------------------------
 // Scanner handler tests（feature 闸：mod tests 只闸 workflow+security，
-// scanner 关闭时本组测试整体不编译——N3，2026-10-24 外评）
-// -----------------------------------------------------------------------
+// scanner 关闭时本组测试整体不编译——， 外评）
 
 #[cfg(feature = "scanner")]
 #[tokio::test]
@@ -709,9 +689,7 @@ async fn test_scanner_config_get_save_roundtrip() {
     assert!(result["saved"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // Security handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_security_config_get_save() {
@@ -815,9 +793,7 @@ async fn test_security_audit_with_data() {
     assert_eq!(by_level["LOW"].as_u64().unwrap(), 1);
 }
 
-// -----------------------------------------------------------------------
 // MCP handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_mcp_add_list_delete_server() {
@@ -958,9 +934,7 @@ async fn test_mcp_delete_nonexistent() {
     assert!(result.is_err());
 }
 
-// -----------------------------------------------------------------------
 // Skills handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_installed_empty() {
@@ -1037,9 +1011,7 @@ async fn test_skills_uninstall() {
     assert!(!skill_dir.exists());
 }
 
-// -----------------------------------------------------------------------
 // Forge handler tests
-// -----------------------------------------------------------------------
 
 #[cfg(feature = "forge")]
 #[tokio::test]
@@ -1122,9 +1094,7 @@ async fn test_forge_artifacts_with_data() {
     assert_eq!(artifacts[0]["name"], "test.txt");
 }
 
-// -----------------------------------------------------------------------
-// Memory handler tests（memory feature 独立可选——引用同闸，2026-10-24 N3）
-// -----------------------------------------------------------------------
+// Memory handler tests（memory feature 独立可选——引用同闸）
 
 #[cfg(feature = "memory")]
 #[tokio::test]
@@ -1188,9 +1158,7 @@ async fn test_memory_documents_and_get_save() {
     assert!(std::fs::read_to_string(ws.join("memory/new.md")).unwrap() == "# New");
 }
 
-// -----------------------------------------------------------------------
 // Tasks handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_tasks_boot_get_save() {
@@ -1318,9 +1286,7 @@ async fn test_tasks_cron_delete_nonexistent() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
-// -----------------------------------------------------------------------
 // Cluster handler tests
-// -----------------------------------------------------------------------
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -1377,9 +1343,7 @@ async fn test_cluster_peers_no_file() {
     assert!(result["peers"].as_array().unwrap().is_empty());
 }
 
-// -----------------------------------------------------------------------
 // Logs handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_logs_requests_empty() {
@@ -1486,9 +1450,7 @@ async fn test_logs_request_detail_not_found() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
-// -----------------------------------------------------------------------
 // Agent handler tests
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_agent_status() {
@@ -1518,9 +1480,7 @@ async fn test_agent_start_stop_stub() {
     assert!(err.contains("Agent not available"));
 }
 
-// -----------------------------------------------------------------------
 // No-workspace error tests
-// -----------------------------------------------------------------------
 
 #[allow(unused_mut)] // `mut` only needed when feature="cluster" adds the push below
 #[tokio::test]
@@ -1571,9 +1531,7 @@ async fn test_no_workspace_returns_error() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Unknown command tests
-// -----------------------------------------------------------------------
 
 #[allow(unused_mut)] // `mut` only needed when feature="cluster" adds the push below
 #[tokio::test]
@@ -2195,7 +2153,7 @@ async fn concurrency_mcp_rapid_add_delete() {
 // Coverage Gap Tests — previously untested commands
 // ===================================================================
 
-// --- Models: set_default ---
+// Models: set_default ---
 #[tokio::test]
 async fn test_models_set_default() {
     let handler = models::ModelsHandler::new();
@@ -2242,7 +2200,7 @@ async fn test_models_set_default_nonexistent() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
-// --- Models: test command (stub) ---
+// Models: test command (stub) ---
 #[tokio::test]
 async fn test_models_test_stub() {
     let handler = models::ModelsHandler::new();
@@ -2260,7 +2218,7 @@ async fn test_models_test_stub() {
     );
 }
 
-// --- Channels: update ---
+// Channels: update ---
 #[tokio::test]
 async fn test_channels_update() {
     let handler = channels::ChannelsHandler::new();
@@ -2299,7 +2257,7 @@ async fn test_channels_update() {
     assert_eq!(result["config"]["enabled"], true);
 }
 
-// --- Channels: test command (stub) ---
+// Channels: test command (stub) ---
 #[tokio::test]
 async fn test_channels_test_stub() {
     let handler = channels::ChannelsHandler::new();
@@ -2315,7 +2273,7 @@ async fn test_channels_test_stub() {
     assert_eq!(result["status"], "not_implemented");
 }
 
-// --- Skills: search (stub) ---
+// Skills: search (stub) ---
 #[tokio::test]
 async fn test_skills_search_stub() {
     let handler = skills::SkillsHandler::new();
@@ -2331,7 +2289,7 @@ async fn test_skills_search_stub() {
     assert!(result["results"].as_array().unwrap().is_empty());
 }
 
-// --- Skills: install (stub) ---
+// Skills: install (stub) ---
 #[tokio::test]
 async fn test_skills_install_stub() {
     let handler = skills::SkillsHandler::new();
@@ -2343,7 +2301,7 @@ async fn test_skills_install_stub() {
     assert!(result.is_err() || result.unwrap().is_none());
 }
 
-// --- Skills: config.get and config.save ---
+// Skills: config.get and config.save ---
 #[tokio::test]
 async fn test_skills_config_get_save() {
     let handler = skills::SkillsHandler::new();
@@ -2372,7 +2330,7 @@ async fn test_skills_config_get_save() {
     assert!(result["saved"].as_bool().unwrap());
 }
 
-// --- Forge: reflect (stub) ---
+// Forge: reflect (stub) ---
 #[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_reflect_stub() {
@@ -2388,7 +2346,7 @@ async fn test_forge_reflect_stub() {
     assert!(!result["triggered"].as_bool().unwrap());
 }
 
-// --- Memory: vector.status ---
+// Memory: vector.status ---
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_vector_status_no_config() {
@@ -2423,7 +2381,7 @@ async fn test_memory_vector_status_with_config() {
     assert!(result["enabled"].as_bool().unwrap());
 }
 
-// --- Memory: vector.search (stub) ---
+// Memory: vector.search (stub) ---
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_vector_search_stub() {
@@ -2440,7 +2398,7 @@ async fn test_memory_vector_search_stub() {
     assert!(result["results"].as_array().unwrap().is_empty());
 }
 
-// --- Cluster: peers with actual data ---
+// Cluster: peers with actual data ---
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cluster_peers_with_data() {
@@ -2474,7 +2432,7 @@ address = "192.168.1.11:5000"
     assert!(peers_str.contains("master"));
 }
 
-// --- Agent: start and stop ---
+// Agent: start and stop ---
 #[tokio::test]
 async fn test_agent_start_returns_stub() {
     let handler = agent::AgentHandler;
@@ -2497,7 +2455,7 @@ async fn test_agent_stop_returns_stub() {
 // Boundary / Edge Case Tests
 // ===================================================================
 
-// --- Missing data (None) for commands that require it ---
+// Missing data (None) for commands that require it ---
 #[tokio::test]
 async fn test_models_add_missing_data() {
     let handler = models::ModelsHandler::new();
@@ -2584,7 +2542,7 @@ async fn test_tasks_cron_update_missing_id() {
     assert!(result.unwrap_err().contains("missing field: id"));
 }
 
-// --- Corrupted config files ---
+// Corrupted config files ---
 #[tokio::test]
 async fn test_config_get_corrupted_file() {
     let handler = config::ConfigHandler::new();
@@ -2654,7 +2612,7 @@ async fn test_logs_requests_ignores_invalid_dir_names() {
     assert_eq!(result["total"], 1);
 }
 
-// --- Special characters in names ---
+// Special characters in names ---
 #[tokio::test]
 async fn test_models_add_special_chars_in_name() {
     let handler = models::ModelsHandler::new();
@@ -2705,7 +2663,7 @@ async fn test_mcp_server_with_special_chars() {
     assert!(result["added"].as_bool().unwrap());
 }
 
-// --- Config: empty path in set_field ---
+// Config: empty path in set_field ---
 #[tokio::test]
 async fn test_config_set_field_empty_path() {
     let handler = config::ConfigHandler::new();
@@ -2717,7 +2675,7 @@ async fn test_config_set_field_empty_path() {
     assert!(result.is_err());
 }
 
-// --- Config: deep nested set_field ---
+// Config: deep nested set_field ---
 #[tokio::test]
 async fn test_config_set_field_deep_nested() {
     let handler = config::ConfigHandler::new();
@@ -2740,7 +2698,7 @@ async fn test_config_set_field_deep_nested() {
     assert_eq!(result["gateway"]["host"], "0.0.0.0");
 }
 
-// --- Forge: config.save missing enabled field ---
+// Forge: config.save missing enabled field ---
 #[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_config_save_missing_enabled() {
@@ -2766,7 +2724,7 @@ async fn test_forge_config_save_non_boolean_enabled() {
     assert!(result.is_err());
 }
 
-// --- Memory: path traversal in document.save ---
+// Memory: path traversal in document.save ---
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_document_path_traversal() {
@@ -2779,7 +2737,7 @@ async fn test_memory_document_path_traversal() {
     assert!(result.unwrap_err().contains("traversal"));
 }
 
-// --- Identity: path traversal ---
+// Identity: path traversal ---
 #[tokio::test]
 async fn test_identity_save_path_traversal() {
     let handler = identity::IdentityHandler;
@@ -2791,7 +2749,7 @@ async fn test_identity_save_path_traversal() {
     assert!(result.unwrap_err().contains("traversal"));
 }
 
-// --- Memory: subdirectory files ---
+// Memory: subdirectory files ---
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_documents_subdirectory() {
@@ -2815,7 +2773,7 @@ async fn test_memory_documents_subdirectory() {
     assert!(paths.iter().any(|p| p.contains("root.md")));
 }
 
-// --- Skills: detail non-existent ---
+// Skills: detail non-existent ---
 #[tokio::test]
 async fn test_skills_detail_nonexistent() {
     let handler = skills::SkillsHandler::new();
@@ -2826,7 +2784,7 @@ async fn test_skills_detail_nonexistent() {
     assert!(result.is_err());
 }
 
-// --- Skills: uninstall non-existent ---
+// Skills: uninstall non-existent ---
 #[tokio::test]
 async fn test_skills_uninstall_nonexistent() {
     let handler = skills::SkillsHandler::new();
@@ -2838,7 +2796,7 @@ async fn test_skills_uninstall_nonexistent() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
-// --- MCP: config.get and config.save ---
+// MCP: config.get and config.save ---
 #[tokio::test]
 async fn test_mcp_config_get_save() {
     let handler = mcp::McpHandler::new();
@@ -2878,7 +2836,7 @@ async fn test_mcp_config_get_save() {
     assert_eq!(result["timeout"], 60);
 }
 
-// --- Config: save invalid JSON ---
+// Config: save invalid JSON ---
 #[tokio::test]
 async fn test_config_save_invalid_structure() {
     let handler = config::ConfigHandler::new();
@@ -2891,7 +2849,7 @@ async fn test_config_save_invalid_structure() {
     assert!(result.is_err());
 }
 
-// --- Security: audit with limit and offset ---
+// Security: audit with limit and offset ---
 #[tokio::test]
 async fn test_security_audit_with_filter() {
     let handler = security::SecurityHandler::new();
@@ -2948,7 +2906,7 @@ async fn test_security_audit_with_filter() {
 // Mock / Invalid Input Tests
 // ===================================================================
 
-// --- Null data for required commands ---
+// Null data for required commands ---
 #[tokio::test]
 async fn test_null_data_for_required_commands() {
     let handlers_and_cmds: Vec<(&str, &str)> = vec![
@@ -3025,7 +2983,7 @@ async fn test_null_data_for_required_commands() {
     }
 }
 
-// --- Empty strings in required fields ---
+// Empty strings in required fields ---
 #[tokio::test]
 async fn test_models_add_empty_name() {
     let handler = models::ModelsHandler::new();
@@ -3048,7 +3006,7 @@ async fn test_tasks_boot_get_nonexistent() {
     assert!(result.is_err());
 }
 
-// --- Config: cors.toggle with invalid type ---
+// Config: cors.toggle with invalid type ---
 #[tokio::test]
 async fn test_config_cors_toggle_invalid_type() {
     let handler = config::ConfigHandler::new();
@@ -3666,7 +3624,7 @@ fn test_require_workspace_missing() {
 // Handler branch coverage — every if/match/Result path
 // ===================================================================
 
-// --- Models: empty api_key not masked ---
+// Models: empty api_key not masked ---
 #[tokio::test]
 async fn test_models_list_empty_api_key() {
     let handler = models::ModelsHandler::new();
@@ -3693,7 +3651,7 @@ async fn test_models_list_empty_api_key() {
     assert_eq!(key, ""); // empty key should remain empty
 }
 
-// --- Models: add with optional fields ---
+// Models: add with optional fields ---
 #[tokio::test]
 async fn test_models_add_with_all_optional_fields() {
     let handler = models::ModelsHandler::new();
@@ -3725,7 +3683,7 @@ async fn test_models_add_with_all_optional_fields() {
     assert_eq!(m["proxy"], "http://proxy:8080");
 }
 
-// --- Channels: get existing channel, verify masking ---
+// Channels: get existing channel, verify masking ---
 #[tokio::test]
 async fn test_channels_get_masks_token() {
     let handler = channels::ChannelsHandler::new();
@@ -3753,7 +3711,7 @@ async fn test_channels_get_masks_token() {
     assert!(config["token"].as_str().unwrap().contains("****"));
 }
 
-// --- Channels: update non-existent ---
+// Channels: update non-existent ---
 #[tokio::test]
 async fn test_channels_update_nonexistent() {
     let handler = channels::ChannelsHandler::new();
@@ -3769,7 +3727,7 @@ async fn test_channels_update_nonexistent() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
-// --- Config: sanitize_config deep recursion ---
+// Config: sanitize_config deep recursion ---
 #[tokio::test]
 async fn test_config_get_nested_sensitive() {
     let handler = config::ConfigHandler::new();
@@ -3796,8 +3754,8 @@ async fn test_config_get_nested_sensitive() {
     assert!(key.contains("****"));
 }
 
-// --- Config: set_field non-existent intermediate path ---
-// R1 修复后 set_field 走 round-trip 校验：为未知 section「自动创建中间对象」
+// Config: set_field non-existent intermediate path ---
+// 修复后 set_field 走 round-trip 校验：为未知 section「自动创建中间对象」
 // 是 typed reparse 会静默丢弃的幻觉写入——旧契约（creates_intermediate）在这
 // 种情况下谎报 updated:true 而盘上什么都没写。本测试钉住新契约：loud 拒绝。
 #[tokio::test]
@@ -3817,7 +3775,7 @@ async fn test_config_set_field_unknown_intermediate_rejected() {
     assert!(raw.get("new_section").is_none());
 }
 
-// --- Forge: status with forge dir containing subdirs ---
+// Forge: status with forge dir containing subdirs ---
 #[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_status_with_artifacts() {
@@ -3864,7 +3822,7 @@ async fn test_forge_status_with_artifacts() {
     );
 }
 
-// --- Tasks: cron update multiple fields simultaneously ---
+// Tasks: cron update multiple fields simultaneously ---
 #[tokio::test]
 async fn test_tasks_cron_update_multiple_fields() {
     let handler = tasks::TasksHandler;
@@ -3907,7 +3865,7 @@ async fn test_tasks_cron_update_multiple_fields() {
     assert!(!job["enabled"].as_bool().unwrap());
 }
 
-// --- Tasks: corrupted cron jobs.json is tolerated (graceful load) ---
+// Tasks: corrupted cron jobs.json is tolerated (graceful load) ---
 // CronService::new logs + starts empty when the store is unparseable, so
 // cron.list succeeds with an empty list rather than erroring.
 #[tokio::test]
@@ -3928,7 +3886,7 @@ async fn test_tasks_cron_list_corrupted() {
     assert_eq!(result["total"], 0);
 }
 
-// --- Tasks: boot.save then heartbeat.save independent ---
+// Tasks: boot.save then heartbeat.save independent ---
 #[tokio::test]
 async fn test_tasks_independent_files() {
     let handler = tasks::TasksHandler;
@@ -3982,7 +3940,7 @@ async fn test_tasks_independent_files() {
     assert_eq!(heart2["content"], "# Heart"); // unchanged
 }
 
-// --- Security: audit with risk_level filter ---
+// Security: audit with risk_level filter ---
 #[tokio::test]
 async fn test_security_audit_risk_level_filter() {
     let handler = security::SecurityHandler::new();
@@ -4016,7 +3974,7 @@ async fn test_security_audit_risk_level_filter() {
     );
 }
 
-// --- Logs: security logs with filter ---
+// Logs: security logs with filter ---
 #[tokio::test]
 async fn test_logs_security_with_filter() {
     let handler = logs::LogsHandler;
@@ -4062,7 +4020,7 @@ async fn test_logs_security_with_filter() {
     assert_eq!(result["total"], 1);
 }
 
-// --- Cluster: status with config ---
+// Cluster: status with config ---
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cluster_status_with_config() {
@@ -4085,7 +4043,7 @@ async fn test_cluster_status_with_config() {
     assert_eq!(config["enabled"], true);
 }
 
-// --- Cluster: config.get nonexistent returns empty ---
+// Cluster: config.get nonexistent returns empty ---
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cluster_config_get_nonexistent() {
@@ -4101,7 +4059,7 @@ async fn test_cluster_config_get_nonexistent() {
     assert!(result.is_object());
 }
 
-// --- Memory: status with enhanced_memory enabled ---
+// Memory: status with enhanced_memory enabled ---
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_status_with_vector_enabled() {
@@ -4128,7 +4086,7 @@ async fn test_memory_status_with_vector_enabled() {
     assert!(result["vector_memory"]["enabled"].as_bool().unwrap());
 }
 
-// --- MCP: server update with args and env ---
+// MCP: server update with args and env ---
 #[tokio::test]
 async fn test_mcp_server_update_args_env() {
     let handler = mcp::McpHandler::new();
@@ -4176,7 +4134,7 @@ async fn test_mcp_server_update_args_env() {
     assert_eq!(args[0], "x");
 }
 
-// --- MCP: update with timeout ---
+// MCP: update with timeout ---
 #[tokio::test]
 async fn test_mcp_server_update_timeout() {
     let handler = mcp::McpHandler::new();
@@ -4284,7 +4242,7 @@ async fn fuzz_config_set_field_various_paths() {
     let ctx = make_ctx(&dir);
 
     // Valid paths (real Config fields — round-trip verifiable after the
-    // R1 fix; `session.max_history` 曾在这组里，但它不是 Config 真字段，
+    // fix; `session.max_history` 曾在这组里，但它不是 Config 真字段，
     // 旧契约下 set_field 谎报 updated:true 才让测试假绿)。
     let valid = vec![
         ("gateway.host", serde_json::json!("0.0.0.0")),
@@ -4302,7 +4260,7 @@ async fn fuzz_config_set_field_various_paths() {
         );
     }
 
-    // Unknown fields must loud-reject（R1 修复：不许谎报 updated:true）。
+    // Unknown fields must loud-reject（修复：不许谎报 updated:true）。
     for path in ["session.max_history", "agents.nonexistent_key_xyz"] {
         let data = serde_json::json!({ "path": path, "value": 1 });
         let result = handler.handle_cmd("set_field", Some(data), &ctx).await;
@@ -4571,7 +4529,7 @@ async fn stress_50_concurrent_write_with_verification() {
     }
 
     // 25 concurrent forge.config.save toggles（forge feature 可选——关时本批
-    // 退出，尾部总数断言按 handles.len() 动态算，两形态都对）
+    // 退出，尾部总数断言按 handles.len 动态算，两形态都对）
     #[cfg(feature = "forge")]
     for i in 0..25 {
         let ctx = ctx.clone();
@@ -4756,15 +4714,13 @@ async fn stress_sustained_1000_ops_10_seconds() {
 
     // Performance assertion: 灾难性卡死检测（病理性退化应远低于此闸）。
     // 每 op 都有 config.json 落盘，CI 慢 runner / 冻结窗下单 op 可达数十 ms
-    // ——50 ops/s 闸在 Windows shard3 实测 33.9 ops/s 假红（2026-10-14，
+    // 50 ops/s 闸在 Windows 实测 33.9 ops/s 假红（
     // 本机 300+ ops/s），按环境敏感断言纪律放宽到 10 ops/s（单 op 100ms
     // 预算），保留灾难检测语义、去掉 CI 环境精确吞吐闸。
     assert!(ops_per_sec > 10.0, "too slow: {:.0} ops/sec", ops_per_sec);
 }
 
-// -----------------------------------------------------------------------
 // Logs handler tests (Phase C/D/E coverage)
-// -----------------------------------------------------------------------
 
 use crate::handlers::logs::LogsHandler;
 use std::fs;
@@ -5274,7 +5230,7 @@ async fn test_logs_session_list_empty_when_no_memory_manager() {
 
 #[tokio::test]
 async fn test_logs_session_list_reads_files_without_memory_manager() {
-    // P1 e2e: no memory_manager (memory disabled), but session_logs files
+    // e2e: no memory_manager (memory disabled), but session_logs files
     // exist → session_list must read them directly (the decoupling fix).
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path());
@@ -5304,7 +5260,7 @@ async fn test_logs_session_list_reads_files_without_memory_manager() {
 
 #[tokio::test]
 async fn test_logs_session_detail_reads_file_without_memory_manager() {
-    // P1 e2e: session_detail reads the JSONL file directly without memory.
+    // e2e: session_detail reads the JSONL file directly without memory.
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path());
     let session_dir = dir.path().join("logs/session_logs");
@@ -5513,9 +5469,7 @@ async fn test_logs_unknown_command_returns_error() {
     assert!(result.unwrap_err().contains("unknown command"));
 }
 
-// -----------------------------------------------------------------------
 // Logs helper unit tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_extract_md_header_basic() {
@@ -5574,9 +5528,7 @@ fn test_parse_cluster_dir_name_without_ms() {
     assert_eq!(task, "taskABC");
 }
 
-// -----------------------------------------------------------------------
-// Sessions delete → cron cascade (2026-08-25 zombie-resurrection fix)
-// -----------------------------------------------------------------------
+// Sessions delete → cron cascade (zombie-resurrection fix)
 
 #[tokio::test]
 async fn test_sessions_delete_pauses_cron_jobs_bound_to_session() {
@@ -5585,9 +5537,9 @@ async fn test_sessions_delete_pauses_cron_jobs_bound_to_session() {
     let ctx = make_ctx(&dir);
 
     // Seed three jobs directly in the cron service:
-    // A) enabled + pinned to the session being deleted  → must be paused
-    // B) enabled + pinned to a DIFFERENT session        → must stay enabled
-    // C) already-disabled + pinned to the deleted one   → untouched, NOT reported
+    // A) enabled + pinned to the session being deleted → must be paused
+    // B) enabled + pinned to a DIFFERENT session → must stay enabled
+    // C) already-disabled + pinned to the deleted one → untouched, NOT reported
     let victim_key = "agent:main:session:victim-sid".to_string();
     let schedule = |ms: i64| nemesis_cron::CronSchedule {
         kind: "every".to_string(),
@@ -5678,8 +5630,8 @@ async fn test_sessions_delete_no_cron_service_still_deletes() {
 
 #[tokio::test]
 async fn test_sessions_list_projects_allow_all_by_same_key_family() {
-    // 2026-10-25：投影块曾裸引 handlers::security，无 security 裁剪形态
-    // E0433（CI 三 shard 实证）。门控修复后钉行为：开着会话行带
+    // 投影块曾裸引 handlers::security，无 security 裁剪形态
+    // （CI 三 shard 实证）。门控修复后钉行为：开着会话行带
     // allow_all:true、未开会话行 false——键族与 security handler 的
     // derive_session_key 同源（该公式另有专项测试）。
     let _serial = crate::handlers::security::SESSION_ALLOW_ALL_TEST_LOCK

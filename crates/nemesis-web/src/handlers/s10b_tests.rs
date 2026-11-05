@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): handlers:: shared path/file
+//! (quality-hardening goal 冲刺, web 批次 2): handlers:: shared path/file
 //! utility arms the gated `mod tests` skips — absolute-path rejection, the
 //! canonicalize-fallback branch (non-existent base), `..` denial when the
 //! target is missing, atomic-write fallback on a read-only destination, and
@@ -10,8 +10,8 @@ use super::*;
 fn resolve_path_rejects_absolute_forms() {
     let err = resolve_path("/ws", "/etc/passwd").unwrap_err();
     assert_eq!(err, "absolute paths not allowed");
-    // 平台差异断言（2026-09-01 远端首跑暴露）：
-    // - `C:/windows/abs.txt` 只在 Windows 是 is_absolute()；Linux 上是普通
+    // 平台差异断言（远端首跑暴露）：
+    // - `C:/windows/abs.txt` 只在 Windows 是 is_absolute；Linux 上是普通
     //   相对路径（文件名含 `C:` 而已），resolve_path 放行是正确行为。
     // - `\rooted` 在**两平台都 Err**：resolve_path 对 `\` 前缀有显式字符串
     //   检查（防 Windows 风格 rooted 路径，跨平台防御，handlers/mod.rs），

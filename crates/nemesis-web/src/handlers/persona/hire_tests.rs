@@ -10,13 +10,11 @@
 //! - `hire_write_cluster_persona`：端到端——IDENTITY 1:1、SOUL 拼接、
 //!   EXPERTISE 不动、peers.toml 只换 name、备份产出、缺文件诚实报错
 //!
-//! 决策契约：docs/REPORT/2026-10-23_集群聘用需求评估与决策.md
+//! 决策契约：集群聘用需求评估与决策
 
 use super::*;
 
-// -----------------------------------------------------------------------
 // strip_system_prefix
-// -----------------------------------------------------------------------
 
 #[test]
 fn strip_removes_download_shape_prefix() {
@@ -42,9 +40,7 @@ fn strip_pure_default_yields_empty() {
     assert_eq!(strip_system_prefix(DEFAULT_TOOLS_MD, DEFAULT_TOOLS_MD), "");
 }
 
-// -----------------------------------------------------------------------
 // build_cluster_soul
-// -----------------------------------------------------------------------
 
 #[test]
 fn soul_appends_agent_and_tools_extras_in_order() {
@@ -88,9 +84,7 @@ fn soul_fallback_keeps_everything_when_prefix_mismatches() {
     assert!(out.contains(tools), "{out}");
 }
 
-// -----------------------------------------------------------------------
 // read_persona_display_name
-// -----------------------------------------------------------------------
 
 #[test]
 fn display_name_reads_persona_json_and_falls_back_to_id() {
@@ -113,9 +107,7 @@ fn display_name_reads_persona_json_and_falls_back_to_id() {
     assert_eq!(read_persona_display_name(p, "some-id"), "some-id");
 }
 
-// -----------------------------------------------------------------------
 // backup_cluster_persona_files
-// -----------------------------------------------------------------------
 
 #[test]
 fn backup_returns_none_when_cluster_persona_files_all_missing() {
@@ -145,7 +137,7 @@ fn backup_zips_present_files_with_contents_intact() {
     let zip_path = root.join(&rel);
     assert!(zip_path.exists(), "备份 zip 应存在: {}", zip_path.display());
 
-    // 解开验证条目与内容（zip 9 name() 返回 Result）
+    // 解开验证条目与内容（zip 9 name 返回 Result）
     let f = std::fs::File::open(&zip_path).unwrap();
     let mut archive = zip::ZipArchive::new(std::io::BufReader::new(f)).unwrap();
     assert_eq!(archive.len(), 2, "只备存在的两件");
@@ -233,9 +225,7 @@ fn backup_fails_closed_when_existing_file_unreadable() {
     assert!(!root.join("cluster").join("backups").exists());
 }
 
-// -----------------------------------------------------------------------
 // hire_write_cluster_persona（端到端文件级）
-// -----------------------------------------------------------------------
 
 /// 造一个模拟超市下载产物的 personas/<id>/ 四件套。
 fn seed_persona(

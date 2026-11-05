@@ -1,4 +1,4 @@
-//! `proxy_keys` 单测（docs/PLAN/2026-11-03_LLM代理调用方key管理.md §4 P2）：
+//! `proxy_keys` 单测（LLM代理调用方key管理 §4）：
 //! 空 token 不参与匹配 / 白名单前置内存闸 / 命中注入 caller / 禁用 key 拒绝
 //! / 缺文件回落 / 手填空 key 不开旁路 / 热生效（mtime 重载）/ workspace 缺席。
 //! AppState 构造依赖 workflow 的 ChatSecretStore，feature 闸同
@@ -170,7 +170,7 @@ fn hot_reload_picks_up_new_key() {
     let state = make_state(Some(ws));
     assert!(match_proxy_caller(&state, "nbk_bbb", "/v1/chat/completions").is_none());
     // WSAPI add 落盘 → 下一请求看到新 key（写代号失配重读——不再赌 mtime
-    // 粒度，BUG-20261103-350 后无 sleep）。
+    // 粒度， 后无 sleep）。
     proxy_keys_file::add_key(&config, entry("bot-b", "nbk_bbb")).unwrap();
     let caller = match_proxy_caller(&state, "nbk_bbb", "/v1/chat/completions").unwrap();
     assert_eq!(caller.0.as_str(), "bot-b");
@@ -184,13 +184,13 @@ fn workspace_absent_returns_none() {
     assert!(match_proxy_caller(&state, "nbk_aaa", "/v1/chat/completions").is_none());
 }
 
-// BUG-20261103-350 回归锁：同 tick 双写的缓存陈旧。NTFS LastWriteTime 有
+// 回归锁：同 tick 双写的缓存陈旧。NTFS LastWriteTime 有
 // 毫秒级量化（本机实测零间隔 atomic 写 3/11 次撞同值；write_file_atomic
-// 的临时名注释、HotReloader::force_reload 的 2026-10-22 实录、auth_tests
+// 的临时名注释、HotReloader::force_reload 的 、auth_tests
 // 的 20ms sleep「不赌 mtime 粒度」三处在案）——第二次写与第一次写落在同
 // 一 tick 时 mtime 相同，mtime 单信号缓存把第二次写当「未变」：禁用/删除
 // 的 key 无限期继续放行，「写盘即热生效」契约被破。
-// 收敛记录（与远端同族修复合并后方案升级为内容比对，BUG-20261103-350）：
+// 收敛记录（与远端同族修复合并后方案升级为内容比对）：
 // 时钟信号退场，比对信号 = 文件字节——同 tick 双写在结构上必可分辨
 //（set_enabled 翻转 enabled 字段 → 字节必变），本测试钉住该结构前提
 //（第二次写字节 ≠ 缓存字节）+ 端到端穿透（零间隔双写后禁用即刻生效，

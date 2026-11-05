@@ -1,7 +1,7 @@
-//! Logs handler 的「浏览面」覆盖（Phase 3 覆盖率，2026-08-25）。
+//! Logs handler 的「浏览面」覆盖（覆盖率，2026-08-25）。
 //!
 //! `requests` / `request_detail` / `cluster_task_list` / `cluster_task_detail`
-//! / `session_list`(BM25 过滤) / `session_detail` 都是「扫磁盘目录 → 组装
+//! / `session_list`(过滤) / `session_detail` 都是「扫磁盘目录 → 组装
 //! JSON 条目」的纯文件逻辑——这里用临时 workspace 造 request_logs /
 //! cluster_logs / session_logs 目录树，直接调 impl 内方法钉行为：
 //! 分页、device 过滤、self/peer perspective 选择、cron 标记透传。
@@ -75,9 +75,7 @@ fn handler() -> LogsHandler {
     LogsHandler
 }
 
-// -----------------------------------------------------------------------
 // requests / request_detail
-// -----------------------------------------------------------------------
 
 /// 造一个 request_logs/{ts}_{rand}/ 目录，含 envelope + markdown 文件。
 fn make_request_dir(ws: &std::path::Path, name: &str, model: &str, round: u64) {
@@ -195,9 +193,7 @@ fn request_detail_builds_entry_with_iterations() {
     );
 }
 
-// -----------------------------------------------------------------------
 // cluster_task_list / cluster_task_detail
-// -----------------------------------------------------------------------
 
 fn make_cluster_task_dir(ws: &std::path::Path, dev: &str, name: &str) {
     let dir = ws.join("logs/cluster_logs").join(dev).join(name);
@@ -311,11 +307,9 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
     assert_eq!(peer_view["peerNode"], "remote-peer");
 }
 
-// -----------------------------------------------------------------------
-// session_detail / session_list(BM25)
-// -----------------------------------------------------------------------
+// session_detail / session_list
 
-// 唯一消费者是下方 memory 门控的 BM25 测试——无 memory 构建里一并门控，
+// 唯一消费者是下方 memory 门控的 测试——无 memory 构建里一并门控，
 // 否则 lib test 出现 never used 警告。
 #[cfg(feature = "memory")]
 fn make_session_log(ws: &std::path::Path, id: &str, lines: &[(&str, &str)]) {
@@ -367,13 +361,13 @@ async fn session_detail_reads_jsonl_and_passes_cron_markers() {
     assert_eq!(msgs[1]["cron_job_name"], "nightly");
     // 无标记消息不得带 cron 字段。
     assert!(msgs[0].get("cron_job_id").is_none());
-    // 集群续行归属（2026-09-23）：刷新后历史重放的行同样透传节点归属；
+    // 集群续行归属：刷新后历史重放的行同样透传节点归属；
     // 无归属行不带该键。
     assert_eq!(msgs[2]["source_node"], "node-b");
     assert!(msgs[0].get("source_node").is_none());
 }
 
-/// D3：assistant 行的 `file_changes` 字段透传（消息↔文件变更映射；M3
+/// assistant 行的 `file_changes` 字段透传（消息↔文件变更映射；
 /// 会话级 diff 查看器的数据源）；无字段的消息不带该键。
 #[tokio::test]
 async fn session_detail_passes_file_changes() {
@@ -409,7 +403,7 @@ async fn session_detail_passes_file_changes() {
     assert!(msgs[0].get("file_changes").is_none());
 }
 
-// BM25 query 过滤逻辑在 session_list 内是 `#[cfg(feature = "memory")]`——
+// query 过滤逻辑在 session_list 内是 `#[cfg(feature = "memory")]`——
 // 无 memory 的构建里 query 不参与过滤，本测试的前提不成立，整体随 feature 门控。
 #[cfg(feature = "memory")]
 #[tokio::test]
@@ -462,7 +456,7 @@ async fn session_list_bm25_query_filters_and_ranks() {
     assert_eq!(miss["total"], 0);
 }
 
-/// BUG-20261102-325 红证：scan_session_logs 必须按 lastTime **降序**返回
+/// 红证：scan_session_logs 必须按 lastTime **降序**返回
 /// （最近活跃在前）。前端侧栏「组内保持原排序」直接消费此序——无排序 =
 /// read_dir 平台序（NTFS 字典序 / ext4 哈希序）直通，ext4 上每次启动列表
 /// 漂移，且与新建会话乐观行 unshift 置顶（最近在前）语义矛盾。文件名字典
@@ -508,11 +502,9 @@ async fn security_list_empty_when_dir_missing() {
     drop(ctx);
 }
 
-// -----------------------------------------------------------------------
-// BUG-HUNT R7（2026-10-23）：session_detail / request_detail 路径消毒闸
-// -----------------------------------------------------------------------
+// session_detail / request_detail 路径消毒闸
 
-/// 客户端 `session` 串直进 join 的容器逃逸（同 fs.rs tree_in 的 F7 类）：
+/// 客户端 `session` 串直进 join 的容器逃逸（同 fs.rs tree_in 的 类）：
 /// `..` 穿越与绝对路径顶替都必须读不到 session_logs 之外的文件；合法
 /// stem 行为不变（消毒对白名单内输入逐字节恒等）。
 #[tokio::test]

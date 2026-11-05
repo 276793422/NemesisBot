@@ -1,4 +1,4 @@
-//! M7（2026-09-06）：`approval.respond` / `approval.pending` WSAPI 测试——
+//! （2026-09-06）：`approval.respond` / `approval.pending` WSAPI 测试——
 //! 未装配诚实错、参数校验、wired 链路触达 FakeResponder、pending 列表。
 
 use super::ApprovalHandler;
@@ -11,9 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness（与 chat_mode_tests 同款 AppState literal）
-// ---------------------------------------------------------------------------
 
 struct NoopProvider;
 
@@ -150,9 +148,7 @@ impl ApprovalResponder for FakeResponder {
     }
 }
 
-// ---------------------------------------------------------------------------
 // 未装配 / 无 loop：诚实错
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn respond_without_agent_loop_is_honest_error() {
@@ -184,9 +180,7 @@ async fn respond_without_responder_is_honest_error() {
     assert!(err.contains("approval manager not wired"), "err: {err}");
 }
 
-// ---------------------------------------------------------------------------
 // 参数校验
-// ---------------------------------------------------------------------------
 
 fn wired_ctx(dir: &tempfile::TempDir) -> (RequestContext, Arc<FakeResponder>) {
     let al = bare_loop();
@@ -242,9 +236,7 @@ async fn unknown_cmd_is_honest_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // wired 链路：respond 触达 + pending 列表
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn respond_delivers_verdict_to_responder() {
@@ -281,7 +273,7 @@ async fn respond_passes_always_flag_through() {
         .await
         .unwrap()
         .unwrap();
-    // F3: always 透传给 responder（规则写入是 responder 侧职责）。
+    // always 透传给 responder（规则写入是 responder 侧职责）。
     assert_eq!(
         *fake.calls.lock(),
         vec![("r2".to_string(), true, true, None)]
@@ -310,7 +302,7 @@ async fn respond_defaults_missing_always_to_false() {
 
 #[tokio::test]
 async fn respond_passes_note_through_and_defaults_to_none() {
-    // F6: note 键透传给 responder；缺键按 None（旧前端兼容）。
+    // note 键透传给 responder；缺键按 None（旧前端兼容）。
     let dir = tempfile::tempdir().unwrap();
     let (ctx, fake) = wired_ctx(&dir);
     ApprovalHandler
@@ -363,9 +355,7 @@ async fn pending_lists_responder_entries() {
     assert_eq!(fake.calls.lock().len(), 0, "pending must not consume calls");
 }
 
-// ---------------------------------------------------------------------------
-// 并行批审批聚合（BUG-A 第三层，2026-11-05）：respond_batch 表面契约。
-// ---------------------------------------------------------------------------
+// 并行批审批聚合（批量聚合层）：respond_batch 表面契约。
 
 #[tokio::test]
 async fn respond_batch_delivers_to_responder() {
@@ -443,10 +433,8 @@ async fn respond_batch_without_agent_loop_is_honest_error() {
     assert!(err.contains("agent loop not running"), "err: {err}");
 }
 
-// ---------------------------------------------------------------------------
-// M5（2026-10-10 集群无人值守硬化）：remote_list / remote_respond 表面契约。
+// （集群无人值守硬化）：remote_list / remote_respond 表面契约。
 // 注册表是进程全局——用例独立 request_id + 结尾摘除防串扰。
-// ---------------------------------------------------------------------------
 
 // registry 在 lib.rs 是 cluster 门（无 feature 编译期消失，引用点必须同门）。
 #[cfg(feature = "cluster")]

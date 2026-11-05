@@ -1,4 +1,4 @@
-//! L12（改进项三期 2026-11-02）— chat_dedup 单元测试。
+//! （改进项三期 2026-11-02）— chat_dedup 单元测试。
 //!
 //! ⚠️ 进程级全局状态（TABLE + WORKSPACE 槽）——并行测试整段互斥
 //! （GLOBAL_TABLE_LOCK，chat_event_log 同款纪律）；workspace 槽测试自管
@@ -30,9 +30,7 @@ macro_rules! table_guard_sync {
     };
 }
 
-// ---------------------------------------------------------------------------
 // 基础语义：miss → insert → hit（原 seq）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn lookup_miss_then_insert_then_hit_returns_original_seq() {
@@ -49,9 +47,7 @@ async fn lookup_miss_then_insert_then_hit_returns_original_seq() {
     assert_eq!(lookup(&other, "cm-1"), None);
 }
 
-// ---------------------------------------------------------------------------
 // LRU：cap 超限逐最旧；lookup 命中 touch（被 touch 的幸存）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn lru_cap_evicts_oldest_and_touch_survives() {
@@ -70,9 +66,7 @@ fn lru_cap_evicts_oldest_and_touch_survives() {
     assert_eq!(lookup(&sk, "cm-new"), Some(999));
 }
 
-// ---------------------------------------------------------------------------
 // sidecar 持久化：insert 落盘 → 清内存表（模拟重启）→ lookup 从盘加载
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn sidecar_persists_across_in_memory_reset() {
@@ -101,9 +95,7 @@ async fn sidecar_persists_across_in_memory_reset() {
     reset_for_tests();
 }
 
-// ---------------------------------------------------------------------------
 // 损坏 sidecar：空窗口 + 不 panic（诚实降级）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn corrupt_sidecar_degrades_to_empty_window() {
@@ -128,9 +120,7 @@ async fn corrupt_sidecar_degrades_to_empty_window() {
     reset_for_tests();
 }
 
-// ---------------------------------------------------------------------------
 // 纯图消息形态：seq=0（无环行）登记与命中
-// ---------------------------------------------------------------------------
 
 #[test]
 fn pure_image_zero_seq_roundtrip() {
@@ -145,9 +135,7 @@ fn pure_image_zero_seq_roundtrip() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 未装 workspace（纯内存模式）：行为一致、无盘上产物
-// ---------------------------------------------------------------------------
 
 #[test]
 fn memory_only_mode_without_workspace() {

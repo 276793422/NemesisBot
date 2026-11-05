@@ -299,11 +299,11 @@ impl McpServerConfig {
 /// （值段可能夹带真凭据；错误文案只接头名/引用名——两者非秘密）。
 ///
 /// 拒绝集：
-/// 缺冒号（应为 `"KEY: VALUE"`）；
-/// 头名为空 / 含空白或控制字符；
-/// `Mcp-Session-Id` 协议保留头（server 指派、transport 自管，配置行
+/// - 缺冒号（应为 `"KEY: VALUE"`）；
+/// - 头名为空 / 含空白或控制字符；
+/// - `Mcp-Session-Id` 协议保留头（server 指派、transport 自管，配置行
 ///   只有伪造会话身份一种效果）；
-/// 整值 `env:`/`yaml:`/`vault:` 引用名为空或带首尾空格（运行期按原样
+/// - 整值 `env:`/`yaml:`/`vault:` 引用名为空或带首尾空格（运行期按原样
 ///   解析不 trim，必失败 → WARN 跳过头 → 401——写入面挡住省一轮学费；
 ///   语义与 [`crate::resolve_secret_field`] 的整值前缀识别一致，内嵌引用
 ///   如 `Bearer vault:x` 按字面量发送、放行）。

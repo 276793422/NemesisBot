@@ -17,9 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure (mirror of tests.rs)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -503,7 +501,7 @@ async fn test_config_save_no_workspace_errors() {
     assert!(err.contains("workspace not configured"));
 }
 
-// BUG-20261031-251：端口校验形状对齐真流量。此前校验臂只识别嵌套
+// 端口校验形状对齐真流量。此前校验臂只识别嵌套
 // `{"cluster":{"discovery_port"}}`——无任何生产调用方发送该形状，
 // ClusterSettings 扁平 `{port, rpc_port}` 恒绕过校验。以下用例全部
 // 采用前端 saveConfig 的真实扁平形状。

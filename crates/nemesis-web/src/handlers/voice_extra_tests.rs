@@ -164,10 +164,10 @@ mod voice_extra_tests {
     #[cfg(feature = "voice-capture")]
     #[tokio::test]
     async fn devices_returns_object() {
-        // 【2026-09-02 CI nemesis-web 0xc0000005】本测试经 cmd_devices() 穿透
-        // 调用 nemesis_voice::audio::list_devices() → cpal host 设备枚举。
+        // 【 CI nemesis-web 0xc0000005】本测试经 cmd_devices 穿透
+        // 调用 nemesis_voice::audio::list_devices → cpal host 设备枚举。
         // cpal 0.15 WASAPI 在 GitHub runner 虚拟音频栈上**枚举/查询同样挂死 +
-        // native ACCESS_VIOLATION**（voice crate 2026-09-01/09-02 二连崩同族雷；
+        // native ACCESS_VIOLATION**（voice crate /09-02 二连崩同族雷；
         // nemesis-web 测试此前从未在 CI 跑到——voice 被排除后首跑即暴露）。
         // CI=true 且未 opt-in 时 SKIP（与 nemesis-voice audio::tests 的
         // ci_audio_unsafe 同语义；ci.yml 已 --exclude nemesis-voice，本闸是
@@ -282,7 +282,7 @@ mod voice_extra_tests {
         assert!(err.contains("missing field: threshold"));
     }
 
-    // ---- config-set I/O commands (no audio) ----
+    // config-set I/O commands (no audio) ----
 
     #[tokio::test]
     async fn voice_config_set_persists_fields() {
@@ -316,7 +316,7 @@ mod voice_extra_tests {
         assert_eq!(r["stt_enabled"], true);
         assert_eq!(r["tts_enabled"], false);
         assert_eq!(r["capture_device"], "Mic0");
-        // BUG-20261031-252：AEC 进阶参数持久化（此前漏接——FE 发送、
+        // AEC 进阶参数持久化（此前漏接——FE 发送、
         // STT 启动读取、保存不落盘 = 改了存不上）。
         assert_eq!(r["aec_filter_length"], 2048);
         assert_eq!(r["aec_preprocess"], false);
@@ -386,7 +386,7 @@ mod voice_extra_tests {
         assert!(r["threshold"].is_number());
     }
 
-    // ---- stop / idle commands (no audio device required) ----
+    // stop / idle commands (no audio device required) ----
 
     #[tokio::test]
     async fn stop_setup_when_idle_errors() {
@@ -555,7 +555,7 @@ mod voice_extra_tests {
         assert!(err.contains("missing data"));
     }
 
-    // ---- tts / tts_playback argument validation (no audio reached) ----
+    // tts / tts_playback argument validation (no audio reached) ----
 
     #[tokio::test]
     async fn tts_missing_data() {

@@ -1,4 +1,4 @@
-//! S3c（2026-10-09）— vault WSAPI handler 测试。
+//! （2026-10-09）— vault WSAPI handler 测试。
 //!
 //! 进程 env（NEMESISBOT_VAULT_PASSPHRASE）是全局的：触及它的用例持
 //! [`TEST_LOCK`] 串行（PathRestore 先例）。Windows 默认 dpapi（open 即解
@@ -9,7 +9,7 @@
 //! 首版闭包形态 `with_passphrase(PW, || async{..}).await` 只在锁内构造
 //! future，真正 .await 发生在摘除口令之后——Linux（argon2id）下 handler
 //! 读 env 恒空，四个 set/remove 用例全红（2026-10-10 ET Linux + CI
-//! coverage 双 job 实录）；Windows dpapi 不需要口令，恒绿掩盖了它。
+//! coverage 双 job）；Windows dpapi 不需要口令，恒绿掩盖了它。
 
 use super::VaultHandler;
 use crate::api_handlers::AppState;
@@ -116,9 +116,7 @@ fn vault_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
     nemesis_path::resolve_vault_path_in_workspace(dir.path())
 }
 
-// ---------------------------------------------------------------------------
 // 缺失态诚实上报
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn status_and_list_on_missing_vault_are_honest() {
@@ -152,9 +150,7 @@ async fn missing_workspace_is_honest_error() {
     assert!(err.contains("workspace not configured"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
 // set → list/status → get 全链（值永不进响应）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn set_list_roundtrip_value_never_in_responses() {
@@ -163,7 +159,7 @@ async fn set_list_roundtrip_value_never_in_responses() {
     // 口令守卫包住**全链**（set/list/status/reopen）：list、status 的
     // unlocked 断言同样依赖 handler 在 poll 时读到场口令——只包 set 的
     // 残留版在 Linux（argon2id）下 unlocked=false 假红（CI coverage
-    // 实录 2026-10-10，line 186）。
+    // line 186）。
     with_passphrase(PW, async {
         let resp = VaultHandler
             .handle_cmd(
@@ -315,9 +311,7 @@ async fn set_invalid_alias_rejected() {
     assert!(err.contains("非法别名"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
 // remove
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn remove_flows() {
@@ -367,9 +361,7 @@ async fn remove_flows() {
     assert_eq!(ls["entries"].as_array().unwrap().len(), 0);
 }
 
-// ---------------------------------------------------------------------------
 // 锁定态诚实上报（仅 argon2id 平台——dpapi 无锁态）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn locked_vault_reports_unlocked_false_and_set_fails_loud() {
@@ -424,9 +416,7 @@ async fn locked_vault_reports_unlocked_false_and_set_fails_loud() {
     .await;
 }
 
-// ---------------------------------------------------------------------------
 // unlock（解锁测试；显式口令——跨平台强制 argon2id fixture，不依赖默认模式）
-// ---------------------------------------------------------------------------
 
 /// 建一个**强制 argon2id** 的 vault fixture（与平台默认无关；dpapi 平台
 /// 也能验证「锁着 → 显式口令开」语义）。
@@ -543,9 +533,7 @@ async fn unlock_does_not_mutate_lock_state_of_later_requests() {
     .await;
 }
 
-// ---------------------------------------------------------------------------
-// L1 注册表面
-// ---------------------------------------------------------------------------
+// 注册表面
 
 #[test]
 fn module_surface() {
@@ -556,11 +544,9 @@ fn module_surface() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 写路径 RMW 串行锁（2026-10-24）：并发 set 不得互相整文件覆盖
+// 写路径 RMW 串行锁：并发 set 不得互相整文件覆盖
 // （websocket_handler 每消息一 spawn，无锁时各持旧快照后写覆盖先写，
 // 先落盘的条目静默丢失——与 share.rs SHARE_LOCK 同一缺陷类）
-// ---------------------------------------------------------------------------
 
 /// 锁可见性（确定性回归钉）：持 [`super::VAULT_IO_LOCK`] 期间 vault.set
 /// 必须阻塞在锁上——盘上不得出现新条目；放锁后完成且条目在盘。锁缺席

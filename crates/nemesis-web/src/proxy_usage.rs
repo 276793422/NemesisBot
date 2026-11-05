@@ -1,4 +1,4 @@
-//! LLM 代理请求用量记账（docs/PLAN/2026-11-03_代理请求用量记账.md）。
+//! LLM 代理请求用量记账（代理请求用量记账）。
 //!
 //! 入站 LLM 代理面的两个裸转发端点（`/v1/chat/completions` 带 tools lane、
 //! `/api/chat/stream`）不经过 AgentLoop，organ 5（loop observer 的每轮
@@ -17,7 +17,7 @@
 //! - 与 organ 5 的刻意偏差：上游错误也记一笔（status=500、token 全 0、
 //!   error_message 在账）——代理错误本身是值得观测的请求事件。
 //! - 与 organ 5 的另一处差异：provider_type 恒空串（同 organ 5 口径，
-//!   该列自 A3 起未再消费）。
+//!   该列自 起未再消费）。
 
 use crate::api_handlers::AppState;
 use nemesis_providers::types::UsageInfo;
@@ -40,9 +40,9 @@ pub(crate) struct ProxyUsageRecord<'a> {
     pub trace_id: String,
 }
 
-/// 落账单一出口。`ds` 传 `state.data_store.as_deref()`——async_stream
+/// 落账单一出口。`ds` 传 `state.data_store.as_deref`——async_stream
 /// 块内借不了 `&AppState`（'static 约束），调用方 clone
-/// `Option<Arc<DataStore>>` 进块后 `.as_deref()`。
+/// `Option<Arc<DataStore>>` 进块后 `.as_deref`。
 pub(crate) fn record_proxy_usage(ds: Option<&nemesis_data::DataStore>, rec: ProxyUsageRecord<'_>) {
     let Some(ds) = ds else {
         return; // usage-store 关 / 未装配：诚实 no-op，请求不失败

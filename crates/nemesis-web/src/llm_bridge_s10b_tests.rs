@@ -1,7 +1,7 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): ProviderAdapter::chat
+//! (quality-hardening goal 冲刺, web 批次 2): ProviderAdapter::chat
 //! conversion arms the existing `llm_bridge_extra_tests` plain-message path
 //! skips — agent-side `tool_calls` messages, the `Some(options)` pass-through
-//! (H4 reasoning_effort), the tool-definition mapping, and the provider-Err
+//! (reasoning_effort), the tool-definition mapping, and the provider-Err
 //! arm — observed through recording/failing mocks on the provider side.
 
 use crate::llm_bridge::ProviderAdapter;

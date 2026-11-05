@@ -43,9 +43,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-// -----------------------------------------------------------------------
 // 直调 harness（无需真 socket）
-// -----------------------------------------------------------------------
 
 fn agt_relay(token: &str) -> Arc<RelayServer> {
     Arc::new(RelayServer::new(token.to_string(), true))
@@ -77,9 +75,7 @@ async fn agt_resp(resp: Response) -> (StatusCode, String) {
     (status, String::from_utf8_lossy(&bytes).to_string())
 }
 
-// -----------------------------------------------------------------------
 // extract_cookie / relay_status_html（私有项）
-// -----------------------------------------------------------------------
 
 #[test]
 fn agt_extract_cookie_matrix() {
@@ -121,9 +117,7 @@ fn agt_relay_status_html_full_mode_toggle() {
     assert!(!bare.contains("打开本机 Dashboard"));
 }
 
-// -----------------------------------------------------------------------
 // handle_relay_api_enabled / handle_relay_login 直调
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_handle_relay_api_enabled_ladder() {
@@ -225,9 +219,7 @@ async fn agt_handle_relay_login_gate_and_oversize() {
     assert!(body.contains("令牌错误"), "{body}");
 }
 
-// -----------------------------------------------------------------------
 // handle_auth_submit / handle_auth_page 直调
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_handle_auth_submit_error_ladder() {
@@ -352,9 +344,7 @@ async fn agt_handle_auth_page_gate_and_redirect() {
     assert_eq!(loc, "/d/node-a/");
 }
 
-// -----------------------------------------------------------------------
 // 隧道直调：in-process 设备（持下行 rx + route_conn_data 喂字节）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_ws_tunnel_invalid_upgrade_request() {
@@ -430,9 +420,7 @@ async fn agt_http_tunnel_device_eof_before_head() {
     assert!(body.contains("未返回任何响应"), "{body}");
 }
 
-// -----------------------------------------------------------------------
 // /bridge 真 socket e2e（同 http_tests harness 形态）
-// -----------------------------------------------------------------------
 
 #[allow(clippy::type_complexity)]
 async fn agt_spawn_relay_server(
@@ -794,12 +782,10 @@ async fn agt_bridge_reconnect_replaces_old_connection() {
         .await;
 }
 
-// -----------------------------------------------------------------------
 // Wave5 批次：handle_ws_tunnel 的「设备下行通道已死」503 臂——设备仍在表
 // （device_online = contains_key）但下行 rx 已 drop → send_to_device
 // Closed → false。升级头齐备但走不到 WebSocketUpgrade 提取（发送检查在前），
 // 故无需合法 sec-websocket-key。
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_ws_tunnel_offline_device_returns_503() {

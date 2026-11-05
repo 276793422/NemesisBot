@@ -46,7 +46,7 @@ fn extract_json_span_and_fence() {
     assert_eq!(stripped, "{\"a\":1}");
 }
 
-// ---- 程序确定性校验（机制硬骨架）单测 ----
+// 程序确定性校验（机制硬骨架）单测 ----
 
 fn sample_unit(id: &str, disposition: &str, entities: &[&str]) -> InformationUnit {
     InformationUnit {
@@ -207,11 +207,11 @@ fn report_skipped_counts_archive_and_drop() {
 }
 
 // ===========================================================================
-// P3-web3（2026-08-25）：schema/prompt/提取边臂 + generate_persona 三阶段流。
+// web3：schema/prompt/提取边臂 + generate_persona 三阶段流。
 //
 // LLM 后端用 wiremock 假 OpenAI 兼容服务，按 system prompt 的阶段特征串区分
-// 三个阶段的请求（“分析师”=阶段1、“人格设计师”=阶段2、“完整性审计员”=
-// 阶段3）；重试轮的 author 请求带“把它们补进”补全提示（覆盖缺口 / 校验失败
+// 三个阶段的请求（“分析师”=、“人格设计师”=、“完整性审计员”=
+// ）；重试轮的 author 请求带“把它们补进”补全提示（覆盖缺口 / 校验失败
 // / 解析失败三类重试共用同一模板），可用更具体的 matcher + with_priority(1)
 // 区分首轮与重试轮，全程进程内无真实 LLM 依赖。
 // ===========================================================================
@@ -542,9 +542,7 @@ fn report_rate_is_one_when_no_target_units() {
     assert_eq!(report.skipped, 2);
 }
 
-// ---------------------------------------------------------------------------
 // generate_persona 三阶段流（wiremock 假 LLM）
-// ---------------------------------------------------------------------------
 
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -682,7 +680,7 @@ async fn generate_persona_full_flow_complete() {
 #[tokio::test]
 async fn generate_persona_retry_after_entity_missing() {
     // u1 去向 expertise：首轮 expertise_md 为空 → 实体 Missing → 补全提示
-    // 重试；第二轮带上实体 → 完整通过。
+    // 重试；带上实体 → 完整通过。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("expertise", false), 200, 1, 5).await;
     // 重试轮（带补全提示，更具体 matcher + 最高优先级）
@@ -743,7 +741,7 @@ async fn generate_persona_exhausted_returns_pkg_with_report() {
 
 #[tokio::test]
 async fn generate_persona_all_author_attempts_fail() {
-    // 阶段2 全部解析失败 → 从未产出 pkg → 耗尽后硬 Err。
+    // 全部解析失败 → 从未产出 pkg → 耗尽后硬 Err。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
     mount_stage_mock(
@@ -826,7 +824,7 @@ async fn generate_persona_segment_gap_hint_and_exhausted() {
 
 #[tokio::test]
 async fn generate_persona_tolerates_audit_failure() {
-    // 阶段3 审计解析失败 → 退化为空审计，程序校验兜底，仍能完整通过。
+    // 审计解析失败 → 退化为空审计，程序校验兜底，仍能完整通过。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
     mount_stage_mock(

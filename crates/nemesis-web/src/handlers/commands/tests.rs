@@ -26,7 +26,7 @@ fn list_missing_file_returns_empty_not_error() {
 
 #[test]
 fn list_includes_builtins_from_shared_truth_source() {
-    // K3：builtins 随清单下发，名称与 nemesis-types 单一真相源一致；
+    // builtins 随清单下发，名称与 nemesis-types 单一真相源一致；
     // 展示元数据齐全（前端补全菜单直接渲染）。
     let dir = tempfile::tempdir().unwrap();
     let r = CommandsHandler::new().commands_list(&ws(&dir)).unwrap();
@@ -93,11 +93,9 @@ fn save_rejects_empty_prompt() {
     assert!(err.contains("提示词不能为空"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
 // dispatch 级（handle_cmd 经完整 RequestContext）——直连方法测试抓不到
-// match 臂命令名错误（2026-08-29 曾把臂写成 "commands.list" 导致 100%
+// match 臂命令名错误（曾把臂写成 "commands.list" 导致 100%
 // unknown command，直连测试全绿）。此处必须走裸名 "list"/"save"。
-// ---------------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     use crate::api_handlers::AppState;

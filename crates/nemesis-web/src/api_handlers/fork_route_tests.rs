@@ -1,8 +1,8 @@
-// P3-1 (2026-08-24 UI entry gap): HTTP-level tests for the session-fork
+// (UI entry gap): HTTP-level tests for the session-fork
 // dialog endpoints (`GET /api/chat/sessions/{id}/turns`,
 // `POST /api/chat/sessions/{id}/fork`).
 //
-// ROUND-3 CONTRACT (2026-08-25 fork 第三轮): the chat_log jsonl is the
+// ROUND-3 CONTRACT (fork): the chat_log jsonl is the
 // single source of truth for turn semantics — the turns table counts jsonl
 // rows and the fork copies them verbatim; the SessionStore side is derived
 // from the same rows. The fixtures deliberately seed a DIVERGENT, polluted
@@ -60,7 +60,7 @@ fn make_state(dir: &tempfile::TempDir, auth_token: &str) -> Arc<AppState> {
         cluster_log_dir: None,
         workflow_engine: None,
         // AppState dual-declares these two fields (workflow-gated real /
-        // `Arc<()>` stub — api_handlers.rs); build per-combo so this module
+        // `Arc<>` stub — api_handlers.rs); build per-combo so this module
         // compiles without the workflow feature too.
         #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(

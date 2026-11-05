@@ -13,7 +13,7 @@
 //! （reqwest client 在构造期快照 env，热改不生效还会造成「看起来改了」的
 //! 假象）；生效路径只有 gateway 启动注入一条。
 //!
-//! `proxy.keys.*`（2026-11-03 LLM代理调用方key管理 P5）：`config.proxy_keys.json`
+//! `proxy.keys.*`（2026-11-03 LLM代理调用方key管理）：`config.proxy_keys.json`
 //! （`nemesis-config::proxy_keys_file`）的调用方 key 管理面——keys.list /
 //! keys.add（key 缺省自动生成 `nbk_`+32hex；拒绝与主 token 相同）/ keys.remove /
 //! keys.set_enabled。全部写盘即热生效（鉴权回落读点按 mtime 缓存，无需重启）；
@@ -153,7 +153,7 @@ impl ModuleHandler for ProxyHandler {
                 };
                 Ok(Some(json!({ "saved": saved, "note": note })))
             }
-            // --- 调用方 key 管理（写盘即热生效，无需重启） ---
+            // 调用方 key 管理（写盘即热生效，无需重启） ---
             "keys.list" => {
                 let config_dir = workspace_of(ctx)?.join("config");
                 let path = proxy_keys_file::proxy_keys_config_path(&config_dir);

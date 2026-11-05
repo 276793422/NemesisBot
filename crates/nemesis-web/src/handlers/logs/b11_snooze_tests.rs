@@ -1,4 +1,4 @@
-//! B11（2026-10-18 snooze）：scan_session_logs 的暂停标记回填——sidecar
+//! （2026-10-18 snooze）：scan_session_logs 的暂停标记回填——sidecar
 //! meta 带 `snoozed_until` 的条目补 `snoozedUntil`（+ `snoozeNote` 跟随）；
 //! 无标记 meta / 无 meta 文件零增量（不加字段）。
 //!

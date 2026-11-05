@@ -1,4 +1,4 @@
-//! `proxy_usage` 单测（docs/PLAN/2026-11-03_代理请求用量记账.md §4）：
+//! `proxy_usage` 单测（代理请求用量记账 §4）：
 //! 落账字段管线（model/session 前缀/status/token/cost）、错误路径、
 //! usage=None 全 0、data_store 缺席 no-op、执行模型解析优先级。
 //! AppState 构造依赖 workflow 的 ChatSecretStore，feature 闸同
@@ -14,9 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Helpers（形态对齐 api_usage_extra_tests）
-// -----------------------------------------------------------------------
 
 fn make_state(ds: Option<Arc<DataStore>>) -> Arc<AppState> {
     Arc::new(AppState {
@@ -77,9 +75,7 @@ fn proxy_logs(ds: &DataStore, session_substr: &str) -> Vec<nemesis_data::Request
     rows
 }
 
-// -----------------------------------------------------------------------
 // 落账字段管线
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_records_success_row() {
@@ -233,9 +229,7 @@ fn test_no_data_store_is_noop() {
     );
 }
 
-// -----------------------------------------------------------------------
 // 执行模型解析
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_execution_model_requested_wins() {

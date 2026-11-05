@@ -1,4 +1,4 @@
-//! WASM 插件管理面（`plugins.wasm.*` WSAPI，W6）。
+//! WASM 插件管理面（`plugins.wasm.*` WSAPI）。
 //!
 //! 宿主运行时**整槽注入**：gateway init_agent 构建的 `PluginInstaller`
 //! （内含 PluginManager + 验签器 + 扫描链 + 审批面）经 [`set_installer`]
@@ -42,7 +42,7 @@ pub fn set_installer(installer: Arc<PluginInstaller>) {
     let _ = INSTALLER.set(installer);
 }
 
-/// W7：agent 工具面同步事件（热装/卸/启停时桥接回调把插件工具同步进
+/// agent 工具面同步事件（热装/卸/启停时桥接回调把插件工具同步进
 /// AgentLoop 注册表；gateway init_agent 注入闭包，桥构造留在 gateway 侧——
 /// `PluginToolBridge` 是 bin crate 类型，web 只带必要信息）。
 #[derive(Debug, Clone)]
@@ -71,7 +71,7 @@ pub fn notify_tool_sync(ev: ToolSyncEvent) {
     }
 }
 
-/// 2026-10-22 样板工程批 4：循环策略面同步事件（install/enable/disable/
+/// 样板工程：循环策略面同步事件（install/enable/disable/
 /// uninstall 时把策略槽接管变化同步进当前 AgentLoop；启动装载走
 /// agent_factory 的 `register_policy_bridges`，两路同语义——hook 侧按
 /// 注册表现状整体对账三槽，事件只当触发器 + 日志上下文）。
@@ -108,7 +108,7 @@ fn require_installer() -> Result<Arc<PluginInstaller>, String> {
     let inst = installer().ok_or_else(|| {
         "WASM 插件子系统未装配（plugins.wasm.enabled=false 或非 gateway 运行态）".to_string()
     })?;
-    // 运行期总闸（2026-11-01 BUG 修复）：启动装配后翻关（config.json
+    // 运行期总闸（BUG 修复）：启动装配后翻关（config.json
     // `plugins.wasm.enabled` 或宿主壳开关）→ 服务面统一拒绝——此前闸只
     // 在启动期消费，运行中翻关面板/guest 命令照常生效。开关改回即时恢复。
     if let Some(err) = runtime_gate_error(inst.manager.workspace_root()) {
@@ -130,12 +130,10 @@ fn runtime_gate_error(workspace_root: &std::path::Path) -> Option<String> {
     )
 }
 
-// ---------------------------------------------------------------------------
 // 命令实现（ctx 无关——测试直接调内部 fn，不经 RequestContext）
-// ---------------------------------------------------------------------------
 
 /// 已装载行投影（tool/policy 面快照齐全）。`enabled` 取开关记录——注册表
-/// 在场只说明**已加载**，两字段语义分离（2026-10-22：安装 ≠ 加载）。
+/// 在场只说明**已加载**，两字段语义分离（安装 ≠ 加载）。
 fn row_of(
     reg: &nemesis_plugins_wasm::registry::RegisteredPlugin,
     enabled: bool,
@@ -355,7 +353,7 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
     // 面同步事件只在「本次已装载」（升级且开关原开）时发：新装/开关关的
     // 升级注册表缺席，loop 面无此插件可清（此前 disable/卸载路径已摘净）。
     // 工具事件恒发（方向由 install_sync_event 决策——tool→observer 化升级
-    // 走前缀摘除，2026-09-30 复查 #4 纪律）；策略事件恒发（hook 收到即
+    // 走前缀摘除， 复查 #4 纪律）；策略事件恒发（hook 收到即
     // 全槽对账，换形旧接管不留幽灵）。
     if let Some(reg) = outcome.registered.as_ref() {
         notify_tool_sync(install_sync_event(
@@ -391,7 +389,7 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
     }))
 }
 
-/// source_dir 入参校验（WSAPI 层；CLI 保持宽容——2026-09-30 复查 #10）。
+/// source_dir 入参校验（WSAPI 层；CLI 保持宽容—— 复查 #10）。
 /// 拒绝：空串 / 相对路径（install 漏斗 canonicalize 会把它钉到 gateway
 /// 进程 cwd，与操作员直觉不符）/ UNC 前缀（`\\`、`//` 开头——网络盘/
 /// 设备路径面，扫描与落位语义未定义）。绝对路径判定交给
@@ -409,7 +407,7 @@ fn validate_source_dir(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 安装完成后的工具面同步事件决策（纯函数，独立可测；2026-09-30 复查 #4）。
+/// 安装完成后的工具面同步事件决策（纯函数，独立可测； 复查 #4）。
 /// `tool + 有 meta + 启用` → add=true 注册；其余一律 add=false——observer
 /// 化升级 / 缺 meta / 禁用升级都走前缀摘除路径，把 loop 里残留的旧版工具
 /// 清掉（hook 的 remove 按 `plugin.<slug>.` 前缀整面摘除，tool_name 不用）。
@@ -862,7 +860,7 @@ fn project_view(v: &nemesis_plugins_wasm::manifest::UiView) -> serde_json::Value
                 })
             })
             .collect::<Vec<_>>(),
-        // chart 专用段（2026-11-01 决策 A）：非 chart 视图恒空值（前端忽略）。
+        // chart 专用段（决策 A）：非 chart 视图恒空值（前端忽略）。
         "chart": v.chart,
         "x_key": v.x_key,
         "series": v
@@ -873,12 +871,10 @@ fn project_view(v: &nemesis_plugins_wasm::manifest::UiView) -> serde_json::Value
     })
 }
 
-// ---------------------------------------------------------------------------
-// flow 引擎代答桥（P3，2026-10-31 插件 UI 面板与流程扩展）：`ui.invoke` 的
+// flow 引擎代答桥（插件 UI 面板与流程扩展）：`ui.invoke` 的
 // `flow://<template>/<view>` 绑定由宿主 flow 引擎（nemesisbot 侧）代答。
 // 本 crate 不能反向依赖 nemesisbot——依赖反转同 DELIVERY_PUBLISH_BRIDGE
-// 先例：trait + 静态槽，gateway 装配期安装，agent 重启重装同槽覆盖。
-// ---------------------------------------------------------------------------
+// trait + 静态槽，gateway 装配期安装，agent 重启重装同槽覆盖。
 
 /// flow 引擎桥：参数解析权在实现侧（view 词表 list/detail/timeline/confirm/
 /// fetch/resume 与 args.instance 等语义由引擎定义）。`Ok(Value)` 透传前端；
@@ -930,7 +926,7 @@ pub async fn cmd_ui_invoke(data: Option<serde_json::Value>) -> Result<serde_json
     if !args.is_object() {
         return Err("args must be an object".to_string());
     }
-    // flow:// 绑定 = 宿主 flow 引擎代答（P3）：前端把 bind 串原样作为
+    // flow:// 绑定 = 宿主 flow 引擎代答：前端把 bind 串原样作为
     // command 发来。桥缺席（flow 扩展未编译/网关装配失败）= 诚实报错，不
     // 静默落 guest——纯声明式插件没有载荷，落 guest 必失败。
     if let Some(rest) = command.strip_prefix("flow://") {

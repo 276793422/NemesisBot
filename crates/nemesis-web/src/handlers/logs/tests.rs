@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- opt_u64 ----
+// opt_u64 ----
 
 #[test]
 fn opt_u64_returns_default_when_missing() {
@@ -25,7 +25,7 @@ fn opt_u64_returns_default_when_non_number() {
     assert_eq!(opt_u64(&data, "limit", 7), 7);
 }
 
-// ---- file_type_name ----
+// file_type_name ----
 
 #[test]
 fn file_type_name_strips_first_segment() {
@@ -41,7 +41,7 @@ fn file_type_name_returns_whole_when_no_dot() {
     assert_eq!(file_type_name("README"), "README");
 }
 
-// ---- sanitize_session_key ----
+// sanitize_session_key ----
 
 #[test]
 fn sanitize_session_key_replaces_path_and_special_chars() {
@@ -58,7 +58,7 @@ fn sanitize_session_key_passes_through_plain_text() {
     assert_eq!(sanitize_session_key("plain-key_123"), "plain-key_123");
 }
 
-// ---- parse_duration_seconds ----
+// parse_duration_seconds ----
 
 #[test]
 fn parse_duration_seconds_whole_seconds() {
@@ -91,7 +91,7 @@ fn parse_duration_seconds_rejects_garbage() {
     assert_eq!(parse_duration_seconds("abc"), None);
 }
 
-// ---- stringify_message_content ----
+// stringify_message_content ----
 
 #[test]
 fn stringify_message_content_none_is_empty() {
@@ -127,7 +127,7 @@ fn stringify_message_content_other_value_stringified() {
     assert_eq!(stringify_message_content(Some(&content)), "42");
 }
 
-// ---- compute_audit_hash ----
+// compute_audit_hash ----
 
 #[test]
 fn compute_audit_hash_is_deterministic() {
@@ -176,7 +176,7 @@ fn compute_audit_hash_changes_with_field() {
     assert_ne!(h1, h2);
 }
 
-// ---- parse_local_tool_results ----
+// parse_local_tool_results ----
 
 #[test]
 fn parse_local_tool_results_empty() {

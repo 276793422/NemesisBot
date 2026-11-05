@@ -129,9 +129,7 @@ impl tracing::Subscriber for AgtLogSubscriber {
     fn exit(&self, _span: &tracing::Id) {}
 }
 
-// ---------------------------------------------------------------------------
 // uploads 目录创建失败
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_upload_dir_create_failure_rejected() {
@@ -152,9 +150,7 @@ async fn agt_upload_dir_create_failure_rejected() {
     assert_eq!(v["error"], "upload_dir_create_failed", "{v}");
 }
 
-// ---------------------------------------------------------------------------
 // 成功落盘 + 日志字段求值
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_upload_success_emits_log_fields() {
@@ -176,9 +172,7 @@ async fn agt_upload_success_emits_log_fields() {
     assert!(std::path::Path::new(stored).is_file(), "path={stored}");
 }
 
-// ---------------------------------------------------------------------------
 // sweep：非文件项跳过 + removed 日志
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_sweep_skips_directories_and_logs_removal() {

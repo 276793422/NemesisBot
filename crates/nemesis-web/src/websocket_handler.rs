@@ -24,9 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
 // Incoming message type
-// ---------------------------------------------------------------------------
 
 /// Incoming message from a WebSocket client.
 #[derive(Debug, Clone)]
@@ -37,22 +35,20 @@ pub struct IncomingMessage {
     pub content: String,
     pub metadata: HashMap<String, String>,
     pub voice_playback: Option<bool>,
-    /// T8（多模态）：随消息的图片引用（`chat.send` data.media 解析产物）。
-    /// 空 = 纯文本（老前端零影响）；进 T5 统一附加（安全闸 → 历史引用）。
+    /// （多模态）：随消息的图片引用（`chat.send` data.media 解析产物）。
+    /// 空 = 纯文本（老前端零影响）；进 统一附加（安全闸 → 历史引用）。
     pub media: Vec<nemesis_types::channel::MediaAttachment>,
 }
 
-// ---------------------------------------------------------------------------
 // Send queue (thread-safe, single-writer, dual-lane)
-// ---------------------------------------------------------------------------
 
 /// A thread-safe send queue that serializes all writes through a single task.
 ///
 /// Mirrors the Go `sendQueue` struct, extended with **dual lanes**（BUG
-/// 2026-09-22 慢客户端洪泛）: 必达帧走 hi 通道（WSAPI 响应/pong/error/chat
+/// 慢客户端洪泛）: 必达帧走 hi 通道（WSAPI 响应/pong/error/chat
 /// 行/历史响应——满则背压等待，绝不丢）；可丢帧走 lo 通道（已落
 /// `chat_event_log` 环、可经 `chat.sync` 补拉自愈的 tool_event/echo 推送
-/// ——满即丢，调用方永不阻塞）。此前两类帧挤同一条 256 槽 FIFO，长流程
+/// 满即丢，调用方永不阻塞）。此前两类帧挤同一条 256 槽 FIFO，长流程
 /// 事件洪泛把 `chat.history` 响应压在队尾 >10s，前端误报「历史加载失败」；
 /// 单任务事件泵也被慢客户端的满队列卡死连坐全部会话。写者批量取帧合并
 /// flush（旧逐帧 feed+flush = 每帧一次系统调用，是消费速度瓶颈放大器）。
@@ -64,10 +60,10 @@ pub struct SendQueue {
     /// 礼貌断连）。writer 收到后发 Close 帧收尾；此后 `send`/`send_droppable`
     /// 随 writer 退出（rx 被 drop）诚实报错，不再静默入死队列。
     close_tx: tokio::sync::watch::Sender<bool>,
-    /// close 通道保活 receiver：通道内无存活 receiver 时 `send()` 会因
+    /// close 通道保活 receiver：通道内无存活 receiver 时 `send` 会因
     /// 关闭而丢值（borrow 读不到置位）。生产路径 writer 持另一份 receiver，
     /// 本字段持克隆；测试构造器（from_channels，无 writer）由本字段独持
-    /// ——与 `done` receiver 存struct 同一对称。
+    /// 与 `done` receiver 存struct 同一对称。
     _close_rx_keepalive: tokio::sync::watch::Receiver<bool>,
     dropped: Arc<AtomicU64>,
 }
@@ -116,7 +112,7 @@ impl SendQueue {
     }
 
     /// 可丢帧入队（lo 通道，非阻塞）：**满即丢**（返回 Err），绝不等待
-    /// ——慢客户端隔离墙。调用前提：帧已落 `chat_event_log` 环（带 seq，
+    /// 慢客户端隔离墙。调用前提：帧已落 `chat_event_log` 环（带 seq，
     /// 丢失可经 `chat.sync` 补拉自愈）；未落环的帧必须走 [`Self::send`]。
     pub fn send_droppable(&self, data: Vec<u8>) -> Result<(), String> {
         match self.lo_tx.try_send(data) {
@@ -177,14 +173,14 @@ impl SendQueue {
             done: done_rx,
             close_tx,
             // 无 writer 的测试队列：保活 receiver 由本字段独持，否则
-            // close() 的 send 撞「无 receiver=通道关闭」丢值。
+            // close 的 send 撞「无 receiver=通道关闭」丢值。
             _close_rx_keepalive: close_rx,
             dropped,
         }
     }
 
     /// 测试构造器：建好双通道全套并返回（queue, hi_rx, lo_rx, done 发送端
-    /// ——is_done 语义用例需要手动置位）。
+    /// is_done 语义用例需要手动置位）。
     #[cfg(test)]
     pub fn test_channels(
         cap: usize,
@@ -271,9 +267,7 @@ async fn run_send_writer<S>(
     );
 }
 
-// ---------------------------------------------------------------------------
 // WebSocket upgrade handler
-// ---------------------------------------------------------------------------
 
 /// Query parameters for WebSocket connections.
 #[derive(Debug, Deserialize)]
@@ -291,7 +285,7 @@ pub struct WsQuery {
     pub pwd: Option<String>,
 }
 
-/// Protocol-level cap on a single WebSocket message (2026-10-16 hardening).
+/// Protocol-level cap on a single WebSocket message (hardening).
 /// 4 MB comfortably covers any legitimate chat frame (text + base64 images
 /// go through the HTTP upload endpoint, not raw WS), against axum's 64 MB
 /// default.
@@ -386,7 +380,7 @@ pub async fn handle_websocket_upgrade(
         // Dashboard path: verify the dashboard token (if configured).
         if !state.auth_token.is_empty() {
             let token = query.token.unwrap_or_default();
-            // BUG-20261104-355：恒时比较（F6 纵深防御覆盖缺口——REST 面走
+            // 恒时比较（纵深防御覆盖缺口——REST 面走
             // verify_token 常数时间形态，WS 升级面三处漏跟）。expected 非空
             // （上行闸），verify_token 语义与 `==` 逐字节等价。
             if !crate::api_handlers::verify_token(&token, &state.auth_token) {
@@ -397,7 +391,7 @@ pub async fn handle_websocket_upgrade(
         crate::session::AuthMethod::Dashboard
     };
 
-    // Protocol-level caps (2026-10-16 hardening): axum's defaults are 64 MB
+    // Protocol-level caps (hardening): axum's defaults are 64 MB
     // per message / 16 MB per frame — far beyond any legitimate chat frame
     // and a cheap DoS amplifier (full-buffer read + JSON parse per frame).
     // Oversized frames fail at the transport layer and never reach handlers.
@@ -407,9 +401,7 @@ pub async fn handle_websocket_upgrade(
     ws.on_upgrade(move |socket| handle_websocket(socket, state, auth_method))
 }
 
-// ---------------------------------------------------------------------------
 // WebSocket connection handler
-// ---------------------------------------------------------------------------
 
 /// Handle a WebSocket connection through its full lifecycle.
 ///
@@ -473,8 +465,8 @@ pub async fn handle_websocket(
                         // if let 块只剩内层 if——clippy::collapsible_if 会建议
                         // 合并；但 full 形态外层块还挂着 workflow_chat 分支
                         // （非 request 的解析成功消息也要走到），合并是行为改
-                        // 变。allow 而非合并（2026-09-05 远端 minimal clippy
-                        // 实录；workspace 全量 feature unification 不触发）。
+                        // 变。allow 而非合并（远端 minimal clippy
+                        // workspace 全量 feature unification 不触发）。
                         #[allow(clippy::collapsible_if)]
                         if let Ok(ref pm) = parsed {
                             if pm.is_request() {
@@ -692,9 +684,7 @@ pub async fn handle_websocket(
     );
 }
 
-// ---------------------------------------------------------------------------
 // Protocol message dispatch
-// ---------------------------------------------------------------------------
 
 /// Handle a WebSocket text message using the three-level protocol.
 ///
@@ -719,9 +709,7 @@ pub fn handle_text_message(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Message module dispatch
-// ---------------------------------------------------------------------------
 
 /// Dispatch messages with type=="message".
 fn handle_message_module(
@@ -757,40 +745,40 @@ fn handle_chat_send(
         /// each conversation gets its own history/context (server.rs:895).
         #[serde(default)]
         session_id: Option<String>,
-        /// T8（多模态）：图片引用列表，`[{id: "<上传 id>"}]` 或
+        /// （多模态）：图片引用列表，`[{id: "<上传 id>"}]` 或
         /// `[{path: "<本地绝对路径>"}]`。缺省 = 纯文本（老前端零影响）。
         #[serde(default)]
         media: Option<Vec<serde_json::Value>>,
-        /// I5（devtool-upgrade 阶段 7）：客户端（IDE）上报的当前打开文件
+        /// （devtool-upgrade）：客户端（IDE）上报的当前打开文件
         /// 路径。缺省 = 无（老客户端零影响）。协议约定顺序 = 上报顺序，
         /// 首条最近活跃。清洗与封顶走 nemesis-types::channel::sanitize_open_files
         /// 单点，JSON 序列化进 metadata["open_files"] 全链路透传到 agent loop。
         #[serde(default)]
         open_files: Option<Vec<String>>,
-        /// 对话生成（2026-09-22）：工作流编辑注入目标。`{workflow_name: "x"}`
+        /// 对话生成：工作流编辑注入目标。`{workflow_name: "x"}`
         /// = 编辑已注册工作流；`{}` 或 `{"workflow_name": null}` = 新建
         /// （_new 引导会话）。缺省 = 普通对话。序列化进
         /// metadata["workflow_edit"]，AgentLoop 每轮经
         /// workflow_edit_from_metadata 单点解析后渲染上下文 section。
         #[serde(default)]
         workflow_edit: Option<nemesis_types::channel::WorkflowEditTarget>,
-        /// A5（2026-10-21 引入）：队列优先级提示。`"high"`
+        /// （引入）：队列优先级提示。`"high"`
         /// （大小写不敏感）= 会话忙时排队插队且不受软水位约束；其余值/
         /// 缺省 = 普通。经 metadata["priority"] 全链路透传
         /// （open_files 同款单点模式，AgentLoop 侧 `inbox::priority_of` 解析）。
         #[serde(default)]
         priority: Option<String>,
-        /// L12（改进项三期 2026-11-02）：客户端幂等键。同一
+        /// （改进项三期）：客户端幂等键。同一
         /// (session_id, client_msg_id) 重复提交 = 服务端去重（回原 seq +
         /// `deduped:true`，不二次触发 agent）；不带 = 旧行为零变化。
         /// 经 metadata["client_msg_id"] 透传到 server.rs 入站咽喉点
         /// （去重裁决点，chat_dedup 模块）；上限 256 字符（超限诚实拒绝
-        /// ——截断会让两个不同 id 假相等误吞消息）。
+        /// 截断会让两个不同 id 假相等误吞消息）。
         #[serde(default)]
         client_msg_id: Option<String>,
     }
     let data: ChatData = msg.decode_data()?;
-    // BUG-1（2026-09-03 二次回归）：纯图片消息合法——前端支持只传 media 不带
+    // BUG-1（二次回归）：纯图片消息合法——前端支持只传 media 不带
     // 文本；content 为空但带 media 引用时放行（后续 media 解析失败的项会诚实
     // 注记进文本，不会变空消息）。无文本无 media 的真空消息仍拒绝。
     let has_media_refs = data.media.as_ref().is_some_and(|m| !m.is_empty());
@@ -804,7 +792,7 @@ fn handle_chat_send(
         "[WebSocket] Message forwarded to channel (new protocol)"
     );
 
-    // T8：media 引用解析——{id} → uploads 落盘文件（裸文件名校验，防穿越）；
+    // media 引用解析——{id} → uploads 落盘文件（裸文件名校验，防穿越）；
     // {path} → 原样引用（用户点名路径语义）。解析失败的项诚实注记进文本。
     let mut content = data.content;
     let mut media = Vec::new();
@@ -833,7 +821,7 @@ fn handle_chat_send(
     if let Some(sid) = data.session_id.as_ref().filter(|s| !s.is_empty()) {
         metadata.insert("session_id".to_string(), sid.clone());
     }
-    // I5：打开文件列表清洗后进 metadata（缺失/空/全垃圾 → 不写键，老链路零影响）。
+    // 打开文件列表清洗后进 metadata（缺失/空/全垃圾 → 不写键，老链路零影响）。
     if let Some(of) = data.open_files {
         let cleaned = nemesis_types::channel::sanitize_open_files(of);
         if !cleaned.is_empty() {
@@ -850,7 +838,7 @@ fn handle_chat_send(
             nemesis_types::channel::workflow_edit_to_metadata(&target),
         );
     }
-    // A5：队列优先级提示进 metadata（缺省/空白 = 不写键，普通对话零影响）。
+    // 队列优先级提示进 metadata（缺省/空白 = 不写键，普通对话零影响）。
     if let Some(p) = data
         .priority
         .as_deref()
@@ -859,7 +847,7 @@ fn handle_chat_send(
     {
         metadata.insert("priority".to_string(), p.to_ascii_lowercase());
     }
-    // L12：幂等键进 metadata（缺省/空白 = 不写键，老客户端零影响；超限
+    // 幂等键进 metadata（缺省/空白 = 不写键，老客户端零影响；超限
     // 诚实拒绝——截断会造成不同 id 假相等误吞消息）。
     if let Some(cmid) = data
         .client_msg_id
@@ -932,9 +920,7 @@ fn handle_history_request(
     }))
 }
 
-// ---------------------------------------------------------------------------
 // System module dispatch
-// ---------------------------------------------------------------------------
 
 /// Dispatch messages with type=="system".
 fn handle_system_module(msg: &ProtocolMessage) -> Result<Option<IncomingMessage>, String> {
@@ -954,13 +940,11 @@ fn handle_system_module(msg: &ProtocolMessage) -> Result<Option<IncomingMessage>
     }
 }
 
-// ---------------------------------------------------------------------------
 // Broadcast / message building helpers
-// ---------------------------------------------------------------------------
 
 /// Build a broadcast message for a session (type=message, module=chat, cmd=receive).
 ///
-/// ⚠️ L2 后生产推送路径（`send_to_session` / `broadcast_to_session`）已改
+/// ⚠️ 后生产推送路径（`send_to_session` / `broadcast_to_session`）已改
 /// 自建帧盖 seq（chat.sync 补拉数据源）；本 helper 无 seq，仅测试/legacy
 /// 合成帧用。
 pub fn build_broadcast_message(role: &str, content: &str) -> Result<Vec<u8>, String> {
@@ -1008,14 +992,14 @@ pub async fn broadcast_to_session(
         session_id = %session_id,
         role = %role,
         content_len = content.len(),
-        // BUG-20261029-185：字节切片在多字节字符中间 panic（中文 3 字节/字符，
+        // 字节切片在多字节字符中间 panic（中文 3 字节/字符，
         // 100%3=1 极易跨界）——floor_char_boundary 收到字符边界（api_handlers
         // 脱敏同款 helper）。
         content_preview = &content[..nemesis_types::utils::floor_char_boundary(content, 100)],
         "[WebSocket] broadcast_to_session called"
     );
 
-    // L2：同 send_to_session——帧盖会话内单调 seq 进 per-session 环形缓冲
+    // 同 send_to_session——帧盖会话内单调 seq 进 per-session 环形缓冲
     //（chat.sync 补拉数据源）。不走 build_broadcast_message（它无 seq，
     // 测试/legacy 专用）。
     let seq = crate::chat_event_log::record(session_id, role, content, None, None);
@@ -1043,9 +1027,7 @@ pub async fn broadcast_to_session(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;
@@ -1053,14 +1035,14 @@ mod tests;
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): workflow-chat
+// (, quality-hardening goal 冲刺 web 批次 2): workflow-chat
 // auth arm, no-router request error, workflow_chat spawn block, inbound
 // channel arms, protocol ping frame, abrupt-drop cleanup — live-socket tests
 // on ephemeral ports.
 #[cfg(all(test, feature = "workflow"))]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：run_send_writer 的 lo 关闭收尾臂 + hi 批量
+// AGT 覆盖率批次：run_send_writer 的 lo 关闭收尾臂 + hi 批量
 // 捎带臂（假 sink 直驱私有 fn）、chat.send 无效 media 注记（content 非空
 // 补换行）+ workflow_edit metadata 写键、broadcast_to_session debug 字段
 // 求值（with_default 确定性装载）。豁免（收括号伪零 + 读流 None 臂可达性

@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): ConfigHandler error arms and
+//! (quality-hardening goal 冲刺, web 批次 2): ConfigHandler error arms and
 //! CORS stubs the gated `mod tests` skips — missing config.json load failure,
 //! invalid save payload, empty-path / invalid-result set_field, and the four
 //! "CORS manager not connected" stub commands.
@@ -177,10 +177,8 @@ async fn config_cors_stubs_report_not_connected() {
     assert_eq!(toggled["toggled"], false);
 }
 
-// ---------------------------------------------------------------------------
-// G6：agents.tool_doc_folding 开关 —— set_field 可写（typed round-trip），
+// agents.tool_doc_folding 开关 —— set_field 可写（typed round-trip），
 // config.get 回读，盘上真实落盘；错型值 loud 拒绝。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_tool_doc_folding_toggle_roundtrip() {
@@ -262,8 +260,8 @@ async fn config_tool_doc_folding_rejects_wrong_typed_value() {
     assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
 }
 
-// R1 真机验收发现：未知键曾走 generic set_field 静默丢弃（serde 忽略未知字段）
-// 却谎报 updated:true —— 现按 G6「未知键必须 loud 拒绝」要求 round-trip 校验。
+// 真机验收发现：未知键曾走 generic set_field 静默丢弃（serde 忽略未知字段）
+// 却谎报 updated:true —— 现按 「未知键必须 loud 拒绝」要求 round-trip 校验。
 #[tokio::test]
 async fn config_set_field_unknown_key_loud_rejects() {
     let dir = tempfile::tempdir().unwrap();
@@ -298,9 +296,9 @@ async fn config_set_field_unknown_key_loud_rejects() {
     assert!(err.contains("unknown config field"), "{err}");
 }
 
-// BUG-20261029-174：set_field 路径中间/末端父节点是 scalar（bool/string/
+// set_field 路径中间/末端父节点是 scalar（bool/string/
 // number）时，serde_json IndexMut 会 panic（cannot access key in JSON …）
-// ——WS handler 任务崩，Dashboard attr 编辑器输错路径即可触发。修复 =
+// WS handler 任务崩，Dashboard attr 编辑器输错路径即可触发。修复 =
 // set_json_path 显式 scalar 检查，loud Err 替代 panic。
 #[tokio::test]
 async fn config_set_field_scalar_parent_node_loud_rejects_no_panic() {
@@ -338,11 +336,9 @@ async fn config_set_field_scalar_parent_node_loud_rejects_no_panic() {
     assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
 }
 
-// ---------------------------------------------------------------------------
 // 数组下标路径（model_list.<i>.<field>）：set_json_path / json_path_get 必须
 // 对称支持数字段（此前 get 对数组数字段返回 None → round-trip 误报
 // "unknown config field"，set 本身也是静默 no-op）。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_set_field_supports_array_index_paths() {
@@ -403,12 +399,10 @@ async fn config_set_field_supports_array_index_paths() {
     assert!(err.contains("not a valid array index"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
-// 闭包事务入口级并发回归钉（2026-10-13 RMW 收口三期）：锁在 update_* 入口内
+// 闭包事务入口级并发回归钉（RMW 收口三期）：锁在 update_* 入口内
 // 取得，两个并发事务改**不同字段**时两个变更都必须存活——旧「调用点手锁」
 // 形态的丢更新类（各自读到旧底、后写整体覆盖先写）在此结构上不可能复现。
 // 一 typed 一 raw 两个入口混用，同钉「同族共用同一把进程级写串行锁」。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn config_update_entries_serialized_both_mutations_survive() {
@@ -481,11 +475,9 @@ fn config_update_entry_closure_err_leaves_disk_untouched() {
     assert_eq!(raw["model_list"][0]["model_name"], "seed");
 }
 
-// ---------------------------------------------------------------------------
-// 掩码还原（2026-10-25 实机实证回归锁）：config.get 脱敏 → 编辑器原样保存，
+// 掩码还原（实机实证回归锁）：config.get 脱敏 → 编辑器原样保存，
 // 旧实现把 model_list[].api_key 落盘成 '****'（真 key 丢失——channels.save /
 // cluster.config.save 都有 restore_masked_named_fields，config.save 漏接）。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_save_restores_masked_sensitive_fields_from_existing() {

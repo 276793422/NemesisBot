@@ -1,4 +1,4 @@
-//! R4 覆盖率（2026-08-27）：server.rs 可达臂——
+//! 覆盖率（2026-08-27）：server.rs 可达臂——
 //! - `serve_embedded_static` 的 workflow/chat/ 路径前缀规则（standalone 页壳）
 //! - bind 端口走查（2026-08-30 重写：49000~50000 带内循环往复 + 49001 让位
 //!   WebSocket 通道 + 带外线性小步，`bind_with_port_walk` / `port_walk_sequence`。
@@ -68,7 +68,7 @@ async fn workflow_chat_path_prefix_serves_standalone_html() {
 }
 
 // ============================================================
-// L4（2026-09-07）：/share 与 /share/ 直达分享壳（规则 2c）。
+// /share 与 /share/ 直达分享壳（规则 2c）。
 // 不加规则时两者落到 SPA fallback 的 Dashboard index.html——
 // 分享链接打开的是错页面。
 // ============================================================

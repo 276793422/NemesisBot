@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure (mirror of tests.rs helpers, isolated to this module)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -146,9 +144,7 @@ fn ensure_config_dir(workspace: &Path) {
     std::fs::create_dir_all(workspace.join("config")).unwrap();
 }
 
-// -----------------------------------------------------------------------
 // stats
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_stats_empty_workspace() {
@@ -176,7 +172,7 @@ async fn test_memory_stats_with_jsonl_and_episodic() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     // Manager's real tree is `memory_vector/`（gateway with_config 的
-    // data_dir）；stats 与 manager 同源读这棵树（V2 修复：旧代码数的是
+    // data_dir）；stats 与 manager 同源读这棵树（修复：旧代码数的是
     // 永远不会被加载的 `memory/`）。
     let mem_dir = ws.join("memory_vector");
     let vector_dir = mem_dir.join("vector");
@@ -207,9 +203,7 @@ async fn handler_stats(ctx: &RequestContext) -> serde_json::Value {
         .unwrap()
 }
 
-// -----------------------------------------------------------------------
 // entries.list
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_entries_list_missing_file() {
@@ -256,9 +250,7 @@ async fn test_memory_entries_list_with_entries_truncated_and_reversed() {
     assert_eq!(result["total"], 2);
 }
 
-// -----------------------------------------------------------------------
 // entries.search
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_entries_search_missing_file() {
@@ -328,9 +320,7 @@ async fn test_memory_entries_search_limit_applied() {
     assert_eq!(result["results"].as_array().unwrap().len(), 2);
 }
 
-// -----------------------------------------------------------------------
 // entries.store
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_entries_store_creates_file_and_appends() {
@@ -357,7 +347,7 @@ async fn test_memory_entries_store_creates_file_and_appends() {
     assert!(r2["stored"].as_bool().unwrap());
 
     // Raw-append fallback writes the manager's load path
-    // （memory_vector/vector/，V2 修复）；legacy `memory/vector/`
+    // （memory_vector/vector/， 修复）；legacy `memory/vector/`
     // 是 manager 永远不加载的死树，不得再写。
     let jsonl = ws
         .join("memory_vector")
@@ -374,9 +364,7 @@ async fn test_memory_entries_store_creates_file_and_appends() {
     );
 }
 
-// -----------------------------------------------------------------------
 // env.check
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_env_check_no_config_returns_degraded() {
@@ -423,9 +411,7 @@ async fn test_memory_env_check_with_main_enabled_plugin_missing() {
     assert_eq!(result["plugin"]["found"], false);
 }
 
-// -----------------------------------------------------------------------
 // env.setup (error path only — real setup triggers download)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_env_setup_plugin_not_found() {
@@ -448,9 +434,7 @@ async fn test_memory_env_setup_plugin_not_found() {
     );
 }
 
-// -----------------------------------------------------------------------
 // config.get
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_config_get_no_main_config() {
@@ -491,9 +475,7 @@ async fn test_memory_config_get_with_main_enabled() {
     assert_eq!(result["main_enabled"], true);
 }
 
-// -----------------------------------------------------------------------
 // config.set
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_config_set_main_enabled_requires_config_json() {
@@ -512,7 +494,7 @@ async fn test_memory_config_set_main_enabled_true() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     write_config(ws);
-    // write_config serializes Config::default(), where `memory: Option<...>` is
+    // write_config serializes Config::default, where `memory: Option<...>` is
     // None — emitted as `null`. The `set_main_switch` helper only inserts
     // the `memory` object when the key is absent; when present as `null`
     // it leaves the field alone. Write a non-null `memory: {}` first so the
@@ -562,9 +544,7 @@ async fn test_memory_config_set_active_tier() {
     assert_eq!(v["active"], "large");
 }
 
-// -----------------------------------------------------------------------
-// config.set / config.get — P1-1 auto_inject flags (2026-08-24 UI entry gap)
-// -----------------------------------------------------------------------
+// config.set / config.get — auto_inject flags (UI entry gap)
 
 /// Set both flags, then read back through `load_embedding_config` — the
 /// exact reader `agent_factory` uses at AgentLoop build time (stronger
@@ -626,7 +606,7 @@ async fn test_memory_config_set_auto_inject_top_k_out_of_range() {
     }
 }
 
-/// 2026-08-24 re-review: present-but-mistyped switch keys must error
+/// re-review: present-but-mistyped switch keys must error
 /// loudly (sandbox `set_config` convention) instead of being silently
 /// ignored — under the old parse, every one of these payloads returned
 /// `updated: true` while doing nothing, so a frontend type bug showed up
@@ -773,9 +753,7 @@ async fn test_memory_config_set_sub_disabled_no_model_needed() {
     assert_eq!(r["updated"], true);
 }
 
-// -----------------------------------------------------------------------
 // model.install (validation / no real download)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_model_install_unknown_tier() {
@@ -809,9 +787,7 @@ async fn test_memory_model_install_valid_tier_runs_or_fails_cleanly() {
     // internal mutex, but a second call must not return "正在安装中").
 }
 
-// -----------------------------------------------------------------------
 // Error paths
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_memory_no_workspace_returns_error() {
@@ -905,10 +881,8 @@ async fn test_memory_model_install_missing_tier_field() {
     assert_eq!(result.unwrap_err(), "missing field: tier");
 }
 
-// -----------------------------------------------------------------------
 // Wave5 批次：legacy 向量库迁移两臂、entries.store→search 关键词命中闭环、
 // stats 的嵌套目录 / episodic 子目录 / 平铺文件计数臂。
-// -----------------------------------------------------------------------
 
 /// 迁移：legacy `<ws>/memory/vector/vector_store.jsonl` 存在且目标不存在 →
 /// 拷贝到 `<ws>/memory_vector/vector/vector_store.jsonl`（267-271 成功臂）；

@@ -198,7 +198,7 @@ async fn unknown_command_returns_error() {
     assert!(err.contains("unknown command"));
 }
 
-// --- agent_loop Some-branch (cancel / checkpoints / rewind real paths) ---
+// agent_loop Some-branch (cancel / checkpoints / rewind real paths) ---
 
 use nemesis_agent::checkpoint::CheckpointStore;
 use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
@@ -331,7 +331,7 @@ async fn rewind_nonexistent_turn_returns_empty() {
 }
 
 // ============================================================
-// Phase 3 覆盖率补测（2026-08-25）：rewind 的 Err 透传臂、
+// 覆盖率补测：rewind 的 Err 透传臂、
 // checkpoints 的非空 map 体、update_model_info 双臂。
 // ============================================================
 

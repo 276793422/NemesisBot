@@ -1,5 +1,5 @@
 //! quic WSAPI 覆盖率（2026-10-23 与集群解耦，自 handlers/cluster/tests.rs
-//! 迁入；QUIC 插件化 M1 起 handler 代理化——此处钉 config 合并/清除语义、
+//! 迁入；QUIC 插件化 起 handler 代理化——此处钉 config 合并/清除语义、
 //! status 载荷形状、客户端面两键、handle=None 实时开关契约 + 名册命令表面）。
 
 use super::*;
@@ -161,12 +161,10 @@ fn test_relay_config_save_client_face() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 实时开关（2026-10-23）：relay.enable / relay.disable 免重启网关——config 闸
+// 实时开关：relay.enable / relay.disable 免重启网关——config 闸
 // 落盘 + 插件内拉起/停掉一体（真中继 roundtrip 归插件侧 e2e + gateway 装载
 // 冒烟）。此处以 handle=None 验证 config+载荷契约：闸与运行态解耦时的诚实
 // 呈现（插件未装载 = requires_restart 亮起，不假成功）。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[cfg(feature = "cluster")]
@@ -195,9 +193,7 @@ async fn test_relay_toggle_config_contract_without_cluster() {
     assert_eq!(v["relay"]["enabled"], serde_json::json!(false));
 }
 
-// ---------------------------------------------------------------------------
-// 命令表面：L1 清单恒注册 + feature 关诚实降级（双形态锚点）
-// ---------------------------------------------------------------------------
+// 命令表面： 清单恒注册 + feature 关诚实降级（双形态锚点）
 
 #[test]
 fn quic_module_commands_surface_is_stable() {
@@ -215,7 +211,7 @@ fn quic_module_commands_surface_is_stable() {
     }
 }
 
-/// 插件化 M1 表面锚点：registry.members 命令恒注册（诚实降级形态在
+/// 插件化 表面锚点：registry.members 命令恒注册（诚实降级形态在
 /// handler None 臂——插件缺席 = available:false + reason，不伪装空表）。
 #[test]
 fn registry_members_command_registered_when_plugin_absent() {
@@ -223,11 +219,9 @@ fn registry_members_command_registered_when_plugin_absent() {
     assert!(h.commands().contains(&"registry.members"));
 }
 
-// ---------------------------------------------------------------------------
-// BUG-20261025-15 双形态锚点（cluster 关形态）：解析投影缺席 = status/回显
+// 双形态锚点（cluster 关形态）：解析投影缺席 = status/回显
 // 诚实降级，校验+落盘（纯 JSON RMW）照常。裸 `cargo test -p nemesis-web`
 // （无 feature）跑这里；全量 feature 构建跑上方 cfg(feature) 臂。
-// ---------------------------------------------------------------------------
 
 #[cfg(not(feature = "cluster"))]
 #[test]

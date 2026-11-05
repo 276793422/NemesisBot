@@ -1,4 +1,4 @@
-//! L9 selfupdate WSAPI — `selfupdate.check` / `selfupdate.download` /
+//! selfupdate WSAPI — `selfupdate.check` / `selfupdate.download` /
 //! `selfupdate.apply` / `selfupdate.status` / `selfupdate.cancel_download` /
 //! `selfupdate.integrity`。
 //!
@@ -18,7 +18,7 @@
 //! download/apply/cancel 需要 `selfupdate` feature（manager 类型本体）+
 //! gateway 装配，双闸诚实降级。
 //!
-//! 交互形态（2026-10-21 用户拍板）：download/apply 都是**受理即回**的后台
+//! 交互形态（2026-10-21）：download/apply 都是**受理即回**的后台
 //! 任务——进度走 SSE `selfupdate-progress`（易逝事件，不进断线补拉）+
 //! status 轮询快照；确认在 Dashboard 侧完成（MessageBox 式确认框），后端
 //! 无审批卡（v4 签名验签是安全闸）。
@@ -52,8 +52,8 @@ fn boot_identity() -> Option<&'static BootIdentity> {
 
 // manager 槽（selfupdate feature 门控——类型本体随 feature 进出）。
 // RwLock<Option> 而非 OnceLock：装配语义仍是「首个生效」，但测试进程需要
-// 可清——gateway full_assembly 冒烟在同进程跑生产 run() 会占槽，OnceLock
-// 时代断言「未装配」的测试只能靠执行顺序，跨测试污染偶发假红（2026-10-13）。
+// 可清——gateway full_assembly 冒烟在同进程跑生产 run 会占槽，OnceLock
+// 时代断言「未装配」的测试只能靠执行顺序，跨测试污染偶发假红。
 #[cfg(feature = "selfupdate")]
 static MANAGER: std::sync::RwLock<Option<std::sync::Arc<crate::selfupdate::SelfUpdateManager>>> =
     std::sync::RwLock::new(None);
@@ -148,7 +148,7 @@ impl ModuleHandler for SelfupdateHandler {
                 }
                 Ok(Some(v))
             }
-            // 两段式第一步：只下载 + 落盘 + sha 校验。受理即回（后台任务），
+            // 两段式：只下载 + 落盘 + sha 校验。受理即回（后台任务），
             // 进度走 SSE `selfupdate-progress` + status 轮询；重复调用幂等
             // （同目标已在下/已就绪直接返回成功）。data.force=true（强制
             // 更新）跳过「pending 已就绪」幂等早退——存量 pending 可能就是
@@ -186,7 +186,7 @@ impl ModuleHandler for SelfupdateHandler {
                         .to_string())
                 }
             }
-            // 两段式第二步（或一步式直达）：staging + 受控重启。受理即回；
+            // 两段式（或一步式直达）：staging + 受控重启。受理即回；
             // 无待装包自动先下载（CLI 兼容旧一步式调用）；执行进度走 SSE
             // 与 gateway 日志；成功后自动重启（确认在 Dashboard 侧完成，
             // 后端无审批卡——v4 验签是安全闸）。
@@ -265,7 +265,7 @@ impl ModuleHandler for SelfupdateHandler {
                     serde_json::json!({"active": false, "phase": "idle"}),
                     serde_json::Value::Null,
                 );
-                // apply 失败反馈面（2026-10-23 挂死修复）：粘滞态解挂依据
+                // apply 失败反馈面（挂死修复）：粘滞态解挂依据
                 // （last_apply_error）+ 首更形态提前告知依据
                 // （sequence_baseline_present=false = 无 applied 基准，顺序
                 // 闸默认 Unknown 拒绝）。基准只看文件在场性，权威判定在闸里。
@@ -319,7 +319,7 @@ impl ModuleHandler for SelfupdateHandler {
                     Err("selfupdate 通道未编译（构建未带 selfupdate feature）".to_string())
                 }
             }
-            // 完整性检查（2026-10-30）：活 exe + plugins/ 平面文件逐一对
+            // 完整性检查：活 exe + plugins/ 平面文件逐一对
             // applied_manifest.json 已验签基线做 sha256 比对。只读不处置——
             // 修复路径 = 强制更新（download/apply 带 force）。同步返回
             //（本地哈希，秒级；无网络依赖）。

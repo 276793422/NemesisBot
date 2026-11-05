@@ -1,4 +1,4 @@
-//! B4（2026-10-18 凭据 vault §7）— `credential.respond` / `credential.pending`。
+//! （2026-10-18 凭据 vault §7）— `credential.respond` / `credential.pending`。
 //!
 //! Dashboard 凭据卡的 WSAPI 入口：把用户提交的凭据值送回等待中的
 //! `WebCredentialBroker::request_credential`（触发点阻塞处），broker **先落

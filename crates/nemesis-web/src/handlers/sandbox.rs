@@ -1,9 +1,9 @@
 //! Sandbox handler — Sandboxie install / status / start commands for the
 //! Sandbox management page.
 //!
-//! Commands: `overview` (P5 platform-adaptive summary), `status`, `check`,
+//! Commands: `overview` (platform-adaptive summary), `status`, `check`,
 //! `pending`, `commit`, `delete`, `install_7z`, `install_sandboxie`, `start`,
-//! `stop`, `open_box`, `open_explorer`, `set_network`, `set_config` (P5
+//! `stop`, `open_box`, `open_explorer`, `set_network`, `set_config` (
 //! field-wise executor switches).
 //!
 //! `install_sandboxie` / `start` need admin (driver + service ops) → they spawn
@@ -49,9 +49,9 @@ fn user_profile() -> PathBuf {
 /// await it. Generous timeout for UAC + download + KmdUtil install.
 async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    // resolve_home() joins `.nemesisbot` onto the env var, so pass the PARENT:
+    // resolve_home joins `.nemesisbot` onto the env var, so pass the PARENT:
     // `home` here is already `<...>/.nemesisbot` — passing it directly made the
-    // child resolve `<...>/.nemesisbot/.nemesisbot` (double-join bug; P3-2
+    // child resolve `<...>/.nemesisbot/.nemesisbot` (double-join bug;
     // catalog_update hit the same trap).
     let env_home = home.parent().unwrap_or(home);
     let output = tokio::time::timeout(
@@ -123,7 +123,7 @@ fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
     );
     let out =
         serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
-    // REL-002：统一原子写入（config.json 含 API key）。
+    // 统一原子写入（config.json 含 API key）。
     nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), out.as_bytes(), 0o600)
         .map_err(|e| format!("write config.json: {e}"))?;
     Ok(())
@@ -139,7 +139,7 @@ fn current_allow_network(home: &std::path::Path) -> bool {
 /// Read the whole `executor` section (all four switches: enabled / sandbox /
 /// allow_network / strict) — single source for `overview` display and
 /// `set_config` echo. Same dual-path resolution as [`current_allow_network`];
-/// defaults mirror `ExecutorSeparationConfig::default()` (all false).
+/// defaults mirror `ExecutorSeparationConfig::default` (all false).
 fn current_executor(home: &std::path::Path) -> nemesis_config::ExecutorSeparationConfig {
     if let Some(store) = nemesis_config::global() {
         let handle = store.handle();
@@ -259,13 +259,13 @@ impl ModuleHandler for SandboxHandler {
                     "box_root": paths.box_root.to_string_lossy(),
                 })))
             }
-            // P5-1/P5-2 平台自适应总览：一次调用回答「我在什么平台 / 四个
+            // / 平台自适应总览：一次调用回答「我在什么平台 / 四个
             // executor 开关现在是什么（live）/ 后端探测看到什么 / 沙盒执行现在
             // 是否真的会被兑现」。Windows → Sandboxie 探测（kind=sandboxie）；
             // 其他平台 → 用户态后端逐个探测（kind=userland，含每个后端的
             // 可用性 + 缺口/原因）。`ready` 与 exec_world 装配的就绪语义一致
             // （Windows = Start.exe + SbieSvc Running + engine_owned；非
-            // Windows = detect_backend() 选中了后端）。
+            // Windows = detect_backend 选中了后端）。
             "overview" => {
                 let executor = current_executor(&home);
                 let platform = if cfg!(target_os = "windows") {
@@ -278,7 +278,7 @@ impl ModuleHandler for SandboxHandler {
                     "other"
                 };
                 let (backend_probe, ready) = if cfg!(target_os = "windows") {
-                    // 挂载路径去重（2026-09-08）：service state 只查一次，
+                    // 挂载路径去重：service state 只查一次，
                     // SbieSvc/SbieDrv 状态同时喂给 engine_owned_with_states
                     // 与 backend_probe（此前 overview 内部 engine_owned 再查
                     // 一遍 + 前端另发 status/check 各查一遍 = 每次进页
@@ -337,7 +337,7 @@ impl ModuleHandler for SandboxHandler {
                             })
                         })
                         .collect();
-                    // P1（2026-09-25）：selected 按 config 的 allow_network
+                    // selected 按 config 的 allow_network
                     // 选型（禁网 + bwrap 可用 → bwrap；与 exec_worker::engage
                     // 同一张决策表）。
                     let selected =
@@ -352,7 +352,7 @@ impl ModuleHandler for SandboxHandler {
                         selected.is_some(),
                     )
                 };
-                // D4 状态面（DACL 定向档 2026-09-27）：Windows + `acl` feature
+                // 状态面（DACL 定向档）：Windows + `acl` feature
                 // 下附 DACL 探针；其余平台/形态 = null（前端据型判空隐藏）。
                 // engaged 是**代理语义**：dacl 配置开 && 探针可用 ⇒ 下一次
                 // executor spawn 走 workspace-dacl 受限令牌路径（与 exec_world
@@ -537,7 +537,7 @@ impl ModuleHandler for SandboxHandler {
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    // 黑窗根修（2026-10-19）：统一压 CREATE_NO_WINDOW（仓库
+                    // 黑窗根修：统一压 CREATE_NO_WINDOW（仓库
                     // 纪律：生产路径 spawn 一律）。GUI 窗口（盒内 explorer）
                     // 是程序自建，不受此 flags 影响。
                     use std::os::windows::process::CommandExt;
@@ -575,7 +575,7 @@ impl ModuleHandler for SandboxHandler {
                 .map_err(|e| format!("rewrite Sandboxie.ini: {e}"))?;
                 #[cfg(target_os = "windows")]
                 {
-                    // 黑窗根修（2026-10-19）：同上，统一压 CREATE_NO_WINDOW。
+                    // 黑窗根修：同上，统一压 CREATE_NO_WINDOW。
                     use std::os::windows::process::CommandExt;
                     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     std::process::Command::new(paths.start_exe())
@@ -590,7 +590,7 @@ impl ModuleHandler for SandboxHandler {
                     "restart_hint": "newly started box processes pick this up immediately; already-open ones need reopening",
                 })))
             }
-            // P5-1/P5-2 executor 开关的逐字段变更（Linux 联动开关 + 全平台
+            // / executor 开关的逐字段变更（Linux 联动开关 + 全平台
             // strict 开关走这里）。每个 bool 只在**显式出现**时应用，其余兄弟
             // 字段原样保留（update_executor 逐字段合并）；出现但非 bool → 报
             // 错（不静默忽略）。注意：Windows 的盒级联网开关仍走 `set_network`
@@ -654,10 +654,10 @@ impl ModuleHandler for SandboxHandler {
                     "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict/acl.dacl 对后续工具调用实时生效",
                 })))
             }
-            // G7 (D2)：用户态沙盒自检（一次性子进程探针；Windows / 无后端
+            // 用户态沙盒自检（一次性子进程探针；Windows / 无后端
             // → supported:false，不 spawn）。
             "self_test" => self.self_test(&home).await,
-            // P21（2026-09-25）：沙盒拒绝台账查询。台账是沙盒层自有观测面
+            // 沙盒拒绝台账查询。台账是沙盒层自有观测面
             // （<workspace>/logs/sandbox_denials.jsonl，executor 子进程侧经
             // nemesis_sandbox::denial 写入），这里只读：limit 缺省 50、上限
             // 500（防一次拖全量），最新在前。不接安全审计链（Merkle 链照旧）。
@@ -668,7 +668,7 @@ impl ModuleHandler for SandboxHandler {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(50)
                     .clamp(1, 500) as usize;
-                // F9（2026-09-26 复查）：工作区取 ctx.workspace（gateway 装配
+                // （复查）：工作区取 ctx.workspace（gateway 装配
                 // 时注入的真实工作区——executor 子进程的台账也写在那份工作区
                 // 的 logs/ 下），仅在其缺省时回落 `home/workspace` 约定（旧
                 // 形态/未装配 ctx）。此前硬编码 join 使 NEMESISBOT_HOME 指向
@@ -707,7 +707,7 @@ impl ModuleHandler for SandboxHandler {
 }
 
 impl SandboxHandler {
-    /// G7 (D2)：用户态沙盒自检。探测「沙盒真的拦得住吗」——在**一次性子进程**
+    /// 用户态沙盒自检。探测「沙盒真的拦得住吗」——在**一次性子进程**
     /// 里跑三条探针（workspace 外写 / 网络出站 / workspace 内写对照组），把
     /// 每条的 blocked + 原始证据如实回给前端。绝不 gateway 进程内自装：
     /// landlock 规则不可逆，装上就把 gateway 永久锁小了。
@@ -725,7 +725,7 @@ impl SandboxHandler {
         std::fs::create_dir_all(&workspace)
             .map_err(|e| format!("create workspace for selftest: {e}"))?;
 
-        // P1（2026-09-25）：先读网络要求再选后端（禁网 + bwrap 可用 → 自检
+        // 先读网络要求再选后端（禁网 + bwrap 可用 → 自检
         // 走 bwrap，测的才是真实强制链）。
         let allow_network = current_allow_network(home);
         let Some(backend) = detect_backend(allow_network) else {
@@ -847,19 +847,19 @@ impl SandboxHandler {
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): fake-box-tree
+// (, quality-hardening goal 冲刺 web 批次 2): fake-box-tree
 // selection/commit/delete paths + set_executor_config + set_config
 // allow_network arm. All offline — no Sandboxie/UAC/downloads.
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-24）：Default+命令表面、pending 的 box_root 为
+// AGT 覆盖率批次：Default+命令表面、pending 的 box_root 为
 // 文件时 enumerate 错误臂、set_network 的 ini 重写失败臂与 Start.exe 缺失
 // spawn 失败臂。run_cli_subcmd/真下载/真开窗臂豁免（见 agt_tests 文件头注）。
 #[cfg(test)]
 mod agt_tests;
 
-// P21（2026-09-25）：sandbox.denials.list 查询面（空账 / 种子账 / limit 截断
+// sandbox.denials.list 查询面（空账 / 种子账 / limit 截断
 // 与上限 / 最新在前）。
 #[cfg(test)]
 mod denials_tests;

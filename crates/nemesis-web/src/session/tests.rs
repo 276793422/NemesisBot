@@ -333,7 +333,7 @@ fn test_session_equality_by_id() {
     assert_eq!(session.chat_id, retrieved.chat_id);
 }
 
-// ---- Additional coverage tests for 95%+ ----
+// Additional coverage tests for 95%+ ----
 
 #[test]
 fn test_set_send_queue_for_existing_session() {
@@ -364,7 +364,7 @@ async fn test_broadcast_with_send_queue() {
     assert_eq!(received, b"hello world");
 }
 
-// BUG 2026-09-22（慢客户端洪泛）：可丢广播走 lo 通道、必达通道不受扰；
+// BUG （慢客户端洪泛）：可丢广播走 lo 通道、必达通道不受扰；
 // 无队列会话诚实报错。
 #[tokio::test]
 async fn test_broadcast_droppable_delivers_on_lo_lane() {
@@ -412,7 +412,7 @@ async fn test_broadcast_after_session_removed() {
     assert!(result.is_err());
 }
 
-// BUG 2026-10-24（僵尸连接）：逐出只删映射不断连，socket 仍活——WSAPI 响应
+// BUG （僵尸连接）：逐出只删映射不断连，socket 仍活——WSAPI 响应
 // 走 dispatch 捕获队列照常送达，而会话路由的帧（agent 回复/用户回声/历史/
 // 推送）查表失败静默丢失，无心跳客户端永无自愈。逐出必须先 close 队列
 // （发 Close 帧握手 → 前端 onclose 非 1008/4001 自动重连拿新会话）。
@@ -527,7 +527,7 @@ fn test_set_send_queue_replaces_existing() {
     assert!(mgr.send_queues.contains_key(&session.id));
 }
 
-/// BUG-20261025-84：broadcast 不得跨背压 await 持有 send_queues 分片读守卫。
+/// broadcast 不得跨背压 await 持有 send_queues 分片读守卫。
 /// hi 通道满（慢客户端）时 `SendQueue::send` 可等待任意久（「满则背压等
 /// 待，绝不丢」）；旧实现 DashMap Ref 守卫跨越该 await——同分片的全部写
 /// 操作停摆到慢客户端消费为止（本测试用同 session 的 remove_session 做
@@ -544,7 +544,7 @@ fn test_set_send_queue_replaces_existing() {
 async fn test_broadcast_releases_shard_guard_during_backpressure() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    // 无写者测试队列（cap=1）：填满后 send() 永久背压，无人消费。
+    // 无写者测试队列（cap=1）：填满后 send 永久背压，无人消费。
     let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(1);
     mgr.set_send_queue(&session.id, Arc::new(queue));
 
@@ -553,7 +553,7 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
         .await
         .expect("fill send");
 
-    // 背压挂起：该 broadcast 在 send().await 上永久等待（旧代码此刻已持
+    // 背压挂起：该 broadcast 在 send.await 上永久等待（旧代码此刻已持
     // 分片读守卫；修复代码在 await 前已归还）。
     let mgr_bg = Arc::clone(&mgr);
     let sid_bg = session.id.clone();
@@ -583,9 +583,9 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
     blocked.abort();
 }
 
-// BUG-20261029-141：cleanup 线程双重失职的行为锁，两段断言各钉一面。
+// cleanup 线程双重失职的行为锁，两段断言各钉一面。
 //
-// 旧缺陷一（活性缺失）：start_cleanup 用 `DashMap::clone()` 把映射交给
+// 旧缺陷一（活性缺失）：start_cleanup 用 `DashMap::clone` 把映射交给
 // 线程——dashmap 的 Clone 是逐 shard 深拷贝而非共享克隆，线程迭代的是
 // 构造瞬间的私有快照（永远为空），逐出从不落真表：活性段轮询等真表
 // 会话被逐出，旧实现 4s 预算内 count 恒 1 → 红。
@@ -597,7 +597,7 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
 // ~1.1s 处逐出它 → 1600ms 等待后断言红。
 #[test]
 fn test_shutdown_stops_cleanup_thread() {
-    // 逐出谓词是 num_seconds() > timeout.as_secs()（秒级地板）：timeout 取
+    // 逐出谓词是 num_seconds > timeout.as_secs（秒级地板）：timeout 取
     // 500ms → 实际阈值 = 年龄跨过 1s 后的首拍；拍间隔 100ms。
     let mgr = SessionManager::new_with_cleanup_interval(
         std::time::Duration::from_millis(500),

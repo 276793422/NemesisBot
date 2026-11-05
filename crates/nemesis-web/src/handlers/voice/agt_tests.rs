@@ -116,9 +116,7 @@ fn make_voice_dir_a_file(dir: &tempfile::TempDir) {
     std::fs::write(tools.join("voice"), b"not a dir").unwrap();
 }
 
-// -----------------------------------------------------------------------
 // 模块接口面
-// -----------------------------------------------------------------------
 
 #[test]
 fn agt_handler_default_module_name_and_command_table() {
@@ -137,9 +135,7 @@ fn agt_handler_default_module_name_and_command_table() {
     assert_eq!(sorted.len(), before, "duplicate command in table");
 }
 
-// -----------------------------------------------------------------------
 // setup / install_runtime / install_aec：voice_dir 为文件 → create_dir 失败
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_setup_and_install_runtime_fail_when_voice_dir_is_file() {
@@ -180,9 +176,7 @@ async fn agt_install_aec_fails_when_voice_dir_is_file() {
     agt_clear_all().await;
 }
 
-// -----------------------------------------------------------------------
 // install_model：锁冲突 / config 缺失 / unknown model 全错误路径
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_install_model_lock_config_gate_and_unknown_model_path() {
@@ -237,9 +231,7 @@ async fn agt_install_model_lock_config_gate_and_unknown_model_path() {
     agt_clear_all().await;
 }
 
-// -----------------------------------------------------------------------
 // tts 纯校验段
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_tts_validation_and_setup_gate() {
@@ -268,9 +260,7 @@ async fn agt_tts_validation_and_setup_gate() {
     assert_eq!(err, "Voice not set up. Run setup first.");
 }
 
-// -----------------------------------------------------------------------
 // voice_config_set：现值非对象（数组）→ 跳过合并但仍写回
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_voice_config_set_tolerates_non_object_current() {
@@ -298,9 +288,7 @@ async fn agt_voice_config_set_tolerates_non_object_current() {
     );
 }
 
-// -----------------------------------------------------------------------
 // init_engines_from_config：三开关全开 → 全部 fail-fast（无 config.toml）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_init_engines_from_config_fail_fast_all_three() {
@@ -329,9 +317,7 @@ async fn agt_init_engines_from_config_fail_fast_all_three() {
     agt_clear_all().await;
 }
 
-// -----------------------------------------------------------------------
 // tts_playback：校验 / channel-closed / 队列生命周期
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_tts_playback_validation_channel_closed_and_queue() {
@@ -356,7 +342,7 @@ async fn agt_tts_playback_validation_channel_closed_and_queue() {
     //    return（rx 随之 drop，不碰网络/DLL）；首次 send 在循环尚未启动时入
     //    队成功。入队与「循环缺 config 即退」是天然竞速（handler 无同步点，
     //    高负载 runner 上循环可能先死 → Err("TTS playback channel closed")）
-    //    ——该 Err 与 ③ 轮询验证的是同一性质（循环已死、发送必闭），同为有
+    //    该 Err 与 ③ 轮询验证的是同一性质（循环已死、发送必闭），同为有
     //    效观测；出现时记 closed=true 直接跳 ③ 的收尾断言。
     let mut closed = false;
     match h
@@ -411,10 +397,8 @@ async fn agt_tts_playback_validation_channel_closed_and_queue() {
     agt_clear_all().await;
 }
 
-// -----------------------------------------------------------------------
 // speaker_status：状态投影（engine/manager 不可注入——SpeakerManager::new
 // 需要 sherpa-onnx FFI，未初始化直接 panic——故 ready 恒 false、manager 臂豁免）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_speaker_status_projects_state_and_voiceprint_file() {
@@ -456,9 +440,7 @@ async fn agt_speaker_status_projects_state_and_voiceprint_file() {
     agt_clear_all().await;
 }
 
-// -----------------------------------------------------------------------
 // 辅助 trait（与 s10_tests 同款，仅测试用）
-// -----------------------------------------------------------------------
 
 trait AgtUnwrapErrOr<T> {
     fn unwrap_err_or(self, msg: impl std::fmt::Display) -> T;

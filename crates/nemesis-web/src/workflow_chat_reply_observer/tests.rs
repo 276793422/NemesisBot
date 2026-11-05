@@ -112,7 +112,7 @@ fn test_agent_response_field_still_works() {
 }
 
 /// Empty bare string falls through the bare-string priority path (the
-/// `!s.is_empty()` guard treats empty as "no real reply") and ends up
+/// `!s.is_empty` guard treats empty as "no real reply") and ends up
 /// JSON-dumped via the merged-output fallback. This is intentional — an
 /// empty transform output shouldn't be served to webchat as a blank
 /// reply just because it has the right shape.

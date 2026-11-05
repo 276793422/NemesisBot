@@ -1,4 +1,4 @@
-//! P3-web3（2026-08-25）：cluster.rs 深覆盖测试。
+//! web3（2026-08-25）：cluster.rs 深覆盖测试。
 //!
 //! 与 `cluster_extra_tests.rs` / `cluster_more_tests.rs` 互补，聚焦此前零覆盖
 //! 的运行时路径：
@@ -13,7 +13,7 @@
 //! - diagnostics.run 三段门（缺参 / 无 client / resolver 缺 peer）
 //! - persona_generate 校验 + tier 门 + wiremock 全流程；persona_apply 全臂
 //!
-//! 所有测试用 tempdir 自建 ctx，不触碰 default_path_manager() 单例 home。
+//! 所有测试用 tempdir 自建 ctx，不触碰 default_path_manager 单例 home。
 
 use super::*;
 use crate::api_handlers::AppState;
@@ -29,9 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure
-// -----------------------------------------------------------------------
 
 /// 可编程假集群服务：控制 start/stop 成败与 is_running 状态。
 struct FakeClusterSvc {
@@ -204,9 +202,7 @@ fn log_event(event: &str, data: serde_json::Value) -> serde_json::Value {
     v
 }
 
-// -----------------------------------------------------------------------
 // runtime.status / runtime.start / runtime.stop
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn rt_status_task_state_metrics() {
@@ -238,7 +234,7 @@ async fn rt_status_task_state_metrics() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(result["running"], true); // service.is_running()
+    assert_eq!(result["running"], true); // service.is_running
     assert_eq!(result["total_nodes"], 1);
     assert_eq!(result["online_nodes"], 1);
     assert_eq!(result["active_tasks"], 2); // t3 Running + t4 Pending
@@ -389,10 +385,8 @@ async fn rt_start_stop_error_arms_and_no_workspace() {
     assert!(!dir2.path().join("config/config.cluster.json").exists());
 }
 
-// -----------------------------------------------------------------------
 // nodes.ping（帧级探针：自 QUIC 插件化起走集群传输层 Custom("ping") RPC，
 // 可达的定义 = 对端帧级应答，不再是裸 TCP connect）
-// -----------------------------------------------------------------------
 
 /// 测试内静态单地址 resolver：把探针拨号钉死到一个地址（对齐
 /// ClusterPeerResolver 的「base.address 原样端口，无推导」语义）。
@@ -435,7 +429,7 @@ async fn nodes_ping_success_marks_peer_healthy() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     // 帧级探针要求对端应答——起真 RpcServer（构造器自带 "ping"→pong 默认
-    // handler）；哑 TcpListener 不再构成成功面（恒 5s 超时假红，c46306ff 实录）。
+    // handler）；哑 TcpListener 不再构成成功面（恒 5s 超时假红，c46306ff）。
     let server = Arc::new(RpcServer::new(RpcServerConfig {
         bind_address: "127.0.0.1:0".into(),
         ..Default::default()
@@ -444,7 +438,7 @@ async fn nodes_ping_success_marks_peer_healthy() {
     let addr = format!("127.0.0.1:{}", server.port());
     let cluster = test_cluster(&dir);
     cluster.register_node(node("n1", "alpha", NodeRole::Worker, false, &addr));
-    // 探针经 cluster 内 RpcClient 拨号——测试簇未 start()，须注入 client。
+    // 探针经 cluster 内 RpcClient 拨号——测试簇未 start，须注入 client。
     cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(Arc::new(
         SingleAddrResolver { addr: addr.clone() },
     ))));
@@ -494,9 +488,7 @@ async fn nodes_ping_refused_marks_peer_offline() {
     assert!(!cluster.get_peer("n1").unwrap().is_online());
 }
 
-// -----------------------------------------------------------------------
 // nodes.add / nodes.refresh
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn nodes_add_registers_into_running_cluster() {
@@ -665,7 +657,7 @@ async fn nodes_refresh_timeout_clamped_to_one_sec() {
 
     let client = Arc::new(RpcClient::with_resolver(Arc::new(OfflineResolver)));
     // 预热：60 次快速失败调用 → 窗口时间戳累积到上限（release 只还 token，
-    // 不清窗口时间戳）。窗口容量 2026-09-18 随 RpcClient 限流放宽从 30 提到
+    // 不清窗口时间戳）。窗口容量 随 RpcClient 限流放宽从 30 提到
     // 60（30 req/10s = 3 req/s 会卡传输类连发），预热次数必须 ≥ 窗口容量，
     // 否则 refresh 的 acquire 直接放行、内层毫秒级 fast-fail，外层 1s
     // Timeout 永远输（实测回归：错误消息变 "peer is offline"）。
@@ -779,7 +771,7 @@ async fn nodes_refresh_parse_errors_and_address_fallbacks() {
 
 #[tokio::test]
 async fn nodes_refresh_rpc_port_rejects_u16_wrap() {
-    // BUG-20261101-266：远端自报 rpc_port 先 u64 域验域再 cast——裸 `as u16`
+    // 远端自报 rpc_port 先 u64 域验域再 cast——裸 `as u16`
     // 会把 65537 回绕成 1、70000 回绕成 4464，恰好穿过 `rpc_port > 0` 闸，
     // 错端口构造 primary_address 并随 merge 落盘 peers.toml。非法值归 0
     // （未上报哨兵）→ 回落裸地址；合法端口照常流转（对照）。
@@ -852,9 +844,7 @@ async fn nodes_refresh_rpc_port_rejects_u16_wrap() {
     assert_eq!(result["node"]["address"], "10.8.8.8:45321");
 }
 
-// -----------------------------------------------------------------------
 // nodes.detail / node.update_identity
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn nodes_detail_master_worker_with_log_stats() {
@@ -993,9 +983,7 @@ async fn node_update_identity_save_failure() {
     assert!(err.contains("failed to save peers.toml"), "{err}");
 }
 
-// -----------------------------------------------------------------------
 // tasks.list / tasks.detail / tasks.submit
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn tasks_list_states_string_payload_and_summaries() {
@@ -1217,9 +1205,7 @@ async fn tasks_submit_peer_chat_paths() {
     assert_eq!(task.peer_id, "n1");
 }
 
-// -----------------------------------------------------------------------
 // topology
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn topology_connections_traces_and_roles() {
@@ -1290,9 +1276,7 @@ async fn topology_connections_traces_and_roles() {
     assert!(ids.contains(&"req-2"));
 }
 
-// -----------------------------------------------------------------------
 // config.get / config.save / config.set_master_enabled
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_get_falls_back_to_static_peers() {
@@ -1379,9 +1363,7 @@ async fn config_set_master_enabled_non_object_cluster_and_missing_file() {
     assert_eq!(written["cluster"], 5); // 原样保留，未强插 enabled
 }
 
-// -----------------------------------------------------------------------
 // firewall.check（AddrInUse 视为 pass）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn firewall_check_reports_addr_in_use_as_pass() {
@@ -1435,9 +1417,7 @@ async fn firewall_check_reports_addr_in_use_as_pass() {
     );
 }
 
-// -----------------------------------------------------------------------
 // diagnostics.run
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn diagnostics_run_gates_and_fails_fast() {
@@ -1486,9 +1466,7 @@ async fn diagnostics_run_gates_and_fails_fast() {
     assert!(err.contains("RPC call failed"), "{err}");
 }
 
-// -----------------------------------------------------------------------
 // persona_generate / persona_apply
-// ---------------------------------------------------------------------------
 
 use nemesis_providers::http_provider::{HttpProvider, HttpProviderConfig};
 
@@ -1948,12 +1926,10 @@ async fn persona_apply_expertise_written_and_corrupt_peers_fails() {
     assert!(err.contains("加载 peers.toml 失败"), "{err}");
 }
 
-// -----------------------------------------------------------------------
-// R4 覆盖率（2026-08-27）：tasks_list/tasks_detail 的 Cancelled / Running
+// 覆盖率：tasks_list/tasks_detail 的 Cancelled / Running
 // 状态映射臂（此前 map_status 的 Cancelled→"failed" 与 detail 的 Running
 // 分支未走到）。Cancelled 任务没有公开 API 能自然产生（tasks.cancel 直接
 // delete），用 TaskManager::submit 全量 Task 构造钉住映射语义。
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn tasks_list_maps_cancelled_status_to_failed() {
@@ -2023,12 +1999,10 @@ async fn tasks_detail_reports_running_status() {
     assert_eq!(out["status"], "running");
 }
 
-// -----------------------------------------------------------------------
 // Wave-5 覆盖率补 batch
-// -----------------------------------------------------------------------
 
 /// nodes.refresh：get_info 自报含 tags → 解析（814-821）并经 merge 落注册表
-/// （A1：看板派发匹配器的标签数据源）。
+/// （看板派发匹配器的标签数据源）。
 #[tokio::test]
 async fn nodes_refresh_merges_self_reported_tags() {
     let handler = cluster::ClusterHandler::new();

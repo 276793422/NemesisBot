@@ -4,19 +4,19 @@
 //! v4 footer（`NMBSIG\x04\x00` magic，摘要覆盖 `[0, L)`，zip crate 按 spec
 //! 从文件尾反向扫 EOCD，尾部附加数据天然容忍）。
 //!
-//! **载荷三形态（v2 起声明式结构引擎，P2a 起脚本载荷）**：
+//! **载荷三形态（v2 起声明式结构引擎， 起脚本载荷）**：
 //! - CSS 载荷（manifest `entry`）——换色，经 `/skins/active.css` 与
 //!   `/skins/{id}` 分发，前端注入当前页 `<style>`；
 //! - 结构载荷（manifest `structure`）——换骨架，皮肤包自带 UI 结构
 //!   （`skin/structure.html`，声明式 `data-nb-*` 原语标注），经
 //!   `/skins/active/structure` 与 `/skins/{id}/structure` 分发，前端
 //!   结构引擎清洗后渲染；
-//! - 脚本载荷（manifest `script`，P2a）——行为扩展，经
+//! - 脚本载荷（manifest `script`）——行为扩展，经
 //!   `/skins/active/script` 与 `/skins/{id}/script` 分发，前端注入
 //!   `<script>` 执行。**脚本不清洗也不可清洗**（代码 ≠ 样式）——授权
 //!   模型是两级闸：`ui.skins.allow_scripts` 全局开关（关 = 403）+ 前端
 //!   逐包同意（consent 卡，`skins.script_consent` 记账）。签名状态照旧
-//!   只是徽标（D1：开关在场即用户自主，同意卡如实展示 ⚠/🚫 但不拦截）。
+//!   只是徽标（开关在场即用户自主，同意卡如实展示 ⚠/🚫 但不拦截）。
 //!
 //! 皮肤的语义 = **给当前应用（Dashboard）原地换观感**：CSS 皮肤 = 换色
 //! （原生 Vue 布局），结构皮肤 = 换骨架 + 换色；同一 URL、同一应用，
@@ -25,7 +25,7 @@
 //!
 //! 服务端职责：**分发 + 管理面来源验证**（`scan_skins`，list/reload/
 //! set_active 时现扫现验）。数据面（CSS/structure/script）**不验签**——
-//! 签名是来源徽标而非加载闸（D1 定案：目录内所有 .nbskin 一律可加载
+//! 签名是来源徽标而非加载闸（定案：目录内所有 .nbskin 一律可加载
 //! 可用，目标用户的皮肤可能就是没签名的）。解析/清洗/注入全在前端。
 //!
 //! 激活 id 来自 `config.json` 的 `ui.skin`（`"default"`/空 = 无皮肤，
@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// 有界解压上限（BUG 2026-10-29 横扫角度 B：皮肤包条目解压无界入内存）。
+/// 有界解压上限（BUG 横扫角度 B：皮肤包条目解压无界入内存）。
 /// 清单是几 KB 的 JSON，4 MB 已是荒谬余量；载荷（css/html/js）与安装端
 /// 单条目 32 MB 上限同源。超限 → 该皮肤按不可用处理（None/404/Broken）。
 const SKIN_MANIFEST_ENTRY_CAP: usize = 4 * 1024 * 1024;
@@ -94,7 +94,7 @@ impl SkinHost {
     /// 读 manifest.json 的字符串字段（拒 `..` 穿越）。泛型后端：
     /// load_css/structure 走 `BufReader<File>`，load_script_with_sha 走
     /// `Cursor<Vec<u8>>`（sha256 需整包字节在手）。manifest 条目有界读
-    /// （BUG 2026-10-29 横扫角度 B；4 MB 对几 KB 的清单已是荒谬余量）。
+    /// （BUG 横扫角度 B；4 MB 对几 KB 的清单已是荒谬余量）。
     fn manifest_str<R: std::io::Read + std::io::Seek>(
         zip: &mut zip::ZipArchive<R>,
         field: &str,
@@ -117,7 +117,7 @@ impl SkinHost {
     }
 
     /// 从包读取皮肤 CSS（换色载荷）。缺 structure 的旧包照常可用。
-    /// 出口经 [`sanitize_css_urls`]（外链 url() 零请求策略，见函数文档）。
+    /// 出口经 [`sanitize_css_urls`]（外链 url 零请求策略，见函数文档）。
     fn load_css(&self, id: &str) -> Option<String> {
         let mut zip = self.open_zip(id)?;
         let entry = Self::manifest_str(&mut zip, "entry")?;
@@ -143,7 +143,7 @@ impl SkinHost {
         String::from_utf8(html).ok()
     }
 
-    /// 从包读取脚本载荷 + 整包 SHA-256（P2a；`load_structure` 镜像）。
+    /// 从包读取脚本载荷 + 整包 SHA-256（`load_structure` 镜像）。
     /// 缺 `script` 字段 → `None` → 上层 404。sha256 出 `X-Skin-Sha256`
     /// 头——**内容身份而非信任结论**（前端同意缓存 `按包内容重确认`
     /// 的盖章材料；整包摘要与 SkinEntry.sha256 同源）。**脚本不做任何
@@ -285,11 +285,11 @@ async fn handle_skin_structure(
     structure_response(host.load_structure(&id))
 }
 
-/// `GET /skins/active/script` — 激活皮肤的脚本载荷（P2a）。**裁决序**
+/// `GET /skins/active/script` — 激活皮肤的脚本载荷。**裁决序**
 ///（裁定 1）：① manifest.script 不在场 → 404；② `allow_scripts=false`
 /// → 403（纯 CSS 模式，前端静默）；③ 通过 → 200 `text/javascript` +
 /// `X-Skin-Id` + `X-Skin-Sha256`（整包摘要 = 同意缓存内容戳，内容身份
-/// 而非信任结论；同锁快照防头/体分裂）。**不带签名头**（数据面 D1 不
+/// 而非信任结论；同锁快照防头/体分裂）。**不带签名头**（数据面 不
 /// 验签，每请求 ECDSA 违背定案；签名徽标走管理面 skins.list/detail）。
 async fn handle_active_script(State(host): State<SkinHost>) -> impl IntoResponse {
     // 锁快照一次：load 与响应头用同一 id（热翻竞态下不会头/体分裂）。
@@ -377,8 +377,8 @@ pub fn skin_router(
 //
 // 管理面：来源验证 + 注册表（scan-per-call，无持久缓存）
 //
-// 设计（docs/PLAN/2026-09-26_skin-signing-and-management-goal.md §3.2）：
-// - 签名是**来源徽标而非加载闸**（D1）：四态 + 正交 broken 状态，灰卡展示。
+// 设计（skin-signing-and-management-goal §3.2）：
+// - 签名是**来源徽标而非加载闸**：四态 + 正交 broken 状态，灰卡展示。
 // - 锚来源复用 v4 现有机制：`NEMESIS_BUILD_ROOT_ANCHOR`（编译期注入，
 //   官方 CI 构建）→ `NEMESIS_ROOT_ANCHOR`（运行时 env）→ 皆无 = 无锚，
 //   物理上无法验证 → ❔ unverified（诚实四态，非四态不可）。
@@ -386,7 +386,7 @@ pub fn skin_router(
 //   文件小 + ECDSA 毫秒级，stateless scan-per-call，无缓存失效 bug 面。
 //
 
-/// 签名徽标五态（P3 起 +🚫）。
+/// 签名徽标五态（起 +🚫）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkinSignature {
@@ -444,7 +444,7 @@ pub struct ManifestInfo {
     /// 原生 UI 布局）。set_active 裁决 = entry ∥ structure 任一在场。
     #[serde(default)]
     pub structure: Option<String>,
-    /// 脚本载荷路径（P2a；缺省 = 无行为扩展）。分发经 `/skins/*/script`
+    /// 脚本载荷路径（缺省 = 无行为扩展）。分发经 `/skins/*/script`
     /// 双闸（`allow_scripts` 开关 + 前端逐包同意）；set_active 裁决 =
     /// entry ∥ structure ∥ script 任一在场。
     #[serde(default)]
@@ -537,7 +537,7 @@ fn inspect_package(bytes: &[u8]) -> (SkinStatus, Option<String>, Option<Manifest
         Ok(z) => z,
         Err(e) => return (SkinStatus::Broken, Some(format!("ZIP 无法解析：{e}")), None),
     };
-    // manifest 条目有界读（BUG 2026-10-29 横扫角度 B）：导入面收的是
+    // manifest 条目有界读（BUG 横扫角度 B）：导入面收的是
     // 上传字节，炸弹 manifest 在撑爆内存前判 Broken。
     let manifest_raw = match zip.by_name("manifest.json") {
         Ok(mut f) => {
@@ -643,14 +643,14 @@ pub fn scan_skins(dir: &str) -> Vec<SkinEntry> {
             has_script,
         });
     }
-    // P3 吊销第五态：CRL 快照在场（且可验）时，对 Verified 包做四维复核
+    // 吊销第五态：CRL 快照在场（且可验）时，对 Verified 包做四维复核
     //（offline）。
     apply_crl_revocations(dir, &anchors, &mut entries);
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     entries
 }
 
-/// CRL 快照吊销复核（P3 第五态；pub(crate) 供测试锚直传）：donor = 首枚
+/// CRL 快照吊销复核（第五态；pub(crate) 供测试锚直传）：donor = 首枚
 /// Verified 包（吊销只对签名有意义——目录里无 verified 包时快照自然无从
 /// 生效）。命中 → Revoked 🚫，注明维度。快照不在场/验不过/过期 = 维持
 /// 原态（离线诚实，不猜）。
@@ -688,9 +688,9 @@ pub(crate) fn apply_crl_revocations(dir: &str, anchors: &[[u8; 32]], entries: &m
 }
 
 //
-// 渠道安装（P2 verify-before-install）与 CRL 快照（P3 吊销第五态）
+// 渠道安装（verify-before-install）与 CRL 快照（吊销第五态）
 //
-// 语义（2026-09-27 用户四裁决，Q4 修订版）：
+// 语义（用户四裁决， 修订版）：
 // - **物理闸在落盘前**：仅物理不可用（broken ZIP / 非 ZIP / 超限）拒收——
 //   「这不是皮肤包」，与信任无关；
 // - **信任闸单点在 set_active**：渠道验签只产出徽标，✅⚪🔴🚫❔ 全部落盘
@@ -868,7 +868,7 @@ pub fn crl_snapshot_info(dir: &str, anchors: &[[u8; 32]], skins: &[SkinEntry]) -
     load_crl_snapshot_state(dir, anchors, root_bytes.as_deref()).1
 }
 
-/// CSS 外链零请求消毒（2026-09-27 拍板落地；2026-09-28 加固）：皮肤 CSS 内
+/// CSS 外链零请求消毒（落地并加固）：皮肤 CSS 内
 /// 渲染即发起的外链请求面（跟踪像素信标，CDP 实测证实）——目标改写为
 /// `about:blank`（声明保留、零请求）。放行：相对/绝对路径（无 scheme）与
 /// 栅格图片 data:（与 structure 消毒器同一张 MIME 白名单语义；SVG 等
@@ -876,10 +876,10 @@ pub fn crl_snapshot_info(dir: &str, anchors: &[[u8; 32]], skins: &[SkinEntry]) -
 /// - `url(…)` 引号/裸 token（大小写不敏感）；
 /// - `@import "…"` 字符串形态（`@import url(…)` 由上一条覆盖）——字符串
 ///   目标外链时内容改写、引号保留（导入静默失败，零请求）；
-/// - **CSS 转义**：先按 CSS Syntax L3 解码（`\75rl(`、`\68 ttp://` 现形）
+/// - **CSS 转义**：先按 CSS Syntax 解码（`\75rl(`、`\68 ttp://` 现形）
 ///   再扫描；解码输出中的字面 `\` 再转义为 `\\`，保证「浏览器解析输出 ≡
 ///   浏览器解析原文」——否则 `\5c 75rl(http://…)` 会被浏览器对输出二次
-///   解码成 url( 走私。含转义的合法 CSS（`content: "\201C"`）解码后语义
+///   解码成 url(走私。含转义的合法 CSS（`content: "\201C"`）解码后语义
 ///   等价，字节形态变化不改变渲染。与前端 `web/src/skins/sanitize.ts`
 ///   的 `sanitizeCssUrls` 同规则（structure 路径的 `<style>`/style 属性
 ///   出口），corpus 两边对齐。
@@ -958,7 +958,7 @@ fn decode_css_escapes(css: &str) -> String {
     out.replace('\\', "\\\\")
 }
 
-/// 外链/非白名单 data: 判据（url( 目标与 @import 字符串目标共用）。
+/// 外链/非白名单 data: 判据（url(目标与 @import 字符串目标共用）。
 fn target_blocked(tok: &str) -> bool {
     tok.starts_with("https://")
         || tok.starts_with("http://")
@@ -1040,8 +1040,8 @@ fn emit_url_target(
 }
 
 /// `@import` 已匹配、`p` = 关键字后一位：字符串形态（`@import "…"`）目标
-/// 外链/坏 data: → 内容改写 `about:blank`、引号保留；url( 形态/其他 →
-/// 原样放行给主循环的 url( 分支。
+/// 外链/坏 data: → 内容改写 `about:blank`、引号保留；url(形态/其他 →
+/// 原样放行给主循环的 url(分支。
 fn emit_import_string(
     lower: &[u8],
     decoded: &str,
@@ -1058,7 +1058,7 @@ fn emit_import_string(
         return p; // EOF：主循环自然收尾
     };
     if q != b'"' && q != b'\'' {
-        return p; // url( 形态等：主循环在目标处接手
+        return p; // url(形态等：主循环在目标处接手
     }
     let tok_start = j + 1;
     let mut k = tok_start;

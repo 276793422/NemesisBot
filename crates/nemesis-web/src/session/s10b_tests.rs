@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): SessionManager surface the
+//! (quality-hardening goal 冲刺, web 批次 2): SessionManager surface the
 //! existing tests skip — stats/all_sessions/shutdown + the broadcast no-queue
 //! error path (queue-present arm needs a real WS sink; covered by the live
 //! websocket_handler tests).

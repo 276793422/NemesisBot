@@ -1,4 +1,4 @@
-//! MCP handler 补测（Phase 3 覆盖率，2026-08-25）。
+//! MCP handler 补测（覆盖率，2026-08-25）。
 //!
 //! 既有 `handlers/tests.rs` 已盖 server.add/delete、config.get/save、
 //! unknown cmd。这里补两块显示/更新语义：
@@ -173,11 +173,9 @@ async fn server_update_patches_all_optional_fields_and_persists() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 事务入口并发回归钉（2026-10-13 横扫四期）：config.mcp.json 此前四个写臂
+// 事务入口并发回归钉（横扫四期）：config.mcp.json 此前四个写臂
 // 全部裸 RMW（横扫清单漏网），现收敛到 update_mcp_config（锁在入口内）。
 // 两线程并发改不同 server，两个变更都必须存活。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn mcp_update_entries_serialized_both_mutations_survive() {
@@ -245,14 +243,12 @@ fn mcp_update_entry_closure_err_leaves_disk_untouched() {
     assert_eq!(raw["servers"][0]["url"], "", "abort 后盘上保持事务前状态");
 }
 
-// ---------------------------------------------------------------------------
-// R9（2026-10-15）：transport_type 入参值集闸——runtime 不支持的值（如
+// transport_type 入参值集闸——runtime 不支持的值（如
 // "sse"）此前 server.add/server.update 原样落盘，挂载时才由分派真相源
 // 拒绝。API 输入面收紧为 loud 拒绝，语义与 CLI `mcp add` 同源。
-// R10（2026-10-15）：值集闸升级为归一闸——大小写变体（"HTTP"）此前原样
+// 值集闸升级为归一闸——大小写变体（"HTTP"）此前原样
 // 落盘，而分派真相源别名匹配大小写敏感，挂载期同样 loud 拒绝。现在规范
 // 小写落盘（CLI `mcp add` 写盘同款语义）。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r9_canonical_transport_type_value_set() {
@@ -307,7 +303,7 @@ async fn r9_server_add_rejects_unsupported_transport_without_disk_write() {
     );
 }
 
-// R10（2026-10-15）：大小写变体规范小写落盘——分派真相源别名匹配大小写
+// 大小写变体规范小写落盘——分派真相源别名匹配大小写
 // 敏感，"HTTP" 原样落盘会在挂载期被 loud 拒绝（API 接受 runtime 消费不
 // 了的值，失败延迟到挂载）。server.add 与 server.update 两臂都归一。
 #[tokio::test]
@@ -361,7 +357,7 @@ async fn r10_transport_type_case_variants_canonicalized_on_disk() {
     assert_eq!(get_type("case-stdio"), "stdio", "Stdio → stdio 盘上归一");
 }
 
-// R12（2026-10-15）：头行语法闸——server.add / server.update 写入面与 CLI
+// 头行语法闸——server.add / server.update 写入面与 CLI
 // `mcp add` 同源（单一真相源 nemesis_config::validate_mcp_header_line）。
 // 此前 Dashboard 放行运行期必跳过/必失败的行（缺冒号、保留头、引用名带
 // 空格），失败延迟到挂载期 401 且 WARN 对用户不可见。
@@ -485,7 +481,7 @@ async fn r12_server_update_tolerates_masked_legacy_plus_new_good_line() {
     assert!(raw.contains("X-Extra: ok"), "新合法行须落盘: {raw}");
 }
 
-// R13（2026-10-15）：结构闸 + command 入参消费化——此前 server_add 硬编码
+// 结构闸 + command 入参消费化——此前 server_add 硬编码
 // command 空串，`{"command": ...}` 载荷被静默丢弃产出双空死条目；且
 // http 无 url / stdio 双空直接落盘，挂载期才炸。
 
@@ -636,7 +632,7 @@ async fn r13_server_update_tolerates_command_only_stdio() {
     assert_eq!(out["updated"], true);
 }
 
-// R13-env（2026-10-15）：env 行语法闸——与 headers 同纪律（单一真相源
+// env：env 行语法闸——与 headers 同纪律（单一真相源
 // nemesis_config::validate_mcp_env_line），坏行写入面 loud 拒绝，不再
 // 静默落盘等挂载期无声消失。
 

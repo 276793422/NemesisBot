@@ -39,9 +39,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tower_http::services::ServeDir;
 
-// ---------------------------------------------------------------------------
 // Port allocation（bind 失败端口走查）
-// ---------------------------------------------------------------------------
 
 /// 网关 Web 端口带下界（单一真相源）。配置端口落在此带内时，bind 走查
 /// 从配置端口起 +1 前进、到 [`WEB_PORT_MAX`] 回绕 [`WEB_PORT_MIN`]
@@ -125,9 +123,7 @@ async fn bind_with_port_walk(
     ))
 }
 
-// ---------------------------------------------------------------------------
 // Configuration
-// ---------------------------------------------------------------------------
 
 /// Web server configuration.
 #[derive(Clone)]
@@ -135,11 +131,11 @@ pub struct WebServerConfig {
     pub listen_addr: String,
     pub auth_token: String,
     pub cors_origins: Vec<String>,
-    /// Explicit allow-all switch (2026-10-16 hardening). CORS is resolved
+    /// Explicit allow-all switch (hardening). CORS is resolved
     /// three-state in `build_router`: non-empty `cors_origins` → production
     /// layer; else `cors_allow_all` → dev layer (`*`); else restrictive
     /// (no cross-origin). The old "empty list = allow-all" default is gone
-    /// — a missing config must not silently become `*`.
+    /// a missing config must not silently become `*`.
     pub cors_allow_all: bool,
     /// WebSocket endpoint path (default: "/ws").
     pub ws_path: String,
@@ -161,7 +157,7 @@ impl std::fmt::Debug for WebServerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebServerConfig")
             .field("listen_addr", &self.listen_addr)
-            // SEC-002（2026-09-22 审查）：Debug/panic/错误上下文常被整段打进
+            // SEC-002（审查）：Debug/panic/错误上下文常被整段打进
             // 日志或故障报告，令牌一律脱敏；字段名保留，值只输出形态。
             .field(
                 "auth_token",
@@ -201,9 +197,7 @@ impl Default for WebServerConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Web server
-// ---------------------------------------------------------------------------
 
 /// Web server. Owns the event hub, session manager, and message bus integration.
 pub struct WebServer {
@@ -221,7 +215,7 @@ pub struct WebServer {
     /// Whether the active model has an API key configured.
     model_has_key: Arc<std::sync::atomic::AtomicBool>,
     /// Optional streaming LLM provider for SSE chat endpoint + persona
-    /// generation（协议感知槽，B 根修 2026-09-17；经 factory 装配）。
+    /// generation（协议感知槽，B 根修 ；经 factory 装配）。
     streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
     /// Agent loop service for start/stop/status control.
     agent_service: Option<Arc<dyn nemesis_services::bot_service::AgentLoopService>>,
@@ -246,15 +240,15 @@ pub struct WebServer {
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     cluster: Option<()>,
-    /// QUIC 中继运行面句柄（QUIC 插件化 M1：plugin_roaming C-ABI，fn 指针
+    /// QUIC 中继运行面句柄（QUIC 插件化 ：plugin_roaming C-ABI，fn 指针
     /// Copy 直接持值；nemesisbot gateway 装载插件后经 set_roaming_plugin 注入）。
-    /// M4 起恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
+    /// 恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
     quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
     cluster_log_dir: Option<String>,
-    /// Workflow engine for trigger / execution APIs (milestone 1a-E3/E4).
+    /// Workflow engine for trigger / execution APIs (milestone 1a-/).
     #[cfg(feature = "workflow")]
     workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
     #[cfg(not(feature = "workflow"))]
@@ -268,7 +262,7 @@ pub struct WebServer {
     #[cfg(not(feature = "workflow"))]
     #[allow(dead_code)]
     chat_secret_store: Option<()>,
-    /// Per-IP rate limiter for webhook endpoints (milestone 1c-E5).
+    /// Per-IP rate limiter for webhook endpoints (milestone 1c-).
     /// Created lazily; shared with AppState.
     #[cfg(feature = "workflow")]
     webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
@@ -282,15 +276,15 @@ pub struct WebServer {
     /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
     /// 注入，flows into AppState for security.signature_verify_status）。
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
-    /// WS4 技能装前审批门（P13；gateway 注入，flows into AppState）。
+    /// 技能装前审批门（gateway 注入，flows into AppState）。
     skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
-    /// L14：会话执行统计读侧（gateway 注入 nemesisbot 聚合器；flows into
+    /// 会话执行统计读侧（gateway 注入 nemesisbot 聚合器；flows into
     /// AppState for sessions.stats）。
     session_stats: Option<Arc<dyn nemesis_agent::SessionStatsReader>>,
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
     /// Managed-agent board service (set by gateway when the `board` feature is on;
-    /// flows into AppState for board.* WSAPI commands). `Option<()>` 占位形态
+    /// flows into AppState for board.* WSAPI commands). `Option<>` 占位形态
     /// 让 `board: None` 结构体初始化器在关态照常编译。
     #[cfg(feature = "board")]
     board: Option<nemesis_board::BoardService>,
@@ -301,13 +295,13 @@ pub struct WebServer {
     /// Populated on inbound in `process_messages`; read by the gateway cron
     /// fire handler to pick a live `chat_id` for the targeted conversation.
     conv_router: Option<crate::conv_router::SharedConvRouter>,
-    /// C5 (2026-09-04): shared LSP manager singleton (same Arc the LspTool
-    /// registers with). Held for the Phase-2 diagnostics loop (C1-C3) and
+    /// shared LSP manager singleton (same Arc the LspTool
+    /// registers with). Held for the Phase-2 diagnostics loop (-) and
     /// any dashboard-driven LSP operations; gateway shutdown_all lives in
     /// gateway.rs Step 24.
     #[cfg(feature = "lsp")]
     lsp_manager: Option<Arc<nemesis_lsp::LspManager>>,
-    /// M1a (2026-09-05): receiving end of the agent tool-event broadcast
+    /// receiving end of the agent tool-event broadcast
     /// channel. gateway injects after creating the channel; `start` spawns
     /// the pump that routes each event to the Dashboard WS session
     /// (`{type:"push", cmd:"tool_event"}`) + EventHub (SSE fallback).
@@ -321,14 +315,14 @@ pub struct WebServer {
     /// None = 无身份（`--relay` 纯中继不服务自己的面板），前缀剥离永不
     /// 命中。`set_bridge_identity` 注入。
     bridge_node_id: Option<String>,
-    /// `--relay` 纯中继形态开关（2026-09-20，用户裁决：纯中继不暴露 hub
+    /// `--relay` 纯中继形态开关（用户裁决：纯中继不暴露 hub
     /// 自身 dashboard——`/api/*` 的信任边界是「本机/内网」，而纯中继绑
     /// 0.0.0.0 公网，暴露即失守；dashboard 静态资源也无装配价值）。
     /// true = build_router 丢弃 dashboard 全量路由（/ws、/api/*、静态
     /// 资源），只保留 /health + 反向桥路由。默认 false，正常模式不变。
     /// `set_relay_only` 打开。
     relay_only: bool,
-    /// 入站过滤链（BUG 2026-09-23 项目会话历史修复）：Dashboard WS 消息
+    /// 入站过滤链（BUG 项目会话历史修复）：Dashboard WS 消息
     /// 唯一咽喉点（`process_messages_with_router`）在 `bus.publish_inbound`
     /// 之前过链——链上过滤器可就地拦截应答（如 history 只读查询），消息
     /// 不再进入 bus 扇出，与任何 agent loop 的存亡/忙闲解耦。`set_inbound_filter_chain`
@@ -336,13 +330,13 @@ pub struct WebServer {
     inbound_filters: Option<Arc<nemesis_bus::FilterChain<InboundMessage>>>,
     /// 皮肤包目录（exe 同级 `skins/`；None = 未注入/exe 路径不可定位，
     /// `/skins/*` 路由不挂载）。`set_skins` 注入（不进 WebServerConfig——
-    /// 该结构有 40+ 处测试字面量装配，加字段即 E0063 面扩大）。
+    /// 该结构有 40+ 处测试字面量装配，加字段即 面扩大）。
     #[cfg(feature = "skins")]
     skins_dir: Option<String>,
     /// 激活皮肤 id（config `ui.skin`；"default"/空 = 内置皮肤，
     /// `/skins/active.css` 404）。共享锁句柄：`set_skins` 注入，
-    /// `skin_id_handle()` 交给 WSAPI skins handler，`set_active` 免重启
-    /// 热翻。`skin_id()` 读快照。
+    /// `skin_id_handle` 交给 WSAPI skins handler，`set_active` 免重启
+    /// 热翻。`skin_id` 读快照。
     #[cfg(feature = "skins")]
     skin_id: Arc<parking_lot::RwLock<String>>,
 }
@@ -407,7 +401,7 @@ impl WebServer {
     /// 注入皮肤装配（须在 `build_router` 前调用）：exe 同级 `skins/`
     /// 目录 + 激活 id（config `ui.skin`）。未注入 = `/skins/*` 路由不挂载
     /// （fail-closed，同 relay 路由装配哲学）。激活 id 被包进共享锁，
-    /// WSAPI skins handler 经 `skin_id_handle()` 拿同一把锁。
+    /// WSAPI skins handler 经 `skin_id_handle` 拿同一把锁。
     #[cfg(feature = "skins")]
     pub fn set_skins(&mut self, skins_dir: Option<String>, skin_id: String) {
         self.skins_dir = skins_dir;
@@ -510,7 +504,7 @@ impl WebServer {
         self.cluster = Some(cluster);
     }
 
-    /// Set the QUIC relay plugin handle（QUIC 插件化 M1：nemesisbot gateway
+    /// Set the QUIC relay plugin handle（QUIC 插件化 ：nemesisbot gateway
     /// 装载 plugin_roaming 后注入；与 cluster 装配独立）。
     pub fn set_roaming_plugin(&mut self, handle: nemesis_plugin::roaming::RoamingPluginHandle) {
         self.quic_relay = Some(handle);
@@ -529,7 +523,7 @@ impl WebServer {
         self.cluster_log_dir = Some(dir);
     }
 
-    /// Set the workflow engine for /api/workflow/* endpoints (milestone 1a-E3/E4).
+    /// Set the workflow engine for /api/workflow/* endpoints (milestone 1a-/).
     #[cfg(feature = "workflow")]
     pub fn set_workflow_engine(&mut self, engine: Arc<nemesis_workflow::engine::WorkflowEngine>) {
         self.workflow_engine = Some(engine);
@@ -566,7 +560,7 @@ impl WebServer {
         self.signature_verify = Some(status);
     }
 
-    /// Set the skills install approval gate (WS4 P13；gateway 注入
+    /// Set the skills install approval gate (；gateway 注入
     /// WebApprovalManager 适配器，`skills.install` 经它出审批卡)。
     pub fn set_skills_install_gate(
         &mut self,
@@ -580,7 +574,7 @@ impl WebServer {
         self.cron = Some(cron);
     }
 
-    /// L14（2026-11-01）：注入会话执行统计读侧（nemesisbot 聚合器，
+    /// 注入会话执行统计读侧（nemesisbot 聚合器，
     /// `sessions.stats` 消费）。None = 未装配（诚实返回 unavailable）。
     pub fn set_session_stats(&mut self, reader: Arc<dyn nemesis_agent::SessionStatsReader>) {
         self.session_stats = Some(reader);
@@ -614,21 +608,21 @@ impl WebServer {
         self.relay_only = relay_only;
     }
 
-    /// C5 (2026-09-04): hold the shared LSP manager singleton (same Arc as
-    /// the registered LspTool). Consumers: Phase-2 diagnostics loop (C1-C3);
+    /// hold the shared LSP manager singleton (same Arc as
+    /// the registered LspTool). Consumers: Phase-2 diagnostics loop (-);
     /// process teardown stays in gateway.rs Step 24 (`shutdown_all`).
     #[cfg(feature = "lsp")]
     pub fn set_lsp_manager(&mut self, mgr: Arc<nemesis_lsp::LspManager>) {
         self.lsp_manager = Some(mgr);
     }
 
-    /// The held LSP manager, if injected (C5).
+    /// The held LSP manager, if injected .
     #[cfg(feature = "lsp")]
     pub fn lsp_manager(&self) -> Option<Arc<nemesis_lsp::LspManager>> {
         self.lsp_manager.clone()
     }
 
-    /// M1a (2026-09-05): hold the receiving end of the agent tool-event
+    /// hold the receiving end of the agent tool-event
     /// broadcast channel. `start`/`start_with_shutdown` spawn the pump from
     /// it; injecting `None` (default) keeps the pump off.
     pub fn set_agent_event_rx(
@@ -638,7 +632,7 @@ impl WebServer {
         self.agent_event_rx = Some(rx);
     }
 
-    /// M1a: spawn the tool-event pump if a receiver was injected. Called
+    /// spawn the tool-event pump if a receiver was injected. Called
     /// from `start`/`start_with_shutdown` alongside the status loop.
     fn start_agent_event_pump(&self) {
         let Some(rx) = self.agent_event_rx.as_ref().map(|rx| rx.resubscribe()) else {
@@ -657,15 +651,15 @@ impl WebServer {
         let (inbound_tx, mut inbound_rx) =
             mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
 
-        // minimal（无 feature）形态下这四个槽位别名退化为 Option<()>（Copy），
-        // 字面量里 .clone() 会触发 clippy::clone_on_copy（2026-09-05 远端
-        // minimal clippy 实录；workspace 全量 feature unification 掩盖）。
+        // minimal（无 feature）形态下这四个槽位别名退化为 Option<>（Copy），
+        // 字面量里 .clone 会触发 clippy::clone_on_copy（远端
+        // minimal clippy ；workspace 全量 feature unification 掩盖）。
         // 按 cfg 取值：full 形态 clone Arc 槽，minimal 形态直接 Copy。
         #[cfg(feature = "memory")]
         let memory_manager = self.memory_manager.clone();
         #[cfg(not(feature = "memory"))]
         let memory_manager = self.memory_manager;
-        // board 槽同款：off 态 Option<()> 是 Copy，直接移动避 clippy::clone_on_copy。
+        // board 槽同款：off 态 Option<> 是 Copy，直接移动避 clippy::clone_on_copy。
         #[cfg(feature = "board")]
         let board = self.board.clone();
         #[cfg(not(feature = "board"))]
@@ -736,7 +730,7 @@ impl WebServer {
 
         let state = Arc::new(state);
 
-        // L8 PTY 内嵌终端：模块级会话管理器（terminal feature 门控；
+        // PTY 内嵌终端：模块级会话管理器（terminal feature 门控；
         // 幂等 OnceLock，重复 build_router 不覆盖）。cwd 取自 config
         // 的 workspace（None = 继承进程 cwd）。
         #[cfg(feature = "terminal")]
@@ -785,7 +779,7 @@ impl WebServer {
             // System info endpoints (readme, license)
             .route("/api/system/readme", get(handle_api_readme))
             .route("/api/system/license", get(handle_api_license))
-            // SDK export downloads (P2-2, 二次开发 page)
+            // SDK export downloads (, 二次开发 page)
             .route(
                 "/api/sdk/export",
                 get(crate::api_handlers::handle_sdk_export),
@@ -800,7 +794,7 @@ impl WebServer {
                 get(crate::api_usage::handle_api_usage_log_detail),
             )
             .route("/api/usage/pricing", get(handle_api_usage_pricing))
-            // 价目表管理（A2 在线更新 / 自定义条目 / 离线导入）
+            // 价目表管理（在线更新 / 自定义条目 / 离线导入）
             .route(
                 "/api/usage/pricing/update",
                 post(crate::api_usage::handle_api_usage_pricing_update),
@@ -821,7 +815,7 @@ impl WebServer {
             )
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
-            // T8（多模态）：Dashboard 图片上传（raw body + ?name=；25MB 上限
+            // （多模态）：Dashboard 图片上传（raw body + ?name=；25MB 上限
             // 需放宽 axum 默认 2MB body 限制，+1MB 余量留给超限错误路径）。
             .route(
                 "/api/upload/image",
@@ -836,14 +830,14 @@ impl WebServer {
                 "/api/chat/stream",
                 axum::routing::post(crate::sse_chat::handle_chat_stream),
             )
-            // S5（2026-10-09）：入站 OpenAI 兼容端点（openai SDK 改 base_url
+            // 入站 OpenAI 兼容端点（openai SDK 改 base_url
             // 即接入）。挂在统一鉴权之下（不进豁免清单——触发 agent 执行
             // 与 dashboard 同一信任边界；Bearer 头本就被中间件接受）。
             .route(
                 "/v1/chat/completions",
                 axum::routing::post(crate::openai_compat::handle_chat_completions),
             )
-            // Session fork dialog backing (P3-1, 2026-08-24 UI entry gap)
+            // Session fork dialog backing (, UI entry gap)
             .route(
                 "/api/chat/sessions/{id}/turns",
                 get(crate::api_handlers::handle_api_chat_session_turns),
@@ -852,12 +846,12 @@ impl WebServer {
                 "/api/chat/sessions/{id}/fork",
                 axum::routing::post(crate::api_handlers::handle_api_chat_session_fork),
             )
-            // L4 会话分享（2026-09-07）：公开只读端点。**故意不过
+            // 会话分享：公开只读端点。**故意不过
             // verify_token** —— token 即凭据（分享链接发给无凭据的接收方），
             // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
             .route("/api/share/{token}", get(crate::share::handle_api_share));
 
-        // Swarm M3（§5.4/D6）：看板资产下载——公开端点（asset_token 即
+        // Swarm （§5.4/）：看板资产下载——公开端点（asset_token 即
         // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
         // board 关：路由与 handlers/board_asset 模块整体退出编译。
         #[cfg(feature = "board")]
@@ -866,7 +860,7 @@ impl WebServer {
             get(crate::handlers::board_asset::handle_board_asset_download),
         );
 
-        // 皮肤本地导入（P2 第三入口；raw body，落盘走 install_bytes 同一
+        // 皮肤本地导入（第三入口；raw body，落盘走 install_bytes 同一
         // 管线——WSAPI skins.install 覆盖不到浏览器文件选择的形态）。
         #[cfg(feature = "skins")]
         let router = if self.relay_only {
@@ -893,7 +887,7 @@ impl WebServer {
             router
         };
 
-        // L8 PTY 内嵌终端端点（terminal feature 门控；config
+        // PTY 内嵌终端端点（terminal feature 门控；config
         // terminal.enabled 运行闸 + token 闸在 handler 内）。
         #[cfg(feature = "terminal")]
         let router = if self.relay_only {
@@ -902,7 +896,7 @@ impl WebServer {
             router.route("/ws/pty", get(crate::pty::handle_pty_upgrade))
         };
 
-        // P5-R2 带界面 VM 显示通道（vm-display feature 门控；config
+        // 带界面 VM 显示通道（vm-display feature 门控；config
         // executor.vm.display 运行闸 + token 闸 + 插件闸 + estop 闸在 handler 内）。
         #[cfg(feature = "vm-display")]
         let router = if self.relay_only {
@@ -914,7 +908,7 @@ impl WebServer {
             )
         };
 
-        // Workflow REST endpoints (milestone 1a-E3/E4)
+        // Workflow REST endpoints (milestone 1a-/)
         #[cfg(feature = "workflow")]
         let router = if self.relay_only {
             router
@@ -1064,13 +1058,13 @@ impl WebServer {
             )
         };
 
-        // F1（2026-09-22 审计修复）：REST 控制面统一鉴权。route_layer 只
+        // （审计修复）：REST 控制面统一鉴权。route_layer 只
         // 作用于其上已注册的路由（含 /api/internal），静态文件 fallback
         // 不受影响；豁免清单见 `auth_exempt_path`。relay-only 形态**不挂**：
         // 其路由面（/bridge、/d/*、/relay、/relay/login、/api/relay/status、
         // /health）是 relay 自有信任边界（设备/管理侧鉴权在 relay 模块内），
         // dashboard token 对其无意义，挂上会把 relay 整体 401。
-        // CORS three-state（2026-10-16 hardening）：显式 origin 列表 → 生产
+        // CORS three-state（hardening）：显式 origin 列表 → 生产
         // 层；显式 allow_all → dev 层（`*`）；二者皆无 → restrictive（拒绝
         // 跨域）。旧「空列表 = allow-all」缺省已废除——配置缺失不再静默
         // 变成 `*`。dashboard/独立页/share 都是同源服务，restrictive 不影响
@@ -1224,7 +1218,7 @@ impl WebServer {
         // 的 layer 运行于路由匹配之后（routing/mod.rs `Router::layer` →
         // path_router.layer 包装 endpoint），改 URI 来不及；外壳形态
         // （无路由 Router + fallback_service）保证改写在匹配前发生。
-        // `/d/<他人>/` 转发请求在外壳内原样透传。无身份（--relay）时
+        // `/d/<他人>/` 转发请求在外壳内原样透传。无身份（relay）时
         // 前缀剥离永不命中，但直连 base 注入仍生效（相对构建产物在
         // `/chat/` 等子路径入口的正确性必需）。
         let inner = router;
@@ -1267,7 +1261,7 @@ impl WebServer {
             self.start_time,
             self.running.clone(),
         );
-        // M1a: tool events → Dashboard WS push + EventHub (no-op if the
+        // tool events → Dashboard WS push + EventHub (no-op if the
         // gateway never injected a receiver).
         self.start_agent_event_pump();
 
@@ -1288,7 +1282,7 @@ impl WebServer {
             .local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?;
         tracing::info!("[WebServer] Listening on {}", actual_addr);
-        // 缺陷 12 修复（2026-09-23）：必须以 with_connect_info 形态挂服务——
+        // 缺陷 12 修复：必须以 with_connect_info 形态挂服务——
         // webhook handler（限流/审计）提取 ConnectInfo<SocketAddr>，裸 Router
         // 形态下该扩展不存在，POST/GET /api/workflow/webhook/:name 必 500，
         // webhook 功能整体不可用。
@@ -1326,7 +1320,7 @@ impl WebServer {
             self.start_time,
             self.running.clone(),
         );
-        // M1a: tool events → Dashboard WS push + EventHub (no-op if the
+        // tool events → Dashboard WS push + EventHub (no-op if the
         // gateway never injected a receiver).
         self.start_agent_event_pump();
 
@@ -1355,7 +1349,7 @@ impl WebServer {
         tracing::info!("[WebServer] Listening on {}", actual_addr);
 
         tokio::select! {
-            // 缺陷 12 修复（2026-09-23）：同 start()——with_connect_info 挂载，
+            // 缺陷 12 修复：同 start——with_connect_info 挂载，
             // 否则 webhook handler 的 ConnectInfo 提取必 500。
             result = axum::serve(
                 listener,
@@ -1378,9 +1372,7 @@ impl WebServer {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Static files utility
-// ---------------------------------------------------------------------------
 
 /// Determine Content-Type for a static file path.
 pub(crate) fn content_type_for(path: &str) -> String {
@@ -1412,7 +1404,7 @@ pub(crate) fn content_type_for(path: &str) -> String {
 
 /// CORS headers appended to every static-file response.
 ///
-/// The main CORS middleware is applied to the route router via `.layer()`,
+/// The main CORS middleware is applied to the route router via `.layer`,
 /// but on Linux/WebKitGTK the fallback handler may not inherit it.
 /// WebKitGTK is stricter than WebView2 (Chromium) about `crossorigin`
 /// module scripts — without `Access-Control-Allow-Origin` it silently
@@ -1435,7 +1427,7 @@ fn cors_origin_value(req: &axum::extract::Request) -> String {
 ///
 /// Exact `/chat` + `/chat/` are handled inside rule 3's slot: they serve the
 /// standalone chat page shell (`chat/index.html`) rather than the dashboard
-/// fallback (L2b). Deeper `/chat/<x>` paths keep the SPA fallback.
+/// fallback . Deeper `/chat/<x>` paths keep the SPA fallback.
 async fn serve_embedded_static(
     files: Arc<dyn StaticFiles>,
     req: axum::extract::Request,
@@ -1443,10 +1435,10 @@ async fn serve_embedded_static(
     apply_html_no_cache(serve_embedded_static_inner(files, req).await)
 }
 
-/// HTML 壳响应统一补 `Cache-Control: no-cache`（2026-10-15 部署旧壳缓存三撞
+/// HTML 壳响应统一补 `Cache-Control: no-cache`（部署旧壳缓存三撞
 /// 墙根修）：前端每次构建资产文件名换哈希，浏览器启发式缓存的旧 index.html
 /// 指向已删除 chunk → 懒加载路由 404（设置页打不开/新页签消失），只能
-/// Ctrl+F5 自救。带 hash 的资产内容寻址、缓存安全，不加头维持启发式缓存；
+/// Ctrl+ 自救。带 hash 的资产内容寻址、缓存安全，不加头维持启发式缓存；
 /// 404 等无 Content-Type 的响应不受影响。
 fn apply_html_no_cache(mut resp: axum::response::Response) -> axum::response::Response {
     let is_html = resp
@@ -1509,7 +1501,7 @@ async fn serve_embedded_static_inner(
             .into_response();
     }
 
-    // 2b. Standalone chat page（LO2，2026-09-04 四轮盲审）：`/chat` 与
+    // 2b. Standalone chat page（四轮盲审）：`/chat` 与
     //     `/chat/` 都直达 chat 壳——旧行为两者都落到 SPA fallback 的
     //     index.html（Dashboard），用户从友好的 /chat 地址进来看到的是
     //     错页面。chat 入口无子路径语义（不像 workflow/chat 的 index 在
@@ -1532,7 +1524,7 @@ async fn serve_embedded_static_inner(
             .into_response();
     }
 
-    // 2c. 会话分享只读页（L4，2026-09-07）：`/share` 与 `/share/` 直达
+    // 2c. 会话分享只读页：`/share` 与 `/share/` 直达
     //     share 壳（token 在 ?t= 查询参数里，无子路径语义）。不加此规则
     //     两者都会落到 SPA fallback 的 Dashboard index.html——分享链接
     //     打开的是错页面。资产（js/css）带 hash 后缀走规则 1 精确匹配。
@@ -1612,9 +1604,7 @@ pub fn resolve_static_dir(explicit_path: Option<&str>, workspace: Option<&str>) 
     None
 }
 
-// ---------------------------------------------------------------------------
 // Embedded static files support
-// ---------------------------------------------------------------------------
 
 /// Trait for providing static file content.
 /// Can be implemented for embedded files or directory-based serving.
@@ -1688,9 +1678,7 @@ impl StaticFiles for DirectoryStaticFiles {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Handler: Health check
-// ---------------------------------------------------------------------------
 
 /// Health check handler. Returns `{"status":"ok","running":true/false,"sessions":N}`.
 pub async fn handle_health(AxumState(state): AxumState<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -1705,16 +1693,14 @@ pub async fn handle_health(AxumState(state): AxumState<Arc<AppState>>) -> Json<s
     }))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: SSE event stream
-// ---------------------------------------------------------------------------
 
 /// SSE event stream handler.
 ///
 /// Subscribes to the EventHub and streams events to the client as
 /// `event: <type>\ndata: <json>\nid: <seq>\n\n` frames. Includes an initial heartbeat.
 ///
-/// L2（devtool-upgrade 阶段 6）断线补拉：每帧带 `id: <seq>`；浏览器
+/// （devtool-upgrade）断线补拉：每帧带 `id: <seq>`；浏览器
 /// EventSource 重连时**自动**回传 `Last-Event-ID` header——端点开头从
 /// EventHub 环形缓冲重放 seq>last 的事件（先重放后进 live，seq 游标去重）；
 /// 缺口已滑出缓冲 → 先发 `resync` 提示事件（前端全量刷新兜底）。
@@ -1725,7 +1711,7 @@ pub async fn handle_events_stream(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     // 浏览器 EventSource 重连自动回传的断点游标（HeaderMap 键大小写不敏感）。
     let mut receiver = state.event_hub.subscribe();
-    // BUG-20261025-14：订阅计数 RAII 守卫。客户端断连时 axum 直接 drop 流体
+    // 订阅计数 RAII 守卫。客户端断连时 axum 直接 drop 流体
     // （不是跑完循环），尾部手工 unsubscribe 永不执行 → subscriber_count 单调
     // 泄漏，board/usage 空闲跳过 watcher 的 `== 0` 闸永久失效。守卫 move 进
     // 生成器：无论自然结束还是中途 drop 都析构归还。
@@ -1735,7 +1721,7 @@ pub async fn handle_events_stream(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    // L2（R32）：重连游标决议收口到 EventHub::resolve_reconnect——重启签名
+    // 重连游标决议收口到 EventHub::resolve_reconnect——重启签名
     // （Last-Event-ID 超前于服务端 latest = 网关重启 seq 域重置）归零游标并
     // 按 0 重放，不再盲目 last_sent = after 让 live 去重闸吞掉整个新域。
     let (mut last_sent, replay, gap) = state.event_hub.resolve_reconnect(last_id);
@@ -1749,7 +1735,7 @@ pub async fn handle_events_stream(
     let _running = state.running.clone();
 
     let stream = async_stream::stream! {
-        // 守卫移入生成器状态机：drop 即归还订阅计数（BUG-20261025-14）。
+        // 守卫移入生成器状态机：drop 即归还订阅计数。
         let _subscription_guard = subscription_guard;
         tracing::debug!("[WebServer] SSE stream started");
         // Send initial heartbeat
@@ -1758,7 +1744,7 @@ pub async fn handle_events_stream(
             .event("heartbeat")
             .data(heartbeat_data.to_string()));
 
-        // L2 断线补拉：先重放缓冲内缺口
+        // 断线补拉：先重放缓冲内缺口
         if let Some(hint) = gap_hint {
             yield Ok(SseEvent::default().event("resync").data(hint));
         }
@@ -1775,7 +1761,7 @@ pub async fn handle_events_stream(
         loop {
             match receiver.recv().await {
                 Ok(event) => {
-                    // L10：ephemeral 事件（seq==0，publish_ephemeral）——无 id、
+                    // ephemeral 事件（seq==0，publish_ephemeral）——无 id、
                     // 不推进 last_sent 游标、不参与重放去重；只投递在线订阅者
                     // （缺省去重分支 `0 <= last_sent` 恒真会把它整类丢掉，故
                     // 前置专发）。
@@ -1796,7 +1782,7 @@ pub async fn handle_events_stream(
                         .data(data));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    // L2：慢消费者丢帧从环形缓冲回捞（原实现裸 continue=丢事件
+                    // 慢消费者丢帧从环形缓冲回捞（原实现裸 continue=丢事件
                     // 无补偿）；滑出缓冲才 resync。
                     tracing::warn!("[WebServer] SSE client lagged by {} events, backfilling from replay buffer", n);
                     let (backfill, gap) = state.event_hub.replay_after(last_sent);
@@ -1824,7 +1810,7 @@ pub async fn handle_events_stream(
             }
         }
 
-        // 订阅计数由 _subscription_guard 析构归还（BUG-20261025-14）——
+        // 订阅计数由 _subscription_guard 析构归还——
         // 此处曾手工 unsubscribe，断连 drop 路径覆盖不到。
         tracing::debug!("[WebServer] SSE stream ended");
     };
@@ -1832,9 +1818,7 @@ pub async fn handle_events_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-// ---------------------------------------------------------------------------
 // Process messages (bus bridge)
-// ---------------------------------------------------------------------------
 
 /// Process incoming messages from the WebSocket message channel and publish
 /// them to the message bus as InboundMessage. (No conv_router — legacy 2-arg
@@ -1849,12 +1833,12 @@ pub async fn process_messages(
 /// Same as [`process_messages`] but also records conversation→chat_id
 /// bindings into `conv_router` (when provided) so cron jobs can live-push
 /// replies to the targeted conversation's open tab (Opt 2). `session_manager`
-/// (when provided) enables the P8 user-row echo: the inbound user row is
+/// (when provided) enables the user-row echo: the inbound user row is
 /// recorded into the chat_event_log ring and echoed back to the sending
 /// connection (see the record block below). `inbound_filters` (when
 /// provided) runs the 入站过滤链 against each built InboundMessage before
 /// `bus.publish_inbound` — `Intercepted` messages are answered in-place by
-/// the filter and never fan out on the bus (BUG 2026-09-23 项目会话历史修复).
+/// the filter and never fan out on the bus (BUG 项目会话历史修复).
 pub async fn process_messages_with_router(
     mut rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
     bus: Arc<MessageBus>,
@@ -1889,24 +1873,24 @@ pub async fn process_messages_with_router(
             router.bind(&session_key, &msg.chat_id);
         }
 
-        // P8 补全（2026-09-21）：user 行入环 + 发起连接回声帧。此前 user 行
+        // 补全：user 行入环 + 发起连接回声帧。此前 user 行
         // 只落 chat_log（loop.rs turn 开始时）与发送方本地视图，环形补拉窗
         // 口里没有 user 行——多端场景（第二标签）的落后信号即便走增量 sync
         // 也拉不到它，而「游标短路」修掉无谓全量刷新后它就没有任何到达路径
-        // （真机 F 剧本 F3 复现：tab2 只见回复不见提问）。入环后 seq 空间完
+        // （真机 F 剧本 复现：tab2 只见回复不见提问）。入环后 seq 空间完
         // 整（chat 行与工具事件交错），增量通道全覆盖；回声帧推进发送方游标
         // （record 触发的 chat.activity 才能被同 seq 短路），发起方去重靠前
         // 端尾行同文比对（本地已有该行）。纯图消息（content 空）不入环——
         // 本地占位已在发送时渲染，历史恢复走 chat_log 全量，与旧行为一致。
         // ⚠️ 咽喉点流经两类消息：chat.send（用户文本）与 chat.history_request
         // （content 是请求 JSON、metadata 带 request_type="history"）——只对
-        // 前者入环+回声。判据用排除式（BUG 修复 2026-09-21：history_request
+        // 前者入环+回声。判据用排除式（BUG 修复 ：history_request
         // 曾被误当 user 行入环回声，前端每个会话凭空出现一条请求 JSON「消
         // 息」并触发悬空占位「...」）；agent 侧消费惯例即只认
         // request_type=="history"（loop.rs 两处），其余按用户消息处理。
         let is_history_request =
             msg.metadata.get("request_type").map(String::as_str) == Some("history");
-        // L12（改进项三期 2026-11-02）：写入侧幂等键——(session_key,
+        // （改进项三期）：写入侧幂等键——(session_key,
         // client_msg_id) 命中去重索引 = 不重复入环、不二次触发 agent（短路
         // bus 转发），回声帧带**原 seq + deduped:true**。幂等窗口有界
         // （chat_dedup LRU cap，超窗重复 = 正常重复处理，文档口径）。
@@ -1929,7 +1913,7 @@ pub async fn process_messages_with_router(
                 "[Web] chat.send deduped (client_msg_id hit; agent not re-triggered)"
             );
             // 环行回声（seq>0）带 deduped 旗重发（游标推进语义与首投一致）；
-            // 纯图消息（seq=0 无环行）沿用 P8 不回声语义，只短路转发。
+            // 纯图消息（seq=0 无环行）沿用 不回声语义，只短路转发。
             if orig_seq > 0
                 && let Some(ref sm) = session_manager
             {
@@ -1952,7 +1936,7 @@ pub async fn process_messages_with_router(
         }
         if !msg.content.is_empty() && !is_history_request {
             let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None, None);
-            // L12：首投登记幂等键（seq = 本次环行原 seq）。
+            // 首投登记幂等键（seq = 本次环行原 seq）。
             if let Some(cmid) = client_msg_id {
                 crate::chat_dedup::insert(&session_key, cmid, seq);
             }
@@ -1969,14 +1953,14 @@ pub async fn process_messages_with_router(
                     crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(echo));
                 if let Ok(bytes) = frame.to_json() {
                     // 失败 soft：发起连接已断（切页/关闭）——行已入环，重连
-                    // 后 sync 补拉自愈。可丢通道（BUG 2026-09-22）：帧带
+                    // 后 sync 补拉自愈。可丢通道（BUG）：帧带
                     // seq，慢客户端满队列时丢它可被 sync 补回，不应阻塞
                     // 入站咽喉点。
                     let _ = sm.broadcast_droppable(&msg.session_id, &bytes);
                 }
             }
         } else if let Some(cmid) = client_msg_id {
-            // L12：纯图消息（content 空带 media）——不入环不回声（P8 语义
+            // 纯图消息（content 空带 media）——不入环不回声（语义
             // 不变），幂等键照常登记（seq=0 标记「无环行」；重复提交仍被
             // 上方 lookup 短路，回声臂 seq>0 闸自动跳过）。
             crate::chat_dedup::insert(&session_key, cmid, 0);
@@ -1994,7 +1978,7 @@ pub async fn process_messages_with_router(
             voice_playback: msg.voice_playback,
         };
 
-        // 入站过滤链（BUG 2026-09-23 项目会话历史修复）：在 bus 扇出之前
+        // 入站过滤链（BUG 项目会话历史修复）：在 bus 扇出之前
         // 过链——`Intercepted` = 过滤器已就地应答（如 history 只读查询经
         // bus.publish_outbound 回帧），消息不再进入扇出，与任何 agent loop
         // 的存亡/忙闲解耦；`Rejected` = 策略拒绝，回执拒绝原因后丢弃；
@@ -2035,9 +2019,7 @@ pub async fn process_messages_with_router(
     tracing::debug!("[WebServer] Message processor stopped");
 }
 
-// ---------------------------------------------------------------------------
 // Send to session helpers
-// ---------------------------------------------------------------------------
 
 /// Send a chat message to a specific session using the broadcast protocol.
 ///
@@ -2045,7 +2027,7 @@ pub async fn process_messages_with_router(
 /// so the Dashboard can render a per-message "供应商·模型名" badge; `None`
 /// omits it (non-assistant / badge-less messages).
 ///
-/// `session_key`（L2，optional）是 agent 会话键——chat_event_log 环形缓冲的
+/// `session_key`（optional）是 agent 会话键——chat_event_log 环形缓冲的
 /// 记录键。缺省回退到 `session_id`（连接级 id；旧路径/无元数据帧仍可补拉，
 /// 只是跨连接补拉要靠会话键才寻址得到）。
 pub async fn send_to_session(
@@ -2071,26 +2053,26 @@ pub async fn send_to_session(
     if let Some(m) = model {
         data["model"] = serde_json::Value::String(m.to_string());
     }
-    // L6++：帧带 agent 会话 id（session_key=`agent:main:session:{sid}` 前缀
+    // 帧带 agent 会话 id（session_key=`agent:main:session:{sid}` 前缀
     // 还原）——前端按当前会话过滤 receive 帧：异会话晚到的回复不进当前视图
     // （后端已持久化，切到该会话时从磁盘加载），否则跨组切换时会串台。
     // 无 session_key 的旧路径帧不带该字段，前端保持接受（legacy 兼容）。
     if let Some(sid) = session_key.and_then(|s| s.strip_prefix("agent:main:session:")) {
         data["session_id"] = serde_json::Value::String(sid.to_string());
     }
-    // 集群续行归属（2026-09-23）：干活的是远端 worker 节点，前端据此渲染
+    // 集群续行归属：干活的是远端 worker 节点，前端据此渲染
     // 「节点 X」徽章（与模型徽章并列）。缺省不写键——旧前端零感知。
     if let Some(node) = source_node {
         data["source_node"] = serde_json::Value::String(node.to_string());
     }
-    // 语音 relay（realtime P1 G3）：语音对话进行中且热态开时，assistant 回复
+    // 语音 relay（realtime）：语音对话进行中且热态开时，assistant 回复
     // 由后端接力 TTS。帧标 voice_relayed=true 让发起端跳过自身 tts_playback
     // （防双播）；广播成功后清洗入队播放。热态关/未注册 = false = 零改动。
     let voice_relay = crate::voice_relay::relay_should_take_over(session_key, role, content);
     if voice_relay {
         data["voice_relayed"] = serde_json::Value::Bool(true);
     }
-    // L2（devtool-upgrade 阶段 6）：chat 帧盖会话内单调 seq 并进 per-session
+    // （devtool-upgrade）：chat 帧盖会话内单调 seq 并进 per-session
     // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
     // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。
     let record_key = session_key.unwrap_or(session_id);
@@ -2139,9 +2121,7 @@ pub async fn send_history_to_session(
         .map_err(|e| format!("failed to broadcast: {}", e))
 }
 
-// ---------------------------------------------------------------------------
-// Agent tool-event pump (M1a)
-// ---------------------------------------------------------------------------
+// Agent tool-event pump
 
 /// Pump agent tool-events to their consumers: every event is published to the
 /// [`EventHub`] (SSE fallback / future subscribers), and events whose
@@ -2170,10 +2150,10 @@ pub async fn pump_agent_events(
                         continue;
                     }
                 };
-                // M7（devtool-upgrade 阶段 5）：审批请求走独立 SSE 事件类型
+                // （devtool-upgrade）：审批请求走独立 SSE 事件类型
                 // `approval-requested` 全局广播（useSSE 白名单订阅）——审批不
                 // 属于单一会话，不做 web: 定向 ws push；审批卡渲染在 App 级。
-                // BUG-B（2026-09-20）：前端契约是 AgentEvent 的**内层 data**
+                // 前端契约是 AgentEvent 的**内层 data**
                 // （useApprovals.upsertFromPayload 直接读 request_id 等平铺
                 // 字段），此处曾把 adjacently tagged 整体
                 // `{"kind":..,"data":{..}}` 原样 publish——前端首行类型卫
@@ -2190,27 +2170,27 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
-                // F6（devtool-upgrade 阶段 5）：裁决结果同走全局广播——所有
+                // （devtool-upgrade）：裁决结果同走全局广播——所有
                 // 前端窗口据此摘除本地审批卡（竞速败方不再挂到倒计时结束）。
                 if matches!(
                     event,
                     nemesis_types::agent::AgentEvent::ApprovalResolved { .. }
                 ) {
-                    // BUG-B（2026-09-20）：同 approval-requested，展平内层。
+                    // 同 approval-requested，展平内层。
                     event_hub.publish(
                         "approval-resolved",
                         data.get("data").cloned().unwrap_or(data),
                     );
                     continue;
                 }
-                // F7（devtool-upgrade 阶段 5）：结构化提问同走全局广播——
+                // （devtool-upgrade）：结构化提问同走全局广播——
                 // question 工具阻塞等答，QuestionCard 渲染选项卡；了结事件
                 // 让所有窗口摘卡（与 approval-resolved 同语义）。
                 if matches!(
                     event,
                     nemesis_types::agent::AgentEvent::QuestionAsked { .. }
                 ) {
-                    // BUG-B（2026-09-20）：同 approval-requested，展平内层
+                    // 同 approval-requested，展平内层
                     // （useQuestions.upsertFromPayload 期望平铺 question_id 等）。
                     event_hub.publish("question-asked", data.get("data").cloned().unwrap_or(data));
                     continue;
@@ -2219,7 +2199,7 @@ pub async fn pump_agent_events(
                     event,
                     nemesis_types::agent::AgentEvent::QuestionResolved { .. }
                 ) {
-                    // BUG-B（2026-09-20）：同族展平（前端 removeLocal 读平铺
+                    // 同族展平（前端 removeLocal 读平铺
                     // question_id）。
                     event_hub.publish(
                         "question-resolved",
@@ -2227,9 +2207,9 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
-                // B4（2026-10-18 凭据 vault §7）：凭据索要卡同走全局广播——
+                // （凭据 vault §7）：凭据索要卡同走全局广播——
                 // 全局卡（无会话字段），前端凭据卡渲染 key_name/reason +
-                // 倒计时；凭据值绝不进事件载荷。展平内层同 BUG-B 族。
+                // 倒计时；凭据值绝不进事件载荷。展平内层同 族。
                 if matches!(
                     event,
                     nemesis_types::agent::AgentEvent::CredentialRequested { .. }
@@ -2251,8 +2231,8 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
-                // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
-                // ——前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
+                // SB：会话物化 → SSE `session.created` 全局广播
+                // 前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
                 // 语义（侧栏是跨会话面），不做 web: 定向 push。
                 if let nemesis_types::agent::AgentEvent::SessionCreated { session_id, .. } = &event
                 {
@@ -2262,7 +2242,7 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
-                // P30（WS14）：canvas 打开 → SSE `canvas.open`（内层 data 展平
+                // canvas 打开 → SSE `canvas.open`（内层 data 展平
                 // + session_id 注入，approval/session.created 同款单发形态）。
                 // 刻意不走默认 tool_event 路径：HTML 载荷大（整个 canvas 文档），
                 // 不入 chat_event_log 环（重连/切页不重发——面板状态在前端本地
@@ -2282,7 +2262,7 @@ pub async fn pump_agent_events(
                     event_hub.publish("canvas.open", payload);
                     continue;
                 }
-                // L10（2026-10-13）：provider 流式输出 → SSE `provider_stream_
+                // provider 流式输出 → SSE `provider_stream_
                 // event`（**ephemeral**：publish_ephemeral 不盖章不入补拉环——
                 // 流式增量是易逝观测，断线重放半截流无意义，且高频 delta 会
                 // 冲刷 1000 帧环挤掉真正需要补拉的事件）+ WS push（**恒可丢**
@@ -2326,7 +2306,7 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
-                // N5（2026-10-13 机会项）：交付物登记 → SSE `deliverables` +
+                // （机会项）：交付物登记 → SSE `deliverables` +
                 // WS push `deliverables`。不入 chat_event_log 环——交付物已
                 // 随 assistant 行持久化在 chat_log（历史映射是权威恢复源，
                 // 重连/重载走 loadHistory 即恢复），环内重放只会让前端重复
@@ -2368,7 +2348,7 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
-                // 委派回执落会话（2026-11-04 委派 UX）：WS push `subagent_reply`
+                // 委派回执落会话（委派 UX）：WS push `subagent_reply`
                 // 定向父会话房间（broadcast 必达——低频完成信号非洪泛源），
                 // 前端 ChatPanel 据此 resyncFromLog 刷新落盘行。不走默认
                 // tool_event 路径（语义不同）；不入 chat_event_log 环（回复
@@ -2417,11 +2397,11 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
-                // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是
+                // 帧内层注入 web 会话 id。chat_id 是
                 // 连接级（`web:{连接id}`，session.rs create_session_with_method
                 // 派生），与前端会话 id（sessionStore.currentId，create/list
                 // 返回的会话 sid）不同域——前端按 `web:${currentId}` 过滤恒
-                // 不等，工具卡/任务清单/模式徽标的实时帧全灭（2026-09-20 实
+                // 不等，工具卡/任务清单/模式徽标的实时帧全灭（实
                 // 测：服务端帧全数到达浏览器、UI 零反应）。session_key 末段
                 // = 发起会话 id（handle_chat_send 把前端 session_id 放
                 // metadata，loop 派生 session_key），注入后前端可精确过滤；
@@ -2432,14 +2412,14 @@ pub async fn pump_agent_events(
                 {
                     inner["session_id"] = serde_json::Value::String(sid.to_string());
                 }
-                // P1（2026-09-21）：工具事件入 chat_event_log（与 chat 行同
+                // 工具事件入 chat_event_log（与 chat 行同
                 // 键空间、同 seq 序列）——sync/replay 回放通道据此恢复工具卡
                 // （切页/重连/重载后「中间流程」可见，此前工具事件只走本
                 // WS 实时 push、无任何持久化）。键取 session_key，与
                 // send_to_session 的 record 同域；无 session_key 的事件不落
                 // （归属不到前端会话，回放无意义）。载荷存帧 data 原样
                 // （含上方注入的 session_id）——回放端复用实时帧同款处理。
-                // P8 精修：seq 注入实时帧（record_tool 返回值）——前端对
+                // 精修：seq 注入实时帧（record_tool 返回值）——前端对
                 // chat 行与 tool 条目统一推进补拉游标，chat.activity 信号
                 // 的 seq ≤ 游标短路才能生效（否则本端每个工具事件都被误判
                 // 「落后」触发无谓全量刷新）。存环条目不注入 seq（回放端
@@ -2448,7 +2428,7 @@ pub async fn pump_agent_events(
                     let tool_seq = crate::chat_event_log::record_tool(sk, data.clone());
                     data["seq"] = serde_json::Value::from(tool_seq);
                 }
-                // 子代理可见性（D3，2026-11-03）：子代理事件的 chat_id =
+                // 子代理可见性：子代理事件的 chat_id =
                 // 注册表 id（detached RequestContext 以 session_key 顶替，
                 // `subagent:{uuid}` 形态），天然够不着下面的 `web:` 房间
                 // 广播——查注册表取 parent_chat_id 作为投递房间；payload
@@ -2475,7 +2455,7 @@ pub async fn pump_agent_events(
                         .and_then(|p| p.strip_prefix("web:"))
                 });
                 if let Some(session_id) = target_room {
-                    // BUG 2026-09-22 慢客户端洪泛：带 seq = 已落
+                    // BUG 慢客户端洪泛：带 seq = 已落
                     // chat_event_log 环，丢帧可被前端 chat.sync 补拉自愈
                     // → 走可丢通道（满即丢，事件泵绝不被单个慢客户端的
                     // 满队列阻塞、连坐全部会话）；无 seq（未落环、不可
@@ -2519,9 +2499,7 @@ pub async fn pump_agent_events(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Publish status loop (periodic SSE status push)
-// ---------------------------------------------------------------------------
 
 /// Start a background task that periodically publishes status events via SSE.
 ///
@@ -2562,9 +2540,7 @@ pub fn start_publish_status_loop(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Dispatch outbound (subscribe to bus, route web channel messages to sessions)
-// ---------------------------------------------------------------------------
 
 /// Subscribe to outbound messages on the bus and dispatch web channel messages
 /// to the appropriate sessions.
@@ -2614,7 +2590,7 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                // P2-1：接收侧真实丢失计入 bus 指标。
+                // 接收侧真实丢失计入 bus 指标。
                 bus.record_outbound_lagged(n);
                 tracing::warn!("[WebServer] Outbound dispatch lagged by {} messages", n);
                 continue;
@@ -2627,18 +2603,16 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
     }
 }
 
-// ---------------------------------------------------------------------------
-// F1（2026-09-22 审计修复）：REST 控制面统一鉴权
-// ---------------------------------------------------------------------------
+// （审计修复）：REST 控制面统一鉴权
 
 /// 统一鉴权豁免路径（[`auth_middleware`] 内短路）。
 /// - `/health`、`/api/health`：探活——监控场景无凭据可达是健康检查语义的一部分；
-/// - `/api/share/`：L4 会话分享——token 即凭据（`share.rs` 模块头注释）；
+/// - `/api/share/`： 会话分享——token 即凭据（`share.rs` 模块头注释）；
 /// - `/api/board/asset/`：看板资产下载——asset_token 即凭据（`handlers/board_asset.rs` 模块头注释）；
 /// - `/api/workflow/chat/`：独立 workflow-chat 页的公共元数据 + 密码校验
 ///   （`handlers/workflow.rs` 注册处注释自认 unauthenticated，凭据是 per-workflow 密码）；
 /// - `/api/sdk/`：SDK 源码包/pip 包下载——公开静态产物（与 GitHub release 资产同性质，
-///   外部消费者没有 dashboard token，token 闸 = 端点失效；2026-09-22 统一鉴权上线
+///   外部消费者没有 dashboard token，token 闸 = 端点失效； 统一鉴权上线
 ///   时漏列，CI integration-test `ui/p2_sdk_http` 钉住的公开契约当场红）。
 fn auth_exempt_path(path: &str) -> bool {
     path == "/health"
@@ -2646,7 +2620,7 @@ fn auth_exempt_path(path: &str) -> bool {
         || path.starts_with("/api/share/")
         || path.starts_with("/api/board/asset/")
         || path.starts_with("/api/workflow/chat/")
-        // 缺陷 11 修复（2026-09-23）：webhook 是给**外部服务**（GitHub/Slack
+        // 缺陷 11 修复：webhook 是给**外部服务**（GitHub/Slack
         // 等无法持有 dashboard token）裸调的回调端点，自有安全层 = 可选 HMAC
         // 签名（workflow 定义 secret）+ per-IP 限流（60/min）+ 审计日志。统一
         // 鉴权上线时漏列（与 /api/sdk/ 漏列同类事故），外部回调恒 401。
@@ -2709,7 +2683,7 @@ pub(crate) async fn auth_middleware(
         return next.run(req).await;
     }
     let token = extract_request_token(&req).unwrap_or_default();
-    // LLM 代理调用方 key 回落臂（docs/PLAN/2026-11-03_LLM代理调用方key管理.md）：
+    // LLM 代理调用方 key 回落臂（LLM代理调用方key管理）：
     // 代理 key 匹配在主 token 校验**之前**——master token 为空 = allow-all 的
     // 文档化约定下，先查 key 才能保住代理调用方的身份归属。命中 = 白名单内
     // 代理 lane + enabled key + 恒时比对全过 → 注入 caller 身份放行（白名单
@@ -2735,30 +2709,28 @@ pub(crate) async fn auth_middleware(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-// M1a (2026-09-05): tool-event pump routing tests (no workflow dependency).
+// tool-event pump routing tests (no workflow dependency).
 #[cfg(test)]
 mod agent_event_pump_tests;
 
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
 
-// F1（2026-09-22 审计修复）：统一鉴权中间件测试（无 workflow 依赖）。
+// （审计修复）：统一鉴权中间件测试（无 workflow 依赖）。
 #[cfg(test)]
 mod auth_tests;
 
-// R4 覆盖率（2026-08-27）：workflow/chat/ 路径前缀静态壳 + bind-failed 错误路径。
+// 覆盖率：workflow/chat/ 路径前缀静态壳 + bind-failed 错误路径。
 #[cfg(test)]
 mod r4_tests;
 
-// AGT 覆盖率批次（2026-09-24）：签名/LSP 槽位、resolve_static_dir 与
-// DirectoryStaticFiles 越界、start() 成功路径、relay 路由外壳（/d 双变体 +
+// AGT 覆盖率批次：签名/LSP 槽位、resolve_static_dir 与
+// DirectoryStaticFiles 越界、start 成功路径、relay 路由外壳（/d 双变体 +
 // overview/enabled）、SSE 断线补拉双形态、process_messages 过滤链三裁决、
 // pump SessionCreated+Lagged、dispatch_outbound 路由矩阵。结构性豁免见
 // agt_tests 文件头注。

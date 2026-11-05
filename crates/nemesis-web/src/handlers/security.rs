@@ -51,7 +51,7 @@ fn approval_auto() -> Option<Arc<nemesis_security::approval_auto::ApprovalAutoAp
     approval_auto_state()
 }
 
-/// 会话级全部放行运行时态槽（2026-10-24 长任务无人值守计划，approval_auto
+/// 会话级全部放行运行时态槽（长任务无人值守计划，approval_auto
 /// 同款双注入：gateway 装配处 `install_session_allow_all` 注入，本 handler
 /// `session_allow`/`session_allow_status` 读写——单一真相源 Arc；持久真相源
 /// = 会话 sidecar `allow_all` 字段，set 时双写内存 + sidecar）。
@@ -86,7 +86,7 @@ pub(crate) fn set_session_allow_all_for_test(
 pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 
-/// 内存裁决与 sidecar 持久半边的串行锁（2026-10-24 R1）：`state.set` 与
+/// 内存裁决与 sidecar 持久半边的串行锁：`state.set` 与
 /// `write_session_allow_all` 必须相邻原子——快速开/关交错时，若无此锁，
 /// 「后发的 disable 先写盘、先发的 enable 后写盘」会让内存终值=关而磁盘
 /// 终值=开（重启恢复出放行）。parking_lot 同步锁：handler 全同步（fs 写），
@@ -182,7 +182,7 @@ impl ModuleHandler for SecurityHandler {
                 self.audit(workspace, limit, offset)
             }
             "stats" => self.stats(workspace),
-            // F3: 审批记忆规则表管理（文件直读，与 config.get/audit 同形态；
+            // 审批记忆规则表管理（文件直读，与 config.get/audit 同形态；
             // 运行中的 gateway 经 HotReloader mtime 在下一次审批查询时自动
             // 感知 clear）。
             "approvals.list" => self.approvals_list(workspace),
@@ -190,7 +190,7 @@ impl ModuleHandler for SecurityHandler {
             // §2: 免打扰开关状态（运行期投影透传；config.get 的 approvals
             // 段是持久真相源，enabled 可能已被 config.save 热翻）。
             "approvals.status" => Ok(Some(Self::approvals_status())),
-            // 会话级全部放行（2026-10-24 长任务无人值守计划）：set 双写
+            // 会话级全部放行（长任务无人值守计划）：set 双写
             // （内存即时生效 + sidecar 重启恢复）；status 供前端刷新。
             "session_allow" => {
                 let data = data.ok_or("missing data")?;
@@ -228,7 +228,7 @@ fn security_config_path(workspace: &str) -> PathBuf {
 /// config.security.json RMW 事务唯一入口——写串行锁在函数内取得，罩
 /// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
-/// （Mutex 非重入，嵌套即死锁）。（同类横扫七期补网，2026-10-13。）
+/// （Mutex 非重入，嵌套即死锁）。（同类横扫七期补网，。）
 fn update_security_config<T>(
     workspace: &str,
     f: impl FnOnce(&mut nemesis_config::SecurityConfig) -> Result<T, String>,
@@ -243,7 +243,7 @@ fn update_security_config<T>(
     Ok(out)
 }
 
-/// F3: 审批记忆规则表管理（list/clear）。路径唯一真相源 nemesis-path。
+/// 审批记忆规则表管理（list/clear）。路径唯一真相源 nemesis-path。
 fn approval_rules_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_approval_rules_path_in_workspace(Path::new(workspace))
 }
@@ -357,8 +357,8 @@ impl SecurityHandler {
 
     /// 会话级全部放行 set：双写（内存态即时生效 + sidecar 持久位重启恢复）。
     /// 返回 set 后快照 `(enabled, since, count)` 供前端即时渲染；`persisted`
-    /// 标注持久半边是否真的落盘（2026-10-24 R1：持久化失败不再谎报普通成功
-    /// ——响应带 `persisted:false` + `warning`，内存态按用户当次意志保留）。
+    /// 标注持久半边是否真的落盘（持久化失败不再谎报普通成功
+    /// 响应带 `persisted:false` + `warning`，内存态按用户当次意志保留）。
     fn session_allow(
         &self,
         session_id: &str,
@@ -368,7 +368,7 @@ impl SecurityHandler {
             return Ok(Some(serde_json::json!({ "injected": false })));
         };
         let session_key = derive_session_key(session_id);
-        // 内存裁决与持久半边串行（R1：快速开/关交错不得让内存与磁盘终值
+        // 内存裁决与持久半边串行（快速开/关交错不得让内存与磁盘终值
         // 相反）。parking_lot 同步锁——本 handler 全同步（fs 写），无 await。
         let _serial = SESSION_ALLOW_PERSIST_LOCK.lock();
         let (since, count) = state.set(&session_key, enabled);
@@ -376,7 +376,7 @@ impl SecurityHandler {
         // sessions.rs clear_undelivered_replies）。since 传内存态返回值——
         // 单一真相，两半边不各打各的时间戳。写失败不回滚内存态：运行期裁决
         // 已生效（关=安全方向保持关；开=用户当次意志），但重启恢复面不可信
-        // ——响应显式 `persisted:false` + warning，由前端向用户告警。
+        // 响应显式 `persisted:false` + warning，由前端向用户告警。
         let mut body = serde_json::json!({
             "injected": true,
             "session_id": session_id,
@@ -517,7 +517,7 @@ impl SecurityHandler {
         })))
     }
 
-    /// F3: 列出「总是允许」规则表（纯 JSON 读——nemesis-web 不依赖
+    /// 列出「总是允许」规则表（纯 JSON 读——nemesis-web 不依赖
     /// nemesis-security，规则条目原样透传给前端展示）。
     fn approvals_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let path = approval_rules_path(workspace);
@@ -532,13 +532,13 @@ impl SecurityHandler {
         Ok(Some(serde_json::json!({ "rules": rules })))
     }
 
-    /// F3: 清空「总是允许」规则表（写回空表；文件保留 = 运行中 gateway 的
+    /// 清空「总是允许」规则表（写回空表；文件保留 = 运行中 gateway 的
     /// HotReloader 照常经 mtime 感知）。
     fn approvals_clear(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         // 写串行锁：approval_rules.json 与 WebApprovalManager::save_always_rule
         // 是同一文件的两个写者——「总是允许」RMW 已持 config_write_lock（叠加
         // 自身 rules_write），本清空臂同锁互斥，防并发清空被复活/规则被丢
-        //（同类横扫四期，2026-10-13）。
+        //（同类横扫四期）。
         let _cfg_serial = nemesis_config::config_write_lock();
         let path = approval_rules_path(workspace);
         let removed = if path.exists() {
@@ -553,7 +553,7 @@ impl SecurityHandler {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create config dir: {}", e))?;
         }
-        // REL-002：统一原子写入（approval 规则表清空）。
+        // 统一原子写入（approval 规则表清空）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), b"[]\n", 0o600)
             .map_err(|e| format!("failed to write approval rules: {}", e))?;
         Ok(Some(
@@ -562,28 +562,28 @@ impl SecurityHandler {
     }
 }
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): audit paging +
+// (, quality-hardening goal 冲刺 web 批次 2): audit paging +
 // decision normalization + flatten/extract fallback arms + config error arms.
 #[cfg(test)]
 mod s10b_tests;
 
-// F3 (2026-09-06, devtool-upgrade 阶段 5): approvals.list / approvals.clear
+// (, devtool-upgrade): approvals.list / approvals.clear
 // 规则表管理命令。
 #[cfg(test)]
 mod f3_tests;
 
-// AGT 覆盖率批次（2026-09-25）：Default 转发、signature_verify_status 双槽
+// AGT 覆盖率批次：Default 转发、signature_verify_status 双槽
 // （未注入降级 / 注入六字段透传）、audit·stats 非 jsonl 项跳过臂、
 // approvals.clear 无文件 removed=0 + config 目录创建失败上抛。
 #[cfg(test)]
 mod agt_tests;
 
-// §2 免打扰（2026-10-11 无人值守计划 Part 2）：approvals.status 双臂 +
+// §2 免打扰（无人值守计划 Part 2）：approvals.status 双臂 +
 // config.save 热翻投影。
 #[cfg(test)]
 mod approval_auto_tests;
 
-// 会话级全部放行（2026-10-24 长任务无人值守计划）：session_allow 双写 /
+// 会话级全部放行（长任务无人值守计划）：session_allow 双写 /
 // status 双臂 / 会话键推导与 chat.sync 字节一致。
 #[cfg(test)]
 mod session_allow_tests;

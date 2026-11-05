@@ -1,4 +1,4 @@
-//! Swarm M3（§5.4/D6）：看板资产下载端点——引用随包走、内容按需 HTTP 拉。
+//! Swarm （§5.4/）：看板资产下载端点——引用随包走、内容按需 HTTP 拉。
 //!
 //! `GET /api/board/asset/{ref}?asset_token=&expires_at=` —— 公开端点，
 //! **故意不走 dashboard verify_token**（web token 不跨节点，worker 没有

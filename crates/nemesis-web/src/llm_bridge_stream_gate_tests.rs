@@ -1,11 +1,11 @@
-//! wire 语义闸（2026-10-14 T37/T42 根修）：`ProviderAdapter::chat_streamed`
+//! wire 语义闸（2026-10-14 / 根修）：`ProviderAdapter::chat_streamed`
 //! 必须尊重 provider 的 `stream_preferred` 裁决——偏好非流式时静默回落
-//! `chat()`（usage / raw 请求响应体全量保留），不得越权走真流式。此前该
+//! `chat`（usage / raw 请求响应体全量保留），不得越权走真流式。此前该
 //! lane 无条件 `chat_stream`，流式路径 raw 体恒 None 且 usage 依赖上游
 //! chunk 自带 → 集群 usage 回传断粮 + raw 日志响应件缺失（观测 lane 改写
 //! wire 语义的教训，详见提交 docs 报告）。
 //!
-//! 附带钉死三条真实 lane 的 `stream_preferred` 判据（与各自 `chat()` 内部
+//! 附带钉死三条真实 lane 的 `stream_preferred` 判据（与各自 `chat` 内部
 //! 切换同源）：http-compat / anthropic auto=非流式，codex auto=流式。
 
 use crate::llm_bridge::ProviderAdapter;
@@ -137,7 +137,7 @@ fn delta_collector() -> Arc<std::sync::Mutex<Vec<String>>> {
 #[tokio::test]
 async fn gate_non_preferred_falls_back_to_chat_preserving_usage_and_raw() {
     // 偏好非流式 + 流 lane 可用（若被调到即失败）：闸必须短路在 chat_stream
-    // 之前，chat() 的 usage / raw 请求响应体原样透传（T37/T42 的生命线）。
+    // 之前，chat 的 usage / raw 请求响应体原样透传（/ 的生命线）。
     let mock = Arc::new(GateMock::new(false, true));
     let adapter = ProviderAdapter::new(mock.clone(), "mock/model".to_string());
     let deltas = delta_collector();
@@ -232,15 +232,13 @@ async fn gate_preferred_but_unsupported_lane_falls_back() {
     assert_eq!(deltas.lock().unwrap().join(""), "非流式正文");
 }
 
-// ---------------------------------------------------------------------------
-// 流中断 partial 保留（L02 契约在 chat_streamed 自带聚合循环的接线，2026-11-01）
+// 流中断 partial 保留（契约在 chat_streamed 自带聚合循环的接线）
 //
-// chat_streamed 不走 provider.chat() 内部的 collect_stream_response，自带
-// 聚合循环——中途 Err 臂漏接 StreamInterrupted 包装即 partial 丢弃（L21
+// chat_streamed 不走 provider.chat 内部的 collect_stream_response，自带
+// 聚合循环——中途 Err 臂漏接 StreamInterrupted 包装即 partial 丢弃（
 // agent-bench stream_break 终局臂实证）。三臂对齐 collect_stream_response
 // Err 臂契约：内容非空 → 包装；内容空但出现过 tool_calls → 包装；全空 →
 // 原错误原样上抛。
-// ---------------------------------------------------------------------------
 
 /// 中途断流 mock：先发 partial 块（delta / tool_calls 按配置），再发 Err。
 struct MidStreamBreakMock {
@@ -334,7 +332,7 @@ async fn mid_stream_err_with_partial_content_wraps_stream_interrupted() {
         err.starts_with("stream interrupted from provider break-mock/mock/model"),
         "头行前缀缺失：{err}"
     );
-    // 根因链保留 + partial 全文随注记框架携带（L02 生命线）。
+    // 根因链保留 + partial 全文随注记框架携带（生命线）。
     assert!(
         err.contains("unexpected EOF during chunk size line"),
         "{err}"
@@ -388,9 +386,7 @@ async fn mid_stream_err_with_nothing_aggregated_maps_raw_error() {
     assert!(!err.contains("stream interrupted"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
-// 真实 lane 的 stream_preferred 判据（与各自 chat() 内部切换同源钉死）
-// ---------------------------------------------------------------------------
+// 真实 lane 的 stream_preferred 判据（与各自 chat 内部切换同源钉死）
 
 #[test]
 fn stream_preferred_lane_semantics() {

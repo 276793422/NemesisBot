@@ -2,10 +2,10 @@
 //!
 //! 与 tests / agent_event_pump_tests / auth_tests / extra_tests / r4_tests
 //! 互补，聚焦仍缺的确定性臂：
-//! - `set_signature_verify` / `set_lsp_manager` + `lsp_manager()` 槽位
+//! - `set_signature_verify` / `set_lsp_manager` + `lsp_manager` 槽位
 //! - `resolve_static_dir` 显式路径臂 + `DirectoryStaticFiles` 越界拒绝
 //!   （symlink 指向 base 外 → canonical 比对拒绝；无权限环境跳过）
-//! - `start()` 成功路径（`start_with_shutdown` 之外的另一条生命周期）
+//! - `start` 成功路径（`start_with_shutdown` 之外的另一条生命周期）
 //! - `build_router` 的 relay 路由外壳：`/d/{node_id}`、`/d/{node_id}/`、
 //!   `/api/relay/overview`、`/api/relay/enabled` + static_dir 缺失 warn
 //! - SSE `last-event-id` 断线补拉双形态（缓冲内重放 / 滑出窗口 resync）
@@ -103,7 +103,7 @@ fn agt_signature_verify_and_lsp_manager_slots() {
         key_fp: None,
         detail: String::new(),
     }));
-    // set_lsp_manager + lsp_manager() getter（getter 此前无调用点）
+    // set_lsp_manager + lsp_manager getter（getter 此前无调用点）
     #[cfg(feature = "lsp")]
     server.set_lsp_manager(Arc::new(nemesis_lsp::LspManager::new(None, None)));
     #[cfg(feature = "lsp")]
@@ -170,7 +170,7 @@ fn agt_resolve_static_dir_explicit_and_directory_provider_traversal() {
 }
 
 // ============================================================
-// start() 成功路径（start_with_shutdown 之外）
+// start 成功路径（start_with_shutdown 之外）
 // ============================================================
 
 #[tokio::test]
@@ -461,7 +461,7 @@ async fn agt_process_messages_binds_router_and_runs_filter_ladder() {
 }
 
 // ============================================================
-// L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键——同
+// （改进项三期）：chat.send 写入侧幂等键——同
 // (session, client_msg_id) 重复提交只扇出一次（bus 不二次触发 agent），
 // 不带 id 的消息零变化。全局去重表（chat_dedup TABLE）测试整段互斥。
 // ============================================================

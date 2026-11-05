@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): workflow_chat history
+//! (quality-hardening goal 冲刺, web 批次 2): workflow_chat history
 //! arms + send unknown-index arm not reached by `workflow_chat_extra_tests`
 //! (which covers the invalid-data / no-engine / human-review cases):
 //!

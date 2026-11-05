@@ -16,9 +16,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-// -----------------------------------------------------------------------
 // Mock provider
-// -----------------------------------------------------------------------
 
 /// Configurable mock that records calls and returns a canned response.
 struct MockProvider {
@@ -30,7 +28,7 @@ struct MockProvider {
     last_model: Mutex<Option<String>>,
     last_message_count: Mutex<Option<usize>>,
     last_tool_count: Mutex<Option<usize>>,
-    /// H4：adapter 透传到 provider 的 reasoning_effort（None 表示透传了
+    /// adapter 透传到 provider 的 reasoning_effort（None 表示透传了
     /// None 或根本没带 options —— 用 absent/Some 区分需要看测试意图）。
     last_effort: Mutex<Option<String>>,
 }
@@ -84,7 +82,7 @@ impl LLMProvider for MockProvider {
         // 预置内容持久（clone 不 take）：真实 provider 的错误/空输出是持续
         // 形态，杂务桥的重试语义（guarded_llm_call_retrying）要求第二次调用
         // 仍见同样结果；一次性消耗会把重试伪装成「重试后拿到 default 成功」，
-        // 断言前提失真（2026-09-28 forge 桥接入重试后三例假红根因）。
+        // 断言前提失真（forge 桥接入重试后三例假红根因）。
         if let Some(err) = self.error.lock().unwrap().as_ref() {
             return Err(err.clone());
         }
@@ -165,9 +163,7 @@ fn one_user_message() -> Vec<LlmMessage> {
     }]
 }
 
-// -----------------------------------------------------------------------
 // ProviderAdapter — construction & basic chat
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn adapter_chat_empty_model_uses_default() {
@@ -257,9 +253,9 @@ async fn adapter_chat_with_tool_calls_marks_not_finished() {
 #[tokio::test]
 async fn adapter_chat_stop_stamp_with_tools_never_marks_finished() {
     let mock = Arc::new(MockProvider::new("m", "p"));
-    // 工具调用在场 ⇒ finished 恒 false（2026-10-13 wal_crash 根修后语义）：
+    // 工具调用在场 ⇒ finished 恒 false（wal_crash 根修后语义）：
     // 异常上游（stop 邮票 + tools 在场）不再被当成终答——那会静默丢掉
-    // tool_calls，agent 侧只见空文本。finished = tool_calls.is_empty()。
+    // tool_calls，agent 侧只见空文本。finished = tool_calls.is_empty。
     let mut resp = tool_call_response();
     resp.finish_reason = "stop".to_string();
     mock.set_response(resp);
@@ -359,9 +355,7 @@ async fn adapter_chat_error_returns_string_err() {
     assert!(err.contains("boom") || !err.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // ProviderAdapter — tool_calls with missing function are filtered out
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn adapter_filters_tool_calls_without_function() {
@@ -406,9 +400,7 @@ async fn adapter_filters_tool_calls_without_function() {
     assert_eq!(r.tool_calls[0].id, "with_func");
 }
 
-// -----------------------------------------------------------------------
 // ForgeProviderBridge
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn forge_bridge_returns_content_on_success() {
@@ -488,7 +480,7 @@ async fn forge_bridge_content_with_tools_returns_content() {
 
 #[tokio::test]
 async fn forge_bridge_empty_content_with_tools_is_error() {
-    // prompt-pack pro（M4）：空输出一律按失败处理——即使 tool_calls 非空，
+    // prompt-pack pro：空输出一律按失败处理——即使 tool_calls 非空，
     // 空文本也不再当成功结果透传（下游本就把空串当无效；bypass_llm 单一
     // 真相源，不因 tool_calls 分叉）。
     let mock = Arc::new(MockProvider::new("m", "p"));
@@ -500,10 +492,8 @@ async fn forge_bridge_empty_content_with_tools_is_error() {
     assert_eq!(mock.calls(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// H4 reasoning_effort 透传（M8 补测：L2 只钉了 CLI/WSAPI 侧，这里钉
+// reasoning_effort 透传（补测： 只钉了 CLI/WSAPI 侧，这里钉
 // adapter 最后一跳 —— agent ChatOptions → provider ChatOptions 的字段搬运）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn adapter_chat_passes_reasoning_effort_h4() {
@@ -554,9 +544,7 @@ async fn adapter_chat_passes_reasoning_effort_h4() {
     );
 }
 
-// -----------------------------------------------------------------------
-// T5（多模态，goal 2026-09-03）：agent_message_to_provider 转换
-// -----------------------------------------------------------------------
+// （多模态，goal）：agent_message_to_provider 转换
 
 #[test]
 fn text_only_message_stays_string_shape() {

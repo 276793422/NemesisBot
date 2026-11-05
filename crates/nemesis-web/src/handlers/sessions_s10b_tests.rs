@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): sessions WSAPI success
+//! (quality-hardening goal 冲刺, web 批次 2): sessions WSAPI success
 //! arms beyond the missing-field bails in `sessions_extra_tests.rs`:
 //!
 //! - `list` strips the `agent_main_session_` prefix (web sessions only) and
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // home 重定向（sessions_trash_tests 同款）：默认软删的 trash 移动走
-// production() 寻址（进程单例 home），不重定向会把回收站条目落进真实
+// production 寻址（进程单例 home），不重定向会把回收站条目落进真实
 // 数据目录（旧 delete_chat_log 清理对已移走的 jsonl 是 no-op——泄漏）。
 struct HomeGuard {
     old: PathBuf,
@@ -164,9 +164,7 @@ async fn run(
     SessionsHandler.handle_cmd(cmd, data, ctx).await
 }
 
-// ---------------------------------------------------------------------------
 // list (fully local fixtures under <ws>/logs/session_logs)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_strips_web_prefix_filters_legacy_and_uses_meta_title() {
@@ -211,9 +209,7 @@ async fn list_strips_web_prefix_filters_legacy_and_uses_meta_title() {
     assert_eq!(sessions[0]["messageCount"], 2);
 }
 
-// ---------------------------------------------------------------------------
 // clear / delete / export (chat_log house pattern)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn clear_truncates_chat_log_with_and_without_live_store() {
@@ -259,8 +255,8 @@ async fn clear_truncates_chat_log_with_and_without_live_store() {
 
 #[tokio::test]
 async fn delete_default_soft_moves_jsonl_to_trash_both_ctx_shapes() {
-    // 2026-10-30 起默认软删（移入回收站）：三件套移动在 handler 侧无条件
-    // 执行——loopless 退化 ctx 也收得走 jsonl（旧 S10b-1「loopless delete
+    // 默认软删（移入回收站）：三件套移动在 handler 侧无条件
+    // 执行——loopless 退化 ctx 也收得走 jsonl（旧 -1「loopless delete
     // jsonl 幸存」的不对称就此消除；该不对称仅存于 hard:true 的 store 臂，
     // 由 sessions_trash_tests::delete_hard_true_keeps_legacy_semantics 钉）。
     let dir = tempfile::tempdir().unwrap();
@@ -347,9 +343,7 @@ async fn export_returns_seeded_messages() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-// ---------------------------------------------------------------------------
-// BUG-HUNT R6（2026-10-23）：delete/clear 的会话闸（busy 拒绝 + 释放后放行）
-// ---------------------------------------------------------------------------
+// delete/clear 的会话闸（busy 拒绝 + 释放后放行）
 
 /// turn 在飞（busy）时 delete/clear 诚实拒绝且零副作用（jsonl 原样——
 /// 旧行为是 peek 不置位、破坏性操作直接动手）；释放后放行走默认软删

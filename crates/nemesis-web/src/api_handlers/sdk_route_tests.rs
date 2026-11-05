@@ -1,4 +1,4 @@
-// P2-2 (2026-08-24 UI entry gap): HTTP-level oneshot tests for the two SDK
+// (UI entry gap): HTTP-level oneshot tests for the two SDK
 // download routes. The handlers are stateless (no State extractor — static
 // embedded artifacts), so these build a minimal stateless router and run
 // under every feature combo, including `--no-default-features`. The last

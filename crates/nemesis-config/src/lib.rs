@@ -371,7 +371,7 @@ impl Config {
     /// Populate deprecated fields from new fields for backward compatibility.
     ///
     /// This mirrors the Go `postProcessForCompatibility` function:
-    /// Sync `sync_to_web` from `sync_to` for External and WebSocket channels.
+    /// - Sync `sync_to_web` from `sync_to` for External and WebSocket channels.
     pub fn post_process_for_compatibility(&mut self) {
         // External channel: populate SyncToWeb from SyncTo
         self.channels.external.sync_to_web = !self.channels.external.sync_to.is_empty();
@@ -398,8 +398,8 @@ impl Config {
     /// Adjust hardcoded default paths to respect NEMESISBOT_HOME.
     ///
     /// This mirrors the Go `adjustPathsForEnvironment` function:
-    /// If the workspace uses a default path, replace it with the actual resolved path.
-    /// Set a default log directory if none is specified.
+    /// - If the workspace uses a default path, replace it with the actual resolved path.
+    /// - Set a default log directory if none is specified.
     pub fn adjust_paths_for_environment(&mut self) {
         let expected_workspace = WorkspaceResolver::resolve(false).join("workspace");
 

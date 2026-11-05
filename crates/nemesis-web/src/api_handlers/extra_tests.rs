@@ -214,7 +214,7 @@ async fn test_handle_api_internal_no_token_required_when_empty() {
     assert!(received.is_ok());
     match received.unwrap().unwrap() {
         crate::internal::InternalCommand::OpenDashboard => {}
-        _ => panic!("expected OpenDashboard"), // (BUG #31) shutdown 变体加入后保持穷尽
+        _ => panic!("expected OpenDashboard"), // shutdown 变体加入后保持穷尽
     }
 }
 
@@ -1139,7 +1139,7 @@ fn test_sanitize_map_does_not_touch_empty_strings() {
 
 #[test]
 fn test_sanitize_map_recursive_into_array_values() {
-    // F2（2026-09-22 审计修复）：数组必须递归——本测试此前把漏洞钉成预期
+    // （审计修复）：数组必须递归——本测试此前把漏洞钉成预期
     // （"Array elements are not sanitized"，数组内 api_key 明文返回），
     // 修复后反转断言：数组内对象的敏感键必须被脱敏。
     let mut map = serde_json::json!({
@@ -1298,7 +1298,7 @@ fn test_verify_token_one_empty_one_not() {
     assert!(!verify_token("", "expected"));
 }
 
-/// F6（2026-10-14）回归锁：XOR 折叠常数时间比较的正确性面——等长错
+/// 回归锁：XOR 折叠常数时间比较的正确性面——等长错
 /// token 必须拒绝（此形态是折叠实现的经典翻车点：只折叠不比较恒 0）。
 #[test]
 fn test_verify_token_constant_time_equality() {
@@ -1316,8 +1316,8 @@ fn test_verify_token_constant_time_equality() {
 }
 
 // ============================================================
-// handle_api_internal: "shutdown" arm (BUG #31, quality-hardening
-// goal 冲刺 S11e) — CLI `nemesisbot shutdown` 的 HTTP 兜底臂后端。
+// handle_api_internal: "shutdown" arm (, quality-hardening
+// goal 冲刺) — CLI `nemesisbot shutdown` 的 HTTP 兜底臂后端。
 // 鉴权语义与 open_dashboard 完全同源（同一 handler 入口）。
 // ============================================================
 
@@ -1344,7 +1344,7 @@ async fn test_handle_api_internal_correct_token_shutdown() {
 async fn test_handle_api_internal_shutdown_wrong_token_unauthorized() {
     // shutdown 与 open_dashboard 同一鉴权门：错 token → 401，且命令不得入队。
     // 注意：必须额外持有一个 Sender 存活——否则 handler 返回后全部 Sender
-    // 落弃、recv() 立刻回 Closed（而非 pend），无法用 timeout 区分「空」与「关」。
+    // 落弃、recv 立刻回 Closed（而非 pend），无法用 timeout 区分「空」与「关」。
     let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::internal::InternalCommand>(8);
     let keep_alive = tx.clone();
     let state = make_state_with_tx(None, None, "expected", Some(tx));

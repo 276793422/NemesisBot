@@ -219,7 +219,7 @@ async fn malformed_payload_keeps_old_table() {
         store.lookup("test-model-a").unwrap().input_cost_per_million,
         1.0
     );
-    // BUG-20261025-62 回归锁（旧形态必红：解析失败不刷 meta，source_url
+    // 回归锁（旧形态必红：解析失败不刷 meta，source_url
     // 仍指上次成功的 /table）：解析失败同样要留下尝试痕迹。
     let meta = store.meta();
     assert!(
@@ -236,7 +236,7 @@ async fn malformed_payload_keeps_old_table() {
     );
 }
 
-// BUG-20261025-62 回归锁（旧形态必红：网络级失败零留痕，meta 全 None）：
+// 回归锁（旧形态必红：网络级失败零留痕，meta 全 None）：
 // 连接拒绝（send Err 路径）也要 record_failed_fetch——受限网络下最常见的
 // 失败形态（连接被重置/超时）此前完全不留尝试痕迹，「上次尝试时间」恒旧。
 #[tokio::test]
@@ -257,10 +257,8 @@ async fn network_failure_records_failed_fetch() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 镜像链（2026-09-07）：None → 链式回落；ETag 不跨镜像附带
+// 镜像链：None → 链式回落；ETag 不跨镜像附带
 // （测试注入本地 URL，受限网络下不打外网）
-// ---------------------------------------------------------------------------
 
 use super::fetch_chain;
 
@@ -298,7 +296,7 @@ async fn etag_not_sent_across_mirrors() {
     let base = spawn_server().await;
     let store = tmp_store("chain-etag");
 
-    // 先从 /table 成功拿到 etag V1。
+    // 先从 /table 成功拿到 etag 。
     fetch_and_replace(&store, Some(&format!("{base}/table")))
         .await
         .unwrap();

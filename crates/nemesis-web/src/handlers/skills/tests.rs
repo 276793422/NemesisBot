@@ -1,4 +1,4 @@
-//! skills.rs 私有面覆盖（quality-hardening goal 冲刺 S10a，web 批次 1，
+//! skills.rs 私有面覆盖（quality-hardening goal 冲刺 ，web 批次 1，
 //! 2026-08-26）。
 //!
 //! `skills_more_tests.rs` / `skills_extra_tests.rs`（handlers 级公共 API）
@@ -65,7 +65,7 @@ async fn review_nov02_old_aged_skill_survives_failed_force_update() {
     println!("REVIEW aged_skill_update={result:?} original_restored=true");
 }
 
-// F4（2026-11-02 复评）回归锁：并发安装的恢复式清扫必须跳过 in-flight
+// （复评）回归锁：并发安装的恢复式清扫必须跳过 in-flight
 // 备份（登记表识别），无关安装失败也不得把别的在途更新回滚掉。缺陷形态
 // （清扫时机只有注释约定、无代码强制）：无关/非法安装先跑恢复式清扫 →
 // 把刚建的新备份误判遗孤搬回原位 → 在途 force 更新被毁、旧版回魂。
@@ -189,7 +189,7 @@ async fn review_nov02_unrelated_install_does_not_adopt_inflight_backup() {
     );
 }
 
-// R6（2026-10-24 复核）回归锁：force 更新失败必须保留已装技能。
+// （复核）回归锁：force 更新失败必须保留已装技能。
 // 旧形态「先卸后验源」——registry 名不存在时旧目录已被删（可用技能被
 // 销毁）。现在：registry 预检在动旧目录**之前**报错，旧目录原样保留。
 #[tokio::test]
@@ -238,7 +238,7 @@ async fn r6_force_update_failed_source_keeps_installed_skill() {
     }
 }
 
-// R6 回归锁②：备份-回滚臂——装失败（GitHub 下载路径，语法合法但源不可达）
+// 回归锁②：备份-回滚臂——装失败（GitHub 下载路径，语法合法但源不可达）
 // 时旧目录从备份原样复位。
 #[tokio::test]
 async fn r6_force_update_install_failure_restores_backup() {
@@ -270,7 +270,7 @@ async fn r6_force_update_install_failure_restores_backup() {
     assert_eq!(std::fs::read_to_string(&old).unwrap(), old_content);
 
     // 备份已回滚消化（`.skill-rollback/` 与 `.skill-staging/` 均无遗留）。
-    // BUG-20261028-118：备份根从 staging 迁到 rollback（staging 24h 一刀切
+    // 备份根从 staging 迁到 rollback（staging 24h 一刀切
     // 清扫会在回滚消费前删掉继承旧 mtime 的备份）。
     for root_name in [".skill-staging", ".skill-rollback"] {
         let staging = dir.path().join(root_name);
@@ -288,7 +288,7 @@ async fn r6_force_update_install_failure_restores_backup() {
     }
 }
 
-// BUG-20261028-118 回归锁：取消窗口——force 更新在「备份已挪走、新版未
+// 回归锁：取消窗口——force 更新在「备份已挪走、新版未
 // 落位」窗口内被取消（future drop）时，Drop guard 必须把备份复位回原位，
 // 旧版本零丢失；备份根留在 `.skill-rollback/`（staging 清扫器射程外）。
 #[tokio::test]
@@ -316,7 +316,7 @@ async fn r118_cancelled_force_update_restores_backup_via_drop_guard() {
             )
             .await
     });
-    // 等进入网络 await（此时备份 rename 已发生——它在 install() 之前）。
+    // 等进入网络 await（此时备份 rename 已发生——它在 install 之前）。
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if !server.received_requests().await.unwrap().is_empty() {
@@ -348,9 +348,7 @@ async fn r118_cancelled_force_update_restores_backup_via_drop_guard() {
     );
 }
 
-// ---------------------------------------------------------------------
 // helpers
-// ---------------------------------------------------------------------
 
 /// 把 clawhub 三 URL 指向 wiremock 服务器的 config.skills.json 写进工作区。
 fn write_clawhub_config(ws: &std::path::Path, server_uri: &str, enabled: bool) {
@@ -456,9 +454,7 @@ fn learn_ctx(
     }
 }
 
-// ---------------------------------------------------------------------
 // parse_github_url 全臂
-// ---------------------------------------------------------------------
 
 #[test]
 fn parse_github_url_https_http_git_suffix_and_shorthand() {
@@ -488,7 +484,7 @@ fn parse_github_url_https_http_git_suffix_and_shorthand() {
 
 #[test]
 fn parse_github_url_rejects_owner_only_and_spacey() {
-    // 只有 owner 没有两段 → Err。(BUG #25) 原实现前缀命中后掉进
+    // 只有 owner 没有两段 → Err。 原实现前缀命中后掉进
     // shorthand 分支产出 ("https:", "/github.com/onlyowner") 垃圾解析，
     // 现在直接报 URL 解析错误。
     let err = parse_github_url("https://github.com/onlyowner").unwrap_err();
@@ -508,9 +504,7 @@ fn parse_github_url_rejects_owner_only_and_spacey() {
     assert_eq!((o.as_str(), r.as_str()), ("https:", "/gitlab.com/a/b"));
 }
 
-// ---------------------------------------------------------------------
 // load_registry_config 三臂
-// ---------------------------------------------------------------------
 
 #[test]
 fn load_registry_config_missing_corrupt_and_valid_arms() {
@@ -539,9 +533,7 @@ fn load_registry_config_missing_corrupt_and_valid_arms() {
     assert_eq!(cfg.clawhub.convex_url, "http://y");
 }
 
-// ---------------------------------------------------------------------
 // learn 三态
-// ---------------------------------------------------------------------
 
 #[tokio::test]
 async fn learn_without_bridge_and_with_dead_channel_error() {
@@ -631,9 +623,7 @@ async fn learn_success_enqueues_prompt_with_source_and_name_hint() {
     assert!(!incoming2.content.contains("as the skill name"));
 }
 
-// ---------------------------------------------------------------------
 // source_add：重名拒绝臂（无网络——dup 检查先于 spawn_blocking 探测）
-// ---------------------------------------------------------------------
 
 #[tokio::test]
 async fn source_add_duplicate_name_rejected_before_detection() {
@@ -658,9 +648,7 @@ async fn source_add_duplicate_name_rejected_before_detection() {
     assert_eq!(err, "源 'duprepo' 已存在");
 }
 
-// ---------------------------------------------------------------------
 // ClawHub 网络臂（wiremock 假 ClawHub）
-// ---------------------------------------------------------------------
 
 #[tokio::test]
 async fn search_ok_via_wiremock_marks_installed() {
@@ -887,7 +875,7 @@ async fn install_ok_downloads_zip_and_extracts() {
                 "resolvedSlug": ""
             }))),
         )
-        // WS4 起安装走 SkillInstaller 漏斗：getBySlug 会被下载与 published_at
+        // 安装走 SkillInstaller 漏斗：getBySlug 会被下载与 published_at
         // 元数据两路各取一次，不钉精确次数。
         .mount(&server)
         .await;
@@ -958,7 +946,7 @@ async fn install_convex_error_maps_chinese_prefix() {
     assert!(err.contains("no such skill"), "err: {err}");
 }
 
-// --- BUG-20261101-279：installed() 列表顺序契约锁 ---
+// installed 列表顺序契约锁 ---
 
 #[test]
 fn bug279_installed_skills_sorted_by_name() {

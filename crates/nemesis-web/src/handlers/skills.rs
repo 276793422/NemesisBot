@@ -224,7 +224,7 @@ fn save_config(workspace: &str, cfg: &nemesis_config::SkillsFullConfig) -> Resul
 
 /// config.skills.json RMW 事务唯一入口——写串行锁在函数内取得，罩
 /// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
-/// 调用方结构上不可能忘锁（2026-10-13 闭包事务收口）。
+/// 调用方结构上不可能忘锁（闭包事务收口）。
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 /// （Mutex 非重入，嵌套即死锁）。
 fn update_skills_config<T>(
@@ -238,7 +238,7 @@ fn update_skills_config<T>(
     Ok(out)
 }
 
-/// 主配置 `{home}/config.json` 的 skills 段（WS4 P11/P16 消费）。
+/// 主配置 `{home}/config.json` 的 skills 段（/ 消费）。
 /// 优先 live 缓存（与 Dashboard config 面同源），回退磁盘读取；
 /// 两路都不可得 = None（调用方按 installer 默认走）。
 fn load_main_skills_config(home: &str) -> Option<nemesis_config::SkillsConfig> {
@@ -265,7 +265,7 @@ fn normalize_repo_ref(repo: &str, ref_field: Option<&str>) -> Result<String, Str
     }
 }
 
-/// BUG-20261101-295：skills 面 name 参数路径安全闸——复用 R35 技能 slug
+/// skills 面 name 参数路径安全闸——复用 技能 slug
 /// 验证器单一真相源（拒空串/路径分隔符/`..`/Windows 保留名/尾点尾空格）。
 /// detail/open_dir 此前裸拼 `skills/<name>`：detail 读任意
 /// `*/SKILL.md`、open_dir explorer 打开 workspace 外任意目录（且报错
@@ -276,9 +276,9 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
         .map_err(|e| format!("invalid skill name '{}': {}", name, e))
 }
 
-/// BUG-20261028-118 取消窗口兜底：force 更新在「备份已挪走、新版未落位」
+/// 取消窗口兜底：force 更新在「备份已挪走、新版未落位」
 /// 的窗口内 future 被 drop（任务取消/超时）时，Drop 同步触发把备份复位回
-/// 原位。显式成功/失败路径先 `disarm()` 再走自己的消费/回滚逻辑，guard
+/// 原位。显式成功/失败路径先 `disarm` 再走自己的消费/回滚逻辑，guard
 /// 只对「没有任何一方负责」的取消场景兜底。复位失败 best-effort（备份
 /// 留在 `.skill-rollback/`，下次安装的恢复式清扫收编）。
 struct RollbackGuard {
@@ -289,7 +289,7 @@ struct RollbackGuard {
 
 impl RollbackGuard {
     fn new(backup: PathBuf, target: PathBuf) -> Self {
-        // F4（2026-11-02 复评）：构造即登记——登记表是
+        // （复评）：构造即登记——登记表是
         // `recover_stale_rollbacks` 区分「活备份/真遗孤」的唯一依据，
         // 这里是备份守卫的单一出生点，所有 force 备份都经此入册。
         nemesis_skills::installer::SkillInstaller::register_inflight_backup(&backup);
@@ -310,7 +310,7 @@ impl Drop for RollbackGuard {
         if self.armed && self.backup.exists() && !self.target.exists() {
             let _ = std::fs::rename(&self.backup, &self.target);
         }
-        // F4：无条件注销——成功消费 / 显式回滚 / 取消复位 / 回滚失败
+        // 无条件注销——成功消费 / 显式回滚 / 取消复位 / 回滚失败
         // （备份留待下轮恢复）四态全走 Drop，此点是登记表的统一出口。
         nemesis_skills::installer::SkillInstaller::unregister_inflight_backup(&self.backup);
     }
@@ -352,7 +352,7 @@ impl SkillsHandler {
             }
         }
 
-        // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+        // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
         // 哈希序），列表直回前端而前端无客户端排序 → 已装技能面板顺序跨平台
         // 不稳定。显式排序钉死。
         skills.sort_by(|a, b| {
@@ -366,7 +366,7 @@ impl SkillsHandler {
     }
 
     fn detail(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        // 路径安全（BUG-20261101-295，与 uninstall/learned_remove 同源同闸）：
+        // 路径安全（与 uninstall/learned_remove 同源同闸）：
         // name 直接拼 `skills/<name>/SKILL.md`，无闸时 workspace 内任意
         // `*/SKILL.md` 可读（如 `../config` 形态越出 skills/ 语义边界）。
         validate_skill_name(name)?;
@@ -382,7 +382,7 @@ impl SkillsHandler {
     /// skills open_dir 的路径拼接 + 存在性校验，happy 路径单测只测这里。
     /// pub(crate)：skills_extra_tests（同 crate 兄弟模块）是它的消费者。
     pub(crate) fn resolve_skill_dir(workspace: &str, name: &str) -> Result<PathBuf, String> {
-        // 路径安全（BUG-20261101-295）：裸 join 无 resolve_path 兜底——
+        // 路径安全：裸 join 无 resolve_path 兜底——
         // `name="../.."` 会 explorer 打开 workspace 外任意目录（且报错
         // 泄露绝对路径 = 存在性 oracle）。单一闸口放这里，open_dir 与
         // 未来新增消费者共用。
@@ -417,7 +417,7 @@ impl SkillsHandler {
     }
 
     fn uninstall(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        // WS4 P14：卸载走 SkillInstaller（skills.lock.json 记账同步移除）。
+        // 卸载走 SkillInstaller（skills.lock.json 记账同步移除）。
         let installer = nemesis_skills::installer::SkillInstaller::new(workspace);
         installer
             .uninstall(name)
@@ -427,7 +427,7 @@ impl SkillsHandler {
         ))
     }
 
-    /// N3（2026-10-13 机会项）：学得技能账目列表（`.learned.json`）。
+    /// （机会项）：学得技能账目列表（`.learned.json`）。
     /// 附带 on_disk 现场核对（账有盘无 = 幽灵条目，如实标记）。
     fn learned_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let manifest =
@@ -448,7 +448,7 @@ impl SkillsHandler {
         Ok(Some(serde_json::json!({ "entries": entries })))
     }
 
-    /// N3：移除一条学得技能（目录 + 账目一起清）。护栏 = **manifest 成员
+    /// 移除一条学得技能（目录 + 账目一起清）。护栏 = **manifest 成员
     /// 资格**——只删账上记着的；registry 装的技能走 `skills.uninstall`
     /// （skills.lock.json 记账面），两条管理面互不越界。名字先过
     /// `validate_skill_identifier`（与 skill_manage 同一守卫，防路径穿越）。
@@ -553,9 +553,9 @@ impl SkillsHandler {
         self.install_with_ctx(data, workspace, None).await
     }
 
-    /// WS4 漏斗统一入口：registry 与 GitHub 两路都走 SkillInstaller
-    /// （验签 P11 → pin+完整性 P12 → 安全扫描 P15 → 版本龄 P16 →
-    /// 审批卡 P13 → lockfile 记账 P14）。
+    /// 漏斗统一入口：registry 与 GitHub 两路都走 SkillInstaller
+    /// （验签 → pin+完整性 → 安全扫描 → 版本龄 →
+    /// 审批卡 → lockfile 记账）。
     async fn install_with_ctx(
         &self,
         data: &serde_json::Value,
@@ -563,7 +563,7 @@ impl SkillsHandler {
         ctx: Option<&RequestContext>,
     ) -> Result<Option<serde_json::Value>, String> {
         let slug = crate::handlers::get_str(data, "slug")?;
-        // 路径安全（BUG-HUNT R35）：入口先拒——exists 检查的 `skills/<slug>` 拼
+        // 路径安全：入口先拒——exists 检查的 `skills/<slug>` 拼
         // 接、force 的 uninstall 与后续 installer.install 都不得喂入穿越 slug
         // （installer 侧有同源校验兜底，此处提前给可读错误）。
         nemesis_skills::types::validate_skill_identifier(&slug)
@@ -593,7 +593,7 @@ impl SkillsHandler {
 
         let mut installer = nemesis_skills::installer::SkillInstaller::new(workspace);
 
-        // P11/P16 主配置消费：{home}/config.json 的 skills 段
+        // / 主配置消费：{home}/config.json 的 skills 段
         // （allow_unsigned / min_age_days / min_age_policy）。读不到按默认。
         if let Some(home) = ctx.and_then(|c| c.home.clone())
             && let Some(skills) = load_main_skills_config(&home)
@@ -601,7 +601,7 @@ impl SkillsHandler {
             installer.set_allow_unsigned(skills.allow_unsigned);
             installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
         }
-        // P13 审批门：gateway 注入槽（None = 无审批面，直装——headless/测试装配；
+        // 审批门：gateway 注入槽（None = 无审批面，直装——headless/测试装配；
         // `skills.install_approval` 的消费点在 gateway 注入侧）。
         // §2 免打扰边界注记（无人值守计划 Part 2）：本闸当前唯一发起方 =
         // Dashboard 登录用户（RequestContext 无 channel 字段，无集群发起
@@ -612,13 +612,13 @@ impl SkillsHandler {
             installer.set_install_gate(gate);
         }
 
-        // R6（2026-10-24 复核）：force 更新事务化——旧形态「先卸后装」，源
+        // （复核）：force 更新事务化——旧形态「先卸后装」，源
         // 校验/下载/安全闸/审批任一失败 = 已装的可用技能被销毁。现在：
         // ① GitHub ref 语法预检提前；② registry 名预检提前；③ 旧目录原子
         // 备份改名（不删除）→ 装成功清备份，装失败原样复位。
         // lockfile/origin 记账随安装成功被同 slug upsert 覆盖（失败时旧记账
         // 与旧目录保持一致）。
-        // BUG-20261028-118：备份放独立根 `.skill-rollback/`（不再住
+        // 备份放独立根 `.skill-rollback/`（不再住
         // `.skill-staging/`——备份继承旧目录 mtime，会被 staging 24h 一刀切
         // 清扫在回滚消费它之前删掉）。建新备份前先跑恢复式清扫，收编上次
         // 失败/取消的遗孤；本次事务挂 Drop guard，任务取消窗口内旧版本
@@ -630,7 +630,7 @@ impl SkillsHandler {
             )?),
             None => None,
         };
-        // F4（2026-11-02 复评）：无效参数校验前移到动恢复材料之前——registry
+        // （复评）：无效参数校验前移到动恢复材料之前——registry
         // 名不存在是纯校验失败，不该先跑一轮恢复式清扫再报错（清扫是变更
         // 操作，失败请求不该有副作用）。
         if force && repo.is_none() {
@@ -643,7 +643,7 @@ impl SkillsHandler {
                 return Err(format!("源 '{}' 不存在", registry_name));
             }
         }
-        // 恢复式清扫：in-flight 备份经登记表识别跳过（F4，见
+        // 恢复式清扫：in-flight 备份经登记表识别跳过（见
         // recover_stale_rollbacks 注），真遗孤照常收编。
         installer.recover_stale_rollbacks();
         let mut backup: Option<PathBuf> = None;
@@ -665,7 +665,7 @@ impl SkillsHandler {
             // 取消窗口兜底：future 在任何 await 点被 drop（任务取消/超时）
             // 时 Drop 触发复位；显式成功/失败路径先 disarm 再走自己的
             // 消费/回滚逻辑。
-            // F4：守卫（=登记）先行于 rename——并发安装的恢复式清扫
+            // 守卫（=登记）先行于 rename——并发安装的恢复式清扫
             // 从此刻起就视本备份为活物，不留「备份已落盘、登记未跟上」
             // 的窗口；rename 失败提前返回时守卫 Drop 无条件注销。
             rollback_guard = Some(RollbackGuard::new(backup_dir.clone(), target_dir.clone()));
@@ -731,7 +731,7 @@ impl SkillsHandler {
             }
             Err(e) => {
                 // 装失败：旧目录原样复位（回滚失败 = 备份原地保留 + 诚实报错；
-                // 文案基于 backup 实检，不谎报——BUG-20261028-118）。
+                // 文案基于 backup 实检，不谎报）。
                 if let Some(b) = &backup {
                     let _ = std::fs::create_dir_all(target_dir.parent().unwrap());
                     if let Err(re) = std::fs::rename(b, &target_dir) {
@@ -761,7 +761,7 @@ impl SkillsHandler {
         }
     }
 
-    /// P14 漂移检测：`{slug}` 查单条（未记账报错），无 slug 全量扫描 lockfile。
+    /// 漂移检测：`{slug}` 查单条（未记账报错），无 slug 全量扫描 lockfile。
     fn verify(
         &self,
         workspace: &str,
@@ -1039,7 +1039,7 @@ impl SkillsHandler {
         match detected {
             Ok((index_type, skill_path_pattern, branch)) => {
                 // 事务入口罩整段 RMW：探测（网络，秒级）期间其他写臂可能
-                // 已改配置，锁内重读 + 重查重 + 写（同类横扫 2026-10-13，
+                // 已改配置，锁内重读 + 重查重 + 写（同类横扫 ，
                 // 锁在 update_skills_config 内）。
                 update_skills_config(workspace, |cfg| {
                     if cfg.github_sources.iter().any(|s| s.name == name) {
@@ -1166,9 +1166,7 @@ impl SkillsHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // GitHub URL parsing and auto-detection (from CLI skills command)
-// ---------------------------------------------------------------------------
 
 fn github_url_error(url: &str) -> String {
     format!(
@@ -1190,7 +1188,7 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
             let repo = parts[1].trim_end_matches(".git").to_string();
             return Ok((parts[0].to_string(), repo));
         }
-        // (BUG #25, quality-hardening goal 冲刺 S10) 前缀命中但只有 owner
+        // (, quality-hardening goal 冲刺) 前缀命中但只有 owner
         // 段（如 https://github.com/onlyowner）时，原实现不返回而是继续掉进
         // 下面的 shorthand 分支，把完整 URL 按第一个 '/' 拆成
         // ("https:", "/github.com/onlyowner") 垃圾 owner/repo——用户最终看到
@@ -1350,11 +1348,11 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
 }
 
 // 私有面测试：learn/parse_github_url/load_registry_config/source_add 重名臂/
-// wiremock 假 ClawHub 网络臂（quality-hardening goal 冲刺 S10a）。
+// wiremock 假 ClawHub 网络臂（quality-hardening goal 冲刺）。
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-24）：Default impl + parse_github_url 条件假
+// AGT 覆盖率批次：Default impl + parse_github_url 条件假
 // 延续臂。探测/浏览网络臂豁免（见文件头注）。
 #[cfg(test)]
 mod agt_tests;

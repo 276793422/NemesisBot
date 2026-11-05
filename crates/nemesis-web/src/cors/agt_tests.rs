@@ -1,6 +1,6 @@
 //! cors.rs AGT 覆盖率批次（2026-09-25）：CORSManager::new 成功路径上的
 //! tracing::info! 字段求值（130）。tracing 宏在无 subscriber 时短路——
-//! `path = %config_path.display()` 的 DisplayValue 构造（即 display() 调用
+//! `path = %config_path.display` 的 DisplayValue 构造（即 display 调用
 //! 本身）只有挂上 always-interest 订阅者才会执行；用 with_default 线程局部
 //! 作用域订阅者确定性触发（不碰全局槽，防并行竞态）。
 //!
@@ -10,7 +10,7 @@
 
 use super::*;
 
-/// 最小 INFO 级订阅者：默认 register_callsite = always()，字段求值必达；
+/// 最小 INFO 级订阅者：默认 register_callsite = always，字段求值必达；
 /// 事件体 no-op（覆盖率只要求求值路径执行，不要求观测内容）。
 struct AgtInfoSubscriber;
 

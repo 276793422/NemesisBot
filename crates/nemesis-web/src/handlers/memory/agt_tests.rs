@@ -2,7 +2,7 @@
 //!
 //! 与 tests / s10b_tests 互补，聚焦仍缺的确定性臂：
 //! - `require_team_memory_store`：board 缺席的诚实报错臂
-//! - team_memory 命令组（M4.5，master board.db）：team.list 的 scope/
+//! - team_memory 命令组（.5，master board.db）：team.list 的 scope/
 //!   include_deprecated 提取、team.search、team.set_deprecated、team.remove
 //! - `migrate_legacy_vector_store` 的旧树一次性拷贝成功臂
 //! - entries.get / entries.delete 的 JSONL 兜底路径：store 缺失臂、
@@ -102,15 +102,13 @@ async fn agt_run(
     MemoryHandler.handle_cmd(cmd, Some(data), ctx).await
 }
 
-// ---------------------------------------------------------------------------
 // team_memory：board 缺席报错 + 全命令组
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_team_memory_requires_board_service() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = agt_ctx_full(&dir, None, None);
-    // 私有取用函数直接断言（BoardStore 无 Debug，用 .err() 取错误）
+    // 私有取用函数直接断言（BoardStore 无 Debug，用 .err 取错误）
     let err = require_team_memory_store(&ctx).err().unwrap();
     assert!(err.contains("board service not available"), "err: {err}");
     // dispatch 层同样诚实报错（在参数提取之前）
@@ -213,9 +211,7 @@ async fn agt_team_memory_command_group_roundtrip() {
     assert!(err.contains("missing field: id"), "err: {err}");
 }
 
-// ---------------------------------------------------------------------------
 // migrate_legacy_vector_store：旧树一次性拷贝
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_migrate_legacy_vector_store_copies_once() {
@@ -247,9 +243,7 @@ fn agt_migrate_legacy_vector_store_copies_once() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // entries.get / entries.delete 的 JSONL 兜底路径边臂
-// ---------------------------------------------------------------------------
 
 fn agt_write_vector_jsonl(ws: &std::path::Path, body: &str) {
     let path = vector_store_jsonl_path(&ws.to_string_lossy());
@@ -305,9 +299,7 @@ async fn agt_entries_get_delete_keyword_fallback_edges() {
     assert_eq!(out["entry"], serde_json::Value::Null);
 }
 
-// ---------------------------------------------------------------------------
 // 语义路径带真实条目（test-fixture 嵌入注入）
-// ---------------------------------------------------------------------------
 
 /// 确定性 64 维字节袋嵌入——同串自相似 1.0，保证跨过任意阈值。
 fn agt_embed() -> nemesis_memory::vector::EmbeddingFunc {

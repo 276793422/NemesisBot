@@ -1,4 +1,4 @@
-//! Tests for the models handler — P3-2 (2026-08-24 UI entry gap) attribute
+//! Tests for the models handler — (2026-08-24 UI entry gap) attribute
 //! editor + catalog glue.
 //!
 //! Declared from `models.rs` (not the flat `handlers/mod.rs` extra-test list)
@@ -213,7 +213,7 @@ fn update_field_effort_and_size_normalization() {
     );
 }
 
-/// per-model 绝对压缩点（2026-10-20 compact_context_tokens）：数字落盘 /
+/// per-model 绝对压缩点（compact_context_tokens）：数字落盘 /
 /// 0 或空串清除=移键（不是写 null）/ 非法值 loud 拒 / 未知字段报错清单
 /// 含新键 / models.list 透传。
 #[test]
@@ -354,7 +354,7 @@ fn catalog_info_reports_cache_state() {
     assert_eq!(info["fetched_at"], "2026-08-24T00:00:00Z");
 }
 
-/// 2026-08-28 布局迁移：home 根的 legacy 缓存在首次读取时自动 rename 进
+/// 布局迁移：home 根的 legacy 缓存在首次读取时自动 rename 进
 /// workspace/data（零重新下载），与 CLI 侧共用 nemesis-path 的迁移函数同契约。
 #[test]
 fn catalog_info_migrates_legacy_home_root_cache() {
@@ -470,15 +470,13 @@ fn list_attaches_extras_and_catalog_match() {
     assert_eq!(m2["catalog_match"], serde_json::Value::Null);
 }
 
-// ---------------------------------------------------------------------------
-// Raw-RMW migration (P3-2): add/delete/set_default must NOT erase the raw
+// Raw-RMW migration : add/delete/set_default must NOT erase the raw
 // extras — the reason they no longer go through a typed save.
-// ---------------------------------------------------------------------------
 
 /// RequestContext for set_default (agent_loop None → no runtime swap; only
 /// the file effect is asserted). Same dual-decl pattern as
 /// handlers/logs/history_tests.rs make_ctx.
-// pub(super)：copy_rename_tests（2026-10-27 批）复用同一 AppState 形态，
+// pub(super)：copy_rename_tests（批）复用同一 AppState 形态，
 // 免复制 60 行构造体。
 pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
     use crate::api_handlers::AppState;
@@ -632,8 +630,8 @@ fn set_default_reorders_and_preserves_extras() {
     assert_eq!(list[1]["custom_note"], "keep-me");
 }
 
-/// 集群专业职能框架 M4 守卫②：images-openai 条目不能被设为默认对话模型
-/// ——写盘前 loud 拒绝，config 保持原状（不产生半状态）。
+/// 集群专业职能框架 守卫②：images-openai 条目不能被设为默认对话模型
+/// 写盘前 loud 拒绝，config 保持原状（不产生半状态）。
 #[test]
 fn set_default_rejects_image_protocol_entry() {
     let seed = r#"{
@@ -655,7 +653,7 @@ fn set_default_rejects_image_protocol_entry() {
     assert_eq!(cfg["agents"]["defaults"]["llm"], serde_json::Value::Null);
 }
 
-/// 声明式模型角色（2026-10-13 N6）守卫②：utility/classifier 条目不能被设
+/// 声明式模型角色守卫②：utility/classifier 条目不能被设
 /// 为默认对话模型——写盘前 loud 拒绝；conversation/缺省照常放行。
 #[test]
 fn set_default_rejects_non_conversation_role_entry() {
@@ -691,7 +689,7 @@ fn set_default_rejects_non_conversation_role_entry() {
     assert_eq!(cfg["agents"]["defaults"]["llm"], "chat");
 }
 
-/// 概览页同步（BUG 2026-09-21）：set_default 写 config 成功后必须同步
+/// 概览页同步（BUG）：set_default 写 config 成功后必须同步
 /// AppState 的 model/model_base/model_has_key 快照——否则 /api/status 与
 /// 概览页永远显示网关启动时的老模型（agent 实际已热换新模型）。
 #[test]
@@ -736,7 +734,7 @@ fn set_default_syncs_state_model_snapshot() {
 }
 
 // ============================================================
-// Phase 3 覆盖率补测（2026-08-25）：delete 默认模型拒绝臂、
+// 覆盖率补测：delete 默认模型拒绝臂、
 // set_default 的运行时 provider 热切（含 api_base 推断/显式/失败
 // 三臂 + Forge 桥）、real_name trim 落盘、catalog 无 key 条目跳过。
 // ============================================================
@@ -761,7 +759,7 @@ fn delete_default_model_refused() {
     assert_eq!(cfg["model_list"].as_array().unwrap().len(), 2);
 }
 
-// --- runtime swap：真 AgentLoop ---
+// runtime swap：真 AgentLoop ---
 
 struct SwapProvider;
 #[async_trait::async_trait]
@@ -925,12 +923,10 @@ fn catalog_entries_without_key_are_skipped() {
     assert_eq!(m1["catalog_match"]["context_window"], 131072);
 }
 
-// ---------------------------------------------------------------------------
-// G4 (U15)：key_source 来源徽标 —— list 必须带 key_source（kind + ref），
+// key_source 来源徽标 —— list 必须带 key_source（kind + ref），
 // 四种来源各就位，且响应中不泄露明文 key。
-// ---------------------------------------------------------------------------
 
-/// G4：env:/yaml:/inline/空 四种 api_key 形态 → classify_key_source 映射正确，
+/// env:/yaml:/inline/空 四种 api_key 形态 → classify_key_source 映射正确，
 /// ref 只携带引用名（VAR 名 / alias），绝不携带明文。
 #[test]
 fn list_key_source_covers_all_four_kinds() {
@@ -971,7 +967,7 @@ fn list_key_source_covers_all_four_kinds() {
     assert!(models[0]["key_source"].get("reference").is_none());
 }
 
-// --- 回归锁（2026-09-11 生产实证）：set_default 运行时热切参数与启动路径同源 ---
+// 回归锁（生产实证）：set_default 运行时热切参数与启动路径同源 ---
 //
 // 此前直接拿裸 model 字段当 llm_ref/模型名：无斜杠名被 factory 默认
 // provider=openai → CodexProvider（POST /responses + 重映射 gpt-5.2，
@@ -1052,7 +1048,7 @@ fn canonical_swap_params_unknown_name_errors_loud() {
     assert!(err.contains("nope"), "got: {err}");
 }
 
-// --- LLM 协议选择器（2026-09-11）：add / update_field 的 protocol 契约 ---
+// LLM 协议选择器：add / update_field 的 protocol 契约 ---
 
 #[test]
 fn add_persists_protocol_and_normalizes_alias() {
@@ -1125,7 +1121,7 @@ fn add_without_protocol_stays_empty_and_invalid_rejected() {
     );
 }
 
-// --- per-model 流式开关（2026-10-13 stream 键）：add / update_field 契约 ---
+// per-model 流式开关（stream 键）：add / update_field 契约 ---
 
 #[test]
 fn add_persists_stream_and_rejects_invalid() {
@@ -1293,12 +1289,12 @@ fn update_field_protocol_set_clear_alias_and_reject() {
 }
 
 // ============================================================
-// 统一默认槽联动（2026-09-22 方案A）：set_default / update_field(protocol|
+// 统一默认槽联动（方案A）：set_default / update_field(protocol|
 // proxy 命中当前默认) 是唯一 chokepoint，必须写
 // nemesis_providers::default_slot——集群 loop / workflow 引擎 / guardian
 // judge / SSE·persona 的 default_following wrapper 经槽跟随热切。
 // 槽是进程级单例，本测试二进制内多个 set_default 测试并行运行会互踩槽值
-// ——这里只做「槽被写」的弱断言；委派/钉扎/恢复的行为级矩阵在
+// 这里只做「槽被写」的弱断言；委派/钉扎/恢复的行为级矩阵在
 // nemesis-providers 的 default_slot/tests.rs（独立测试二进制，无互踩）。
 // ============================================================
 

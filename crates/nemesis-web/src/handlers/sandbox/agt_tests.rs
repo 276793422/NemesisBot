@@ -138,7 +138,7 @@ async fn agt_set_network_ini_rewrite_failure_arm() {
 
 // Start.exe /reload spawn 失败臂是 Sandboxie Windows 形态（Linux stub 路径
 // 无 spawn 步骤、诚实返回 Ok + restart_hint，Linux CI 实证假红），照
-// 2026-09-02 约定按平台门控。
+// 约定按平台门控。
 #[cfg(windows)] // Windows-form test（Sandboxie Start.exe /reload 语义，Linux nightly: excluded）
 #[tokio::test]
 async fn agt_set_network_reload_spawn_failure_arm() {
@@ -146,7 +146,7 @@ async fn agt_set_network_reload_spawn_failure_arm() {
     let data = serde_json::json!({ "enabled": true });
 
     // ② ini 写成功但 Start.exe 缺失 → /reload spawn 失败（无副作用：
-    //    Command::new(不存在路径).spawn() 立即 Err）
+    //    Command::new(不存在路径).spawn 立即 Err）
     let dir2 = tempfile::tempdir().unwrap();
     agt_write_config_json(dir2.path());
     let ctx2 = agt_make_ctx(&dir2);
@@ -167,17 +167,15 @@ async fn agt_set_network_reload_spawn_failure_arm() {
     assert!(content.contains("AllowNetworkAccess=y"), "{content}");
 }
 
-// ---------------------------------------------------------------------------
 // Wave5 批次：Default impl、current_executor 的 CLI fallback 读失败臂、
 // self_test 的 Windows 无后端诚实臂（supported:false，不 spawn 子进程）。
-// ---------------------------------------------------------------------------
 
 /// `Default` impl 三行（trait 转发 new）。
 #[test]
 fn w5_default_impl_delegates_to_new() {
-    // 经泛型间接调用：单元结构体直呼 `Default::default()` 会被
+    // 经泛型间接调用：单元结构体直呼 `Default::default` 会被
     // clippy::default_constructed_unit_structs 建议改成字面量（那就执行不到
-    // default() 的产品行了）；间接一层 lint 干净，且真实走 trait 转发。
+    // default 的产品行了）；间接一层 lint 干净，且真实走 trait 转发。
     fn via_default<H: Default>() -> H {
         H::default()
     }
@@ -207,7 +205,7 @@ fn w5_current_executor_missing_config_defaults_to_all_false() {
 #[tokio::test]
 async fn w5_selftest_reports_unsupported_without_userland_backend() {
     // 若机器装了 landlock/bwrap 等价物（Windows 上没有）则本测试前提失效，
-    // 诚实跳过；正常 Windows 机 detect_backend(false) == None（P1 后带
+    // 诚实跳过；正常 Windows 机 detect_backend(false) == None（后带
     // 网络选型入参，Windows 两态恒 None）。
     if nemesis_sandbox::backend::detect_backend(false).is_some() {
         eprintln!("skip: userland backend present, unsupported arm unreachable");

@@ -1,5 +1,5 @@
-//! 子代理 WSAPI handler 测试（P1，2026-11-03）。handler 走全局注册表
-//! （`subagent_registry::global()`，测试进程未 init = 纯内存态）——断言
+//! 子代理 WSAPI handler 测试（2026-11-03）。handler 走全局注册表
+//! （`subagent_registry::global`，测试进程未 init = 纯内存态）——断言
 //! 一律按唯一 marker 过滤，不假设全局表为空（同二进制其他测试可能写入）。
 
 use super::subagents::SubagentsHandler;
@@ -235,11 +235,9 @@ async fn commands_surface_and_unknown_command_rejected() {
     assert!(err.contains("unknown command: subagents.nope"), "err={err}");
 }
 
-// ---------------------------------------------------------------------------
-// events（D4 回放面）：registry id == 环键（`subagent:{uuid}`），泵侧
+// events（回放面）：registry id == 环键（`subagent:{uuid}`），泵侧
 // record_tool 落环 → replay_after 原样读回。环是进程级全局表——测试
 // 须持 GLOBAL_TABLE_LOCK（chat_sync_tests 同款），防并行测试串扰。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn events_replays_ring_under_registry_id() {

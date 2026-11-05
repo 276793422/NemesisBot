@@ -2,7 +2,7 @@
 //!
 //! 前三个测试子模块已覆盖 parse_github_url 主臂 / source_add 重名拒绝 /
 //! wiremock 网络臂；本文件只补剩余确定性臂：
-//! - `Default` impl（tests 全走 `new()`，default 恒空）
+//! - `Default` impl（tests 全走 `new`，default 恒空）
 //! - `parse_github_url` 的条件假延续臂：git@ 前缀命中但无 owner/repo 斜杠
 //!   （`git@github.com:onlyrepo` → 落出 git@ 分支）、shorthand 有一侧为空
 //!   （`/repo` → owner 空）→ 都落到最终 Err

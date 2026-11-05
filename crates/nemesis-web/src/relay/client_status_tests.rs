@@ -7,8 +7,8 @@
 use super::client_status::*;
 
 /// 串行化闸（槽是全局的，测试必须互斥）。tokio Mutex：async 用例
-/// `.lock().await` 跨 await 持锁（clippy await_holding_lock 只针对 std
-/// guard），同步用例走 `blocking_lock()`。
+/// `.lock.await` 跨 await 持锁（clippy await_holding_lock 只针对 std
+/// guard），同步用例走 `blocking_lock`。
 static GLOBAL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 测试结束清槽（Drop 保 panic 路径也清理）。
@@ -86,10 +86,10 @@ async fn test_kick_wakes_notified_waiter() {
     let _lock = GLOBAL_TEST_LOCK.lock().await;
     let _guard = SlotGuard;
 
-    // kick 语义：先订阅后 kick，notified() 立即完成（不等待）。
+    // kick 语义：先订阅后 kick，notified 立即完成（不等待）。
     let notify = reconnect_notify();
     let waiter = tokio::spawn(async move { notify.notified().await });
-    // 让 waiter 先跑到 notified() 注册点（yield 几轮足够）。
+    // 让 waiter 先跑到 notified 注册点（yield 几轮足够）。
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
     kick_reconnect();
@@ -104,7 +104,7 @@ async fn test_kick_permit_survives_until_subscribed() {
     let _lock = GLOBAL_TEST_LOCK.lock().await;
     let _guard = SlotGuard;
 
-    // 先 kick（无订阅者）→ 后订阅：permit 存活，notified() 立即完成。
+    // 先 kick（无订阅者）→ 后订阅：permit 存活，notified 立即完成。
     // 这正是「客户端未运行时点重连」的语义：permit 留给下次 spawn。
     kick_reconnect();
     let notify = reconnect_notify();
@@ -116,10 +116,8 @@ async fn test_kick_permit_survives_until_subscribed() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // 批次三通道页端点（handler 直调——路由挂载形态见 server.rs，直调足以
 // 覆盖 JSON 语义；与 /api/relay/status 的 handler 测试同思路）
-// ---------------------------------------------------------------------------
 
 use axum::body::Body;
 use axum::http::Request;

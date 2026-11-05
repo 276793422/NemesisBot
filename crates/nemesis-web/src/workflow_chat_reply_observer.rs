@@ -235,12 +235,12 @@ fn terminal_node_ids(workflow: &nemesis_workflow::types::Workflow) -> Vec<String
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): on_event
+// (, quality-hardening goal 冲刺 web 批次 2): on_event
 // delivery path (Completed/Failed/Cancelled/unknown/non-chat-trigger) via a
 // persistence-seeded engine + missing-def reply fallback.
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：Observer 名牌臂（name() 契约）。
+// AGT 覆盖率批次：Observer 名牌臂（name 契约）。
 #[cfg(test)]
 mod agt_tests;

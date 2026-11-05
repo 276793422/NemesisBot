@@ -1,4 +1,4 @@
-//! F1（2026-09-22 审计修复）：统一 REST 鉴权中间件测试。
+//! （2026-09-22 审计修复）：统一 REST 鉴权中间件测试。
 //!
 //! 覆盖三块：
 //! 1. `auth_exempt_path` 豁免清单真值表（含近邻前缀不误豁免）；
@@ -29,7 +29,7 @@ fn test_auth_exempt_path_truth_table() {
     assert!(auth_exempt_path("/api/sdk/export"));
     assert!(auth_exempt_path("/api/sdk/pip"));
     // 豁免：webhook 回调（外部服务 GitHub/Slack 等裸调；自有安全层 =
-    // 可选 HMAC + per-IP 限流 + 审计；缺陷 11 修复 2026-09-23）
+    // 可选 HMAC + per-IP 限流 + 审计；缺陷 11 修复）
     assert!(auth_exempt_path("/api/workflow/webhook/webhook_flow"));
     assert!(auth_exempt_path("/api/workflow/webhook/a/b"));
 
@@ -37,7 +37,7 @@ fn test_auth_exempt_path_truth_table() {
     assert!(!auth_exempt_path("/api/status"));
     assert!(!auth_exempt_path("/api/config"));
     assert!(!auth_exempt_path("/api/chat/stream"));
-    // S5（2026-10-09）：OpenAI 兼容端点触发 agent 执行——与 dashboard
+    // OpenAI 兼容端点触发 agent 执行——与 dashboard
     // 同一信任边界，绝不进豁免清单（Bearer 头本就被中间件接受）。
     assert!(!auth_exempt_path("/v1/chat/completions"));
     assert!(!auth_exempt_path("/"));
@@ -202,7 +202,7 @@ async fn test_auth_exempt_health_passes_without_token() {
 
 #[tokio::test]
 async fn test_auth_share_endpoint_passes_auth_layer() {
-    // L4 分享：token 即凭据——不持 dashboard token 也不该 401；
+    // 分享：token 即凭据——不持 dashboard token 也不该 401；
     // 未知分享号按 share 语义 404（非 401 即证明过了鉴权闸）。
     let resp = router_oneshot("/api/share/nonexistent-token", None, None).await;
     assert_ne!(resp.status(), 401);
@@ -211,7 +211,7 @@ async fn test_auth_share_endpoint_passes_auth_layer() {
 
 #[tokio::test]
 async fn test_auth_workflow_chat_query_does_not_bypass_other_paths() {
-    // workflow_chat= 豁免只对 WS 路径成立（复核 2026-09-22 收敛）——其余
+    // workflow_chat= 豁免只对 WS 路径成立（复核 收敛）——其余
     // 路径拼上该查询键**不得**绕过 auth 闸（否则任何端点皆可旁路）。
     let resp = router_oneshot("/api/status?workflow_chat=1", None, None).await;
     assert_eq!(resp.status(), 401);
@@ -243,7 +243,7 @@ async fn test_auth_empty_expected_token_allows_all() {
 }
 
 // ============================================================
-// LLM 代理调用方 key 回落臂（2026-11-03 LLM代理调用方key管理 P3）
+// LLM 代理调用方 key 回落臂（LLM代理调用方key管理）
 // ============================================================
 
 /// 带代理 key 表的 router + oneshot（workspace 指向临时目录，key 文件由
@@ -321,8 +321,8 @@ async fn test_proxy_key_disabled_rejected_without_restart() {
     // 禁用即失效（热生效：同一 router 不重建）。
     nemesis_config::proxy_keys_file::set_enabled(&dir.path().join("config"), "bot-a", false)
         .unwrap();
-    // BUG-20261103：原 sleep(20ms)「不赌 mtime 粒度」仍是赌——Windows CI 实录
-    // 20ms 内文件时间可同 tick（shard9 禁用未生效 → 放行 → GET 打 POST-only
+    // 原 sleep(20ms)「不赌 mtime 粒度」仍是赌——Windows CI
+    // 20ms 内文件时间可同 tick（禁用未生效 → 放行 → GET 打 POST-only
     // completions 回 405 顶掉 401）。缓存已改内容比对（proxy_keys.rs），写盘
     // 即刻生效不依赖任何钟，sleep 撤除让测试同时钉住零延迟热生效语义。
     let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;

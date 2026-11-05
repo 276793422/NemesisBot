@@ -227,7 +227,7 @@ async fn test_dispatch_req_id_roundtrip() {
     assert_eq!(resp["reqId"], custom_id);
 }
 
-// 2026-10-16 hardening (P1-1): workflow_chat sessions are bound to the
+// hardening : workflow_chat sessions are bound to the
 // chat surface only. Even though dispatch no longer trusts the auth check
 // happening elsewhere, the router itself must refuse every module access —
 // here the handler IS registered and reachable, and must still be denied.

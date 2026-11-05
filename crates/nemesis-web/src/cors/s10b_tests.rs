@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): CORSManager error arms the
+//! (quality-hardening goal 冲刺, web 批次 2): CORSManager error arms the
 //! existing tests skip — invalid JSON load, un-creatable parent directory
 //! (`create_dir_all` failure), the honest rename failure on a read-only
 //! destination, and the CDN `Url::parse` failure arm in `check_origin`.
@@ -32,7 +32,7 @@ fn load_invalid_json_reports_invalid_data() {
 fn new_with_file_as_parent_dir_fails_create_dir_all() {
     // A regular FILE sits where the config's parent directory should be →
     // the atomic helper's internal `create_dir_all` fails when writing the
-    // default config (REL-002 后错误经 helper 步骤标签包装，kind 归一为
+    // default config (后错误经 helper 步骤标签包装，kind 归一为
     // Other，断言改查步骤标签与路径上下文——比裸 kind 更有语义)。
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("blocker");
@@ -57,7 +57,7 @@ fn rename_fails_honestly_when_destination_is_readonly() {
     let path = dir.path().join("cors.json");
     // Seed a valid config file, then make it read-only so the atomic
     // rename (tmp → path) fails and save_to_file surfaces the error.
-    // REL-002 注：旧实现此时会回退为裸写（同失败，但回退语义会把原子性
+    // 注：旧实现此时会回退为裸写（同失败，但回退语义会把原子性
     // 悄悄降级）；helper 统一后无回退臂，失败即诚实报错。
     std::fs::write(
         &path,

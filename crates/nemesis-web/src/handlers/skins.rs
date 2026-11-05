@@ -1,7 +1,7 @@
 //! Skins WSAPI handler — Dashboard 设置页「皮肤」tab 的管理面。
 //!
 //! 命令：`list` / `reload`（现扫即最新，语义锚点）/ `detail` / `set_active`
-//! / `install`（P2 渠道下载）。扫描与验证在 `crate::skins::scan_skins`（管理面
+//! / `install`（渠道下载）。扫描与验证在 `crate::skins::scan_skins`（管理面
 //! 按需现扫现验，stateless scan-per-call 无缓存失效面；数据面分发不验签）。
 //!
 //! `install` = verify-before-install 渠道（2026-09-27 四裁决）：`{url}` 任意
@@ -84,7 +84,7 @@ impl SkinsHandler {
         };
         let dir_exists = std::path::Path::new(&dir).is_dir();
         let skins = scan_skins(&dir);
-        // P3 管理面 CRL 快照状态（在场 + 装载各态诚实呈现）。
+        // 管理面 CRL 快照状态（在场 + 装载各态诚实呈现）。
         let crl = crl_snapshot_info(&dir, &crate::skins::resolve_anchors(), &skins);
         Ok(Some(
             json!({ "dir": dir, "dir_exists": dir_exists, "skins": skins, "crl": crl }),
@@ -131,7 +131,7 @@ impl SkinsHandler {
 
         // 锁在 update_config 内：require_signed 读取与 ui.skin 写入同源一事务
         //（scan_skins 目录扫描在闭包内拉宽持锁窗口，与旧手动锁等价；
-        // 2026-10-13 闭包事务收口）。
+        // 闭包事务收口）。
         super::config::update_config(&home, |cfg| {
             // ① 非默认 id：先过包体/策略校验，全绿才动 config。
             if id != "default" {
@@ -147,7 +147,7 @@ impl SkinsHandler {
                     let reason = entry.status_detail.unwrap_or_else(|| "未知原因".into());
                     return Err(format!("皮肤包损坏，无法启用（{reason}）"));
                 }
-                // v2 双载荷闸 → P2a 三载荷闸：entry（CSS 换色）∥ structure
+                // v2 双载荷闸 → 三载荷闸：entry（CSS 换色）∥ structure
                 //（结构骨架）∥ script（行为扩展）任一在场即可激活；全无 =
                 // 无任何可服务载荷，拒绝。
                 if entry.manifest.entry.is_none()
@@ -184,9 +184,7 @@ impl SkinsHandler {
         Ok(Some(json!({ "active": id })))
     }
 
-    // -----------------------------------------------------------------------
-    // P2 渠道下载（verify-before-install；2026-09-27 四裁决语义）
-    // -----------------------------------------------------------------------
+    // 渠道下载（verify-before-install； 四裁决语义）
 
     /// `skins.install` 入口：`{url}` 任意 https 地址 / `{source:"release"}`
     /// 官方 Release；可选 `overwrite`（默认 false，重名拒绝）。
@@ -221,7 +219,7 @@ impl SkinsHandler {
         Ok(Some(serde_json::to_value(outcome).unwrap_or(json!({}))))
     }
 
-    /// `skins.script_consent`（P2a）：脚本同意卡动作的审计漏斗。
+    /// `skins.script_consent`：脚本同意卡动作的审计漏斗。
     /// `{id, decision}`（decision = "allow" | "deny"）。逐包现扫取 sha256
     /// 与签名徽标，JSONL 追加 `<workspace>/logs/skin_scripts.log` +
     /// tracing。**记账不改变任何运行时状态**——脚本执行授权在前端
@@ -298,16 +296,14 @@ impl SkinsHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // 渠道下载机制（fetch + release 解包）
-// ---------------------------------------------------------------------------
 //
 // 下载链（SSRF 逐跳闸 / 手动重定向循环 / 流式上限）公共化在
 // [`crate::handlers::release_fetch`]——WASM 插件开发包（devkit）下载共用
 // 单一来源；本模块只保留 skins 语义的资产名与解包安装。
 
 /// 官方发布源 Release 的 nightly-skins.zip 附件名——CI 打包链的固定产物
-///（plan §2 P0）。列表 API 与查找在 [`crate::handlers::release_fetch`]。
+///（plan §2）。列表 API 与查找在 [`crate::handlers::release_fetch`]。
 const RELEASE_ZIP_NAME: &str = "nightly-skins.zip";
 
 /// 官方 Release 安装：GitHub API 近期 Release 列表 → 首个含 nightly-skins.zip
@@ -353,7 +349,7 @@ async fn install_zip_entries(
         if entry.is_dir() || !name.ends_with(".nbskin") {
             continue; // signatures.json / certs/ / 目录条目不是可安装对象
         }
-        // 有界解压（BUG 2026-10-29 横扫角度 B）：单条目 32 MiB 上限（皮肤
+        // 有界解压（BUG 横扫角度 B）：单条目 32 MiB 上限（皮肤
         // 包远小于此），解压炸弹逐条记 errors 不炸整包——与名字解码失败
         // 同款容错形态。
         const SKIN_ENTRY_CAP: usize = 32 * 1024 * 1024;
@@ -389,9 +385,7 @@ async fn install_zip_entries(
     Ok(Some(json!({ "installed": installed, "errors": errors })))
 }
 
-// ---------------------------------------------------------------------------
 // HTTP 导入端点（本地文件第三入口；server.rs 挂载 /api/skins/import）
-// ---------------------------------------------------------------------------
 
 /// 导入 body 上限（25MB 有效载荷 + 1MB 余量，超限 axum 直接 413）。
 pub const SKIN_IMPORT_BODY_LIMIT_BYTES: usize = SKIN_PACKAGE_MAX_BYTES + 1024 * 1024;

@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): websocket_handler arms
+//! (quality-hardening goal 冲刺, web 批次 2): websocket_handler arms
 //! that `extra_tests.rs` (auth/legacy happy paths) does not reach, all via a
 //! real axum server on an ephemeral 127.0.0.1 port + tokio-tungstenite client:
 //!
@@ -79,7 +79,7 @@ fn make_state(
 }
 
 /// 注册一个可聊天测试工作流（单个 0 秒 delay 节点），返回其规范 chat index。
-/// workflow-chat 升级闸要求 index 能解析到已注册工作流（2026-10-16 加固）。
+/// workflow-chat 升级闸要求 index 能解析到已注册工作流（加固）。
 fn register_chat_wf(engine: &nemesis_workflow::engine::WorkflowEngine, name: &str) -> String {
     use std::collections::HashMap;
     let mut cfg = HashMap::new();
@@ -153,9 +153,7 @@ async fn assert_loop_alive(ws: &mut WsStream) {
     assert_eq!(v["cmd"], "pong", "loop must still respond, got: {}", pong);
 }
 
-// ---------------------------------------------------------------------------
 // workflow-chat password auth (handle_websocket_upgrade)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn workflow_chat_wrong_password_rejects_upgrade_with_401() {
@@ -220,9 +218,7 @@ async fn workflow_chat_correct_password_allows_upgrade() {
     ws.send(WsMessage::Close(None)).await.unwrap();
 }
 
-// ---------------------------------------------------------------------------
 // request dispatch with no router + workflow_chat module spawn
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn request_without_router_gets_error_response() {
@@ -265,9 +261,7 @@ async fn workflow_chat_module_message_is_spawned_and_loop_survives() {
     assert_loop_alive(&mut ws).await;
 }
 
-// ---------------------------------------------------------------------------
 // legacy path inbound-channel arms
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn chat_send_with_no_inbound_channel_is_dropped_with_warning() {
@@ -301,9 +295,7 @@ async fn chat_send_with_closed_inbound_channel_warns_and_survives() {
     assert_loop_alive(&mut ws).await;
 }
 
-// ---------------------------------------------------------------------------
 // protocol frame arms
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn protocol_ping_frame_receives_text_pong() {
@@ -357,9 +349,7 @@ async fn abrupt_client_drop_ends_stream_and_cleans_up_session() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // direct metadata arms (session_id passthrough)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn chat_send_and_history_request_pass_session_id_metadata() {

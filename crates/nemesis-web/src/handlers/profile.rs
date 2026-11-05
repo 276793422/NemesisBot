@@ -94,7 +94,7 @@ impl ProfileHandler {
             entry.enabled = true;
             Ok(())
         })?;
-        // 截断上限与 sweep 同源：config 现读 max_entries（BUG-20261025-20）。
+        // 截断上限与 sweep 同源：config 现读 max_entries。
         let max_entries = crate::handlers::config::load_config(&home)
             .ok()
             .and_then(|cfg| cfg.user_profile)

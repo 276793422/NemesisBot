@@ -71,7 +71,7 @@ fn missing_legacy_file_is_noop() {
 }
 
 // ============================================================
-// Phase 3 coverage (2026-08-25): main-switch read/write, status,
+// coverage : main-switch read/write, status,
 // documents / document.get / document.save, vector.status direct-path testing.
 // Private methods callable directly (this file is a child of the memory module).
 // ============================================================
@@ -298,7 +298,7 @@ fn env_check_local_model_paths_mark_ready() {
     assert_eq!(out["overall"], "degraded");
 }
 
-// --- BUG-20261101-279：collect_files 遍历顺序契约锁 ---
+// collect_files 遍历顺序契约锁 ---
 
 #[test]
 fn bug279_collect_files_dfs_lexicographic_order() {

@@ -3,10 +3,10 @@
 //! 依赖环约束：vault 的加密实现住在 nemesis-security，而 nemesis-security
 //! 依赖本 crate（nemesis-config）——所以本 crate **不能**反向依赖它。约定：
 //!
-//! 本模块只持有前缀常量 + 全局解析器槽位（`set_global_vault_resolver`）；
-//! 上层装配（nemesisbot 启动路径，security feature）把"别名 → secret"
+//! - 本模块只持有前缀常量 + 全局解析器槽位（`set_global_vault_resolver`）；
+//! - 上层装配（nemesisbot 启动路径，security feature）把"别名 → secret"
 //!   的解析闭包注入进来；
-//! 所有 `vault:` 消费点（provider api_key、channel token、cluster token、
+//! - 所有 `vault:` 消费点（provider api_key、channel token、cluster token、
 //!   MCP env/headers）经 [`resolve_vault_reference`] / [`resolve_secret_field`]
 //!   走同一槽位。
 //!

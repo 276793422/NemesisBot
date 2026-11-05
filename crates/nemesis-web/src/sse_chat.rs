@@ -21,9 +21,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Request / Response types
-// ---------------------------------------------------------------------------
 
 /// Request body for `/api/chat/stream`.
 #[derive(Debug, serde::Deserialize)]
@@ -67,9 +65,7 @@ pub struct Usage {
     pub total_tokens: i64,
 }
 
-// ---------------------------------------------------------------------------
 // Handler
-// ---------------------------------------------------------------------------
 
 /// `POST /api/chat/stream` — SSE streaming chat endpoint.
 ///
@@ -133,7 +129,7 @@ pub(crate) async fn handle_chat_stream(
 
         let mut rx = provider.chat_stream(&messages, &[], &model, &options);
 
-        // L02（2026-11-01）：已转发增量的自累积——error 帧据此携带
+        // 已转发增量的自累积——error 帧据此携带
         // retained_partial，客户端已收到的 chunk 不因错误作废（SSE 追加
         // 语义下错误帧在 chunk 之后追加，累积值 = 可恢复的半截文本）。
         let mut forwarded = String::new();
@@ -181,7 +177,7 @@ pub(crate) async fn handle_chat_stream(
                     }
                 }
                 Err(e) => {
-                    // L02：error 帧携带 retained_partial（仅累积非空白时
+                    // error 帧携带 retained_partial（仅累积非空白时
                     // 出现——空白增量无恢复价值，与 stream_util 判空口径
                     // 一致）；无累积维持纯 {"error": …} 旧形态（兼容）。
                     let err_msg = e.to_string();
@@ -233,14 +229,12 @@ pub(crate) async fn handle_chat_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): explicit-model
+// (, quality-hardening goal 冲刺 web 批次 2): explicit-model
 // passthrough arm + unterminated backend stream still gets handler done event.
 #[cfg(test)]
 mod s10b_tests;

@@ -33,9 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure (mirror of scanner_extra_tests.rs)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -346,7 +344,7 @@ async fn test_check_with_empty_path_and_existing_install_status_keeps_status() {
         .unwrap()
         .unwrap();
     let engines = result["engines"].as_array().unwrap();
-    // Pre-existing "installed" status preserved (state.install_status.is_empty() == false).
+    // Pre-existing "installed" status preserved (state.install_status.is_empty == false).
     assert_eq!(engines[0]["state"]["install_status"], "installed");
 }
 

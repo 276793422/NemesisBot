@@ -1,4 +1,4 @@
-//! Outbox handler — worker 侧发件箱死信面（CD6，2026-09-17）。
+//! Outbox handler — worker 侧发件箱死信面（2026-09-17）。
 //!
 //! 死信 = 回传条目过闸（age 7 天 / attempts 1000）后的诚实停车态。本
 //! handler 提供 Dashboard 可见性（列表）与手动重放口；状态全在磁盘
@@ -74,7 +74,7 @@ impl ModuleHandler for OutboxHandler {
     }
 }
 
-// AGT 覆盖率批次（2026-09-25）：dead_list 只列 dead 态 + 字段透传、
+// AGT 覆盖率批次：dead_list 只列 dead 态 + 字段透传、
 // dead_replay 全链（翻态落盘 + 清零 + 未知 id 报错）、缺参/未知命令/
 // workspace 未配置 bail。
 #[cfg(test)]

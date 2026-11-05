@@ -1442,7 +1442,7 @@ fn test_mcp_config_default() {
     let cfg = McpConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.servers.is_empty());
-    // 起手写 Default（收敛单一真相源时一并修正）：与 serde
+    // 手写 Default（收敛单一真相源时一并修正）：与 serde
     // 缺省值一致均为 30，不再有「Default 给 0 / serde 给 30」的分叉。
     assert_eq!(cfg.timeout, 30);
 }
@@ -3476,7 +3476,7 @@ fn test_model_config_parse_only_provider() {
 }
 
 // =========================================================================
-// BUG #41 回归：历史 CLI（channel web port N）把端口写成 JSON 字符串，
+// 回归：历史 CLI（channel web port N）把端口写成 JSON 字符串，
 // 而 WebChannelConfig.port / WebSocketChannelConfig.port 是裸 i64 —— 存在
 // 该键的 config.json 在网关启动时整个 Config 解析直接失败。修复 = 柔性
 // deserialize_flexible_i64 容忍数字与十进制字符串两种磁盘形态。

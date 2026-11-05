@@ -1,10 +1,10 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): models handler — the only
+//! (quality-hardening goal 冲刺, web 批次 2): models handler — the only
 //! remaining non-structural uncovered lines are the DISABLED typed-save
 //! helper `save_config` (kept per the code-change discipline; exercised here
 //! so its behavior stays pinned if it is ever revived). The other TSV gaps
 //! are structural: `load_config`/`write_raw_config` global-ConfigStore arms
 //! (setting the OnceLock store would poison every other test in this
-//! binary) and `catalog_update` (spawns `current_exe()` as the real CLI —
+//! binary) and `catalog_update` (spawns `current_exe` as the real CLI —
 //! under `cargo test` that is the test binary, so the arm is
 //! untestable without a real nemesisbot.exe).
 

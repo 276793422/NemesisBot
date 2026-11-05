@@ -1,7 +1,7 @@
-//! L9 selfupdate 版本自切换通道（2026-10-13，内部专项总计划 T4 战略项；
+//! selfupdate 版本自切换通道（2026-10-13，内部专项总计划 战略项；
 //! 2026-10-22 两段式改造：审批卡/频率保险丝退役，下载与安装分离）。
 //!
-//! apply 通道（docs/INFO/2026-10-12_LLM自更新通道设计方案.md §四；两段式
+//! apply 通道（LLM自更新通道设计方案 §四；两段式
 //! 改造后的步骤序）：
 //! estop 闸 → 单飞锁 + journal 闸 + 安装目录锁 → 待装包就位（本地
 //! `updates/pending.<zip|tar.gz>`，缺席自动先下载）→ 发布源对账（已最新/
@@ -11,7 +11,7 @@
 //! 自检 → 回滚 → 审计链留痕。nemesis-verify 的第二个生产消费点（第一个 =
 //! 启动自验 verify_policy）。
 //!
-//! 人闸位置（用户拍板 2026-10-21）：CRITICAL 审批卡退役——由前端
+//! 人闸位置（2026-10-21）：CRITICAL 审批卡退役——由前端
 //! MessageBox 确认框替代（点【开始更新】→「确定更新到 vX？」→ 受理执行，
 //! 用户点按钮即主体意志）；真正的安全闸是 v4 签名验签（编译期根锚，
 //! Valid-only，任何路径不豁免）。24h 频率保险丝同步退役——两段式后重试
@@ -26,13 +26,13 @@
 //!   门控 apply 编排与下载编排（SelfUpdateManager）——IoT 裁剪构建可整体
 //!   关掉更新通道；journal / check / boot 收口不门控（纯 fs + serde_json，
 //!   recover_on_boot 在任何构建都要能清残留现场）。
-//! - 版本身份 = **签名更新清单（R1）**：包内 `manifest.json` 是「JSON 字节 +
+//! - 版本身份 = **签名更新清单**：包内 `manifest.json` 是「JSON 字节 +
 //!   CMS + v4 footer」单文件签名载体（`{commit, sequence, exe_sha256,
 //!   plugins_sha256, built_at}`，CI 用与 exe 同一密钥体系签发），客户端
 //!   `verify_bytes` 验签 Valid 后取身份，且 `sha256(exe_bytes)` 必须等于
 //!   清单 `exe_sha256`（完整性硬拒，不豁免）；清单带 `plugins_sha256`
 //!   （文件名 → 摘要映射）时包内 plugins/ 逐文件 sha256 + **集合双向匹配**
-//!   硬拒（多/少都拒，2026-10-22 用户拍板）；旧清单无此字段 = 诚实降级
+//!   硬拒（多/少都拒，2026-10-22）；旧清单无此字段 = 诚实降级
 //!   不绑定（审计留痕）。版本单调性 = `sequence` 数值比较（CI
 //!   run_number），「当前」基准来自 `<exe_dir>/applied_manifest.json`（上次
 //!   成功更新写入的已验签清单副本）。**顺序未知 = 默认拒绝**（清单缺失/
@@ -44,7 +44,7 @@
 //!   天然原子覆盖运行中二进制，同一 dance 在 Linux 单步即可（代码同一份，
 //!   Windows 臂多一步让位）。journal 先于任何 rename 落盘，启动期
 //!   [`recover_on_boot`] 按相位收口。
-//! - **staging 抽屉 `back/`**（2026-10-27 用户拍板）：五件套（`.old-{pid}` /
+//! - **staging 抽屉 `back/`**（2026-10-27）：五件套（`.old-{pid}` /
 //!   `.new-{pid}` / `.failed` / `plugins.{old,new}-{pid}/`）全部住进 exe 同级
 //!   `back/` 目录，安装根目录不再出现散件（收尾清扫失败也不裸露）；
 //!   `updates/`（下载缓存）与 `back/`（舞步与回滚源活区）物理隔离——updates/
@@ -53,18 +53,18 @@
 //!   记录路径消费、不依赖布局（旧布局 journal 照旧路径收口，跨版本安全）；
 //!   根目录旧前缀残留由清扫的**过渡兼容层**收掉。成功收口 = 整删 `back/`；
 //!   失败零删除（回滚源原样保留）。
-//! - **plugins 整包替换**（2026-10-22 用户拍板：主包自带 plugins/ 子树，
+//! - **plugins 整包替换**（2026-10-22 ：主包自带 plugins/ 子树，
 //!   整包同版本分发——接口错配根因消失，不需单独打包）：解包产物里
 //!   plugins/ 平面文件先落 `back/plugins.new-{pid}/` staging；舞步 = 既有
 //!   同名让位 `back/plugins.old-{pid}/` → 新文件逐个 rename 进 `plugins/`
 //!   （Windows 运行中 DLL 可 rename 不可覆盖，与 exe 同语义；目录不整迁
-//!   ——映射中的 DLL 会让整目录 rename 失败）。**只同名覆盖不删既有**——
+//!   映射中的 DLL 会让整目录 rename 失败）。**只同名覆盖不删既有**——
 //!   用户自装插件不受伤。回滚与 exe **同进同退**（journal 记 staging 目录，
 //!   boot 收口连带回滚），杜绝「旧 exe + 新插件」错配。
 //! - 两段式持久态（`<exe_dir>/updates/`，自更新私有）：`pending.zip` /
 //!   `pending.tar.gz`（`.part` 中转改名）+ `pending.json` 元数据（**后写**
-//!   ——见 meta 必有包）。每次读取做 sha256 复验，坏包**整个清空重来**
-//!   （不续传不修复，用户拍板）；apply 无 pending 自动先下载；更新收口
+//!   见 meta 必有包）。每次读取做 sha256 复验，坏包**整个清空重来**
+//!   （不续传不修复）；apply 无 pending 自动先下载；更新收口
 //!   删包；发布源前进 → pending 过期作废（清空重下）。
 //! - 平台支持（2026-10-22 扩面）：windows/linux = apply 全链路（解包按
 //!   包格式 magic 分派 zip/tar.gz，不按平台 cfg 硬分）；macos = TARGET_ASSET
@@ -103,9 +103,7 @@ pub const MAX_UPDATE_ASSET_BYTES: usize = 300 * 1024 * 1024;
 /// 等旧进程退场超时（受控重启：新进程 spawn 后旧进程优雅停机窗口）。
 pub const WAIT_OLD_PID_TIMEOUT_MILLIS: u64 = 120 * 1000;
 
-// ---------------------------------------------------------------------------
 // journal（崩溃恢复真相源）
-// ---------------------------------------------------------------------------
 
 /// staging/restart 期状态日志——**先于任何 rename 落盘**，boot 期按相位收口。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,13 +117,13 @@ pub struct UpdateJournal {
     /// 旧 exe 的绝对路径（.old rename 后所在；回滚源）。
     pub old_path: String,
     pub started_ms: u64,
-    /// R1：目标更新清单的**已验签载体字节**（base64）。boot `update_success`
+    /// 目标更新清单的**已验签载体字节**（base64）。boot `update_success`
     /// 收口时写入 `<exe_dir>/applied_manifest.json`（写前再验签）——下次 apply
-    /// 的顺序基准。`#[serde(default)]` 兼容 R1 之前的旧 journal（空 = 无清单，
+    /// 的顺序基准。`#[serde(default)]` 兼容 之前的旧 journal（空 = 无清单，
     /// 不写 applied 副本）。
     #[serde(default)]
     pub target_manifest: String,
-    /// plugins 整包替换 staging 的绝对路径（2026-10-22 扩面）。`plugins_new`
+    /// plugins 整包替换 staging 的绝对路径（扩面）。`plugins_new`
     /// = 新插件落位目录（`plugins.new-{pid}`）；`plugins_backup` = 既有同名
     /// 插件让位目录（`plugins.old-{pid}`）。**双空 = 本次更新无 plugins 舞步**
     /// （旧包无 plugins/ 子树）；boot 回滚按 journal 幂等收口——exe 回滚变
@@ -134,9 +132,9 @@ pub struct UpdateJournal {
     pub plugins_backup_dir: String,
     #[serde(default)]
     pub plugins_new_dir: String,
-    /// plugins 逐文件清单（2026-10-24 N1 根修）：journal 构造时（任何落盘
+    /// plugins 逐文件清单（根修）：journal 构造时（任何落盘
     /// 动作之前）按「包内条目 × plugins/ 现状」计算并随 journal 先行落盘
-    /// ——回滚以它为唯一真相源，不再从「backup 目录名单差集」推断谁是
+    /// 回滚以它为唯一真相源，不再从「backup 目录名单差集」推断谁是
     /// 新装（该推断在 backup 缺席、部分归位两个崩溃窗口都会把旧插件误判
     /// 成 new-only 删掉）。`#[serde(default)]` 兼容旧 journal（空清单 =
     /// 保守模式：只归位 backup，不删任何文件）。
@@ -220,7 +218,7 @@ fn clear_journal_logged(workspace: &Path) {
 /// boot 收口日志三件套。**必须 eprintln + tracing 双写**：boot 收口早于日志
 /// 初始化（`init_logger_from_config` 在 `gateway/ctx.rs` 的 assemble 内部，
 /// `gateway::run` 在 [`recover_on_boot`] 之后才 assemble）——此处的 tracing
-/// 事件无 subscriber 接收，静默丢弃（2026-10-22 彩排实证：update_success
+/// 事件无 subscriber 接收，静默丢弃（彩排实证：update_success
 /// 全链跑通但 stdout / 文件双 sink 零痕迹，收口成败完全不可观测）。自更新
 /// 最安全关键的一步不允许零痕迹：gateway 是控制台进程，stderr 恒在（与
 /// verify_policy 启动自检的 eprintln 同理由）。
@@ -239,9 +237,7 @@ fn boot_log_error(msg: &str) {
     tracing::error!("{msg}");
 }
 
-// ---------------------------------------------------------------------------
 // commit 身份
-// ---------------------------------------------------------------------------
 
 /// 当前 commit 是否命中目标 commit（短 sha 前缀匹配全量 sha）。任一为空 =
 /// 未知身份 → false。
@@ -249,7 +245,7 @@ pub fn commit_matches(current_short: &str, target_full: &str) -> bool {
     !current_short.is_empty() && !target_full.is_empty() && target_full.starts_with(current_short)
 }
 
-/// 包内 version.txt 的 `Commit     : <sha>` 行提取（40 hex 全量）。
+/// 包内 version.txt 的 `Commit : <sha>` 行提取（40 hex 全量）。
 /// 「Commit Date : …」行因冒号前多一段不匹配，天然跳过。
 pub fn extract_commit_from_version_txt(txt: &str) -> Option<String> {
     for line in txt.lines() {
@@ -287,10 +283,8 @@ pub fn extract_commit_from_release_body(body: &str) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
 // 两段式待装包持久态（`<exe_dir>/updates/`；selfupdate feature 门控——
 // 唯一写入方是 SelfUpdateManager，IoT 裁剪构建不引入任何读取/清扫开销）
-// ---------------------------------------------------------------------------
 
 /// 待装包目录（exe 同目录 `updates/`——portable 发行目录随包走，多实例各自
 /// 独立；只读安装目录（Program Files 场景）写失败 = 诚实报错，发行形态以
@@ -304,7 +298,7 @@ pub(crate) fn updates_dir(exe: &Path) -> PathBuf {
 
 /// 待装包文件名（按资产名推导：`nightly-windows.zip` → `pending.zip`；
 /// `nightly-linux.tar.gz` → `pending.tar.gz`）。同一 updates/ 只存一份待装包
-/// ——资产名互斥（每平台只认自己的 TARGET_ASSET），不同资产共存即异常，
+/// 资产名互斥（每平台只认自己的 TARGET_ASSET），不同资产共存即异常，
 /// 由 load_pending 的 sha256/资产对账兜底整清。
 #[cfg(feature = "selfupdate")]
 fn pending_package_name(asset: &str) -> String {
@@ -374,7 +368,7 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 /// 读待装包（含完整性复验）。meta 缺失 = None（无事）；meta 坏 / 包缺 /
-/// sha 不匹配 = **整个 updates/ 清空** + None（用户拍板：坏包宁可重下，不给
+/// sha 不匹配 = **整个 updates/ 清空** + None（坏包宁可重下，不给
 /// 安装机会）。
 #[cfg(feature = "selfupdate")]
 pub fn load_pending(exe: &Path) -> Option<PendingUpdate> {
@@ -460,9 +454,7 @@ pub(crate) fn publish_progress(
     );
 }
 
-// ---------------------------------------------------------------------------
-// 降级判定（R1：单调基准 = 签名清单 sequence 数值；发布列表位次版整体退役）
-// ---------------------------------------------------------------------------
+// 降级判定（单调基准 = 签名清单 sequence 数值；发布列表位次版整体退役）
 
 /// 降级判定结论。版本单调性以 CI 清单 `sequence`（run_number）数值比较为
 /// 基准；「当前」基准 = `<exe_dir>/applied_manifest.json` 的已验签 sequence。
@@ -477,7 +469,7 @@ pub(crate) enum DowngradeVerdict {
     /// 目标 sequence 比当前已安装的小（= 旧包）。
     Downgrade,
     /// 无法证明（applied 副本缺失/验签失败/目标清单缺失或验签失败）——**默认
-    /// 拒绝**，`allow_downgrade` 显式豁免（R1 语义反转：旧实现放行 + 审计）。
+    /// 拒绝**，`allow_downgrade` 显式豁免（语义反转：旧实现放行 + 审计）。
     Unknown,
 }
 
@@ -496,12 +488,12 @@ pub(crate) fn sequence_verdict(current: Option<u64>, target: u64) -> DowngradeVe
     }
 }
 
-/// 结论 → 拒绝文案（None = 放行）。R1 语义反转：**Unknown 也默认拒绝**——
+/// 结论 → 拒绝文案（None = 放行）。 语义反转：**Unknown 也默认拒绝**——
 /// 顺序证据缺失（清单缺失/验签失败/applied 副本缺失）不能默认当成升级；
 /// `allow_downgrade` 是「顺序未知」显式豁免。v4 验签在任何路径都不豁免
 ///（不变）。
 ///
-/// `force`（强制更新，2026-10-30）：只豁免 `Same` 臂——强制更新的意志是
+/// `force`（强制更新）：只豁免 `Same` 臂——强制更新的意志是
 /// 「重装当前版本」（本地包残了自救），不是降级；`Downgrade`/`Unknown`
 /// 仍由 `allow_downgrade` 管辖，force 不混同。
 #[cfg(feature = "selfupdate")]
@@ -533,9 +525,7 @@ pub(crate) fn downgrade_gate_error(
     }
 }
 
-// ---------------------------------------------------------------------------
-// 签名更新清单（R1：身份数据源；「JSON 字节 + CMS + v4 footer」单文件载体）
-// ---------------------------------------------------------------------------
+// 签名更新清单（身份数据源；「JSON 字节 + CMS + v4 footer」单文件载体）
 
 /// 更新清单（`manifest.json` 载体剥 footer 后的明文 JSON 结构）。CI 签发
 /// （与 exe 同一密钥体系）；客户端验签 Valid 后才采信任何字段。
@@ -549,7 +539,7 @@ pub(crate) struct UpdateManifest {
     /// **已签名 exe** 的 SHA-256（CI 在 exe 签名之后生成清单——客户端下载
     /// 解包的字节即此摘要的绑定对象；不匹配 = 完整性问题，无条件拒）。
     pub exe_sha256: String,
-    /// **已签名 plugins** 逐文件 SHA-256 绑定（2026-10-22 用户拍板 ①）：
+    /// **已签名 plugins** 逐文件 SHA-256 绑定（①）：
     /// 文件名（`plugins/` 下平面名）→ 摘要。CI 在插件签名之后生成清单——
     /// 哈希覆盖的是已签名字节，闭环成立。非空时 apply 对包内 plugins/
     /// 逐文件校验 + **集合双向匹配**（包内多文件 / 清单缺条目都拒）；空/缺
@@ -628,11 +618,11 @@ fn verify_and_parse_manifest(
     Ok(manifest)
 }
 
-/// plugins 绑定校验纯函数（内存字节面，任何 staging 之前调用——2026-10-22
-/// 用户拍板 ①：清单声明 `plugins_sha256` 时逐文件 sha256 + **集合双向匹配**
+/// plugins 绑定校验纯函数（内存字节面，任何 staging 之前调用——
+/// ①：清单声明 `plugins_sha256` 时逐文件 sha256 + **集合双向匹配**
 /// 硬拒：清单有条目包内缺文件 = 拒，包内多出文件 = 拒，摘要不匹配 = 拒；
 /// 均大小写不敏感）。清单无绑定（空 map）= Ok（诚实降级，调用方审计留痕
-/// ——旧清单无此字段是合法历史形态）。
+/// 旧清单无此字段是合法历史形态）。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码（测试消费不受影响）
 fn verify_plugins_binding_map(
@@ -739,7 +729,7 @@ pub(crate) fn sequence_baseline_present(exe: &Path) -> bool {
     applied_manifest_path(exe).exists()
 }
 
-/// journal → applied 副本落盘（boot `update_success` 收口接线；R1 写入链
+/// journal → applied 副本落盘（boot `update_success` 收口接线； 写入链
 /// 闭环的最后一步）。carrier 为空（旧 journal）= 无事返回 Ok；锚集空 = 诚实
 /// 跳过（下次 apply 走 Unknown 拒绝，不假装有基准）。
 #[cfg(feature = "selfupdate")]
@@ -769,10 +759,8 @@ fn write_applied_manifest_from_journal(
     save_applied_manifest(exe, &carrier, anchors, now)
 }
 
-// ---------------------------------------------------------------------------
-// 完整性检查（2026-10-30）：活安装 vs applied_manifest.json 已验签基线。
+// 完整性检查：活安装 vs applied_manifest.json 已验签基线。
 // 只读不处置——修复路径 = 强制更新（download/apply 带 force）。
-// ---------------------------------------------------------------------------
 
 /// 单文件完整性判定。
 #[cfg(feature = "selfupdate")]
@@ -998,9 +986,7 @@ pub(crate) fn integrity_snapshot_at(exe: &Path, anchors: &[[u8; 32]]) -> Integri
     }
 }
 
-// ---------------------------------------------------------------------------
 // check（只读，全平台可用；不下载主包）
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UpdateCheck {
@@ -1058,21 +1044,19 @@ pub async fn check(
     })
 }
 
-// ---------------------------------------------------------------------------
 // boot 收口（recover_on_boot）+ 旧进程等待（不门控：任何构建都要能清现场）
-// ---------------------------------------------------------------------------
 
 /// boot 收口结果（gateway 启动期 tracing 可见）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BootRecovery {
     /// none / wait_timeout / update_success / rolled_back / recovery_failed
-    /// （R2：recovery_failed = 回滚执行失败，journal 与 .old **保留**，下次
+    /// （recovery_failed = 回滚执行失败，journal 与 .old **保留**，下次
     /// 启动 boot 收口幂等重试——旧实现失败也清 journal，现场丢失不可重试）。
     pub action: String,
     pub detail: String,
 }
 
-/// 等 PID 退场（受控重启第一步：新进程让旧进程先走）。Windows 用 `tasklist`
+/// 等 PID 退场（受控重启：新进程让旧进程先走）。Windows 用 `tasklist`
 /// （无 libc 依赖），Unix 用 `kill -0`。
 pub fn wait_for_pid_exit(pid: u32, timeout_ms: u64) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
@@ -1161,7 +1145,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
     match journal.phase.as_str() {
         "restarting" => {
             if commit_matches(current_commit, &journal.target_commit) {
-                // R1 写入链闭环：update_success 收口时把 journal 携带的已验签
+                // 写入链闭环：update_success 收口时把 journal 携带的已验签
                 // 清单载体写入 exe 目录（下次 apply 的顺序基准）。写前再验签，
                 // 失败 warn 跳过（副本缺失 = 下次 apply 走 Unknown 拒，诚实
                 // 边界，不阻塞收口本身）；回滚路径不写。
@@ -1191,7 +1175,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                     Ok((detail, noop)) => {
                         clear_journal_logged(workspace);
                         // exe 与 plugins 双双无可恢复现场 = noop，不是回滚成功
-                        // ——action 如实分臂，日志表述跟随。
+                        // action 如实分臂，日志表述跟随。
                         let action = if noop { "rollback_noop" } else { "rolled_back" };
                         let verb = if noop {
                             "无可恢复现场（.old 与 plugins staging 双缺席），journal 已清"
@@ -1206,7 +1190,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                             detail,
                         }
                     }
-                    // R2：回滚失败不清 journal——现场（journal + .old + plugins
+                    // 回滚失败不清 journal——现场（journal + .old + plugins
                     // staging）保留，下次启动重试；旧实现无条件清 journal =
                     // 失败即丢现场。
                     Err(fail) => {
@@ -1256,13 +1240,13 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
 }
 
 /// 回滚本体（old→target rename；target 参数化——单测注入临时路径，不碰
-/// 测试二进制自身）。**诚实化（R2）**：Ok=回滚成功 / Err=失败原因——调用方
+/// 测试二进制自身）。**诚实化**：Ok=回滚成功 / Err=失败原因——调用方
 /// 据 Ok/Err 决定清不清 journal，失败时保留现场等下次 boot 重试。
 ///
 /// Windows 舞步：目标位被运行中的 PE 占用时（boot 收口的常态——当前进程
 /// 就跑在待回滚替换的 exe 上），直接 rename(.old→exe) 会撞「文件被占用」。
 /// 运行中 PE 可 rename 不可覆盖，所以先把运行中 exe 让位到 `.failed`
-/// （保留作诊断现场），再 .old→exe；第二步失败则把 `.failed` 尝试回手
+/// （保留作诊断现场），再 .old→exe；失败则把 `.failed` 尝试回手
 /// 原位并 Err。非 Windows rename 语义天然可覆盖运行中二进制，单步即可。
 /// 缺 `.old` 分支（noop）的 detail 前缀：boot 调用方据此把 action 记为
 /// `rollback_noop` 而非 `rolled_back`——什么都没回滚就不能宣称回滚完成。
@@ -1292,7 +1276,7 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
             )
         })?;
         if let Err(e) = std::fs::rename(&old, target) {
-            // 第二步失败：尽力把运行中 exe 回手原位，诚实上报双现场。
+            // 失败：尽力把运行中 exe 回手原位，诚实上报双现场。
             let restored = std::fs::rename(&failed, target).is_ok();
             return Err(format!(
                 "回滚失败（{} ← {}）：{e}；.old 现场保留{}。",
@@ -1325,12 +1309,10 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// plugins 整包替换（2026-10-22 扩面；主包自带 plugins/ 子树同版本分发——
+// plugins 整包替换（扩面；主包自带 plugins/ 子树同版本分发——
 // 接口错配根因消失，不需单独打包。机制 = 逐文件 rename dance，与 exe 同
 // 语义：Windows 运行中 PE/DLL 可 rename 不可覆盖。boot 收口与 exe 同进同退
-// ——journal 记 staging 双目录，杜绝「旧 exe + 新插件」错配）
-// ---------------------------------------------------------------------------
+// journal 记 staging 双目录，杜绝「旧 exe + 新插件」错配）
 
 /// plugins 回滚 noop 判定前缀（与 exe [`ROLLBACK_NOOP_PREFIX`] 同语义；独立
 /// 常量防串判——boot 调用方对两者分别分臂，双 noop 才算 rollback_noop）。
@@ -1360,7 +1342,7 @@ fn plugins_staging_paths(exe: &Path) -> (PathBuf, PathBuf, PathBuf) {
 ///    目录不整迁同理）→ 新文件 copy 就位（copy 非 rename：new_dir 全集
 ///    副本不被消耗）。
 ///
-/// **只同名覆盖不删既有**（用户拍板 ②）——用户自装插件不受伤。同名字段
+/// **只同名覆盖不删既有**（②）——用户自装插件不受伤。同名字段
 /// 有**类型边界**：包内条目是平面文件，既有同名条目若是**目录**，让位舞步
 /// 会把整个目录迁进 backup，而回滚名单只认文件（is_file）、收尾整删
 /// backup = 用户目录内容永久丢失——文件-目录类型冲突不属于「同名覆盖」，
@@ -1453,7 +1435,7 @@ fn remove_loaded_file(target: &Path) -> Result<(), String> {
     }
 }
 
-/// plugins 回滚本体（清单驱动，2026-10-24 N1 根修）。幂等 + 诚实化：Ok =
+/// plugins 回滚本体（清单驱动， 根修）。幂等 + 诚实化：Ok =
 /// 回滚完成（detail 区分 noop）/ Err = 失败原因（调用方保 journal，下次
 /// boot 重试）。
 ///
@@ -1461,7 +1443,7 @@ fn remove_loaded_file(target: &Path) -> Result<(), String> {
 /// - `new_install=false`（替换）：从 backup 归位。**backup 缺席 = 跳过**——
 ///   两种成因（舞步从未让位到该文件 / 上轮回滚已归位）都意味着 plugins/
 ///   里已是旧版，无需也不得动作（旧实现按「backup 名单差集」推断 new-only，
-///   在这两个窗口会把旧插件当新装删掉——W0′ 与部分失败重试两个崩溃窗口
+///   在这两个窗口会把旧插件当新装删掉——′ 与部分失败重试两个崩溃窗口
 ///   的数据丢失根因）。
 /// - `new_install=true`（新装）：plugins/ 有则删（无旧版可回，删除归零）。
 ///
@@ -1536,7 +1518,7 @@ fn rollback_plugins_to(
 
 /// 旧 journal 保守回滚（清单缺键）：只归位 backup 里真实在场的文件，**不做
 /// 任何删除**——「new_dir − backup」差集推断在 backup 缺席/部分归位窗口会
-/// 把旧插件误判成新装（N1 数据丢失根因），清单缺失时宁留毋删；new_dir 残
+/// 把旧插件误判成新装（数据丢失根因），清单缺失时宁留毋删；new_dir 残
 /// 留物在 detail 里报路径供人工核查（删错了找不回，留着最多版本错配）。
 fn rollback_plugins_legacy(
     backup: &Path,
@@ -1624,11 +1606,9 @@ fn rollback_update(journal: &UpdateJournal, exe: &Path) -> Result<(String, bool)
     }
 }
 
-// ---------------------------------------------------------------------------
-// apply 互斥原语（R2：单飞 + 跨进程锁 + staging 名去固定化）
-// ---------------------------------------------------------------------------
+// apply 互斥原语（单飞 + 跨进程锁 + staging 名去固定化）
 
-/// staging 抽屉（2026-10-27 用户拍板）：`<exe_dir>/back/`——apply 舞步五件套
+/// staging 抽屉：`<exe_dir>/back/`——apply 舞步五件套
 /// （`.old-{pid}` / `.new-{pid}` / `.failed` / `plugins.{old,new}-{pid}/`）的
 /// 专属目录。安装根目录不再出现散件（收尾清扫失败也不裸露）；`updates/`
 /// （下载缓存）与 `back/`（舞步与回滚源活区）物理隔离——updates/ 的任何
@@ -1685,7 +1665,7 @@ fn acquire_install_lock(exe_dir: &Path) -> Result<std::fs::File, String> {
     }
 }
 
-/// 陈旧 staging 残留清扫（R2 补口 + 2026-10-27 back/ 抽屉迁位）：
+/// 陈旧 staging 残留清扫（补口 + back/ 抽屉迁位）：
 ///
 /// **新布局**：`back/` 抽屉整目录韧性删除——持安装目录锁窗口内不可能有
 /// 并发 apply，journal 闸（apply 1b 先于本清扫）保证在场 journal 已被 boot
@@ -1781,9 +1761,7 @@ fn sweep_staging_after_boot(exe: &Path) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // SelfUpdateManager（apply 编排；selfupdate feature 门控）
-// ---------------------------------------------------------------------------
 
 /// 下载进度快照（WSAPI status 轮询兜底 + SSE 之外的第二观测面）。
 #[cfg(feature = "selfupdate")]
@@ -1812,7 +1790,7 @@ impl Default for DownloadProgress {
     }
 }
 
-/// 最近一次 apply 编排失败的反馈面（2026-10-23 挂死修复）。apply 是受理即
+/// 最近一次 apply 编排失败的反馈面（挂死修复）。apply 是受理即
 /// 回的后台编排——失败若只落 gateway 日志，Dashboard 的「更新执行中」粘滞
 /// 态永远等不到收口信号。Ok 即清；重试发起时由 apply 包装层先行清空（编排
 /// 中不残留旧错）。
@@ -1837,12 +1815,12 @@ pub struct SelfUpdateManager {
     pub estop: std::sync::Arc<nemesis_agent::estop::EstopState>,
     pub audit: Option<std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>,
     pub shutdown: std::sync::Arc<dyn Fn() + Send + Sync>,
-    /// R2 进程内单飞闸：同一 manager 上并发 apply 恰一进入（try_lock 失败 =
+    /// 进程内单飞闸：同一 manager 上并发 apply 恰一进入（try_lock 失败 =
     /// 「已有自更新在进行」，诚实拒绝）。与 [`acquire_install_lock`]（安装
     /// 目录跨进程锁）两层互补。
     pub flight: tokio::sync::Mutex<()>,
     /// 下载单飞闸（与 apply 的 [`SelfUpdateManager::flight`] 分立：apply 会
-    /// `.lock().await` 这把锁等在途下载收口后再读 pending，反向则不会——
+    /// `.lock.await` 这把锁等在途下载收口后再读 pending，反向则不会——
     /// 下载方永不等待 apply）。下载任务自身 try_lock，占用中 = 幂等受理。
     pub download_flight: tokio::sync::Mutex<()>,
     /// 下载取消旗标（WSAPI cancel_download 置位；进度回调逐 chunk 轮询，
@@ -1887,7 +1865,7 @@ impl SelfUpdateManager {
     /// tokio 任务——受理即回）。幂等语义：pending 已就绪直接返回；在途下载
     /// 中重复调用幂等受理。estop 生效 = 拒绝（下载段同受急停冻结）。
     ///
-    /// `force`（强制更新，2026-10-30）：跳过「pending 已就绪」幂等早退——
+    /// `force`（强制更新）：跳过「pending 已就绪」幂等早退——
     /// 存量 pending 可能就是残包，强制更新必须重拉。新鲜度闸仅此一道；
     /// estop/单飞锁照常。
     pub async fn download(&self, current_commit: &str, force: bool) -> Result<String, String> {
@@ -2057,7 +2035,7 @@ impl SelfUpdateManager {
             .to_string();
         let release_tag = meta.tag_name.clone();
         let target_commit = meta.body_commit().unwrap_or_default();
-        // total 优先源 = GitHub API asset size（S3 预签 URL 也稳定给数）>
+        // total 优先源 = GitHub API asset size（预签 URL 也稳定给数）>
         // Content-Length > 未知（进度条显示已下载字节数）。先种子进度槽，
         // 回调只在其缺位时才采信 Content-Length（优先级不倒挂）。
         let hint_total = meta.asset_size(TARGET_ASSET);
@@ -2065,7 +2043,7 @@ impl SelfUpdateManager {
             let mut p = self.download_progress.lock();
             p.total_bytes = hint_total;
         }
-        // 干净起步（用户拍板：异常/中断不恢复不续传，整清重来；.part 残留同清）。
+        // 干净起步（异常/中断不恢复不续传，整清重来；.part 残留同清）。
         clear_updates_dir(exe_path);
         let part = pending_package_part_path(exe_path, TARGET_ASSET);
         // 进度回调（Fn 闭包——可变状态全部走 Arc 槽；SSE 100ms 节流用
@@ -2161,7 +2139,7 @@ impl SelfUpdateManager {
             self.audit_event("selfupdate", "denied", "estop engaged");
             return Err("急停（estop）生效中：自更新被冻结。释放急停后重试。".to_string());
         }
-        // ── 步骤 1a-2：进程内单飞（R2）——并发 apply 恰一进入 ──
+        // ── 步骤 1a-2：进程内单飞——并发 apply 恰一进入 ──
         let _flight = match self.flight.try_lock() {
             Ok(g) => g,
             Err(_) => {
@@ -2183,7 +2161,7 @@ impl SelfUpdateManager {
                 self.workspace.display()
             ));
         }
-        // ── 步骤 1d-2：安装目录跨进程锁（R2）——从下载到 staging 全程持有，
+        // ── 步骤 1d-2：安装目录跨进程锁——从下载到 staging 全程持有，
         //    双 gateway 进程共享安装目录时只允许一个自更新执行。闸在快闸
         //    之后（estop/journal 拒绝路径不碰锁文件），pending 就位之前
         //    （自动下载期就占锁，串行化整个 apply）。
@@ -2280,7 +2258,7 @@ impl SelfUpdateManager {
                 );
             }
         }
-        // ── R1 单候选链退役：包字节从本地待装包读入（下载段已前移至
+        // ── 单候选链退役：包字节从本地待装包读入（下载段已前移至
         //    download_to_pending）。字节入内存后，后续任何清 updates/ 的路径
         //    都不再影响本次 apply。解包取新 exe / version.txt / 签名清单 /
         //    plugins/ 子树（zip=Windows 主包，tar.gz=Linux/macOS 主包，按
@@ -2304,7 +2282,7 @@ impl SelfUpdateManager {
             msg
         })?;
 
-        // ── 步骤 1e：身份与顺序闸（R1：签名更新清单为唯一权威）──
+        // ── 步骤 1e：身份与顺序闸（签名更新清单为唯一权威）──
         // 锚与时间在闸前构造（清单验签在此需要；步骤 4 的 exe 本体验签复用
         // 同锚同时钟）。
         let anchors = nemesis_verify::builtin_root_anchors();
@@ -2321,7 +2299,7 @@ impl SelfUpdateManager {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         // ① 签名清单验签 + 解析。清单缺失/验签失败/字段非法都归 Unknown 类——
-        //    默认拒绝（R1 语义反转），allow_downgrade 显式豁免后回落 version.txt
+        //    默认拒绝（语义反转），allow_downgrade 显式豁免后回落 version.txt
         //    身份继续（身份弱化透明：审计留痕，后续闸按 Unknown 记）。
         let manifest = match extracted
             .manifest_bytes
@@ -2374,7 +2352,7 @@ impl SelfUpdateManager {
                     .to_string(),
             );
         }
-        // ②-b plugins 绑定硬拒（2026-10-22 扩面，用户拍板 ①）：清单在场且带
+        // ②-b plugins 绑定硬拒（扩面， ①）：清单在场且带
         //    非空 plugins_sha256 表时，包内 plugins/ 子树逐文件 sha256 + 集合
         //    双向匹配，任一失配 = 包被调包/下载损坏，无条件拒（不受
         //    allow_downgrade 豁免）。空表/缺失 = 无绑定诚实降级（旧清单兼容，
@@ -2427,7 +2405,7 @@ impl SelfUpdateManager {
         // ⑤ 顺序降级闸：sequence 数值比较，基准 = `<exe_dir>/applied_manifest.json`
         //    （上次成功更新收口写入的已验签清单副本）。applied 缺失（存量安装
         //    首次更新）/副本验签失败/清单本侧缺失（豁免放行）= Unknown——默认
-        //    拒绝（R1 语义反转），allow_downgrade 显式豁免 + 审计留痕。v4 验签
+        //    拒绝（语义反转），allow_downgrade 显式豁免 + 审计留痕。v4 验签
         //    对任何路径都不豁免。force 只豁免 Same 臂（见 downgrade_gate_error）。
         if let Some(m) = &manifest {
             let current_seq = load_applied_sequence(&exe_path, &anchors, now);
@@ -2450,7 +2428,7 @@ impl SelfUpdateManager {
                 );
             }
         }
-        // 审批卡已退役（用户拍板：Dashboard 确认框即主体意志表达；真正的
+        // 审批卡已退役（Dashboard 确认框即主体意志表达；真正的
         // 安全闸 = v4 签名验签 + sequence 单调闸 + estop + 单飞锁）。
         let target_desc = format!("commit {}", &target_commit[..target_commit.len().min(12)]);
 
@@ -2518,7 +2496,7 @@ impl SelfUpdateManager {
             target_version: extracted.version_txt_commit_desc(),
             old_path: old_path.display().to_string(),
             started_ms: now_ms(),
-            // R1：已验签清单载体随 journal 走——boot `update_success` 收口写
+            // 已验签清单载体随 journal 走——boot `update_success` 收口写
             // `<exe_dir>/applied_manifest.json`，构成下次 apply 的顺序基准。
             // 清单缺失（豁免放行）= 空串，收口不写副本（顺序闸届时 Unknown）。
             target_manifest: match (&manifest, extracted.manifest_bytes.as_deref()) {
@@ -2540,7 +2518,7 @@ impl SelfUpdateManager {
             } else {
                 plugins_new.display().to_string()
             },
-            // 逐文件清单（N1）：此刻在任何 rename 之前——「包内条目 × 现状」
+            // 逐文件清单：此刻在任何 rename 之前——「包内条目 × 现状」
             // 的准确快照随 journal 先行落盘，回滚按它收口（不再从 backup
             // 名单差集反推）。
             plugins_files: compute_plugins_manifest(&plugins_dir, &extracted.plugins),
@@ -2629,7 +2607,7 @@ impl SelfUpdateManager {
             return Err(format!("{e}（staging 现场已留，重启本进程即自动回滚）"));
         }
         self.audit_event("restart", "allowed", &target_desc);
-        // 更新一次性完成 → 删包收口（用户拍板：更新完删除；journal/安装收口
+        // 更新一次性完成 → 删包收口（更新完删除；journal/安装收口
         // 照旧由新进程 boot 承担）。
         clear_updates_dir(&exe_path);
 
@@ -2652,7 +2630,7 @@ impl SelfUpdateManager {
     /// 桩平台变体（macOS 留位 / Android APK 形态）：诚实拒绝。apply 全链路
     /// 主体不参与桩平台编译（避免 unreachable 段）；check/status/boot 收口
     /// 全平台可用。macOS CI 产物（nightly-macos.tar.gz）就位后，把
-    /// `apply_supported()` 与本 cfg 门一起放开即接通。
+    /// `apply_supported` 与本 cfg 门一起放开即接通。
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     async fn apply_inner(
         &self,
@@ -2734,7 +2712,7 @@ fn outcome_kind(o: &nemesis_verify::verify::VerifyOutcome) -> &'static str {
 struct ExtractedBundle {
     exe_bytes: Vec<u8>,
     commit: Option<String>,
-    /// R1：包内签名更新清单的原始载体字节（JSON + CMS + v4 footer）。缺失 =
+    /// 包内签名更新清单的原始载体字节（JSON + CMS + v4 footer）。缺失 =
     /// None（旧 CI 包 / 用户自打包）——apply 侧按 Unknown 类处理。
     manifest_bytes: Option<Vec<u8>>,
     /// unix 包内 exe 权限位（tar 条目 mode；zip 臂恒 None——zip 无通用执行位
@@ -2843,7 +2821,7 @@ fn classify_entry(name: &str) -> Result<BundleEntry, String> {
     Ok(BundleEntry::Ignored)
 }
 
-/// 有界解压上限（BUG 2026-10-29 横扫角度 B：更新包条目解压无界入内存，
+/// 有界解压上限（BUG 横扫角度 B：更新包条目解压无界入内存，
 /// 且旧 zip 臂按条目头撒谎 size 预分配）。exe 实测 ~93 MB，留 2.5x 余量；
 /// version.txt 是一行文本，1 MB 已是荒谬余量。超限 = 解压炸弹/损坏包，
 /// 诚实拒收（在撑爆内存之前）。

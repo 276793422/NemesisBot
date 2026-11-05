@@ -32,7 +32,7 @@ impl ModuleHandler for ToolsHandler {
         match cmd {
             // List the host bot's registered tools (name + description + schema).
             // Does not need the workspace; reads the agent loop's tool map.
-            // L6++ G4（2026-09-08）：可选 session_id——项目会话列项目 loop 的
+            // 可选 session_id——项目会话列项目 loop 的
             // 工具表（工厂裁剪后的集合），不带 = 主 loop（现状不变）。
             "list" => self.list(ctx, data.as_ref()),
             "get" => {
@@ -62,7 +62,7 @@ impl ToolsHandler {
         ctx: &RequestContext,
         data: Option<&serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, String> {
-        // L6++ G4：显式 session_id 契约——带则按归属解析（项目 loop / 诚实
+        // 显式 session_id 契约——带则按归属解析（项目 loop / 诚实
         // 报错），不带 = 主 loop。
         let al: std::sync::Arc<nemesis_agent::r#loop::AgentLoop> = match data
             .and_then(|d| d.get("session_id"))
@@ -108,12 +108,12 @@ impl ToolsHandler {
     }
 }
 
-// Phase 3 覆盖率（2026-08-25）：list 的真 AgentLoop map 体
+// 覆盖率：list 的真 AgentLoop map 体
 // （name/description/parameters 三字段组装）+ agent not running bail。
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：list 显式 session_id 契约臂（bridge/loop
+// AGT 覆盖率批次：list 显式 session_id 契约臂（bridge/loop
 // 双缺 → resolve_session_loop 诚实上抛）。
 #[cfg(test)]
 mod agt_tests;

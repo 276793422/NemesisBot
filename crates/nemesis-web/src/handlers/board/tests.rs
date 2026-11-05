@@ -152,7 +152,7 @@ async fn test_issue_create_list_get_flow() {
 
 #[tokio::test]
 async fn test_issue_create_anchor_warning_field() {
-    // F5 件①：建单 AC 含 `[CHECK] re:` 锚点 → 响应带 warning（锚点下放
+    // 件①：建单 AC 含 `[CHECK] re:` 锚点 → 响应带 warning（锚点下放
     // 纪律提醒）；file: 锚点/无锚点 → 无 warning（父单层 file: 可实核）。
     let dir = unique_dir("create-anchor-warn");
     let ctx = make_ctx_with_board(&dir);
@@ -207,7 +207,7 @@ async fn test_issue_create_anchor_warning_field() {
 
 #[tokio::test]
 async fn test_project_create_anchor_warning_field() {
-    // F5 件①：项目 AC 含 re: 锚点 → 响应带 warning（项目层无交付文本，
+    // 件①：项目 AC 含 re: 锚点 → 响应带 warning（项目层无交付文本，
     // 锚点在项目收口评审时必然失败）；无锚点 → 无 warning。
     let dir = unique_dir("project-anchor-warn");
     let ctx = make_ctx_with_board(&dir);
@@ -250,7 +250,7 @@ async fn test_confirm_plan_anchor_downgrade_check_three_states() {
     // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
     let _serial = PLAN_TEST_LOCK.lock().await;
     clear_plan_globals();
-    // F5 件③：父单 AC 含 re: 锚点但子单均未继承 → 父单系统评论提醒人工
+    // 件③：父单 AC 含 re: 锚点但子单均未继承 → 父单系统评论提醒人工
     //（不阻塞发车）；子单已继承 / 父单无锚点 → 不评论。三态钉死。
     let dir = unique_dir("confirm-anchor-check");
     let ctx = make_ctx_with_board(&dir);
@@ -439,7 +439,7 @@ async fn test_issue_assign_and_update() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 嵌套 patch 形态 loud 拒绝（gw36 实录回归锁）：`{id, patch:{...}}` 此前
+// 嵌套 patch 形态 loud 拒绝（回归锁）：`{id, patch:{...}}` 此前
 // 静默不生效还回 updated:true——三个 update 命令都必须报错而不是假成功。
 #[tokio::test]
 async fn test_update_commands_reject_nested_patch_form() {
@@ -633,7 +633,7 @@ async fn test_projects_attachments_stats() {
         .unwrap();
     assert_eq!(out["by_status"]["backlog"], 1);
 
-    // attachment.list 空（P1 只读元数据）。
+    // attachment.list 空（只读元数据）。
     let out = dispatch(
         &ctx,
         "attachment.list",
@@ -647,7 +647,7 @@ async fn test_projects_attachments_stats() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 角色门控已移除（2026-08-31 修复）：board.db 是节点本地数据（无集群同步、
+/// 角色门控已移除（修复）：board.db 是节点本地数据（无集群同步、
 /// CLI 同权直写），worker 对本机看板有完整写权——完整 CRUD 往返必须成功。
 #[tokio::test]
 async fn test_worker_role_has_full_write_access() {
@@ -768,7 +768,7 @@ async fn test_coordinator_role_writes_allowed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P2 派发链路（无集群实例的校验矩阵）：本地校验先行（目标/状态/重复
+/// 派发链路（无集群实例的校验矩阵）：本地校验先行（目标/状态/重复
 /// 派发），集群缺失最后报——错误指向明确且校验不依赖集群实例。
 /// （dispatch 走集群，无 cluster feature 时 handler 直接报缺依赖 → 测试随之门控。）
 #[cfg(feature = "cluster")]
@@ -854,7 +854,7 @@ async fn test_issue_dispatch_validation_without_cluster() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// F-U4-5（2026-09-15 真机实证）：急停发车护栏——estop ENGAGED 时手动
+/// F-（真机实证）：急停发车护栏——estop ENGAGED 时手动
 /// 发车面（issue.dispatch / issue.plan / autopilot.run / project.create
 /// auto_start）一律诚实拒绝；release 后放行到既有校验链（此处无集群，
 /// 落到「集群未运行」即证明护栏已过）。
@@ -953,7 +953,7 @@ async fn test_estop_blocks_dispatch_family_entries() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// BUG 2026-11-05 共享本地执行器 stub：LOCAL_DISPATCH_EXECUTOR 是进程级
+/// BUG 共享本地执行器 stub：LOCAL_DISPATCH_EXECUTOR 是进程级
 /// OnceLock（首装胜出）——本测试二进制内的 self 分臂测试共用同一 Arc，
 /// 各自持 PLAN_TEST_LOCK 串行 + delta 计数，互不踩计数。stub 只在
 /// target="self" 分臂被调（集群路径不受影响）。
@@ -981,9 +981,9 @@ fn shared_local_executor() -> std::sync::Arc<RecordingLocalExecutor> {
         .clone()
 }
 
-/// BUG 2026-11-05 回归锁（手动派发缺 self 分臂）：WSAPI issue.dispatch 带
+/// BUG 回归锁（手动派发缺 self 分臂）：WSAPI issue.dispatch 带
 /// target="self" 必须走本地执行面 dispatch_issue_local，不得直落集群单臂
-/// ——旧行为在空集群注册表（cluster=None）下报「集群未运行」（装配集群
+/// 旧行为在空集群注册表（cluster=None）下报「集群未运行」（装配集群
 /// 时报「未知节点：self」），手动本地发车全断。修复形态 = self 委托下沉
 /// dispatch_issue_core 入口单点（全部调用方生效）；本测试经 WSAPI 入口
 /// 钉端到端行为。负对照臂：target="node-b" 仍走集群臂（空注册表报
@@ -1081,7 +1081,7 @@ async fn test_issue_dispatch_self_targets_local_executor() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// BUG 2026-11-05 回归锁（core 层单点下沉）：dispatch_issue_core 对
+/// BUG 回归锁（core 层单点下沉）：dispatch_issue_core 对
 /// target="self" 恒委托本地执行面（含 cluster=None）——WSAPI 手动派发 /
 /// conflict resume 重派 / 送达失败 sweep 重试 / auto_dispatch（本地单
 /// assignee_id="self"）/ autopilot / plan 依赖波全部调用方一处语义生效。
@@ -1202,7 +1202,7 @@ async fn test_board_not_injected_and_unknown_cmd() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P3 看板拖拽：同列重排只改 position（无 status_change 评论，产生
+/// 看板拖拽：同列重排只改 position（无 status_change 评论，产生
 /// reordered 活动）；跨列走状态机（status_change 评论）；非法转移与缺参拒绝。
 #[tokio::test]
 async fn test_issue_move_handler() {
@@ -1287,7 +1287,7 @@ async fn test_issue_move_handler() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P3 附件上传/下载：base64 内容落盘 workspace/board/files/issue_N/，
+/// 附件上传/下载：base64 内容落盘 workspace/board/files/issue_N/，
 /// storage_path 记 workspace 相对路径；坏 base64 / 穿越文件名 / 缺 issue 拒绝。
 #[tokio::test]
 async fn test_attachment_add_get_roundtrip() {
@@ -1386,7 +1386,7 @@ async fn test_attachment_add_get_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P3 项目字段级更新：patch 语义（未提供字段保持原值）、空名拒绝、
+/// 项目字段级更新：patch 语义（未提供字段保持原值）、空名拒绝、
 /// 缺 id / 不存在的项目拒绝。
 #[tokio::test]
 async fn test_project_update_handler() {
@@ -1446,7 +1446,7 @@ async fn test_project_update_handler() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P3 收件箱：store 事件钩子产生通知（测试经 store 直播种子，handler
+/// 收件箱：store 事件钩子产生通知（测试经 store 直播种子，handler
 /// 评论作者=创建者会被排除）；admin wildcard 全量可见；单条/全部已读幂等。
 #[tokio::test]
 async fn test_inbox_list_and_mark_read() {
@@ -1539,7 +1539,7 @@ async fn test_inbox_list_and_mark_read() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P4 issue.cancel 校验矩阵（无集群实例，B3 修订后的契约）：无派发
+/// issue.cancel 校验矩阵（无集群实例， 修订后的契约）：无派发
 /// 直接终态（停车场单/依赖闸未放行单不需要集群）；有在途派发时集群缺失
 /// 在动账前拒（取消 = 下行 task_cancel，竞态守卫在集群校验之后才动账）。
 #[cfg(feature = "cluster")]
@@ -1549,7 +1549,7 @@ async fn test_issue_cancel_validation_without_cluster() {
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
 
-    // 建 issue → 无派发 → 直接终态（B3：不再要求集群参与）。
+    // 建 issue → 无派发 → 直接终态（不再要求集群参与）。
     let out = dispatch(
         &ctx,
         "issue.create",
@@ -1604,7 +1604,7 @@ async fn test_issue_cancel_validation_without_cluster() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// B14 issue.cancel_dispatch（只撤派发、单据存活）：无在途派发诚实报错；
+/// issue.cancel_dispatch（只撤派发、单据存活）：无在途派发诚实报错；
 /// 有在途派发、集群缺失 = 本地撤回 + 下行退化 warn（撤回比 issue.cancel
 /// 轻、可逆——重派即可，无需集群在动账前把关）；撤后 issue 状态不动、
 /// 活动派发清零（重派闸放行）、再撤诚实报错、留痕评论在场。
@@ -1682,7 +1682,7 @@ async fn test_issue_cancel_dispatch_keeps_issue_alive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P4 autopilot：CRUD + 手动触发（target 空 → 仅建单，`{date}` 替换，
+/// autopilot：CRUD + 手动触发（target 空 → 仅建单，`{date}` 替换，
 /// origin=autopilot 进 run 历史）+ target 非空但集群缺失 → 建单前拒绝 +
 /// remove。cron 未注入（AppState.cron=None）→ 跳过 job 登记，cron_job_id
 /// 保持 None（gateway 启动同步兜底）。
@@ -1778,7 +1778,7 @@ async fn test_autopilot_crud_manual_run_and_history() {
     // cluster 编译但未运行（nemesisbot 全量常态）→「集群未运行」；cluster
     // 未编译（minimal-iot 裁剪档 / nightly feature-matrix 同形态）→
     // 「cluster feature 未编译」。两者都是正确生产行为，按实际编译形态断言
-    // 对应臂（2026-09-02 CI 实录：本测试未像 dispatch/cancel 测试那样整体
+    // 对应臂（CI 本测试未像 dispatch/cancel 测试那样整体
     // 门控，在无 cluster 编译下钉死单臂假红）。
     let err = dispatch(
         &ctx,
@@ -1838,9 +1838,7 @@ async fn test_autopilot_crud_manual_run_and_history() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// W2.5 自动派发接口（board.auto_dispatch，默认关；用户拍板 2026-08-31）
-// ---------------------------------------------------------------------------
+// .5 自动派发接口（board.auto_dispatch，默认关）
 
 #[test]
 fn auto_dispatch_gate_requires_switch_and_worker() {
@@ -1873,7 +1871,7 @@ fn auto_dispatch_gate_requires_switch_and_worker() {
 #[tokio::test]
 async fn assign_worker_default_stays_pending_no_dispatch() {
     // 默认（无全局 config store → live_board_config None）：指派给 worker
-    // 只写 assignee 元数据，不触发派发——行为与 W2.5 之前完全一致
+    // 只写 assignee 元数据，不触发派发——行为与 .5 之前完全一致
     //（不要求集群、状态不推进、无 ⛔ 评论）。
     let dir = unique_dir("assign-default-off");
     let ctx = make_ctx_with_board(&dir);
@@ -1989,10 +1987,8 @@ async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// Swarm M1：issue.plan 两段式拆解 + 依赖补派（cluster 编译时；无真实集群的
-// 路径全部走诚实降级断言——自动派发的正路径由真机矩阵 G1/G2 覆盖）
-// ---------------------------------------------------------------------------
+// Swarm ：issue.plan 两段式拆解 + 依赖补派（cluster 编译时；无真实集群的
+// 路径全部走诚实降级断言——自动派发的正路径由真机矩阵 / 覆盖）
 
 /// 取 ctx 里 board store 的 Arc。
 #[cfg(feature = "cluster")]
@@ -2389,8 +2385,8 @@ async fn sync_parent_status_all_done_cancel_gap_and_terminal_noop() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn sync_parent_status_all_done_blocked_by_finish_gate() {
-    // AOR 批二b ⑥：全 done 子树但子单存在未裁决 unknown → FINISH 谓词
-    // 阻塞垫升/收口 + 缺口评论（C-F4 去重）；admin 评论裁决后重跑 sync
+    // 全 done 子树但子单存在未裁决 unknown → FINISH 谓词
+    // 阻塞垫升/收口 + 缺口评论（C- 去重）；admin 评论裁决后重跑 sync
     // 放行垫升进 in_review。
     let dir = unique_dir("parent-sync-finish-gate");
     let ctx = make_ctx_with_board(&dir);
@@ -2539,9 +2535,7 @@ async fn on_issue_settled_syncs_parent_and_attempts_redispatch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// -------------------------------------------------------------------------
-// Swarm M3 批次 E：讨论频道（channel.list / channel.messages / channel.post）
-// -------------------------------------------------------------------------
+// Swarm 批次 E：讨论频道（channel.list / channel.messages / channel.post）
 
 /// 假发言桥：记录调用并回固定首响（不写 store——web 层只负责桥接）。
 struct FakeIngress(std::sync::Mutex<Vec<(String, String, i64, String)>>);
@@ -2701,9 +2695,7 @@ async fn test_channel_post_routes_through_ingress() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// 全自动流转 P1（A4）：board.config.get / board.config.set 配置 TAB 读写。
-// ---------------------------------------------------------------------------
+// 全自动流转 ：board.config.get / board.config.set 配置 TAB 读写。
 
 #[tokio::test]
 async fn test_board_config_get_set_roundtrip() {
@@ -2753,7 +2745,7 @@ async fn test_board_config_get_set_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// P5/F1：conflict_auto_resolve 在 config.set 白名单内（缺省 false=human 档；
+// /：conflict_auto_resolve 在 config.set 白名单内（缺省 false=human 档；
 // 开 = AI 硬解漏斗）。这是 Dashboard 配置页切换冲突档位的唯一写入口。
 #[tokio::test]
 async fn test_board_config_set_conflict_auto_resolve_roundtrip() {
@@ -2799,7 +2791,7 @@ async fn test_board_config_set_conflict_auto_resolve_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// AOR 批三 5.1：autonomy 自治模式总开关（"assisted"|"autonomous"）；
+// autonomy 自治模式总开关（"assisted"|"autonomous"）；
 // 矛盾态两方向硬拒（autonomous 前置要求 unlimited=true / unlimited 关闭
 // 前置要求 autonomy 非 autonomous），被拒写入不得落盘。
 #[tokio::test]
@@ -2925,7 +2917,7 @@ async fn test_board_config_set_autonomy_contradiction_gates() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 连续 UNSURE 停车阈值（2026-10-15 用户：设置页缺旋钮）：白名单 + 回读 +
+// 连续 UNSURE 停车阈值（用户：设置页缺旋钮）：白名单 + 回读 +
 // 盘上落盘 roundtrip；0=不限合法。
 #[tokio::test]
 async fn test_board_config_set_max_unsure_streak_roundtrip() {
@@ -3024,7 +3016,7 @@ async fn test_board_config_set_wrong_type_rejects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// B1（职能→评审预设查表）：review.professions.<slug>.<field> 白名单键。
+// （职能→评审预设查表）：review.professions.<slug>.<field> 白名单键。
 // 写入 → get 回读 + 盘上真实落盘；非法 slug/未知维度 loud 拒绝。
 #[tokio::test]
 async fn test_board_config_set_profession_preset_roundtrip() {
@@ -3131,10 +3123,8 @@ async fn test_board_config_set_profession_preset_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// 全自动流转 P3：D2 autopilot auto_plan / F1 project auto_start / F2 项目
+// 全自动流转 ： autopilot auto_plan / project auto_start / 项目
 // 状态联动
-// ---------------------------------------------------------------------------
 
 /// 建一条 target 空（不预指派）+ 可调 auto_plan 的规则（经 store 落库——
 /// fire_autopilot 尾部 mark_autopilot_run 要求规则真实存在；顺带覆盖
@@ -3161,7 +3151,7 @@ fn p3_ap(store: &BoardStore, name: &str, auto_plan: bool) -> nemesis_board::Auto
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_fire_autopilot_auto_plan_false_unchanged() {
-    // auto_plan=false（存量默认）→ 行为与 P3 之前一致：只建单，auto_plan=null。
+    // auto_plan=false（存量默认）→ 行为与 之前一致：只建单，auto_plan=null。
     let dir = unique_dir("ap-auto-plan-false");
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
@@ -3175,7 +3165,7 @@ async fn test_fire_autopilot_auto_plan_false_unchanged() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
-    // F-U5-1：规则带验收标准 → 触发建单透传给 issue（定时任务全自动验收
+    // F-：规则带验收标准 → 触发建单透传给 issue（定时任务全自动验收
     // 的前提）；规则不填 → issue 验收标准为空（保守转人工语义不变）。
     let dir = unique_dir("ap-acceptance-passthrough");
     let ctx = make_ctx_with_board(&dir);
@@ -3208,7 +3198,7 @@ async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
     let ap_empty = p3_ap(&store, "不填", false);
     let out2 = fire_autopilot(&store, None, &ap_empty, &actor, None).unwrap();
     let issue2 = store.get_issue(out2["issue_id"].as_i64().unwrap()).unwrap();
-    // 2026-10-17 契约更新（NB-125 根修）：规则不填 → issue 萭 store 自动
+    // 契约更新（根修）：规则不填 → issue 萭 store 自动
     // 生成 AC（任务形态）——此前「为空保守转人工」语义被自动生成取代，
     // 定时建单同样不再裸奔进评审。
     assert!(
@@ -3282,7 +3272,7 @@ async fn test_fire_autopilot_auto_plan_true_empty_slot_degrades_with_comment() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_project_create_auto_start_builds_parent_issue() {
-    // F1：auto_start=true → 建父单（title=项目名 / project_id 绑定 /
+    // auto_start=true → 建父单（title=项目名 / project_id 绑定 /
     // origin=project / acceptance_criteria 透传）；agent 未运行 → 诚实降级
     // 评论一次（幂等：不重复发车）。
     let dir = unique_dir("project-auto-start");
@@ -3356,7 +3346,7 @@ async fn test_project_create_auto_start_false_keeps_legacy_behavior() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_link_project_on_dispatch_transitions_and_guards() {
-    // F2：Active + project_id 非空 → in_progress；project_id 空 / 非 Active
+    // Active + project_id 非空 → in_progress；project_id 空 / 非 Active
     // 状态不联动（回归保护）。
     let dir = unique_dir("link-project-dispatch");
     let ctx = make_ctx_with_board(&dir);
@@ -3395,7 +3385,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
     // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
     let _serial = PLAN_TEST_LOCK.lock().await;
     clear_plan_globals();
-    // F2 回归（T32 实证缺口）：confirm_plan 落库的子单必须继承父单
+    // 回归（实证缺口）：confirm_plan 落库的子单必须继承父单
     // project_id——派发联动 link_project_on_dispatch 读的是子单自己的
     // project_id，缺继承则项目永远停在 active。
     let dir = unique_dir("confirm-plan-inherit-project");
@@ -3473,12 +3463,10 @@ async fn test_issue_plan_via_handler_one_shot_planning() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// 全自动流转 P4：F3 项目收口触发面（eligible 矩阵 + notify 守卫）+ config
+// 全自动流转 ： 项目收口触发面（eligible 矩阵 + notify 守卫）+ config
 // review/budget 新键回读
-// ---------------------------------------------------------------------------
 
-/// F3 eligible 夹具：项目 + 若干顶层父单（前 done_parents 个落 done）。
+/// eligible 夹具：项目 + 若干顶层父单（前 done_parents 个落 done）。
 #[cfg(feature = "cluster")]
 fn f3_project_with_parents(
     store: &BoardStore,
@@ -3530,7 +3518,7 @@ async fn test_project_completion_eligible_matrix() {
         .id;
     assert!(!project_completion_eligible(&store, empty));
 
-    // 全部顶层父单 done → true（F2 首派联动后项目已在 in_progress 主链）。
+    // 全部顶层父单 done → true（首派联动后项目已在 in_progress 主链）。
     let all_done = f3_project_with_parents(&store, "全done项目", 2, 2);
     assert!(project_completion_eligible(&store, all_done));
 
@@ -3664,12 +3652,12 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     let dir = unique_dir("config-review-budget");
     let ctx = make_ctx_with_board(&dir);
 
-    // 初始默认值回读（P4 新键全部 serde default）。
+    // 初始默认值回读（新键全部 serde default）。
     let out = dispatch(&ctx, "config.get", serde_json::json!({}))
         .await
         .unwrap()
         .unwrap();
-    // M6-3（2026-10-10）：评审取证轮数默认 0=不限（C1 预算耗尽根修；
+    // 评审取证轮数默认 0=不限（预算耗尽根修；
     // doom-loop/estop 守卫仍在，0 语义安全）。
     assert_eq!(out["review"]["max_turns"], 0);
     assert_eq!(out["review"]["selfcheck"], false);
@@ -3679,7 +3667,7 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     assert_eq!(out["budget"]["wall_clock_budget_secs"], 0);
     assert_eq!(out["review"]["checkers"], 1);
     assert_eq!(out["budget"]["max_tokens_per_parent"], 0);
-    // F2 送达失败重试熔断默认开（5 次，自动循环默认带护栏）。
+    // 送达失败重试熔断默认开（5 次，自动循环默认带护栏）。
     assert_eq!(out["budget"]["max_send_retries"], 5);
 
     // 九键 set → 盘上真实落盘回读。
@@ -3715,7 +3703,7 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     assert_eq!(raw["board"]["review"]["checkers"], 3);
     assert_eq!(raw["board"]["budget"]["max_tokens_per_parent"], 100000);
     assert_eq!(raw["board"]["budget"]["max_send_retries"], 7);
-    // typed 重序列化 round-trip：既有键不丢（P1 键仍在）。
+    // typed 重序列化 round-trip：既有键不丢（键仍在）。
     assert_eq!(raw["board"]["unlimited_mode"], false);
 
     // 未知嵌套键 loud 拒绝，错误信息列出允许键（含新键）。
@@ -3734,12 +3722,10 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ------------------------------------------------------------------
-// 停车场复活（A1/A2/B1-B5，2026-09-11）：tags 匹配、sweep 重试、⏸ 去重、
+// 停车场复活（//）：tags 匹配、sweep 重试、⏸ 去重、
 // 父单受阻联动、级联取消、无派发取消。
-// ------------------------------------------------------------------
 
-/// 独立 workspace 的离线 Cluster（不 start()，纯注册表/任务账本内存态；
+/// 独立 workspace 的离线 Cluster（不 start，纯注册表/任务账本内存态；
 /// peers.toml 落测试目录不污染源码树）。
 #[cfg(feature = "cluster")]
 fn offline_cluster(dir: &std::path::Path, node_id: &str) -> Arc<nemesis_cluster::cluster::Cluster> {
@@ -3756,7 +3742,7 @@ fn offline_cluster(dir: &std::path::Path, node_id: &str) -> Arc<nemesis_cluster:
 
 /// 派发同步断言用的「哑对端」地址：进程内 loopback listener（永不 accept/
 /// 响应，进程存活期常驻）。connect 在 OS backlog 即刻完成、ACK 永不到来
-/// ——派发 spawn 内的 send 挂在外层超时上，同步断言窗口内 claim 行保持
+/// 派发 spawn 内的 send 挂在外层超时上，同步断言窗口内 claim 行保持
 /// 在途（不可路由地址的 connect 失败快慢随主机路由环境漂移，竞态不可
 /// 接受；自备端口不进固定端口表）。
 #[cfg(feature = "cluster")]
@@ -3768,7 +3754,7 @@ fn silent_peer_addr() -> String {
     format!("127.0.0.1:{}", addr.port())
 }
 
-/// 节点 → 哑对端地址的静态 [`PeerResolver`]（裸 `RpcClient::new()` 无
+/// 节点 → 哑对端地址的静态 [`PeerResolver`]（裸 `RpcClient::new` 无
 /// resolver，send 秒败 "peer unresolvable" → 回退路径抢跑——同步断言
 /// 竞态；本解析器让 send 真解析到哑 listener，ACK 挂外层超时）。
 #[cfg(feature = "cluster")]
@@ -3831,7 +3817,7 @@ fn planner_child(
         .unwrap()
 }
 
-/// B4+B5：停车留痕去重 + 父单转受阻 + sweep 静默重试不刷评论。
+/// +：停车留痕去重 + 父单转受阻 + sweep 静默重试不刷评论。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn park_notice_dedup_parent_blocked_and_silent_sweep() {
@@ -3881,7 +3867,7 @@ async fn park_notice_dedup_parent_blocked_and_silent_sweep() {
         "整条链都在等节点 → 父单 blocked 显形"
     );
 
-    // B4 去重：再次停车（notify=true）不堆叠同文案评论。
+    // 去重：再次停车（notify=true）不堆叠同文案评论。
     super::dispatch_subissue_auto(&store, Some(&cluster), a.id, &actor, true).unwrap();
     assert_eq!(notices(a.id), 1, "同状态重复停车不得刷评论");
     assert_eq!(notices(parent.id), 1);
@@ -3891,7 +3877,7 @@ async fn park_notice_dedup_parent_blocked_and_silent_sweep() {
     assert!(cands.contains(&a.id), "planner 单必须是 sweep 候选");
     assert!(!cands.contains(&b.id), "无标记手工单不得进候选");
 
-    // A2 静默重试：无匹配节点 → 派不出但零副作用（不刷评论不动父单）。
+    // 静默重试：无匹配节点 → 派不出但零副作用（不刷评论不动父单）。
     let (cands, dispatched, failed) = super::sweep_parked_dispatches(&store, &cluster, &actor);
     assert_eq!(dispatched, 0);
     assert_eq!(failed, 0);
@@ -3904,7 +3890,7 @@ async fn park_notice_dedup_parent_blocked_and_silent_sweep() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A2 金路径 + A1 标签匹配：节点带 tags 上线 → sweep 复活停车场单，
+/// 金路径 + 标签匹配：节点带 tags 上线 → sweep 复活停车场单，
 /// 父单 blocked → in_progress。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -3930,7 +3916,7 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
     super::dispatch_subissue_auto(&store, Some(&cluster), a.id, &actor, true).unwrap();
     assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
 
-    // 离线 Cluster 没有 RPC client（start() 才装）——派发核心需要它拿
+    // 离线 Cluster 没有 RPC client（start 才装）——派发核心需要它拿
     // fire-and-forget 发送句柄；注入空 client（对 127.0.0.1:19999 的
     // connect 失败走 spawn 内的 FAILED 终结，不影响本测试断言的同步面）。
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
@@ -3973,9 +3959,9 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// F-U3-4：周期兜底 ticker 的 notify 路径——首次 sweep 停车即落 ⏸ 评论 +
+/// F-：周期兜底 ticker 的 notify 路径——首次 sweep 停车即落 ⏸ 评论 +
 /// 父单 blocked 显形（与直派路径同语义；此前 announce 路径静默，停车零
-/// 反馈），重复 tick B4 去重不刷屏，匹配节点上线后 sweep 派出并解锁父单。
+/// 反馈），重复 tick 去重不刷屏，匹配节点上线后 sweep 派出并解锁父单。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn periodic_sweep_notify_parks_with_notice_then_revives() {
@@ -4013,7 +3999,7 @@ async fn periodic_sweep_notify_parks_with_notice_then_revives() {
         "整条链在等节点 → 父单 blocked 显形"
     );
 
-    // 重复 tick：B4 去重，不刷评论不动父单。
+    // 重复 tick： 去重，不刷评论不动父单。
     let (cands, dispatched, failed) =
         super::sweep_parked_dispatches_notify(&store, &cluster, &actor, true);
     assert_eq!((cands, dispatched, failed), (1, 0, 0));
@@ -4060,7 +4046,7 @@ async fn periodic_sweep_notify_parks_with_notice_then_revives() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// B3+B2：无在途派发的单取消不再拒绝；落定联动父单收口。
+/// +：无在途派发的单取消不再拒绝；落定联动父单收口。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn issue_cancel_without_dispatch_direct_terminal_and_parent_sync() {
@@ -4109,7 +4095,7 @@ async fn issue_cancel_without_dispatch_direct_terminal_and_parent_sync() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// B1：依赖取消后 dependents 原本是永久死链（依赖闸只认 done + 无
+/// 依赖取消后 dependents 原本是永久死链（依赖闸只认 done + 无
 /// reopen）——现在级联取消让死链显形：B/孙单全部 cancelled + ⛔ 留痕。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -4195,7 +4181,7 @@ async fn cancel_cascades_to_dependents() {
             "级联单必须 ⛔ 留痕"
         );
     }
-    // C3：cancel 响应体必须披露级联清单（不再无声）。
+    // cancel 响应体必须披露级联清单（不再无声）。
     let cascaded: Vec<&str> = out["cascade_cancelled"]
         .as_array()
         .expect("响应必须带 cascade_cancelled 数组")
@@ -4230,7 +4216,7 @@ async fn cancel_cascades_to_dependents() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// F-U4-3：cancel **父单**必须经父子边级联取消子单——planner 拆解的依赖
+/// F-：cancel **父单**必须经父子边级联取消子单——planner 拆解的依赖
 /// 边是兄弟链、从不指向父单，只走依赖边则父单取消恒零级联（真实 UAT
 /// 事故：三子单僵尸 backlog + 补派触发器还会继续派它们空烧 token）。
 /// 在途派发的子单连带终结派发行（竞态守卫赢），披露清单含全部子单。
@@ -4246,7 +4232,7 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
     let store = store_of(&ctx);
     let actor = Actor::admin("test-session");
     let parent = no_parent(&store);
-    // 三子单只有 parent_issue_id 关联（U4-3 真实夹具：零依赖边）。
+    // 三子单只有 parent_issue_id 关联（真实夹具：零依赖边）。
     let c1 = planner_child(&store, parent, "子甲", vec![]);
     let c2 = planner_child(&store, parent, "子乙", vec![]);
     let c3 = planner_child(&store, parent, "子丙", vec![]);
@@ -4323,7 +4309,7 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// F-U4-3 派发侧闸：父单已取消的子单不再被派出（补派触发器/停车场
+/// F- 派发侧闸：父单已取消的子单不再被派出（补派触发器/停车场
 /// sweep 都过这道闸）——否则父单死后子单还会被派发空烧 token。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -4362,7 +4348,7 @@ async fn dispatch_skips_children_of_cancelled_parent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// F-U4-3 reopen 侧闸：父单已取消的子单不可单独复活（否则被派发闸拦成
+/// F- reopen 侧闸：父单已取消的子单不可单独复活（否则被派发闸拦成
 /// 永久 backlog 僵尸）——先复活父单，再逐单复活子单。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -4407,7 +4393,7 @@ async fn reopen_refuses_child_of_cancelled_parent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// ④ reopen（发现④ 2026-09-15）：非法来源 loud 拒绝（todo/done 不可走
+/// ④ reopen（发现④）：非法来源 loud 拒绝（todo/done 不可走
 /// reopen），cancelled → backlog 走通且 has_active_dispatch 天然解锁
 ///（无在途派发记录），可直接重新 dispatch（此处验证表面契约：reopen 后
 /// 再 cancel 不再被旧状态卡死）。
@@ -4449,7 +4435,7 @@ async fn issue_reopen_rejects_non_cancelled_and_restores_dispatchability() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// B5 收尾路径：受阻父单的子单全部落定（含取消）→ 先垫 in_progress 再
+/// 收尾路径：受阻父单的子单全部落定（含取消）→ 先垫 in_progress 再
 /// in_review（blocked→in_review 非法，垫底条件必须含 blocked）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -4486,10 +4472,8 @@ async fn sync_parent_status_bumps_blocked_parent_before_review() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ------------------------------------------------------------------
-// 停车场兜底派发开关（集群完备性加固 2026-09-11）：dispatch_fallback /
+// 停车场兜底派发开关（集群完备性加固）：dispatch_fallback /
 // dispatch_fallback_target。无人匹配时任务必须能推进（用户裁决）。
-// ------------------------------------------------------------------
 
 /// 构造兜底档位配置（显式入参，测试不碰进程级全局 live config）。
 #[cfg(feature = "cluster")]
@@ -4590,7 +4574,7 @@ async fn fallback_on_but_no_peers_still_parks() {
 }
 
 /// Role 档（新默认）角色纪律保留：coordinator 单只有 worker 在线——④全
-/// 松弛才能救的局诚实停车；Full 档同场景才兜底派出（2026-09-29 三档化
+/// 松弛才能救的局诚实停车；Full 档同场景才兜底派出（三档化
 /// 回归锚：默认不越 worker/coordinator 纪律）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -4939,10 +4923,8 @@ async fn fallback_sweep_revives_parked_issue() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// P1 拓扑硬闸（2026-09-12 双端真机 S2 根修）：远端目标 + file: 锚点 = 拒绝派发
+// 拓扑硬闸（双端真机 根修）：远端目标 + file: 锚点 = 拒绝派发
 // （被测 fn 本体 cluster-gated → 测试同守卫，无 feature 编译期消失）
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg(feature = "cluster")]
@@ -5019,10 +5001,8 @@ fn remote_file_anchor_gate_ignores_unsafe_path_anchors() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// goal P1/C1+C2：board.project.progress 项目进度聚合
+// goal /+：board.project.progress 项目进度聚合
 // （环节计数/卡点环节/逐单环节数据——实机验收=goal §四 T-obs-2/3/4）。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_project_progress_counts_stage_and_rows() {
@@ -5129,7 +5109,7 @@ fn test_project_progress_counts_stage_and_rows() {
     // 卡点优先级：受阻 > 停车 > 执行中 > 待重派 > 验收中 > 待派发
     assert_eq!(out["stage"], "受阻");
 
-    // 逐单环节（C2 徽标数据源）
+    // 逐单环节（徽标数据源）
     let stage_of = |title: &str| -> String {
         out["issues"]
             .as_array()
@@ -5202,10 +5182,8 @@ fn test_project_progress_empty_and_stage_priority() {
     assert_eq!(out["stage"], "停车待恢复");
 }
 
-// ---------------------------------------------------------------------------
-// goal P2/D0：派发准入控制（worker_max_inflight）纯函数判定。
+// goal /：派发准入控制（worker_max_inflight）纯函数判定。
 // （自动链集成路径由 cluster-uat 双 worker 场景覆盖——本处钉判定语义。）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_inflight_full_semantics() {
@@ -5229,9 +5207,7 @@ fn test_inflight_full_semantics() {
     assert!(!super::inflight_full(&load, "node-x", -1));
 }
 
-// ---------------------------------------------------------------------------
-// goal P2/P5-E：标签授予台账（board_meta granted_tags）。
-// ---------------------------------------------------------------------------
+// goal /-E：标签授予台账（board_meta granted_tags）。
 
 #[test]
 fn test_grant_tags_to_node_store() {
@@ -5258,9 +5234,7 @@ fn test_grant_tags_to_node_store() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// goal P2/D0b 回归：running 态派发的终结与在途判定（NB-12 卡死类回归防线）。
-// ---------------------------------------------------------------------------
+// goal / 回归：running 态派发的终结与在途判定（卡死类回归防线）。
 
 #[test]
 fn test_running_dispatch_lifecycle() {
@@ -5297,12 +5271,10 @@ fn test_running_dispatch_lifecycle() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// D0 × T37 身份归一化回归（2026-09-13）：auto 派发 target 必须在 D0 闸之前
+// × 身份归一化回归：auto 派发 target 必须在 闸之前
 // 归一化为节点 id——人工指派给 peer 名（"Alex"）时，负载表（键=账本
 // worker_id，归一化后全为节点 id）按名字查不到 = 闸失效 + 账本/上报身份
 // 分裂（task.started / delivery.files 校验永假）。
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -5386,7 +5358,7 @@ async fn inflight_gate_hits_canonical_worker_id_for_named_assignee() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// R-9 互斥释放波（2026-09-13 T-sched-1 实机缺口 NB-18）：同父两 planner
+/// R-9 互斥释放波（T-sched-1 实机缺口）：同父两 planner
 /// 子单声明同写路径（[TOUCH] shared/a.txt）——冲突单静默延后留 backlog；
 /// 冲突派发落定（finish_dispatch DONE，对应写回 settled=true）后，
 /// sweep_parked_dispatches 必须把延后单承接派出。守卫「稳态集群冲突落定
@@ -5490,11 +5462,9 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ------------------------------------------------------------------
-// B1 匹配失败明细（2026-09-13 goal 复核补齐）：match_failure_detail
+// 匹配失败明细（goal 复核补齐）：match_failure_detail
 // 纯函数直测（函数注释声称「单测直测」但首轮落地遗漏测试）+
-// project_resume 无匹配候选附 match_detail（goal P2/D 顺序依赖条款）。
-// ------------------------------------------------------------------
+// project_resume 无匹配候选附 match_detail（goal /D 顺序依赖条款）。
 
 #[cfg(feature = "cluster")]
 fn cand(id: &str, role: &str, tags: &[&str]) -> nemesis_board::PeerCandidate {
@@ -5588,7 +5558,7 @@ fn match_detail_reports_role_and_tag_gaps_per_candidate() {
     );
 }
 
-/// B1×D 接线：project_resume 无匹配候选在 dry_run 预览行与执行失败行附
+/// ×D 接线：project_resume 无匹配候选在 dry_run 预览行与执行失败行附
 /// `match_detail`；匹配成功行不附。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -5664,9 +5634,7 @@ async fn project_resume_no_match_carries_b1_detail() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// P5/F2：dispatch_issue_core 冲突冻结闸（派发单一入口唯一落点）
-// ---------------------------------------------------------------------------
+// /：dispatch_issue_core 冲突冻结闸（派发单一入口唯一落点）
 
 /// 冻结闸先于集群依赖校验：冻结项目的单**无论**有没有集群、有没有目标，
 /// 一律诚实拒绝且错误指向 project.resume——不因「集群未运行」混淆语义。
@@ -5717,7 +5685,7 @@ async fn test_dispatch_issue_core_rejects_frozen_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// BUG-②（2026-10-15 NB-1 事故）：挂有未确认计划的父单不可直接派发。
+// BUG-②（事故）：挂有未确认计划的父单不可直接派发。
 // ready（待确认）与 running（拆解进行中）都拦，错误指引确认或等 TTL；
 // 过期计划不拦（TTL 惰性清理，派发闸自身 retain 同 plan.list 判据）。
 #[cfg(feature = "cluster")]
@@ -5794,11 +5762,9 @@ async fn test_dispatch_issue_core_rejects_issue_with_pending_plan() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// 派发即指派回填（2026-09-17）：dispatch_issue_core 单一入口回填 assignee
-// ---------------------------------------------------------------------------
+// 派发即指派回填：dispatch_issue_core 单一入口回填 assignee
 
-// F1（2026-09-30 派发目标校验前置）：幽灵 target 在 API 层直接拒绝——
+// （派发目标校验前置）：幽灵 target 在 API 层直接拒绝——
 // 旧行为照单全收（dispatched=true）去 RPC 撞墙（真机行为分裂实证）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -5812,8 +5778,8 @@ async fn test_dispatch_rejects_unknown_target_upfront() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
-    // 注入空 client（2026-10-17 起 rpc client 前置检查先于 F1 归一化拒绝
-    // ——裸 Cluster::new 会先撞「RPC client 未就绪」，走不到本测试要钉的
+    // 注入空 client（起 rpc client 前置检查先于 归一化拒绝
+    // 裸 Cluster::new 会先撞「RPC client 未就绪」，走不到本测试要钉的
     // 「未知节点」臂；归一化拒绝发生在任何 send 之前，裸 client 足够）。
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
     let issue = store
@@ -5843,7 +5809,7 @@ async fn test_dispatch_rejects_unknown_target_upfront() {
 
 /// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。注入可解析
 /// 到哑对端的 client（connect 即刻完成、ACK 永不到来——spawn 内 send 挂在
-/// 外层超时上，同步断言窗口内回退路径不触发）：2026-10-17 rpc client 前置
+/// 外层超时上，同步断言窗口内回退路径不触发）： rpc client 前置
 /// 检查后，裸 `Cluster::new` 会在一切状态变更之前零副作用诚实拒绝——回填
 /// 只在派发同步管线成功路径上观察（claim/状态转移/指派回填均在
 /// submit_peer_chat 之后、fire-and-forget 发送之前落库）。
@@ -5866,7 +5832,7 @@ async fn test_dispatch_backfills_assignee() {
             ("node-c", silent_peer_addr()),
         ],
     );
-    // F1 派发目标校验前置（2026-09-30）：未知 target 在归一化处即被拒绝，
+    // 派发目标校验前置：未知 target 在归一化处即被拒绝，
     // 本测试意图是回填点位（同步成功路径）——target 必须是注册表已知节点，
     // 且地址用哑对端（connect 即刻完成、ACK 永不到来，spawn 内 send 挂在
     // 外层超时上——同步断言窗口内回退路径不会触发）。
@@ -5941,7 +5907,7 @@ async fn test_dispatch_backfills_assignee() {
     );
 
     // 已显式指派 node-a → 派发 target=node-c：指派跟随实际派发目标改写
-    //（D3 换节点重派同款语义——目标变了字段必须跟上）。
+    //（换节点重派同款语义——目标变了字段必须跟上）。
     let issue2 = store
         .create_issue(nemesis_board::NewIssue {
             title: "改指的单".into(),
@@ -5971,9 +5937,7 @@ async fn test_dispatch_backfills_assignee() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// 看板项目档案 P6（F11）：project.progress 档案完整性投影
-// ---------------------------------------------------------------------------
+// 看板项目档案 ：project.progress 档案完整性投影
 
 #[test]
 fn test_project_progress_projects_archive_integrity_projection() {
@@ -6037,9 +6001,7 @@ fn test_project_progress_projects_archive_integrity_projection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// SAN-06/08 + EST（2026-09-16 横扫加固）：子树闭包联动 / 级联穿终态 / estop 闸内核
-// ---------------------------------------------------------------------------
+// SAN-06/08 + EST（横扫加固）：子树闭包联动 / 级联穿终态 / estop 闸内核
 
 /// SAN-06：联动沿祖先链向上传播，且穿过终态中间层——done 父单 A 之下的
 /// 取消叶子不再对上层 P 冻结：A 保持终态 + 缺口评论显形，P 推 in_review。
@@ -6215,7 +6177,7 @@ fn test_estop_dispatch_frozen_pure_helper() {
 }
 
 // ===========================================================================
-// AGT 覆盖率批次（2026-09-24）：board.rs miss 收口。
+// AGT 覆盖率批次：board.rs miss 收口。
 // 纯函数臂 / 钩子装配 / project_progress 环节矩阵 / config.set 全键 /
 // audit 族 / autopilot cron 装配与同步。派发与 plan 链见附录二。
 // ===========================================================================
@@ -6284,7 +6246,7 @@ fn agt_make_ctx_ex(
     }
 }
 
-// --- 附录一：纯函数与校验臂 ---
+// 附录一：纯函数与校验臂 ---
 
 #[test]
 fn agt_assignee_pairing_sanitize_and_filter_arms() {
@@ -6343,7 +6305,7 @@ fn agt_assignee_pairing_sanitize_and_filter_arms() {
 fn agt_dispatch_prompt_renders_all_optional_sections() {
     let dir = unique_dir("agt-prompt");
     let store = store_of(&make_ctx_with_board(&dir));
-    // 2026-10-17 契约更新（NB-125 根修）：store 创建时自动生成 AC——要测
+    // 契约更新（根修）：store 创建时自动生成 AC——要测
     // None 臂（兜底文案 231-232）必须显式抹掉生成值，模拟存量缺 AC 单。
     let mut issue = store
         .create_issue(nemesis_board::NewIssue {
@@ -6381,7 +6343,7 @@ fn agt_dispatch_prompt_renders_all_optional_sections() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------- PR5：重派轮次段 + 循环升级契约 ----------
+// 重派轮次段 + 循环升级契约 ----------
 
 #[cfg(feature = "cluster")]
 #[test]
@@ -6453,7 +6415,7 @@ fn agt_hook_setters_first_ok_second_rejected_and_notify_missing_issue() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- 附录一：project_progress 环节矩阵（1030-1065 全臂 + 1070）---
+// 附录一：project_progress 环节矩阵（1030-1065 全臂 + 1070）---
 
 #[cfg(feature = "cluster")]
 #[test]
@@ -6624,7 +6586,7 @@ fn agt_project_progress_stage_matrix_and_priority() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- 附录一：config.get / config.set 全键（4259-4479）---
+// 附录一：config.get / config.set 全键（4259-4479）---
 
 #[tokio::test]
 async fn agt_board_config_get_set_all_keys_and_rejections() {
@@ -6648,7 +6610,7 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("unlimited_mode", serde_json::json!(false)),
         ("conflict_auto_resolve", serde_json::json!(true)),
         ("dispatch_fallback", serde_json::json!(true)),
-        // 2026-09-29 三档化：字符串档位 round-trip（旧布尔上一行保真）。
+        // 三档化：字符串档位 round-trip（旧布尔上一行保真）。
         ("dispatch_fallback", serde_json::json!("off")),
         ("dispatch_fallback", serde_json::json!("role")),
         ("fingerprint_weighting", serde_json::json!(true)),
@@ -6770,7 +6732,7 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- 附录一：audit 族（4208-4256）---
+// 附录一：audit 族（4208-4256）---
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -6873,7 +6835,7 @@ async fn agt_audit_list_offset_action_rollback_and_retry_merge() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- 附录一：M5-1 评审重触发（review.retrigger，2026-10-10 机制加固）---
+// 附录一： 评审重触发（review.retrigger， 机制加固）---
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -6920,7 +6882,7 @@ async fn agt_review_retrigger_gate_hook_and_trace() {
     );
 
     // ③ 钩子未安装 → 诚实报错（本测试是 REVIEW_RETRIGGER_HOOK 唯一安装
-    //    点，安装前 get() 恒 None；number 寻址顺带覆盖）。
+    //    点，安装前 get 恒 None；number 寻址顺带覆盖）。
     let err = dispatch(
         &ctx,
         "review.retrigger",
@@ -6972,7 +6934,7 @@ async fn agt_review_retrigger_gate_hook_and_trace() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- 项目收口复评臂（2026-10-17 NB-101 project_escalate_human 死路根修）---
+// 项目收口复评臂（project_escalate_human 死路根修）---
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -7013,7 +6975,7 @@ async fn agt_project_retrigger_arm_gates_hook_and_trace() {
     assert!(!err.is_empty(), "{err}");
 
     // ② 钩子未安装 → 诚实报错（PROJECT_REVIEW_RETRIGGER_HOOK 唯一安装点
-    //    在本测试；装之前的 get() 恒 None）。
+    //    在本测试；装之前的 get 恒 None）。
     let err = dispatch(
         &ctx,
         "review.retrigger",
@@ -7076,7 +7038,7 @@ async fn agt_project_retrigger_arm_gates_hook_and_trace() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- 附录一：autopilot cron 装配 / 同步 / 摘除（3279-3390）---
+// 附录一：autopilot cron 装配 / 同步 / 摘除（3279-3390）---
 
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -7141,7 +7103,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
             expr: Some("*/9 * * * *".into()),
             tz: None,
         };
-        // BUG-20261024-10 后 `board-ap:{i64}` 是保留命名空间：内部旁路
+        // 后 `board-ap:{i64}` 是保留命名空间：内部旁路
         // （add_job_internal）是这类名字的唯一来源，这里用它造幽灵作业。
         // 孤儿判据按全形态——整数 id 且未注册才在射程内。
         svc.add_job_internal(
@@ -7186,7 +7148,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
         );
         assert!(names.contains(&missing_job_name), "{names:?}");
     }
-    // BUG-20261025-18：存量死排程规则（绕过入口直落库的形态）→ sync
+    // 存量死排程规则（绕过入口直落库的形态）→ sync
     // 只跳过该条（per-rule 隔离），其余规则照常挂载，整体不 Err。
     let dead = store
         .create_autopilot(&nemesis_board::NewAutopilot {
@@ -7253,7 +7215,7 @@ async fn agt_autopilot_validate_and_issues_listing() {
     )
     .await;
     assert!(r.is_err(), "非法 cron 必须被拒");
-    // BUG-20261025-18：解析通过但永不匹配（2 月没有 30 日）→ create 拒绝
+    // 解析通过但永不匹配（2 月没有 30 日）→ create 拒绝
     // 且 store 不落规则（先验后写，不留「已创建」的静默僵尸）。
     let r = dispatch(
         &ctx,
@@ -7268,7 +7230,7 @@ async fn agt_autopilot_validate_and_issues_listing() {
         "拒绝后不得留规则: {:?}",
         store.list_autopilots().unwrap()
     );
-    // 同表达式 enabled=false → 放行（W1b：停用规则不排程）。
+    // 同表达式 enabled=false → 放行（停用规则不排程）。
     let out = dispatch(
         &ctx,
         "autopilot.create",
@@ -7335,7 +7297,7 @@ async fn agt_autopilot_validate_and_issues_listing() {
 }
 
 // ===========================================================================
-// AGT 覆盖率批次（2026-09-24）附录二：派发闸 / project.resume / sweep /
+// AGT 覆盖率批次附录二：派发闸 / project.resume / sweep /
 // 重平衡 / 级联取消 / planner / plan 链（全部 cluster-gated）。
 // ===========================================================================
 
@@ -7419,7 +7381,7 @@ impl LlmProvider for AgtDownProvider {
     }
 }
 
-/// 捕获全部 user 消息文本的 provider（D2 等待预算注入断言；恒回合法计划）。
+/// 捕获全部 user 消息文本的 provider（等待预算注入断言；恒回合法计划）。
 #[cfg(feature = "cluster")]
 struct AgtPromptCaptureProvider(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -7450,7 +7412,7 @@ impl LlmProvider for AgtPromptCaptureProvider {
     }
 }
 
-/// D2 等待预算注入（run_planner 新参）：Some(secs) → user prompt 带
+/// 等待预算注入（run_planner 新参）：Some(secs) → user prompt 带
 /// 「讨论评审等待预算」段与具体值；None → 段不渲染（字节与历史一致）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -7713,7 +7675,7 @@ impl LlmProvider for AgtAcDraftProvider {
     }
 }
 
-/// 预防层（NB-101 AC 缺失根修）：父单 AC 为空 → 拆解链自动起草落库 +
+/// 预防层（AC 缺失根修）：父单 AC 为空 → 拆解链自动起草落库 +
 /// 系统评论留痕；已有基线不动（用户显式 AC 最大）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -7733,7 +7695,7 @@ async fn agt_execute_plan_chain_drafts_parent_ac_when_empty() {
         AgentConfig::default(),
     ));
 
-    // 空基线父单：起草落库 + 评论留痕。2026-10-17 契约更新：store 建单
+    // 空基线父单：起草落库 + 评论留痕。 契约更新：store 建单
     // 自动生成 AC——LLM 起草闸只在 AC 真空时触发（存量单形态），本地抹掉
     // 生成值保持该路径覆盖。
     let mut parent = store
@@ -7812,7 +7774,7 @@ async fn agt_execute_plan_chain_ac_draft_failure_does_not_block() {
     std::fs::create_dir_all(&dir).unwrap();
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
-    // 2026-10-17 契约更新：本地抹掉 store 生成值，保持「AC 真空 → 起草失败
+    // 契约更新：本地抹掉 store 生成值，保持「AC 真空 → 起草失败
     // 不落坏草稿」路径覆盖。
     let mut parent = store
         .create_issue(nemesis_board::NewIssue {
@@ -7843,7 +7805,7 @@ async fn agt_execute_plan_chain_ac_draft_failure_does_not_block() {
         serde_json::json!("planned"),
         "起草失败不阻塞: {out}"
     );
-    // 2026-10-17 契约更新：起草失败不落坏草稿——store 基线（建单自动生成
+    // 契约更新：起草失败不落坏草稿——store 基线（建单自动生成
     // AC）逐字节不变，没有被失败产物污染。
     let ac_baseline = store
         .get_issue(parent.id)
@@ -7912,7 +7874,7 @@ async fn agt_issue_draft_ac_returns_draft_without_persisting() {
         })
         .unwrap();
 
-    // 草稿不落库（保存决定权在用户）。2026-10-17 契约更新：store 建单已
+    // 草稿不落库（保存决定权在用户）。 契约更新：store 建单已
     // 自动生成 AC——「不落库」的正确断言 = 起草前后 AC 逐字节不变。
     let ac_before = store.get_issue(parent.id).unwrap().acceptance_criteria;
     assert!(ac_before.is_some(), "建单自动生成 AC 已在场（新契约基线）");
@@ -7943,7 +7905,7 @@ async fn agt_issue_draft_ac_returns_draft_without_persisting() {
         .unwrap_err();
     assert!(err.contains("agent 未运行"), "{err}");
 
-    // commands() 注册（L1 契约：system.commands 汇总发布）。
+    // commands 注册（契约：system.commands 汇总发布）。
     let cmds = super::BoardHandler.commands();
     assert!(
         cmds.contains(&"issue.draft_ac"),
@@ -8026,7 +7988,7 @@ async fn agt_dispatch_gates_matrix() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
-    // 注入可解析到哑对端的 client（2026-10-17 rpc client 前置检查先于各
+    // 注入可解析到哑对端的 client（rpc client 前置检查先于各
     // 状态闸后的派发管线——裸 Cluster::new 会零副作用早拒，走不到注册表
     // 归一化/拓扑闸/完整派发管线；哑 listener 让 send 挂在外层超时，同步
     // 断言窗口内 claim 行保持在途）。
@@ -8051,7 +8013,7 @@ async fn agt_dispatch_gates_matrix() {
         node_type: "agent".into(),
         build: String::new(),
     });
-    // 拓扑硬闸臂的 far-node-9 同理须是已知节点（F1 归一化拒绝先于拓扑闸）。
+    // 拓扑硬闸臂的 far-node-9 同理须是已知节点（归一化拒绝先于拓扑闸）。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "far-node-9".into(),
@@ -8250,7 +8212,7 @@ async fn agt_dispatch_gates_matrix() {
     .unwrap_err();
     assert!(err.contains("拒绝派发") && err.contains("file:"), "{err}");
 
-    // project_id 指向已删除项目（存量幽灵行——引用完整性闸 2026-10-17 后
+    // project_id 指向已删除项目（存量幽灵行——引用完整性闸 后
     // create 不再接受，直连 SQLite 删行复刻存量形态）：两个诚实降级点，
     // 命中哪个取决于 BASELINE_PUSHER OnceLock 的装配赢家（基线测试同进程
     // 并行）——基线装配先跑 = push_dispatch_baseline 的 get_project Err
@@ -8580,7 +8542,7 @@ async fn agt_issue_cancel_with_dispatch_cascades_union_edges() {
 }
 
 // ===========================================================================
-// AGT 覆盖率批次（2026-09-24）附录三：基线下发（BASELINE_PUSHER 通路）。
+// AGT 覆盖率批次附录三：基线下发（BASELINE_PUSHER 通路）。
 // push_dispatch_baseline 五Outcome × 传输四形态；OnceLock 进程级唯一安装，
 // transport 行为由 AtomicU8 现场切换（安装一次，段内变轨）。
 // block_in_place 要求 multi_thread runtime。
@@ -8644,7 +8606,7 @@ async fn agt_push_dispatch_baseline_paths() {
     };
     let with_proj = store.create_issue(mk("带项目", Some(proj.id))).unwrap();
     let no_proj = store.create_issue(mk("无项目", None)).unwrap();
-    // 「幽灵项目」引用（存量态）：引用完整性闸（2026-10-17）后 create 已
+    // 「幽灵项目」引用（存量态）：引用完整性闸后 create 已
     // 不接受不存在的 project_id——先建真实项目再直连 SQLite 删行复刻存量
     // 数据形态（push_dispatch_baseline 的 get_project Err 防御臂只对存量
     // 幽灵行有意义）。
@@ -8730,8 +8692,8 @@ async fn agt_push_dispatch_baseline_paths() {
     // ⑩ 完整派发管线带基线：dedup 模式恢复 → 基线成功后照走同步管线
     //    （submit → claim + 状态推进；连接失败在 spawn 内异步终结）。
     let cluster = offline_cluster(&dir, "node-a");
-    // F1 派发目标校验前置：node-b 须在注册表（否则归一化处被拒）。RPC
-    // client 前置检查（2026-10-17）要求注入可用 client 才能走到完整管线。
+    // 派发目标校验前置：node-b 须在注册表（否则归一化处被拒）。RPC
+    // client 前置检查要求注入可用 client 才能走到完整管线。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
@@ -8786,14 +8748,14 @@ async fn agt_push_dispatch_baseline_paths() {
 }
 
 // ===========================================================================
-// W5 覆盖率补批（2026-09-25）：board.rs 末批 miss 收口。
+// 覆盖率补批：board.rs 末批 miss 收口。
 // 纯函数臂 / 派发正路径（离线 cluster + 注入 RPC client）/ 重平衡搬运环 /
 // sweep 失败计数 / spawned plan 链 / handler 杂项臂。失败注入臂（基线下发
 // Err、claim 竞态、状态转移回滚、estop 全局 engaged 装配）保持不测，与
 // 既有纪律一致。
 // ===========================================================================
 
-/// 给离线 cluster 注入空 RPC client（resolver:None → spawn 体内 dispatch()
+/// 给离线 cluster 注入空 RPC client（resolver:None → spawn 体内 dispatch
 /// 瞬时「peer unresolvable」Err → 回滚）。**只用于 current_thread 测试**：
 /// spawn 体在断言窗口内不被调度（运行时关闭时丢弃未执行任务），同步断言
 /// 看到的都是 pre-rollback 状态；multi_thread 测试必须改用
@@ -9225,7 +9187,7 @@ async fn w5_issue_dispatch_success_via_handler() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(saw_fail, "RPC spawn 体失败终结应落 ⛔ 评论");
-    // F3 失败分类：不可达对端 → 评论带 [节点不可达] 标签。
+    // 失败分类：不可达对端 → 评论带 [节点不可达] 标签。
     let fail_comment = store
         .list_comments(issue.id)
         .unwrap()
@@ -9237,7 +9199,7 @@ async fn w5_issue_dispatch_success_via_handler() {
         fail_comment.contains("[节点不可达]"),
         "失败评论必须带分类标签：{fail_comment}"
     );
-    // F2（2026-09-30）：送达失败 = 任务从未开始 → 状态回退派发前值 +
+    // 送达失败 = 任务从未开始 → 状态回退派发前值 +
     // 指派恢复 + dispatch_rolled_back 审计（rollback 在 ⛔ 评论之前执行，
     // 评论已现即回退已落定，无需再轮询）。
     let rolled = store.get_issue(issue.id).unwrap();
@@ -9258,7 +9220,7 @@ async fn w5_issue_dispatch_success_via_handler() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// D0b 重平衡（2153-2268）：空队列早退（2175-2176）→ 非超载源跳过
+/// 重平衡（2153-2268）：空队列早退（2175-2176）→ 非超载源跳过
 /// （2196-2198）→ 超载源（在途 2 > cap 1）队首搬给空闲目标：旧排队单
 /// cancel + 重派成功 + ↳ 评论（2191-2266）。
 #[cfg(feature = "cluster")]
@@ -9332,7 +9294,7 @@ async fn w5_sweep_counts_failed_candidate_dispatch() {
     // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
     // 且首派 no_match 停车会写 HANDOFF_WORKSPACE（进程级 OnceLock，ua
     // 测试装配指向其临时目录）——不持锁会与 ua 并行互踩档案断言
-    // （2026-10-31 实录：ua 断言读到本测试写入的 ["python"] 假红）。
+    // （ua 断言读到本测试写入的 ["python"] 假红）。
     let _serial = PLAN_TEST_LOCK.lock().await;
     clear_plan_globals();
     let dir = unique_dir("w5-sweep-fail");
@@ -9363,7 +9325,7 @@ async fn w5_sweep_counts_failed_candidate_dispatch() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_cancel_active_dispatch_spawns_rpc_and_channel_post_reply_to() {
-    // --- cancel：在途单 + RPC client → task_cancel spawn ---
+    // cancel：在途单 + RPC client → task_cancel spawn ---
     let dir = unique_dir("w5-cancel-rpc");
     let cluster = offline_cluster(&dir, "w5-cc-c");
     w5_inject_rpc(&cluster);
@@ -9401,7 +9363,7 @@ async fn w5_cancel_active_dispatch_spawns_rpc_and_channel_post_reply_to() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 
-    // --- channel.post：reply_to + kind_tag 经桥转发 ---
+    // channel.post：reply_to + kind_tag 经桥转发 ---
     let dir2 = unique_dir("w5-channel-reply");
     let store2 = Arc::new(BoardStore::open(&dir2.join("board.db"), "NB").unwrap());
     store2.ensure_default_channels().unwrap();
@@ -9444,7 +9406,7 @@ async fn w5_cancel_active_dispatch_spawns_rpc_and_channel_post_reply_to() {
 }
 
 /// 本地派发（worker_id="self"）issue.cancel：spawn_task_cancel 守卫跳过
-/// RPC——不产生「取消指令送达失败」误导评论（D5 sweep 同族：对 "self"
+/// RPC——不产生「取消指令送达失败」误导评论（sweep 同族：对 "self"
 /// 发 RPC = peer unresolvable）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -9837,7 +9799,7 @@ async fn w5_project_auto_start_with_agent_and_empty_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// D2 auto_plan 有 moderator 槽（3184-3214）：同步段装配 spawn 返回
+/// auto_plan 有 moderator 槽（3184-3214）：同步段装配 spawn 返回
 /// planning + plan_id；后台链 GoodPlanner → 预览按 plan_id 入缓存。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -9921,11 +9883,9 @@ fn w5_render_assets_section_with_signing_context() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// 集群专业职能框架 M2：confirm_plan 降级评论 + required_profession 落库
-// ---------------------------------------------------------------------------
+// 集群专业职能框架 ：confirm_plan 降级评论 + required_profession 落库
 
-/// D9 末轮宽和降级：downgrades 明细逐条落被降级子单的系统评论；合法职能
+/// 末轮宽和降级：downgrades 明细逐条落被降级子单的系统评论；合法职能
 /// 原样落库。
 #[cfg(feature = "cluster")]
 #[test]
@@ -9999,7 +9959,7 @@ fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
 }
 
 // ===========================================================================
-// file: 锚点拓扑约束回归锁（2026-10-08 NB-4/NB-5/NB-6 根修）。谓词矩阵在
+// file: 锚点拓扑约束回归锁（// 根修）。谓词矩阵在
 // nemesis-board anchor/tests.rs；此处钉三个决策面的行为：重平衡不偷拓扑受
 // 限单 / 重派失败补偿评论 / 匹配器与兜底对 file: 锚点单返回空候选。
 // ===========================================================================
@@ -10086,7 +10046,7 @@ async fn w5_rebalance_skips_file_anchor_queued_but_moves_plain() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 重派失败补偿（NB-5/NB-6 事故面的最小重演）：排队单被 cancel 后重派因
+/// 重派失败补偿（/ 事故面的最小重演）：排队单被 cancel 后重派因
 /// 状态闸失败（issue 已 Blocked）→ moved=0 + ⛔ 系统评论诚实留痕 + issue
 /// 无活跃派发——「无声死透」必须变成「可见停车」。
 #[cfg(feature = "cluster")]
@@ -10209,7 +10169,7 @@ fn w5_rank_and_fallback_return_empty_for_file_anchor_issue() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// M6-2（2026-10-10 机制加固，P5 clobber 根修）：rebase_board_onto_disk——
+// （机制加固， clobber 根修）：rebase_board_onto_disk——
 // 磁盘为底只嫁接 board 段；窗口期外部写者的非 board 改动不得被回滚。
 #[test]
 fn test_rebase_board_onto_disk_preserves_external_writes() {
@@ -10250,7 +10210,7 @@ fn test_rebase_board_onto_disk_preserves_external_writes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// M7（2026-10-10）：exec 锚点开关/超时进 config.set 白名单；get 序列化
+// exec 锚点开关/超时进 config.set 白名单；get 序列化
 // typed board 段自动透出。
 #[tokio::test]
 async fn test_board_config_set_exec_anchor_keys() {
@@ -10302,7 +10262,7 @@ async fn test_board_config_set_exec_anchor_keys() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// P2 必检计划闸（SKIP≠PASS，2026-10-25）：config.set 白名单 round-trip
+// 必检计划闸（SKIP≠PASS）：config.set 白名单 round-trip
 // （typed 序列化自动透出 + 盘上落盘 + 布尔闸）。
 #[tokio::test]
 async fn test_board_config_set_require_check_plan_roundtrip() {
@@ -10342,10 +10302,8 @@ async fn test_board_config_set_require_check_plan_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// P11 观测面（2026-10-10）：plan 预览查询（plan.list/plan.get）+ planner
+// 观测面：plan 预览查询（plan.list/plan.get）+ planner
 // 结果评论留痕（execute_plan_chain 三发布点）
-// ---------------------------------------------------------------------------
 
 /// planner 链测试用迷你 provider（同 nemesis-agent spawn_detached 形状）：
 /// `content=Some` 输出固定文本（放合法 plan JSON 走成功链），`None` 恒 Err
@@ -10601,7 +10559,7 @@ async fn planner_chain_success_comment_trace() {
     ));
     let hub = crate::events::EventHub::new();
     let mut rx = hub.subscribe();
-    // 拆解运行期可观测（2026-10-11「停着」事故）回归：链开头应注册 running
+    // 拆解运行期可观测（「停着」事故）回归：链开头应注册 running
     // 条目（in-flight 可查）——execute_plan_chain 同步 await 无法在运行中
     // 抽查，改为断言结束后条目已摘除（guard Drop 三退出路径中的正常路径）。
     let out = super::execute_plan_chain(
@@ -10737,7 +10695,7 @@ async fn planner_chain_failure_comment_trace() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// panic 留痕闭环回归锁（2026-10-11 planner 截断 panic 事故）：后台 plan
+/// panic 留痕闭环回归锁（planner 截断 panic 事故）：后台 plan
 /// 链任务 panic 时，监视壳必须往 issue 落系统评论 + 发 `board.plan_failed`
 /// 事件——无声死亡（用户体感「建了不动」）不得再发生。
 #[cfg(feature = "cluster")]
@@ -10813,7 +10771,7 @@ async fn plan_chain_panic_leaves_issue_comment_and_event() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// plan.list running 态回归（2026-10-11「停着」事故）：in-flight 拆解必须
+/// plan.list running 态回归（「停着」事故）：in-flight 拆解必须
 /// 可查（status=running + elapsed_secs），与 ready 条目并列——此前 PLAN_CACHE
 /// 完成才写入，查询「正在跑」返回空，编排者无法区分拆解中与没跑。
 #[cfg(feature = "cluster")]
@@ -10883,7 +10841,7 @@ async fn plan_list_includes_running_entries() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// project.create 同名友好错误回归（2026-10-11 用户实测）：项目名 UNIQUE
+/// project.create 同名友好错误回归（用户实测）：项目名 UNIQUE
 /// 约束此前透传裸 `UNIQUE constraint failed: project.name`——用户看不懂。
 /// 预检后应为中文提示（含项目名 + 处理指引）。
 #[tokio::test]
@@ -10936,25 +10894,23 @@ async fn project_create_duplicate_name_friendly_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// §1.1 拆解超时重拆链 / superseded 双闸 / N1 重启恢复（2026-10-11 计划 Part 1）
-// ---------------------------------------------------------------------------
+// §1.1 拆解超时重拆链 / superseded 双闸 / 重启恢复（计划 Part 1）
 
 /// 本批 Part 1 测试串行闸：RUNNING_PLANS 是进程级全局，而各测试的独立
 /// BoardStore 里 issue id 都从 1 起——并行跑会跨 store 误匹配 issue_id
 ///（让恢复扫描误判「在途链」/ issue.list 投影串台）。background_registry
 /// TEST_LOCK 同款纪律。
 ///
-/// BUG-② 派发闸（2026-10-15）后**读侧也入册**：`dispatch_issue_core` 会
+/// BUG-② 派发闸后**读侧也入册**：`dispatch_issue_core` 会
 /// 读 PLAN_CACHE/RUNNING_PLANS 拦「挂有未确认计划的父单」——所有走到
 /// 派发路径的测试（含只读负例）必须持本锁，否则其他测试的残留条目按
-/// issue id 撞库误拦（实录：9 个派发测试并行假红）。
+/// issue id 撞库误拦（9 个派发测试并行假红）。
 static PLAN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 派发闸读的两个进程级全局的开场清残留（cluster 门控；无 feature 编译为
 /// 空调用）。持 PLAN_TEST_LOCK 期间调用——plan 链测试按设计会留条目
 ///（superseded mock 中途摘除后不回填等），不清则后续派发测试按 issue id
-/// 撞库确定性误拦（实录：首批 9 个派发测试假红）。
+/// 撞库确定性误拦（首 个派发测试假红）。
 #[cfg(feature = "cluster")]
 fn clear_plan_globals() {
     super::PLAN_CACHE.lock().clear();
@@ -11046,7 +11002,7 @@ async fn wait_for_event(
     }
 }
 
-/// 超时重拆主链路（V2）：短阈值注入 → 监视摘条目 → ⏰ 评论 → attempt+1
+/// 超时重拆主链路：短阈值注入 → 监视摘条目 → ⏰ 评论 → attempt+1
 /// 新链（plan_started 载荷带 attempt=2）。mock 恒 Err → 新链快速失败收口
 ///（失败评论 + plan_failed），不影响本断言面。
 #[cfg(feature = "cluster")]
@@ -11074,7 +11030,7 @@ async fn plan_timeout_watch_replans_with_next_attempt() {
         super::RunningPlan {
             issue_id: issue.id,
             // checked_sub 而非裸减：Instant 自系统启动起算，CI 新启 VM 纪元余量
-            // 不足会下溢 panic（2026-10-18 shard2 实录）。监视超时只由 timeout_secs
+            // 不足会下溢 panic。监视超时只由 timeout_secs
             // 睡眠驱动（不读 started_at），回拨不出时用当下时刻语义不变。
             started_at: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1201))
@@ -11132,7 +11088,7 @@ async fn plan_timeout_watch_replans_with_next_attempt() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// attempt 耗尽停车（V2）：max_attempts=1 时第 1 次超时即停车——停车评论
+/// attempt 耗尽停车：max_attempts=1 时第 1 次超时即停车——停车评论
 /// + board.plan_failed 事件 + 无新链（无第二条开始评论）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -11314,7 +11270,7 @@ async fn plan_timeout_watch_disabled_when_zero() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// superseded 双闸·成功路径（V3）：LLM 返回前条目被监视摘除（已被重拆链
+/// superseded 双闸·成功路径：LLM 返回前条目被监视摘除（已被重拆链
 /// 取代）→ 静默放弃：status=superseded、不落缓存、无完成评论、无 plan_ready。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -11389,7 +11345,7 @@ async fn plan_chain_superseded_success_path_is_silent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// superseded 双闸·失败路径（V3）：旧链 planner 失败且已被取代 → 返回
+/// superseded 双闸·失败路径：旧链 planner 失败且已被取代 → 返回
 /// Ok(superseded)（不外抛错误），无失败评论、无 plan_failed（旧链迟到的
 /// 失败事件会撤掉新链横幅——双闸的本意）。
 #[cfg(feature = "cluster")]
@@ -11518,7 +11474,7 @@ async fn issue_list_includes_planning_projection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// N1 重启恢复（V4 单测臂）：中断形态命中（backlog/todo + 最新系统评论=
+/// 重启恢复（单测臂）：中断形态命中（backlog/todo + 最新系统评论=
 /// 拆解中 + 无子单 + 不在 RUNNING_PLANS）→ 自动重拆；守卫臂：开关关 /
 /// estop 挂起 / 有子单 / 最新系统评论已被顶掉 / 非 backlog 状态均不恢复。
 #[cfg(feature = "cluster")]
@@ -11674,7 +11630,7 @@ async fn recover_interrupted_plans_scans_and_respects_guards() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- U-C（2026-10-12 §9.3）：issue.timeline 表面契约 ---
+// U-C（§9.3）：issue.timeline 表面契约 ---
 
 #[tokio::test]
 async fn test_issue_timeline_surface_contract() {
@@ -11760,12 +11716,12 @@ async fn test_issue_timeline_surface_contract() {
         .await
         .is_err()
     );
-    // commands() 清单含 issue.timeline（L1 注册表漂移闸）。
+    // commands 清单含 issue.timeline（注册表漂移闸）。
     assert!(BoardHandler.commands().contains(&"issue.timeline"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// U-A（2026-10-12 停车现场工程）：no_match 停车落现场档案。HANDOFF_
+/// U-A（停车现场工程）：no_match 停车落现场档案。HANDOFF_
 /// WORKSPACE 是模块级 OnceLock（BASELINE_PUSHER 同款单测不装配零波及）——
 /// 本测试是全进程唯一装配点，装一次性临时目录后断言 handoffs/<NB-x>.json。
 #[cfg(feature = "cluster")]
@@ -11814,10 +11770,8 @@ async fn ua_no_match_park_writes_handoff_archive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ------------------------------------------------------------------
-// F2 送达失败自动重试 sweep 闸序（多角度审计批 2026-10-13）：预算熔断 →
+// 送达失败自动重试 sweep 闸序（多角度审计-13）：预算熔断 →
 // 退避 → 执行器。真派发腿（RPC 达成）归 cluster-uat；本节钉 surface 契约。
-// ------------------------------------------------------------------
 
 /// 造一个「送达失败池成员」：backlog + 失败派发行 + n 条 ⛔ 系统评论。
 #[cfg(feature = "cluster")]
@@ -11948,7 +11902,7 @@ async fn send_failure_fuse_disabled_by_unlimited_mode() {
 }
 
 /// 退避闸：末次失败 = 刚刚（attempts=1 → 60s 窗口），sweep 本 tick 必须跳过
-/// ——零派发、零副作用、留池。
+/// 零派发、零副作用、留池。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn send_failure_backoff_gate_skips_fresh_failure() {
@@ -12120,7 +12074,7 @@ async fn pick_send_failure_target_prefers_last_worker_then_best_online() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// BUG 2026-10-08 `board.plan.model` dead-key 修复回归：覆盖解析 helper 的
+/// BUG `board.plan.model` dead-key 修复回归：覆盖解析 helper 的
 /// 三臂（解析成功 / 未配置·空别名回落 None / 未知别名回落 None——不
 /// fail-closed，warn 留痕）。
 #[cfg(feature = "cluster")]
@@ -12177,7 +12131,7 @@ fn board_plan_model_swap_resolution_arms() {
     }
 }
 
-// 2026-10-15 依赖徽标投影：issue.list / issue.get 都带 depends_on
+// 依赖徽标投影：issue.list / issue.get 都带 depends_on
 // [{id, number, status}]；status 变化后投影跟随（前端阻塞态判断数据源）。
 #[tokio::test]
 async fn test_issue_depends_on_projection() {
@@ -12185,7 +12139,7 @@ async fn test_issue_depends_on_projection() {
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
 
-    // 两个单：NB-1 上游、NB-2 依赖 NB-1。
+    // 两个单： 上游、 依赖 。
     let a = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "上游" }))
         .await
         .unwrap()
@@ -12240,13 +12194,11 @@ async fn test_issue_depends_on_projection() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
-// ---------------------------------------------------------------------------
-// 决策可见性投影（2026-10-15 批）：needs_user（停车强信号）/ attention
+// 决策可见性投影（批）：needs_user（停车强信号）/ attention
 // （停滞弱信号）/ plan_ready（计划待发车中信号）三投影 + issue.decision
 // 面板数据源。HANDOFF_WORKSPACE 是进程级 OnceLock（ua 测试唯一装配）——
 // 全局侧走 scan_live_handoffs_in 纯内核，装配路径由 dispatch 级「无信号
 // 形态」钉住（未装配 = 空档案集，诚实降级）。
-// ---------------------------------------------------------------------------
 
 fn handoff_map_entry(number: &str, stop_kind: &str) -> serde_json::Value {
     serde_json::json!({
@@ -12565,7 +12517,7 @@ async fn decision_visibility_projections_via_list_and_decision() {
     assert_eq!(out["attention"], true);
     assert_eq!(out["plan_ready"], serde_json::Value::Null);
 
-    // commands() 清单含 issue.decision（L1 注册表漂移闸）。
+    // commands 清单含 issue.decision（注册表漂移闸）。
     assert!(BoardHandler.commands().contains(&"issue.decision"));
 
     // 清残留（plan 链纪律：持锁期间摘自己的条目）。
@@ -12573,7 +12525,7 @@ async fn decision_visibility_projections_via_list_and_decision() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- board.resume（停车续做正门，2026-10-16 主会话污染根修） ---
+// board.resume（停车续做正门， 主会话污染根修） ---
 
 #[test]
 fn test_board_resume_prompt_contract() {
@@ -12636,16 +12588,16 @@ async fn test_board_resume_surface_contract() {
     .unwrap_err();
     assert!(e.contains("agent 未运行"), "actual: {e}");
 
-    // L1 注册表：commands() 清单含 board.resume（漂移闸）。
+    // 注册表：commands 清单含 board.resume（漂移闸）。
     assert!(BoardHandler.commands().contains(&"board.resume"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 2026-10-16 收件箱重复根修回归钉：dashboard 操作者身份必须是固定
+// 收件箱重复根修回归钉：dashboard 操作者身份必须是固定
 // "dashboard"，不得随 WS session 每连必换——否则每个页面会话以新 admin id
 // 落订阅表（唯一键含 subscriber_id，去重失效）并永久累积，通知按订阅者扇出
-// 同一事件 N 份（实录：NB-121 一次验收失败收件箱 6 份、全库 18 个历史
+// 同一事件 N 份（一次验收失败收件箱 6 份、全库 18 个历史
 // admin 身份）。钉两层：ctx_actor 纯函数契约 + 端到端（同 ctx 不同 session
 // 两次评论 → 订阅表仍只有一个 admin 行）。
 #[tokio::test]
@@ -12708,12 +12660,10 @@ async fn test_admin_subscriber_dedup_across_sessions() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// A1（2026-10-21 引入）：duration_weighted_candidates 接线
+// （引入）：duration_weighted_candidates 接线
 //（匹配器榜 → 耗时次级重排）。核心重排语义（滑窗中位数/回落链/方向）由
 // nemesis-board node_perf 单测覆盖；这里钉接线语义：单候选/无样本/跨类别
 // 零干预 + 有样本时重排真实生效。
-// ---------------------------------------------------------------------------
 
 /// 播种一条完结派发耗时样本（insert 后 hold 秒再 finish，时长 = hold）。
 /// `BoardStore.conn` 私有、跨 crate 无法回拨时间戳，快慢差用真实时钟
@@ -12805,11 +12755,9 @@ fn a1_duration_weighted_candidates_wiring() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// -------------------------------------------------------------------------
-// autopilot cron 孤儿清理判据（BUG-20261024-10）：按 `board-ap:{i64}` 全
+// autopilot cron 孤儿清理判据：按 `board-ap:{i64}` 全
 // 形态判定（autopilot_id_from_job_name），保留命名空间外的撞名用户作业
 // 不再被启动同步误删；真孤儿（整数形态 + 未注册）照常清理。
-// -------------------------------------------------------------------------
 
 #[test]
 fn autopilot_orphan_sweep_spares_user_collision_names_and_sweeps_real_orphans() {

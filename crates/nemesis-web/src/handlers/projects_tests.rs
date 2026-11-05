@@ -1,4 +1,4 @@
-//! L6++ G4（2026-09-08）— projects WSAPI 全命令臂 + resolve_session_loop
+//! （2026-09-08）— projects WSAPI 全命令臂 + resolve_session_loop
 //! 两分支 + 项目根切换。
 //!
 //! bridge 槽是进程级共享态（`PROJECTS_BRIDGE`）——所有触碰它的测试持
@@ -26,9 +26,7 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
 use nemesis_agent::types::{AgentConfig, ChatOptions, ToolDefinition};
 
-// ---------------------------------------------------------------------------
 // 夹具
-// ---------------------------------------------------------------------------
 
 fn make_ctx(main_loop: Option<Arc<AgentLoop>>) -> RequestContext {
     let dir = tempfile::tempdir().unwrap();
@@ -129,7 +127,7 @@ struct MockState {
     bound: HashMap<String, String>,
     /// 归属命中但 loop 不在（不可用形态）。
     missing_loops: HashSet<String>,
-    /// N7：最近一次 set_trust 入参（handler→bridge 传递验证）。
+    /// 最近一次 set_trust 入参（handler→bridge 传递验证）。
     last_trust: Option<(String, bool)>,
 }
 
@@ -293,9 +291,7 @@ impl Drop for BridgeGuard {
     }
 }
 
-// ---------------------------------------------------------------------------
 // projects.* 全命令臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn projects_cmds_without_bridge_are_honest_errors() {
@@ -384,7 +380,7 @@ async fn projects_list_create_remove_rename_route_through_bridge() {
         .expect("remove returns payload");
     assert_eq!(out["removed"]["id"], new_pid);
     // 后端 note 是事后陈述（「未删除」）；「不删除」是前端确认弹窗的事前
-    // 承诺文案（goal F-10，G5 面），两表面不同。
+    // 承诺文案（goal F-10， 面），两表面不同。
     assert!(out["note"].as_str().unwrap().contains("未删除"));
     let err = h
         .handle_cmd(
@@ -465,9 +461,7 @@ async fn projects_trust_routes_through_bridge_and_reflects_flag() {
     drop(g);
 }
 
-// ---------------------------------------------------------------------------
 // resolve_session_loop 两分支 + 不可用诚实报错
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn resolve_loop_bound_session_goes_to_project_loop() {
@@ -526,7 +520,7 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
     }
     let ctx = make_ctx(None);
     let err = resolve_session_loop(&ctx, SENTINEL_KEY)
-        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持 .err().expect()
+        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持 .err.expect
         .err()
         .expect("bound-but-missing must fail honestly");
     assert!(
@@ -536,9 +530,7 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
     drop(g);
 }
 
-// ---------------------------------------------------------------------------
 // 项目根切换（fs.tree / chat.todo_get 消费）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn project_root_switches_only_for_bound_sessions() {
@@ -560,9 +552,7 @@ async fn project_root_switches_only_for_bound_sessions() {
     drop(g);
 }
 
-// ---------------------------------------------------------------------------
 // sessions.create 带 project_id：未装配 / 未知项目诚实报错
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn sessions_create_with_project_id_without_bridge_is_honest_error() {
@@ -603,11 +593,9 @@ async fn sessions_create_with_project_id_unknown_project_is_honest_error() {
     drop(g);
 }
 
-// ---------------------------------------------------------------------------
 // open_dir：只开注册表已知项目目录（未注册/目录消失诚实报错）。
 // 真正 spawn explorer 的成功臂不做单测（副作用=弹窗口）；单测钉目标解析
 // 纯函数 + handler 错误透传（解析失败时根本不会走到 spawn）。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn open_dir_unknown_project_is_honest_error_without_spawn() {
@@ -668,12 +656,10 @@ async fn open_dir_resolves_only_registered_paths() {
     drop(g);
 }
 
-// ---------------------------------------------------------------------------
-// G6（2026-09-08）：rewind/redo/file_diff 路由项目会话——三命令的 undo 栈
+// rewind/redo/file_diff 路由项目会话——三命令的 undo 栈
 // / checkpoint store 住 loop 实例，项目会话必须由项目 loop 执行。回归锚：
 // 曾硬编码主槽，项目会话 rewind 拿主 loop 的空 checkpoint 索引 → 文件恢复
 // 静默 no-op（applied + 空 restored_files + 文件未回滚）。
-// ---------------------------------------------------------------------------
 
 /// 归属命中但项目 loop 不可用 → 三命令都必须诚实报「项目不可用」，
 /// 绝不能落回主 loop（硬编码时代的行为）。

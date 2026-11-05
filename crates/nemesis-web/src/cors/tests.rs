@@ -11,7 +11,7 @@ fn sample_config() -> CORSConfig {
     }
 }
 
-// -- CORSConfig defaults ------------------------------------------------
+// CORSConfig defaults ------------------------------------------------
 
 #[test]
 fn default_config_values() {
@@ -37,7 +37,7 @@ fn config_serialization_roundtrip() {
     assert_eq!(cfg.allow_localhost, parsed.allow_localhost);
 }
 
-// -- Origin checking ----------------------------------------------------
+// Origin checking ----------------------------------------------------
 
 #[test]
 fn check_exact_match() {
@@ -129,7 +129,7 @@ fn check_development_mode_allows_localhost() {
     assert!(!mgr.check_origin("https://evil.com"));
 }
 
-// -- Runtime mutation ---------------------------------------------------
+// Runtime mutation ---------------------------------------------------
 
 #[test]
 fn add_and_remove_origin() {
@@ -169,7 +169,7 @@ fn set_development_mode_persists() {
     assert!(mgr2.config().development_mode);
 }
 
-// -- Static layer helpers -----------------------------------------------
+// Static layer helpers -----------------------------------------------
 
 #[test]
 fn test_dev_cors_layer_creation() {

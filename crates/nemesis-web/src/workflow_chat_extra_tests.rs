@@ -152,7 +152,7 @@ async fn history_request_no_engine_returns_ok() {
     assert!(res.is_ok());
 }
 
-// ---- engine-present branches ----
+// engine-present branches ----
 
 fn make_node(id: &str, node_type: &str, deps: Vec<&str>) -> NodeDef {
     NodeDef {
@@ -182,7 +182,7 @@ fn make_workflow(name: &str, nodes: Vec<NodeDef>) -> Workflow {
 #[tokio::test]
 async fn send_engine_index_not_found_logs_error() {
     // Engine present and has a registered workflow, but the client sends
-    // an index that resolves to nothing → log_send_error + Ok(()).
+    // an index that resolves to nothing → log_send_error + Ok.
     let engine = Arc::new(WorkflowEngine::new());
     engine
         .register_workflow(make_workflow(
@@ -206,7 +206,7 @@ async fn send_engine_index_not_found_logs_error() {
         None,
     )
     .await;
-    // workflow_by_chat_index returns None → log_send_error → Ok(())
+    // workflow_by_chat_index returns None → log_send_error → Ok
     assert!(res.is_ok());
 }
 
@@ -236,7 +236,7 @@ async fn send_engine_human_review_workflow_rejected() {
         None,
     )
     .await;
-    // Rejected before start_async → Ok(()), no execution spawned.
+    // Rejected before start_async → Ok, no execution spawned.
     assert!(res.is_ok());
 }
 
@@ -244,7 +244,7 @@ async fn send_engine_human_review_workflow_rejected() {
 async fn send_engine_starts_workflow_returns_ok() {
     // Happy path: index resolves, no human_review, start_async succeeds.
     // handle_send writes the user turn to chat_log, stores the per-workflow
-    // mutex guard, and returns Ok(()). The background execution is
+    // mutex guard, and returns Ok. The background execution is
     // detached; its outcome does not affect this return value.
     let engine = Arc::new(WorkflowEngine::new());
     let name = "chat_ok_wf";
@@ -305,9 +305,7 @@ async fn history_request_engine_present_broadcasts_response() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 2026-10-16 hardening: history limit clamp + bound-workflow precedence
-// ---------------------------------------------------------------------------
+// hardening: history limit clamp + bound-workflow precedence
 
 #[test]
 fn history_limit_clamp_table() {

@@ -1,4 +1,4 @@
-//! BUG-20261104-361 回归钉：`models.add` 模型 identifier 形态校验——此前
+//! 回归钉：`models.add` 模型 identifier 形态校验——此前
 //! WSAPI add 零校验（连 CLI 的 `contains('/')` 闸都没有），`../../etc/passwd`
 //! 等穿越形态可落盘。校验走 `validate_model_identifier` 单一真相源（与 CLI
 //! `model add` 同源），且在触碰 config.json **之前**执行（非法形态错误优先于

@@ -1,6 +1,6 @@
 //! Tests for `PluginsHandler`（插件状态总览，2026-08-29）。
 //! 直连 workspace 方法 + **dispatch 级**（handle_cmd 裸名——commands.list
-//! 事故教训：match 臂命令名错误只有 dispatch 层能抓住）。
+//! 事故match 臂命令名错误只有 dispatch 层能抓住）。
 
 use super::*;
 
@@ -77,9 +77,9 @@ fn plugins_list_reports_full_native_catalog_without_error() {
     let r = PluginsHandler::new().plugins_list(&ws(&dir)).unwrap();
 
     let arr = r["plugins"].as_array().unwrap();
-    // 目录 = nemesis-config NativePluginId::ALL 六成员（2026-10-23 补登记
+    // 目录 = nemesis-config NativePluginId::ALL 六成员（补登记
     // plugin_vm——此前 VM 显示通道被误列「未识别的库」的花名册缺口根修；
-    // 2026-10-25 补登记 plugin_roaming——同款缺口第二例）。
+    // 补登记 plugin_roaming——同款缺口第二例）。
     let ids: Vec<&str> = arr.iter().filter_map(|p| p["id"].as_str()).collect();
     assert_eq!(
         ids,

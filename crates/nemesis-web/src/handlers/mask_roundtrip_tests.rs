@@ -70,7 +70,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-// -- ① 共享助手语义 ----------------------------------------------------------
+// ① 共享助手语义 ----------------------------------------------------------
 
 #[test]
 fn mask_secret_entry_masks_sensitive_value_part_only() {
@@ -141,7 +141,7 @@ fn restore_masked_named_fields_restores_and_rejects() {
     assert!(restore_masked_named_fields(&mut masked_orig, &existing_masked).is_err());
 }
 
-// -- ② + ③ MCP 面 ------------------------------------------------------------
+// ② + ③ MCP 面 ------------------------------------------------------------
 
 fn seed_mcp_config(dir: &tempfile::TempDir, servers: serde_json::Value) {
     let cfg_dir = dir.path().join("config");
@@ -281,7 +281,7 @@ async fn mcp_config_save_restores_masked_entries_wholesale() {
     assert!(!raw.contains("****"), "掩码绝不能落盘: {raw}");
 }
 
-// -- ② + ③ cluster 面（feature=cluster） --------------------------------------
+// ② + ③ cluster 面（feature=cluster） --------------------------------------
 
 #[cfg(feature = "cluster")]
 mod cluster_mask_tests {
@@ -354,7 +354,7 @@ mod cluster_mask_tests {
     }
 }
 
-// -- ③ channels 面（存量脱敏回显的回程还原） -----------------------------------
+// ③ channels 面（存量脱敏回显的回程还原） -----------------------------------
 
 mod channels_mask_tests {
     use super::*;

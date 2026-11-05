@@ -1,9 +1,9 @@
 //! （桌面级 VM）：`executor.vm` 配置面测试。
 //!
-//! serde 缺省：executor 段无 vm 键 = 铁律默认（enabled=false，全部子段缺省）；
-//! typed roundtrip：显式值序列化/反序列化不丢（2026-09-03 typed save
+//! - serde 缺省：executor 段无 vm 键 = 铁律默认（enabled=false，全部子段缺省）；
+//! - typed roundtrip：显式值序列化/反序列化不丢（2026-09-03 typed save
 //!   回归锁同款纪律）；
-//! `validate`：枚举型字符串未知值 loud 拒绝 + max_instances=0 拒绝；
+//! - `validate`：枚举型字符串未知值 loud 拒绝 + max_instances=0 拒绝；
 //!   合法值域与 nemesis-sandbox vm::guest_arch 同步钉住。
 
 use super::*;

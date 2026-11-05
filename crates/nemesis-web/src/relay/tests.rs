@@ -10,9 +10,7 @@ use super::server::{RelayServer, handle_control_frame};
 use base64::Engine as _;
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
-// A1. 帧编解码 round-trip（全部变体）
-// ---------------------------------------------------------------------------
+// . 帧编解码 round-trip（全部变体）
 
 #[test]
 fn frame_round_trip_all_variants() {
@@ -141,9 +139,7 @@ fn frame_decode_garbage_is_err() {
     assert!(decode_frame("{\"type\":\"unknown_kind\"}").is_err());
 }
 
-// ---------------------------------------------------------------------------
-// A2. 请求重序列化（serialize_http_request）
-// ---------------------------------------------------------------------------
+// . 请求重序列化（serialize_http_request）
 
 #[test]
 fn serialize_get_request_no_body() {
@@ -209,9 +205,7 @@ fn serialize_strips_hop_by_hop_but_keeps_upgrade() {
     assert!(!text.contains("keep-alive"));
 }
 
-// ---------------------------------------------------------------------------
-// A3. 响应头解析 + chunked 解码
-// ---------------------------------------------------------------------------
+// . 响应头解析 + chunked 解码
 
 #[test]
 fn parse_response_head_ok() {
@@ -269,9 +263,7 @@ fn chunked_decoder_extension_ignored() {
     assert!(d.is_finished());
 }
 
-// ---------------------------------------------------------------------------
-// A4. WS 帧编解码（ws_codec）
-// ---------------------------------------------------------------------------
+// . WS 帧编解码（ws_codec）
 
 mod ws_codec_tests {
     use super::super::ws_codec::{encode_client_frame, parse_server_frame};
@@ -359,9 +351,7 @@ mod ws_codec_tests {
     }
 }
 
-// ---------------------------------------------------------------------------
 // B. 中继状态机（RelayServer）
-// ---------------------------------------------------------------------------
 
 /// 测试脚手架：注册一台假设备并持有其下行帧接收端。
 struct FakeDevice {
@@ -618,9 +608,7 @@ fn heartbeat_control_frame_replies_pong() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // C. 二期身份交换（goal 批次五）：身份事件 + 老格式兼容
-// ---------------------------------------------------------------------------
 
 use super::identity::{BridgeClusterIdentity, BridgeIdentityEvent, BridgeIdentitySink};
 
@@ -773,9 +761,7 @@ fn hub_node_id_setter_round_trip() {
     assert_eq!(relay.hub_node_id(), "node-hub-1");
 }
 
-// ---------------------------------------------------------------------------
 // 三期批次八：member_sync 广播（快照闭包 / --relay 设备表摘要 / gate 关跳过）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn member_sync_broadcast_three_sources() {
@@ -808,7 +794,7 @@ fn member_sync_broadcast_three_sources() {
         other => panic!("应收到 MemberSync，得到 {other:?}"),
     }
 
-    // 形态二：未注入快照（--relay）→ 广播自身桥设备表摘要。
+    // 形态二：未注入快照（relay）→ 广播自身桥设备表摘要。
     let relay = RelayServer::new("tok".to_string(), true);
     let mut dev = register_fake(&relay, "bridge-b", "tok", "B 机");
     relay.broadcast_member_sync();

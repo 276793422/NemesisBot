@@ -1,6 +1,6 @@
-//! E4（2026-09-05）：scan_session_logs 的 fork 血缘回填——sidecar meta 带
+//! （2026-09-05）：scan_session_logs 的 fork 血缘回填——sidecar meta 带
 //! `parent`/`forked_at_turn` 的条目补 `parent`/`parentTitle`/`forkedAtTurn`
-//! 三字段；pre-E4 meta（只有 title）与父会话已删的场景干净缺省（不加字段/
+//! 三字段；pre meta（只有 title）与父会话已删的场景干净缺省（不加字段/
 //! parentTitle 缺省由前端回退显示 parent key）。
 //!
 //! 夹具：workspace=tempdir，`logs/sessions/` 下手工落 jsonl + meta.json
@@ -64,7 +64,7 @@ fn scan_backfills_parent_parent_title_and_turn() {
 #[test]
 fn scan_legacy_meta_and_missing_parent_degrade_cleanly() {
     let ws = tempfile::tempdir().unwrap();
-    // pre-E4 meta：只有 title → 不加任何血缘字段。
+    // pre meta：只有 title → 不加任何血缘字段。
     seed_session(
         ws.path(),
         "agent_main_session_old",
