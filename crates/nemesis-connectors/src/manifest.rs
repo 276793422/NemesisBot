@@ -494,17 +494,6 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         }
     }
 
-    // 治理补全 P1（2026-10-19）：纯独占接管形态合法化——ops 为空但声明了
-    // exclusive_mcp 时不再要求 [[op]]（镜像 op 就是它的操作面，B2 语义下
-    // 「整体接管一个 server、一个 op 都不写」是主场景；此前被迫写假 op）。
-    // 既无 op 又无独占 = 连接器没有任何可调用面，仍拒绝。
-    if raw.ops.is_empty() && meta.exclusive_mcp.is_none() {
-        return Err(format!(
-            "connector `{}`: 至少要声明一个 [[op]]（或 exclusive_mcp 独占接管）",
-            meta.id
-        ));
-    }
-
     // B2：独占声明归一（去空白、拒空项、去重保序）。server 名是否真实
     // 在册**不在此处校验**——独占声明可以走在装 MCP 之前（治理壳先行的
     // 合法形态），前缀匹配在运行期按当下注册真相计算，未注册 = 无工具
@@ -527,6 +516,20 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
                 exclusive_mcp.push(e);
             }
         }
+    }
+
+    // 治理补全 P1（2026-10-19）：纯独占接管形态合法化——ops 为空但声明了
+    // exclusive_mcp 时不再要求 [[op]]（镜像 op 就是它的操作面，B2 语义下
+    // 「整体接管一个 server、一个 op 都不写」是主场景；此前被迫写假 op）。
+    // 既无 op 又无独占 = 连接器没有任何可调用面，仍拒绝。
+    // BUG-20261105-021：闸在归一化**之后**判——旧形态在归一化前看
+    // `meta.exclusive_mcp.is_none()`，`exclusive_mcp: []`（空数组是 Some）
+    // 绕闸 → 零操作面死连接器静默入库。
+    if raw.ops.is_empty() && exclusive_mcp.is_empty() {
+        return Err(format!(
+            "connector `{}`: 至少要声明一个 [[op]]（或 exclusive_mcp 独占接管）",
+            meta.id
+        ));
     }
 
     let mut ops = Vec::with_capacity(raw.ops.len());

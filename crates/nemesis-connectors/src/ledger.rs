@@ -178,6 +178,11 @@ impl BrokerLedger {
         if qty <= 0.0 || qty.is_nan() {
             return Err(format!("卖出数量必须为正（收到 {qty}）"));
         }
+        // BUG-20261105-022：负价/NaN 价与 buy 同款闸——缺闸时负价卖出
+        // proceeds 为负直接扣现金（账本可被工具调用面推成负余额）。
+        if price < 0.0 || price.is_nan() {
+            return Err(format!("价格非法（收到 {price}）"));
+        }
         let Some(pos) = self.positions.get_mut(symbol) else {
             return Err(format!("无 {symbol} 持仓，无法卖出"));
         };

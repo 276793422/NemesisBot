@@ -457,7 +457,12 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         // 撤销防重落标记（边界补强 2026-10-20）：无论 verdict 成败——反向
         // op 已发起执行，可能已在对端生效，重复发起会叠加副作用（标记在
         // 判定后、返回前落，Ok 带撤销凭条 id 供审计）。
-        let verdict = undo_ledger_verdict(&before, &after, &c.id, &undo.op);
+        // BUG-20261105-023：凭条绑定派发 args（digest 匹配）——旧形态按
+        // (connector, op, 「新出现」) 认领，并发双撤销互认对方凭条。
+        let expected_digest = nemesis_connectors::receipt::args_digest(&json!({
+            (undo.arg.as_str()): key_value,
+        }));
+        let verdict = undo_ledger_verdict(&before, &after, &c.id, &undo.op, &expected_digest);
         nemesis_connectors::state::mark_undone(
             &ws,
             &r.receipt_id,
@@ -530,21 +535,29 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
 }
 
 /// R5 撤销判定（纯函数，便于三臂单测）：对比反向 op 派发前后的行动账本
-/// 快照，只认「新增凭条 + `outcome == "executed"`」为撤销成功。不嗅探
-/// 文本——派发回显是给人看的，账才是结构化真相。
+/// 快照，只认「新增凭条 + `outcome == "executed"` + args digest 与本次
+/// 派发一致」为撤销成功。不嗅探文本——派发回显是给人看的，账才是结构化
+/// 真相。
 ///
 /// - `Ok(undo_receipt_id)`：新凭条已 executed，`undone: true`；
-/// - `Err(reason)`：新凭条 outcome 非 executed（被拦/失败），或压根没落
-///   新凭条——外部状态未撤销，`undone: false`。
+/// - `Err(reason)`：新凭条 outcome 非 executed（被拦/失败），digest 不匹配
+///   （并发撤销互认防护，BUG-20261105-023），或压根没落新凭条——外部状态
+///   未撤销，`undone: false`。
 fn undo_ledger_verdict(
     before: &std::collections::HashSet<String>,
     after: &[nemesis_connectors::receipt::Receipt],
     connector: &str,
     undo_op: &str,
+    expected_digest: &str,
 ) -> Result<String, String> {
     after
         .iter()
-        .find(|x| !before.contains(&x.receipt_id) && x.connector == connector && x.op == undo_op)
+        .find(|x| {
+            !before.contains(&x.receipt_id)
+                && x.connector == connector
+                && x.op == undo_op
+                && x.args_digest == expected_digest
+        })
         .map(|nr| {
             if nr.outcome == "executed" {
                 Ok(nr.receipt_id.clone())

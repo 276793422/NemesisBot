@@ -1255,7 +1255,10 @@ impl AgentLoop {
             let cred_gate = cred_gate.clone();
             // 并行批审批聚合（BUG-A 第三层）：批号物化为 owned 才能进
             // 'static Fn 闭包（Option<&str> 借用跨不过 Send+'static 边界）；
-            // 凭据闸发卡的 ApprovalContext 靠它同批聚合。
+            // 凭据闸发卡的 ApprovalContext 靠它同批聚合。唯一消费点在
+            // security cfg 块内——非 security 构建不物化（悬空绑定 =
+            // unused warning，nightly 全量红）。
+            #[cfg(feature = "security")]
             let batch_id = batch_id.map(str::to_string);
             std::sync::Arc::new(move |call: HookToolCall| {
                 // Fn 闭包：捕获的 Arc 每次调用克隆一份（不能 move 出 Fn）。
@@ -1270,6 +1273,10 @@ impl AgentLoop {
                 let cred_guard = Arc::clone(&cred_guard);
                 #[cfg(feature = "security")]
                 let cred_gate = cred_gate.clone();
+                // 并行批审批聚合（BUG-A 第三层）：唯一消费点在下方 security
+                // cfg 块内（凭据发卡 ApprovalContext.batch_id）——非 security
+                // 构建不捕获（悬空 clone = unused warning，nightly 全量红）。
+                #[cfg(feature = "security")]
                 let batch_id = batch_id.clone();
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();

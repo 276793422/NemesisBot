@@ -531,12 +531,25 @@ mod imp {
             &self,
             profile_id: &str,
         ) -> Result<serde_json::Value, String> {
-            let session = self
-                .get(profile_id)
-                .ok_or_else(|| format!("会话不存在（profile {profile_id}）"))?;
             let profile = crate::profile::ProfileStore::new(&self.workspace)
                 .load(profile_id)
                 .map_err(|e| e.to_string())?;
+            self.resolve_functions_with(profile_id, profile).await
+        }
+
+        /// [`Self::resolve_functions`] 的 profile 注入形态（BUG-20261105-015）：
+        /// 向导期 profile 只在 `ziwei/drafts/<id>/`（已提交库 load 恒
+        /// NotFound）——向导面（setup diff_window hook 臂）传 draft 进来，
+        /// 运行时面（runtime attach 后）仍走已提交库包装。
+        #[cfg(windows)]
+        pub async fn resolve_functions_with(
+            &self,
+            profile_id: &str,
+            profile: nemesis_ziwei_profile::Profile,
+        ) -> Result<serde_json::Value, String> {
+            let session = self
+                .get(profile_id)
+                .ok_or_else(|| format!("会话不存在（profile {profile_id}）"))?;
             let locates = crate::resolve::collect_profile_locates(&profile);
             if locates.is_empty() {
                 return Err("profile 无函数 locate 可解析（functions 为空）".to_string());
@@ -750,13 +763,22 @@ mod imp {
                         "tid": ev.tid,
                         "regs": ev.regs,
                     });
-                    // decode：regs[0] 视为结构指针（v1 约定；profile ArgSpec 注记）
+                    // decode：regs[0] 视为结构指针（v1 约定；profile ArgSpec 注记）。
+                    // BUG-20261105-016：read_mem 必须 CMD_TIMEOUT 包装（同函数
+                    // poll_events / dispatch 入口同纪律）——目标停摆时裸 await
+                    // 永挂并持有 link 互斥锁，调度器 poll_loop 与后续 detach
+                    // 全部连锁挂死（普通 detach 无超时预算）。
                     if let Some(ds) = decode_of.get(&ev.id)
                         && ev.regs[0] != 0
                     {
                         let mut link = session.link().lock().await;
-                        match crate::pipe::read_mem(&mut link, ev.regs[0], ds.size).await {
-                            Ok(data) => match crate::dispatch::decode_struct(&data, ds) {
+                        let read = tokio::time::timeout(
+                            CMD_TIMEOUT,
+                            crate::pipe::read_mem(&mut link, ev.regs[0], ds.size),
+                        )
+                        .await;
+                        match read {
+                            Ok(Ok(data)) => match crate::dispatch::decode_struct(&data, ds) {
                                 Ok(value) => {
                                     record["decoded"] = value;
                                 }
@@ -765,14 +787,25 @@ mod imp {
                                         serde_json::json!(format!("decode: {e}"));
                                 }
                             },
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 record["decode_error"] =
                                     serde_json::json!(format!("read_mem: {e}"));
                             }
+                            Err(_) => {
+                                record["decode_error"] =
+                                    serde_json::json!("read_mem 超时（目标无应答）");
+                            }
                         }
                     }
-                    if self.capture.append(profile_id, record.clone()).is_ok() {
-                        stored += 1;
+                    // BUG-20261105-020：落盘失败不再静默（磁盘满/权限故障时
+                    // 事件只活在本次响应里，TTL 清扫与审计面永久缺 these 记录
+                    // 的根因是无人知道失败发生了）——warn 可观测 + stored 计数
+                    // 如实不增。
+                    match self.capture.append(profile_id, record.clone()) {
+                        Ok(()) => stored += 1,
+                        Err(e) => tracing::warn!(
+                            "[ziwei] capture 回流落盘失败（profile {profile_id}）：{e}"
+                        ),
                     }
                     records.push(record);
                 }

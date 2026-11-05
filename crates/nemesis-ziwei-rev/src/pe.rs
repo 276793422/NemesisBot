@@ -382,9 +382,20 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
         } else {
             first_thunk
         };
+        // BUG-20261105-017：thunk 语义按 machine 分支——32 位 PE（0x14C）
+        // 的 IMAGE_THUNK_DATA32 是 4 字节槽（stride ×4、u32 读、序号旗标
+        // 0x8000_0000）；旧形态无条件按 64 位读会把相邻两个 32 位 thunk 拼
+        // 成一个 u64、IAT 槽 RVA 跨度翻倍、序号判断用错掩码。
+        let is32 = pe.machine == 0x14C;
+        let stride: u32 = if is32 { 4 } else { 8 };
+        let ord_flag: u64 = if is32 {
+            0x0000_0000_8000_0000
+        } else {
+            0x8000_0000_0000_0000
+        };
         let mut funcs = Vec::new();
         for ti in 0..0x1_0000u32 {
-            let thunk_i = match thunk_rva.checked_add(ti * 8) {
+            let thunk_i = match thunk_rva.checked_add(ti * stride) {
                 Some(v) => v,
                 None => break, // 名字表基址越界：后续槽位必然越界
             };
@@ -392,12 +403,16 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
                 Some(o) => o,
                 None => break,
             };
-            let thunk = u64_at(file, t_off)?;
+            let thunk = if is32 {
+                u32_at(file, t_off)? as u64
+            } else {
+                u64_at(file, t_off)?
+            };
             if thunk == 0 {
                 break;
             }
             // 按序号导入（高位 1）记作 #ord；名字导入取 IMAGE_IMPORT_BY_NAME
-            let fname = if thunk & 0x8000_0000_0000_0000 != 0 {
+            let fname = if thunk & ord_flag != 0 {
                 format!("#{}", thunk & 0xFFFF)
             } else {
                 let hint_rva = (thunk & 0x7FFF_FFFF) as u32;
@@ -405,7 +420,7 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
                     .and_then(|o| cstr_at(file, o + 2, 512))
                     .unwrap_or_else(|| format!("#unk_{hint_rva:X}"))
             };
-            let slot = match first_thunk.checked_add(ti * 8) {
+            let slot = match first_thunk.checked_add(ti * stride) {
                 Some(v) => v,
                 None => break, // IAT 基址越界：槽位记录无效，诚实止步
             };
@@ -583,20 +598,33 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
             }
         };
         let iat_rva = norm(iat_field, rva_form);
+        // BUG-20261105-017：thunk 语义按 machine 分支（同 parse_imports_file
+        // ——延迟导入名字表/IAT 同为 4 字节槽 / 32 位形态）。
+        let is32 = pe.machine == 0x14C;
+        let stride: u32 = if is32 { 4 } else { 8 };
+        let ord_flag: u64 = if is32 {
+            0x0000_0000_8000_0000
+        } else {
+            0x8000_0000_0000_0000
+        };
         let mut funcs = Vec::new();
         for ti in 0..0x1_0000u32 {
-            let thunk_i = match thunk_rva.checked_add(ti * 8) {
+            let thunk_i = match thunk_rva.checked_add(ti * stride) {
                 Some(v) => v,
                 None => break,
             };
             let Some(t_off) = pe.rva_to_file_offset(thunk_i) else {
                 break;
             };
-            let thunk = u64_at(file, t_off)?;
+            let thunk = if is32 {
+                u32_at(file, t_off)? as u64
+            } else {
+                u64_at(file, t_off)?
+            };
             if thunk == 0 {
                 break;
             }
-            let fname = if thunk & 0x8000_0000_0000_0000 != 0 {
+            let fname = if thunk & ord_flag != 0 {
                 format!("#{}", thunk & 0xFFFF)
             } else {
                 let hint_rva = (thunk & 0x7FFF_FFFF) as u32;
@@ -604,7 +632,7 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
                     .and_then(|o| cstr_at(file, o + 2, 512))
                     .unwrap_or_else(|| format!("#unk_{hint_rva:X}"))
             };
-            let slot = match iat_rva.checked_add(ti * 8) {
+            let slot = match iat_rva.checked_add(ti * stride) {
                 Some(v) => v,
                 None => break,
             };

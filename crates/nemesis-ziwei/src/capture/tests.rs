@@ -49,6 +49,26 @@ fn profiles_isolated() {
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
 
+/// BUG-20261105-018：大文件下 read_recent 只留尾部 limit 条（滑动窗口），
+/// 返回 = 尾部且恰好 limit 条；limit=0 = 空（旧语义不变）。
+#[test]
+fn read_recent_sliding_window_keeps_tail_only() {
+    let ws = temp_ws("slide");
+    let store = CaptureStore::new(&ws);
+    for i in 0..2000 {
+        store.append("bulk", serde_json::json!({ "i": i })).unwrap();
+    }
+    let tail = store.read_recent("bulk", 50);
+    assert_eq!(tail.len(), 50, "恰好 limit 条");
+    assert_eq!(tail[0]["i"], 1950, "窗口首条 = 总数-limit");
+    assert_eq!(tail[49]["i"], 1999, "窗口尾条 = 最新");
+    // limit=0 = 空（旧行为钉死）
+    assert!(store.read_recent("bulk", 0).is_empty());
+    // limit > 行数 = 全量
+    assert_eq!(store.read_recent("bulk", 5000).len(), 2000);
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
+}
+
 #[test]
 fn ttl_sweep_expires_old_keeps_new() {
     let ws = temp_ws("ttl");

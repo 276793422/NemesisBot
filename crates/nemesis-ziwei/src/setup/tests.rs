@@ -389,3 +389,28 @@ fn normalize_pattern_shapes_hex() {
     );
     cleanup(&ws);
 }
+
+// ── BUG-20261105-015：draft 与已提交库的隔离根因钉死 ────────────────────
+
+/// 根因不对称：向导期 profile_id 只存在于 `ziwei/drafts/<id>/`（本向导
+/// 新造的毫秒戳 id，已提交库 `ziwei/profiles/<id>/` 必不存在）——旧 hook
+/// 臂用 `ProfileStore::load`（只读已提交库）恒 NotFound → hook_notes
+/// 「draft profile 不可用」+ fn_addrs 永不设置 = hook=true 臂整条死路。
+/// 修复后 hook 臂走 `load_draft`（本测试钉死：同一 id load_draft 成功、
+/// ProfileStore::load 诚实 NotFound）。
+#[test]
+fn draft_only_id_is_invisible_to_committed_store() {
+    let ws = temp_ws("draft-only");
+    let id = "zw-pro-d1751700000000";
+    seed_draft(&ws, id);
+
+    // 新路径：hook 臂同源读法，成功
+    let profile = load_draft(&ws, id).expect("load_draft 应命中向导 draft");
+    assert_eq!(profile.profile_id, id);
+
+    // 旧路径：已提交库对同一 id 诚实 NotFound（死路根因）
+    let committed = ProfileStore::new(&ws).load(id);
+    assert!(committed.is_err(), "已提交库不得看到 draft：{committed:?}");
+
+    cleanup(&ws);
+}

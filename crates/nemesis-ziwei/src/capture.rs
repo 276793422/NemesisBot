@@ -64,19 +64,29 @@ impl CaptureStore {
         Ok(())
     }
 
-    /// 读回某 profile 的全部记录（WSAPI 会话视图「最近捕获」用）。
+    /// 读回某 profile 的最近 `limit` 条记录（WSAPI 会话视图「最近捕获」用）。
+    /// BUG-20261105-018：只保留尾部 limit 条的滑动窗口——旧形态全量
+    /// collect 后再切片，capture.jsonl 上限 512MB，读侧一次性载入即数百
+    /// MB 级瞬时峰值（gateway 常驻进程反复触发 = 内存压力）。
     pub fn read_recent(&self, profile_id: &str, limit: usize) -> Vec<serde_json::Value> {
         let path = self.profile_file(profile_id);
         let Ok(f) = std::fs::File::open(&path) else {
             return Vec::new();
         };
-        let all: Vec<serde_json::Value> = BufReader::new(f)
-            .lines()
-            .map_while(|l| l.ok())
-            .filter_map(|l| serde_json::from_str(&l).ok())
-            .collect();
-        let start = all.len().saturating_sub(limit);
-        all[start..].to_vec()
+        let mut recent: std::collections::VecDeque<serde_json::Value> =
+            std::collections::VecDeque::with_capacity(limit.min(1024));
+        for l in BufReader::new(f).lines().map_while(|l| l.ok()) {
+            if limit == 0 {
+                break; // 旧形态 limit=0 返回空，语义不变
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&l) {
+                if recent.len() == limit {
+                    recent.pop_front();
+                }
+                recent.push_back(v);
+            }
+        }
+        recent.into_iter().collect()
     }
 
     /// 清扫：TTL + 每 profile 容量上限（网关启动时 + 每 10 分钟周期）。
