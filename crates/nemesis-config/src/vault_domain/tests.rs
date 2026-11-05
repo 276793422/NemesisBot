@@ -22,7 +22,7 @@ fn r(field: &str, alias: &str) -> (String, String) {
     (field.to_string(), alias.to_string())
 }
 
-// -- load_at 四态 -----------------------------------------------------------
+// load_at 四态 -----------------------------------------------------------
 
 #[test]
 fn load_at_absent_file_returns_none() {
@@ -78,7 +78,7 @@ fn path_helper_joins_config_dir() {
     assert_eq!(p, PathBuf::from("/ws/config").join("config.vault.json"));
 }
 
-// -- evaluate 判定矩阵 ------------------------------------------------------
+// evaluate 判定矩阵 ------------------------------------------------------
 
 fn sample_cfg() -> VaultDomainConfig {
     let mut b = BTreeMap::new();

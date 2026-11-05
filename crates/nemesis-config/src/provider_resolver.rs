@@ -3,12 +3,12 @@
 //! Translated from Go `module/config/provider_resolver.go`.
 //!
 //! This module provides:
-//! - [`resolve_model_config`] - resolves a model reference to a full provider config
-//! - [`get_model_by_name`] - finds a model by name with round-robin load balancing
-//! - [`get_effective_llm`] - gets the effective LLM for the default agent
-//! - [`infer_provider_from_model`] - infers provider from model name
-//! - [`infer_default_model`] - gets default model for a provider
-//! - [`get_default_api_base`] - gets default API base URL for a provider
+//! [`resolve_model_config`] - resolves a model reference to a full provider config
+//! [`get_model_by_name`] - finds a model by name with round-robin load balancing
+//! [`get_effective_llm`] - gets the effective LLM for the default agent
+//! [`infer_provider_from_model`] - infers provider from model name
+//! [`infer_default_model`] - gets default model for a provider
+//! [`get_default_api_base`] - gets default API base URL for a provider
 
 use serde::{Deserialize, Serialize};
 
@@ -43,22 +43,22 @@ pub struct ProviderResolution {
     pub protocol: String,
     pub workspace: String,
     pub enabled: bool,
-    /// H4 (U16 half): reasoning-effort tier from the model entry ("" = unset).
+    /// (half): reasoning-effort tier from the model entry ("" = unset).
     #[serde(default)]
     pub reasoning_effort: String,
-    /// Per-model 单请求超时秒数（P3A 超时对齐，2026-09-12）：模型条目 extra 的
+    /// Per-model 单请求超时秒数（P3A 超时对齐）：模型条目 extra 的
     /// `timeout_secs`（别名 `timeout`）。0 = 未设置 → factory 落 lane 默认
     /// 600s（修复 anthropic/codex/http-compat lane 曾各写死 120s、与
     /// 超时阶梯「provider 单请求 600s」口径不一致：评审 LLM 连续精确 120s
     /// 超时的根因）。
     #[serde(default)]
     pub timeout_secs: u64,
-    /// per-model 流式开关（2026-10-13 stream 键）：模型条目 extra 的 `stream`。
+    /// per-model 流式开关（stream 键）：模型条目 extra 的 `stream`。
     /// 值集归一："yes" / "no" / ""（auto）。factory 透传到各 HTTP lane 构造期
     /// 消费（codex auto=流式；anthropic/openai auto=非流式；yes/no 强制）。
     #[serde(default)]
     pub stream_mode: String,
-    /// per-model 缓存断点显式化（B13，2026-10-18 B 级清零）：模型条目 extra
+    /// per-model 缓存断点显式化（B 级清零）：模型条目 extra
     /// 的 `cache_breakpoints`。仅 anthropic lane 消费——开启后在 system 尾 +
     /// tools 尾注入 `cache_control:{type:"ephemeral"}`（Anthropic 手动缓存
     /// 语义：断点必须显式放置，无断点 = 零缓存）。缺省 false = 请求体字节
@@ -112,7 +112,7 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
     }
 
     // Then, try to find by the entry's `model` field (exact match, no '/'
-    // gating). 2026-10-13 根修：旧实现只在该 ref 含 '/' 时才比对 model 字段，
+    // gating). 根修：旧实现只在该 ref 含 '/' 时才比对 model 字段，
     // 无前缀条目（model: "gpt-5.6-sol"）+ 同名 ref 会**错过**直接落 inference
     // fallback（gpt→openai→api.openai.com 默认 base + 空 key → SYN 黑洞 21s
     // 假超时，gpt-5.6-sol 风暴排查破案的第二层）。精确命中条目就该命中——
@@ -154,11 +154,11 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
 
 /// Convert a ModelConfig to ProviderResolution.
 /// Mirrors Go `resolveFromModelConfig`.
-/// H2 (U15): resolve an api_key VALUE that may be a credential REFERENCE.
+/// resolve an api_key VALUE that may be a credential REFERENCE.
 /// Three layers, checked in order (structural — the prefixes are disjoint):
 /// 1. `env:VAR_NAME` — resolved from the process environment at read time.
 /// 2. `yaml:<alias>` — resolved from `workspace/config/credentials.yaml`
-///    (U15 completion; see `credentials` module).
+///    (completion; see `credentials` module).
 /// 3. Literal value — passes through unchanged (full backward compatibility).
 ///    References are resolved per-operation with NO caching: changing the env var
 ///    or credentials.yaml takes effect on the next resolve. A reference that
@@ -188,7 +188,7 @@ pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<
     if let Some(alias) = raw.strip_prefix("yaml:") {
         return crate::credentials::resolve_yaml_reference(alias, model_for_error);
     }
-    // P0 vault（B1，2026-09-22 计划）：`vault:<alias>` 是链上第四层显式
+    // vault（计划）：`vault:<alias>` 是链上第四层显式
     // 前缀，位于 yaml 之后；解析器由 nemesisbot 启动时注入（依赖环约束，
     // 见 vault_ref 模块文档）。非 vault 引用返回 None，直落字面量分支。
     if let Some(resolved) = crate::vault_ref::resolve_vault_reference(raw) {
@@ -196,7 +196,7 @@ pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<
             ConfigError::Validation(format!("model '{}': {}", model_for_error, msg))
         });
     }
-    // B4（同计划）：明文明文 key 仍兼容，但每进程 loud warn 一次，提示
+    // （同计划）：明文明文 key 仍兼容，但每进程 loud warn 一次，提示
     // 迁移到加密 vault（迁移期不强制——明文继续工作，只是不再无声）。
     static PLAINTEXT_KEY_WARN: std::sync::Once = std::sync::Once::new();
     PLAINTEXT_KEY_WARN.call_once(|| {
@@ -222,11 +222,11 @@ fn extract_timeout_secs(extra: &std::collections::BTreeMap<String, serde_json::V
     0
 }
 
-/// per-model 流式开关提取（2026-10-13 stream 键）：读模型条目 extra 的
+/// per-model 流式开关提取（stream 键）：读模型条目 extra 的
 /// `stream`。值集归一到 "yes" / "no" / ""（auto）：
-/// - 布尔 `true` / 字符串 "yes"/"true"（大小写不敏感）→ "yes"；
-/// - 布尔 `false` / 字符串 "no"/"false" → "no"；
-/// - 缺省 / 其他值 → ""（auto，lane 默认形态）。未知值诚实忽略落 auto
+/// 布尔 `true` / 字符串 "yes"/"true"（大小写不敏感）→ "yes"；
+/// 布尔 `false` / 字符串 "no"/"false" → "no"；
+/// 缺省 / 其他值 → ""（auto，lane 默认形态）。未知值诚实忽略落 auto
 ///   （与 timeout 的「非 u64 忽略」同策略——配置层不做静默纠偏）。
 fn extract_stream_mode(extra: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
     extra
@@ -250,7 +250,7 @@ pub fn normalize_stream_value(v: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// per-model 缓存断点提取（B13）：读模型条目 extra 的 `cache_breakpoints`。
+/// per-model 缓存断点提取：读模型条目 extra 的 `cache_breakpoints`。
 /// 缺省/非真值 = false（请求体零字节变化）。真值语义对齐 stream 键：布尔
 /// `true` / 字符串 "yes"/"true"（大小写不敏感）→ true；其余诚实忽略按关。
 fn extract_cache_breakpoints(
@@ -322,7 +322,7 @@ pub fn find_model_by_name<'a>(cfg: &'a Config, model_ref: &str) -> Result<&'a Mo
     )))
 }
 
-/// 声明式模型角色守卫④（2026-10-13 N6）：装配点专用——校验「即将坐上
+/// 声明式模型角色守卫④：装配点专用——校验「即将坐上
 /// 默认对话模型槽的条目」role 是对话形态。utility/classifier 条目对话形态
 /// 但不该坐主槽（杂务消费走 agents.small_model），手改 config 是到达该
 /// 状态的唯一路径（CLI/WSAPI 写入侧守卫①②已拦），所以这里 loud 报错并
@@ -398,7 +398,7 @@ pub fn infer_provider_from_model(model: &str) -> String {
 }
 
 // ============================================================================
-// Provider preset table（P9，能力扩展 WS5，2026-09-25）
+// Provider preset table（能力扩展）
 // ============================================================================
 
 /// 一个内置 provider 家族预设。
@@ -434,7 +434,7 @@ pub struct ProviderPreset {
 /// 分区顺序：前沿实验室 → 中国厂商 → 国际厂商 → 聚合/GPU 云 → 本地推理
 /// 服务器 → 特例（历史遗留入口）。
 pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
-    // ---- 前沿实验室 ----
+    // 前沿实验室 ----
     ProviderPreset {
         id: "openai",
         aliases: &["gpt"],
@@ -467,7 +467,7 @@ pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
         default_model: "grok-3",
         display_name: "xAI",
     },
-    // ---- 中国厂商 ----
+    // 中国厂商 ----
     ProviderPreset {
         id: "zhipu",
         aliases: &["glm", "bigmodel"],
@@ -612,7 +612,7 @@ pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
         default_model: "DeepSeek-V3",
         display_name: "Gitee AI",
     },
-    // ---- 国际厂商 ----
+    // 国际厂商 ----
     ProviderPreset {
         id: "mistral",
         aliases: &[],
@@ -711,7 +711,7 @@ pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
         default_model: "Llama-4-Maverick-17B-128E-Instruct-FP8",
         display_name: "Meta Llama API",
     },
-    // ---- 聚合 / GPU 云 ----
+    // 聚合 / GPU 云 ----
     ProviderPreset {
         id: "openrouter",
         aliases: &[],
@@ -936,7 +936,7 @@ pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
         default_model: "gpt-4o",
         display_name: "AiHubMix",
     },
-    // ---- 本地推理服务器 ----
+    // 本地推理服务器 ----
     ProviderPreset {
         id: "ollama",
         aliases: &[],
@@ -989,7 +989,7 @@ pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
         default_model: "local-model",
         display_name: "Jan（本机）",
     },
-    // ---- 特例（历史遗留入口）----
+    // 特例（历史遗留入口）----
     // GitHub Copilot 本地代理（LiteLLM 同款默认端口）。
     ProviderPreset {
         id: "github_copilot",

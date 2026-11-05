@@ -1,22 +1,20 @@
-//! P5（桌面级 VM）：`executor.vm` 配置面测试。
+//! （桌面级 VM）：`executor.vm` 配置面测试。
 //!
-//! - serde 缺省：executor 段无 vm 键 = 铁律默认（enabled=false，全部子段缺省）；
-//! - typed roundtrip：显式值序列化/反序列化不丢（2026-09-03 typed save
+//! serde 缺省：executor 段无 vm 键 = 铁律默认（enabled=false，全部子段缺省）；
+//! typed roundtrip：显式值序列化/反序列化不丢（2026-09-03 typed save
 //!   回归锁同款纪律）；
-//! - `validate()`：枚举型字符串未知值 loud 拒绝 + max_instances=0 拒绝；
+//! `validate`：枚举型字符串未知值 loud 拒绝 + max_instances=0 拒绝；
 //!   合法值域与 nemesis-sandbox vm::guest_arch 同步钉住。
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // serde 缺省（铁律：默认关）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn vm_serde_default_when_key_absent() {
     let cfg: Config = serde_json::from_str("{}").expect("empty config parses");
     // executor 段整段缺席 = None（消费面 unwrap_or_default 落全缺省——
-    // 与 ExecutorSeparationConfig::default() 的 vm 字段同源断言）。
+    // 与 ExecutorSeparationConfig::default 的 vm 字段同源断言）。
     assert!(cfg.executor.is_none(), "缺 executor 段 = None");
     let vm = &ExecutorSeparationConfig::default().vm;
     assert!(!vm.enabled, "缺键 = VM 零激活（铁律默认关）");
@@ -53,9 +51,7 @@ fn vm_partial_section_field_defaults_apply() {
     assert_eq!(vm.gc.over_limit, "warn");
 }
 
-// ---------------------------------------------------------------------------
 // typed roundtrip
-// ---------------------------------------------------------------------------
 
 #[test]
 fn vm_typed_roundtrip_preserves_explicit_values() {
@@ -109,9 +105,7 @@ fn vm_typed_roundtrip_preserves_explicit_values() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// validate() loud 拒绝
-// ---------------------------------------------------------------------------
+// validate loud 拒绝
 
 #[test]
 fn vm_validate_accepts_defaults() {
@@ -182,9 +176,7 @@ fn vm_validate_rejects_zero_max_instances() {
     vm.validate().unwrap_or_else(|e| panic!("1 合法: {e}"));
 }
 
-// ---------------------------------------------------------------------------
-// ready_budget_secs（P5-R4 配置化：原 vm_runtime 编译期常量 240s 退役）
-// ---------------------------------------------------------------------------
+// ready_budget_secs（配置化：原 vm_runtime 编译期常量 240s 退役）
 
 /// 缺省 240 = 原编译期常量行为字节不变（回归锁：双路径同源——serde 字段级
 /// 缺省与手写 Default 都落 240）。
@@ -214,9 +206,7 @@ fn vm_validate_rejects_zero_ready_budget() {
     vm.validate().unwrap_or_else(|e| panic!("1 合法: {e}"));
 }
 
-// ---------------------------------------------------------------------------
-// display / display_resolution（P5-R2 带界面 VM）
-// ---------------------------------------------------------------------------
+// display / display_resolution（带界面 VM）
 
 /// 缺省 none = 原无头形态字节不变（回归锁：双路径同源——serde 字段级缺省
 /// 与手写 Default 都落 "none"；分辨率缺省 1280x720）。

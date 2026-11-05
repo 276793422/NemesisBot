@@ -1,14 +1,14 @@
-//! vault 别名域绑定（L26②，2026-11-02 三期）：alias → (工具,槽位) 白名单。
+//! vault 别名域绑定（②，2026-11-02 三期）：alias → (工具,槽位) 白名单。
 //!
-//! 绑定配置落 `<workspace>/config/config.vault.json`（拍板：配置落 vault
+//! 绑定配置落 `<workspace>/config/config.vault.json`（配置落 vault
 //! 配置文件；config.cluster.json / config.forge.json 同族 sidecar 形态）。
 //! 绑定是**策略元数据不是秘密**：明文 JSON，不进 vault.enc——可读、可手
 //! 编、可 version control，泄密面为零（不含值）。
 //!
 //! 判定语义（dispatch 凭据闸 v2 臂，见 nemesis-agent tool_dispatch）：
-//! - 域内（全部 ref 命中各自绑定）→ 免卡直过（绑定即预授权）；
-//! - 出域（任一 ref 的别名有绑定但 (tool, field) 不命中）→ 审计拒绝 loud；
-//! - 无绑定（任一 ref 的别名没配域）→ v1 审批卡路径（绑定 opt-in，存量零回归）。
+//! 域内（全部 ref 命中各自绑定）→ 免卡直过（绑定即预授权）；
+//! 出域（任一 ref 的别名有绑定但 (tool, field) 不命中）→ 审计拒绝 loud；
+//! 无绑定（任一 ref 的别名没配域）→ v1 审批卡路径（绑定 opt-in，存量零回归）。
 //!
 //! crate 归位：判定臂 always-on（不依赖 security feature / 审批通道），
 //! 所以 loader 住本 crate（nemesis-agent 的非 cfg 依赖）；nemesis-security
@@ -127,7 +127,7 @@ fn slot_covers(slot: &str, field: &str) -> bool {
             .is_some()
 }
 
-/// 绑定文件在 config 目录下的标准路径（`config_path.parent()` 消费形态）。
+/// 绑定文件在 config 目录下的标准路径（`config_path.parent` 消费形态）。
 pub fn vault_domain_config_path_in(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join(VAULT_DOMAIN_CONFIG_FILE)
 }

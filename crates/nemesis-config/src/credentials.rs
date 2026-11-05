@@ -1,9 +1,9 @@
-//! U15: model API-key credential store (`workspace/config/credentials.yaml`).
+//! model API-key credential store (`workspace/config/credentials.yaml`).
 //!
 //! A `config.json` model entry's `api_key` may be a REFERENCE instead of an
 //! inline literal:
-//! - `env:VAR_NAME` — resolved from the process environment (H2, earlier batch)
-//! - `yaml:<alias>` — resolved from this file's `keys:` map (this module)
+//! `env:VAR_NAME` — resolved from the process environment (, earlier batch)
+//! `yaml:<alias>` — resolved from this file's `keys:` map (this module)
 //!
 //! Resolution order (`provider_resolver::resolve_api_key_value`):
 //! `env:VAR` > `yaml:<alias>` > inline literal (legacy, unchanged).
@@ -63,7 +63,7 @@ impl ImportReport {
     }
 }
 
-/// G4 (U15 dashboard badge): where a model entry's `api_key` resolves from —
+/// (dashboard badge): where a model entry's `api_key` resolves from —
 /// the same three-layer prefix contract `provider_resolver::resolve_api_key_value`
 /// applies (`env:` > `yaml:` > inline literal), but carrying ONLY the
 /// reference name, never the key value: dashboards badge the source with
@@ -91,7 +91,7 @@ pub fn classify_key_source(api_key: &str) -> KeySource {
             reference: alias.to_string(),
         }
     } else if let Some(alias) = api_key.strip_prefix(crate::vault_ref::VAULT_PREFIX) {
-        // P0 vault（B2）：models 页来源徽标——vault 别名只出现在 reference
+        // vault：models 页来源徽标——vault 别名只出现在 reference
         // 里（与 env/yaml 同脱敏面）。
         KeySource {
             kind: "vault".to_string(),
@@ -118,9 +118,7 @@ pub fn credentials_path_for_home(home: &Path) -> PathBuf {
         .join("credentials.yaml")
 }
 
-// ----------------------------------------------------------------------------
 // Global path (process-wide; set by the CLI/gateway entry points)
-// ----------------------------------------------------------------------------
 
 /// Process-global credentials.yaml location. Set once at process start by the
 /// binary (`run_command`) and by `eval_worker`; library code never mutates it,
@@ -142,9 +140,7 @@ pub fn global_credentials_path() -> Option<PathBuf> {
     GLOBAL_CREDENTIALS_PATH.read().clone()
 }
 
-// ----------------------------------------------------------------------------
 // File IO
-// ----------------------------------------------------------------------------
 
 /// Read and parse credentials.yaml.
 ///
@@ -187,7 +183,7 @@ pub fn save_credentials_file(path: &Path, file: &CredentialsFile) -> Result<()> 
     let body = serde_yaml::to_string(file).map_err(|e| {
         ConfigError::Validation(format!("failed to serialize credentials.yaml: {}", e))
     })?;
-    // REL-002：统一原子写入；0600 在临时文件创建时即挂（取代写后
+    // 统一原子写入；0600 在临时文件创建时即挂（取代写后
     // restrict_permissions 的先宽后收窗口）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o600).map_err(
         |e| {
@@ -223,12 +219,10 @@ fn warn_if_permissions_loose(path: &Path) {
 #[cfg(not(unix))]
 fn warn_if_permissions_loose(_path: &Path) {}
 
-// （restrict_permissions 已随 REL-002 移除：0600 现由 write_file_atomic 在
+// （restrict_permissions 已移除：0600 现由 write_file_atomic 在
 // 临时文件创建时即挂，不再有写后补 chmod 的先宽后收窗口。）
 
-// ----------------------------------------------------------------------------
 // Reference resolution
-// ----------------------------------------------------------------------------
 
 /// Resolve a `yaml:<alias>` reference against the global credentials path.
 /// Called from `provider_resolver::resolve_api_key_value` — every failure is
@@ -268,9 +262,7 @@ pub(crate) fn resolve_yaml_reference(alias: &str, model_for_error: &str) -> Resu
     }
 }
 
-// ----------------------------------------------------------------------------
 // `nemesisbot credentials import` core (library-level, testable)
-// ----------------------------------------------------------------------------
 
 /// Raw-Value migration core shared by the CLI (`run_import`) and the WSAPI
 /// `models.migrate_keys` (target=yaml): rewrite inline plaintext `api_key`s
@@ -304,8 +296,8 @@ pub fn migrate_inline_keys_to_yaml(
             report.skipped_empty += 1;
             continue;
         }
-        // P0 vault（B2 旁路修复）：vault: 已是加密引用——绝不能被当明文
-        // 搬进 credentials.yaml（那会把引用降级成 yaml:）。
+        // vault（旁路修复）：vault: 已是加密引用——绝不能被当明文
+        // 搬进 credentials.yaml（那会把引用降级成 yaml）。
         if api_key.starts_with("env:")
             || api_key.starts_with("yaml:")
             || api_key.starts_with(crate::vault_ref::VAULT_PREFIX)
@@ -437,7 +429,7 @@ pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportR
 
 /// Turn a model name/model string into a yaml-safe alias
 /// (no `/`, `\`, `:`, whitespace).
-/// P0 vault（B2）：`vault migrate` 复用同一规则（vault 与 yaml 别名空间
+/// vault：`vault migrate` 复用同一规则（vault 与 yaml 别名空间
 /// 保持一致，用户在两种存储间迁移时别名不变）。
 pub fn sanitize_alias(raw: &str) -> String {
     let cleaned: String = raw

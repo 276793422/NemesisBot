@@ -1,10 +1,8 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
-/// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；M6 2026-10-27
+/// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；
 /// 整改批次五）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -13,7 +11,7 @@ pub struct CheckpointConfig {
     pub gc: CheckpointGcConfig,
 }
 
-/// checkpoint gc 参数（M6）。**默认关**：gc 删错 = 回退网失效，宁默认关、
+/// checkpoint gc 参数。**默认关**：gc 删错 = 回退网失效，宁默认关、
 /// 开关在用户手里（长任务开发建议显式开启）。git 影子形态走**重建式**
 /// gc（新建临时对象集 → 完整性自检 → 原子换名 `objects/` 子树，不碰主仓
 /// `.git/objects`、不区分 loose/pack）；JSON 形态窗口外 turn-N.json 直删。
@@ -87,18 +85,18 @@ pub struct ConnectorsConfig {
     /// 资金类限额（None = 全 0 = fail-closed 拒绝所有资金 op）。
     #[serde(default)]
     pub finance: Option<ConnectorsFinanceConfig>,
-    /// 远程执行面总闸（集群 E1：worker 节点是否接受 master 经 RPC 派发的
+    /// 远程执行面总闸（集群 ：worker 节点是否接受 master 经 RPC 派发的
     /// `connector_invoke`；false = worker 侧 handler 诚实拒绝。缺省 true）。
     /// 凭据铁律不变：派发载荷只含 op+args，凭据永不上 RPC 线——worker 用
     /// 自己的 vault 解锁。
     #[serde(default = "default_remote_invoke_enabled")]
     pub remote_invoke_enabled: bool,
-    /// 信任总闸（M1）：true = unsigned connector 一律拒执行（trust_blocked
+    /// 信任总闸：true = unsigned connector 一律拒执行（trust_blocked
     /// 诚实凭条）；false（缺省）= 只在审批卡加警示行，不拦截——本地自签
     /// 开发场景合法，拦截是用户显式选择。
     #[serde(default)]
     pub require_signed: bool,
-    /// script 绑定全局配置（M2；None = 全缺省：default_timeout_secs 60）。
+    /// script 绑定全局配置（None = 全缺省：default_timeout_secs 60）。
     #[serde(default)]
     pub script: Option<ConnectorsScriptConfig>,
 }
@@ -131,7 +129,7 @@ impl Default for ConnectorsConfig {
     }
 }
 
-/// script 绑定全局配置（M2，2026-10-19）。
+/// script 绑定全局配置。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ConnectorsScriptConfig {
@@ -173,7 +171,7 @@ impl Default for ConnectorsFinanceConfig {
 pub struct SkinsPolicy {
     /// true = 「设为默认观感」（WSAPI `skins.set_active`）拒绝非 verified
     /// 皮肤包。闸在**信任决策点**——数据面（active.css / app 分发）不拦，
-    /// 签名仍是徽标而非加载闸（D1 定案），这里只约束「把哪个包设为默认」
+    /// 签名仍是徽标而非加载闸（定案），这里只约束「把哪个包设为默认」
     /// 这一个动作。默认 false（未签名皮肤照常可用）。
     pub require_signed: bool,
     /// true = 皮肤脚本载荷（manifest `script`）可经 `/skins/active/script`
@@ -247,7 +245,7 @@ pub struct BridgeClientConfig {
     pub access_token: String,
 }
 
-/// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；L8。交互 shell 无法
+/// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；。交互 shell 无法
 /// 逐命令审批——默认关闭，启用即接受「dashboard 登录用户=shell 信任级」
 /// +全 I/O 审计 `<workspace>/logs/terminal/`）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -271,8 +269,8 @@ impl Default for TerminalConfig {
     }
 }
 
-/// 日志五族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
-/// 2026-10-27 整改批次三）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
+/// 日志五族 TTL 清扫（`config.json` 的 `logs` 段；/ 统一清扫器，
+/// 整改批次三）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
 /// 全默认。清扫器（nemesisbot logs_sweeper）启动扫一次 + 每 6h 一拍，
 /// 每族每拍限量 200 件防 IO 尖峰。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -294,7 +292,7 @@ pub struct LogsTtlConfig {
     /// 末行非 append 保留）。默认 30。
     pub event_ledger: u64,
     /// 会话回收站（`logs/trash/sessions/`，整目录清扫，目录 mtime ≈ 删除
-    /// 时刻）。默认 **90**（拍板①：30 天太短）。
+    /// 时刻）。默认 **90**（30 天太短）。
     pub trash: u64,
 }
 
@@ -311,7 +309,7 @@ impl Default for LogsTtlConfig {
     }
 }
 
-/// 项目注册表参数（`config.json` 的 `projects` 段；L6++ Phase 1。
+/// 项目注册表参数（`config.json` 的 `projects` 段； 。
 /// `#[serde(default)]` 每字段全可省）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -319,7 +317,7 @@ pub struct ProjectsConfig {
     /// 项目数上限（每项目 = 一个常驻 AgentLoop，上限即可预期的资源面；
     /// 默认 4。`config set_field projects.max` 经 typed round-trip 自动可用）。
     pub max: usize,
-    /// N7（2026-10-13）：**未受信**项目（注册表条目 `instructions_trusted:
+    /// **未受信**项目（注册表条目 `instructions_trusted:
     /// false`，`projects.trust` 翻转）的工作区指令处理策略——`""`/`annotate`
     /// = 注入但前置不可信来源横幅（缺省）；`isolated` = 整段跳过；未知值
     /// lenient 按 annotate 处理 + warn。受信条目恒 verbatim 注入（逐项目
@@ -390,7 +388,7 @@ impl Default for CaptureConfig {
 // ============================================================================
 // Agents Config
 // ============================================================================
-/// 健康监测旗标（`config.json` 的 `health` 段；M2，2026-10-27 整改批次一）。
+/// 健康监测旗标（`config.json` 的 `health` 段；， 整改批次一）。
 /// None = 全默认——磁盘水位监测开（warn 5GB / critical 1GB / 60s）。
 /// critical 臂只升级告警面（SSE `system-alert` + `/ready` 降级），**不做
 /// 自动 estop**（防误伤）。
@@ -405,7 +403,7 @@ pub struct HealthFlagConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DiskWatermarkConfig {
-    /// 总开关（默认开——「快满了」可见是 M2 的最小代价最大收益项）。
+    /// 总开关（默认开——「快满了」可见是 的最小代价最大收益项）。
     pub enabled: bool,
     /// warn 阈值（GB；低于此值升 warn 告警）。
     pub warn_gb: u64,
@@ -440,9 +438,9 @@ pub struct HeartbeatConfig {
 
 impl Default for HeartbeatConfig {
     /// 手写而非 derive（serde 双路径纪律，WebChannelConfig 同款——
-    /// BUG-20261031-226）：`heartbeat` 顶层键整段缺席时 serde 走结构体
-    /// `Default::default()`，字段级缺省函数不经过。derive 的
-    /// {enabled:false, interval:0} 与字段级缺省/出厂模板/default_config()
+    /// ）：`heartbeat` 顶层键整段缺席时 serde 走结构体
+    /// `Default::default`，字段级缺省函数不经过。derive 的
+    /// {enabled:false, interval:0} 与字段级缺省/出厂模板/default_config
     /// 的 {true, 30} 相反——migrate 骨架（openclaw_config.rs 无 heartbeat
     /// 段）与手精简 config 的心跳服务被静默关闭（bot_service.rs 装配闸
     /// 直接读 enabled）。两条构造路径必须收敛同值。
@@ -463,7 +461,7 @@ pub struct DevicesConfig {
 }
 
 impl Default for DevicesConfig {
-    /// 手写收敛（BUG-20261031-226 同批）：`monitor_usb` 字段级缺省 true，
+    /// 手写收敛（同批）：`monitor_usb` 字段级缺省 true，
     /// derive 给 false——devices 服务缺省关使分歧暂不可达，但用户经
     /// Dashboard 开启 enabled 保存的是内存结构体（缺席键场景=derive 值），
     /// monitor_usb:false 会落盘，与模板 monitor_usb:true 相反。
@@ -545,12 +543,12 @@ pub struct ClusterFlagConfig {
 pub struct MemoryFlagConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// P31 记忆 dreaming（三段式记忆巩固；None = 全默认——enabled=false 关）。
+    /// 记忆 dreaming（三段式记忆巩固；None = 全默认——enabled=false 关）。
     #[serde(default)]
     pub dreaming: Option<DreamingConfig>,
 }
 
-/// `memory.dreaming` 配置节（P31 记忆巩固）。
+/// `memory.dreaming` 配置节（记忆巩固）。
 ///
 /// sweep 挂载于 gateway 启动同步（job 名 `memory-dreaming:sweep`）；LLM 决策
 /// 走 `agents.small_model` 通道（未配则回落主模型）。默认全关——dreaming 是
@@ -582,7 +580,7 @@ impl Default for DreamingConfig {
     }
 }
 
-/// 6 信号权重覆盖节（P31）。全部 Option——只覆盖用户显式给出的项。
+/// 6 信号权重覆盖节。全部 Option——只覆盖用户显式给出的项。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DreamingWeightsConfig {
     /// 召回次数权重。

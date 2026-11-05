@@ -2,13 +2,13 @@
 //!
 //! 收编此前各自手写的"文件变了才重读"模式（tier / commands / mcp 各一套，
 //! 细节漂移）。新增性热更配置 = 写一个 `fn(&Path) -> T` load 函数 + 一行声明，
-//! 不再复制检测逻辑。调用方每消息/每轮主动 `check()`（一次小文件直读，可
+//! 不再复制检测逻辑。调用方每消息/每轮主动 `check`（一次小文件直读，可
 //! 忽略），无回调订阅、无事件总线——与既有语义一致。
 //!
 //! NOT 线程语义：记账用 std Mutex、状态用 std RwLock（本 crate 无
 //! parking_lot 依赖）；锁内不做 IO（盘读在锁外，锁内只比对/换值）。
 //!
-//! 变更检测 = **内容比对不赌钟**（BUG-20261104-359 同族收编）：mtime 等值
+//! 变更检测 = **内容比对不赌钟**（同族收编）：mtime 等值
 //! 判定在 Windows 毫秒级粒度（write_file_atomic 临时名同 tick 同 nanos，
 //! 346d3dc2 / c584086a CI 实证同族）下漏检同刻改写，配置静默永久陈旧。
 //! 现改为比对盘上原始文本（`fsutil::read_config_string` 同源，含 BOM 剥离）：
@@ -63,8 +63,8 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> HotReloade
     }
 
     /// 绕过比对强制重读（写方落盘后立即自我刷新；保留为写方自刷新契约——
-    /// 2026-10-22 CI Windows 审批 pattern 假红回归钉，auditor 写路径消费）。
-    /// 成功返回 true；读失败按 None 记账并返回 false（下次 `check()` 兜底）。
+    /// CI Windows 审批 pattern 假红回归钉，auditor 写路径消费）。
+    /// 成功返回 true；读失败按 None 记账并返回 false（下次 `check` 兜底）。
     pub fn force_reload(&self) -> bool {
         let raw = nemesis_utils::fsutil::read_config_string(&self.path).ok();
         let value = (self.load)(&self.path);

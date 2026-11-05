@@ -665,7 +665,7 @@ fn test_full_config_roundtrip() {
         agents: AgentsConfig {
             discipline: DisciplineConfig::default(),
             prompt_system: "pro".to_string(),
-            // P32 cache_warmer 配置节（serde 缺省关 + $0.05）——全字段
+            // cache_warmer 配置节（serde 缺省关 + $0.05）——全字段
             // 初始化器补齐。
             cache_warmer: crate::CacheWarmerConfig::default(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
@@ -681,15 +681,15 @@ fn test_full_config_roundtrip() {
             guardian_model: None,
             doom_loop_approval: false,
             image_downscale: true,
-            // WS9/P22 写租约开关（serde 缺省 true）——全字段初始化器补齐。
+            // / 写租约开关（serde 缺省 true）——全字段初始化器补齐。
             lease_enabled: true,
-            // T2/T3（2026-10-13 内部专项批次：codemode / turn WAL / provider
+            // /（内部专项批次：codemode / turn WAL / provider
             // 流事件开关）——全字段初始化器补齐（值对齐 lib.rs Default）。
             codemode: crate::CodeModeConfig::default(),
             delegate: crate::DelegateToolConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
-            // BUG-20261105-008 三键（serde 缺省 true/true/None）——全字段
+            // 三键（serde 缺省 true/true/None）——全字段
             // 初始化器补齐（值对齐 lib.rs Default）。
             stream_concat_retry: true,
             profession_tool_fence: true,
@@ -864,11 +864,11 @@ fn test_agents_config_default() {
     assert!(agents.list.is_empty());
 }
 
-/// G2 (devtool-upgrade 阶段 3): sub-agent depth config — absent section
+/// (devtool-upgrade): sub-agent depth config — absent section
 /// defaults to max_depth 1; explicit values parse; round-trips losslessly.
 #[test]
 fn test_subagent_depth_config() {
-    // Old JSON (pre-G2) — no agents.subagent section at all.
+    // Old JSON (pre-) — no agents.subagent section at all.
     let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
     assert_eq!(old.subagent.max_depth, 1, "缺省段 = 默认深度上限 1");
 
@@ -882,12 +882,12 @@ fn test_subagent_depth_config() {
     assert_eq!(back.subagent.max_depth, 3, "round-trip 不得丢 max_depth");
 }
 
-/// F8 (devtool-upgrade 阶段 3): `agents.hidden_tools` — absent key (old
+/// (devtool-upgrade): `agents.hidden_tools` — absent key (old
 /// config.json) defaults to empty (= hide nothing); explicit entries parse;
 /// round-trips losslessly (typed save paths must not silently drop the key).
 #[test]
 fn test_hidden_tools_config() {
-    // Old JSON (pre-F8) — no agents.hidden_tools key.
+    // Old JSON (pre-) — no agents.hidden_tools key.
     let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
     assert!(old.hidden_tools.is_empty(), "缺省键 = 不隐藏任何工具");
 
@@ -904,12 +904,12 @@ fn test_hidden_tools_config() {
     );
 }
 
-/// N2 (devtool-upgrade 阶段 4): small-model chore lane — `agents.small_model`
-/// parses when present, defaults to None on old config.json (pre-N2), and
+/// (devtool-upgrade): small-model chore lane — `agents.small_model`
+/// parses when present, defaults to None on old config.json (pre-), and
 /// round-trips losslessly (typed save paths must not silently drop the key).
 #[test]
 fn test_small_model_config() {
-    // Old JSON (pre-N2) — no agents.small_model key.
+    // Old JSON (pre-) — no agents.small_model key.
     let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
     assert!(old.small_model.is_none(), "缺省键 = 未配置小模型");
 
@@ -934,14 +934,14 @@ fn test_small_model_config() {
     assert!(unset.small_model.is_none(), "null = 未配置");
 }
 
-/// B7（2026-10-13）：guardian judge 专用模型通道 — `agents.guardian_model`
+/// guardian judge 专用模型通道 — `agents.guardian_model`
 /// parses when present, defaults to None on old config.json, round-trips
 /// losslessly（typed 保存路径不得静默丢键）。阶梯消费点唯一：gateway
 /// guardian judge 装配（commands/gateway/runtime.rs
 /// resolve_guardian_judge_lane）。
 #[test]
 fn test_guardian_model_config() {
-    // Old JSON (pre-B7) — no agents.guardian_model key.
+    // Old JSON (pre-) — no agents.guardian_model key.
     let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
     assert!(old.guardian_model.is_none(), "缺省键 = 未配置专用通道");
 
@@ -966,7 +966,7 @@ fn test_guardian_model_config() {
     assert!(unset.guardian_model.is_none(), "null = 未配置");
 }
 
-/// prompt-pack pro（2026-09-27）：`agents.prompt_system` — 缺省键 = "pro"
+/// prompt-pack pro：`agents.prompt_system` — 缺省键 = "pro"
 /// （serde default），空串保留原样（agent 侧按未配置 = pro 解析），显式
 /// classic 透传，round-trip 不丢键（typed 保存路径不得静默抹掉）。
 #[test]
@@ -994,11 +994,11 @@ fn test_prompt_system_config() {
     assert_eq!(default_config().agents.prompt_system, "pro");
 }
 
-/// T5 (U13): delegation permission-tier config — new fields parse, absent
+/// delegation permission-tier config — new fields parse, absent
 /// fields (old config.json) default to empty (= tool default tier).
 #[test]
 fn test_delegation_tool_permission_tier_config() {
-    // Old JSON (pre-T5) — no permission_mode/sandbox keys.
+    // Old JSON (pre-) — no permission_mode/sandbox keys.
     let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
     assert_eq!(old.claude_code_tool.permission_mode, "");
     assert_eq!(old.codex_tool.sandbox, "");
@@ -1026,17 +1026,17 @@ fn test_delegation_tool_permission_tier_config() {
 #[test]
 fn test_channels_config_default() {
     let channels = ChannelsConfig::default();
-    // BUG-20261028-109：与字段级 default_true / 出厂模板收敛（web 通道是
+    // 与字段级 default_true / 出厂模板收敛（web 通道是
     // dashboard 唯一 UI，缺省开启）。
     assert!(channels.web.enabled);
     assert_eq!(channels.web.port, 8080);
 }
 
-/// BUG-20261028-109 回归锁：WebChannelConfig 的 serde 双路径默认值必须收敛。
+/// 回归锁：WebChannelConfig 的 serde 双路径默认值必须收敛。
 ///
 /// 路径 A：`channels.web` 键整体缺席（含 `channels` 段缺席）→ 走结构体
 /// 手写 Default；路径 B：`web` 键在场但 `enabled` 字段缺席 → 走字段级
-/// `default_true`；路径 C：出厂硬编码默认 `default_config()`。三路必须
+/// `default_true`；路径 C：出厂硬编码默认 `default_config`。三路必须
 /// 收敛同一默认值——修复前 A=false、B=true、C=true，磁盘 config.json
 /// 一旦精简掉 web 子段，dashboard 静默消失（gateway 照常起、无警告）。
 #[test]
@@ -1107,7 +1107,7 @@ fn test_model_validate_empty_api_key() {
         api_key: String::new(),
         ..Default::default()
     };
-    // api_key is not validated by validate()
+    // api_key is not validated by validate
     assert!(model.validate().is_ok());
 }
 
@@ -1200,7 +1200,7 @@ fn test_expand_tilde_relative() {
 
 #[test]
 fn test_expand_tilde_backslash_prefix() {
-    // BUG-20261102-319：`~\` 反斜杠形态（Windows 用户手写惯例，save_config /
+    // `~\` 反斜杠形态（Windows 用户手写惯例，save_config /
     // adjust_paths 的默认拼法判定均已承认该形态）此前不展开——与 log.rs 的
     // 本地 expand_tilde（认 `~\`）分叉，同义两形态异判。
     let result = expand_tilde("~\\custom\\path");
@@ -1217,7 +1217,7 @@ fn test_save_config_creates_parent_dirs() {
     assert!(path.exists());
 }
 
-// ---- New tests ----
+// New tests ----
 
 #[test]
 fn test_agent_defaults_restrict_to_workspace_default() {
@@ -1234,7 +1234,7 @@ fn test_agent_defaults_queue_size() {
 #[test]
 fn test_agent_defaults_concurrent_request_mode() {
     let defaults = AgentDefaults::default();
-    // E1 (2026-09-05): default flipped reject → queue (busy sessions park
+    // default flipped reject → queue (busy sessions park
     // messages in the inbox instead of bouncing; serde default = key absent).
     assert_eq!(defaults.concurrent_request_mode, "queue");
 }
@@ -1301,7 +1301,7 @@ fn test_discord_config_default() {
 #[test]
 fn test_tools_config_default() {
     let cfg = ToolsConfig::default();
-    // BUG-20261031-226：brave.max_results 已收敛字段级缺省 5；
+    // brave.max_results 已收敛字段级缺省 5；
     // duckduckgo 保持刻意不收敛（见 lib.rs DuckDuckGoConfig 注记）。
     assert_eq!(cfg.web.brave.max_results, 5);
     assert!(!cfg.web.duckduckgo.enabled);
@@ -1316,7 +1316,7 @@ fn test_exec_config_default() {
 
 #[test]
 fn test_heartbeat_config_default() {
-    // BUG-20261031-226：Default 已与 serde 字段级缺省/出厂模板收敛
+    // Default 已与 serde 字段级缺省/出厂模板收敛
     // （{enabled:true, interval:30}）——键缺席不再静默关心跳服务。
     let cfg = HeartbeatConfig::default();
     assert!(cfg.enabled);
@@ -1325,7 +1325,7 @@ fn test_heartbeat_config_default() {
 
 #[test]
 fn test_devices_config_default() {
-    // BUG-20261031-226：monitor_usb 已与字段级缺省/模板收敛为 true
+    // monitor_usb 已与字段级缺省/模板收敛为 true
     // （enabled 仍缺省关）。
     let cfg = DevicesConfig::default();
     assert!(!cfg.enabled);
@@ -1405,7 +1405,7 @@ fn test_channels_config_all_disabled() {
 #[test]
 fn test_web_channel_config_defaults() {
     let cfg = WebChannelConfig::default();
-    // BUG-20261028-109：与字段级 default_true 收敛（缺省开启）。
+    // 与字段级 default_true 收敛（缺省开启）。
     assert!(cfg.enabled);
     assert_eq!(cfg.host, "0.0.0.0");
     assert_eq!(cfg.port, 8080);
@@ -1442,7 +1442,7 @@ fn test_mcp_config_default() {
     let cfg = McpConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.servers.is_empty());
-    // 2026-08-31 起手写 Default（收敛单一真相源时一并修正）：与 serde
+    // 起手写 Default（收敛单一真相源时一并修正）：与 serde
     // 缺省值一致均为 30，不再有「Default 给 0 / serde 给 30」的分叉。
     assert_eq!(cfg.timeout, 30);
 }
@@ -1546,7 +1546,7 @@ fn test_config_workspace_path_tilde() {
 
 #[test]
 fn test_config_workspace_path_tilde_backslash() {
-    // BUG-20261102-319：`~\` 形态 workspace 此前原样返回字面量（MCP/security/
+    // `~\` 形态 workspace 此前原样返回字面量（MCP/security/
     // skills/scanner 四个配置路径解析消费方拿到后落 cwd 下 `~` 目录）——与
     // `~/` 形态正确展开分叉。
     let config = Config {
@@ -1576,7 +1576,7 @@ fn test_security_layers_config_default() {
 
 #[test]
 fn test_brave_config_default() {
-    // BUG-20261031-226：max_results 已与字段级缺省/模板收敛为 5
+    // max_results 已与字段级缺省/模板收敛为 5
     // （enabled 仍缺省关）。
     let cfg = BraveConfig::default();
     assert!(!cfg.enabled);
@@ -1586,7 +1586,7 @@ fn test_brave_config_default() {
 
 #[test]
 fn test_duckduckgo_config_default() {
-    // DuckDuckGo 刻意保持双路径现状（BUG-20261031-226 排除项）：
+    // DuckDuckGo 刻意保持双路径现状（排除项）：
     // 键缺席=false 与模板显式 false 一致，不收敛。
     let cfg = DuckDuckGoConfig::default();
     assert!(!cfg.enabled);
@@ -1595,7 +1595,7 @@ fn test_duckduckgo_config_default() {
 
 #[test]
 fn test_perplexity_config_default() {
-    // BUG-20261031-226：max_results 已与字段级缺省/模板收敛为 5
+    // max_results 已与字段级缺省/模板收敛为 5
     // （enabled 仍缺省关）。
     let cfg = PerplexityConfig::default();
     assert!(!cfg.enabled);
@@ -1603,8 +1603,8 @@ fn test_perplexity_config_default() {
     assert_eq!(cfg.max_results, 5);
 }
 
-// BUG-20261031-226 回归锁：顶层键整段缺席时 serde 走子结构体 `Default::default()`
-//（BUG-20261028-109 双路径纪律），必须与字段级 serde 缺省/出厂模板/default_config()
+// 回归锁：顶层键整段缺席时 serde 走子结构体 `Default::default`
+//（双路径纪律），必须与字段级 serde 缺省/出厂模板/default_config
 // 收敛。修复前 HeartbeatConfig derive 的 Default 是 {enabled:false, interval:0}——
 // migrate 骨架（openclaw_config.rs 无 heartbeat 段）与手精简 config 的心跳服务
 // 被静默关闭，与 bot_service.rs 装配闸/模板 {enabled:true,interval:30} 相反。
@@ -1727,7 +1727,7 @@ fn test_skills_clawhub_config_default() {
     assert!(cfg.base_url.is_empty());
 }
 
-// ---- Additional coverage tests ----
+// Additional coverage tests ----
 
 #[test]
 fn test_expand_tilde_home() {
@@ -1826,7 +1826,7 @@ fn test_apply_env_overrides_forge_enabled() {
     }
 }
 
-/// BUG-20261025-22 回归锁（宽容识别集）：布尔 env 覆盖必须认得 Go
+/// 回归锁（宽容识别集）：布尔 env 覆盖必须认得 Go
 /// strconv.ParseBool 全集（true/false/t/f/1/0，大小写不敏感）+ 项目自身的
 /// yes/no/on/off 宽容惯例（同 normalize_stream_value 出发点）——设
 /// `NEMESISBOT_SECURITY_ENABLED=1` 想开安全必须真的开，不得因严格 parse
@@ -1861,7 +1861,7 @@ fn test_apply_env_overrides_bool_lenient_forms() {
     }
 }
 
-/// BUG-20261025-22 回归锁（不识别 = 保留 config 文件值）：布尔 env 覆盖
+/// 回归锁（不识别 = 保留 config 文件值）：布尔 env 覆盖
 /// 设了但值无法识别时，必须与同函数数值臂同惯例——不动 config、warn 留痕，
 /// 严禁静默用硬编码默认覆盖（旧 unwrap_or(false) 会把 security 静默关掉、
 /// unwrap_or(true) 会把 web/heartbeat/restrict 静默打开）。
@@ -2024,7 +2024,7 @@ fn test_platform_info_json_fields() {
 
 #[test]
 fn test_deserialize_flexible_string_vec_with_bool() {
-    // The deserializer converts non-string, non-number types via to_string()
+    // The deserializer converts non-string, non-number types via to_string
     let json = r#"{"allow_from": ["user1", true]}"#;
     let cfg: TelegramConfig = serde_json::from_str(json).unwrap();
     assert_eq!(cfg.allow_from.len(), 2);
@@ -2058,7 +2058,7 @@ fn test_model_validate_empty_model() {
     assert!(model.validate().is_err());
 }
 
-// ---- Additional coverage tests for 95%+ ----
+// Additional coverage tests for 95%+ ----
 
 #[test]
 fn test_apply_env_overrides_web_channel() {
@@ -2095,8 +2095,8 @@ fn test_apply_env_overrides_invalid_bool() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    // BUG-20261025-22：无法识别的布尔 env 覆盖 = 保留 config 值 + warn
-    // （旧语义「强制 true」已废除）。Config::default() 的
+    // 无法识别的布尔 env 覆盖 = 保留 config 值 + warn
+    // （旧语义「强制 true」已废除）。Config::default 的
     // restrict_to_workspace 恰为 true，此处钉的是「保留文件值」不翻转。
     unsafe {
         std::env::set_var(
@@ -2160,7 +2160,7 @@ fn test_apply_env_overrides_max_tool_iterations() {
     }
 }
 
-/// P8（2026-10-10 集群无人值守硬化 A2）：session_token_budget 默认 pin。
+/// （集群无人值守硬化）：session_token_budget 默认 pin。
 /// **0 = 关**（与 max_tool_iterations 的 0=不限惯例相反）；typed round-trip
 /// 保值（AgentDefaults 无 flatten extra，typed 字段是防 save_config 抹键的
 /// 唯一防线）；内嵌 config.default.json 恒 0（默认不改现网行为）。
@@ -2195,7 +2195,7 @@ fn test_session_token_budget_default_pin_and_roundtrip() {
     );
 }
 
-/// W6（2026-10-25 加固）：shutdown_drain_secs 默认 pin。
+/// （加固）：shutdown_drain_secs 默认 pin。
 /// 30 = 默认 drain 预算；**0 = 跳过 drain**；typed round-trip 保值
 /// （AgentDefaults 无 flatten extra，typed 字段是防 save_config 抹键的
 /// 唯一防线）；内嵌 config.default.json 不写此键（缺席 = serde 默认 30，
@@ -2234,7 +2234,7 @@ fn test_shutdown_drain_secs_default_pin_and_roundtrip() {
     assert_eq!(defaults.shutdown_drain_secs, 30);
 }
 
-/// W7（2026-10-25 加固）：mcp_lazy_supply typed round-trip 保值
+/// （加固）：mcp_lazy_supply typed round-trip 保值
 /// （AgentsConfig typed 字段是防 save_config 抹键的唯一防线）；默认 false
 ///（行为零变化面）；内嵌 config.default.json 不写此键（缺席 = serde 默认
 /// false）。
@@ -2549,7 +2549,7 @@ fn test_adjust_paths_for_environment_no_logging() {
     assert!(config.logging.is_none());
 }
 
-// BUG-20261025-77 锁：以 `.nemesisbot/workspace` 结尾的**绝对自定义路径**
+// 锁：以 `.nemesisbot/workspace` 结尾的**绝对自定义路径**
 // 不是默认形态，加载期不得强改回默认（旧 ends_with 后缀匹配必红）。
 #[test]
 fn test_adjust_paths_for_environment_preserves_absolute_custom_local_form() {
@@ -2682,7 +2682,7 @@ fn test_cron_tools_config_defaults_v2() {
     assert_eq!(cfg.exec_timeout_minutes, 0);
 }
 
-// ---- Additional tests to improve coverage from 72% to 80%+ ----
+// Additional tests to improve coverage from 72% to 80%+ ----
 
 #[test]
 fn test_flexible_vec_visitor_with_mixed_types() {
@@ -2965,7 +2965,7 @@ fn test_save_config_local_mode_detection() {
     std::env::set_current_dir(original).unwrap();
 }
 
-// BUG-20261025-76 锁：local 模式落盘只重写「默认工作区」的等价拼法，
+// 锁：local 模式落盘只重写「默认工作区」的等价拼法，
 // home 下的自定义路径与波浪号自定义路径必须原样保留（旧 starts_with
 // 宽匹配把它们静默改写成 .nemesisbot/workspace，必红）。
 #[test]
@@ -2978,7 +2978,7 @@ fn test_save_config_local_mode_preserves_custom_workspace() {
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
     let config_path = local_dir.join("config.json");
-    // Pre-create so canonicalize() inside is_local_mode can resolve it.
+    // Pre-create so canonicalize inside is_local_mode can resolve it.
     std::fs::write(&config_path, b"{}").unwrap();
 
     let custom = home
@@ -3035,7 +3035,7 @@ fn test_save_config_local_mode_still_rewrites_default_workspace() {
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
     let config_path = local_dir.join("config.json");
-    // Pre-create so canonicalize() inside is_local_mode can resolve it.
+    // Pre-create so canonicalize inside is_local_mode can resolve it.
     std::fs::write(&config_path, b"{}").unwrap();
 
     let mut config = Config::default();
@@ -3152,14 +3152,14 @@ fn test_adjust_paths_no_llm_logging() {
 }
 
 // ============================================================================
-// Coverage batch 2026-08-25: remaining uncovered branches in lib.rs.
+// Coverage batch : remaining uncovered branches in lib.rs.
 // Only lines NOT already covered by tests.rs / extra_tests.rs are targeted
 // here (verified against existing test bodies before writing each one).
 // ============================================================================
 
 #[test]
 fn test_flexible_string_vec_expecting_non_seq_input() {
-    // `expecting()` (lib.rs:61-63) only runs when serde rejects the input
+    // `expecting` (lib.rs:61-63) only runs when serde rejects the input
     // with an invalid-type error — feed allow_from a non-array value.
     let err =
         serde_json::from_str::<WhatsAppConfig>(r#"{"allow_from": "not-an-array"}"#).unwrap_err();
@@ -3544,7 +3544,7 @@ fn test_web_channel_config_rejects_all_non_port_json_types() {
 
 #[test]
 fn test_board_flag_config_auto_dispatch_default_off() {
-    // auto_dispatch（W2.5 接口预留）默认必须为 false：用户拍板「现阶段不做
+    // auto_dispatch（.5 接口预留）默认必须为 false：「现阶段不做
     // 自动派发」——缺段 / 空段 / 段内缺字段都不得意外打开。
     let empty: Config = serde_json::from_str("{}").unwrap();
     assert!(!empty.board.unwrap_or_default().auto_dispatch);
@@ -3566,12 +3566,12 @@ fn test_board_flag_config_auto_dispatch_roundtrip() {
 }
 
 // ============================================================
-// 全自动流转 P4：board.review / board.budget 默认值与 round-trip
+// 全自动流转 ：board.review / board.budget 默认值与 round-trip
 // ============================================================
 
 #[test]
 fn test_board_review_budget_defaults_conservative() {
-    // P4 新段默认必须保守：取证轮数 0=不限（M6-3，2026-10-10 C1 预算耗尽
+    // 新段默认必须保守：取证轮数 0=不限（预算耗尽
     // 根修——1 轮经常不够下结论 → 假 UNSURE/假 FAIL；doom-loop/estop 守卫
     // 仍在，0 语义安全）、自检/项目收口关（自动 agent 活动显式 opt-in）、
     // 预算三维全关（0=不设限，存量行为不变）。缺段 / 空段 / 段内缺字段
@@ -3584,7 +3584,7 @@ fn test_board_review_budget_defaults_conservative() {
     assert_eq!(b.budget.max_subissues_per_parent, 20);
     assert_eq!(b.budget.max_total_redispatch, 0);
     assert_eq!(b.budget.wall_clock_budget_secs, 0);
-    // F2 送达失败重试熔断默认**开**（5 次）——自动重试循环默认带护栏的
+    // 送达失败重试熔断默认**开**（5 次）——自动重试循环默认带护栏的
     // 系统惯例；其余预算维默认关不冲突（那是「不设限」、这是「熔断」）。
     assert_eq!(b.budget.max_send_retries, 5);
 
@@ -3624,7 +3624,7 @@ fn test_board_review_budget_roundtrip() {
 }
 
 // ============================================================
-// 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）：
+// 必需检查契约（项 B「必需的必须跑」）：
 // board.review.required_checks 默认 / round-trip / 空串键全局兜底保留
 // ============================================================
 
@@ -3673,7 +3673,7 @@ fn test_board_required_checks_default_empty_and_roundtrip() {
 }
 
 // ============================================================
-// B1：职能→评审预设查表（board.review.professions）
+// 职能→评审预设查表（board.review.professions）
 // ============================================================
 
 #[test]
@@ -3797,7 +3797,7 @@ fn test_profession_review_preset_roundtrip() {
 }
 
 // ============================================================
-// ModelConfig.extra passthrough（2026-09-03 二次回归根修回归锁）
+// ModelConfig.extra passthrough（二次回归根修回归锁）
 // ============================================================
 
 #[test]
@@ -3873,13 +3873,13 @@ fn test_typed_entry_without_unknown_keys_serializes_without_extra_noise() {
     let v = serde_json::to_value(&mc).unwrap();
     let obj = v.as_object().unwrap();
     assert!(obj.contains_key("model_name") && obj.contains_key("model"));
-    // 10 个类型化字段（2026-09-11 LLM 协议选择器加入 protocol 后由 9→10），
+    // 10 个类型化字段（LLM 协议选择器加入 protocol 后由 9→10），
     // 无 extra 噪音。
     assert_eq!(obj.len(), 10, "十个类型化字段，无 extra 噪音: {obj:#?}");
 }
 
 // ============================================================
-// 顶层/agents 级 raw 消费键 typed 保存保真（BUG-20261105-008 回归锁）
+// 顶层/agents 级 raw 消费键 typed 保存保真（回归锁）
 // ============================================================
 
 #[test]
@@ -3929,8 +3929,8 @@ fn test_typed_save_absent_state_does_not_pin_lazy_schema_or_disable_wasm() {
     // tier 裁决矩阵」语义不得被钉成显式值）；agents 级两个定值默认键落
     // 显式 true（与 turn_wal 同款，显式 true ≡ 缺席语义）；plugins 段不得
     // 出现幽灵禁用（None → null，runtime_enabled pointer 下 = 缺键 = 缺省
-    // true 放行）。用 default_config()（生产 canonical 默认；derive 骨架
-    // Config::default() 的 bool 全 false，非生产语义）。
+    // true 放行）。用 default_config（生产 canonical 默认；derive 骨架
+    // Config::default 的 bool 全 false，非生产语义）。
     let mut cfg = crate::default_config();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
@@ -3952,7 +3952,7 @@ fn test_typed_save_absent_state_does_not_pin_lazy_schema_or_disable_wasm() {
 }
 
 // ============================================================
-// McpServerConfig.extra passthrough（2026-09-03 二次回归 F2 同族回归锁）
+// McpServerConfig.extra passthrough（二次回归 同族回归锁）
 // ============================================================
 
 #[test]
@@ -3996,7 +3996,7 @@ fn test_typed_mcp_roundtrip_preserves_untyped_per_server_keys() {
 }
 
 // ============================================================
-// L7（2026-09-04 四轮盲审）：extra map 键序确定性——BTreeMap
+// （四轮盲审）：extra map 键序确定性——BTreeMap
 // ============================================================
 
 #[test]
@@ -4065,14 +4065,12 @@ fn test_l7_mcp_extra_serialization_deterministic() {
     assert!(alpha < zebra, "per-server extra 键按字典序输出: {s1}");
 }
 
-// ---------------------------------------------------------------------------
-// C4 (2026-09-04 devtool-upgrade 阶段 1): agents.diagnostics_loop
-// ---------------------------------------------------------------------------
+// (devtool-upgrade): agents.diagnostics_loop
 
 #[test]
 fn test_diagnostics_loop_missing_key_defaults() {
-    // 缺键不炸（serde default fn 全覆盖）：诊断闭环默认**开**（P2 能力扩展
-    // WS3 翻转，对齐业界内置无条件开启）、20 条、2000ms。
+    // 缺键不炸（serde default fn 全覆盖）：诊断闭环默认**开**（能力扩展
+    // 翻转，对齐业界内置无条件开启）、20 条、2000ms。
     let parsed: crate::AgentDefaults = serde_json::from_str("{}").unwrap();
     assert!(parsed.diagnostics_loop.enabled);
     assert_eq!(parsed.diagnostics_loop.max_errors, 20);
@@ -4089,7 +4087,7 @@ fn test_diagnostics_loop_missing_key_defaults() {
     let d = crate::DiagnosticsLoopConfig::default();
     assert_eq!((d.enabled, d.max_errors, d.wait_max_ms), (true, 20, 2000));
 
-    // P2：显式 false 不受默认翻转影响（serde 显式值优先）——存量用户
+    // 显式 false 不受默认翻转影响（serde 显式值优先）——存量用户
     // 配置语义保持。
     let off: crate::DiagnosticsLoopConfig = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
     assert!(!off.enabled);
@@ -4100,7 +4098,7 @@ fn test_diagnostics_loop_missing_key_defaults() {
 
 #[test]
 fn test_diagnostics_loop_roundtrip_in_full_config() {
-    // C4 验收回归锁：typed save round-trip 保留新键（模式同
+    // 验收回归锁：typed save round-trip 保留新键（模式同
     // test_typed_save_roundtrip_preserves_untyped_per_model_keys，但那是
     // untyped extra 键；本键是 typed 字段，锁的是「加字段后序列化/反序列化
     // 全链不丢」+ 与 lsp_tool 解耦两语义同时成立）。
@@ -4134,7 +4132,7 @@ fn test_diagnostics_loop_roundtrip_in_full_config() {
     assert!(!parsed.agents.lsp_tool.enabled);
 }
 
-// L6++（2026-09-08）：projects 段 serde round-trip。set_field 的 typed
+// projects 段 serde round-trip。set_field 的 typed
 // round-trip 校验（handlers/config.rs）要求数据面先通过——未知键会响亮拒绝，
 // 所以 `projects.max` 必须是 typed 字段（terminal 先例）。
 #[test]
@@ -4157,7 +4155,7 @@ fn test_projects_config_serde_roundtrip() {
     assert_eq!(cfg.projects.as_ref().unwrap().max, 4);
 }
 
-// N7（2026-10-13）：projects.instruction_trust——缺省空串（= annotate 策略）
+// projects.instruction_trust——缺省空串（= annotate 策略）
 // 且空串不序列化（typed 保存字节零变化，role 先例）；显式值 round-trip。
 #[test]
 fn test_projects_instruction_trust_default_skip_empty_and_roundtrip() {
@@ -4175,7 +4173,7 @@ fn test_projects_instruction_trust_default_skip_empty_and_roundtrip() {
     assert_eq!(json["projects"]["instruction_trust"], "isolated");
 }
 
-// 看板项目档案 P5/F1：board.conflict_auto_resolve 默认 false（human 档）
+// 看板项目档案 /：board.conflict_auto_resolve 默认 false（human 档）
 // + round-trip 不漂移。
 #[test]
 fn test_board_conflict_auto_resolve_default_and_roundtrip() {
@@ -4193,7 +4191,7 @@ fn test_board_conflict_auto_resolve_default_and_roundtrip() {
 }
 
 // ============================================================
-// CFG-01（2026-09-16 横扫存量加固）：SecurityConfig `dir_rules` rename 回归锁
+// CFG-01（横扫存量加固）：SecurityConfig `dir_rules` rename 回归锁
 // ============================================================
 
 #[test]
@@ -4201,7 +4199,7 @@ fn test_security_config_roundtrip_preserves_dir_rules() {
     // 磁盘/出厂模板真相键名是 `dir_rules`（runtime security_setup.rs 按裸
     // JSON 键读取）。typed 字段此前无 rename → 反序列化拿不到（None）+
     // 序列化吐 `directory_rules`（或缺键）→ Dashboard 安全设置页保存一次即
-    // 把磁盘 `dir_rules` 整段抹掉（F-U4-7 同后果，miss 落 default allow）。
+    // 把磁盘 `dir_rules` 整段抹掉（F- 同后果，miss 落 default allow）。
     // rename 后 load→save 键名稳定，且反序列化本体就能拿到规则。
     let raw = serde_json::json!({
         "default_action": "allow",
@@ -4231,10 +4229,10 @@ fn test_security_config_roundtrip_preserves_dir_rules() {
     assert_eq!(out["exec_unknown_policy"], "ask");
     assert_eq!(out["guardian_failure_policy"], "deny");
 
-    // D1/D2 缺键语义（A-F4 复核 2026-09-16）：typed 缺省 = **空串**（=
+    // / 缺键语义（A- 复核）：typed 缺省 = **空串**（=
     // runtime 缺键旧行为，且 skip_serializing_if 不物化），不是裁决值——
     // 若缺省给 "allow"/"ask"，从未显式配置的部署经 Dashboard 保存一次即被
-    // 静默物化（D1 落 default_action / D2 旧 fail-open 被替换 = 语义漂移）。
+    // 静默物化（落 default_action / 旧 fail-open 被替换 = 语义漂移）。
     // 裁决默认值只在前端 UI 显示层兜底（SecurityView POLICY_KEYS fallback）。
     let cfg2: crate::SecurityConfig = serde_json::from_value(serde_json::json!({})).unwrap();
     assert_eq!(cfg2.exec_unknown_policy, "");
@@ -4246,8 +4244,8 @@ fn test_security_config_roundtrip_preserves_dir_rules() {
     );
 }
 
-/// CFG-10 ③（2026-09-16）：typed SecurityConfig round-trip 不丢键 + 幂等。
-/// 用户磁盘上的配置（含手加策略键 / D1/D2 / audit_chain_enabled /
+/// CFG-10 ③：typed SecurityConfig round-trip 不丢键 + 幂等。
+/// 用户磁盘上的配置（含手加策略键 / / / audit_chain_enabled /
 /// layers.injection.extra 自定义键）经 parse → serialize 后**任何用户键
 /// 不得消失**（CFG-01/CFG-09 丢键族的机械防线）；serialize → parse →
 /// serialize 必须逐字节一致（fixpoint——serde 回填的空数组/null 是首次
@@ -4306,7 +4304,7 @@ fn cfg10_security_config_typed_roundtrip_byte_preserving() {
 
 #[test]
 fn test_typed_save_roundtrip_preserves_vault_references() {
-    // P0 vault（计划 §5 纪律项，2026-09-21 完善度检查补齐）：typed
+    // vault（计划 §5 纪律项， 完善度检查补齐）：typed
     // load→save round-trip 不得把 `vault:`/`env:`/`yaml:` 引用键抹掉、
     // 改写或解析成明文。引用只在消费面（provider_resolver / gateway
     // 装配点 / agent_factory）现解；配置层任何保存（dashboard
@@ -4359,8 +4357,8 @@ fn test_typed_save_roundtrip_preserves_vault_references() {
     assert_eq!(reloaded.channels.web.auth_token, "vault:e2e-web-token");
 }
 
-// 签名验证三态开关（接入计划 §1，2026-09-23）：typed round-trip 回归锁。
-// A-F4 同款缺省语义——空串 = 未配置 = 不落盘（skip_serializing_if），从未
+// 签名验证三态开关（接入计划 §1）：typed round-trip 回归锁。
+// A- 同款缺省语义——空串 = 未配置 = 不落盘（skip_serializing_if），从未
 // 显式配置的部署经 Dashboard 安全设置页保存一次字节不变；显式值原样存活。
 #[test]
 fn test_security_config_signature_verify_roundtrip() {
@@ -4419,7 +4417,7 @@ fn test_skills_config_ws4_keys_defaults_and_roundtrip() {
 #[test]
 fn test_connectors_remote_invoke_enabled_default_true_and_roundtrip() {
     // 缺省：老 config.json 无 `connectors.remote_invoke_enabled` 键 = true
-    //（E1 集群分发默认开；关=worker 侧 handler 诚实拒绝）。
+    //（集群分发默认开；关=worker 侧 handler 诚实拒绝）。
     let cfg: crate::ConnectorsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
     assert!(cfg.enabled);
     assert!(cfg.remote_invoke_enabled);

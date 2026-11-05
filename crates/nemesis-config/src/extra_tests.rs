@@ -269,7 +269,7 @@ fn extra_save_config_local_mode_tilde_workspace() {
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
     let config_path = local_dir.join("config.json");
-    // Pre-create the file so canonicalize() inside is_local_mode can resolve it.
+    // Pre-create the file so canonicalize inside is_local_mode can resolve it.
     std::fs::write(&config_path, b"{}").unwrap();
 
     let original = std::env::current_dir().unwrap();
@@ -280,14 +280,14 @@ fn extra_save_config_local_mode_tilde_workspace() {
 
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
-    // BUG-20261025-76：波浪号自定义路径不是默认形态，落盘必须原样保留
+    // 波浪号自定义路径不是默认形态，落盘必须原样保留
     // （旧 `~/` 宽匹配会把它静默改写成 .nemesisbot/workspace）。
     assert_eq!(config.agents.defaults.workspace, "~/some/path");
 
     std::env::set_current_dir(original).unwrap();
 }
 
-// BUG-20261031-260：Windows 记事本「带 BOM 的 UTF-8」保存的 config.json——
+// Windows 记事本「带 BOM 的 UTF-8」保存的 config.json——
 // serde_json 拒 BOM（expected value at line 1 column 1），load_config 硬 Err
 // 炸 gateway 启动且错误无从定位。读取面统一走 fsutil::read_config_string
 // 剥前导 BOM 后，带 BOM 配置必须照常加载。
@@ -316,7 +316,7 @@ fn extra_save_config_local_mode_empty_llm_log_dir() {
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
     let config_path = local_dir.join("config.json");
-    // Pre-create the file so canonicalize() inside is_local_mode can resolve it.
+    // Pre-create the file so canonicalize inside is_local_mode can resolve it.
     std::fs::write(&config_path, b"{}").unwrap();
 
     let original = std::env::current_dir().unwrap();
@@ -823,7 +823,7 @@ fn extra_serde_default_agent_defaults_via_json() {
     );
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);
     assert_eq!(cfg.max_tool_iterations, 100);
-    // E1 (2026-09-05): serde default flipped reject → queue.
+    // serde default flipped reject → queue.
     assert_eq!(cfg.concurrent_request_mode, "queue");
     assert_eq!(cfg.queue_size, 8);
 }
@@ -943,7 +943,7 @@ fn extra_expand_tilde_with_subpath() {
 }
 
 // ============================================================================
-// default_config()
+// default_config
 // ============================================================================
 
 #[test]
@@ -1202,7 +1202,7 @@ fn extra_is_local_mode_returns_true_with_local_dir() {
     std::env::set_current_dir(dir.path()).unwrap();
 
     let cfg_path = local_dir.join("config.json");
-    // Pre-create so canonicalize() succeeds inside is_local_mode.
+    // Pre-create so canonicalize succeeds inside is_local_mode.
     std::fs::write(&cfg_path, b"{}").unwrap();
     // Should return true since cwd/.nemesisbot exists and config is inside it.
     assert!(is_local_mode(&cfg_path));
@@ -1241,7 +1241,7 @@ fn extra_adjust_paths_ends_with_nemesisbot_workspace() {
     let mut cfg = Config::default();
     cfg.agents.defaults.workspace = "/something/.nemesisbot/workspace".into();
     cfg.adjust_paths_for_environment();
-    // BUG-20261025-77：以 .nemesisbot/workspace 结尾的**绝对路径**是自定义
+    // 以 .nemesisbot/workspace 结尾的**绝对路径**是自定义
     // 形态，加载期必须原样保留（旧 ends_with 后缀匹配会强改回默认值）。
     assert_eq!(
         cfg.agents.defaults.workspace,
@@ -1491,7 +1491,7 @@ fn extra_save_config_local_mode_home_prefix_workspace() {
 
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
-    // BUG-20261025-76：home 下的自定义路径不是默认工作区，落盘必须原样
+    // home 下的自定义路径不是默认工作区，落盘必须原样
     // 保留（旧 starts_with(home) 宽匹配会把它静默改写成 .nemesisbot/workspace）。
     assert_eq!(config.agents.defaults.workspace, home_workspace);
 
@@ -1539,9 +1539,7 @@ fn extra_save_config_local_mode_default_workspace_path() {
     std::env::set_current_dir(original).unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// P0 vault（D1，2026-09-22 计划 §4）：security.limits serde 语义
-// ---------------------------------------------------------------------------
+// vault（计划 §4）：security.limits serde 语义
 
 /// limits 段 round-trip：落盘形态稳定，未配置时空表不写键（字节不变）。
 #[test]
@@ -1565,7 +1563,7 @@ fn extra_security_limits_roundtrip_and_skip_empty() {
 }
 
 // ============================================================================
-// SEC-002（2026-09-22 审查）：Debug 脱敏契约——secret 结构体 Debug 输出
+// SEC-002（审查）：Debug 脱敏契约——secret 结构体 Debug 输出
 // 含字段名、绝不含真实值（Debug/panic/错误上下文会整段进日志）。
 // ============================================================================
 

@@ -2,15 +2,15 @@
 //! 不进 config.json，独立文件与 [`crate::proxy_file`] 同族同范式）。
 //!
 //! 语义（与 [`crate::proxy_file`] / [`crate::plugin_wasm`] 开关文件同范式）：
-//! - 文件缺失 = 未配置零 key：读路径空表，**不落盘不生成**（无默认模板，
+//! 文件缺失 = 未配置零 key：读路径空表，**不落盘不生成**（无默认模板，
 //!   onboard 不预置）；用户首次 keys.add 才创建。
-//! - 鉴权回落读点（nemesis-web auth_middleware）消费 [`list`]：缺文件/
+//! 鉴权回落读点（nemesis-web auth_middleware）消费 [`list`]：缺文件/
 //!   损坏 = 空 key 表 + WARN——按无 key 处理回落主 token 校验，**绝不因
 //!   配置问题锁死共享 token 老路径**。
-//! - 变更操作（[`add_key`] / [`remove_key`] / [`set_enabled`]）= 整段 RMW
-//!   罩 `config_write_lock`（BUG-20261103-333 纪律：锁取在函数首行覆盖
+//! 变更操作（[`add_key`] / [`remove_key`] / [`set_enabled`]）= 整段 RMW
+//!   罩 `config_write_lock`（纪律：锁取在函数首行覆盖
 //!   读底 + 落盘全程，并发保存不丢更新）。
-//! - 纯 serde_json 读写，不进 typed Config——独立文件红利同 proxy_file：
+//! 纯 serde_json 读写，不进 typed Config——独立文件红利同 proxy_file：
 //!   彻底绕开 typed save 静默抹键的回归类（2026-09-03）。
 //!
 //! 热生效：写盘即对下一个请求生效（读点按需读盘 + mtime 缓存在消费侧，

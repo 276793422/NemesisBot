@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -8,13 +6,13 @@ use super::*;
 pub struct SecurityConfig {
     #[serde(default = "default_security_action")]
     pub default_action: String,
-    /// CFG-05（2026-09-16 死键接线）：审计 JSONL 是否记录放行事件
+    /// CFG-05（死键接线）：审计 JSONL 是否记录放行事件
     /// （false = 只记拦截/告警）。runtime 侧 security_setup.rs 构造期读取。
     #[serde(default = "default_true")]
     pub log_all_operations: bool,
-    // ── 死键恢复区（2026-09-16 用户指令：代码不得随便删，先恢复保留待
+    // ── 死键恢复区（用户指令：代码不得随便删，先恢复保留待
     // 讨论）────────────────────────────────────────────────────
-    // 以下 5 键曾在 CFG-05 被裁「确认无用直接删」（D3），现按用户指令
+    // 以下 5 键曾在 CFG-05 被裁「确认无用直接删」，现按用户指令
     // 恢复原字段原属性。**未接线**（零 runtime 消费方，runtime 走裸 JSON
     // 或 NemesisPath 硬拼）：log_denials_only（与 log_all_operations=false
     // 同义）、max_pending_requests（无满额语义实现）、audit_log_retention_days
@@ -45,14 +43,14 @@ pub struct SecurityConfig {
     /// （与 CFG-01 directory_rules 同族 round-trip 删键 bug）。
     #[serde(default)]
     pub audit_chain_enabled: bool,
-    // T4（扩展计划 D2a，2026-09-24）：子进程环境凭据清洗开关（默认开）。
+    // （扩展计划）：子进程环境凭据清洗开关（默认开）。
     // runtime 侧 security_setup.rs 构造期同步到
     // nemesis_utils::env_sanitize 进程级静态；三处 spawn 点
     // （agent loop exec/run_checks 闸 + nemesis-tools shell/async_shell）
     // 统一查询。
     #[serde(default = "default_true")]
     pub sanitize_child_env: bool,
-    // L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。runtime 侧
+    // pre-exec 脚本内容扫描开关（默认开）。runtime 侧
     // security_setup.rs 构造期按裸 JSON 键读取注入 SecurityPluginConfig；
     // typed 字段的存在只为 Dashboard typed round-trip 不丢键（CFG-01 同族
     // 删键 bug 防线）。
@@ -60,14 +58,14 @@ pub struct SecurityConfig {
     pub preexec_scan_enabled: bool,
     #[serde(default)]
     pub file_rules: Option<FileSecurityRules>,
-    // CFG-01（2026-09-16 横扫存量加固）：磁盘/出厂模板真相源键名是
+    // CFG-01（横扫存量加固）：磁盘/出厂模板真相源键名是
     // `dir_rules`（runtime 侧 security_setup.rs 按裸 JSON 键 `dir_rules`
     // 读取）。此前 typed 字段无 rename → 反序列化拿不到、保存时以
     // `directory_rules` 键（或 None）整文件覆盖，磁盘 `dir_rules` 被整段
     // 抹掉（Dashboard 安全设置页保存一次即触发）。rename 对齐后 round-trip
     // 字节稳定；历史键名 `directory_rules` 的别名读取仍在 runtime 侧保留
     // （security_setup.rs，WARN 提示改名）。
-    // alias（复核 2026-09-16）：存量部署文件里写的是历史键名
+    // alias（复核）：存量部署文件里写的是历史键名
     // `directory_rules`——仅 rename 时该文件经 typed 读-改-写会把规则段
     // 变成 `"dir_rules": null`（内容丢失），且 runtime 读 `dir_rules` 得
     // Some(Null) 连别名分支也不再触发。alias 让 legacy 键内容被读进
@@ -84,62 +82,62 @@ pub struct SecurityConfig {
     pub registry_rules: Option<RegistrySecurityRules>,
     #[serde(default)]
     pub layers: Option<SecurityLayersConfig>,
-    // D1（2026-09-16 用户裁决）：exec/spawn 未知命令（无规则命中）姿态。
+    // （用户裁决）：exec/spawn 未知命令（无规则命中）姿态。
     // allow（默认=旧行为）/ ask（送审批卡）/ deny（硬拦）。runtime 侧
     // security_setup.rs 按裸 JSON 键读取注入 auditor。
-    // A-F4（复核 2026-09-16）：typed 缺省必须是**空串**（= runtime 缺键
+    // A-（复核）：typed 缺省必须是**空串**（= runtime 缺键
     // 语义，落 auditor 旧行为），不得物化裁决值——Dashboard 保存走 typed
     // round-trip，若 serde 缺省给 "allow"/"ask"，用户从未显式配置的部署
-    // 保存一次即被静默写入（缺键语义：D1 落 default_action、D2 旧
+    // 保存一次即被静默写入（缺键语义： 落 default_action、 旧
     // fail-open——被替换成裁决值 = 语义漂移）。前端已按「缺键显示裁决
     // 默认、保存不写键」实现（SecurityView POLICY_KEYS + spec 钉死），
     // typed 侧对齐；`skip_serializing_if` 让未配置（空串）不落盘。用户
     // 显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub exec_unknown_policy: String,
-    // D2（2026-09-16 用户裁决）：Guardian LLM judge 失败（异常/不可用）
+    // （用户裁决）：Guardian LLM judge 失败（异常/不可用）
     // 时的姿态。ask（默认，送审批卡）/ allow（按策略放行+WARN）/ deny。
-    // 缺省语义同上（A-F4）：空串 = runtime 缺键 = 旧行为，不物化。
+    // 缺省语义同上（A）：空串 = runtime 缺键 = 旧行为，不物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub guardian_failure_policy: String,
-    // 无上下文 LLM 命令审计（2026-09-16 用户拍板默认 off）：guardian 覆盖
+    // 无上下文 LLM 命令审计（默认 off）：guardian 覆盖
     // 面开关。off（默认）= 不装配 judge（零 LLM 成本）；critical = 旧
-    // CRITICAL 全审；high = HIGH+CRITICAL 破坏形态预筛 + LLM 审。A-F4
+    // CRITICAL 全审；high = HIGH+CRITICAL 破坏形态预筛 + LLM 审。A-
     // 同款：typed 缺省空串（= runtime 缺键 = off），`skip_serializing_if`
     // 未配置不落盘，用户显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub guardian_mode: String,
-    // ── P0 vault（D1，2026-09-22 计划 §4）：声明式量化风险限制 ──────
-    // 类别 → 规则。**缺省空表 = 全关**（A-F4 同款缺省语义：空表不落盘，
+    // ── vault（计划 §4）：声明式量化风险限制 ──────
+    // 类别 → 规则。**缺省空表 = 全关**（A- 同款缺省语义：空表不落盘，
     // 未配置的部署保存一次字节不变）。类别键由工具经
-    // `Tool::limit_categories()` 声明（机制不认识业务名词，工具 declares，
+    // `Tool::limit_categories` 声明（机制不认识业务名词，工具 declares，
     // 配置 binds）。窗口 = 滑动窗口（进程内存计数，重启清零——诚实边界，
     // 见计划 §4）。
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub limits: std::collections::BTreeMap<String, RateLimitRule>,
-    // ── 签名验证三态开关（接入计划 §1，2026-09-23）──────────────────
+    // ── 签名验证三态开关（接入计划 §1）──────────────────
     // ""（缺省）/ "off" / "warn" / "enforce"；未知值启动时 loud 拒绝。
     // **只读于启动，改动必须重启**（与 tier 等热载键刻意不同——避免
-    // 「运行中验证策略被改」这个额外可篡改面）。A-F4 同款缺省语义：
+    // 「运行中验证策略被改」这个额外可篡改面）。A- 同款缺省语义：
     // 空串 = 用户从未配置 = 落默认 warn，`skip_serializing_if` 不落盘，
     // Dashboard 保存一次字节不变；用户显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature_verify: String,
-    // ── §2 免打扰（2026-10-11 无人值守计划 Part 2）──────────────────
+    // ── §2 免打扰（无人值守计划 Part 2）──────────────────
     // 审批自动批准段。缺省关（弹卡照旧）；`auto_approve=true` 时
     // RequireApproval 一律自动放行（审计标 auto_by_config，安全 8 层其余
     // 各层照常全跑）。整段缺省不落盘（skip_serializing_if）：未配置的
-    // 部署 typed round-trip 字节不变（A-F4 缺省语义同款）。
+    // 部署 typed round-trip 字节不变（A- 缺省语义同款）。
     #[serde(default, skip_serializing_if = "approvals_is_default")]
     pub approvals: ApprovalsConfig,
 }
 
-/// §2 免打扰：审批自动批准配置段（2026-10-11 无人值守计划 Part 2）。
+/// §2 免打扰：审批自动批准配置段（无人值守计划 Part 2）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ApprovalsConfig {
     /// 无人值守免打扰：RequireApproval 审批卡一律自动批准（pattern 记忆
     /// 优先；guardian 语义二审不是弹窗不纳入；技能安装闸按发起流程分叉
-    /// ——见计划 §2.4）。默认关 = 现行为（弹窗）。
+    /// 见计划 §2.4）。默认关 = 现行为（弹窗）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_approve: bool,
 }
@@ -149,7 +147,7 @@ fn approvals_is_default(v: &ApprovalsConfig) -> bool {
     !v.auto_approve
 }
 
-/// 单类别的滑动窗口限制规则（P0 D1）。
+/// 单类别的滑动窗口限制规则。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RateLimitRule {
     /// 窗口内允许的最大次数。
@@ -163,7 +161,7 @@ impl Default for SecurityConfig {
         Self {
             default_action: "deny".to_string(),
             log_all_operations: true,
-            // 死键恢复区（2026-09-16 用户指令恢复保留，未接线，见字段区注释）
+            // 死键恢复区（用户指令恢复保留，未接线，见字段区注释）
             log_denials_only: false,
             approval_timeout_seconds: 300,
             max_pending_requests: 100,
@@ -184,7 +182,7 @@ impl Default for SecurityConfig {
             exec_unknown_policy: String::new(),
             guardian_failure_policy: String::new(),
             guardian_mode: String::new(),
-            // P0 D1：缺省空表 = 限制全关。
+            // 缺省空表 = 限制全关。
             limits: std::collections::BTreeMap::new(),
             // 签名验证三态开关：空串 = 未配置 = 落默认 warn。
             signature_verify: String::new(),
@@ -206,7 +204,7 @@ pub struct SecurityLayersConfig {
     pub ssrf: Option<SecurityLayerConfig>,
     #[serde(default)]
     pub credential: Option<SecurityLayerConfig>,
-    // ── 死键恢复区（2026-09-16 用户指令恢复保留，未接线）──────
+    // ── 死键恢复区（用户指令恢复保留，未接线）──────
     // `signature`：签名验证层尚未接入管线（v4 verify 是独立子系统）；
     // `audit_chain`：runtime 读取的是顶层 `audit_chain_enabled` 而非本键，
     // 曾被定性误导性假开关。恢复保留待用户裁决。
@@ -229,7 +227,7 @@ pub struct SignatureLayerConfig {
 pub struct SecurityLayerConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// L7：BTreeMap 键序确定（同 `ModelConfig.extra`，security 段字节稳定）。
+    /// BTreeMap 键序确定（同 `ModelConfig.extra`，security 段字节稳定）。
     #[serde(default)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -260,7 +258,7 @@ pub struct SecurityRule {
     pub pattern: String,
     #[serde(default)]
     pub action: String,
-    /// 规则注释（复核 2026-09-16）：CLI `security rules add` 会写入
+    /// 规则注释（复核）：CLI `security rules add` 会写入
     /// `comment` 字段、runtime `parse_rules` 读取展示；typed 缺此字段时
     /// Dashboard 保存一次即把手写 comment 抹掉（CFG-01 同族）。
     #[serde(default)]

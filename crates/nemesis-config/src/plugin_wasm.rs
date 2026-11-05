@@ -20,7 +20,7 @@
 //!
 //! 旧 per-slug 实例文件（`config/plugins/<slug>.json`，enabled 缺省 true）
 //! 退役：读路径首次命中且旧文件在场 → 并入本文件（**enabled 强制 false**
-//! ——新纪律全量接管；config entries 保留）→ 删旧文件，见
+//! 新纪律全量接管；config entries 保留）→ 删旧文件，见
 //! [`migrate_legacy_instances`]。
 //!
 //! 损坏纪律 = **fail-closed**（与 native 插件的 fail-open 相反）：开关文件
@@ -93,14 +93,14 @@ pub fn plugin_wasm_config_path(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join("config.plugin.wasm.json")
 }
 
-/// WASM 插件子系统**运行期**总闸（2026-11-01 BUG 修复：宿主壳/总闸开关
+/// WASM 插件子系统**运行期**总闸（BUG 修复：宿主壳/总闸开关
 /// 此前只在启动装配期一次性消费——运行中翻关后 WSAPI 面板/guest 命令/
 /// flow 引擎/agent 工具照常生效，刷新 UI 面板仍在）。
 ///
 /// 热语义：任一真相源关 = 服务面拒绝，开关改回**即时恢复**（每调用现读，
 /// 无缓存）。真相源两件：
 /// ① `<home>/config.json` 的 `plugins.wasm.enabled`（缺省 true）；home 与
-///    workspace 同级是全局约定（`workspace_root.parent()` = home）。
+///    workspace 同级是全局约定（`workspace_root.parent` = home）。
 /// ② `<config_dir>/config.plugin.native.json` 的 `plugin_wasm.enabled`
 ///    （宿主壳闸，缺省 true）。壳的**装载/卸载**仍是启动期一次性
 ///    （`NativePluginId::immediate_effect` 语义不变）——本闸只裁已装
@@ -110,7 +110,7 @@ pub fn runtime_enabled(workspace_root: &Path) -> bool {
         .parent()
         .map(|home| home.join("config.json"))
         .unwrap_or_else(|| workspace_root.join("config.json"));
-    // BUG-20261103-334：走 read_config_string 剥 BOM（记事本保存的
+    // 走 read_config_string 剥 BOM（记事本保存的
     // config.json）——旧形态裸 read_to_string 时 BOM → serde_json parse
     // 失败 → 本源按缺省 true 跳过，用户 `plugins.wasm.enabled=false` 被静默
     // 忽略。与 197/246 行同源纪律。
@@ -137,7 +137,7 @@ const LEGACY_INSTANCE_DIR: &str = "plugins";
 /// 全量读开关（列出/启动装载用）。文件缺席 = 空；损坏 = 空（fail-closed）
 /// + WARN。迁移旧实例文件后把合并结果写回。
 ///
-/// BUG-20261103-333：迁移写（并入主文件的 RMW + 删旧文件）全程罩
+/// 迁移写（并入主文件的 RMW + 删旧文件）全程罩
 /// config_write_lock——旧形态读路径迁移写零锁，与 set_enabled/set_config/
 /// remove（全程罩锁）并发互相以旧底覆盖；开关写丢 = 用户切换静默回退，
 /// 迁移写丢更重（旧实例文件已删、数据不可恢复）。本函数非纯读（可能迁移
@@ -153,7 +153,7 @@ pub fn load_switches(config_dir: &Path) -> BTreeMap<String, WasmSwitch> {
 }
 
 /// 读单个 slug 的开关（文件无该 slug 且旧实例文件在场 → 先迁移再读）。
-/// 锁纪律同 load_switches（BUG-20261103-333：迁移写全程罩锁）。
+/// 锁纪律同 load_switches（迁移写全程罩锁）。
 pub fn switch(config_dir: &Path, slug: &str) -> WasmSwitch {
     let _serial = crate::config_write_lock();
     let mut file = read_switch_file(config_dir);
@@ -214,7 +214,7 @@ fn read_switch_file(config_dir: &Path) -> SwitchFile {
     }
 }
 
-/// 原子写（BUG-20261025-45 起走 `nemesis_utils::write_file_atomic`：唯一
+/// 原子写（起走 `nemesis_utils::write_file_atomic`：唯一
 /// 临时名 + `sync_all` 先于 rename + 失败清理——旧手搓 tmp 名只到毫秒精度，
 /// 读路径迁移写不罩锁时同毫秒并发可撞名，且无 fsync 崩溃可撕裂目标文件）。
 fn write_switch_file(config_dir: &Path, file: &SwitchFile) -> Result<(), String> {

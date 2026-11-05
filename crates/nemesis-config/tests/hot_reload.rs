@@ -1,5 +1,5 @@
 //! Tests for `HotReloader`（热重载统一收编，2026-08-29）——经公开 API 验证
-//! 内容变更重载/未变 no-op/缺失文件与垃圾内容兜底（BUG-20261104-359：
+//! 内容变更重载/未变 no-op/缺失文件与垃圾内容兜底（
 //! 变更检测为内容比对，测试不再 sleep 赌 mtime 粒度）。
 
 use nemesis_config::{CommandsConfig, HotReloader, load_commands_config};
@@ -23,10 +23,10 @@ fn hot_reloader_picks_up_table_edits_and_unchanged_is_noop() {
     let hot: HotReloader<CommandsConfig> = HotReloader::new(path.clone(), load_commands);
     assert_eq!(hot.get().commands.len(), 1);
 
-    // 未变化 → check() false（no-op）。
+    // 未变化 → check false（no-op）。
     assert!(!hot.check(), "unchanged content must not reload");
 
-    // 变化 → check() true + 内容更新（内容比对，无需 sleep 推 mtime）。
+    // 变化 → check true + 内容更新（内容比对，无需 sleep 推 mtime）。
     std::fs::write(
         &path,
         r#"{ "commands": [ { "name": "a", "prompt": "P1" }, { "name": "b", "prompt": "P2" } ] }"#,

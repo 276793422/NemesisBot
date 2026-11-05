@@ -1,6 +1,6 @@
 //! HotReloader force_reload 语义测试（2026-10-22 CI Windows 审批 pattern
 //! 假红的回归钉：写方落盘后必须能不依赖变更检测地刷新内存态）+ 同刻改写
-//! 回归钉（BUG-20261104-359：内容比对不赌钟——mtime 钉回旧值也必须重载）。
+//! 回归钉（内容比对不赌钟——mtime 钉回旧值也必须重载）。
 
 use crate::hot_reload::HotReloader;
 use std::path::Path;
@@ -18,7 +18,7 @@ fn write_json(path: &Path, v: &[&str]) {
 }
 
 /// 把 mtime 钉回指定值（内容不动）——确定性复现 Windows 毫秒级粒度下
-/// 「同刻改写」形态（CI Windows 实录：亚毫秒级连写撞同值 mtime）。
+/// 「同刻改写」形态（CI Windows 亚毫秒级连写撞同值 mtime）。
 fn pin_mtime(path: &Path, t: std::time::SystemTime) {
     let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     f.set_times(std::fs::FileTimes::new().set_modified(t))
@@ -33,9 +33,9 @@ fn force_reload_picks_up_rewrite_without_change_signal() {
     let r = HotReloader::new(path.clone(), load_vec);
     assert_eq!(r.get(), vec!["v1".to_string()]);
 
-    // 常规路径 sanity：内容变化 → check() 重载。mtime 钉到远离当前的
+    // 常规路径 sanity：内容变化 → check 重载。mtime 钉到远离当前的
     // 固定值——不赌连续两次快速写自然产生不同 mtime（CI Windows runner
-    // 实录：亚毫秒级连写撞同值 mtime，2026-10-22；这正是内容闸收编前
+    // 亚毫秒级连写撞同值 mtime，；这正是内容闸收编前
     // force_reload 防的现象本身）。
     write_json(&path, &["v2"]);
     pin_mtime(
@@ -56,7 +56,7 @@ fn force_reload_picks_up_rewrite_without_change_signal() {
     assert!(r.get().is_empty());
 }
 
-/// BUG-20261104-359 回归钉：mtime 不变（同刻改写）也必须重载——内容
+/// 回归钉：mtime 不变（同刻改写）也必须重载——内容
 /// 比对不赌钟。旧 mtime 等值闸在此直接跳过 = 配置静默永久陈旧。
 #[test]
 fn check_reloads_when_content_changes_with_pinned_mtime() {
@@ -67,7 +67,7 @@ fn check_reloads_when_content_changes_with_pinned_mtime() {
     assert!(!r.check(), "无变化 no-op");
     let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
 
-    // 同刻改写：内容换 v2，mtime 钉回旧值 → check() 必须重载。
+    // 同刻改写：内容换 v2，mtime 钉回旧值 → check 必须重载。
     write_json(&path, &["v2"]);
     pin_mtime(&path, old_mtime);
     assert_eq!(
