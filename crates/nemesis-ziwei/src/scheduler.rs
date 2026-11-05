@@ -157,11 +157,14 @@ async fn poll_loop(ctx: PollCtx) {
         if on_change && !changed {
             continue;
         }
-        // 变化（或 every 模式）→ capture 回流
-        let _ = capture.append(
+        // 变化（或 every 模式）→ capture 回流（BUG-20261105-020：落盘失败
+        // warn 可观测——静默吞 = 磁盘满时审计面永久缺口且无人知晓）。
+        if let Err(e) = capture.append(
             &profile_id,
             serde_json::json!({ "tool": tool.tool_name, "kind": "poll", "data": v }),
-        );
+        ) {
+            tracing::warn!("[ziwei] poll capture 回流落盘失败（{profile_id}）：{e}");
+        }
         // 报警（限频：窗口内同工具只发一次）
         if let Some(notify) = &tool.action.notify {
             let hit = crate::notify::matches(&notify.on, &v);

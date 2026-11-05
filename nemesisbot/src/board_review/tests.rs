@@ -1553,7 +1553,7 @@ async fn e1_wall_clock_dimension_and_saturating_arithmetic() {
 fn selfcheck_registry_routes_task_to_issue() {
     let reg = SelfcheckRegistry::new();
     assert!(!reg.has_inflight(7), "空表不得报在途");
-    reg.register("task-x".to_string(), 7);
+    reg.register("task-x".to_string(), 7, "node-a");
     assert!(reg.has_inflight(7));
     assert!(!reg.has_inflight(8), "在途判定按 issue_id 精确匹配");
     assert_eq!(reg.take("task-x"), Some(7), "take 应路由到 issue 7");
@@ -7739,6 +7739,7 @@ async fn selfcheck_second_stage_error_escalates_honestly() {
         issue.id,
         "error".to_string(),
         "worker 内部崩溃".to_string(),
+        None,
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -7827,6 +7828,7 @@ async fn selfcheck_suspension_comment_never_serves_as_worker_report() {
         issue.id,
         "ok".to_string(),
         "取证回报：文件已实际写入".to_string(),
+        None,
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -8618,7 +8620,13 @@ mod w5r2parent {
     async fn w5_spawn_selfcheck_error_posts_manual_comment() {
         let (deps, _ws) = w5_deps("selfcheck-err");
         let issue = w5_issue(&deps.store, "取证失败单", None, None, "");
-        spawn_selfcheck_second_stage(deps.clone(), issue.id, "error".into(), "worker 炸了".into());
+        spawn_selfcheck_second_stage(
+            deps.clone(),
+            issue.id,
+            "error".into(),
+            "worker 炸了".into(),
+            None,
+        );
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         let comments = deps.store.list_comments(issue.id).unwrap();
         assert!(
@@ -10375,4 +10383,162 @@ async fn fail_redispatch_to_self_uses_local_executor_not_cluster() {
             c.content
         );
     }
+}
+
+// ===========================================================================
+// BUG-20261105-012：自检取证路由持久层（selfcheck_pending）
+//
+// 修复前：内存注册表是 gateway 进程态，重启清零 → worker 取证回调 miss →
+// master 照样回 Ok("received") → worker 销毁唯一持久副本 → 证据蒸发、
+// 单据永久卡死 in_review。回归锁：重启兜底路由 / 重复回调防重 / sweep
+// 两臂（二段残留重放 + 超龄诚实收口）。
+// ===========================================================================
+
+/// 生产形态注册表（挂 board store）+ 模拟 gateway 重启：新注册表实例
+/// （内存表空）凭持久行兜底路由；已路由行对重复回调诚实返回 None。
+#[test]
+fn selfcheck_registry_durable_fallback_after_restart() {
+    let (mut deps, _ws) = review_deps("sc-durable");
+    deps.selfcheck = SelfcheckRegistry::with_store(Some(deps.store.clone()));
+    let issue = delivered_issue(&deps.store, "取证重启恢复", "t-sc-rs-1");
+
+    deps.selfcheck
+        .register("sc-rs-1".to_string(), issue.id, "node-b");
+
+    // 模拟 gateway 重启：全新注册表实例，内存表为空。
+    let rebooted = SelfcheckRegistry::with_store(Some(deps.store.clone()));
+    assert!(
+        rebooted.has_inflight(issue.id),
+        "重启后在途判定由持久行兜住（跨重启重入闸）"
+    );
+    assert_eq!(
+        rebooted.take("sc-rs-1"),
+        Some(issue.id),
+        "重启后 worker 取证回调必须由持久层兜底路由（修复前=None → 证据被销毁）"
+    );
+
+    // 回调路由落地（callback 闭包语义）：烧入 status 后重复回调不得二次路由。
+    deps.store
+        .mark_selfcheck_routed("sc-rs-1", "ok", "证据正文")
+        .unwrap();
+    assert_eq!(
+        rebooted.take("sc-rs-1"),
+        None,
+        "已路由行不得二次触发二段验收（worker 重试重放防护）"
+    );
+}
+
+/// sweep 臂 A：已路由未完成的残留行（二段验收进行中进程崩溃）→ 重放二段
+/// （error 臂 → 诚实转人工评论），完成后行被删（生命周期收口）。
+#[tokio::test]
+async fn selfcheck_sweep_replays_orphaned_routed_row() {
+    let (mut deps, _ws) = review_deps("sc-sweep-a");
+    deps.selfcheck = SelfcheckRegistry::with_store(Some(deps.store.clone()));
+    let issue = delivered_issue(&deps.store, "二段残留重放", "t-sc-a-1");
+
+    // 直接构造残留行（register + mark_routed = 回调已路由、二段未完成）。
+    deps.store
+        .register_selfcheck_pending("sc-a-1", issue.id, "node-b")
+        .unwrap();
+    deps.store
+        .mark_selfcheck_routed("sc-a-1", "error", "worker 内部崩溃")
+        .unwrap();
+
+    super::sweep_selfcheck_pending_at(&deps, chrono::Utc::now().timestamp()).await;
+
+    // 重放 → error 臂 → 转人工评论。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut landed = false;
+    while std::time::Instant::now() < deadline {
+        landed = deps
+            .store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("自检取证回报失败"));
+        if landed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(landed, "臂 A 重放必须走 error 转人工评论");
+
+    // 二段完成 → 持久行删除（sweep 不再重放）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if deps.store.list_selfcheck_pending().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        deps.store.list_selfcheck_pending().unwrap().is_empty(),
+        "二段完成后持久行必须删除（生命周期收口）"
+    );
+}
+
+/// sweep 臂 B：未路由行（回调未到）+ 伪时钟超龄（>24h）→ 诚实停车转人工
+/// 评论 + 删行。修复前该形态 = 单据静默卡死 in_review 无任何反馈。
+#[tokio::test]
+async fn selfcheck_sweep_gives_up_stale_unrouted_row() {
+    let (mut deps, _ws) = review_deps("sc-sweep-b");
+    deps.selfcheck = SelfcheckRegistry::with_store(Some(deps.store.clone()));
+    let issue = delivered_issue(&deps.store, "取证超龄收口", "t-sc-b-1");
+
+    deps.store
+        .register_selfcheck_pending("sc-b-1", issue.id, "node-b")
+        .unwrap();
+
+    // 伪时钟：超过绝对超龄闸（24h）。give_up 判定先于任何 RPC——纯本地断言。
+    let now = chrono::Utc::now().timestamp() + 25 * 3600;
+    super::sweep_selfcheck_pending_at(&deps, now).await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut landed = false;
+    while std::time::Instant::now() < deadline {
+        landed = deps
+            .store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("自检取证回调丢失且无法恢复"));
+        if landed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(landed, "超龄未路由行必须诚实转人工（不许静默卡死）");
+    assert!(
+        deps.store.list_selfcheck_pending().unwrap().is_empty(),
+        "give_up 收口必须删行"
+    );
+}
+
+/// sweep 臂 B 宽限内：worker RPC 不可达 + 行龄未超任何闸 → 行保留不动
+/// （下个 tick 再试——不许在宽限内放弃仍在跑/短暂离线的 worker）。
+#[tokio::test]
+async fn selfcheck_sweep_keeps_young_unrouted_row() {
+    let (mut deps, _ws) = review_deps("sc-sweep-young");
+    deps.selfcheck = SelfcheckRegistry::with_store(Some(deps.store.clone()));
+    let issue = delivered_issue(&deps.store, "宽限内保留", "t-sc-y-1");
+
+    deps.store
+        .register_selfcheck_pending("sc-y-1", issue.id, "node-b")
+        .unwrap();
+
+    // 行龄 5 分钟：not_found 宽限（30min）与绝对超龄（24h）都未触及；
+    // node-b 无真实 RPC 服务 → 轮询失败 → 行保留。
+    let now = chrono::Utc::now().timestamp() + 300;
+    super::sweep_selfcheck_pending_at(&deps, now).await;
+
+    let rows = deps.store.list_selfcheck_pending().unwrap();
+    assert_eq!(rows.len(), 1, "宽限内不得收口（worker 可能仍在跑）");
+    assert!(
+        deps.store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .all(|c| !c.content.contains("自检取证回调丢失")),
+        "宽限内不得发转人工评论"
+    );
 }

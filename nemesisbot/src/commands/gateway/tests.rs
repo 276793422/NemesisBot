@@ -6787,7 +6787,7 @@ async fn ci2_peer_chat_callback_routes_all_branches() {
         .expect("sc issue");
     wiring
         .board_selfcheck_registry
-        .register("cb-sc-1".into(), sc_issue.id);
+        .register("cb-sc-1".into(), sc_issue.id, "node-a");
     cluster
         .task_manager()
         .submit(nemesis_types::cluster::Task {

@@ -700,6 +700,43 @@ impl HttpProvider {
                             Err(_) => continue,
                         };
 
+                        // 终态后帧闸（BUG-20261105-026）：finish_emitted 后只认
+                        // include_usage 尾帧（choices 空缺/缺失 + usage 对象）
+                        // 转发 usage，其余一律丢弃。重复 finish 帧（代理双序列
+                        // 无 [DONE] 分隔 / 网关聚合形态）会再发一个终态 chunk，
+                        // 覆盖式消费端（collect_stream_response /
+                        // llm_bridge::chat_streamed 同契约「出现即覆盖」）已收的
+                        // finish_reason 被第二发覆盖——如首终 "length" 被覆盖成
+                        // "stop" 后 length 升档（length_escalation）与 usage 缺
+                        // 失回落判定（run_loop）双双静默失效。这是 wal_crash
+                        // （2026-10-13）双终态覆盖根因的第三形态：[DONE]/EOF
+                        // 两路已闸，finish 帧本体此前漏闸。终后文本增量同属
+                        // 异常形态，一并拦截。
+                        if finish_emitted {
+                            let usage_tail = parsed
+                                .get("choices")
+                                .and_then(|c| c.as_array())
+                                .is_none_or(|a| a.is_empty());
+                            if usage_tail
+                                && let Some(usage) = parsed
+                                    .get("usage")
+                                    .filter(|u| u.is_object())
+                                    .map(extract_usage)
+                            {
+                                let chunk = StreamChunk {
+                                    delta: String::new(),
+                                    tool_calls: vec![],
+                                    finish_reason: None,
+                                    usage: Some(usage),
+                                    reasoning_content: None,
+                                };
+                                if tx.send(Ok(chunk)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            continue;
+                        }
+
                         let delta_content = parsed["choices"][0]["delta"]["content"]
                             .as_str()
                             .unwrap_or("")

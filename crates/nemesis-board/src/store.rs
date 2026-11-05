@@ -18,8 +18,8 @@ use crate::models::{
     ChannelMessage, Comment, CommentType, DispatchRecord, Issue, IssueFilter, IssuePatch,
     IssueStatus, LedgerEntry, NewAsset, NewAutopilot, NewChannel, NewChannelMessage, NewComment,
     NewIssue, NewNotification, NewTeamMemory, Notification, PostedMessage, Project, ProjectPatch,
-    Subscriber, TeamMemoryEntry, channel_message_type, dispatch_state, notification_kind,
-    thread_kind,
+    SelfcheckPendingRow, Subscriber, TeamMemoryEntry, channel_message_type, dispatch_state,
+    notification_kind, thread_kind,
 };
 
 /// Thread-safe SQLite board store.
@@ -2607,6 +2607,119 @@ impl BoardStore {
                 ],
             )
             .map_err(|e| format!("mark_dispatch_running: {e}"))?;
+        Ok(n > 0)
+    }
+
+    // -----------------------------------------------------------------------
+    // 自检取证路由持久层（表 `selfcheck_pending`；BUG-20261105-012）
+    //
+    // selfcheck 派发刻意不写 issue_dispatch（Route 0 会当交付写回），路由键
+    // 以本表持久化：gateway 重启后内存注册表清零，worker 取证回调凭本表兜
+    // 底路由；status/response 是二段验收状态机（NULL=回调未到，Some=已路由
+    // 待二段完成，完成删行）。写侧失败一律 Err 由调用方 warn 降级（内存注
+    // 册表照常工作 = 旧行为），绝不阻断回调路由。
+    // -----------------------------------------------------------------------
+
+    /// 登记（自检派发成功后与内存注册表同批写）。
+    pub fn register_selfcheck_pending(
+        &self,
+        task_id: &str,
+        issue_id: i64,
+        worker_id: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO selfcheck_pending (task_id, issue_id, worker_id, status, response, created_at)
+             VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
+            params![task_id, issue_id, worker_id, chrono::Utc::now().timestamp()],
+        )
+        .map_err(|e| format!("register_selfcheck_pending: {e}"))?;
+        Ok(())
+    }
+
+    /// 路由落地（worker 取证回调被路由时烧入 status/response）：只覆写
+    /// `status IS NULL` 的行——首个回调定案，worker 重试的重复回调不覆盖
+    /// 已烧入的证据（语义与内存注册表 take-即移除的防重入一致）。
+    /// 返回 false = 行不存在或已路由。
+    pub fn mark_selfcheck_routed(
+        &self,
+        task_id: &str,
+        status: &str,
+        response: &str,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE selfcheck_pending SET status = ?1, response = ?2
+                 WHERE task_id = ?3 AND status IS NULL",
+                params![status, response, task_id],
+            )
+            .map_err(|e| format!("mark_selfcheck_routed: {e}"))?;
+        Ok(n > 0)
+    }
+
+    /// 路由兜底查（gateway 重启后内存注册表 miss 时）：只认未路由行
+    /// （status IS NULL）——已路由行的重复回调走 Route 0 miss（Ok 短路），
+    /// 不会二次触发二段验收。
+    pub fn get_pending_selfcheck_route(&self, task_id: &str) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT issue_id FROM selfcheck_pending
+             WHERE task_id = ?1 AND status IS NULL",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("get_pending_selfcheck_route: {e}"))
+    }
+
+    /// 全量在途行（sweep 两臂的数据源）。
+    pub fn list_selfcheck_pending(&self) -> Result<Vec<SelfcheckPendingRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT task_id, issue_id, worker_id, status, response, created_at
+                 FROM selfcheck_pending ORDER BY rowid ASC",
+            )
+            .map_err(|e| format!("list_selfcheck_pending: {e}"))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SelfcheckPendingRow {
+                    task_id: r.get(0)?,
+                    issue_id: r.get(1)?,
+                    worker_id: r.get(2)?,
+                    status: r.get(3)?,
+                    response: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            })
+            .map_err(|e| format!("list_selfcheck_pending: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("list_selfcheck_pending: {e}"))
+    }
+
+    /// 二段验收完成删行（sweep 恢复重放与回调正常路径共用）。
+    pub fn delete_selfcheck_pending(&self, task_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM selfcheck_pending WHERE task_id = ?1",
+            params![task_id],
+        )
+        .map_err(|e| format!("delete_selfcheck_pending: {e}"))?;
+        Ok(())
+    }
+
+    /// 同 issue 是否仍有在途取证（含已路由待二段完成——跨重启的重入闸，
+    /// 内存注册表重启清零后由本查询兜底）。
+    pub fn has_selfcheck_pending_for_issue(&self, issue_id: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM selfcheck_pending WHERE issue_id = ?1",
+                params![issue_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("has_selfcheck_pending_for_issue: {e}"))?;
         Ok(n > 0)
     }
 

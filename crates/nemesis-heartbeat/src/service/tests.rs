@@ -180,6 +180,31 @@ fn test_is_heartbeat_file_empty_truly_empty() {
 }
 
 #[test]
+fn test_is_heartbeat_file_empty_bom_comments_only() {
+    // BUG-20261105-030：UTF-8 BOM（EF BB BF，旧版 Notepad/部分编辑器保存常态）
+    // 不在 char::is_whitespace 内，trim 不剥——BOM 开头的注释-only 文件第一行
+    // 是 "\u{feff}# ..." 不以 '#' 开头，误判为有实质内容 → 生产 tick
+    // （execute_heartbeat_tick → build_prompt_from_workspace）每拍空跑完整
+    // agent loop（LLM 成本 + 注释清空这一文档化停心跳方式失效）。
+    let svc = HeartbeatService::new(HeartbeatConfig::default());
+    let mut data = b"\xEF\xBB\xBF".to_vec(); // UTF-8 BOM
+    data.extend_from_slice(b"# Title\n\n## All tasks paused\n");
+    assert!(svc.is_heartbeat_file_empty(&data));
+}
+
+#[test]
+fn test_is_heartbeat_file_empty_static_bom_comments_only() {
+    // 生产路径静态版（spawn tick 消费）同缺陷同修，直调钉死。
+    let mut data = b"\xEF\xBB\xBF".to_vec();
+    data.extend_from_slice(b"# comment only\n");
+    assert!(super::is_heartbeat_file_empty_static(&data));
+    // BOM + 实质内容仍判非空（修复不得放宽判定）。
+    let mut data2 = b"\xEF\xBB\xBF".to_vec();
+    data2.extend_from_slice(b"# Title\nreal task\n");
+    assert!(!super::is_heartbeat_file_empty_static(&data2));
+}
+
+#[test]
 fn test_parse_last_channel_valid() {
     let svc = HeartbeatService::new(HeartbeatConfig::default());
     let (platform, user_id) = svc.parse_last_channel("telegram:123456");

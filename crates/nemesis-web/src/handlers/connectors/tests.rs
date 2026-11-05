@@ -757,11 +757,13 @@ async fn undo_network_class_without_undo_reports_no_capability() {
 // ---------------------------------------------------------------------------
 
 /// 三臂：新凭条 executed → Ok(新凭条 id)；新凭条非 executed → Err（含
-/// outcome）；无新凭条 → Err。外加两条钉死不误判：派发前在册（before
+/// outcome）；无新凭条 → Err。外加三条钉死不误判：派发前在册（before
 /// 快照内）的旧 executed 凭条不算撤销成功；connector/op 不匹配的新凭条
-/// 不算（比如并发其他 op 也落了账）。
+/// 不算（比如并发其他 op 也落了账）；args digest 不匹配的新凭条不算
+/// （BUG-20261105-023：并发双撤销互认防护）。
 #[test]
 fn undo_ledger_verdict_three_arms() {
+    let digest = "0123456789abcdef0123456789abcdef"; // mk_receipt 固定值
     let mut before = std::collections::HashSet::new();
     let old = undo_receipt("u-broker", "cancel_order", "executed");
     before.insert(old.receipt_id.clone());
@@ -770,7 +772,7 @@ fn undo_ledger_verdict_three_arms() {
     let mut ok_new = undo_receipt("u-broker", "cancel_order", "executed");
     ok_new.receipt_id = "RCPT-AFTER-OK".to_string();
     let after = vec![old.clone(), ok_new.clone()];
-    let v = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order");
+    let v = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order", digest);
     assert_eq!(
         v.unwrap().as_str(),
         "RCPT-AFTER-OK",
@@ -781,7 +783,7 @@ fn undo_ledger_verdict_three_arms() {
     let mut blocked = undo_receipt("u-broker", "cancel_order", "budget_blocked");
     blocked.receipt_id = "RCPT-AFTER-BLOCKED".to_string();
     let after = vec![old.clone(), blocked];
-    let err = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order").unwrap_err();
+    let err = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order", digest).unwrap_err();
     assert!(err.contains("budget_blocked"), "{err}");
     assert!(err.contains("未真实生效"), "{err}");
 
@@ -790,7 +792,7 @@ fn undo_ledger_verdict_three_arms() {
     let mut unknown = undo_receipt("u-broker", "cancel_order", "unknown");
     unknown.receipt_id = "RCPT-AFTER-UNKNOWN".to_string();
     let after = vec![old.clone(), unknown];
-    let err = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order").unwrap_err();
+    let err = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order", digest).unwrap_err();
     assert!(err.contains("结果未知"), "{err}");
     assert!(!err.contains("未真实生效"), "unknown 不得断言未生效: {err}");
 
@@ -800,6 +802,7 @@ fn undo_ledger_verdict_three_arms() {
         std::slice::from_ref(&old),
         "u-broker",
         "cancel_order",
+        digest,
     )
     .unwrap_err();
     assert!(err.contains("未落新凭条"), "{err}");
@@ -810,6 +813,7 @@ fn undo_ledger_verdict_three_arms() {
         std::slice::from_ref(&old),
         "u-broker",
         "cancel_order",
+        digest,
     );
     assert!(v.is_err(), "旧凭条不算新账");
 
@@ -823,9 +827,25 @@ fn undo_ledger_verdict_three_arms() {
         &[old, other_op, other_conn],
         "u-broker",
         "cancel_order",
+        digest,
     )
     .unwrap_err();
     assert!(err.contains("未落新凭条"), "{err}");
+
+    // BUG-20261105-023：新凭条 connector/op 全匹配但 args digest 不同
+    // （并发另一路撤销的同形凭条）→ 不认领，诚实报未落新凭条。
+    let mut alien = undo_receipt("u-broker", "cancel_order", "executed");
+    alien.receipt_id = "RCPT-ALIEN-DIGEST".to_string();
+    alien.args_digest = "ffffffffffffffffffffffffffffffff".to_string();
+    let err = undo_ledger_verdict(
+        &before,
+        std::slice::from_ref(&alien),
+        "u-broker",
+        "cancel_order",
+        digest,
+    )
+    .unwrap_err();
+    assert!(err.contains("未落新凭条"), "digest 不匹配不得认领: {err}");
 }
 
 // ---------------------------------------------------------------------------

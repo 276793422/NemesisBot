@@ -680,6 +680,24 @@ pub fn http_client() -> reqwest::Client {
         .unwrap()
 }
 
+/// 预览截断的字节安全版：把 `n` 回退到 `s` 内最近的 char boundary。
+///
+/// BUG-20261105-029：[`http_get_json`] 的错误预览曾用裸
+/// `&body[..len.min(200)]`——中文错误体（gateway 错误消息经 serde_json
+/// 原样 UTF-8）第 200 字节落在多字节字符中间直接 panic，把「HTTP 错误
+/// 报告」变成「测试工具崩溃」（str-slice-multibyte-panic 家族，
+/// BUG-20261029-185 同款写法在测试基建的漏网点；ws-send/ws-api-send
+/// 同款修复先例）。
+fn floor_char_boundary(s: &str, mut n: usize) -> usize {
+    if n >= s.len() {
+        return s.len();
+    }
+    while n > 0 && !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
 /// 单次 GET 并把 2xx 响应体解析为 JSON（非 2xx / 超时 / 非 JSON = Err）。
 /// 供契约探针类前置检查使用（如 agent-bench 的 /v1/models 模型面核查）。
 pub async fn http_get_json(url: &str, timeout: Duration) -> Result<Value> {
@@ -691,7 +709,8 @@ pub async fn http_get_json(url: &str, timeout: Duration) -> Result<Value> {
     let status = resp.status();
     let body = resp.text().await.context("read response body")?;
     if !status.is_success() {
-        bail!("GET {url} -> {status}: {}", &body[..body.len().min(200)]);
+        let cut = floor_char_boundary(&body, body.len().min(200));
+        bail!("GET {url} -> {status}: {}", &body[..cut]);
     }
     serde_json::from_str(&body).context(format!("parse JSON from {url}"))
 }

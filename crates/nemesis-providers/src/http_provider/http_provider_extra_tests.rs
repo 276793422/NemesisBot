@@ -2115,3 +2115,62 @@ fn drain_request(sock: &mut std::net::TcpStream) {
         }
     }
 }
+
+/// BUG-20261105-026 红证：重复 finish 帧（代理双序列无 [DONE] 分隔形态）
+/// 不得发第二终态 chunk——覆盖式消费端（collect_stream_response /
+/// llm_bridge::chat_streamed 同契约「出现即覆盖」）已收的 finish_reason 会被
+/// 第二发覆盖（首终 "length" 被覆盖成 "stop" 后 length 升档与 usage 缺失
+/// 回落判定双双失效；wal_crash 双终态覆盖根因第三形态：[DONE]/EOF 已闸、
+/// finish 帧本体此前漏闸）。终态后只认 include_usage 尾帧（choices 空缺 +
+/// usage 对象）转发 usage。
+#[tokio::test]
+async fn test_chat_stream_duplicate_finish_frame_does_not_override_terminal() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // 序列：delta + finish "length"（第一终态）→ 重复 finish "stop"（异常
+    // 第二发）→ include_usage 尾帧（choices 缺失 + usage）→ [DONE]。
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial te\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":9,\"total_tokens\":16}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut finish_frames: Vec<String> = Vec::new();
+    let mut content = String::new();
+    let mut usage_total: Option<i64> = None;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                content.push_str(&chunk.delta);
+                if let Some(fr) = chunk.finish_reason.as_deref() {
+                    finish_frames.push(fr.to_string());
+                }
+                if let Some(u) = chunk.usage.as_ref() {
+                    usage_total = Some(u.total_tokens);
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(content, "partial te");
+    // 终态帧恰好一发且首个 finish_reason 幸存（旧形态：第二发把 "length"
+    // 覆盖成 "stop"，length 升档静默失效）。
+    assert_eq!(finish_frames, vec!["length".to_string()]);
+    // include_usage 尾帧照常转发（终态闸不吞 usage）。
+    assert_eq!(usage_total, Some(16));
+}

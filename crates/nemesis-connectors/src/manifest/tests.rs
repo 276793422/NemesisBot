@@ -298,6 +298,45 @@ kind = "local"
     assert!(err.contains("至少要声明一个"), "got: {err}");
 }
 
+/// BUG-20261105-021：`exclusive_mcp = []`（空数组是 Some 非 None）不得
+/// 绕过零操作面闸——旧形态在归一化前判 `is_none()`，空数组 + 空 ops =
+/// 死连接器静默入库。合法化语义不回退：空数组 + 有 op 照常合法。
+#[test]
+fn rejects_empty_ops_with_empty_exclusive_array() {
+    let toml_text = r#"
+[connector]
+id = "empty-exclusive"
+name = "空独占"
+version = "0.1.0"
+kind = "local"
+exclusive_mcp = []
+"#;
+    let err = parse_connector_manifest(toml_text).expect_err("empty exclusive array");
+    assert!(err.contains("至少要声明一个"), "got: {err}");
+
+    // 对照：空数组独占 + 有 op = 合法（归一化后的闸不误伤）。
+    let toml_text = r#"
+[connector]
+id = "op-with-empty-exclusive"
+name = "有 op 空独占"
+version = "0.1.0"
+kind = "rest"
+exclusive_mcp = []
+
+[connector.http]
+base = "http://127.0.0.1:9"
+
+[[op]]
+id = "ping"
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/ping" }
+"#;
+    let c = parse_connector_manifest(toml_text).expect("op + empty exclusive array");
+    assert_eq!(c.ops.len(), 1);
+    assert!(c.exclusive_mcp.is_empty());
+}
+
 #[test]
 fn risk_level_rank_is_total_order() {
     assert!(RiskLevel::Low.rank() < RiskLevel::Medium.rank());

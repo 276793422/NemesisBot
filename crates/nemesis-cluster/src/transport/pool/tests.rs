@@ -707,3 +707,65 @@ async fn test_link_locally_closed_conn_evicted_then_fresh_dialed() {
     pool.close();
     server.abort();
 }
+
+/// BUG-20261105-027 回归锁：同 key 二次归还不得覆盖池内条目。
+/// per-node limit 允许同 node+address 并发租借（get 直接拨新不走池），
+/// 两条租借的 key 相同；旧实现顺序归还时 HashMap::insert 覆盖池内第一条，
+/// 被覆盖连接 dial 时 forget 的 permit + node_count + active_count 三账
+/// 单位永久蒸发（泄漏单位不在池内，cleanup_dead 摸不到）——反复并发调用
+/// 即逼近 "connection limit reached" / "per-node limit reached" 假限流。
+/// 修复后：后来者关连接并回吐自己的三账单位，池内条目与许可账目对齐。
+#[tokio::test]
+async fn test_pool_return_same_key_twice_does_not_overwrite_entry() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 3,
+        ..Default::default()
+    });
+
+    // 同 key 并发租借两条（per-node limit=3 允许）：get 都直接拨新，
+    // 两条租借共享同一 key "node-1:{addr}"。
+    let (key1, c1) = pool.get("node-1", &addr).await.unwrap();
+    let (key2, c2) = pool.get("node-1", &addr).await.unwrap();
+    assert_eq!(key1, key2, "同 node+address 的 key 必须相同");
+    assert_eq!(pool.active_connection_count(), 2);
+
+    // 顺序归还两条：第二条不得覆盖第一条的池条目。
+    pool.return_connection(key1.clone(), c1);
+    pool.return_connection(key2, c2);
+
+    let stats = pool.get_stats();
+    assert_eq!(
+        stats.active_conns, 1,
+        "同 key 二归还后池内只留一条（覆盖泄漏形态 active=2）"
+    );
+    assert_eq!(
+        stats.node_conns.get("node-1"),
+        Some(&1),
+        "节点计数不得漂移（覆盖泄漏形态=2）"
+    );
+    // 许可账目直接核对：max_conns=10，池内 1 条各占 1 许可 → 9 可用
+    //（覆盖泄漏形态第二条 forget 的许可不回吐 → 8）。
+    assert_eq!(
+        pool.semaphore.available_permits(),
+        9,
+        "两条租借的许可都必须回吐"
+    );
+
+    // 池内幸存条目取用即验：get 命中池内连接（不新拨 → active 不变）。
+    let (key3, c3) = pool.get("node-1", &addr).await.unwrap();
+    assert_eq!(key3, key1);
+    assert_eq!(
+        pool.active_connection_count(),
+        1,
+        "命中池内条目不产生新租约记账"
+    );
+
+    drop(c3);
+    pool.close();
+    server.abort();
+}

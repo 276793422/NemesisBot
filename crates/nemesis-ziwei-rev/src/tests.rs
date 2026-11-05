@@ -497,3 +497,105 @@ fn snapshot_save_latest_sweep_roundtrip() {
     // 清理（fsutil 韧性删除纪律）
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&root);
 }
+
+// ── pe 32 位导入表（BUG-20261105-017）─────────────────────────────────
+
+/// PE32（machine 0x14C）最小镜像：.rdata 含普通导入表 + 延迟导入表，
+/// thunk 数组混合「名字导入 + 序号导入」两个 32 位槽。
+/// 布局（RVA；节 .rdata @0x2000 → 文件 0x200，0x200 字节）：
+/// - 0x2000 普通导入描述符（OFT=0x2068, name=0x2088, FT=0x2078）；
+///   0x2014 终止项（零）
+/// - 0x2028 延迟导入描述符（attrs=1 RVA 形态；name=0x2088, IAT=0x2078,
+///   INT=0x2068）；0x2048 终止项（零）
+/// - 0x2068 OFT 名字表（u32 槽）：[0]=0x2098（名字）、[1]=0x8000_0005
+///   （序号 5）、[2]=0 终止
+/// - 0x2078 FT/IAT 同值
+/// - 0x2088 "A.dll"；0x2098 hint(0)+"MsgA"
+fn test_pe32_file() -> Vec<u8> {
+    let mut f = vec![0u8; 0x400];
+    let w16 = |f: &mut [u8], off: usize, v: u16| f[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    let w32 = |f: &mut [u8], off: usize, v: u32| f[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    f[0] = b'M';
+    f[1] = b'Z';
+    w32(&mut f, 0x3C, 0x80); // e_lfanew
+    f[0x80..0x84].copy_from_slice(b"PE\0\0");
+    // COFF @0x84
+    w16(&mut f, 0x84, 0x14C); // machine = i386
+    w16(&mut f, 0x86, 1); // 1 节
+    w16(&mut f, 0x94, 0xE0); // optional size = 224（PE32 标准长）
+    w16(&mut f, 0x96, 0x0022); // characteristics
+    // Optional @0x98（PE32，magic 0x10B）
+    let opt = 0x98usize;
+    w16(&mut f, opt, 0x10B);
+    w32(&mut f, opt + 16, 0x1000); // entry
+    w32(&mut f, opt + 28, 0x400000); // image base（u32，PE32）
+    w32(&mut f, opt + 32, 0x1000); // sect align
+    w32(&mut f, opt + 36, 0x200); // file align
+    let dd = opt + 96; // PE32 数据目录起点
+    w32(&mut f, dd + 8, 0x2000); // [1] import dir rva
+    w32(&mut f, dd + 12, 0x28);
+    w32(&mut f, dd + 13 * 8, 0x2028); // [13] delay import dir rva
+    w32(&mut f, dd + 13 * 8 + 4, 0x40);
+    // 节表 @opt+0xE0 = 0x178
+    let sh = opt + 0xE0;
+    f[sh..sh + 8].copy_from_slice(b".rdata\0\0");
+    w32(&mut f, sh + 8, 0x200); // vsize
+    w32(&mut f, sh + 12, 0x2000); // rva
+    w32(&mut f, sh + 16, 0x200); // raw size
+    w32(&mut f, sh + 20, 0x200); // raw ptr
+    w32(&mut f, sh + 36, 0x4000_0040); // characteristics
+    // 节内容（文件偏移 = rva - 0x2000 + 0x200）
+    let at = |rva: u32| (rva - 0x2000 + 0x200) as usize;
+    // 普通导入描述符 @0x2000
+    w32(&mut f, at(0x2000), 0x2068); // OFT
+    w32(&mut f, at(0x2000) + 12, 0x2088); // name
+    w32(&mut f, at(0x2000) + 16, 0x2078); // FT
+    // 延迟导入描述符 @0x2028（32 字节）
+    w32(&mut f, at(0x2028), 1); // attrs：RVA 形态
+    w32(&mut f, at(0x2028) + 4, 0x2088); // szName
+    w32(&mut f, at(0x2028) + 8, 0x2070); // pHmod（占位）
+    w32(&mut f, at(0x2028) + 12, 0x2078); // pIAT
+    w32(&mut f, at(0x2028) + 16, 0x2068); // pINT
+    // OFT 名字表 @0x2068：名字 / 序号 / 终止（32 位槽）
+    w32(&mut f, at(0x2068), 0x2098);
+    w32(&mut f, at(0x2068) + 4, 0x8000_0005);
+    // FT/IAT @0x2078 同值
+    w32(&mut f, at(0x2078), 0x2098);
+    w32(&mut f, at(0x2078) + 4, 0x8000_0005);
+    // "A.dll\0" @0x2088
+    f[at(0x2088)..at(0x2088) + 6].copy_from_slice(b"A.dll\0");
+    // hint(0) + "MsgA\0" @0x2098
+    f[at(0x2098)..at(0x2098) + 7].copy_from_slice(&[0, 0, b'M', b's', b'g', b'A', 0]);
+    f
+}
+
+/// BUG-20261105-017：32 位 PE 的导入/延迟导入 thunk 语义——4 字节槽
+/// （stride ×4）、u32 读、序号旗标 0x8000_0000。混合名字+序号两槽必须
+/// 都被认出，IAT 槽 RVA 按 stride 递增（旧 64 位读法会把两槽拼成一个
+/// u64、漏序号导入、后续槽位 RVA 翻倍）。
+#[test]
+fn pe32_imports_use_32bit_thunk_semantics() {
+    let file = test_pe32_file();
+    let pe = pe::PeInfo::parse(&file).expect("PE32 夹具可解析");
+    assert_eq!(pe.machine, 0x14C);
+    assert_eq!(pe.bitness(), Some(32));
+
+    // 普通导入：A.dll → [("MsgA", 0x2078), ("#5", 0x207C)]
+    let imports = pe::parse_imports_file(&file, &pe).expect("imports");
+    assert_eq!(imports.len(), 1, "恰好一个 DLL：{imports:?}");
+    assert_eq!(imports[0].dll, "A.dll");
+    assert_eq!(
+        imports[0].funcs,
+        vec![("MsgA".to_string(), 0x2078), ("#5".to_string(), 0x207C),],
+        "名字+序号两槽都认出，IAT 槽 stride ×4：{imports:?}"
+    );
+
+    // 延迟导入同语义
+    let delay = pe::parse_delay_imports_file(&file, &pe).expect("delay imports");
+    assert_eq!(delay.len(), 1, "恰好一个延迟 DLL：{delay:?}");
+    assert_eq!(delay[0].dll, "A.dll");
+    assert_eq!(
+        delay[0].funcs,
+        vec![("MsgA".to_string(), 0x2078), ("#5".to_string(), 0x207C),],
+    );
+}

@@ -132,3 +132,21 @@ fn buy_rejects_invalid_input() {
     assert!(l.buy("A", -1.0, 10.0, TS).is_err(), "qty<0");
     assert!(l.buy("A", 1.0, -1.0, TS).is_err(), "price<0");
 }
+
+/// BUG-20261105-022：sell 与 buy 同款价格/数量闸——负价卖出缺闸时
+/// proceeds 为负直接扣现金（账本可被推成负余额）；NaN 价也拒。
+#[test]
+fn sell_rejects_invalid_input() {
+    let mut l = BrokerLedger::default();
+    l.buy("A", 1.0, 10.0, TS).expect("buy");
+    let cash_before = l.cash;
+
+    assert!(l.sell("A", 0.0, 10.0, TS).is_err(), "qty=0");
+    assert!(l.sell("A", -1.0, 10.0, TS).is_err(), "qty<0");
+    assert!(l.sell("A", 1.0, -1.0, TS).is_err(), "price<0");
+    assert!(l.sell("A", 1.0, f64::NAN, TS).is_err(), "price=NaN");
+
+    // 全部拒绝后账本原封不动（无现金变动、持仓不丢）
+    assert_eq!(l.cash, cash_before, "非法单不得动账");
+    assert!(l.positions.contains_key("A"), "非法单不得动持仓");
+}

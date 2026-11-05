@@ -241,118 +241,165 @@ impl SetupManager {
         }
         #[cfg(windows)]
         {
-            if self.state.lock().unwrap().is_some() {
-                return Err("已有活跃向导 draft（先 commit 或 abort）".to_string());
-            }
-            if let Some(cur) = latest_draft_id(workspace) {
-                return Err(format!(
-                    "存在未收尾的 draft {cur}：先 commit/abort（CLI ziwei setup abort）后再开新向导"
-                ));
-            }
-            let pid = match (pid, exe_hint) {
-                (Some(p), _) => p,
-                (None, Some(name)) => find_pid_by_name(name)?,
-                (None, None) => return Err("缺 pid 或 exe（二选一）".to_string()),
-            };
-            let (base, size, path, _name) = main_module(pid)?;
-
-            // 盘上 exe：指纹素材 + 节表真相源
-            let exe_path = PathBuf::from(&path);
-            let file = std::fs::read(&exe_path)
-                .map_err(|e| format!("读 exe 失败（{}）：{e}", exe_path.display()))?;
-            let pe = PeInfo::parse(&file).map_err(|e| format!("exe PE 头解析失败：{e}"))?;
-            let machine = match pe.machine {
-                0x8664 => Machine::X64,
-                0x14C => Machine::X86,
-                m => return Err(format!("machine 0x{m:04X} 不支持（只支持 x64/x86）")),
-            };
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(&file);
-            let sha = hex::encode(hasher.finalize());
-            let exe_name = exe_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if exe_name.is_empty() {
-                return Err(format!("exe 路径无文件名：{}", exe_path.display()));
-            }
-
-            // draft profile（中途形态直落盘，不走 ProfileStore::save 的全量校验）
-            let now = chrono::Utc::now();
-            let id = format!("zw-pro-d{}", now.timestamp_millis());
-            let profile = Profile {
-                schema_version: SCHEMA_VERSION,
-                profile_id: id.clone(),
-                name: format!("draft: {exe_name}"),
-                created_at: now,
-                last_verified_at: now,
-                status: ProfileStatus::Active,
-                target: TargetFingerprint {
-                    exe_name: exe_name.clone(),
-                    exe_path_hint: Some(exe_path.display().to_string()),
-                    machine,
-                    file_sha256: Some(sha.clone()),
-                    version_resource: Default::default(),
-                    verify_policy: VerifyPolicy::HashOrVersion,
-                },
-                attach: AttachInfo::default(),
-                functions: Vec::new(),
-                data_structures: Vec::new(),
-                tools: Vec::new(),
-                verification: Verification {
-                    on_attach: vec!["file_sha256".into(), "anchors_vote>=2".into()],
-                    stale_action: Some("notify_user".into()),
-                },
-            };
-            let draft = draft_dir(workspace, &id);
-            std::fs::create_dir_all(&draft).map_err(|e| format!("建 draft 目录失败：{e}"))?;
-            save_draft(workspace, &profile)?;
-            save_draft_anchors(
-                workspace,
-                &AnchorSet {
-                    profile_id: id.clone(),
-                    anchors: Vec::new(),
-                },
-            )?;
-
-            // attach 会话（指纹校验在 attach 链内；失败则回滚 draft）
-            let manager = crate::session::global().ok_or_else(|| {
-                let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-                crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string()
-            })?;
-            let session = match manager.attach(&profile, pid).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-                    return Err(format!("attach 失败（draft 已回滚）：{e}"));
+            // BUG-20261105-019：在册检查与预占**同一把锁**内完成——旧形态
+            // 检查后锁即释放，中间隔 exe 指纹读取 + attach await 才落位
+            // state，两个并发 select_target 可双过闸（双 draft + 重复注入
+            // 会话）。预占后后来者在锁上即被拒；本函数到收尾之间任何失败
+            // 路径统一在下方 Err 臂回收预占。
+            let id = {
+                let mut st = self.state.lock().unwrap();
+                if st.is_some() {
+                    return Err("已有活跃向导 draft（先 commit 或 abort）".to_string());
                 }
+                if let Some(cur) = latest_draft_id(workspace) {
+                    return Err(format!(
+                        "存在未收尾的 draft {cur}：先 commit/abort（CLI ziwei setup abort）后再开新向导"
+                    ));
+                }
+                let id = format!("zw-pro-d{}", chrono::Utc::now().timestamp_millis());
+                // pid=0 占位形态：窗口期内 require_live_info 消费方诚实拒绝
+                // （「重新 select_target」），不会拿假基址干真活。
+                *st = Some(SetupState {
+                    info: SetupInfo {
+                        profile_id: id.clone(),
+                        pid: 0,
+                        module_base: 0,
+                        module_size: 0,
+                        machine: Machine::X64,
+                        exe_path: PathBuf::new(),
+                        exe_name: String::new(),
+                        file_sha256: String::new(),
+                    },
+                    analysis: None,
+                });
+                id
             };
-
-            let info = SetupInfo {
-                profile_id: id.clone(),
-                pid,
-                module_base: base,
-                module_size: size,
-                machine,
-                exe_path,
-                exe_name: exe_name.clone(),
-                file_sha256: sha,
-            };
-            *self.state_mut() = Some(SetupState {
-                info: info.clone(),
-                analysis: None,
-            });
-            tracing::info!(
-                "[ziwei][setup] draft {id} 选定目标 pid={pid} base=0x{base:X} {exe_name}（{}）",
-                session.arch
-            );
-            Ok(json!({
-                "draft": info.to_json(false),
-                "session": session.snapshot(),
-                "next": "snapshot",
-            }))
+            match self
+                .select_target_reserved(workspace, pid, exe_hint, &id)
+                .await
+            {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    *self.state_mut() = None;
+                    Err(e)
+                }
+            }
         }
+    }
+
+    /// [`Self::select_target`] 的续体（预占已成立；pid/exe 指纹/draft/attach
+    /// 全在无锁区执行，失败由调用方回收预占）。
+    #[cfg(windows)]
+    async fn select_target_reserved(
+        &self,
+        workspace: &Path,
+        pid: Option<u32>,
+        exe_hint: Option<&str>,
+        id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let pid = match (pid, exe_hint) {
+            (Some(p), _) => p,
+            (None, Some(name)) => find_pid_by_name(name)?,
+            (None, None) => return Err("缺 pid 或 exe（二选一）".to_string()),
+        };
+        let (base, size, path, _name) = main_module(pid)?;
+
+        // 盘上 exe：指纹素材 + 节表真相源
+        let exe_path = PathBuf::from(&path);
+        let file = std::fs::read(&exe_path)
+            .map_err(|e| format!("读 exe 失败（{}）：{e}", exe_path.display()))?;
+        let pe = PeInfo::parse(&file).map_err(|e| format!("exe PE 头解析失败：{e}"))?;
+        let machine = match pe.machine {
+            0x8664 => Machine::X64,
+            0x14C => Machine::X86,
+            m => return Err(format!("machine 0x{m:04X} 不支持（只支持 x64/x86）")),
+        };
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&file);
+        let sha = hex::encode(hasher.finalize());
+        let exe_name = exe_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if exe_name.is_empty() {
+            return Err(format!("exe 路径无文件名：{}", exe_path.display()));
+        }
+
+        // draft profile（中途形态直落盘，不走 ProfileStore::save 的全量校验）
+        let now = chrono::Utc::now();
+        let id = id.to_string();
+        let profile = Profile {
+            schema_version: SCHEMA_VERSION,
+            profile_id: id.clone(),
+            name: format!("draft: {exe_name}"),
+            created_at: now,
+            last_verified_at: now,
+            status: ProfileStatus::Active,
+            target: TargetFingerprint {
+                exe_name: exe_name.clone(),
+                exe_path_hint: Some(exe_path.display().to_string()),
+                machine,
+                file_sha256: Some(sha.clone()),
+                version_resource: Default::default(),
+                verify_policy: VerifyPolicy::HashOrVersion,
+            },
+            attach: AttachInfo::default(),
+            functions: Vec::new(),
+            data_structures: Vec::new(),
+            tools: Vec::new(),
+            verification: Verification {
+                on_attach: vec!["file_sha256".into(), "anchors_vote>=2".into()],
+                stale_action: Some("notify_user".into()),
+            },
+        };
+        let draft = draft_dir(workspace, &id);
+        std::fs::create_dir_all(&draft).map_err(|e| format!("建 draft 目录失败：{e}"))?;
+        save_draft(workspace, &profile)?;
+        save_draft_anchors(
+            workspace,
+            &AnchorSet {
+                profile_id: id.clone(),
+                anchors: Vec::new(),
+            },
+        )?;
+
+        // attach 会话（指纹校验在 attach 链内；失败则回滚 draft）
+        let manager = crate::session::global().ok_or_else(|| {
+            let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
+            crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string()
+        })?;
+        let session = match manager.attach(&profile, pid).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
+                return Err(format!("attach 失败（draft 已回滚）：{e}"));
+            }
+        };
+
+        let info = SetupInfo {
+            profile_id: id.clone(),
+            pid,
+            module_base: base,
+            module_size: size,
+            machine,
+            exe_path,
+            exe_name: exe_name.clone(),
+            file_sha256: sha,
+        };
+        *self.state_mut() = Some(SetupState {
+            info: info.clone(),
+            analysis: None,
+        });
+        tracing::info!(
+            "[ziwei][setup] draft {id} 选定目标 pid={pid} base=0x{base:X} {exe_name}（{}）",
+            session.arch
+        );
+        Ok(json!({
+            "draft": info.to_json(false),
+            "session": session.snapshot(),
+            "next": "snapshot",
+        }))
     }
 
     // ── Step 2：snapshot ────────────────────────────────────────────────
@@ -1616,14 +1663,21 @@ impl SetupManager {
                 .map_err(|e| e.to_string())?
                 .ok_or("无快照：先 snapshot")?;
 
-            // T4.4：观测窗前武装临时 hook（已标注函数；失败诚实注记不阻断）
+            // T4.4：观测窗前武装临时 hook（已标注函数；失败诚实注记不阻断）。
+            // BUG-20261105-015：向导期 profile 只在 drafts/（profile_id 是
+            // 本向导新造的毫秒戳，已提交库 ziwei/profiles/<id>/ 必不存在，
+            // ProfileStore::load 恒 NotFound → hook=true 整条死路）——读
+            // draft（load_draft 单一真相源），解析走 profile 注入形态。
             let hook_on = hook.unwrap_or(false);
             let mut hook_notes: Vec<String> = Vec::new();
             let mut armed: Vec<String> = Vec::new();
             if hook_on {
-                match crate::profile::ProfileStore::new(workspace).load(&info.profile_id) {
+                match load_draft(workspace, &info.profile_id) {
                     Ok(profile) if !profile.functions.is_empty() => {
-                        if let Ok(rep) = manager.resolve_functions(&info.profile_id).await {
+                        if let Ok(rep) = manager
+                            .resolve_functions_with(&info.profile_id, profile.clone())
+                            .await
+                        {
                             for n in rep["notes"].as_array().cloned().unwrap_or_default() {
                                 if let Some(s) = n.as_str() {
                                     hook_notes.push(s.to_string());

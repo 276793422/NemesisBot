@@ -8,64 +8,97 @@ use super::*;
 /// 命中后调用（issue_id 由闭包 `take` 出，避免双取竞态）。worker 回报失败
 /// （status=error）→ 诚实转人工；正常回报 → 证据带入二段评审
 /// （`allow_selfcheck=false`：取证只带一程，二段结论直接三态处置）。
+///
+/// `task_id` = 本轮二段对应的取证任务（执行档案直读路径无任务传 `None`）：
+/// BUG-20261105-012——在途标记防 sweep 恢复臂双跑；完成（含失败臂）后清
+/// 标记 + 删 `selfcheck_pending` 持久行（行生命周期 = 二段完成；完成前
+/// gateway 崩溃由 sweep 重放）。
 pub(crate) fn spawn_selfcheck_second_stage(
     deps: BoardReviewDeps,
+    issue_id: i64,
+    status: String,
+    response: String,
+    task_id: Option<String>,
+) {
+    if let Some(tid) = task_id.as_deref() {
+        deps.selfcheck.mark_review_started(tid);
+    }
+    let store = deps.store.clone();
+    let cluster = deps.cluster.clone();
+    spawn_watched(store, cluster, Some(issue_id), "二段验收", async move {
+        run_second_stage_review(&deps, issue_id, status, response).await;
+        // 行生命周期收口：二段结束（无论三态处置还是失败臂停车）即删持久
+        // 行——后续恢复臂不再重放；行删除失败 warn（sweep 臂 A 会因在途
+        // 标记已清而重放一次二段，review_still_relevant 守卫兜住幂等）。
+        if let Some(tid) = task_id {
+            deps.selfcheck.mark_review_finished(&tid);
+            if let Some(sc_store) = deps.selfcheck.store.as_ref()
+                && let Err(e) = sc_store.delete_selfcheck_pending(&tid)
+            {
+                warn!("[BoardReview] selfcheck 持久行清理失败（task {tid}）：{e}");
+            }
+        }
+    });
+}
+
+/// 二段验收主体（[`spawn_selfcheck_second_stage`] 的 async 内容；独立成
+/// fn 让收口清理不随主体早退丢失——原 error 臂 `return` 会跳过删行）。
+async fn run_second_stage_review(
+    deps: &BoardReviewDeps,
     issue_id: i64,
     status: String,
     response: String,
 ) {
     let store = deps.store.clone();
     let cluster = deps.cluster.clone();
-    spawn_watched(store, cluster, Some(issue_id), "二段验收", async move {
-        if status == "error" {
-            warn!(
-                "[BoardReview] issue {issue_id} 自检取证回报失败（status=error）→ 转人工（评审保持 in_review）"
-            );
-            // U-A：取证闭环无法完成也是停车路径（worker 侧出错——重发
-            // 取证或放弃自检直评都需要明确入口）。
-            let handoff_note = match deps.store.get_issue(issue_id) {
-                Ok(issue) => park_with_handoff(
-                    &deps,
-                    &issue.number,
-                    issue_id,
-                    nemesis_board::handoff::HandoffSpec {
-                        stop_kind: "retry_exhausted",
-                        suggested_action: "retry",
-                        hint: "自检取证回报失败（worker 侧出错）：核查 worker 状态后 review.retrigger 重新验收（评审会按需重新取证）".into(),
-                        resume_entry: "review.retrigger（number=NB-x）".into(),
-                        environment: last_dispatch_env(
-                            &deps.store.list_dispatches(issue_id).unwrap_or_default(),
-                        ),
-                        attempted: vec![serde_json::json!({
-                            "action": "selfcheck_evidence",
-                            "result": nemesis_utils::truncate(response.trim(), 300),
-                        })],
-                    },
-                ),
-                Err(_) => String::new(),
-            };
-            let _ = post_review_comment(
-                &deps.store,
+    if status == "error" {
+        warn!(
+            "[BoardReview] issue {issue_id} 自检取证回报失败（status=error）→ 转人工（评审保持 in_review）"
+        );
+        // U-A：取证闭环无法完成也是停车路径（worker 侧出错——重发
+        // 取证或放弃自检直评都需要明确入口）。
+        let handoff_note = match store.get_issue(issue_id) {
+            Ok(issue) => park_with_handoff(
+                deps,
+                &issue.number,
                 issue_id,
-                &deps.cluster,
-                &format!(
-                    "⚠ 自检取证回报失败（worker 侧出错），取证闭环无法完成，请人工裁决或重新派发。{handoff_note}"
-                ),
-            );
-            return;
-        }
-        info!("[BoardReview] issue {issue_id} 取证回报到位 → 二段验收");
-        let ctx = ReviewCtx {
-            allow_selfcheck: false,
-            evidence: Some(response.to_string()),
-            retry: 0,
+                nemesis_board::handoff::HandoffSpec {
+                    stop_kind: "retry_exhausted",
+                    suggested_action: "retry",
+                    hint: "自检取证回报失败（worker 侧出错）：核查 worker 状态后 review.retrigger 重新验收（评审会按需重新取证）".into(),
+                    resume_entry: "review.retrigger（number=NB-x）".into(),
+                    environment: last_dispatch_env(
+                        &store.list_dispatches(issue_id).unwrap_or_default(),
+                    ),
+                    attempted: vec![serde_json::json!({
+                        "action": "selfcheck_evidence",
+                        "result": nemesis_utils::truncate(response.trim(), 300),
+                    })],
+                },
+            ),
+            Err(_) => String::new(),
         };
-        match review_issue(&deps, issue_id, ctx).await {
-            Ok(true) => {}
-            Ok(false) => {} // 跳过类结果已在 review_issue 内记日志
-            Err(e) => warn!("[BoardReview] issue {issue_id} 二段验收失败：{e}（人工兜底）"),
-        }
-    });
+        let _ = post_review_comment(
+            &store,
+            issue_id,
+            &cluster,
+            &format!(
+                "⚠ 自检取证回报失败（worker 侧出错），取证闭环无法完成，请人工裁决或重新派发。{handoff_note}"
+            ),
+        );
+        return;
+    }
+    info!("[BoardReview] issue {issue_id} 取证回报到位 → 二段验收");
+    let ctx = ReviewCtx {
+        allow_selfcheck: false,
+        evidence: Some(response.to_string()),
+        retry: 0,
+    };
+    match review_issue(deps, issue_id, ctx).await {
+        Ok(true) => {}
+        Ok(false) => {} // 跳过类结果已在 review_issue 内记日志
+        Err(e) => warn!("[BoardReview] issue {issue_id} 二段验收失败：{e}（人工兜底）"),
+    }
 }
 
 /// B2b 自检取证提示词：给执行 worker 的指令——只收集证据如实回报，不下
@@ -150,6 +183,224 @@ pub(super) async fn dispatch_selfcheck(
         return Err(format!("取证派发被 worker 拒单（{reason}）"));
     }
     Ok(task_id)
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261105-012：自检取证路由持久层兜底 sweep
+// ---------------------------------------------------------------------------
+
+/// 臂 B not_found 宽限（秒）：worker 工作队列正常秒级消费，ACK 后超宽限
+/// 仍 not_found = 任务在 worker 侧丢失（队列丢弃 / worker 重装丢盘）。
+const SELFCHECK_NOT_FOUND_GRACE_SECS: i64 = 30 * 60;
+
+/// 行绝对超龄（秒；worker 持续离线 / 轮询永不成功的兜底上限）。与集群
+/// stale 安全网 24h 下限对齐——超过它 TaskManager 侧也判死，两侧一致收口。
+const SELFCHECK_PENDING_MAX_AGE_SECS: i64 = 24 * 60 * 60;
+
+/// 自检取证路由持久层兜底 sweep（gateway 派发 sweep 同 tick 调用）。
+/// 内存注册表是进程态——gateway 重启后 `selfcheck_pending` 表里的在途行
+/// 分两臂处理：
+/// - **臂 A**（已路由 status 非空、不在本进程在途集合）：二段验收进行中
+///   进程崩溃 → 重放二段（证据已烧入行内，零 worker 依赖）。
+/// - **臂 B**（未路由 status NULL）：取证回调丢失（gateway 停机窗口送达
+///   失败时 worker `send_callback_or_persist` 落盘保留副本）→ G5 式
+///   `query_task_result` 轮询捞回：done → 恢复路由进二段；running →
+///   继续；not_found 超宽限 / 行绝对超龄 → 诚实停车转人工。
+///
+/// P1 保险丝：estop 挂起时评审冻结（不跑 LLM、不转人工收口）——两臂同
+/// 冻结，行保留等 release 后处理。
+pub(crate) async fn sweep_selfcheck_pending(deps: &BoardReviewDeps) {
+    sweep_selfcheck_pending_at(deps, chrono::Utc::now().timestamp()).await;
+}
+
+/// [`sweep_selfcheck_pending`] 的时钟注入形态（测试伪造 `now` 用——
+/// 超龄/宽限闸按行龄判定，真实时钟测不到）。
+pub(crate) async fn sweep_selfcheck_pending_at(deps: &BoardReviewDeps, now: i64) {
+    if deps.estop.is_engaged() {
+        return;
+    }
+    let rows = match deps.store.list_selfcheck_pending() {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("[BoardReview] selfcheck 持久行枚举失败：{e}");
+            return;
+        }
+    };
+    for row in rows {
+        match row.status.as_deref() {
+            None => selfcheck_sweep_unrouted(deps, &row, now).await,
+            Some(status) => {
+                if deps.selfcheck.has_inflight_review(&row.task_id) {
+                    continue; // 本进程评审在途（正常流），不重放
+                }
+                info!(
+                    "[BoardReview] issue {} 自检二段残留行重放（task {}，进程重启恢复）",
+                    row.issue_id, row.task_id
+                );
+                spawn_selfcheck_second_stage(
+                    deps.clone(),
+                    row.issue_id,
+                    status.to_string(),
+                    row.response.clone().unwrap_or_default(),
+                    Some(row.task_id.clone()),
+                );
+            }
+        }
+    }
+}
+
+/// 臂 B：未路由行（回调未到）——恢复轮询 / 超龄收口。
+async fn selfcheck_sweep_unrouted(
+    deps: &BoardReviewDeps,
+    row: &nemesis_board::SelfcheckPendingRow,
+    now: i64,
+) {
+    let age = now - row.created_at;
+    if age > SELFCHECK_PENDING_MAX_AGE_SECS {
+        selfcheck_sweep_give_up(deps, row, "自检取证超龄未回收").await;
+        return;
+    }
+    let lost = age > SELFCHECK_NOT_FOUND_GRACE_SECS;
+    if row.worker_id.is_empty() {
+        // 异常行（无轮询目标）：按宽限闸收口。
+        if lost {
+            selfcheck_sweep_give_up(deps, row, "取证行缺 worker 身份").await;
+        }
+        return;
+    }
+    let Some(rpc_client) = deps.cluster.rpc_client_arc() else {
+        if lost {
+            selfcheck_sweep_give_up(deps, row, "RPC 客户端不可用").await;
+        }
+        return;
+    };
+    let request = nemesis_cluster::rpc_types::RPCRequest {
+        id: row.task_id.clone(),
+        action: nemesis_cluster::rpc_types::ActionType::Custom("query_task_result".to_string()),
+        payload: serde_json::json!({ "task_id": row.task_id }),
+        source: deps.cluster.node_id().to_string(),
+        target: Some(row.worker_id.clone()),
+    };
+    let resp = match rpc_client
+        .call_with_timeout(&row.worker_id, request, std::time::Duration::from_secs(30))
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return, // worker 暂时离线：下个 tick 再试（绝对超龄兜底）
+    };
+    let Some(result) = resp.result else {
+        return;
+    };
+    match result.get("status").and_then(|v| v.as_str()).unwrap_or("") {
+        "done" => {
+            let result_status = result
+                .get("result_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("error");
+            let mapped = if result_status == "success" {
+                "ok"
+            } else {
+                "error"
+            };
+            // ok 臂取取证正文；error 臂 error 字段优先（与回调路径
+            // fail_text 合并语义一致）。
+            let response_field = result
+                .get("response")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let error_field = result.get("error").and_then(|v| v.as_str()).unwrap_or("");
+            let text = if mapped == "ok" || error_field.is_empty() {
+                response_field.to_string()
+            } else {
+                error_field.to_string()
+            };
+            info!(
+                "[BoardReview] issue {} 取证回调丢失，恢复轮询捞回（task {}，{mapped}）→ 二段验收",
+                row.issue_id, row.task_id
+            );
+            // 与回调路径同语义三连：路由落地 + TaskManager 收口 + 二段。
+            if let Err(e) = deps
+                .store
+                .mark_selfcheck_routed(&row.task_id, mapped, &text)
+            {
+                warn!(
+                    "[BoardReview] selfcheck 恢复路由落地失败（task {}）：{e}",
+                    row.task_id
+                );
+            }
+            let result_value = serde_json::json!({
+                "status": mapped,
+                "response": text,
+                "source_node": row.worker_id,
+            });
+            if mapped == "error" {
+                deps.cluster.fail_task(&row.task_id, &text);
+            } else {
+                deps.cluster.complete_task(&row.task_id, result_value);
+            }
+            spawn_selfcheck_second_stage(
+                deps.clone(),
+                row.issue_id,
+                mapped.to_string(),
+                text,
+                Some(row.task_id.clone()),
+            );
+        }
+        "running" => {} // worker 还在跑，继续等下个 tick
+        _ => {
+            // not_found / 未知：宽限内再等，超宽限 = worker 侧任务丢失。
+            if lost {
+                selfcheck_sweep_give_up(deps, row, "worker 侧无该任务结果（not_found）").await;
+            }
+        }
+    }
+}
+
+/// 臂 B 收口：取证无法回收 → 停车登记 + 评论转人工（与回调 error 臂同
+/// 形态，入口 review.retrigger）+ TaskManager 收口 + 删行。
+async fn selfcheck_sweep_give_up(
+    deps: &BoardReviewDeps,
+    row: &nemesis_board::SelfcheckPendingRow,
+    reason: &str,
+) {
+    warn!(
+        "[BoardReview] issue {} 自检取证无法回收（task {}，{reason}）→ 转人工",
+        row.issue_id, row.task_id
+    );
+    deps.cluster.fail_task(
+        &row.task_id,
+        &format!("selfcheck recovery give up: {reason}"),
+    );
+    let handoff_note = match deps.store.get_issue(row.issue_id) {
+        Ok(issue) => park_with_handoff(
+            deps,
+            &issue.number,
+            row.issue_id,
+            nemesis_board::handoff::HandoffSpec {
+                stop_kind: "retry_exhausted",
+                suggested_action: "retry",
+                hint: "自检取证回调丢失且无法恢复：核查 worker 状态后 review.retrigger 重新验收（评审会按需重新取证）".into(),
+                resume_entry: "review.retrigger（number=NB-x）".into(),
+                environment: last_dispatch_env(
+                    &deps.store.list_dispatches(row.issue_id).unwrap_or_default(),
+                ),
+                attempted: vec![serde_json::json!({
+                    "action": "selfcheck_evidence_recovery",
+                    "result": reason,
+                })],
+            },
+        ),
+        Err(_) => String::new(),
+    };
+    let _ = post_review_comment(
+        &deps.store,
+        row.issue_id,
+        &deps.cluster,
+        &format!(
+            "⚠ 自检取证回调丢失且无法恢复（{reason}），取证闭环无法完成，请人工裁决或重新验收。{handoff_note}"
+        ),
+    );
+    let _ = deps.store.delete_selfcheck_pending(&row.task_id);
 }
 
 /// 取证软件化（2026-10-15）：执行档案直读取证。档案管线

@@ -272,7 +272,10 @@ impl AgentHandler {
             .get("turn")
             .and_then(|v| v.as_u64())
             .ok_or("turn is required")? as usize;
-        let agent_loop = match data
+        // BUG-20261105-024：历史手术面统一持会话闸（rewind_to_message/undo/
+        // redo/delete/clear/compact 同族纪律，R6 家族一致性）——旧形态裸调
+        // al.rewind(turn)，与在途轮次的会话落库/jsonl 写入并发竞争。
+        let (session_key, agent_loop) = match data
             .get("session_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
@@ -282,28 +285,33 @@ impl AgentHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
-                Some(crate::handlers::projects::resolve_session_loop(
-                    ctx,
-                    &session_key,
-                )?)
+                let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
+                (session_key, Some(al))
             }
-            None => ctx.state.agent_loop.read().clone(),
+            None => {
+                // 缺省 = 当前聊天会话（chat.rs sync 同构缺省形态）。
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&ctx.session_id)
+                );
+                (session_key, ctx.state.agent_loop.read().clone())
+            }
         };
-        match agent_loop {
-            Some(al) => match al.rewind(turn).await {
-                Ok(report) => Ok(Some(serde_json::json!({
-                    "turn": turn,
-                    "written": report.written,
-                    "deleted": report.deleted,
-                    // R3：失败项不再被吞——非空 = 工作区部分恢复态。
-                    "failures": report.failures.iter().map(|(p, e)| {
-                        serde_json::json!({ "path": p, "error": e })
-                    }).collect::<Vec<_>>(),
-                }))),
-                Err(e) => Err(e),
-            },
-            None => Err("Agent not running".to_string()),
-        }
+        let Some(al) = agent_loop else {
+            return Err("Agent not running".to_string());
+        };
+        let report = al
+            .under_history_gate(&session_key, "回退", || al.rewind(turn))
+            .await?;
+        Ok(Some(serde_json::json!({
+            "turn": turn,
+            "written": report.written,
+            "deleted": report.deleted,
+            // R3：失败项不再被吞——非空 = 工作区部分恢复态。
+            "failures": report.failures.iter().map(|(p, e)| {
+                serde_json::json!({ "path": p, "error": e })
+            }).collect::<Vec<_>>(),
+        })))
     }
 
     /// `agent.checkpoints` — list checkpoint turns (for a rewind picker UI).

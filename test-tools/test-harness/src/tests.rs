@@ -193,3 +193,54 @@ fn long_form_path_resolves_short_name_via_verbatim_strip() {
     assert!(root.exists(), "root must exist: {}", root.display());
     assert!(!root.as_os_str().to_string_lossy().starts_with(r"\\?\"));
 }
+
+#[test]
+fn floor_char_boundary_ascii_and_multibyte() {
+    // ASCII：恒等。
+    assert_eq!(super::floor_char_boundary("abc", 3), 3);
+    assert_eq!(super::floor_char_boundary("abc", 1), 1);
+    assert_eq!(super::floor_char_boundary("abc", 10), 3); // n ≥ len → floor 到 len
+    assert_eq!(super::floor_char_boundary("", 200), 0);
+    // 多字节：中文每字符 3 字节，切点 200 落在第 68 个"中"的中间 → 回退到 199。
+    let s = format!("{}a{}", "中".repeat(66), "中".repeat(10));
+    assert_eq!(s.len(), 229);
+    assert_eq!(super::floor_char_boundary(&s, 200), 199);
+    // 切点恰在边界 → 原样返回。
+    assert_eq!(super::floor_char_boundary(&s, 198), 198);
+}
+
+/// BUG-20261105-029 回归锁：`http_get_json` 对非 2xx 响应的预览截断曾用裸
+/// `&body[..len.min(200)]` 字节切片——中文错误体（gateway 错误消息原样
+/// UTF-8）第 200 字节落在多字节字符中间直接 panic，把「HTTP 错误报告」
+/// 变成「测试工具崩溃」。修复后必须诚实 bail（str-slice-multibyte-panic
+/// 家族，BUG-20261029-185 同款写法的测试基建漏网点）。
+#[tokio::test]
+async fn http_get_json_non2xx_multibyte_body_reports_not_panics() {
+    // mini HTTP server：返回 500 + 229 字节 body，字节 200 恰在多字节字符中间。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let body = format!("{}a{}", "中".repeat(66), "中".repeat(10)); // 229B
+    let server_body = body.clone();
+    std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = std::io::Read::read(&mut sock, &mut buf); // 读掉请求头
+        let resp = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            server_body.len(),
+            server_body
+        );
+        let _ = std::io::Write::write_all(&mut sock, resp.as_bytes());
+    });
+
+    let err = super::http_get_json(
+        &format!("http://127.0.0.1:{port}/v1/models"),
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .expect_err("500 must be Err");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("500"), "status in message: {msg}");
+    // 截断预览保留到字节边界（66 个中文字符 + 'a' = 199B），而非 panic。
+    assert!(msg.contains(&"中".repeat(66)), "preview prefix kept: {msg}");
+}

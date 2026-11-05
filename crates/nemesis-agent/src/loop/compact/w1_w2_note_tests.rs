@@ -1,11 +1,13 @@
-//! W1+W2（2026-10-25 加固）压缩注记域测试。
+//! W1（2026-10-25 加固）压缩注记域测试 + 压缩点解析窗口来源各臂。
 //!
 //! - W1：注记限频（纯函数 + emit 集成）、注记文本
 //!   要素、summarize 触发落 role="system" jsonl 行、StuckResume 档仲裁、
 //!   hook 标签二值；
-//! - W2：`resolve_compact_trigger` 的
-//!   auto_suppressed/window_source 各臂 + `maybe_update_summary` 停用守卫
-//!   （一次性注记 + 不摘要）+ `session_context_status` 新字段。
+//! - 窗口来源各臂：`resolve_compact_trigger` 的 window/source/
+//!   window_source/clamped_from 各形态（config/catalog/user/fallback）。
+//!   2026-11-05 用户拍板：三级链全 miss 时按 fallback 窗口（128k）照常
+//!   自动压缩——旧 W2「窗口未知整条停用」形态废除，fallback 照跑回归锁
+//!   在本文件（fallback_window_still_auto_summarizes）。
 //!
 //! 独立测试文件（生产文件只保留声明行，仓库纪律）。`test_config`/`turn`
 //! 自建——`loop/tests.rs` 同名辅助模块私有，跨文件不可复用（ws2 同款）。
@@ -41,21 +43,33 @@ fn unique_key(tag: &str) -> String {
     )
 }
 
-/// 已知窗口配置（W2：窗口已知才不禁自动压缩；阈值 = 100×75% = 75）。
+/// 已知窗口配置（窗口来源 config 臂；阈值 = 100×75% = 75）。
 fn known_window_config(tag: &str, keep: i64) -> std::path::PathBuf {
+    write_temp_config(
+        tag,
+        &serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": keep}},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        }),
+    )
+}
+
+/// 只配 keep 不配窗口——三级链双 miss 形态（fallback 窗口生效）。
+fn keep_only_config(tag: &str, keep: i64) -> std::path::PathBuf {
+    write_temp_config(
+        tag,
+        &serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": keep}}
+        }),
+    )
+}
+
+fn write_temp_config(tag: &str, body: &serde_json::Value) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
         "nemesis_test_w1w2_{tag}_{}.json",
         std::process::id()
     ));
-    std::fs::write(
-        &path,
-        serde_json::json!({
-            "agents": {"defaults": {"compact_keep_recent_tokens": keep}},
-            "model_list": [{"model_name": "test-model", "context_window": 100}]
-        })
-        .to_string(),
-    )
-    .unwrap();
+    std::fs::write(&path, body.to_string()).unwrap();
     path
 }
 
@@ -169,47 +183,51 @@ fn auto_note_reason_and_hook_kind() {
 
 #[test]
 fn compact_state_defaults_for_new_note_fields() {
-    // 新字段默认态（子模块可见私有字段）：限频无记账、无恢复旗、未发过停用注记。
+    // 新字段默认态（子模块可见私有字段）：限频无记账、无恢复旗。
     let st = CompactState::default();
     assert_eq!(st.last_auto_note, None);
     assert!(!st.resumed_from_pause);
-    assert!(!st.suppressed_noticed);
 }
 
 // ---------------------------------------------------------------------------
-// W2：resolve_compact_trigger 各臂
+// 压缩点解析：窗口来源各臂
 // ---------------------------------------------------------------------------
 
 #[test]
-fn trigger_suppressed_on_fallback_without_user_point() {
-    // 三级链双 miss + 未设压缩点 → 停用（agent 运行期形态：实例兜底标签）。
+fn trigger_fallback_window_compact_point() {
+    // 三级链双 miss → fallback 窗口 + 窗口×75%（2026-11-05：fallback 照常
+    // 压缩，旧 auto_suppressed 停用形态废除）。agent 运行期形态：实例兜底
+    // 标签。
     let trig = resolve_compact_trigger(None, "obscure/local-7b", None, (100, "instance"));
-    assert!(trig.auto_suppressed);
+    assert_eq!(trig.window, 100);
+    assert_eq!(trig.trigger, 75);
+    assert_eq!(trig.source, "instance");
     assert_eq!(trig.window_source, "instance");
-    assert_eq!(trig.trigger, 75, "触发点计算不变（停用闸在消费端）");
-    // CLI 展示形态：编译期默认 128k 标签。
+    // CLI 展示形态：编译期默认 128k。
     let trig = resolve_compact_trigger(
         None,
         "obscure/local-7b",
         None,
         (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
     );
-    assert!(trig.auto_suppressed);
+    assert_eq!(trig.window, FALLBACK_CONTEXT_WINDOW);
+    assert_eq!(trig.trigger, 96_000);
+    assert_eq!(trig.source, "fallback-128k");
     assert_eq!(trig.window_source, "fallback-128k");
 }
 
 #[test]
-fn trigger_not_suppressed_with_user_point_or_config_window() {
-    // 用户压缩点 = 显式意志（哪怕窗口仍是兜底值）→ 不停用。
+fn trigger_user_point_and_config_window() {
+    // 用户压缩点 = 显式意志（哪怕窗口仍是兜底值）。
     let cfg: serde_json::Value = serde_json::from_str(
         r#"{"model_list": [{"model_name": "local", "compact_context_tokens": 50}]}"#,
     )
     .unwrap();
     let trig = resolve_compact_trigger(Some(&cfg), "local", None, (100, "instance"));
-    assert!(!trig.auto_suppressed);
     assert_eq!(trig.source, "user");
+    assert_eq!(trig.trigger, 50);
     assert_eq!(trig.window_source, "instance", "窗口来源独立于触发点来源");
-    // config 窗口命中 → 不停用，窗口来源 config。
+    // config 窗口命中 → 窗口来源 config。
     let cfg: serde_json::Value = serde_json::from_str(
         r#"{"model_list": [{"model_name": "opus", "context_window": 200000}]}"#,
     )
@@ -220,16 +238,16 @@ fn trigger_not_suppressed_with_user_point_or_config_window() {
         None,
         (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
     );
-    assert!(!trig.auto_suppressed);
+    assert_eq!(trig.source, "config");
     assert_eq!(trig.window_source, "config");
     assert_eq!(trig.trigger, 150_000);
 }
 
 #[test]
-fn trigger_not_suppressed_with_catalog_window() {
-    // 价目表 catalog 命中 → 窗口已知 → 不停用（三分支收口：fallback/config
-    // 两臂见 trigger_suppressed_on_fallback_without_user_point /
-    // trigger_not_suppressed_with_user_point_or_config_window）。
+fn trigger_catalog_window() {
+    // 价目表 catalog 命中 → 窗口已知（config 臂见
+    // trigger_user_point_and_config_window；fallback 臂见
+    // trigger_fallback_window_compact_point）。
     let dir = tempfile::tempdir().unwrap();
     let store = std::sync::Arc::new(nemesis_data::PricingStore::open(dir.path()).unwrap());
     store
@@ -255,48 +273,53 @@ fn trigger_not_suppressed_with_catalog_window() {
         Some(store.as_ref()),
         (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
     );
-    assert!(!trig.auto_suppressed, "catalog 命中即窗口已知，压缩照常");
     assert_eq!(trig.window_source, "catalog");
     assert_eq!(trig.window, 96_000);
+    assert_eq!(trig.trigger, 72_000);
 }
 
 // ---------------------------------------------------------------------------
-// W2 集成：停用守卫 + 一次性注记
+// fallback 照跑回归锁（2026-11-05 用户拍板）
 // ---------------------------------------------------------------------------
 
+/// 三级链全 miss（只配 keep 不配窗口 + 显式小实例窗口）时自动压缩照常跑
+/// ——不再有「窗口未知整条停用」形态（旧 W2 废除后的行为锁）。
 #[tokio::test]
-async fn suppressed_stops_auto_summarize_with_one_shot_note() {
-    let key = unique_key("suppressed");
-    // 无 config_path（standalone）→ 三级链双 miss → auto_suppressed。
-    let agent_loop = AgentLoop::new(
+async fn fallback_window_still_auto_summarizes() {
+    let key = unique_key("fallback-compacts");
+    let cfg_path = keep_only_config("fallback-compacts", 40);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
         Box::new(OnceProvider {
             reply: "SUMMARY".into(),
         }),
         test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
     );
+    agent_loop.set_config_path(cfg_path.clone());
     let mut instance = AgentInstance::new(test_config());
-    instance.set_context_window(100); // 阈值 75——旧规则下必然触发
-    for i in 0..6 {
-        instance.add_user_message(&format!("user msg {i} {}", "x".repeat(125)));
-        instance.add_assistant_message(&format!("reply {i} {}", "x".repeat(125)), Vec::new(), None);
+    instance.set_context_window(100); // 阈值 75——fallback 窗口派生
+    // 单消息 ≤ 摘要上限（window=100 → 50 tok → ≤125 字符）防空转闸截胡；
+    // 总量 ≥ 75 保证信号越点。
+    for _ in 0..6 {
+        instance.add_user_message(&"x".repeat(100));
+        instance.add_assistant_message(&"x".repeat(100), Vec::new(), None);
     }
 
     agent_loop
         .maybe_update_summary(&instance, &key, "web", "c")
         .await;
 
-    assert!(instance.get_summary_cache().is_none(), "停用态下绝不摘要");
-    let rows = system_rows(&key);
-    assert_eq!(rows.len(), 1, "恰好一条停用注记: {rows:?}");
-    assert_eq!(rows[0], COMPACT_SUPPRESSED_NOTE);
-
-    // 第二次调用：一次性闸生效，不重复注记。
-    agent_loop
-        .maybe_update_summary(&instance, &key, "web", "c")
-        .await;
-    assert_eq!(system_rows(&key).len(), 1, "one-shot：不重复");
+    let cache = instance
+        .get_summary_cache()
+        .expect("fallback 窗口下自动压缩照常跑");
+    assert_eq!(cache.text, "SUMMARY");
 
     crate::chat_log::delete_chat_log(&key);
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,12 +452,12 @@ async fn emit_note_rate_limited_per_reason() {
 }
 
 // ---------------------------------------------------------------------------
-// W2：session_context_status 新字段
+// session_context_status 窗口字段
 // ---------------------------------------------------------------------------
 
 #[test]
 fn session_status_reports_window_fields() {
-    // 已知窗口（config 命中）→ 不停用 + 来源 config。
+    // 已知窗口（config 命中）→ 来源 config。
     let cfg_path = known_window_config("status", 40);
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let agent_loop = AgentLoop::new_bus(
@@ -448,12 +471,14 @@ fn session_status_reports_window_fields() {
     agent_loop.set_config_path(cfg_path.clone());
     let v = agent_loop.session_context_status("test:w1w2:status-cfg");
     assert_eq!(v["window_source"], "config");
-    assert_eq!(v["auto_suppressed"], false);
     let _ = std::fs::remove_file(&cfg_path);
 
-    // standalone（无 config）→ 停用 + 实例兜底标签。
+    // standalone（无 config）→ 实例兜底标签（fallback 窗口照跑形态）。
     let agent_loop = AgentLoop::new(Box::new(OnceProvider { reply: "S".into() }), test_config());
     let v = agent_loop.session_context_status("test:w1w2:status-standalone");
-    assert_eq!(v["auto_suppressed"], true);
     assert_eq!(v["window_source"], "instance");
+    // token 实报化观测分量在场（2026-11-05）：无 usage lane 回落纯估算。
+    assert_eq!(v["provider_reported_tokens"], 0);
+    assert!(v["estimated_tokens"].is_u64());
+    assert_eq!(v["used_tokens"], v["estimated_tokens"]);
 }
